@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+- Updated the local pi development baseline to `@earendil-works/*` `0.77.0` in package metadata.
+- Declared all pi-bundled runtime packages (`@earendil-works/pi-*`, `typebox`) as optional wildcard peers and kept them only as development dependencies, so npm peer ranges do not block future pi releases.
+- Added explicit `subagent` tool prompt snippet/guidelines so Pi 0.77+ tool metadata attribution has concise delegation guidance separate from the full schema description.
+- Switched the local TypeScript test loader to `jiti` so validation does not depend on Node's removed `--experimental-transform-types` flag on newer Node releases.
+
 ## [0.28.0] - 2026-06-03
 
 ### Added

@@ -13,6 +13,10 @@ function errno(code: string): NodeJS.ErrnoException {
 	return error;
 }
 
+function rmrf(target: string): void {
+	fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+}
+
 function textContent(result: ReturnType<typeof inspectSubagentStatus>): string {
 	const first = result.content[0];
 	return first?.type === "text" ? first.text : "";
@@ -58,7 +62,7 @@ describe("async run status inspection", () => {
 			assert.equal(resultJson.success, false);
 			assert.equal(resultJson.results[0].sessionFile, sessionFile);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			rmrf(root);
 		}
 	});
 
@@ -110,7 +114,7 @@ describe("async run status inspection", () => {
 			assert.match(text, new RegExp(`  Output: ${secondStepOutputPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 			assert.doesNotMatch(text, /Step 1: reviewer/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			rmrf(root);
 		}
 	});
 
@@ -204,8 +208,8 @@ describe("async run status inspection", () => {
 			assert.match(text, /↳ reviewer \[nested-status-child\] running \| tool read/);
 			assert.match(text, /Status: subagent\(\{ action: "status", id: "nested-status-child" \}\)/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
+			rmrf(root);
+			rmrf(path.dirname(route.eventSink));
 		}
 	});
 
@@ -268,9 +272,9 @@ describe("async run status inspection", () => {
 			assert.match(text, /1\. reviewer failed \| error: Async runner process 54321 exited or disappeared/);
 			assert.ok(fs.existsSync(path.join(resultsDir, "nested", "run-stale-nested-root", "nested-stale.json")));
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
-			fs.rmSync(nestedAsyncDir, { recursive: true, force: true });
+			rmrf(root);
+			rmrf(path.dirname(route.eventSink));
+			rmrf(nestedAsyncDir);
 		}
 	});
 
@@ -298,8 +302,8 @@ describe("async run status inspection", () => {
 			assert.equal(result.isError, undefined);
 			assert.match(textContent(result), /Warning: Nested status unavailable:/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
+			rmrf(root);
+			rmrf(path.dirname(route.eventSink));
 		}
 	});
 
@@ -327,8 +331,8 @@ describe("async run status inspection", () => {
 			assert.equal(result.isError, undefined);
 			assert.match(textContent(result), /Warning: Nested status unavailable:/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
+			rmrf(root);
+			rmrf(path.dirname(route.eventSink));
 		}
 	});
 
@@ -370,8 +374,8 @@ describe("async run status inspection", () => {
 			assert.match(text, /Interrupt: subagent\(\{ action: "interrupt", id: "nested-exact-child" \}\)/);
 			assert.match(text, /Resume: subagent\(\{ action: "resume", id: "nested-exact-child", message: "\.\.\." \}\)/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
+			rmrf(root);
+			rmrf(path.dirname(route.eventSink));
 		}
 	});
 
@@ -406,7 +410,7 @@ describe("async run status inspection", () => {
 			assert.match(text, /Revive child: subagent\(\{ action: "resume", id: "run-multi", index: 0, message: "\.\.\." \}\)/);
 			assert.doesNotMatch(text, /unsupported for multi-child/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			rmrf(root);
 		}
 	});
 
@@ -433,7 +437,7 @@ describe("async run status inspection", () => {
 			const text = textContent(result);
 			assert.match(text, /Revive child: subagent\(\{ action: "resume", id: "run-result-index", index: 1, message: "\.\.\." \}\)/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			rmrf(root);
 		}
 	});
 
@@ -474,7 +478,7 @@ describe("async run status inspection", () => {
 			assert.match(text, /Step 2\/3 Agent 2\/2: auditor pending/);
 			assert.match(text, /Step 3\/3: writer pending/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			rmrf(root);
 		}
 	});
 
@@ -505,7 +509,7 @@ describe("async run status inspection", () => {
 			assert.match(text, /Step 1: scout running/);
 			assert.match(text, /Intercom target: subagent-scout-run-live-1 \(if registered\)/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			rmrf(root);
 		}
 	});
 
@@ -524,7 +528,7 @@ describe("async run status inspection", () => {
 			assert.equal(result.isError, true);
 			assert.match(textContent(result), /Ambiguous subagent run id prefix 'run-a' matched: async:run-aa, async:run-ab/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			rmrf(root);
 		}
 	});
 
@@ -539,7 +543,7 @@ describe("async run status inspection", () => {
 			assert.equal(result.isError, true);
 			assert.match(textContent(result), /id must be a non-empty safe id token/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			rmrf(root);
 		}
 	});
 
@@ -570,7 +574,7 @@ describe("async run status inspection", () => {
 			assert.match(text, /Resume: unavailable/);
 			assert.doesNotMatch(text, /Revive:/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			rmrf(root);
 		}
 	});
 
@@ -604,7 +608,7 @@ describe("async run status inspection", () => {
 			assert.match(text, /Revive: subagent\(\{ action: "resume", id: "run-result-only", message: "\.\.\." \}\)/);
 			assert.match(text, /result survived missing status/);
 		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
+			rmrf(root);
 		}
 	});
 });
