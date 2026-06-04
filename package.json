@@ -79,11 +79,15 @@
     "jiti": "^2.7.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.77.0",
-    "@earendil-works/pi-ai": "^0.77.0",
-    "@earendil-works/pi-coding-agent": "^0.77.0",
-    "@earendil-works/pi-tui": "^0.77.0",
+    "@earendil-works/pi-agent-core": "^0.78.1",
+    "@earendil-works/pi-ai": "^0.78.1",
+    "@earendil-works/pi-coding-agent": "^0.78.1",
+    "@earendil-works/pi-tui": "^0.78.1",
     "typebox": "^1.1.39"
+  },
+  "overrides": {
+    "brace-expansion": "^5.0.6",
+    "ws": "^8.20.1"
   },
   "packageManager": "npm@11.16.0"
 }

@@ -25,6 +25,7 @@ import {
 	type SingleResult,
 	type SubagentState,
 } from "../shared/types.ts";
+import { isTuiContext } from "../shared/ui-mode.ts";
 
 interface InlineConfig {
 	output?: string | false;
@@ -221,7 +222,7 @@ async function requestSlashRun(
 			ctx.ui.setStatus("subagent-slash", `${count} tools${tool} | Ctrl+O live detail`);
 		};
 
-		const onTerminalInput = ctx.hasUI
+		const onTerminalInput = isTuiContext(ctx)
 			? ctx.ui.onTerminalInput((input) => {
 				if (!matchesKey(input, Key.escape)) return undefined;
 				pi.events.emit(SLASH_SUBAGENT_CANCEL_EVENT, { requestId });
@@ -312,7 +313,7 @@ async function runSlashSubagent(
 	ctx: ExtensionContext,
 	params: SubagentParamsLike,
 ): Promise<void> {
-	if (ctx.hasUI) ctx.ui.setToolsExpanded(false);
+	if (isTuiContext(ctx)) ctx.ui.setToolsExpanded(false);
 	const requestId = randomUUID();
 	const initialDetails = buildSlashInitialResult(requestId, params);
 	const initialText = extractSlashMessageText(initialDetails.result.content) || "Running subagent...";

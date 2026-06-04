@@ -23,6 +23,7 @@ import { getDisplayItems, getSingleResultOutput } from "../shared/utils.ts";
 import { flatToLogicalStepIndex } from "../runs/background/parallel-groups.ts";
 import { formatNestedAggregate } from "../runs/shared/nested-render.ts";
 import { aggregateStepStatus, formatActivityLabel, formatAgentRunningLabel, formatParallelOutcome } from "../shared/status-format.ts";
+import { isTuiContext } from "../shared/ui-mode.ts";
 
 type Theme = ExtensionContext["ui"]["theme"];
 
@@ -1017,10 +1018,10 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
  */
 export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void {
 	if (jobs.length === 0) {
-		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
+		if (isTuiContext(ctx)) ctx.ui.setWidget(WIDGET_KEY, undefined);
 		return;
 	}
-	if (!ctx.hasUI) return;
+	if (!isTuiContext(ctx)) return;
 	ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(jobs, ctx.ui.getToolsExpanded?.() ?? false));
 }
 

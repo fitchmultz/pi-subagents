@@ -3,7 +3,10 @@
 ## [Unreleased]
 
 ### Changed
-- Updated the local pi development baseline to `@earendil-works/*` `0.77.0` in package metadata.
+- Updated the local Pi development baseline to `@earendil-works/*` `0.78.1` while keeping Pi runtime packages as optional wildcard peers so 0.78.1 is a suggested floor, not a hard requirement.
+- Use Pi 0.78.1 `ctx.mode` when available to restrict terminal-only widget, raw input, and tool-expansion behavior to TUI mode while preserving a `ctx.hasUI` fallback for older compatible Pi installs.
+- Ignore the whole project-local `.pi/` tree so semantic caches and other agent state do not appear as publishable package artifacts.
+- Added dev-only dependency overrides for current transitive `brace-expansion` and `ws` advisories without changing runtime package dependencies.
 - Declared all pi-bundled runtime packages (`@earendil-works/pi-*`, `typebox`) as optional wildcard peers and kept them only as development dependencies, so npm peer ranges do not block future pi releases.
 - Added explicit `subagent` tool prompt snippet/guidelines so Pi 0.77+ tool metadata attribution has concise delegation guidance separate from the full schema description.
 - Switched the local TypeScript test loader to `jiti` so validation does not depend on Node's removed `--experimental-transform-types` flag on newer Node releases.

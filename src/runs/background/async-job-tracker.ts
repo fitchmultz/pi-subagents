@@ -17,6 +17,7 @@ import { readStatus } from "../../shared/utils.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 import { hasLiveNestedDescendants, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
+import { isTuiContext } from "../../shared/ui-mode.ts";
 
 interface AsyncJobTrackerOptions {
 	completionRetentionMs?: number;
@@ -116,7 +117,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		if (state.poller) return;
 		state.poller = setInterval(() => {
 			if (state.asyncJobs.size === 0) {
-				if (state.lastUiContext?.hasUI) rerenderWidget(state.lastUiContext, []);
+				if (state.lastUiContext && isTuiContext(state.lastUiContext)) rerenderWidget(state.lastUiContext, []);
 				if (state.poller) {
 					clearInterval(state.poller);
 					state.poller = null;
@@ -228,7 +229,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				if (widgetRenderKey(job) !== widgetStateBefore) widgetChanged = true;
 			}
 
-			if (widgetChanged && state.lastUiContext?.hasUI) rerenderWidget(state.lastUiContext);
+			if (widgetChanged && state.lastUiContext && isTuiContext(state.lastUiContext)) rerenderWidget(state.lastUiContext);
 		}, pollIntervalMs);
 		state.poller.unref?.();
 	};
@@ -263,7 +264,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			updatedAt: now,
 		});
 		ensurePoller();
-		if (state.lastUiContext) {
+		if (state.lastUiContext && isTuiContext(state.lastUiContext)) {
 			rerenderWidget(state.lastUiContext);
 		}
 	};
@@ -285,7 +286,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				console.error(`Failed to refresh nested async descendants for '${job.asyncDir}':`, error);
 			}
 		}
-		if (state.lastUiContext) {
+		if (state.lastUiContext && isTuiContext(state.lastUiContext)) {
 			rerenderWidget(state.lastUiContext);
 		}
 		if (!nestedRefreshFailed && !hasLiveNestedDescendants(job?.nestedChildren)) scheduleCleanup(asyncId);
@@ -300,7 +301,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		state.foregroundControls?.clear();
 		state.lastForegroundControlId = null;
 		state.resultFileCoalescer.clear();
-		if (ctx?.hasUI) {
+		if (ctx && isTuiContext(ctx)) {
 			state.lastUiContext = ctx;
 			rerenderWidget(ctx, []);
 		}

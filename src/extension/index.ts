@@ -36,6 +36,7 @@ import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/back
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import registerFanoutChildSubagentExtension from "./fanout-child.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
+import { isTuiContext } from "../shared/ui-mode.ts";
 import { loadConfig } from "./config.ts";
 import {
 	type Details,
@@ -327,7 +328,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
-		if (ctx.hasUI) ctx.ui.setToolsExpanded(false);
+		if (isTuiContext(ctx)) ctx.ui.setToolsExpanded(false);
 		return executor.execute(id, params, signal, onUpdate, ctx);
 	};
 
@@ -509,7 +510,7 @@ DIAGNOSTICS:
 
 	pi.on("tool_result", (event, ctx) => {
 		if (event.toolName !== "subagent") return;
-		if (!ctx.hasUI) return;
+		if (!isTuiContext(ctx)) return;
 		state.lastUiContext = ctx;
 		if (state.asyncJobs.size > 0) {
 			renderWidget(ctx, Array.from(state.asyncJobs.values()));
@@ -573,7 +574,7 @@ DIAGNOSTICS:
 			delete globalStore[runtimeCleanupStoreKey];
 		}
 		try {
-			if (state.lastUiContext?.hasUI) {
+			if (state.lastUiContext && isTuiContext(state.lastUiContext)) {
 				state.lastUiContext.ui.setWidget(WIDGET_KEY, undefined);
 			}
 		} catch (error) {

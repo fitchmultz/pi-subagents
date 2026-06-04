@@ -16,6 +16,8 @@ pi install npm:pi-subagents
 
 That is the only required step. You can add optional pieces later.
 
+Pi 0.78.1 or newer is recommended because the extension uses the current extension-mode APIs when available. The package does not hard-pin that exact Pi version; Pi core packages stay optional wildcard peers so newer Pi releases are not blocked.
+
 ## Try this first
 
 You do not need to create agents, write config, or learn slash commands. After installing, ask Pi for delegation in plain language:
