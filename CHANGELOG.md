@@ -10,6 +10,12 @@
 - Declared all pi-bundled runtime packages (`@earendil-works/pi-*`, `typebox`) as optional wildcard peers and kept them only as development dependencies, so npm peer ranges do not block future pi releases.
 - Added explicit `subagent` tool prompt snippet/guidelines so Pi 0.77+ tool metadata attribution has concise delegation guidance separate from the full schema description.
 - Switched the local TypeScript test loader to `jiti` so validation does not depend on Node's removed `--experimental-transform-types` flag on newer Node releases.
+- Run local test scripts through a small wrapper that clears inherited `PI_SUBAGENT_*` runtime variables before starting the Node test runner.
+
+### Fixed
+- Return the last non-empty text part from the latest assistant message so multi-part assistant outputs prefer the final answer over progress text.
+- Keep path-resolution tests hermetic by using a temporary fake home and Pi agent directory instead of touching the real `~/.agents` tree.
+- Updated per-agent context documentation to describe the fork's fixed behavior rather than upstream whole-invocation fork promotion.
 
 ## [0.28.0] - 2026-06-03
 

@@ -1,16 +1,22 @@
-# Issue: Whole-invocation fork promotion ignores per-agent `defaultContext: fresh`
+# Upstream issue: whole-invocation fork promotion ignores per-agent `defaultContext: fresh`
+
+## Status
+
+Fixed in this fork by `src/shared/agent-context-policy.ts`; still present in the locally inspected upstream refs as of 2026-06-05.
 
 ## Summary
 
-When `context` is omitted on a `subagent(...)` call, pi-subagents currently promotes the **entire** invocation to `fork` if **any** requested agent has `defaultContext: "fork"`.
+Upstream `pi-subagents` promotes the **entire** invocation to `fork` when `context` is omitted and **any** requested agent has `defaultContext: "fork"`.
 
 That causes read-only agents configured with `defaultContext: fresh` (for example `scout`, `reviewer`) to inherit the full parent transcript when batched with `worker` or `oracle` in parallel or chain mode.
 
-## Reproduction
+This fork intentionally resolves context per child when top-level `context` is omitted.
+
+## Reproduction against upstream
 
 1. Configure `scout` with `defaultContext: fresh`.
 2. Configure `worker` with `defaultContext: fork`.
-3. Run parallel subagent call without explicit `context`:
+3. Run a parallel subagent call without explicit `context`:
 
 ```json
 {
@@ -21,9 +27,9 @@ That causes read-only agents configured with `defaultContext: fresh` (for exampl
 }
 ```
 
-4. Observe both tasks run with forked/inherited parent context.
+4. Upstream runs both tasks with forked/inherited parent context.
 
-Root cause: `applyAgentDefaultContext()` in `src/runs/foreground/subagent-executor.ts`.
+Root cause in upstream: `applyAgentDefaultContext()` in `src/runs/foreground/subagent-executor.ts` promotes the whole invocation.
 
 ## Expected behavior
 
@@ -33,13 +39,15 @@ When caller omits top-level `context`:
 - Explicit `context: "fresh"` or `context: "fork"` should override all agents in that call.
 - Parallel scout + worker should fork only the worker task, not the scout.
 
-## Proposed fix
+## Fork behavior
 
-- Remove whole-invocation fork promotion.
-- Resolve context per flat task index via agent `defaultContext`.
-- Fork session files and `wrapForkTask()` only for indices whose resolved context is `fork`.
-- Update tool docs/schema descriptions accordingly.
+The fork implements the policy in `src/shared/agent-context-policy.ts`:
 
-## Impact
+- resolve context per agent/default through `resolveAgentContext()`;
+- wrap fork prompts only for fork-resolved children;
+- allocate fork session files only for child indexes whose resolved context is `fork`;
+- preserve invocation-level metadata that a mixed run used fork context for badges/status.
 
-Users relying on implicit whole-invocation fork when mixing fork-default and fresh-default agents in one call would need to pass explicit `context: "fork"` for that behavior.
+## Migration impact
+
+Users relying on upstream's implicit whole-invocation fork when mixing fork-default and fresh-default agents must pass explicit `context: "fork"` for that behavior.

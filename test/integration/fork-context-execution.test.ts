@@ -198,6 +198,14 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		).length;
 	}
 
+	async function waitForRecordedCalls(count: number, timeoutMs = 5_000): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (readAllCallArgs().length < count) {
+			if (Date.now() > deadline) assert.fail(`Timed out waiting for ${count} mock pi call(s)`);
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+	}
+
 	function makeForkingSessionManagerRecorder(options: { sessionFile: string; leafId: string }) {
 		const openedPaths: string[] = [];
 		const branchedLeafIds: string[] = [];
@@ -818,6 +826,44 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.details?.mode, "parallel");
 		assert.ok(result.details?.asyncId, "expected an asyncId for background top-level parallel runs");
 		assert.match(result.content[0]?.text ?? "", /Async parallel:/);
+	});
+
+	it("forks only fork-default agents in top-level parallel async when launch context is omitted", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
+		const parentSessionFile = path.join(tempDir, "parent.jsonl");
+		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
+		const executor = makeExecutorWithDiscoverAgents(() => ({
+			agents: [
+				{ name: "scout", description: "Scout", defaultContext: "fresh" },
+				{ name: "worker", description: "Worker", defaultContext: "fork" },
+			],
+			projectAgentsDir: null,
+		}));
+
+		const result = await executor.execute(
+			"id",
+			{
+				tasks: [
+					{ agent: "scout", task: "find files" },
+					{ agent: "worker", task: "implement fix" },
+				],
+				async: true,
+				clarify: false,
+			},
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.equal(result.details?.mode, "parallel");
+		assert.equal(result.details?.context, "fork");
+		assert.ok(result.details?.asyncId, "expected an asyncId for background top-level parallel runs");
+
+		await waitForRecordedCalls(2);
+		const sessionArgs = readSessionArgsFromCalls();
+		assert.equal(sessionArgs.length, 2);
+		assert.equal(countForkedSessionFiles(sessionArgs), 1);
+		assert.ok(sessionArgs.includes(forkedSessionFile(1)));
 	});
 
 	it("runs async chain requests in the background when clarify is omitted", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {

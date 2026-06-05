@@ -3,6 +3,7 @@
 AGENTS.md
 node_modules/
 .fallow/
+audit/
 
 context.md
 package-lock.json

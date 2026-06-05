@@ -28,6 +28,7 @@
   "files": [
     "src/**/*.ts",
     "*.mjs",
+    "scripts/",
     "agents/",
     "skills/**/*",
     "prompts/**/*",
@@ -36,9 +37,9 @@
   ],
   "scripts": {
     "test": "npm run test:unit",
-    "test:unit": "node --import jiti/register --test test/unit/*.test.ts",
-    "test:integration": "node --import jiti/register --import ./test/support/register-loader.mjs --test test/integration/*.test.ts",
-    "test:all": "npm run test:unit && npm run test:integration"
+    "test:unit": "node scripts/run-tests.mjs unit",
+    "test:integration": "node scripts/run-tests.mjs integration",
+    "test:all": "node scripts/run-tests.mjs all"
   },
   "pi": {
     "extensions": [

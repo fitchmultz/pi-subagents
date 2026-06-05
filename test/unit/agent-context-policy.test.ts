@@ -90,6 +90,22 @@ describe("wrapChainTasksForAgentContext", () => {
 		assert.equal((wrapped[0] as { task?: string }).task, "scout task");
 		assert.match((wrapped[1] as { task?: string }).task ?? "", /delegated subagent/i);
 	});
+
+	it("applies fork wrapping to dynamic parallel templates", () => {
+		const wrapped = wrapChainTasksForAgentContext(
+			[
+				{
+					expand: { from: { output: "items", path: "$" } },
+					parallel: { agent: "worker", task: "handle {item}" },
+					collect: { as: "results" },
+				},
+			],
+			undefined,
+			agents,
+		);
+		const step = wrapped[0] as { parallel: { task?: string } };
+		assert.match(step.parallel.task ?? "", /delegated subagent/i);
+	});
 });
 
 describe("createPerAgentForkContextResolver", () => {

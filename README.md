@@ -815,7 +815,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `sessionDir` | string | derived | Override session log directory. |
 | `acceptance` | object | omitted | Explicit acceptance contract. When present, the child gets a structured contract, then the runtime continues the same session for a bounded self-review/repair loop before evaluating acceptance. |
 
-`context: "fork"` fails fast when the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. It never silently downgrades to `fresh`. In multi-agent runs, if any requested agent has `defaultContext: fork` and the launch omits `context`, the whole invocation uses forked context; pass `context: "fresh"` when you intentionally want a fresh run.
+`context: "fork"` fails fast when the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. It never silently downgrades to `fresh`. When a multi-agent run omits `context`, each child uses its own `defaultContext`: a fresh-default scout or reviewer stays fresh even when batched with a fork-default worker or oracle. Pass explicit `context: "fresh"` or `context: "fork"` only when you intentionally want one context policy to override every child in the call.
 
 Use `outputMode: "file-only"` when a saved output may be large and the parent only needs a pointer. The returned text is a compact reference like `Output saved to: /abs/report.md (48.2 KB, 2847 lines). Read this file if needed.` Failed runs and save errors still return normal inline output for debugging. In chains, later `{previous}` steps receive the same compact reference when the prior step used file-only mode.
 
