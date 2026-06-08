@@ -15,6 +15,7 @@ import {
 	type ArtifactPaths,
 	type AsyncParallelGroupStatus,
 	type AsyncStatus,
+	type ChildProjectTrustPolicy,
 	type ChainOutputMap,
 	type ModelAttempt,
 	type NestedRouteInfo,
@@ -52,7 +53,7 @@ import { outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/c
 import { createStructuredOutputRuntime, readStructuredOutput } from "../shared/structured-output.ts";
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
-import { formatModelAttemptNote, isRetryableModelFailure } from "../shared/model-fallback.ts";
+import { formatModelAttemptNote, formatModelRecoveryAttemptNote, isRecoverableSameModelFailure, isRetryableModelFailure } from "../shared/model-fallback.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
 import { evaluateCompletionMutationGuard, resolveCompletionPolicy } from "../shared/completion-guard.ts";
@@ -121,6 +122,7 @@ interface SubagentRunConfig {
 	workflowGraph?: WorkflowGraphSnapshot;
 	nestedRoute?: NestedRouteInfo;
 	nestedSelf?: { parentRunId: string; parentStepIndex?: number; depth: number; path?: Array<{ runId: string; stepIndex?: number; agent?: string }> };
+	projectTrust?: ChildProjectTrustPolicy;
 }
 
 interface StepResult {
@@ -145,6 +147,15 @@ interface StepResult {
 }
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
+const MAX_SAME_MODEL_RECOVERY_RETRIES = 1;
+
+function formatProcessExitFailure(input: { agent: string; exitCode: number | null; durationMs?: number }): string {
+	const duration = input.durationMs !== undefined ? ` after ${input.durationMs}ms` : "";
+	if (input.exitCode === 143) {
+		return `${input.agent} exited with code 143${duration}. The child process received SIGTERM or exited as if terminated by SIGTERM; if this was close to 300000ms, Pi's default HTTP idle timeout is a likely provider-side cause.`;
+	}
+	return `${input.agent} exited with code ${input.exitCode ?? 1}${duration} without producing a final assistant response.`;
+}
 
 function findLatestSessionFile(sessionDir: string): string | null {
 	try {
@@ -237,6 +248,7 @@ interface RunPiStreamingResult {
 	interrupted?: boolean;
 	observedMutationAttempt?: boolean;
 	resourceLimitExceeded?: ResourceLimitExceeded;
+	durationMs?: number;
 }
 
 function runPiStreaming(
@@ -254,6 +266,7 @@ function runPiStreaming(
 	maxTokens?: number,
 ): Promise<RunPiStreamingResult> {
 	return new Promise((resolve) => {
+		const startTime = Date.now();
 		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
 		const spawnEnv = { ...process.env, ...(env ?? {}), ...getSubagentDepthEnv(maxSubagentDepth) };
 		const spawnSpec = getPiSpawnCommand(args, {
@@ -473,6 +486,7 @@ function runPiStreaming(
 			if (stdoutBuf.trim()) processStdoutLine(stdoutBuf);
 			if (stderrBuf.trim()) appendChildLine("subagent.child.stderr", stderrBuf);
 			outputStream.end();
+			const durationMs = Date.now() - startTime;
 			const finalOutput = resourceLimitExceeded?.message ?? (getFinalOutput(messages) || rawStdoutLines.join("\n").trim());
 			const finalError = resourceLimitExceeded?.message ?? error ?? assistantError;
 			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !finalError;
@@ -487,6 +501,7 @@ function runPiStreaming(
 				interrupted,
 				observedMutationAttempt,
 				resourceLimitExceeded,
+				durationMs,
 			});
 		});
 
@@ -498,7 +513,7 @@ function runPiStreaming(
 			outputStream.end();
 			const finalOutput = resourceLimitExceeded?.message ?? (getFinalOutput(messages) || rawStdoutLines.join("\n").trim());
 			const spawnErrorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
-			resolve({ stderr, exitCode: 1, messages, usage, model, error: resourceLimitExceeded?.message ?? error ?? assistantError ?? spawnErrorMessage, finalOutput, observedMutationAttempt, resourceLimitExceeded });
+			resolve({ stderr, exitCode: 1, messages, usage, model, error: resourceLimitExceeded?.message ?? error ?? assistantError ?? spawnErrorMessage, finalOutput, observedMutationAttempt, resourceLimitExceeded, durationMs: Date.now() - startTime });
 		});
 	});
 }
@@ -629,6 +644,7 @@ interface SingleStepContext {
 	childIntercomTarget?: string;
 	orchestratorIntercomTarget?: string;
 	nestedRoute?: NestedRouteInfo;
+	projectTrust?: ChildProjectTrustPolicy;
 	onAttemptStart?: (attempt: { model?: string; thinking?: string }) => void;
 	onChildEvent?: (event: ChildEvent) => void;
 }
@@ -692,6 +708,7 @@ async function runSingleStep(
 	let finalResult: RunPiStreamingResult | undefined;
 	let finalOutputSnapshot: SingleOutputSnapshot | undefined;
 	let completionGuardTriggeredFinal = false;
+	const sameModelRetryCounts = new Map<number, number>();
 
 	for (let index = 0; index < candidates.length; index++) {
 		const candidate = candidates[index];
@@ -730,6 +747,7 @@ async function runSingleStep(
 			parentRootRunId: ctx.nestedRoute?.rootRunId,
 			parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
 			structuredOutput: effectiveStructuredOutput,
+			projectTrust: ctx.projectTrust,
 		});
 		const run = await runPiStreaming(
 			args,
@@ -795,7 +813,9 @@ async function runSingleStep(
 				? hiddenError.details
 					? `${hiddenError.errorType} failed (exit ${effectiveExitCode}): ${hiddenError.details}`
 					: `${hiddenError.errorType} failed with exit code ${effectiveExitCode}`
-				: run.error || (run.exitCode !== 0 && run.stderr.trim() ? run.stderr.trim() : undefined));
+				: run.error
+					|| (run.exitCode !== 0 && run.stderr.trim() ? run.stderr.trim() : undefined)
+					|| (run.exitCode !== 0 ? formatProcessExitFailure({ agent: step.agent, exitCode: run.exitCode, durationMs: run.durationMs }) : undefined));
 		const attempt: ModelAttempt = {
 			model: candidate ?? run.model ?? step.model ?? "default",
 			success: effectiveExitCode === 0 && !error,
@@ -809,7 +829,16 @@ async function runSingleStep(
 		finalOutputSnapshot = outputSnapshot;
 		finalResult = { ...run, exitCode: effectiveExitCode, model: candidate ?? run.model, error, structuredOutput } as RunPiStreamingResult & { structuredOutput?: unknown };
 		if (attempt.success || completionGuardError) break;
-		if (run.resourceLimitExceeded || !isRetryableModelFailure(error) || index === candidates.length - 1) break;
+		if (run.resourceLimitExceeded || run.interrupted) break;
+		const sameModelRetryCount = sameModelRetryCounts.get(index) ?? 0;
+		if (sameModelRetryCount < MAX_SAME_MODEL_RECOVERY_RETRIES && isRecoverableSameModelFailure(error, effectiveExitCode)) {
+			const nextRetryCount = sameModelRetryCount + 1;
+			sameModelRetryCounts.set(index, nextRetryCount);
+			attemptNotes.push(formatModelRecoveryAttemptNote(attempt, nextRetryCount, MAX_SAME_MODEL_RECOVERY_RETRIES));
+			index--;
+			continue;
+		}
+		if (!isRetryableModelFailure(error) || index === candidates.length - 1) break;
 		attemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
 	}
 
@@ -891,6 +920,7 @@ async function runSingleStep(
 					parentControlInbox: ctx.nestedRoute?.controlInbox,
 					parentRootRunId: ctx.nestedRoute?.rootRunId,
 					parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
+					projectTrust: ctx.projectTrust,
 				});
 				ctx.onAttemptStart?.({ model: finalResult?.model ?? step.model, thinking: resolveEffectiveThinking(finalResult?.model ?? step.model, step.thinking) });
 				const finalizationRun = await runPiStreaming(
@@ -1739,6 +1769,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					childIntercomTarget: config.childIntercomTargets?.[fi],
 					orchestratorIntercomTarget: config.controlIntercomTarget,
 					nestedRoute: config.nestedRoute,
+					projectTrust: config.projectTrust,
 					registerInterrupt: (interrupt) => {
 						activeChildInterrupt = interrupt;
 					},
@@ -1965,6 +1996,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							childIntercomTarget: config.childIntercomTargets?.[fi],
 							orchestratorIntercomTarget: config.controlIntercomTarget,
 							nestedRoute: config.nestedRoute,
+							projectTrust: config.projectTrust,
 							registerInterrupt: (interrupt) => {
 								activeChildInterrupt = interrupt;
 							},
@@ -2133,6 +2165,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				childIntercomTarget: config.childIntercomTargets?.[flatIndex],
 				orchestratorIntercomTarget: config.controlIntercomTarget,
 				nestedRoute: config.nestedRoute,
+				projectTrust: config.projectTrust,
 				registerInterrupt: (interrupt) => {
 					activeChildInterrupt = interrupt;
 				},

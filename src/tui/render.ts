@@ -1435,7 +1435,7 @@ export function renderSubagentResult(
 			c.addChild(new Text(fit(theme.fg("warning", `    Warning: ${r.skillsWarning}`)), 0, 0));
 		}
 		if (r.attemptedModels && r.attemptedModels.length > 1) {
-			c.addChild(new Text(fit(theme.fg("dim", `    fallbacks: ${r.attemptedModels.join(" → ")}`)), 0, 0));
+			c.addChild(new Text(fit(theme.fg("dim", `    model attempts: ${r.attemptedModels.join(" → ")}`)), 0, 0));
 		}
 
 		if (rRunning && rProg) {

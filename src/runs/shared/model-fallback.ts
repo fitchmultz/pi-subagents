@@ -95,9 +95,59 @@ export function isRetryableModelFailure(error: string | undefined): boolean {
 	return RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(error));
 }
 
+const NON_RECOVERABLE_SAME_MODEL_PATTERNS = [
+	/quota/i,
+	/billing/i,
+	/credit/i,
+	/auth(?:entication)?/i,
+	/unauthori[sz]ed/i,
+	/forbidden/i,
+	/api key/i,
+	/token expired/i,
+	/invalid key/i,
+	/model.*disabled/i,
+	/model.*not found/i,
+	/unknown model/i,
+];
+
+const SAME_MODEL_RECOVERY_PATTERNS = [
+	/web\s*socket/i,
+	/websocket/i,
+	/transport/i,
+	/stream/i,
+	/socket/i,
+	/connection/i,
+	/fetch failed/i,
+	/network/i,
+	/http idle/i,
+	/timed? out/i,
+	/timeout/i,
+	/overloaded/i,
+	/service unavailable/i,
+	/temporar(?:ily)? unavailable/i,
+	/connection refused/i,
+	/econnreset/i,
+	/etimedout/i,
+	/\b502\b/,
+	/\b503\b/,
+	/\b504\b/,
+];
+
+export function isRecoverableSameModelFailure(error: string | undefined, exitCode?: number | null): boolean {
+	if (exitCode === 143) return true;
+	if (!error) return false;
+	if (NON_RECOVERABLE_SAME_MODEL_PATTERNS.some((pattern) => pattern.test(error))) return false;
+	return SAME_MODEL_RECOVERY_PATTERNS.some((pattern) => pattern.test(error));
+}
+
 export function formatModelAttemptNote(attempt: ModelAttemptSummary, nextModel?: string): string {
 	const failure = attempt.error?.trim() || `exit ${attempt.exitCode ?? 1}`;
 	return nextModel
 		? `[fallback] ${attempt.model} failed: ${failure}. Retrying with ${nextModel}.`
 		: `[fallback] ${attempt.model} failed: ${failure}.`;
+}
+
+export function formatModelRecoveryAttemptNote(attempt: ModelAttemptSummary, retryNumber: number, maxRetries: number): string {
+	const failure = attempt.error?.trim() || `exit ${attempt.exitCode ?? 1}`;
+	return `[retry] ${attempt.model} failed: ${failure}. Retrying same model (${retryNumber}/${maxRetries}).`;
 }

@@ -16,7 +16,7 @@ pi install npm:pi-subagents
 
 That is the only required step. You can add optional pieces later.
 
-Pi 0.78.1 or newer is recommended because the extension uses the current extension-mode APIs when available. The package does not hard-pin that exact Pi version; Pi core packages stay optional wildcard peers so newer Pi releases are not blocked.
+Pi 0.79.0 or newer is recommended because the extension tracks current extension-mode and project-trust APIs when available. The package does not hard-pin that exact Pi version; Pi core packages stay optional wildcard peers so newer Pi releases are not blocked.
 
 ## Try this first
 
@@ -453,7 +453,7 @@ Important fields:
 | `tools` | Builtin tool allowlist. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. |
 | `extensions` | Omitted means normal extensions; empty means no extensions; comma-separated values allowlist specific extensions. |
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. |
-| `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. Ordinary task failures do not trigger fallback. |
+| `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. Foreground and async subagents first retry the same model once for recoverable transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, then fall back when appropriate. Ordinary task failures do not trigger retry or fallback. |
 | `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present. |
 | `systemPromptMode` | `replace` by default; `append` keeps Pi’s base prompt. |
 | `inheritProjectContext` | Keeps or strips inherited project instruction blocks. |
@@ -909,6 +909,14 @@ Forces depth-0 single, parallel, and chain runs into background mode and bypasse
 ```
 
 Session directory precedence is: `params.sessionDir`, then `config.defaultSessionDir`, then a directory derived from the parent session. Sessions are always enabled.
+
+### `projectTrust`
+
+```json
+{ "projectTrust": { "childRuns": "approve" } }
+```
+
+Controls Pi 0.79+ project-trust flags for non-interactive child `pi` processes. This fork defaults child runs to `approve` so subagents see the same project-local instructions, settings, skills, and extensions the parent trusted. If the parent Pi process was explicitly started with `--no-approve`, child runs keep `--no-approve`. Set `"childRuns": "inherit"` to only forward the parent CLI trust flag, or `"childRuns": "no-approve"` to force children to ignore project-local inputs.
 
 ### `maxSubagentDepth`
 

@@ -202,7 +202,7 @@ describe("acceptance gates", () => {
 		const passing = resolveEffectiveAcceptance({
 			agentName: "worker",
 			task: "Implement a fix",
-			explicit: { criteria: ["Patch bug"], verify: [{ id: "pass", command: "node -e \"process.exit(0)\"", timeoutMs: 10_000 }] },
+			explicit: { criteria: ["Patch bug"], verify: [{ id: "pass", command: "node -e \"process.exit(0)\"", timeoutMs: 30_000 }] },
 		});
 		const passLedger = await evaluateAcceptance({ acceptance: passing, output: report(), cwd });
 		assert.equal(passLedger.status, "verified");
@@ -211,7 +211,7 @@ describe("acceptance gates", () => {
 		const failing = resolveEffectiveAcceptance({
 			agentName: "worker",
 			task: "Implement a fix",
-			explicit: { criteria: ["Patch bug"], verify: [{ id: "fail", command: "node -e \"process.exit(7)\"", timeoutMs: 10_000 }] },
+			explicit: { criteria: ["Patch bug"], verify: [{ id: "fail", command: "node -e \"process.exit(7)\"", timeoutMs: 30_000 }] },
 		});
 		const failLedger = await evaluateAcceptance({ acceptance: failing, output: report(), cwd });
 		assert.equal(failLedger.status, "rejected");

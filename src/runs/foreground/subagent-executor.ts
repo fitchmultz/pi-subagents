@@ -32,6 +32,7 @@ import {
 } from "../../shared/settings.ts";
 import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skills.ts";
 import { executeAsyncChain, executeAsyncSingle, formatAsyncStartedMessage, isAsyncAvailable } from "../background/async-execution.ts";
+import { resolveConfiguredChildProjectTrustPolicy } from "../shared/pi-args.ts";
 import {
 	buildFlatAgentNameResolver,
 	collectInvocationAgentNames,
@@ -76,6 +77,7 @@ import {
 	type AcceptanceInput,
 	type ArtifactConfig,
 	type ArtifactPaths,
+	type ChildProjectTrustPolicy,
 	type ControlConfig,
 	type ControlEvent,
 	type Details,
@@ -676,6 +678,7 @@ async function resumeAsyncRun(input: {
 		controlIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
 		childIntercomTarget: intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(runId, agent, index) : undefined,
 		availableModels,
+		projectTrust: resolveConfiguredChildProjectTrustPolicy(input.deps.config.projectTrust),
 	});
 	if (result.isError) return result;
 
@@ -1116,6 +1119,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 	const currentProvider = ctx.model?.provider;
 	const controlIntercomTarget = intercomBridge.active ? intercomBridge.orchestratorTarget : undefined;
 	const childIntercomTarget = intercomBridge.active ? (agent: string, index: number) => resolveSubagentIntercomTarget(id, agent, index) : undefined;
+	const projectTrust = resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust);
 
 	if (hasTasks && params.tasks) {
 		const agentConfigs = params.tasks.map((task) => agents.find((agent) => agent.name === task.agent));
@@ -1160,6 +1164,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			controlIntercomTarget,
 			childIntercomTarget,
 			nestedRoute,
+			projectTrust,
 		});
 	}
 
@@ -1189,6 +1194,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			controlIntercomTarget,
 			childIntercomTarget,
 			nestedRoute,
+			projectTrust,
 		});
 	}
 
@@ -1233,6 +1239,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(agent, index) : undefined,
 			nestedRoute,
 			acceptance: params.acceptance,
+			projectTrust,
 		});
 	}
 
@@ -1293,6 +1300,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		maxSubagentDepth: currentMaxSubagentDepth,
 		worktreeSetupHook: deps.config.worktreeSetupHook,
 		worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
+		projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 	});
 
 	if (chainResult.requestedAsync) {
@@ -1333,6 +1341,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 			childIntercomTarget: data.intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(id, agent, index) : undefined,
 			nestedRoute: data.nestedRoute,
+			projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 		});
 	}
 
@@ -1392,6 +1401,7 @@ interface ForegroundParallelRunInput {
 	liveProgress: (AgentProgress | undefined)[];
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	worktreeSetup?: WorktreeSetup;
+	projectTrust?: ChildProjectTrustPolicy;
 }
 
 function buildParallelModeError(message: string): AgentToolResult<Details> {
@@ -1555,6 +1565,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			skills: effectiveSkills === false ? [] : effectiveSkills,
 			acceptance: task.acceptance,
 			acceptanceContext: { mode: "parallel" },
+			projectTrust: input.projectTrust,
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {
 						const stepResults = progressUpdate.details?.results || [];
@@ -1767,6 +1778,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 				controlConfig,
 				controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 				childIntercomTarget: data.intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(id, agent, index) : undefined,
+				projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 			});
 		}
 	}
@@ -1841,6 +1853,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			liveProgress,
 			onUpdate,
 			worktreeSetup,
+			projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 		});
 		for (let i = 0; i < results.length; i++) {
 			const run = results[i]!;
@@ -2042,6 +2055,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				controlConfig,
 				controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 				childIntercomTarget: data.intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(id, agent, index) : undefined,
+				projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 			});
 		}
 	}
@@ -2130,6 +2144,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		skills: effectiveSkills,
 		acceptance: params.acceptance,
 		acceptanceContext: { mode: "single" },
+		projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 	});
 	if (foregroundControl?.currentIndex === 0) {
 		foregroundControl.interrupt = undefined;

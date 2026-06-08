@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
 	buildModelCandidates,
+	isRecoverableSameModelFailure,
 	isRetryableModelFailure,
 	resolveModelCandidate,
 } from "../../src/runs/shared/model-fallback.ts";
@@ -66,6 +67,14 @@ describe("model fallback helpers", () => {
 		assert.equal(isRetryableModelFailure("rate limit exceeded for provider"), true);
 		assert.equal(isRetryableModelFailure("model unavailable"), true);
 		assert.equal(isRetryableModelFailure("authentication failed"), true);
+	});
+
+	it("detects same-model transport recovery failures without retrying auth or quota loops", () => {
+		assert.equal(isRecoverableSameModelFailure("WebSocket closed before response completed", 1), true);
+		assert.equal(isRecoverableSameModelFailure("provider transport timed out", 1), true);
+		assert.equal(isRecoverableSameModelFailure(undefined, 143), true);
+		assert.equal(isRecoverableSameModelFailure("429 quota exceeded", 1), false);
+		assert.equal(isRecoverableSameModelFailure("authentication failed", 1), false);
 	});
 
 	it("does not treat ordinary task/tool failures as retryable model failures", () => {

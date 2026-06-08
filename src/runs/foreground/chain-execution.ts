@@ -50,6 +50,7 @@ import {
 	type AgentProgress,
 	type ArtifactConfig,
 	type ArtifactPaths,
+	type ChildProjectTrustPolicy,
 	type ControlEvent,
 	type Details,
 	type IntercomEventBus,
@@ -137,6 +138,7 @@ interface ParallelChainRunInput {
 	worktreeSetup?: WorktreeSetup;
 	maxSubagentDepth: number;
 	nestedRoute?: NestedRouteInfo;
+	projectTrust?: ChildProjectTrustPolicy;
 }
 
 function buildChainExecutionDetails(input: ChainExecutionDetailsInput): Details {
@@ -294,6 +296,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				structuredOutput: structuredRuntime,
 				acceptance: task.acceptance,
 				acceptanceContext: { mode: "chain" },
+				projectTrust: input.projectTrust,
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {
 						const stepResults = progressUpdate.details?.results || [];
@@ -397,6 +400,7 @@ interface ChainExecutionParams {
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	timeoutMs?: number;
+	projectTrust?: ChildProjectTrustPolicy;
 }
 
 interface ChainExecutionResult {
@@ -674,6 +678,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					nestedRoute: params.nestedRoute,
 					worktreeSetup,
 					maxSubagentDepth: params.maxSubagentDepth,
+					projectTrust: params.projectTrust,
 				});
 				globalTaskIndex += step.parallel.length;
 
@@ -873,6 +878,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				foregroundControl,
 				nestedRoute: params.nestedRoute,
 				maxSubagentDepth: params.maxSubagentDepth,
+				projectTrust: params.projectTrust,
 			});
 			globalTaskIndex += dynamicParallelStep.parallel.length;
 
@@ -1070,6 +1076,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				structuredOutput: structuredRuntime,
 				acceptance: seqStep.acceptance,
 				acceptanceContext: { mode: "chain" },
+				projectTrust: params.projectTrust,
 				onUpdate: onUpdate
 					? (p) => {
 						const stepResults = p.details?.results || [];

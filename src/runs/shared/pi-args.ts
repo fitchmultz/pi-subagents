@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { encodeNestedPathEnv, parseNestedPathEnv, type NestedPathEntry } from "./nested-path.ts";
 import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
-import type { JsonSchemaObject } from "../../shared/types.ts";
+import type { ChildProjectTrustPolicy, JsonSchemaObject } from "../../shared/types.ts";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 const TASK_ARG_LIMIT = 8000;
@@ -61,6 +61,7 @@ interface BuildPiArgsInput {
 		schemaPath: string;
 		outputPath: string;
 	};
+	projectTrust?: ChildProjectTrustPolicy;
 }
 
 interface BuildPiArgsResult {
@@ -76,8 +77,44 @@ export function applyThinkingSuffix(model: string | undefined, thinking: string 
 	return `${model}:${thinking}`;
 }
 
+export function normalizeChildProjectTrustPolicy(input: unknown): ChildProjectTrustPolicy {
+	if (input === "approve" || input === "no-approve" || input === "inherit") return input;
+	if (typeof input === "object" && input !== null && "childRuns" in input) {
+		return normalizeChildProjectTrustPolicy((input as { childRuns?: unknown }).childRuns);
+	}
+	return "inherit";
+}
+
+export function resolveConfiguredChildProjectTrustPolicy(input: unknown, argv: string[] = process.argv): ChildProjectTrustPolicy {
+	const inherited = findInheritedProjectTrustFlag(argv);
+	const explicitInherit = input === "inherit" || (typeof input === "object" && input !== null && (input as { childRuns?: unknown }).childRuns === "inherit");
+	if (explicitInherit) return inherited ?? "inherit";
+	if (inherited === "no-approve") return "no-approve";
+	if (input === undefined || (typeof input === "object" && input !== null && !("childRuns" in input))) return "approve";
+	const normalized = normalizeChildProjectTrustPolicy(input);
+	return normalized === "inherit" ? "approve" : normalized;
+}
+
+function findInheritedProjectTrustFlag(argv: string[]): "approve" | "no-approve" | undefined {
+	let inherited: "approve" | "no-approve" | undefined;
+	for (const arg of argv) {
+		if (arg === "--approve" || arg === "-a") inherited = "approve";
+		if (arg === "--no-approve" || arg === "-na") inherited = "no-approve";
+	}
+	return inherited;
+}
+
+export function resolveChildProjectTrustArgs(policy: ChildProjectTrustPolicy = "inherit", argv: string[] = process.argv): string[] {
+	const inherited = findInheritedProjectTrustFlag(argv);
+	if (policy === "approve") return inherited === "no-approve" ? ["--no-approve"] : ["--approve"];
+	if (policy === "no-approve") return ["--no-approve"];
+
+	return inherited === "approve" ? ["--approve"] : inherited === "no-approve" ? ["--no-approve"] : [];
+}
+
 export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	const args = [...input.baseArgs];
+	args.push(...resolveChildProjectTrustArgs(input.projectTrust));
 
 	if (input.sessionFile) {
 		fs.mkdirSync(path.dirname(input.sessionFile), { recursive: true });

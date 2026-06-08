@@ -1247,6 +1247,23 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		// Exit code is platform-dependent (Windows: often 1 or 0, Linux: null/143)
 	});
 
+	it("retries the same model once after child SIGTERM-style provider exits", async () => {
+		mockPi.onCall({ exitCode: 143 });
+		mockPi.onCall({ output: "Recovered after provider transport retry" });
+		const agents = [makeAgent("terminated", { model: "mock/primary", fallbackModels: ["mock/fallback"] })];
+
+		const result = await runSync(tempDir, agents, "terminated", "Terminated task", {
+			runId: "terminated-run",
+		});
+
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.finalOutput, "Recovered after provider transport retry");
+		assert.deepEqual(result.attemptedModels, ["mock/primary", "mock/primary"]);
+		assert.equal(result.modelAttempts?.length, 2);
+		assert.match(result.modelAttempts?.[0]?.error ?? "", /terminated exited with code 143/);
+		assert.equal(mockPi.callCount(), 2);
+	});
+
 	it("times out the current foreground run without retrying fallback models", async () => {
 		mockPi.onCall({ delay: 10000 });
 		const agents = [makeAgent("slow", { model: "mock/primary", fallbackModels: ["mock/fallback"] })];

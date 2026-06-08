@@ -826,6 +826,7 @@ export interface RunSyncOptions {
 		schemaPath: string;
 		outputPath: string;
 	};
+	projectTrust?: ChildProjectTrustPolicy;
 	acceptance?: AcceptanceInput;
 	acceptanceContext?: {
 		mode?: SubagentRunMode;
@@ -840,6 +841,12 @@ export type IntercomBridgeMode = "off" | "fork-only" | "always";
 export interface IntercomBridgeConfig {
 	mode?: IntercomBridgeMode;
 	instructionFile?: string;
+}
+
+export type ChildProjectTrustPolicy = "inherit" | "approve" | "no-approve";
+
+export interface ProjectTrustConfig {
+	childRuns?: ChildProjectTrustPolicy;
 }
 
 interface TopLevelParallelConfig {
@@ -864,6 +871,7 @@ export interface ExtensionConfig {
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	intercomBridge?: IntercomBridgeConfig;
+	projectTrust?: ChildProjectTrustPolicy | ProjectTrustConfig;
 }
 
 // ============================================================================

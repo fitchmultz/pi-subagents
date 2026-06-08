@@ -17,6 +17,8 @@ import {
 	SUBAGENT_RUN_ID_ENV,
 	applyThinkingSuffix,
 	buildPiArgs,
+	resolveChildProjectTrustArgs,
+	resolveConfiguredChildProjectTrustPolicy,
 } from "../../src/runs/shared/pi-args.ts";
 
 const originalEnv = {
@@ -151,6 +153,54 @@ describe("buildPiArgs session wiring", () => {
 		assert.ok(args.includes("--session-dir"));
 		assert.ok(args.includes("/tmp/subagent-sessions"));
 		assert.ok(!args.includes("--session"));
+	});
+});
+
+describe("buildPiArgs project trust wiring", () => {
+	it("does not emit trust flags unless a project trust policy is supplied", () => {
+		const { args } = buildPiArgs({
+			baseArgs: ["-p"],
+			task: "hello",
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+		});
+
+		assert.ok(!args.includes("--approve"));
+		assert.ok(!args.includes("--no-approve"));
+	});
+
+	it("emits approve for configured child runs by default", () => {
+		assert.equal(resolveConfiguredChildProjectTrustPolicy(undefined, ["pi"]), "approve");
+		assert.equal(resolveConfiguredChildProjectTrustPolicy({}, ["pi"]), "approve");
+		assert.equal(resolveConfiguredChildProjectTrustPolicy({ childRuns: "inherit" }, ["pi"]), "inherit");
+		assert.equal(resolveConfiguredChildProjectTrustPolicy({ childRuns: "inherit" }, ["pi", "--approve"]), "approve");
+		assert.equal(resolveConfiguredChildProjectTrustPolicy(undefined, ["pi", "--no-approve"]), "no-approve");
+	});
+
+	it("passes explicit approve or no-approve to child pi", () => {
+		assert.deepEqual(resolveChildProjectTrustArgs("approve", ["pi"]), ["--approve"]);
+		assert.deepEqual(resolveChildProjectTrustArgs("no-approve", ["pi", "--approve"]), ["--no-approve"]);
+	});
+
+	it("inherits explicit parent trust flags and lets no-approve win over default approve", () => {
+		assert.deepEqual(resolveChildProjectTrustArgs("inherit", ["pi", "--approve"]), ["--approve"]);
+		assert.deepEqual(resolveChildProjectTrustArgs("inherit", ["pi", "-na"]), ["--no-approve"]);
+		assert.deepEqual(resolveChildProjectTrustArgs("approve", ["pi", "--no-approve"]), ["--no-approve"]);
+	});
+
+	it("adds the configured trust flag before the task", () => {
+		const { args } = buildPiArgs({
+			baseArgs: ["-p"],
+			task: "hello",
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			projectTrust: "approve",
+		});
+
+		assert.ok(args.includes("--approve"));
+		assert.ok(!args.includes("--no-approve"));
 	});
 });
 

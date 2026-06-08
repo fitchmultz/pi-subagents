@@ -1040,7 +1040,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.exitCode, 1);
 		assert.equal(payload.results[0]?.success, false);
 		assert.match(payload.results[0]?.error ?? "", /provider transport failed/);
-		assert.equal(payload.results[0]?.output, "");
+		assert.match(payload.results[0]?.output ?? "", /Retrying same model/);
 		const statusPayload = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8")) as AsyncStatusPayload;
 		assert.equal(statusPayload.state, "failed");
 		assert.equal(statusPayload.steps?.[0]?.status, "failed");

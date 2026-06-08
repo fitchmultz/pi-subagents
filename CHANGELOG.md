@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Changed
-- Updated the local Pi development baseline to `@earendil-works/*` `0.78.1` while keeping Pi runtime packages as optional wildcard peers so 0.78.1 is a suggested floor, not a hard requirement.
+- Updated the local Pi development baseline to `@earendil-works/*` `0.79.0` while keeping Pi runtime packages as optional wildcard peers so 0.79.0 is a suggested floor, not a hard requirement.
 - Use Pi 0.78.1 `ctx.mode` when available to restrict terminal-only widget, raw input, and tool-expansion behavior to TUI mode while preserving a `ctx.hasUI` fallback for older compatible Pi installs.
 - Ignore the whole project-local `.pi/` tree so semantic caches and other agent state do not appear as publishable package artifacts.
 - Added dev-only dependency overrides for current transitive `brace-expansion` and `ws` advisories without changing runtime package dependencies.
@@ -16,6 +16,8 @@
 - Return the last non-empty text part from the latest assistant message so multi-part assistant outputs prefer the final answer over progress text.
 - Keep path-resolution tests hermetic by using a temporary fake home and Pi agent directory instead of touching the real `~/.agents` tree.
 - Updated per-agent context documentation to describe the fork's fixed behavior rather than upstream whole-invocation fork promotion.
+- Retry the same model once for foreground and async subagents after recoverable child transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, before falling back to alternate models.
+- Default child Pi 0.79+ project-trust handling to `--approve` for subagent runs so trusted parent sessions do not lose project-local inputs in non-interactive child processes; explicit parent/configured `--no-approve` remains honored.
 
 ## [0.28.0] - 2026-06-03
 

@@ -57,6 +57,8 @@ import { captureSingleOutputSnapshot, formatSavedOutputReference, resolveSingleO
 import {
 	buildModelCandidates,
 	formatModelAttemptNote,
+	formatModelRecoveryAttemptNote,
+	isRecoverableSameModelFailure,
 	isRetryableModelFailure,
 } from "../shared/model-fallback.ts";
 import {
@@ -110,9 +112,22 @@ function appendRecentOutput(progress: AgentProgress, lines: string[]): void {
 }
 
 const FOREGROUND_TIMEOUT_EXIT_CODE = 124;
+const MAX_SAME_MODEL_RECOVERY_RETRIES = 1;
 
 function formatForegroundTimeoutMessage(timeoutMs: number | undefined): string {
 	return timeoutMs ? `Timed out after ${timeoutMs}ms.` : "Timed out.";
+}
+
+function formatProcessExitFailure(input: { agent: string; exitCode: number; durationMs: number }): string {
+	const duration = `${input.durationMs}ms`;
+	if (input.exitCode === 143) {
+		const nearDefaultHttpIdleTimeout = input.durationMs >= 280_000 && input.durationMs <= 330_000;
+		const likelyCause = nearDefaultHttpIdleTimeout
+			? " This is close to Pi's default 300000ms HTTP idle timeout; if the child was waiting on a slow provider response, raise or disable `httpIdleTimeoutMs` in Pi settings."
+			: " The child process received SIGTERM or exited as if terminated by SIGTERM.";
+		return `${input.agent} exited with code 143 after ${duration}.${likelyCause}`;
+	}
+	return `${input.agent} exited with code ${input.exitCode} after ${duration} without producing a final assistant response.`;
 }
 
 function createTimedOutResult(agent: string, task: string, options: RunSyncOptions): SingleResult {
@@ -235,6 +250,7 @@ async function runSingleAttempt(
 		parentRootRunId: options.nestedRoute?.rootRunId,
 		parentCapabilityToken: options.nestedRoute?.capabilityToken,
 		structuredOutput: options.structuredOutput,
+		projectTrust: options.projectTrust,
 	});
 
 	const result: SingleResult = {
@@ -866,6 +882,11 @@ async function runSingleAttempt(
 		}
 	}
 
+	if (result.exitCode !== 0 && !result.error && !result.finalOutput) {
+		result.error = formatProcessExitFailure({ agent: agent.name, exitCode: result.exitCode, durationMs: Date.now() - startTime });
+		result.finalOutput = result.error;
+	}
+
 	progress.status = result.exitCode === 0 ? "completed" : "failed";
 	progress.durationMs = Date.now() - startTime;
 	if (result.error) {
@@ -1141,49 +1162,62 @@ export async function runSync(
 
 	let lastResult: SingleResult | undefined;
 	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
+	modelLoop:
 	for (let i = 0; i < modelsToTry.length; i++) {
 		const candidate = modelsToTry[i];
-		if (candidate) attemptedModels.push(candidate);
-		const outputSnapshot = captureSingleOutputSnapshot(effectiveOptions.outputPath);
-		const result = await runSingleAttempt(runtimeCwd, agent, taskWithAcceptance, candidate, effectiveOptions, {
-			sessionEnabled,
-			systemPrompt,
-			resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
-			skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
-			jsonlPath,
-			artifactPaths: artifactPathsResult,
-			attemptNotes,
-			outputSnapshot,
-			originalTask: task,
-			completionPolicy: resolveCompletionPolicy({
-				agent: agent.name,
-				task,
-				completionGuardEnabled: agent.completionGuard !== false,
-				usesAcceptanceContract: effectiveAcceptance.explicit,
-				tools: agent.tools,
-				mcpDirectTools: agent.mcpDirectTools,
-			}),
-		});
-		lastResult = result;
-		sumUsage(aggregateUsage, result.usage);
-		totalToolCount += result.progressSummary?.toolCount ?? 0;
-		totalDurationMs += result.progressSummary?.durationMs ?? 0;
-		const attemptSucceeded = result.exitCode === 0 && !result.error;
-		const attempt: ModelAttempt = {
-			model: candidate ?? result.model ?? agent.model ?? "default",
-			success: attemptSucceeded,
-			exitCode: result.exitCode,
-			error: result.error,
-			usage: { ...result.usage },
-		};
-		modelAttempts.push(attempt);
-		if (attemptSucceeded) {
+		let sameModelRetries = 0;
+		while (true) {
+			if (candidate) attemptedModels.push(candidate);
+			const outputSnapshot = captureSingleOutputSnapshot(effectiveOptions.outputPath);
+			const result = await runSingleAttempt(runtimeCwd, agent, taskWithAcceptance, candidate, effectiveOptions, {
+				sessionEnabled,
+				systemPrompt,
+				resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
+				skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
+				jsonlPath,
+				artifactPaths: artifactPathsResult,
+				attemptNotes,
+				outputSnapshot,
+				originalTask: task,
+				completionPolicy: resolveCompletionPolicy({
+					agent: agent.name,
+					task,
+					completionGuardEnabled: agent.completionGuard !== false,
+					usesAcceptanceContract: effectiveAcceptance.explicit,
+					tools: agent.tools,
+					mcpDirectTools: agent.mcpDirectTools,
+				}),
+			});
+			lastResult = result;
+			sumUsage(aggregateUsage, result.usage);
+			totalToolCount += result.progressSummary?.toolCount ?? 0;
+			totalDurationMs += result.progressSummary?.durationMs ?? 0;
+			const attemptSucceeded = result.exitCode === 0 && !result.error;
+			const attempt: ModelAttempt = {
+				model: candidate ?? result.model ?? agent.model ?? "default",
+				success: attemptSucceeded,
+				exitCode: result.exitCode,
+				error: result.error,
+				usage: { ...result.usage },
+			};
+			modelAttempts.push(attempt);
+			if (attemptSucceeded) {
+				break modelLoop;
+			}
+			if (result.timedOut || result.resourceLimitExceeded || result.interrupted) {
+				break modelLoop;
+			}
+			if (sameModelRetries < MAX_SAME_MODEL_RECOVERY_RETRIES && isRecoverableSameModelFailure(result.error, result.exitCode)) {
+				sameModelRetries++;
+				attemptNotes.push(formatModelRecoveryAttemptNote(attempt, sameModelRetries, MAX_SAME_MODEL_RECOVERY_RETRIES));
+				continue;
+			}
+			if (!isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
+				break modelLoop;
+			}
+			attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));
 			break;
 		}
-		if (result.timedOut || result.resourceLimitExceeded || !isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
-			break;
-		}
-		attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));
 	}
 
 	const result = lastResult ?? {

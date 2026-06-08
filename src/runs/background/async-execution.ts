@@ -27,6 +27,7 @@ import { resolveEffectiveAcceptance } from "../shared/acceptance.ts";
 import {
 	type AcceptanceInput,
 	type ArtifactConfig,
+	type ChildProjectTrustPolicy,
 	type Details,
 	type MaxOutputConfig,
 	type NestedRouteInfo,
@@ -121,6 +122,7 @@ interface AsyncChainParams {
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
 	acceptance?: AcceptanceInput;
+	projectTrust?: ChildProjectTrustPolicy;
 }
 
 interface AsyncSingleParams {
@@ -148,6 +150,7 @@ interface AsyncSingleParams {
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
 	acceptance?: AcceptanceInput;
+	projectTrust?: ChildProjectTrustPolicy;
 }
 
 interface AsyncExecutionResult {
@@ -491,6 +494,7 @@ export function executeAsyncChain(
 					depth: nestedAddress.depth,
 					path: nestedAddress.path,
 				} : undefined,
+				projectTrust: params.projectTrust,
 			},
 			id,
 			runnerCwd,
@@ -727,6 +731,7 @@ export function executeAsyncSingle(
 					depth: nestedAddress.depth,
 					path: nestedAddress.path,
 				} : undefined,
+				projectTrust: params.projectTrust,
 			},
 			id,
 			runnerCwd,
