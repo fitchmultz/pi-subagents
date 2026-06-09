@@ -339,20 +339,14 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
 		const status = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as AsyncStatusPayload;
-			assert.equal(payload.mode, "parallel");
-			assert.equal(payload.sessionId, "session-123");
-			assert.equal(payload.results[0]?.acceptance?.status, "not-required");
-			assert.equal(status.sessionId, "session-123");
-			assert.equal(status.steps?.[0]?.acceptance?.status, "not-required");
+		assert.equal(payload.mode, "parallel");
+		assert.equal(payload.sessionId, "session-123");
+		assert.equal(payload.results[0]?.acceptance?.status, "not-required");
+		assert.equal(status.sessionId, "session-123");
+		assert.equal(status.steps?.[0]?.acceptance?.status, "not-required");
 		const outputPath = path.join(tempDir, "async-top-output.md");
-		const outputDeadline = Date.now() + 5_000;
-		while (!fs.existsSync(outputPath)) {
-			if (Date.now() > outputDeadline) {
-				assert.fail(`Timed out waiting for saved output file: ${outputPath}`);
-			}
-			await new Promise((resolve) => setTimeout(resolve, 50));
-		}
-		assert.equal(fs.readFileSync(outputPath, "utf-8"), "Async top-level report");
+		assert.equal(payload.results[0]?.output.includes("Async top-level report"), true);
+		assert.equal(fs.existsSync(outputPath), false);
 		const callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"));
 		assert.ok(callFile, "expected a recorded mock pi call");
 		const args = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];

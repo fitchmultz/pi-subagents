@@ -53,7 +53,7 @@ import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import { readStructuredOutput } from "../shared/structured-output.ts";
-import { captureSingleOutputSnapshot, formatSavedOutputReference, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
+import { captureSingleOutputSnapshot, cleanupSingleOutputFile, formatConsumedOutputReference, formatSavedOutputReference, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	buildModelCandidates,
 	formatModelAttemptNote,
@@ -936,7 +936,14 @@ async function runSingleAttempt(
 		result.savedOutputPath = resolvedOutput.savedPath;
 		result.outputSaveError = resolvedOutput.saveError;
 		if (resolvedOutput.savedPath) {
-			result.outputReference = formatSavedOutputReference(resolvedOutput.savedPath, fullOutput);
+			const cleanup = options.outputMode === "file-only"
+				? undefined
+				: cleanupSingleOutputFile(resolvedOutput.savedPath, resolvedOutput.fullOutput, shared.outputSnapshot);
+			result.outputCleanup = cleanup;
+			result.outputReference = cleanup
+				? formatConsumedOutputReference(resolvedOutput.savedPath, fullOutput, cleanup)
+				: formatSavedOutputReference(resolvedOutput.savedPath, fullOutput);
+			if (cleanup && cleanup.action !== "skipped") result.savedOutputPath = undefined;
 		}
 	}
 	artifactOutputByResult.set(result, fullOutput);

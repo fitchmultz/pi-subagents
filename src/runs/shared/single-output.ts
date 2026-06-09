@@ -6,6 +6,14 @@ export interface SingleOutputSnapshot {
 	exists: boolean;
 	mtimeMs?: number;
 	size?: number;
+	content?: string;
+}
+
+export interface SingleOutputCleanupResult {
+	path: string;
+	action: "deleted" | "already-missing" | "skipped";
+	reason?: string;
+	error?: string;
 }
 
 export function normalizeSingleOutputOverride(
@@ -66,6 +74,23 @@ export function formatSavedOutputReference(savedPath: string, fullOutput: string
 	};
 }
 
+export function formatConsumedOutputReference(outputPath: string, fullOutput: string, cleanup: SingleOutputCleanupResult): SavedOutputReference {
+	const absolutePath = path.resolve(outputPath);
+	const bytes = Buffer.byteLength(fullOutput, "utf-8");
+	const lines = countLines(fullOutput);
+	const status = cleanup.action === "deleted"
+		? "removed after capture"
+		: cleanup.action === "already-missing"
+			? "already absent after capture"
+			: `not removed${cleanup.reason ? `: ${cleanup.reason}` : ""}`;
+	return {
+		path: absolutePath,
+		bytes,
+		lines,
+		message: `Output file consumed: ${absolutePath} (${formatByteSize(bytes)}, ${lines} ${lines === 1 ? "line" : "lines"}); ${status}.`,
+	};
+}
+
 export function validateFileOnlyOutputMode(outputMode: OutputMode | undefined, outputPath: string | undefined, context: string): string | undefined {
 	if (outputMode === "file-only" && !outputPath) {
 		return `${context} sets outputMode: "file-only" but does not configure an output file. Set output to a path or use outputMode: "inline".`;
@@ -77,7 +102,7 @@ export function captureSingleOutputSnapshot(outputPath: string | undefined): Sin
 	if (!outputPath) return undefined;
 	try {
 		const stat = fs.statSync(outputPath);
-		return { exists: true, mtimeMs: stat.mtimeMs, size: stat.size };
+		return { exists: true, mtimeMs: stat.mtimeMs, size: stat.size, content: fs.readFileSync(outputPath, "utf-8") };
 	} catch {
 		// The snapshot is advisory; resolveSingleOutput reports concrete read/write failures.
 		return { exists: false };
@@ -137,6 +162,30 @@ export function resolveSingleOutput(
 	return { fullOutput: fallbackOutput, saveError: save.error };
 }
 
+export function cleanupSingleOutputFile(
+	outputPath: string | undefined,
+	fullOutput: string,
+	beforeRun: SingleOutputSnapshot | undefined,
+): SingleOutputCleanupResult | undefined {
+	if (!outputPath) return undefined;
+	const absolutePath = path.resolve(outputPath);
+	try {
+		const current = fs.readFileSync(outputPath, "utf-8");
+		if (current !== fullOutput) {
+			return { path: absolutePath, action: "skipped", reason: "file changed after capture" };
+		}
+		if (beforeRun?.exists && beforeRun.content === current) {
+			return { path: absolutePath, action: "skipped", reason: "file preexisted and was unchanged" };
+		}
+		fs.unlinkSync(outputPath);
+		return { path: absolutePath, action: "deleted" };
+	} catch (error) {
+		const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+		if (code === "ENOENT" || code === "ENOTDIR") return { path: absolutePath, action: "already-missing" };
+		return { path: absolutePath, action: "skipped", error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
 export function finalizeSingleOutput(params: {
 	fullOutput: string;
 	truncatedOutput?: string;
@@ -146,15 +195,18 @@ export function finalizeSingleOutput(params: {
 	savedPath?: string;
 	outputReference?: SavedOutputReference;
 	saveError?: string;
+	cleanup?: SingleOutputCleanupResult;
 }): { displayOutput: string; savedPath?: string; outputReference?: SavedOutputReference; saveError?: string } {
 	let displayOutput = params.truncatedOutput || params.fullOutput;
 	if (params.exitCode === 0 && params.savedPath) {
-		const outputReference = params.outputReference ?? formatSavedOutputReference(params.savedPath, params.fullOutput);
+		const outputReference = params.outputReference ?? (params.cleanup && params.outputMode !== "file-only"
+			? formatConsumedOutputReference(params.savedPath, params.fullOutput, params.cleanup)
+			: formatSavedOutputReference(params.savedPath, params.fullOutput));
 		if (params.outputMode === "file-only") {
 			return { displayOutput: outputReference.message, savedPath: params.savedPath, outputReference };
 		}
 		displayOutput += `\n\n${outputReference.message}`;
-		return { displayOutput, savedPath: params.savedPath, outputReference };
+		return { displayOutput, savedPath: params.cleanup ? undefined : params.savedPath, outputReference };
 	}
 	if (params.exitCode === 0 && params.saveError && params.outputPath) {
 		displayOutput += `\n\nOutput file error: ${params.outputPath}\n${params.saveError}`;

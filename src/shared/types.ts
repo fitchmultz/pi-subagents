@@ -444,6 +444,7 @@ export interface SingleResult {
 	savedOutputPath?: string;
 	outputReference?: SavedOutputReference;
 	outputSaveError?: string;
+	outputCleanup?: { path: string; action: "deleted" | "already-missing" | "skipped"; reason?: string; error?: string };
 	structuredOutput?: unknown;
 	structuredOutputPath?: string;
 	structuredOutputSchemaPath?: string;

@@ -6,7 +6,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
 import { PI_CODING_AGENT_PACKAGE, getPiSpawnCommand, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
-import { captureSingleOutputSnapshot, finalizeSingleOutput, formatSavedOutputReference, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
+import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, formatConsumedOutputReference, formatSavedOutputReference, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	type AcceptanceFinalizationTurn,
 	type AcceptanceLedger,
@@ -848,7 +848,14 @@ async function runSingleStep(
 		? resolveSingleOutput(step.outputPath, outputForPersistence, finalOutputSnapshot)
 		: { fullOutput: outputForPersistence };
 	const output = resolvedOutput.fullOutput;
-	const outputReference = resolvedOutput.savedPath ? formatSavedOutputReference(resolvedOutput.savedPath, output) : undefined;
+	const cleanup = resolvedOutput.savedPath && step.outputMode !== "file-only"
+		? cleanupSingleOutputFile(resolvedOutput.savedPath, resolvedOutput.fullOutput, finalOutputSnapshot)
+		: undefined;
+	const outputReference = resolvedOutput.savedPath
+		? cleanup
+			? formatConsumedOutputReference(resolvedOutput.savedPath, output, cleanup)
+			: formatSavedOutputReference(resolvedOutput.savedPath, output)
+		: undefined;
 	let outputForSummary = output;
 	if (attemptNotes.length > 0) {
 		outputForSummary = `${attemptNotes.join("\n")}\n\n${outputForSummary}`.trim();
@@ -862,6 +869,7 @@ async function runSingleStep(
 		savedPath: resolvedOutput.savedPath,
 		outputReference,
 		saveError: resolvedOutput.saveError,
+		cleanup,
 	});
 	outputForSummary = finalizedOutput.displayOutput;
 	const acceptanceForInitialReport = step.effectiveAcceptance && shouldRunAcceptanceFinalization(step.effectiveAcceptance)

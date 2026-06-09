@@ -18,6 +18,7 @@
 - Updated per-agent context documentation to describe the fork's fixed behavior rather than upstream whole-invocation fork promotion.
 - Retry the same model once for foreground and async subagents after recoverable child transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, before falling back to alternate models.
 - Default child Pi 0.79+ project-trust handling to `--approve` for subagent runs so trusted parent sessions do not lose project-local inputs in non-interactive child processes; explicit parent/configured `--no-approve` remains honored.
+- Treat normal `output` files as runtime-owned handoff scratch: capture their contents into the parent result, then remove the file so `review.md`, `context.md`, and similar subagent outputs do not pollute the working tree.
 
 ## [0.28.0] - 2026-06-03
 

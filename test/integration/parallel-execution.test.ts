@@ -203,7 +203,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(result.details.results[1].timedOut, true);
 	});
 
-	it("top-level parallel output saves use per-task output paths", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("top-level parallel output paths are consumed and removed after capture", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ output: "Saved report" });
 		const executor = makeExecutor();
 
@@ -217,8 +217,9 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 
 		const outputPath = path.join(tempDir, "parallel-output.md");
 		assert.equal(result.isError, undefined);
-		assert.equal(fs.readFileSync(outputPath, "utf-8"), "Saved report");
-		assert.equal(result.details?.results?.[0]?.savedOutputPath, outputPath);
+		assert.equal(fs.existsSync(outputPath), false);
+		assert.equal(result.details?.results?.[0]?.finalOutput, "Saved report");
+		assert.equal(result.details?.results?.[0]?.outputCleanup?.action, "deleted");
 	});
 
 	it("top-level parallel file-only output aggregates concise file references", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {

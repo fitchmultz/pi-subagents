@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
 	captureSingleOutputSnapshot,
+	cleanupSingleOutputFile,
 	finalizeSingleOutput,
 	formatSavedOutputReference,
 	injectSingleOutputInstruction,
@@ -121,6 +122,35 @@ describe("resolveSingleOutput", () => {
 		assert.equal(result.fullOutput, "fallback output");
 		assert.equal(result.savedPath, undefined);
 		assert.match(result.saveError ?? "", /Failed to read changed output file/);
+	});
+});
+
+describe("cleanupSingleOutputFile", () => {
+	it("deletes a captured output file when it still matches captured content", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-output-test-"));
+		tempDirs.push(dir);
+		const outputPath = path.join(dir, "review.md");
+		const before = captureSingleOutputSnapshot(outputPath);
+		fs.writeFileSync(outputPath, "child output", "utf-8");
+
+		const cleanup = cleanupSingleOutputFile(outputPath, "child output", before);
+
+		assert.equal(cleanup?.action, "deleted");
+		assert.equal(fs.existsSync(outputPath), false);
+	});
+
+	it("does not delete preexisting unchanged files", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-output-test-"));
+		tempDirs.push(dir);
+		const outputPath = path.join(dir, "review.md");
+		fs.writeFileSync(outputPath, "preexisting content", "utf-8");
+		const before = captureSingleOutputSnapshot(outputPath);
+
+		const cleanup = cleanupSingleOutputFile(outputPath, "preexisting content", before);
+
+		assert.equal(cleanup?.action, "skipped");
+		assert.equal(cleanup?.reason, "file preexisted and was unchanged");
+		assert.equal(fs.readFileSync(outputPath, "utf-8"), "preexisting content");
 	});
 });
 

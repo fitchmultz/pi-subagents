@@ -756,7 +756,8 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		const result = await runPromise;
 
 		assert.equal(result.exitCode, 0);
-		assert.equal(fs.readFileSync(outputPath, "utf-8"), "fallback assistant output");
+		assert.equal(result.finalOutput, "fallback assistant output");
+		assert.equal(fs.existsSync(outputPath), false);
 	});
 
 	it("does not retry on ordinary task/tool failures", async () => {
@@ -920,7 +921,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.ok(fs.existsSync(artifactsDir), "artifacts dir should exist");
 	});
 
-	it("preserves agent-written output files instead of overwriting them with the final receipt", async () => {
+	it("consumes and removes agent-written output files after capturing them", async () => {
 		const outputPath = path.join(tempDir, "report.md");
 		const artifactsDir = path.join(tempDir, "artifacts");
 		mockPi.onCall({ output: `Wrote to ${outputPath}`, delay: 100 });
@@ -940,7 +941,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		const result = await runPromise;
 		assert.equal(result.exitCode, 0);
 		assert.equal(result.finalOutput, "real file content");
-		assert.equal(fs.readFileSync(outputPath, "utf-8"), "real file content");
+		assert.equal(fs.existsSync(outputPath), false);
 		assert.ok(result.artifactPaths, "should have artifact paths");
 		assert.equal(fs.readFileSync(result.artifactPaths.outputPath, "utf-8"), "real file content");
 	});
@@ -958,7 +959,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 
 		assert.equal(result.exitCode, 0);
 		assert.equal(result.finalOutput, "fresh assistant output");
-		assert.equal(fs.readFileSync(outputPath, "utf-8"), "fresh assistant output");
+		assert.equal(fs.existsSync(outputPath), false);
 	});
 
 	it("treats string false as disabled output in foreground single runs", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
