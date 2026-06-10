@@ -1,5 +1,6 @@
 ---
 description: Parallel context builders for planning handoff
+argument-hint: "[request]"
 ---
 
 Launch fresh-context `context-builder` subagents in parallel to build grounded handoff context for planning or implementation.
@@ -16,7 +17,7 @@ Do not write these context artifacts into the repository unless I explicitly ask
 
 Treat the slash command arguments as the primary request, target, or focus:
 
-$@
+${ARGUMENTS:-infer the planning handoff scope from the current conversation and repository context}
 
 If the invocation provides a URL, issue link, file path, plan path, or freeform request, read or fetch that target before assigning builder angles, then pass the target explicitly into every `context-builder` task.
 

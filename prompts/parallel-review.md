@@ -1,5 +1,6 @@
 ---
 description: Parallel subagents review
+argument-hint: "[scope]"
 ---
 
 Launch parallel reviewers for an adversarial review of the current work.

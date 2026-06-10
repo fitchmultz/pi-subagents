@@ -1,5 +1,6 @@
 ---
 description: Parallel subagents research
+argument-hint: "[question]"
 ---
 
 Launch parallel research subagents to build a grounded answer to the current question or decision.

@@ -89,9 +89,11 @@ const extractExecutionFlags = (rawArgs: string): { args: string; bg: boolean; fo
 	return { args, bg, fork };
 };
 
+const projectTrusted = (state: SubagentState): boolean => state.lastUiContext?.isProjectTrusted?.() ?? true;
+
 const makeAgentCompletions = (state: SubagentState, multiAgent: boolean) => (prefix: string) => {
 	if (!state.baseCwd) return null;
-	const agents = discoverAgents(state.baseCwd, "both").agents;
+	const agents = discoverAgents(state.baseCwd, "both", { projectTrusted: projectTrusted(state) }).agents;
 	if (!multiAgent) {
 		if (prefix.includes(" ")) return null;
 		return agents.filter((a) => a.name.startsWith(prefix)).map((a) => ({ value: a.name, label: a.name }));
@@ -111,9 +113,10 @@ const makeAgentCompletions = (state: SubagentState, multiAgent: boolean) => (pre
 	return agents.filter((a) => a.name.startsWith(lastWord)).map((a) => ({ value: `${beforeLastWord}${a.name}`, label: a.name }));
 };
 
-const discoverSavedChains = (cwd: string): ChainConfig[] => {
+const discoverSavedChains = (state: SubagentState): ChainConfig[] => {
+	if (!state.baseCwd) return [];
 	const chainsByName = new Map<string, ChainConfig>();
-	for (const chain of discoverAgentsAll(cwd).chains) {
+	for (const chain of discoverAgentsAll(state.baseCwd, { projectTrusted: projectTrusted(state) }).chains) {
 		chainsByName.set(chain.name, chain);
 	}
 	return Array.from(chainsByName.values());
@@ -121,7 +124,7 @@ const discoverSavedChains = (cwd: string): ChainConfig[] => {
 
 const makeChainCompletions = (state: SubagentState) => (prefix: string) => {
 	if (prefix.includes(" ") || !state.baseCwd) return null;
-	return discoverSavedChains(state.baseCwd)
+	return discoverSavedChains(state)
 		.filter((chain) => chain.name.startsWith(prefix))
 		.map((chain) => ({ value: chain.name, label: chain.name }));
 };
@@ -426,7 +429,7 @@ const parseAgentArgs = (
 		ctx.ui.notify("Subagent session cwd is not initialized yet", "error");
 		return null;
 	}
-	const agents = discoverAgents(state.baseCwd, "both").agents;
+	const agents = discoverAgents(state.baseCwd, "both", { projectTrusted: ctx.isProjectTrusted?.() ?? true }).agents;
 	for (const step of steps) {
 		if (!agents.find((a) => a.name === step.name)) {
 			ctx.ui.notify(`Unknown agent: ${step.name}`, "error");
@@ -460,7 +463,7 @@ export function registerSlashCommands(
 			const task = firstSpace === -1 ? "" : input.slice(firstSpace + 1).trim();
 
 			if (!state.baseCwd) { ctx.ui.notify("Subagent session cwd is not initialized yet", "error"); return; }
-			const agents = discoverAgents(state.baseCwd, "both").agents;
+			const agents = discoverAgents(state.baseCwd, "both", { projectTrusted: ctx.isProjectTrusted?.() ?? true }).agents;
 			if (!agents.find((a) => a.name === agentName)) { ctx.ui.notify(`Unknown agent: ${agentName}`, "error"); return; }
 
 			let finalTask = task;

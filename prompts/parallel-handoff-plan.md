@@ -1,12 +1,13 @@
 ---
 description: Parallel research/context builders into an implementation handoff plan
+argument-hint: "[request]"
 ---
 
 Use parallel subagents to understand the request, compare any external references, inspect the local codebase, and produce a grounded implementation handoff plan with a final implementation-ready meta-prompt.
 
 Primary request, target, or focus:
 
-$@
+${ARGUMENTS:-infer the implementation handoff scope from the current conversation and repository context}
 
 Use `context: "fresh"` unless I explicitly ask for forked context. First read or fetch any URLs, issue links, PRs, screenshots, plans, docs, or local files mentioned in the request. Treat them as primary scope, not optional context.
 

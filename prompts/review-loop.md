@@ -1,5 +1,6 @@
 ---
 description: Review/fix loop until clean
+argument-hint: "[work-scope]"
 ---
 
 Run a parent-orchestrated review loop for the requested work.

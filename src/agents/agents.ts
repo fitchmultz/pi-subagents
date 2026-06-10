@@ -152,6 +152,10 @@ export interface ChainDiscoveryDiagnostic {
 	error: string;
 }
 
+export interface AgentDiscoveryOptions {
+	projectTrusted?: boolean;
+}
+
 interface AgentDiscoveryResult {
 	agents: AgentConfig[];
 	projectAgentsDir: string | null;
@@ -253,7 +257,8 @@ function getUserAgentSettingsPath(): string {
 	return path.join(getAgentDir(), "settings.json");
 }
 
-function getProjectAgentSettingsPath(cwd: string): string | null {
+function getProjectAgentSettingsPath(cwd: string, options: AgentDiscoveryOptions = {}): string | null {
+	if (options.projectTrusted === false) return null;
 	const projectRoot = findNearestProjectRoot(cwd);
 	return projectRoot ? path.join(projectRoot, ".pi", "settings.json") : null;
 }
@@ -609,7 +614,7 @@ function listFilesRecursive(dir: string, predicate: (fileName: string) => boolea
 function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
-	for (const filePath of listFilesRecursive(dir, (fileName) => fileName.endsWith(".md") && !fileName.endsWith(".chain.md"))) {
+	for (const filePath of listFilesRecursive(dir, (fileName) => fileName.endsWith(".md") && !fileName.endsWith(".chain.md") && fileName !== "SKILL.template.md")) {
 		let content: string;
 		try {
 			content = fs.readFileSync(filePath, "utf-8");
@@ -780,7 +785,8 @@ function isDirectory(p: string): boolean {
 	}
 }
 
-function resolveNearestProjectAgentDirs(cwd: string): { readDirs: string[]; preferredDir: string | null } {
+function resolveNearestProjectAgentDirs(cwd: string, options: AgentDiscoveryOptions = {}): { readDirs: string[]; preferredDir: string | null } {
+	if (options.projectTrusted === false) return { readDirs: [], preferredDir: null };
 	const projectRoot = findNearestProjectRoot(cwd);
 	if (!projectRoot) return { readDirs: [], preferredDir: null };
 
@@ -796,7 +802,8 @@ function resolveNearestProjectAgentDirs(cwd: string): { readDirs: string[]; pref
 	};
 }
 
-function resolveNearestProjectChainDirs(cwd: string): { readDirs: string[]; preferredDir: string | null } {
+function resolveNearestProjectChainDirs(cwd: string, options: AgentDiscoveryOptions = {}): { readDirs: string[]; preferredDir: string | null } {
+	if (options.projectTrusted === false) return { readDirs: [], preferredDir: null };
 	const projectRoot = findNearestProjectRoot(cwd);
 	if (!projectRoot) return { readDirs: [], preferredDir: null };
 
@@ -808,12 +815,12 @@ function resolveNearestProjectChainDirs(cwd: string): { readDirs: string[]; pref
 }
 const BUILTIN_AGENTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "agents");
 
-export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
+export function discoverAgents(cwd: string, scope: AgentScope, options: AgentDiscoveryOptions = {}): AgentDiscoveryResult {
 	const userDirOld = path.join(getAgentDir(), "agents");
 	const userDirNew = path.join(os.homedir(), ".agents");
-	const { readDirs: projectAgentDirs, preferredDir: projectAgentsDir } = resolveNearestProjectAgentDirs(cwd);
+	const { readDirs: projectAgentDirs, preferredDir: projectAgentsDir } = resolveNearestProjectAgentDirs(cwd, options);
 	const userSettingsPath = getUserAgentSettingsPath();
-	const projectSettingsPath = getProjectAgentSettingsPath(cwd);
+	const projectSettingsPath = getProjectAgentSettingsPath(cwd, options);
 	const userSettings = scope === "project" ? EMPTY_SUBAGENT_SETTINGS : readSubagentSettings(userSettingsPath);
 	const projectSettings = scope === "user" ? EMPTY_SUBAGENT_SETTINGS : readSubagentSettings(projectSettingsPath);
 
@@ -836,7 +843,7 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 	return { agents, projectAgentsDir };
 }
 
-export function discoverAgentsAll(cwd: string): {
+export function discoverAgentsAll(cwd: string, options: AgentDiscoveryOptions = {}): {
 	builtin: AgentConfig[];
 	user: AgentConfig[];
 	project: AgentConfig[];
@@ -852,10 +859,10 @@ export function discoverAgentsAll(cwd: string): {
 	const userDirOld = path.join(getAgentDir(), "agents");
 	const userDirNew = path.join(os.homedir(), ".agents");
 	const userChainDir = getUserChainDir();
-	const { readDirs: projectDirs, preferredDir: projectDir } = resolveNearestProjectAgentDirs(cwd);
-	const { readDirs: projectChainDirs, preferredDir: projectChainDir } = resolveNearestProjectChainDirs(cwd);
+	const { readDirs: projectDirs, preferredDir: projectDir } = resolveNearestProjectAgentDirs(cwd, options);
+	const { readDirs: projectChainDirs, preferredDir: projectChainDir } = resolveNearestProjectChainDirs(cwd, options);
 	const userSettingsPath = getUserAgentSettingsPath();
-	const projectSettingsPath = getProjectAgentSettingsPath(cwd);
+	const projectSettingsPath = getProjectAgentSettingsPath(cwd, options);
 	const userSettings = readSubagentSettings(userSettingsPath);
 	const projectSettings = readSubagentSettings(projectSettingsPath);
 

@@ -509,6 +509,23 @@ Review
 		assert.equal(result.project.some((agent) => agent.filePath.endsWith("review.chain.md")), false);
 	});
 
+	it("ignores skill template assets during agent discovery", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-skill-template-asset-"));
+		tempDirs.push(dir);
+		const assetsDir = path.join(dir, ".agents", "skills", "agent-skill-engineering", "assets");
+		fs.mkdirSync(assetsDir, { recursive: true });
+		fs.writeFileSync(path.join(assetsDir, "SKILL.template.md"), `---
+name: skill-name
+description: Template placeholder that should not be executable.
+---
+
+# Skill Name
+`, "utf-8");
+
+		const result = discoverAgentsAll(dir);
+		assert.equal(result.project.some((agent) => agent.name === "skill-name"), false);
+	});
+
 	it("registers packaged agents by runtime name and serializes local name plus package", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-packaged-agent-"));
 		tempDirs.push(dir);

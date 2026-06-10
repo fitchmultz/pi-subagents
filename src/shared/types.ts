@@ -828,6 +828,7 @@ export interface RunSyncOptions {
 		outputPath: string;
 	};
 	projectTrust?: ChildProjectTrustPolicy;
+	projectTrusted?: boolean;
 	acceptance?: AcceptanceInput;
 	acceptanceContext?: {
 		mode?: SubagentRunMode;

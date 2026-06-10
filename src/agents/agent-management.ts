@@ -23,7 +23,7 @@ import type { Details } from "../shared/types.ts";
 
 type ManagementAction = "list" | "get" | "create" | "update" | "delete";
 type ManagementScope = "user" | "project";
-type ManagementContext = Pick<ExtensionContext, "cwd" | "modelRegistry">;
+type ManagementContext = Pick<ExtensionContext, "cwd" | "modelRegistry"> & { isProjectTrusted?: () => boolean };
 
 interface ManagementParams {
 	action?: string;
@@ -82,14 +82,18 @@ function allAgents(d: { builtin: AgentConfig[]; user: AgentConfig[]; project: Ag
 	return [...d.builtin, ...d.user, ...d.project];
 }
 
-function availableNames(cwd: string, kind: "agent" | "chain"): string[] {
-	const d = discoverAgentsAll(cwd);
+function discoveryOptions(ctx: ManagementContext): { projectTrusted: boolean } {
+	return { projectTrusted: ctx.isProjectTrusted?.() ?? true };
+}
+
+function availableNames(ctx: ManagementContext, kind: "agent" | "chain"): string[] {
+	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
 	const items = kind === "agent" ? allAgents(d) : d.chains;
 	return [...new Set(items.map((x) => x.name))].sort((a, b) => a.localeCompare(b));
 }
 
-function findAgents(name: string, cwd: string, scope: AgentScope = "both"): AgentConfig[] {
-	const d = discoverAgentsAll(cwd);
+function findAgents(name: string, ctx: ManagementContext, scope: AgentScope = "both"): AgentConfig[] {
+	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
 	const raw = name.trim();
 	const sanitized = sanitizeName(raw);
 	return allAgents(d)
@@ -97,16 +101,16 @@ function findAgents(name: string, cwd: string, scope: AgentScope = "both"): Agen
 		.sort((a, b) => a.source.localeCompare(b.source));
 }
 
-function findChains(name: string, cwd: string, scope: AgentScope = "both"): ChainConfig[] {
+function findChains(name: string, ctx: ManagementContext, scope: AgentScope = "both"): ChainConfig[] {
 	const raw = name.trim();
 	const sanitized = sanitizeName(raw);
-	return discoverAgentsAll(cwd).chains
+	return discoverAgentsAll(ctx.cwd, discoveryOptions(ctx)).chains
 		.filter((c) => (scope === "both" || c.source === scope) && (c.name === raw || c.name === sanitized))
 		.sort((a, b) => a.source.localeCompare(b.source));
 }
 
-function nameExistsInScope(cwd: string, scope: ManagementScope, name: string, excludePath?: string): boolean {
-	const d = discoverAgentsAll(cwd);
+function nameExistsInScope(ctx: ManagementContext, scope: ManagementScope, name: string, excludePath?: string): boolean {
+	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
 	for (const a of scope === "user" ? d.user : d.project) {
 		if (a.name === name && a.filePath !== excludePath) return true;
 	}
@@ -116,15 +120,15 @@ function nameExistsInScope(cwd: string, scope: ManagementScope, name: string, ex
 	return false;
 }
 
-function unknownChainAgents(cwd: string, steps: ChainStepConfig[]): string[] {
-	const d = discoverAgentsAll(cwd);
+function unknownChainAgents(ctx: ManagementContext, steps: ChainStepConfig[]): string[] {
+	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
 	const known = new Set(allAgents(d).map((a) => a.name));
 	return [...new Set(steps.map((s) => s.agent).filter((a) => !known.has(a)))].sort((a, b) => a.localeCompare(b));
 }
 
 function chainStepWarnings(ctx: ManagementContext, steps: ChainStepConfig[]): string[] {
 	const warnings: string[] = [];
-	const available = new Set(discoverAvailableSkills(ctx.cwd).map((s) => s.name));
+	const available = new Set(discoverAvailableSkills(ctx.cwd, discoveryOptions(ctx)).map((s) => s.name));
 	for (let i = 0; i < steps.length; i++) {
 		const s = steps[i]!;
 		if (s.model) {
@@ -152,9 +156,9 @@ function fallbackModelsWarning(ctx: ManagementContext, fallbackModels: string[] 
 	return missing.length ? `Warning: fallback models not in the current model registry: ${missing.join(", ")}.` : undefined;
 }
 
-function skillsWarning(cwd: string, skills: string[] | undefined): string | undefined {
+function skillsWarning(ctx: ManagementContext, skills: string[] | undefined): string | undefined {
 	if (!skills || skills.length === 0) return undefined;
-	const available = new Set(discoverAvailableSkills(cwd).map((s) => s.name));
+	const available = new Set(discoverAvailableSkills(ctx.cwd, discoveryOptions(ctx)).map((s) => s.name));
 	const missing = skills.filter((s) => !available.has(s));
 	return missing.length ? `Warning: skills not found: ${missing.join(", ")}.` : undefined;
 }
@@ -336,7 +340,7 @@ function resolveTarget<T extends { source: AgentSource; filePath: string }>(
 	kind: "agent" | "chain",
 	name: string,
 	matches: T[],
-	cwd: string,
+	ctx: ManagementContext,
 	scopeHint?: string,
 ): T | AgentToolResult<Details> {
 	const mutable = matches.filter((m) => m.source !== "builtin");
@@ -344,7 +348,7 @@ function resolveTarget<T extends { source: AgentSource; filePath: string }>(
 		if (matches.length > 0) {
 			return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' is builtin and cannot be modified. Create a same-named ${kind} in user or project scope to override it.`, true);
 		}
-		const available = availableNames(cwd, kind);
+		const available = availableNames(ctx, kind);
 		return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' not found. Available: ${available.join(", ") || "none"}.`, true);
 	}
 	if (mutable.length === 1) return mutable[0]!;
@@ -364,9 +368,9 @@ function renamePath(
 	currentPath: string,
 	newName: string,
 	scope: ManagementScope,
-	cwd: string,
+	ctx: ManagementContext,
 ): { filePath?: string; error?: string } {
-	if (nameExistsInScope(cwd, scope, newName, currentPath)) return { error: `Name '${newName}' already exists in ${scope} scope.` };
+	if (nameExistsInScope(ctx, scope, newName, currentPath)) return { error: `Name '${newName}' already exists in ${scope} scope.` };
 	const ext = kind === "agent" ? ".md" : currentPath.endsWith(".chain.json") ? ".chain.json" : ".chain.md";
 	const filePath = path.join(path.dirname(currentPath), `${newName}${ext}`);
 	if (fs.existsSync(filePath) && filePath !== currentPath) {
@@ -455,7 +459,7 @@ function formatChainDetail(chain: ChainConfig): string {
 
 export function handleList(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
 	const scope = normalizeListScope(params.agentScope) ?? "both";
-	const d = discoverAgentsAll(ctx.cwd);
+	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
 	const scopedAgents = allAgents(d).filter((a) => scope === "both" || a.source === "builtin" || a.source === scope).sort((a, b) => a.name.localeCompare(b.name));
 	const agents = scopedAgents.filter((a) => !a.disabled);
 	const chains = d.chains.filter((c) => scope === "both" || c.source === scope).sort((a, b) => a.name.localeCompare(b.name));
@@ -479,9 +483,9 @@ function handleGet(params: ManagementParams, ctx: ManagementContext): AgentToolR
 	const blocks: string[] = [];
 	let anyFound = false;
 	if (params.agent) {
-		const matches = findAgents(params.agent, ctx.cwd, "both");
+		const matches = findAgents(params.agent, ctx, "both");
 		if (!matches.length) {
-			const msg = `Agent '${params.agent}' not found. Available: ${availableNames(ctx.cwd, "agent").join(", ") || "none"}.`;
+			const msg = `Agent '${params.agent}' not found. Available: ${availableNames(ctx, "agent").join(", ") || "none"}.`;
 			if (!hasBoth) return result(msg, true);
 			blocks.push(msg);
 		} else {
@@ -490,9 +494,9 @@ function handleGet(params: ManagementParams, ctx: ManagementContext): AgentToolR
 		}
 	}
 	if (params.chainName) {
-		const matches = findChains(params.chainName, ctx.cwd, "both");
+		const matches = findChains(params.chainName, ctx, "both");
 		if (!matches.length) {
-			const msg = `Chain '${params.chainName}' not found. Available: ${availableNames(ctx.cwd, "chain").join(", ") || "none"}.`;
+			const msg = `Chain '${params.chainName}' not found. Available: ${availableNames(ctx, "chain").join(", ") || "none"}.`;
 			if (!hasBoth) return result(msg, true);
 			blocks.push(msg);
 		} else {
@@ -519,12 +523,14 @@ export function handleCreate(params: ManagementParams, ctx: ManagementContext): 
 	if (scopeRaw !== "user" && scopeRaw !== "project") return result("config.scope must be 'user' or 'project'.", true);
 	const scope = scopeRaw as ManagementScope;
 	const isChain = hasKey(cfg, "steps");
-	const d = discoverAgentsAll(ctx.cwd);
+	const options = discoveryOptions(ctx);
+	if (scope === "project" && options.projectTrusted === false) return result("Project scope is not available because this project is untrusted. Run from a trusted project or use scope: 'user'.", true);
+	const d = discoverAgentsAll(ctx.cwd, options);
 	const targetDir = isChain
 		? scope === "user" ? d.userChainDir : d.projectChainDir ?? path.join(ctx.cwd, ".pi", "chains")
 		: scope === "user" ? d.userDir : d.projectDir ?? path.join(ctx.cwd, ".pi", "agents");
 	fs.mkdirSync(targetDir, { recursive: true });
-	if (nameExistsInScope(ctx.cwd, scope, runtimeName)) return result(`Name '${runtimeName}' already exists in ${scope} scope. Use update instead.`, true);
+	if (nameExistsInScope(ctx, scope, runtimeName)) return result(`Name '${runtimeName}' already exists in ${scope} scope. Use update instead.`, true);
 	const targetPath = path.join(targetDir, isChain ? `${runtimeName}.chain.md` : `${runtimeName}.md`);
 	if (fs.existsSync(targetPath)) return result(`File already exists at ${targetPath} but is not a valid ${isChain ? "chain" : "agent"} definition. Remove or rename it first.`, true);
 	const warnings: string[] = [];
@@ -534,7 +540,7 @@ export function handleCreate(params: ManagementParams, ctx: ManagementContext): 
 		if (parsed.error) return result(parsed.error, true);
 		const chain: ChainConfig = { name: runtimeName, localName: name, packageName: parsedPackage.packageName, description: cfg.description.trim(), source: scope, filePath: targetPath, steps: parsed.steps! };
 		fs.writeFileSync(targetPath, serializeChain(chain), "utf-8");
-		const missing = unknownChainAgents(ctx.cwd, chain.steps);
+		const missing = unknownChainAgents(ctx, chain.steps);
 		if (missing.length) warnings.push(`Warning: chain steps reference unknown agents: ${missing.join(", ")}.`);
 		warnings.push(...chainStepWarnings(ctx, chain.steps));
 		return result([`Created chain '${runtimeName}' at ${targetPath}.`, ...warnings].join("\n"));
@@ -557,7 +563,7 @@ export function handleCreate(params: ManagementParams, ctx: ManagementContext): 
 	if (mw) warnings.push(mw);
 	const fmw = fallbackModelsWarning(ctx, agent.fallbackModels);
 	if (fmw) warnings.push(fmw);
-	const sw = skillsWarning(ctx.cwd, agent.skills);
+	const sw = skillsWarning(ctx, agent.skills);
 	if (sw) warnings.push(sw);
 	fs.writeFileSync(targetPath, serializeAgent(agent), "utf-8");
 	return result([`Created agent '${runtimeName}' at ${targetPath}.`, ...warnings].join("\n"));
@@ -573,7 +579,7 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 	const warnings: string[] = [];
 	if (params.agent) {
 		const scopeHint = asDisambiguationScope(params.agentScope);
-		const targetOrError = resolveTarget("agent", params.agent, findAgents(params.agent, ctx.cwd, scopeHint ?? "both"), ctx.cwd, params.agentScope);
+		const targetOrError = resolveTarget("agent", params.agent, findAgents(params.agent, ctx, scopeHint ?? "both"), ctx, params.agentScope);
 		if ("content" in targetOrError) return targetOrError;
 		const target = targetOrError;
 		const updated: AgentConfig = { ...target };
@@ -606,17 +612,17 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 			if (fmw) warnings.push(fmw);
 		}
 		if (hasKey(cfg, "skills")) {
-			const sw = skillsWarning(ctx.cwd, updated.skills);
+			const sw = skillsWarning(ctx, updated.skills);
 			if (sw) warnings.push(sw);
 		}
 		if (updated.name !== oldName) {
-			const renamed = renamePath("agent", target.filePath, updated.name, target.source, ctx.cwd);
+			const renamed = renamePath("agent", target.filePath, updated.name, target.source, ctx);
 			if (renamed.error) return result(renamed.error, true);
 			updated.filePath = renamed.filePath!;
 		}
 		fs.writeFileSync(updated.filePath, serializeAgent(updated), "utf-8");
 		if (updated.name !== oldName) {
-			const refs = discoverAgentsAll(ctx.cwd).chains.filter((c) => c.steps.some((s) => s.agent === oldName)).map((c) => `${c.name} (${c.source})`);
+			const refs = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx)).chains.filter((c) => c.steps.some((s) => s.agent === oldName)).map((c) => `${c.name} (${c.source})`);
 			if (refs.length) warnings.push(`Warning: chains still reference '${oldName}': ${refs.join(", ")}.`);
 		}
 		const headline = updated.name === oldName
@@ -625,7 +631,7 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 		return result([headline, ...warnings].join("\n"));
 	}
 	const scopeHint = asDisambiguationScope(params.agentScope);
-	const targetOrError = resolveTarget("chain", params.chainName!, findChains(params.chainName!, ctx.cwd, scopeHint ?? "both"), ctx.cwd, params.agentScope);
+	const targetOrError = resolveTarget("chain", params.chainName!, findChains(params.chainName!, ctx, scopeHint ?? "both"), ctx, params.agentScope);
 	if ("content" in targetOrError) return targetOrError;
 	const target = targetOrError;
 	const updated: ChainConfig = { ...target, steps: [...target.steps] };
@@ -655,12 +661,12 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 	if (hasKey(cfg, "description")) updated.description = (cfg.description as string).trim();
 	if (parsedSteps) {
 		updated.steps = parsedSteps;
-		const missing = unknownChainAgents(ctx.cwd, updated.steps);
+		const missing = unknownChainAgents(ctx, updated.steps);
 		if (missing.length) warnings.push(`Warning: chain steps reference unknown agents: ${missing.join(", ")}.`);
 		warnings.push(...chainStepWarnings(ctx, updated.steps));
 	}
 	if (updated.name !== oldName) {
-		const renamed = renamePath("chain", target.filePath, updated.name, target.source, ctx.cwd);
+		const renamed = renamePath("chain", target.filePath, updated.name, target.source, ctx);
 		if (renamed.error) return result(renamed.error, true);
 		updated.filePath = renamed.filePath!;
 	}
@@ -676,16 +682,16 @@ function handleDelete(params: ManagementParams, ctx: ManagementContext): AgentTo
 	if (params.agent && params.chainName) return result("Specify either 'agent' or 'chainName', not both.", true);
 	const scopeHint = asDisambiguationScope(params.agentScope);
 	if (params.agent) {
-		const targetOrError = resolveTarget("agent", params.agent, findAgents(params.agent, ctx.cwd, scopeHint ?? "both"), ctx.cwd, params.agentScope);
+		const targetOrError = resolveTarget("agent", params.agent, findAgents(params.agent, ctx, scopeHint ?? "both"), ctx, params.agentScope);
 		if ("content" in targetOrError) return targetOrError;
 		const target = targetOrError;
 		fs.unlinkSync(target.filePath);
-		const refs = discoverAgentsAll(ctx.cwd).chains.filter((c) => c.steps.some((s) => s.agent === target.name)).map((c) => `${c.name} (${c.source})`);
+		const refs = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx)).chains.filter((c) => c.steps.some((s) => s.agent === target.name)).map((c) => `${c.name} (${c.source})`);
 		const lines = [`Deleted agent '${target.name}' at ${target.filePath}.`];
 		if (refs.length) lines.push(`Warning: chains reference deleted agent '${target.name}': ${refs.join(", ")}.`);
 		return result(lines.join("\n"));
 	}
-	const targetOrError = resolveTarget("chain", params.chainName!, findChains(params.chainName!, ctx.cwd, scopeHint ?? "both"), ctx.cwd, params.agentScope);
+	const targetOrError = resolveTarget("chain", params.chainName!, findChains(params.chainName!, ctx, scopeHint ?? "both"), ctx, params.agentScope);
 	if ("content" in targetOrError) return targetOrError;
 	const target = targetOrError;
 	fs.unlinkSync(target.filePath);

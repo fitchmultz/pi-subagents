@@ -1,5 +1,6 @@
 ---
 description: Use subagents to gather context, then ask clarifying questions
+argument-hint: "[request]"
 ---
 
 Based on our discussion and my intent, launch focused context-gathering subagents before planning or implementing.
@@ -10,4 +11,4 @@ Give each subagent a specific meta prompt. Ask them to return concise findings p
 
 After they return, synthesize what we know and use the `interview` tool to ask me the unresolved questions needed to reach a shared understanding.
 
-$@
+${ARGUMENTS:-infer the request from the current conversation and repository context}

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type AgentConfig, type AgentScope } from "../../agents/agents.ts";
+import { type AgentConfig, type AgentDiscoveryOptions, type AgentScope } from "../../agents/agents.ts";
 import { getArtifactsDir } from "../../shared/artifacts.ts";
 import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
 import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
@@ -161,7 +161,7 @@ interface ExecutorDeps {
 	tempArtifactsDir: string;
 	getSubagentSessionRoot: (parentSessionFile: string | null) => string;
 	expandTilde: (p: string) => string;
-	discoverAgents: (cwd: string, scope: AgentScope) => { agents: AgentConfig[] };
+	discoverAgents: (cwd: string, scope: AgentScope, options?: AgentDiscoveryOptions) => { agents: AgentConfig[] };
 	allowMutatingManagementActions?: boolean;
 }
 
@@ -631,7 +631,7 @@ async function resumeAsyncRun(input: {
 	input.deps.state.currentSessionId = resolveCurrentSessionId(input.ctx.sessionManager);
 	const effectiveCwd = target.cwd ?? input.requestCwd;
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
-	const discoveredAgents = input.deps.discoverAgents(effectiveCwd, scope).agents;
+	const discoveredAgents = input.deps.discoverAgents(effectiveCwd, scope, { projectTrusted: input.ctx.isProjectTrusted?.() ?? true }).agents;
 	const sessionName = resolveIntercomSessionTarget(input.deps.pi.getSessionName(), input.ctx.sessionManager.getSessionId());
 	const intercomBridge = resolveIntercomBridge({
 		config: input.deps.config.intercomBridge,
@@ -1566,6 +1566,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			acceptance: task.acceptance,
 			acceptanceContext: { mode: "parallel" },
 			projectTrust: input.projectTrust,
+			projectTrusted: input.ctx.isProjectTrusted?.() ?? true,
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {
 						const stepResults = progressUpdate.details?.results || [];
@@ -1687,7 +1688,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		const behaviors = agentConfigs.map((c, i) =>
 			resolveStepBehavior(c, behaviorOverrides[i]!),
 		);
-		const availableSkills = discoverAvailableSkills(effectiveCwd);
+		const availableSkills = discoverAvailableSkills(effectiveCwd, { projectTrusted: ctx.isProjectTrusted?.() ?? true });
 
 		const result = await ctx.ui.custom<ChainClarifyResult>(
 			(tui, theme, _kb, done) =>
@@ -1987,7 +1988,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 
 	if (params.clarify === true && ctx.hasUI) {
 		const behavior = resolveStepBehavior(agentConfig, { output: effectiveOutput, skills: skillOverride });
-		const availableSkills = discoverAvailableSkills(effectiveCwd);
+		const availableSkills = discoverAvailableSkills(effectiveCwd, { projectTrusted: ctx.isProjectTrusted?.() ?? true });
 
 		const result = await ctx.ui.custom<ChainClarifyResult>(
 			(tui, theme, _kb, done) =>
@@ -2145,6 +2146,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		acceptance: params.acceptance,
 		acceptanceContext: { mode: "single" },
 		projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
+		projectTrusted: ctx.isProjectTrusted?.() ?? true,
 	});
 	if (foregroundControl?.currentIndex === 0) {
 		foregroundControl.interrupt = undefined;
@@ -2287,6 +2289,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							currentSessionId,
 							orchestratorTarget,
 							sessionError,
+							projectTrusted: ctx.isProjectTrusted?.() ?? true,
 							expandTilde: deps.expandTilde,
 						}),
 					}],
@@ -2401,7 +2404,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const effectiveCwd = effectiveParams.cwd ?? ctx.cwd;
 		const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
 		deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
-		const discoveredAgents = deps.discoverAgents(effectiveCwd, scope).agents;
+		const discoveredAgents = deps.discoverAgents(effectiveCwd, scope, { projectTrusted: ctx.isProjectTrusted?.() ?? true }).agents;
 		const invocationAgentNames = collectInvocationAgentNames(effectiveParams);
 		const invocationContext: SubagentParamsLike["context"] = invocationUsesForkContext(
 			effectiveParams.context,

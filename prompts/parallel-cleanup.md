@@ -1,5 +1,6 @@
 ---
 description: Parallel cleanup review
+argument-hint: "[scope]"
 ---
 
 Run a fresh-context parallel cleanup review of the current work.
