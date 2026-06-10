@@ -42,7 +42,7 @@ const EVIDENCE_REPORT_FIELDS: Record<AcceptanceEvidenceKind, string> = {
 	"residual-risks": "residualRisks: array of remaining risks or blockers; use [] when none remain",
 	"no-staged-files": "noStagedFiles: boolean",
 	"diff-summary": "diffSummary: non-empty string summarizing changed behavior and important files",
-	"review-findings": "reviewFindings: array of reviewer findings; use [] when no findings remain",
+	"review-findings": "reviewFindings: array of reviewer findings as strings or objects; use [] when no findings remain",
 	"manual-notes": "manualNotes: string for manual notes or external evidence",
 };
 

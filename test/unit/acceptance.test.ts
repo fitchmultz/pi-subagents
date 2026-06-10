@@ -141,7 +141,40 @@ describe("acceptance gates", () => {
 
 		const malformedCommands = parseAcceptanceReport("```acceptance-report\n{\"commandsRun\":[{}]}\n```");
 		assert.equal(malformedCommands.report, undefined);
-		assert.match(malformedCommands.error ?? "", /valid acceptance report/);
+		assert.match(malformedCommands.error ?? "", /commandsRun must be an array/);
+	});
+
+	it("accepts evidence-only acceptance reports", async () => {
+		const parsed = parseAcceptanceReport("```acceptance-report\n{\"diffSummary\":\"Patched acceptance parsing\"}\n```");
+		assert.deepEqual(parsed.report, { diffSummary: "Patched acceptance parsing" });
+	});
+
+	it("accepts structured reviewer finding objects in acceptance reports", async () => withTempRepo(async (cwd) => {
+		const parsed = parseAcceptanceReport(report({
+			reviewFindings: [{ severity: "major", summary: "raw path leaked", evidence: "src/file.ts:12" }],
+		}));
+		assert.ok(parsed.report);
+		assert.deepEqual(parsed.report.reviewFindings, [{ severity: "major", summary: "raw path leaked", evidence: "src/file.ts:12" }]);
+
+		const acceptance = resolveEffectiveAcceptance({
+			agentName: "reviewer",
+			task: "Review the diff",
+			explicit: { criteria: ["Review findings are reported"], evidence: ["review-findings", "commands-run", "residual-risks"] },
+		});
+		const ledger = await evaluateAcceptance({ acceptance, output: report({ reviewFindings: [{ severity: "major", summary: "raw path leaked" }] }), cwd });
+
+		assert.equal(ledger.status, "checked");
+		assert.equal(ledger.childReportParseError, undefined);
+	}));
+
+	it("rejects malformed structured reviewer finding objects", () => {
+		const emptyFinding = parseAcceptanceReport(report({ reviewFindings: [{}] }));
+		assert.equal(emptyFinding.report, undefined);
+		assert.match(emptyFinding.error ?? "", /reviewFindings must be an array/);
+
+		const noStringEvidence = parseAcceptanceReport(report({ reviewFindings: [{ severity: [] }] }));
+		assert.equal(noStringEvidence.report, undefined);
+		assert.match(noStringEvidence.error ?? "", /reviewFindings must be an array/);
 	});
 
 	it("checked acceptance rejects missing required evidence", async () => withTempRepo(async (cwd) => {

@@ -435,7 +435,7 @@ describe("renderSubagentResult fork indicator", () => {
 		}, { expanded: false }, theme);
 
 		const text = widget.render(120).join("\n");
-		assert.match(text, /parallel · 2 agents running · 0\/3 done/);
+		assert.match(text, /parallel · 2 agents running · 0\/3 succeeded/);
 		assert.match(text, /Agent 3\/3: worker/);
 		assert.doesNotMatch(text, /Step 3: worker/);
 		assert.doesNotMatch(text, /Agent 1: worker/);
@@ -467,7 +467,7 @@ describe("renderSubagentResult fork indicator", () => {
 		}, { expanded: false }, theme);
 
 		const text = widget.render(120).join("\n");
-		assert.match(text, /parallel · 1 agent running · 1\/3 done/);
+		assert.match(text, /parallel · 1 agent running · 1\/3 succeeded/);
 	});
 
 	it("labels active chain parallel groups with chain step and agent fractions", () => {
@@ -498,7 +498,7 @@ describe("renderSubagentResult fork indicator", () => {
 		}, { expanded: false }, theme);
 
 		const text = widget.render(120).join("\n");
-		assert.match(text, /chain · step 1\/3 · parallel group: 2 agents running · 0\/3 done/);
+		assert.match(text, /chain · step 1\/3 · parallel group: 2 agents running · 0\/3 succeeded/);
 		assert.match(text, /Agent 1\/3: scout/);
 		assert.match(text, /Agent 2\/3: reviewer/);
 		assert.doesNotMatch(text, /Step 1: scout/);
@@ -543,7 +543,7 @@ describe("renderSubagentResult fork indicator", () => {
 		}, { expanded: false }, theme);
 
 		const text = widget.render(120).join("\n");
-		assert.match(text, /chain · step 2\/3 · parallel group: 2 agents running · 0\/2 done/);
+		assert.match(text, /chain · step 2\/3 · parallel group: 2 agents running · 0\/2 succeeded/);
 		assert.match(text, /Agent 1\/2: scout/);
 		assert.match(text, /Agent 2\/2: reviewer/);
 		assert.doesNotMatch(text, /planner/);

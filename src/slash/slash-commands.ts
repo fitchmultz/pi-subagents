@@ -523,7 +523,7 @@ export function registerSlashCommands(
 				return;
 			}
 			if (!state.baseCwd) { ctx.ui.notify("Subagent session cwd is not initialized yet", "error"); return; }
-			const chain = discoverSavedChains(state.baseCwd).find((candidate) => candidate.name === chainName);
+			const chain = discoverSavedChains(state).find((candidate) => candidate.name === chainName);
 			if (!chain) {
 				ctx.ui.notify(`Unknown chain: ${chainName}`, "error");
 				return;

@@ -69,13 +69,13 @@ describe("subagent async widget rendering", () => {
 		assert.match(text, /⎿  read/);
 	});
 
-	it("uses parallel running/done wording for async jobs with parallel groups", () => {
+	it("uses parallel running/succeeded wording for async jobs with parallel groups", () => {
 		const lines = buildWidgetLines([
 			{ asyncId: "run-1", asyncDir: "/tmp/1", status: "running", mode: "parallel", agents: ["scout", "reviewer", "worker"], hasParallelGroups: true, activeParallelGroup: true, runningSteps: 3, completedSteps: 0, stepsTotal: 3 },
 		], theme, 120);
 
 		const text = lines.join("\n");
-		assert.match(text, /parallel · 3 agents running · 0\/3 done/);
+		assert.match(text, /parallel · 3 agents running · 0\/3 succeeded/);
 		assert.match(text, /⎿  thinking…/);
 		assert.doesNotMatch(text, /parallel · scout, reviewer, worker/);
 		assert.doesNotMatch(text, /step 1\/3/);
@@ -149,7 +149,7 @@ describe("subagent async widget rendering", () => {
 
 		const text = lines.join("\n");
 		assert.match(text, /async subagent parallel \(3\) · background/);
-		assert.match(text, /parallel · 2 agents running · 1\/3 done/);
+		assert.match(text, /parallel · 2 agents running · 1\/3 succeeded/);
 		assert.match(text, /Agent 1\/3: reviewer · running · 2 tool uses/);
 		assert.match(text, /⎿  active now/);
 		assert.match(text, /Agent 2\/3: reviewer · running\n\s+⎿  read \| 2\.0s/);
@@ -321,7 +321,7 @@ describe("subagent async widget rendering", () => {
 		], theme, 160);
 
 		const text = lines.join("\n");
-		assert.match(text, /step 2\/3 · parallel group: 1 agent running · 1\/2 done/);
+		assert.match(text, /step 2\/3 · parallel group: 1 agent running · 1\/2 succeeded/);
 	});
 
 	it("uses logical chain steps after an async chain parallel group finishes", () => {
@@ -349,7 +349,7 @@ describe("subagent async widget rendering", () => {
 		const text = lines.join("\n");
 		assert.match(text, /async subagent chain \(2\)/);
 		assert.match(text, /chain · step 2\/2/);
-		assert.match(text, /Step 1\/2: parallel group · 3\/3 done/);
+		assert.match(text, /Step 1\/2: parallel group · 3\/3 succeeded/);
 		assert.match(text, /Step 2\/2: writer · running · 1 tool use/);
 		assert.match(text, /Press Ctrl\+O for live detail/);
 		assert.match(text, outputPathPattern("/tmp/chain/output-3.log"));
@@ -387,8 +387,8 @@ describe("subagent async widget rendering", () => {
 		], theme, 180);
 
 		const text = lines.join("\n");
-		assert.match(text, /parallel · 0\/3 done/);
-		assert.match(text, /chain · step 1\/2 · parallel group: 0\/2 done/);
+		assert.match(text, /parallel · 0\/3 succeeded/);
+		assert.match(text, /chain · step 1\/2 · parallel group: 0\/2 succeeded/);
 		assert.doesNotMatch(text, /0 agents running/);
 	});
 

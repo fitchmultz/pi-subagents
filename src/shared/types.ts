@@ -324,7 +324,7 @@ export interface AcceptanceReport {
 	residualRisks?: string[];
 	noStagedFiles?: boolean;
 	diffSummary?: string;
-	reviewFindings?: string[];
+	reviewFindings?: Array<string | Record<string, unknown>>;
 	manualNotes?: string;
 	notes?: string;
 }

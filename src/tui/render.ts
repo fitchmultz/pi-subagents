@@ -608,10 +608,14 @@ function buildMultiProgressLabel(details: Pick<Details, "mode" | "results" | "pr
 			statuses[index] = status;
 		}
 		const running = statuses.filter((status) => status === "running").length;
-		const done = statuses.filter((status) => status === "completed").length;
-		const headerLabel = hasRunning
-			? `${formatAgentRunningLabel(running)} · ${done}/${totalCount} done`
-			: `${done}/${totalCount} done`;
+		const succeeded = statuses.filter((status) => status === "completed").length;
+		const failed = statuses.filter((status) => status === "failed" || status === "timed-out").length;
+		const paused = statuses.filter((status) => status === "paused" || status === "detached").length;
+		const parts = [`${succeeded}/${totalCount} succeeded`];
+		if (hasRunning) parts.unshift(formatAgentRunningLabel(running));
+		if (failed > 0) parts.push(`${failed} failed`);
+		if (paused > 0) parts.push(`${paused} paused`);
+		const headerLabel = parts.join(" · ");
 		return { headerLabel, itemTitle, totalCount, hasParallelInChain, activeParallelGroup, groupStartIndex: 0, groupEndIndex: totalCount, showActiveGroupOnly: false };
 	}
 
@@ -622,7 +626,9 @@ function buildMultiProgressLabel(details: Pick<Details, "mode" | "results" | "pr
 		const groupStart = span?.start ?? 0;
 		const groupEnd = groupStart + groupSize;
 		let running = 0;
-		let done = 0;
+		let succeeded = 0;
+		let failed = 0;
+		let paused = 0;
 		for (let index = groupStart; index < groupEnd; index++) {
 			const progressEntry = details.progress?.find((progress) => progress.index === index);
 			const resultEntry = details.results.find((result) => result.progress?.index === index);
@@ -631,15 +637,26 @@ function buildMultiProgressLabel(details: Pick<Details, "mode" | "results" | "pr
 				continue;
 			}
 			if (progressEntry?.status === "completed") {
-				done++;
+				succeeded++;
 				continue;
 			}
-			if (resultEntry && isDoneResult(resultEntry)) done++;
+			if (progressEntry?.status === "failed" || progressEntry?.status === "timed-out") {
+				failed++;
+				continue;
+			}
+			if (progressEntry?.status === "detached") {
+				paused++;
+				continue;
+			}
+			if (resultEntry && isDoneResult(resultEntry)) succeeded++;
+			else if (resultEntry && resultEntry.exitCode !== 0) failed++;
 		}
 		const totalSteps = details.totalSteps ?? details.chainAgents?.length ?? 1;
-		const headerLabel = hasRunning
-			? `step ${currentStepIndex + 1}/${totalSteps} · parallel group: ${formatAgentRunningLabel(running)} · ${done}/${groupSize} done`
-			: `step ${currentStepIndex + 1}/${totalSteps} · parallel group: ${done}/${groupSize} done`;
+		const groupParts = [`${succeeded}/${groupSize} succeeded`];
+		if (hasRunning) groupParts.unshift(formatAgentRunningLabel(running));
+		if (failed > 0) groupParts.push(`${failed} failed`);
+		if (paused > 0) groupParts.push(`${paused} paused`);
+		const headerLabel = `step ${currentStepIndex + 1}/${totalSteps} · parallel group: ${groupParts.join(" · ")}`;
 		return { headerLabel, itemTitle, totalCount: groupSize, hasParallelInChain, activeParallelGroup, groupStartIndex: groupStart, groupEndIndex: groupEnd, showActiveGroupOnly: true };
 	}
 
@@ -688,17 +705,17 @@ function widgetStats(job: AsyncJobState, theme: Theme): string {
 	const stepsTotal = job.stepsTotal ?? (job.agents?.length ?? 1);
 	if (job.activeParallelGroup) {
 		const running = job.runningSteps ?? (job.status === "running" ? 1 : 0);
-		const done = job.completedSteps ?? (job.status === "complete" ? stepsTotal : 0);
+		const succeeded = job.completedSteps ?? (job.status === "complete" ? stepsTotal : 0);
 		if (job.mode === "parallel") {
 			if (job.status === "running" && running > 0) parts.push(formatAgentRunningLabel(running));
-			if (stepsTotal > 0) parts.push(`${done}/${stepsTotal} done`);
+			if (stepsTotal > 0) parts.push(`${succeeded}/${stepsTotal} succeeded`);
 		} else {
 			const activeGroup = job.currentStep !== undefined
 				? job.parallelGroups?.find((group) => job.currentStep! >= group.start && job.currentStep! < group.start + group.count)
 				: job.parallelGroups?.find((group) => group.start === 0);
 			const logicalStep = activeGroup?.stepIndex ?? job.currentStep ?? 0;
 			const total = job.chainStepCount ?? stepsTotal;
-			const groupParts = [`${done}/${stepsTotal} done`];
+			const groupParts = [`${succeeded}/${stepsTotal} succeeded`];
 			if (job.status === "running" && running > 0) groupParts.unshift(formatAgentRunningLabel(running));
 			parts.push(`step ${logicalStep + 1}/${total} · parallel group: ${groupParts.join(" · ")}`);
 		}

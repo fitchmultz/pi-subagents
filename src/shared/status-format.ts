@@ -38,10 +38,10 @@ export function formatAgentRunningLabel(count: number): string {
 
 export function formatParallelOutcome(steps: StepStatusLike[], total: number, options: { showRunning?: boolean } = {}): string {
 	const running = steps.filter((step) => step.status === "running").length;
-	const done = steps.filter((step) => isCompletedStepStatus(step.status)).length;
+	const succeeded = steps.filter((step) => isCompletedStepStatus(step.status)).length;
 	const failed = steps.filter((step) => step.status === "failed").length;
 	const paused = steps.filter((step) => step.status === "paused").length;
-	const parts = [`${done}/${total} done`];
+	const parts = [`${succeeded}/${total} succeeded`];
 	if (options.showRunning !== false && running > 0) parts.unshift(formatAgentRunningLabel(running));
 	if (failed > 0) parts.push(`${failed} failed`);
 	if (paused > 0) parts.push(`${paused} paused`);

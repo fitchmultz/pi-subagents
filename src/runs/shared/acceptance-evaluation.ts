@@ -45,7 +45,7 @@ function reportEvidencePresent(report: AcceptanceReport, kind: AcceptanceEvidenc
 		case "residual-risks": return isStringArray(report.residualRisks);
 		case "no-staged-files": return report.noStagedFiles === true;
 		case "diff-summary": return typeof report.diffSummary === "string" && report.diffSummary.trim().length > 0;
-		case "review-findings": return isStringArray(report.reviewFindings);
+		case "review-findings": return Array.isArray(report.reviewFindings);
 		case "manual-notes": return Boolean((report.manualNotes ?? report.notes)?.trim());
 	}
 }

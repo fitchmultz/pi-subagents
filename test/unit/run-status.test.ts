@@ -104,7 +104,7 @@ describe("async run status inspection", () => {
 
 			const text = textContent(result);
 			assert.match(text, /Mode: parallel/);
-			assert.match(text, /Progress: 2 agents running · 0\/3 done/);
+			assert.match(text, /Progress: 2 agents running · 0\/3 succeeded/);
 			assert.match(text, new RegExp(`Output: ${runOutputPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 			assert.match(text, /Agent 1\/3: reviewer running \(gpt-5\.5 · thinking high\)/);
 			assert.match(text, /Agent 2\/3: reviewer running \(claude-haiku-4-5 · thinking low\)/);
