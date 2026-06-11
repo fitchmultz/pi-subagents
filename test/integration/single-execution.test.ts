@@ -1285,6 +1285,66 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.deepEqual(result.attemptedModels, ["mock/primary"], "timeout should not retry fallback models");
 	});
 
+	it("foreground timeout preserves partial child output", async () => {
+		mockPi.onCall({
+			steps: [
+				{
+					jsonl: [{
+						type: "message_end",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: "Partial review notes before timeout" }],
+							model: "mock/test-model",
+							stopReason: "tool_use",
+							usage: { input: 100, output: 25, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
+						},
+					}],
+				},
+				{ delay: 10_000 },
+			],
+		});
+		const agents = [makeAgent("slow", { model: "mock/primary" })];
+
+		const result = await runSync(tempDir, agents, "slow", "Slow task", {
+			runId: "timeout-partial-run",
+			timeoutMs: 600,
+			timeoutAt: Date.now() + 600,
+		});
+
+		assert.equal(result.exitCode, 124);
+		assert.equal(result.timedOut, true);
+		assert.match(result.finalOutput ?? "", /Timed out after 600ms/);
+		assert.match(result.finalOutput ?? "", /Partial output before timeout:/);
+		assert.match(result.finalOutput ?? "", /Partial review notes before timeout/);
+	});
+
+	it("failed same-model recovery keeps the prior informative failure context", async () => {
+		mockPi.onCall({
+			jsonl: [{
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "I made progress before transport death" }],
+					model: "mock/test-model",
+					stopReason: "tool_use",
+					usage: { input: 100, output: 25, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
+				},
+			}],
+			exitCode: 143,
+		});
+		mockPi.onCall({ exitCode: 1 });
+		const agents = [makeAgent("terminated", { model: "mock/primary" })];
+
+		const result = await runSync(tempDir, agents, "terminated", "Terminated task", {
+			runId: "terminated-empty-retry-run",
+		});
+
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.modelAttempts?.length, 2);
+		assert.match(result.error ?? "", /without producing a final assistant response/);
+		assert.match(result.error ?? "", /Previous attempt before the empty retry failed with: terminated exited with code 143/);
+	});
+
 	it("enforces an agent maxExecutionTimeMs limit without retrying fallback models", async () => {
 		mockPi.onCall({ delay: 10000 });
 		const agents = [makeAgent("slow", { model: "mock/primary", fallbackModels: ["mock/fallback"], maxExecutionTimeMs: 150 })];

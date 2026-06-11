@@ -11,6 +11,7 @@ import {
 	defaultInheritProjectContext,
 	defaultInheritSkills,
 	defaultSystemPromptMode,
+	discoverAgents,
 	discoverAgentsAll,
 	buildRuntimeName,
 	frontmatterNameForConfig,
@@ -107,6 +108,13 @@ function findChains(name: string, ctx: ManagementContext, scope: AgentScope = "b
 	return discoverAgentsAll(ctx.cwd, discoveryOptions(ctx)).chains
 		.filter((c) => (scope === "both" || c.source === scope) && (c.name === raw || c.name === sanitized))
 		.sort((a, b) => a.source.localeCompare(b.source));
+}
+
+function findEffectiveAgents(name: string, ctx: ManagementContext, scope: AgentScope = "both"): AgentConfig[] {
+	const raw = name.trim();
+	const sanitized = sanitizeName(raw);
+	return discoverAgents(ctx.cwd, scope, discoveryOptions(ctx)).agents
+		.filter((a) => a.name === raw || a.name === sanitized);
 }
 
 function nameExistsInScope(ctx: ManagementContext, scope: ManagementScope, name: string, excludePath?: string): boolean {
@@ -460,8 +468,8 @@ function formatChainDetail(chain: ChainConfig): string {
 export function handleList(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
 	const scope = normalizeListScope(params.agentScope) ?? "both";
 	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
-	const scopedAgents = allAgents(d).filter((a) => scope === "both" || a.source === "builtin" || a.source === scope).sort((a, b) => a.name.localeCompare(b.name));
-	const agents = scopedAgents.filter((a) => !a.disabled);
+	const agents = discoverAgents(ctx.cwd, scope, discoveryOptions(ctx)).agents
+		.sort((a, b) => a.name.localeCompare(b.name));
 	const chains = d.chains.filter((c) => scope === "both" || c.source === scope).sort((a, b) => a.name.localeCompare(b.name));
 	const diagnostics = d.chainDiagnostics.filter((entry) => scope === "both" || entry.source === scope);
 	const lines = [
@@ -483,7 +491,8 @@ function handleGet(params: ManagementParams, ctx: ManagementContext): AgentToolR
 	const blocks: string[] = [];
 	let anyFound = false;
 	if (params.agent) {
-		const matches = findAgents(params.agent, ctx, "both");
+		const scope = normalizeListScope(params.agentScope) ?? "both";
+		const matches = findEffectiveAgents(params.agent, ctx, scope);
 		if (!matches.length) {
 			const msg = `Agent '${params.agent}' not found. Available: ${availableNames(ctx, "agent").join(", ") || "none"}.`;
 			if (!hasBoth) return result(msg, true);

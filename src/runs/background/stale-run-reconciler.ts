@@ -76,6 +76,7 @@ function readStatusFile(asyncDir: string): AsyncStatus | null {
 interface ResultChildOutcome {
 	agent?: string;
 	success?: boolean;
+	interrupted?: boolean;
 	error?: string;
 	sessionFile?: string;
 	model?: string;
@@ -103,18 +104,30 @@ function readResultRepairData(resultPath: string): ResultRepairData | undefined 
 
 function childState(overallState: ResultRepairData["state"], child: ResultChildOutcome | undefined): "complete" | "failed" | "paused" {
 	if (child?.success === true) return "complete";
+	if (child?.interrupted === true) return "paused";
 	if (child?.success === false) return "failed";
 	return overallState;
+}
+
+function withoutLiveActivity<T extends { currentTool?: string; currentToolArgs?: string; currentToolStartedAt?: number; currentPath?: string; activityState?: string }>(value: T): T {
+	return {
+		...value,
+		activityState: undefined,
+		currentTool: undefined,
+		currentToolArgs: undefined,
+		currentToolStartedAt: undefined,
+		currentPath: undefined,
+	};
 }
 
 function terminalStatusFromResult(status: AsyncStatus, resultPath: string, now: number): AsyncStatus | undefined {
 	const repair = readResultRepairData(resultPath);
 	if (!repair) return undefined;
 	const steps = (status.steps ?? []).map((step, index) => {
-		if (step.status !== "running" && step.status !== "pending") return step;
+		if (step.status !== "running" && step.status !== "pending") return withoutLiveActivity(step);
 		const child = repair.results?.[index];
 		const state = childState(repair.state, child);
-		return {
+		return withoutLiveActivity({
 			...step,
 			status: state === "complete" ? "complete" as const : state,
 			endedAt: step.endedAt ?? now,
@@ -125,16 +138,15 @@ function terminalStatusFromResult(status: AsyncStatus, resultPath: string, now: 
 			model: step.model ?? child?.model,
 			attemptedModels: step.attemptedModels ?? child?.attemptedModels,
 			modelAttempts: step.modelAttempts ?? child?.modelAttempts,
-		};
+		});
 	});
-	return {
+	return withoutLiveActivity({
 		...status,
 		state: repair.state,
-		activityState: undefined,
 		lastUpdate: now,
 		endedAt: status.endedAt ?? now,
 		steps,
-	};
+	});
 }
 
 function buildStartedStatus(asyncDir: string, startedRun: StartedRunMetadata, now: number): AsyncStatus {
@@ -164,30 +176,37 @@ function buildStartedStatus(asyncDir: string, startedRun: StartedRunMetadata, no
 	};
 }
 
+function readCompletedStepOutput(asyncDir: string, index: number): string {
+	try {
+		return fs.readFileSync(path.join(asyncDir, `output-${index}.log`), "utf-8").trim();
+	} catch (error) {
+		if (isNotFoundError(error)) return "";
+		throw error;
+	}
+}
+
 function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, reason?: string): { status: AsyncStatus; result: object; message: string } {
 	const runId = status.runId || path.basename(asyncDir);
 	const pid = typeof status.pid === "number" ? status.pid : "unknown";
 	const message = reason ?? `Async runner process ${pid} exited or disappeared before writing a result. Marked run failed by stale-run reconciliation.`;
 	const steps = status.steps?.length ? status.steps : [{ agent: "subagent", status: "running" as const }];
 	const repairedSteps = steps.map((step) => step.status === "running" || step.status === "pending"
-		? {
+		? withoutLiveActivity({
 			...step,
 			status: "failed" as const,
-			activityState: undefined,
 			endedAt: step.endedAt ?? now,
 			durationMs: step.startedAt !== undefined && step.durationMs === undefined ? Math.max(0, now - step.startedAt) : step.durationMs,
 			exitCode: step.exitCode ?? 1,
 			error: step.error ?? message,
-		}
-		: step);
-	const repairedStatus: AsyncStatus = {
+		})
+		: withoutLiveActivity(step));
+	const repairedStatus: AsyncStatus = withoutLiveActivity({
 		...status,
 		state: "failed",
-		activityState: undefined,
 		lastUpdate: now,
 		endedAt: now,
 		steps: repairedSteps,
-	};
+	});
 	const resultAgent = repairedSteps[status.currentStep ?? 0]?.agent ?? repairedSteps[0]?.agent ?? "subagent";
 	return {
 		status: repairedStatus,
@@ -199,16 +218,19 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 			success: false,
 			state: "failed",
 			summary: message,
-			results: repairedSteps.map((step) => ({
-				agent: step.agent,
-				output: step.status === "complete" || step.status === "completed" ? "" : message,
-				error: step.status === "complete" || step.status === "completed" ? undefined : step.error ?? message,
-				success: step.status === "complete" || step.status === "completed",
-				model: step.model,
-				attemptedModels: step.attemptedModels,
-				modelAttempts: step.modelAttempts,
-				sessionFile: step.sessionFile,
-			})),
+			results: repairedSteps.map((step, index) => {
+				const success = step.status === "complete" || step.status === "completed";
+				return {
+					agent: step.agent,
+					output: success ? readCompletedStepOutput(asyncDir, index) : message,
+					error: success ? undefined : step.error ?? message,
+					success,
+					model: step.model,
+					attemptedModels: step.attemptedModels,
+					modelAttempts: step.modelAttempts,
+					sessionFile: step.sessionFile,
+				};
+			}),
 			exitCode: 1,
 			timestamp: now,
 			durationMs: Math.max(0, now - status.startedAt),

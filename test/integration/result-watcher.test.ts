@@ -643,7 +643,7 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("marks grouped async results as paused when the result file is paused", async () => {
+	it("preserves child outcomes when a grouped async result is paused", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
 		try {
 			const emitted: Array<{ event: string; data: unknown }> = [];
@@ -682,7 +682,8 @@ describe("result watcher", () => {
 					summary: "Paused after interrupt. Waiting for explicit next action.",
 					results: [
 						{ agent: "a", output: "Result from a", success: true, intercomTarget: "subagent-a-run-paused-1" },
-						{ agent: "b", output: "Paused after interrupt", success: false, intercomTarget: "subagent-b-run-paused-2" },
+						{ agent: "b", output: "Paused after interrupt", success: false, interrupted: true, intercomTarget: "subagent-b-run-paused-2" },
+						{ agent: "c", output: "Failed before interrupt", success: false, error: "C failed", intercomTarget: "subagent-c-run-paused-3" },
 					],
 					sessionId: "session-1",
 					intercomTarget: "subagent-chat-main",
@@ -695,13 +696,19 @@ describe("result watcher", () => {
 
 			const intercomEvents = emitted.filter((entry) => entry.event === "subagent:result-intercom");
 			assert.equal(intercomEvents.length, 1);
-			const payload = intercomEvents[0]?.data as { mode?: string; status?: string; message?: string; children?: Array<{ status?: string }> };
+			const payload = intercomEvents[0]?.data as { mode?: string; status?: string; message?: string; children?: Array<{ status?: string; summary?: string }> };
+			const completion = emitted.find((entry) => entry.event === "subagent:async-complete")?.data as { state?: string; results?: Array<{ status?: string; summary?: string }> } | undefined;
 			assert.equal(payload.mode, "chain");
-			assert.equal(payload.status, "paused");
-			assert.equal(payload.children?.every((child) => child.status === "paused"), true);
-			assert.match(String(payload.message ?? ""), /Status: paused/);
-			assert.match(String(payload.message ?? ""), /1\. a — paused/);
+			assert.equal(payload.status, "failed");
+			assert.equal(completion?.state, "paused");
+			assert.deepEqual(payload.children?.map((child) => child.status), ["completed", "paused", "failed"]);
+			assert.deepEqual(completion?.results?.map((child) => child.status), ["completed", "paused", "failed"]);
+			assert.equal(payload.children?.[2]?.summary, "C failed\n\nOutput:\nFailed before interrupt");
+			assert.match(String(payload.message ?? ""), /Status: failed/);
+			assert.match(String(payload.message ?? ""), /Children: 1 completed, 1 failed, 1 paused/);
+			assert.match(String(payload.message ?? ""), /1\. a — completed/);
 			assert.match(String(payload.message ?? ""), /2\. b — paused/);
+			assert.match(String(payload.message ?? ""), /3\. c — failed/);
 		} finally {
 			fs.rmSync(resultsDir, { recursive: true, force: true });
 		}

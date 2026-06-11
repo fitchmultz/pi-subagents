@@ -81,6 +81,32 @@ describe("subagent async widget rendering", () => {
 		assert.doesNotMatch(text, /step 1\/3/);
 	});
 
+	it("shows failed async parallel step errors instead of stale live activity", () => {
+		const now = Date.now();
+		const lines = buildWidgetLines([
+			{
+				asyncId: "run-1",
+				asyncDir: "/tmp/1",
+				status: "failed",
+				mode: "parallel",
+				agents: ["reviewer", "reviewer"],
+				activeParallelGroup: true,
+				completedSteps: 0,
+				stepsTotal: 2,
+				updatedAt: now,
+				steps: [
+					{ index: 0, agent: "reviewer", status: "failed", error: "Resource limit exceeded for reviewer: maxTokens 64000 (observed 65410).", currentTool: "read", currentToolStartedAt: now - 46_000, currentPath: "docs/large.png" },
+					{ index: 1, agent: "reviewer", status: "running", currentTool: "read", currentToolStartedAt: now - 1_000 },
+				],
+			},
+		], theme, 180, true);
+
+		const text = lines.join("\n");
+		assert.match(text, /Agent 1\/2: reviewer · failed/);
+		assert.match(text, /Resource limit exceeded for reviewer/);
+		assert.doesNotMatch(text, /Agent 1\/2: reviewer · failed .*read 46s/);
+	});
+
 	it("collapses repeated async parallel agent names", () => {
 		const lines = buildWidgetLines([
 			{ asyncId: "run-1", asyncDir: "/tmp/1", status: "running", mode: "parallel", agents: ["reviewer", "reviewer", "reviewer"], activeParallelGroup: true, runningSteps: 3, completedSteps: 0, stepsTotal: 3 },

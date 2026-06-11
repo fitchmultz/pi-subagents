@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { buildBuiltinOverrideConfig, discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
-import { handleList } from "../../src/agents/agent-management.ts";
+import { handleList, handleManagementAction } from "../../src/agents/agent-management.ts";
 
 let tempHome = "";
 let tempProject = "";
@@ -22,6 +22,15 @@ function readText(result: { content: Array<{ type: string; text?: string }> }): 
 	assert.equal(first.type, "text");
 	assert.equal(typeof first.text, "string");
 	return first.text;
+}
+
+function writeAgent(filePath: string, name: string, description: string, model: string): void {
+	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+	fs.writeFileSync(
+		filePath,
+		`---\nname: ${name}\ndescription: ${description}\nmodel: ${model}\n---\n\nPrompt.\n`,
+		"utf-8",
+	);
 }
 
 describe("builtin agent disabling", () => {
@@ -182,6 +191,75 @@ describe("builtin agent disabling", () => {
 		for (const name of disabledBuiltinNames) {
 			assert.doesNotMatch(text, new RegExp(`^- ${name} \\(builtin`, "m"));
 		}
+	});
+
+	it("management list shows effective agents instead of duplicate shadowed builtins", () => {
+		writeAgent(
+			path.join(tempHome, ".pi", "agent", "agents", "reviewer.md"),
+			"reviewer",
+			"User reviewer override",
+			"openai/gpt-user",
+		);
+
+		const text = readText(handleList(
+			{},
+			{ cwd: tempProject, modelRegistry: { getAvailable: () => [] } },
+		));
+
+		assert.match(text, /^- reviewer \(user\): User reviewer override$/m);
+		assert.doesNotMatch(text, /^- reviewer \(builtin/m);
+		assert.equal((text.match(/^- reviewer /gm) ?? []).length, 1);
+	});
+
+	it("management get returns the effective override instead of every same-named agent", () => {
+		writeAgent(
+			path.join(tempHome, ".pi", "agent", "agents", "reviewer.md"),
+			"reviewer",
+			"User reviewer override",
+			"openai/gpt-user",
+		);
+		writeAgent(
+			path.join(tempProject, ".pi", "agents", "reviewer.md"),
+			"reviewer",
+			"Project reviewer override",
+			"openai/gpt-project",
+		);
+
+		const text = readText(handleManagementAction(
+			"get",
+			{ action: "get", agent: "reviewer" },
+			{ cwd: tempProject, modelRegistry: { getAvailable: () => [] } },
+		));
+
+		assert.match(text, /^Agent: reviewer \(project\)$/m);
+		assert.match(text, /Model: openai\/gpt-project/);
+		assert.doesNotMatch(text, /Agent: reviewer \(builtin\)/);
+		assert.doesNotMatch(text, /Model: openai\/gpt-user/);
+	});
+
+	it("management get can still inspect a specific shadowing scope", () => {
+		writeAgent(
+			path.join(tempHome, ".pi", "agent", "agents", "reviewer.md"),
+			"reviewer",
+			"User reviewer override",
+			"openai/gpt-user",
+		);
+		writeAgent(
+			path.join(tempProject, ".pi", "agents", "reviewer.md"),
+			"reviewer",
+			"Project reviewer override",
+			"openai/gpt-project",
+		);
+
+		const text = readText(handleManagementAction(
+			"get",
+			{ action: "get", agent: "reviewer", agentScope: "user" },
+			{ cwd: tempProject, modelRegistry: { getAvailable: () => [] } },
+		));
+
+		assert.match(text, /^Agent: reviewer \(user\)$/m);
+		assert.match(text, /Model: openai\/gpt-user/);
+		assert.doesNotMatch(text, /Agent: reviewer \(project\)/);
 	});
 
 	it("buildBuiltinOverrideConfig emits disabled false when re-enabling a builtin", () => {

@@ -147,9 +147,11 @@ Use `~/.pi/agent/settings.json` for a user override or `.pi/settings.json` for a
 
 ## Where running subagents show up
 
-Foreground runs stream progress in the conversation while they run. Use `timeoutMs` or its alias `maxRuntimeMs` when a foreground run must return within a wall-clock budget. When the timeout expires, running children are soft-interrupted, completed children stay in the result, and timed-out children return `timedOut: true` with a stable timeout message.
+Foreground runs stream progress in the conversation while they run. Use `timeoutMs` or its alias `maxRuntimeMs` when a foreground run must return within a wall-clock budget. When the timeout expires, running children are soft-interrupted, completed children stay in the result, and timed-out children return `timedOut: true` with a stable timeout message. Foreground reviewer runs automatically raise short timeout budgets to at least 15 minutes because a timed-out reviewer is incomplete review, not sign-off.
 
 Background runs keep working after control returns to you. Inspect active runs with `subagent({ action: "status" })`, or a specific run with `subagent({ action: "status", id: "..." })`.
+
+When a Codex-style Pi goal is active, prefer foreground runs for subagent work that gates the next goal step. Ending the parent turn after launching async work can let goal prompting continue before the child evidence is available. Use async under an active goal only when you have useful same-turn parent work to do before checking the result, or when you explicitly want background execution.
 
 They also show a compact async widget and send completion notifications. Parallel background runs show per-agent progress instead of fake chain steps. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. When a child is explicitly allowed to fan out with `tools: subagent`, its nested runs appear under that parent child in the main status tree instead of being hidden inside the child process.
 
@@ -328,7 +330,7 @@ You can combine them in either order:
 /run reviewer "review this diff" --bg --fork
 ```
 
-Background runs are detached. If the parent agent has other independent work, it should keep working. If it has nothing useful to do until the background result arrives, it should end the turn instead of running sleep or status-polling loops. Pi will deliver the completion when the run finishes.
+Background runs are detached. If the parent agent has other independent work, it should keep working. If it has nothing useful to do until the background result arrives and no active goal depends on same-turn child evidence, it should end the turn instead of running sleep or status-polling loops. Pi will deliver the completion when the run finishes. When an active goal is incomplete and the child result gates the next step, prefer foreground/blocking runs instead of ending the turn after a background launch.
 
 The `oracle` and `worker` builtins are designed for an explicit decision loop. A typical pattern is to ask `oracle` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
 
@@ -680,7 +682,7 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
   { agent: "reviewer" }
 ]}
 
-// Chain in the background, suitable for unblocking the main chat
+// Chain in the background, suitable for unblocking the main chat when no active goal needs same-turn child evidence
 { chain: [...], async: true }
 
 // Chain with fan-out/fan-in
@@ -737,7 +739,7 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
 
 ### Management actions
 
-Agent definitions are not loaded into context by default. Management actions let the LLM discover, inspect, create, update, and delete agents and chains at runtime.
+Agent definitions are not loaded into context by default. Management actions let the LLM discover, inspect, create, update, and delete agents and chains at runtime. `list` and `get` show the effective runtime agent by default, so user/project agents that shadow a builtin appear once with the same precedence used for execution (`project` > `user` > `builtin`). Pass `agentScope: "user"` or `agentScope: "project"` to inspect a specific shadowing scope.
 
 ```ts
 { action: "list" }
@@ -782,7 +784,7 @@ Agent definitions are not loaded into context by default. Management actions let
 { action: "delete", chainName: "review-pipeline" }
 ```
 
-`create` uses `config.scope`, not `agentScope`. `config.name` is the local frontmatter name; optional `config.package` registers the runtime name as `{package}.{name}` and is saved as separate `name` and `package` frontmatter. `update` and `delete` use the runtime name and `agentScope` only when the same runtime name exists in multiple scopes. To clear optional string fields, including `package`, set them to `false` or `""`.
+`create` uses `config.scope`, not `agentScope`. `config.name` is the local frontmatter name; optional `config.package` registers the runtime name as `{package}.{name}` and is saved as separate `name` and `package` frontmatter. `get` uses effective runtime precedence by default and can be narrowed with `agentScope`. `update` and `delete` use the runtime name and `agentScope` only when the same runtime name exists in multiple mutable scopes. To clear optional string fields, including `package`, set them to `false` or `""`.
 
 ### Parameter reference
 
@@ -1053,7 +1055,7 @@ When delegating implementation from a plan or spec, keep the task focused on wha
 ```ts
 subagent({
   agent: "worker",
-  async: true,
+  // Add async: true only when safe under the active-goal rule or explicitly requested.
   task: "Implement the plan at /Users/me/docs/mcp-alignment-plan.md. Use scout artifacts in ./handoff/ as context. Do not commit the scout artifacts.",
   acceptance: {
     criteria: [

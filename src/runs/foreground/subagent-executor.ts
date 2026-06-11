@@ -780,6 +780,8 @@ function validationErrorResult(mode: Details["mode"], text: string): AgentToolRe
 	return { content: [{ type: "text", text }], isError: true, details: { mode, results: [] } };
 }
 
+const MIN_REVIEWER_FOREGROUND_TIMEOUT_MS = 900_000;
+
 function resolveForegroundTimeoutMs(params: SubagentParamsLike): { timeoutMs?: number; error?: string } {
 	const rawTimeout = (params as { timeoutMs?: unknown }).timeoutMs;
 	const rawMaxRuntime = (params as { maxRuntimeMs?: unknown }).maxRuntimeMs;
@@ -793,6 +795,35 @@ function resolveForegroundTimeoutMs(params: SubagentParamsLike): { timeoutMs?: n
 	}
 	const timeoutMs = rawTimeout ?? rawMaxRuntime;
 	return timeoutMs === undefined ? {} : { timeoutMs };
+}
+
+function isReviewerLikeAgentName(agentName: string | undefined): boolean {
+	return typeof agentName === "string" && /(^|[._-])reviewer($|[._-])/i.test(agentName);
+}
+
+function reviewerAgentsInRequest(params: SubagentParamsLike): string[] {
+	const names = new Set<string>();
+	if ((params.chain?.length ?? 0) > 0) {
+		for (const step of params.chain ?? []) {
+			for (const agent of getStepAgents(step as ChainStep)) {
+				if (isReviewerLikeAgentName(agent)) names.add(agent);
+			}
+		}
+		return [...names];
+	}
+	if ((params.tasks?.length ?? 0) > 0) {
+		for (const task of params.tasks ?? []) {
+			if (isReviewerLikeAgentName(task.agent)) names.add(task.agent);
+		}
+		return [...names];
+	}
+	if (isReviewerLikeAgentName(params.agent)) names.add(params.agent!);
+	return [...names];
+}
+
+function normalizeReviewerForegroundTimeout(params: SubagentParamsLike, timeoutMs: number | undefined): number | undefined {
+	if (timeoutMs === undefined || timeoutMs >= MIN_REVIEWER_FOREGROUND_TIMEOUT_MS) return timeoutMs;
+	return reviewerAgentsInRequest(params).length > 0 ? MIN_REVIEWER_FOREGROUND_TIMEOUT_MS : timeoutMs;
 }
 
 function validateAcceptanceForExecution(params: SubagentParamsLike): AgentToolResult<Details> | null {
@@ -2213,8 +2244,11 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 	}
 
 	if (r.timedOut) {
+		const timeoutText = r.finalOutput && r.finalOutput !== r.error
+			? `Run timed out (${params.agent}).\n${r.finalOutput}`
+			: `Run timed out (${params.agent}): ${r.error ?? "timeout expired"}`;
 		return {
-			content: [{ type: "text", text: `Run timed out (${params.agent}): ${r.error ?? "timeout expired"}` }],
+			content: [{ type: "text", text: timeoutText }],
 			details,
 			isError: true,
 		};
@@ -2463,6 +2497,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		if (effectiveAsync && foregroundTimeout.timeoutMs !== undefined) {
 			return buildRequestedModeError(effectiveParams, "timeoutMs/maxRuntimeMs only applies to foreground subagent runs. Omit async:true or use action:'interrupt' for background runs.");
 		}
+		if (!effectiveAsync) foregroundTimeout.timeoutMs = normalizeReviewerForegroundTimeout(effectiveParams, foregroundTimeout.timeoutMs);
 		const controlConfig = resolveControlConfig(deps.config.control, effectiveParams.control);
 
 		const artifactConfig: ArtifactConfig = {

@@ -43,6 +43,7 @@ type ResultFileChild = {
 	sessionFile?: string;
 	artifactPaths?: { outputPath?: string };
 	intercomTarget?: string;
+	interrupted?: boolean;
 	children?: unknown;
 };
 
@@ -152,7 +153,8 @@ export function createResultWatcher(
 					agent: result.agent ?? data.agent ?? `step-${index + 1}`,
 					status: resolveSubagentResultStatus({
 						success: result.success,
-						state: data.state === "paused" || typeof result.success !== "boolean" ? data.state : undefined,
+						interrupted: result.interrupted,
+						state: result.interrupted || typeof result.success !== "boolean" ? data.state : undefined,
 					}),
 					summary,
 					index,

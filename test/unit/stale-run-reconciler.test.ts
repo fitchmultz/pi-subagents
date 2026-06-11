@@ -123,6 +123,99 @@ describe("async stale-run reconciliation", () => {
 		}
 	});
 
+	it("keeps interrupted paused children paused when repairing from an existing paused result", () => {
+		const root = tempRoot("pi-stale-paused-result-");
+		try {
+			const asyncDir = path.join(root, "run-paused");
+			const resultsDir = path.join(root, "results");
+			fs.mkdirSync(resultsDir, { recursive: true });
+			writeStatus(asyncDir, {
+				runId: "run-paused",
+				mode: "parallel",
+				state: "running",
+				pid: 12345,
+				startedAt: 1000,
+				lastUpdate: 1000,
+				currentTool: "read",
+				currentToolStartedAt: 1500,
+				currentPath: "large.pdf",
+				steps: [
+					{ agent: "scout", status: "running", startedAt: 1000, currentTool: "read", currentToolStartedAt: 1500, currentPath: "a.pdf" },
+					{ agent: "worker", status: "running", startedAt: 1100, currentTool: "read", currentToolStartedAt: 1500, currentPath: "b.pdf" },
+					{ agent: "reviewer", status: "running", startedAt: 1200, currentTool: "read", currentToolStartedAt: 1500, currentPath: "c.pdf" },
+				],
+			});
+			fs.writeFileSync(path.join(resultsDir, "run-paused.json"), JSON.stringify({
+				id: "run-paused",
+				success: false,
+				state: "paused",
+				exitCode: 0,
+				results: [
+					{ agent: "scout", success: true },
+					{ agent: "worker", success: false, interrupted: true },
+					{ agent: "reviewer", success: false, error: "Resource limit exceeded" },
+				],
+			}, null, 2), "utf-8");
+
+			const result = reconcileAsyncRun(asyncDir, {
+				resultsDir,
+				kill: () => { throw errno("ESRCH"); },
+				now: () => 2000,
+			});
+
+			assert.equal(result.repaired, true);
+			assert.equal(result.status?.state, "paused");
+			assert.equal(result.status?.steps?.[0]?.status, "complete");
+			assert.equal(result.status?.steps?.[1]?.status, "paused");
+			assert.equal(result.status?.steps?.[1]?.exitCode, 0);
+			assert.equal(result.status?.steps?.[2]?.status, "failed");
+			assert.equal(result.status?.steps?.[2]?.exitCode, 1);
+			assert.equal(result.status?.steps?.[2]?.error, "Resource limit exceeded");
+			assert.equal(result.status?.currentTool, undefined);
+			assert.equal(result.status?.currentPath, undefined);
+			assert.equal(result.status?.steps?.some((step) => step.currentTool || step.currentPath), false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves completed step output when writing a stale-run failure result", () => {
+		const root = tempRoot("pi-stale-partial-output-");
+		try {
+			const asyncDir = path.join(root, "run-partial");
+			const resultsDir = path.join(root, "results");
+			writeStatus(asyncDir, {
+				runId: "run-partial",
+				mode: "parallel",
+				state: "running",
+				pid: 12345,
+				startedAt: 1000,
+				lastUpdate: 1000,
+				steps: [
+					{ agent: "scout", status: "complete", startedAt: 1000, endedAt: 1200, durationMs: 200, exitCode: 0 },
+					{ agent: "worker", status: "running", startedAt: 1100 },
+				],
+			});
+			fs.writeFileSync(path.join(asyncDir, "output-0.log"), "completed scout output\n", "utf-8");
+
+			const result = reconcileAsyncRun(asyncDir, {
+				resultsDir,
+				kill: () => { throw errno("ESRCH"); },
+				now: () => 2000,
+			});
+
+			assert.equal(result.repaired, true);
+			assert.equal(result.status?.state, "failed");
+			const resultJson = JSON.parse(fs.readFileSync(path.join(resultsDir, "run-partial.json"), "utf-8"));
+			assert.equal(resultJson.results[0].success, true);
+			assert.equal(resultJson.results[0].output, "completed scout output");
+			assert.equal(resultJson.results[1].success, false);
+			assert.match(resultJson.results[1].output, /exited or disappeared/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("fails a stale run when a live pid has not updated beyond the stale threshold", () => {
 		const root = tempRoot("pi-stale-live-pid-");
 		try {

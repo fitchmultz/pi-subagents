@@ -7,6 +7,8 @@ Launch parallel reviewers for an adversarial review of the current work.
 
 Use fresh context, not forked context, unless I explicitly ask for forked context. Reviewers should inspect the repository, relevant instructions, and current diff directly from files and commands. Do not rely on the main conversation history.
 
+Prefer async reviewers when the chat is not under an active Pi goal or when you have concrete same-turn independent work to do before checking reviewer results. If an active Pi goal is incomplete and the review result is needed for the next goal step, prefer foreground reviewers with no short `timeoutMs`/`maxRuntimeMs`. A timed-out reviewer is incomplete review, never sign-off; rerun, resume, or split the review.
+
 Give each reviewer a distinct angle. Generate the angles dynamically from the user's intent, the plan, the implemented code, and the current diff. If I specify angles, use mine. Otherwise, choose the highest-value review angles for this specific work.
 
 These are examples, not fixed defaults:

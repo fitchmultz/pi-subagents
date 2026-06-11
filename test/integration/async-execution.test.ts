@@ -29,13 +29,14 @@ interface AsyncResultPayload {
 	sessionId?: string;
 	mode?: string;
 	summary?: string;
-	results: Array<{ output?: string; success?: boolean; error?: string; model?: string; attemptedModels?: string[]; modelAttempts?: Array<{ success?: boolean; error?: string }>; structuredOutput?: unknown; intercomTarget?: string; acceptance?: { status?: string; childReport?: unknown }; resourceLimitExceeded?: { kind?: string; limit?: number; observed?: number; message?: string } }>;
+	results: Array<{ output?: string; success?: boolean; error?: string; model?: string; attemptedModels?: string[]; modelAttempts?: Array<{ success?: boolean; error?: string }>; structuredOutput?: unknown; intercomTarget?: string; acceptance?: { status?: string; childReport?: unknown }; resourceLimitExceeded?: { kind?: string; limit?: number; observed?: number; message?: string }; interrupted?: boolean }>;
 	outputs?: Record<string, { text?: string; structured?: unknown }>;
 	workflowGraph?: { nodes?: Array<{ kind?: string; label?: string; phase?: string; status?: string; error?: string; outputName?: string; structured?: boolean; children?: Array<{ label?: string; outputName?: string; itemKey?: string; status?: string; error?: string }> }> };
 }
 
 interface AsyncStatusPayload {
 	sessionId?: string;
+	pid?: number;
 	activityState?: string;
 	currentTool?: string;
 	currentPath?: string;
@@ -59,6 +60,7 @@ interface AsyncStatusPayload {
 		acceptance?: { status?: string };
 		resourceLimitExceeded?: { kind?: string; limit?: number; observed?: number; message?: string };
 	}>;
+	workflowGraph?: { nodes?: Array<{ status?: string }> };
 }
 
 interface AsyncExecutionModule {
@@ -140,6 +142,28 @@ async function waitForAsyncResultFile(id: string, timeoutMs = 15_000): Promise<s
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 	return resultPath;
+}
+
+async function waitForAsyncStatus(id: string, predicate: (status: AsyncStatusPayload) => boolean, timeoutMs = 15_000): Promise<AsyncStatusPayload> {
+	const statusPath = path.join(ASYNC_DIR, id, "status.json");
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() <= deadline) {
+		if (fs.existsSync(statusPath)) {
+			const status = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as AsyncStatusPayload;
+			if (predicate(status)) return status;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	assert.fail(`Timed out waiting for async status predicate: ${statusPath}`);
+}
+
+async function waitForMockPiCalls(mockPi: MockPi, count: number, timeoutMs = 15_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() <= deadline) {
+		if (mockPi.callCount() >= count) return;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	assert.fail(`Timed out waiting for ${count} mock pi calls; observed ${mockPi.callCount()}`);
 }
 
 function readLastMockPiArgs(mockPi: MockPi): string[] {
@@ -302,6 +326,70 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(status.steps?.[0]?.resourceLimitExceeded?.kind, "maxTokens");
 	});
 
+	it("async parallel interrupt pauses every running child and does not start queued work", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ delay: 5_000, output: "first should be interrupted" });
+		mockPi.onCall({ delay: 5_000, output: "second should be interrupted" });
+		const id = `async-parallel-interrupt-${Date.now().toString(36)}`;
+
+		executeAsyncChain(id, {
+			chain: [{ parallel: [{ agent: "worker", task: "First", as: "firstOutput" }, { agent: "reviewer", task: "Second" }, { agent: "worker", task: "Queued" }], concurrency: 2 }],
+			resultMode: "parallel",
+			agents: [makeAgent("worker"), makeAgent("reviewer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-parallel-interrupt" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.filter((step) => step.status === "running").length === 2 && typeof status.pid === "number", 10_000);
+		await waitForMockPiCalls(mockPi, 2, 10_000);
+		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
+
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		const finalStatus = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+
+		assert.equal(result.state, "paused");
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.results.length, 3);
+		assert.equal(result.results.every((child) => child.interrupted === true), true);
+		assert.equal(finalStatus.state, "paused");
+		assert.equal(finalStatus.steps?.every((step) => step.status === "paused"), true);
+		assert.equal(mockPi.callCount(), 2);
+		assert.equal(result.outputs?.firstOutput, undefined);
+		const events = fs.readFileSync(path.join(ASYNC_DIR, id, "events.jsonl"), "utf-8").trim().split("\n").map((line) => JSON.parse(line) as { type?: string; interrupted?: boolean; success?: boolean; state?: string });
+		assert.equal(events.some((event) => event.type === "subagent.step.completed"), false);
+		assert.ok(events.some((event) => event.type === "subagent.step.paused" && event.interrupted === true));
+		assert.ok(events.some((event) => event.type === "subagent.parallel.completed" && event.success === false && event.state === "paused"));
+	});
+
+	it("async sequential interrupt does not publish named output", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ delay: 5_000, output: "first should be interrupted", structuredOutput: { value: "partial" } });
+		const id = `async-sequential-interrupt-${Date.now().toString(36)}`;
+		executeAsyncChain(id, {
+			chain: [
+				{ agent: "worker", task: "First", as: "firstOutput", outputSchema: { type: "object" } },
+				{ agent: "reviewer", task: "Use {outputs.firstOutput}" },
+			],
+			agents: [makeAgent("worker"), makeAgent("reviewer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-sequential-interrupt" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.[0]?.status === "running" && typeof status.pid === "number", 10_000);
+		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
+
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		const finalStatus = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		assert.equal(result.state, "paused");
+		assert.equal(result.outputs?.firstOutput, undefined);
+		assert.equal(finalStatus.state, "paused");
+		assert.equal(finalStatus.steps?.every((step) => step.status === "paused"), true);
+		assert.equal(finalStatus.steps?.[1]?.startedAt !== undefined, true);
+		assert.equal(mockPi.callCount(), 1);
+	});
+
 	it("top-level async parallel conversion preserves output, reads, and progress", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
 		mockPi.onCall({ output: "Async top-level report" });
 		const executor = createSubagentExecutor!({
@@ -397,6 +485,43 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(result.results[0]?.acceptance?.status, "checked");
 		assert.equal(result.results[0]?.acceptance?.finalization?.status, "completed");
 		assert.equal(mockPi.callCount(), 2);
+	});
+
+	it("async single pauses when interrupted during acceptance finalization", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		const report = [
+			"```acceptance-report",
+			JSON.stringify({
+				criteriaSatisfied: [{ id: "criterion-1", status: "unsatisfied", evidence: "not done yet" }],
+				residualRisks: ["needs another turn"],
+			}),
+			"```",
+		].join("\n");
+		mockPi.onCall({ output: report });
+		mockPi.onCall({ delay: 5_000, output: report });
+		const id = `async-acceptance-interrupt-${Date.now().toString(36)}`;
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Complete accepted work",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-acceptance-interrupt" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+			sessionFile: path.join(tempDir, "async-acceptance-interrupt-session.jsonl"),
+			acceptance: { criteria: ["Complete accepted work"], maxFinalizationTurns: 3 },
+		});
+		await waitForMockPiCalls(mockPi, 2, 10_000);
+		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && typeof status.pid === "number", 10_000);
+		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
+
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		const finalStatus = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		assert.equal(result.state, "paused");
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.results[0]?.interrupted, true);
+		assert.equal(finalStatus.state, "paused");
+		assert.equal(finalStatus.steps?.[0]?.status, "paused");
 	});
 
 	it("async single rejects explicit reviewed acceptance without a reviewer result", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
@@ -644,6 +769,73 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.workflowGraph?.nodes?.[1]?.kind, "dynamic-parallel-group");
 		assert.deepEqual(payload.workflowGraph?.nodes?.[1]?.children?.map((child) => child.itemKey), ["src/a.ts", "src/b.ts"]);
 		assert.equal(payload.workflowGraph?.nodes?.[2]?.flatIndex, 3);
+	});
+
+	it("async dynamic empty fanout completes and persists an empty collection", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [] } });
+		const id = `async-dynamic-empty-${Date.now().toString(36)}`;
+		const result = executeAsyncChain(id, {
+			chain: [
+				{ agent: "producer", task: "Produce no targets", as: "targets", outputSchema: { type: "object" } },
+				{
+					expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4, onEmpty: "skip" },
+					parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: { type: "object" } },
+					collect: { as: "reviews" },
+				},
+			],
+			agents: [makeAgent("producer"), makeAgent("reviewer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-dynamic-empty" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+
+		assert.ok(!result.isError);
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		assert.equal(payload.success, true);
+		assert.equal(payload.state, "complete");
+		assert.deepEqual(payload.outputs?.reviews?.structured, []);
+		assert.equal(status.state, "complete");
+		assert.deepEqual(status.steps?.map((step) => step.status), ["complete", "complete"]);
+		assert.equal(mockPi.callCount(), 1);
+	});
+
+	it("async dynamic fanout interrupt pauses without publishing collected outputs", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
+		mockPi.onCall({ delay: 5_000, output: "review-a", structuredOutput: { ok: "a" } });
+		mockPi.onCall({ delay: 5_000, output: "review-b", structuredOutput: { ok: "b" } });
+		const id = `async-dynamic-interrupt-${Date.now().toString(36)}`;
+		executeAsyncChain(id, {
+			chain: [
+				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
+				{
+					expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
+					parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: { type: "object" } },
+					collect: { as: "reviews" },
+					concurrency: 2,
+				},
+			],
+			agents: [makeAgent("producer"), makeAgent("reviewer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-dynamic-interrupt" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		await waitForMockPiCalls(mockPi, 3, 10_000);
+		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.filter((step) => step.status === "running").length === 2 && typeof status.pid === "number", 10_000);
+		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
+
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		const events = fs.readFileSync(path.join(ASYNC_DIR, id, "events.jsonl"), "utf-8").trim().split("\n").map((line) => JSON.parse(line) as { type?: string; success?: boolean; state?: string });
+
+		assert.equal(payload.state, "paused");
+		assert.equal(payload.outputs?.reviews, undefined);
+		assert.equal(status.workflowGraph?.nodes?.[1]?.status, "paused");
+		assert.ok(events.some((event) => event.type === "subagent.dynamic.completed" && event.success === false && event.state === "paused"));
 	});
 
 	it("async dynamic fanout recomputes later child intercom targets by final flat index", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {

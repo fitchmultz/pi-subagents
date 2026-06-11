@@ -130,6 +130,37 @@ function formatProcessExitFailure(input: { agent: string; exitCode: number; dura
 	return `${input.agent} exited with code ${input.exitCode} after ${duration} without producing a final assistant response.`;
 }
 
+function collectPartialOutput(result: Pick<SingleResult, "messages" | "finalOutput">, progress?: Pick<AgentProgress, "recentOutput">): string | undefined {
+	const fromMessages = getFinalOutput(result.messages);
+	const partial = fromMessages || progress?.recentOutput?.join("\n") || result.finalOutput || "";
+	const trimmed = partial.trim();
+	if (!trimmed) return undefined;
+	return trimmed.length > 4000 ? `${trimmed.slice(0, 4000)}\n…` : trimmed;
+}
+
+function formatTimeoutOutput(message: string, result: Pick<SingleResult, "messages" | "finalOutput">, progress?: Pick<AgentProgress, "recentOutput">): string {
+	const partial = collectPartialOutput(result, progress);
+	if (!partial || partial === message) return message;
+	return `${message}\n\nPartial output before timeout:\n${partial}`;
+}
+
+function usageTotal(usage: Usage | undefined): number {
+	return (usage?.input ?? 0) + (usage?.output ?? 0) + (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0);
+}
+
+function appendPreviousAttemptContext(result: SingleResult, attempts: ModelAttempt[]): void {
+	if (result.exitCode === 0 || !result.error || attempts.length < 2) return;
+	const latest = attempts.at(-1);
+	if (!latest || usageTotal(latest.usage) > 0) return;
+	const prior = attempts.slice(0, -1).reverse().find((attempt) => attempt.error);
+	if (!prior?.error) return;
+	const context = `Previous attempt before the empty retry failed with: ${prior.error}`;
+	if (result.error.includes(context)) return;
+	result.error = `${result.error}\n${context}`;
+	result.finalOutput = result.finalOutput ? `${result.finalOutput}\n${context}` : result.error;
+	if (result.progress?.error) result.progress.error = result.error;
+}
+
 function createTimedOutResult(agent: string, task: string, options: RunSyncOptions): SingleResult {
 	const message = formatForegroundTimeoutMessage(options.timeoutMs);
 	return {
@@ -819,7 +850,8 @@ async function runSingleAttempt(
 	if (result.timedOut) {
 		result.exitCode = FOREGROUND_TIMEOUT_EXIT_CODE;
 		result.error = result.error ?? formatForegroundTimeoutMessage(options.timeoutMs);
-		result.finalOutput = result.finalOutput || result.error;
+		result.finalOutput = formatTimeoutOutput(result.error, result, result.progress ?? progress);
+		artifactOutputByResult.set(result, result.finalOutput);
 		if (result.progress) {
 			result.progress.status = "failed";
 			result.progress.activityState = undefined;
@@ -1239,6 +1271,7 @@ export async function runSync(
 	result.usage = aggregateUsage;
 	result.attemptedModels = attemptedModels.length > 0 ? attemptedModels : undefined;
 	result.modelAttempts = modelAttempts.length > 0 ? modelAttempts : undefined;
+	appendPreviousAttemptContext(result, modelAttempts);
 	result.progressSummary = {
 		toolCount: totalToolCount,
 		tokens: aggregateUsage.input + aggregateUsage.output,

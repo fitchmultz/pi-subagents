@@ -124,6 +124,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			agents: [
 				{ name: "echo", description: "Echo test agent" },
 				{ name: "second", description: "Second test agent" },
+				{ name: "reviewer", description: "Review test agent" },
 			],
 			projectAgentsDir: null,
 		}), config);
@@ -292,6 +293,123 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.isError, undefined);
 		const args = readCallArgs();
 		assert.equal(args.at(-1) ?? "", "Task: ");
+	});
+
+	it("raises short foreground reviewer timeouts instead of launching with a brittle budget", async () => {
+		const { manager } = makeSessionManagerRecorder();
+		const executor = makeExecutor();
+		mockPi.reset();
+		mockPi.onCall({ delay: 250, output: "review complete" });
+
+		const startedAt = Date.now();
+		const result = await executor.execute(
+			"id",
+			{ agent: "reviewer", task: "Review this diff", timeoutMs: 180 },
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.match(result.content[0]?.text ?? "", /review complete/);
+		assert.equal(fs.readdirSync(mockPi.dir).some((name) => name.startsWith("call-")), true);
+		assert.ok(Date.now() - startedAt >= 200, "reviewer should not use the brittle 180ms budget");
+	});
+
+	it("allows short foreground timeouts for non-reviewer agents", async () => {
+		const { manager } = makeSessionManagerRecorder();
+		const executor = makeExecutor();
+
+		const result = await executor.execute(
+			"id",
+			{ agent: "echo", task: "Run with a small budget", timeoutMs: 180_000 },
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.equal(fs.readdirSync(mockPi.dir).some((name) => name.startsWith("call-")), true);
+	});
+
+	it("does not raise parallel timeouts because an ignored top-level agent is reviewer", async () => {
+		const { manager } = makeSessionManagerRecorder();
+		const executor = makeExecutor();
+		mockPi.reset();
+		mockPi.onCall({ delay: 250, output: "slow worker" });
+
+		const startedAt = Date.now();
+		const result = await executor.execute(
+			"id",
+			{ agent: "reviewer", tasks: [{ agent: "echo", task: "parallel task" }], timeoutMs: 180 },
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /Parallel run timed out/);
+		assert.ok(Date.now() - startedAt < 900, "worker-only parallel run should keep the requested short budget");
+	});
+
+	it("does not raise chain timeouts because an ignored top-level agent is reviewer", async () => {
+		const { manager } = makeSessionManagerRecorder();
+		const executor = makeExecutor();
+		mockPi.reset();
+		mockPi.onCall({ delay: 250, output: "slow chain worker" });
+
+		const startedAt = Date.now();
+		const result = await executor.execute(
+			"id",
+			{ agent: "reviewer", chain: [{ agent: "echo", task: "chain task" }], timeoutMs: 180 },
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /Chain timed out/);
+		assert.ok(Date.now() - startedAt < 900, "worker-only chain run should keep the requested short budget");
+	});
+
+	it("rejects async reviewer timeout budgets before reviewer foreground normalization", async () => {
+		const { manager } = makeSessionManagerRecorder();
+		const executor = makeExecutor();
+
+		const result = await executor.execute(
+			"id",
+			{ agent: "reviewer", task: "Review this diff", async: true, timeoutMs: 180_000 },
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /timeoutMs\/maxRuntimeMs only applies to foreground subagent runs/);
+		assert.equal(fs.readdirSync(mockPi.dir).some((name) => name.startsWith("call-")), false);
+	});
+
+	it("does not treat non-reviewer names containing reviewer as reviewer-like", async () => {
+		const { manager } = makeSessionManagerRecorder();
+		const executor = makeExecutorWithDiscoverAgents(() => ({
+			agents: [{ name: "previewer", description: "Preview agent" }],
+			projectAgentsDir: null,
+		}));
+		mockPi.reset();
+		mockPi.onCall({ delay: 250, output: "preview complete" });
+
+		const startedAt = Date.now();
+		const result = await executor.execute(
+			"id",
+			{ agent: "previewer", task: "Preview this", timeoutMs: 180 },
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /Timed out after 180ms/);
+		assert.ok(Date.now() - startedAt < 900, "previewer should keep the requested short budget");
 	});
 
 	it("does not treat top-level agent as single mode when tasks are present", async () => {

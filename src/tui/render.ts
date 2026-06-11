@@ -384,6 +384,7 @@ function widgetStepStatus(status: AsyncJobStep["status"] | WorkflowNodeStatus, t
 }
 
 function widgetStepActivity(step: NonNullable<AsyncJobState["steps"]>[number], snapshotNow?: number): string {
+	if ((step.status === "failed" || step.status === "timed-out") && step.error) return firstOutputLine(step.error);
 	const facts: string[] = [];
 	if (step.currentTool && step.currentToolStartedAt !== undefined && snapshotNow !== undefined) facts.push(`${step.currentTool} ${formatDuration(Math.max(0, snapshotNow - step.currentToolStartedAt))}`);
 	else if (step.currentTool) facts.push(step.currentTool);
@@ -750,6 +751,7 @@ function modelThinkingBadge(theme: Theme, model?: string, thinking?: string): st
 }
 
 function widgetStepActivityLine(step: NonNullable<AsyncJobState["steps"]>[number], width: number, expanded: boolean, snapshotNow?: number): string {
+	if ((step.status === "failed" || step.status === "timed-out") && step.error) return firstOutputLine(step.error);
 	const toolLine = formatCurrentToolLine(step, width, expanded, snapshotNow);
 	if (toolLine) return toolLine;
 	const activity = buildLiveStatusLine(step, snapshotNow);
