@@ -140,6 +140,7 @@ export function createResultWatcher(
 			}), nestedChildren);
 
 			const intercomTarget = data.intercomTarget?.trim();
+			let intercomResultDelivered = false;
 			if (intercomTarget) {
 				const mode = data.mode === "single" || data.mode === "parallel" || data.mode === "chain"
 					? data.mode
@@ -153,8 +154,8 @@ export function createResultWatcher(
 					asyncId: data.id,
 					asyncDir: data.asyncDir,
 				});
-				const delivered = await deliverSubagentResultIntercomEvent(pi.events, payload);
-				if (!delivered) {
+				intercomResultDelivered = await deliverSubagentResultIntercomEvent(pi.events, payload);
+				if (!intercomResultDelivered) {
 					console.error(`Subagent async grouped result intercom delivery was not acknowledged for '${resultPath}'.`);
 				}
 			}
@@ -163,6 +164,7 @@ export function createResultWatcher(
 			pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
 				...eventData,
 				runId,
+				intercomResultDelivered,
 				...(nestedChildren?.length ? { nestedChildren } : {}),
 				...(Array.isArray(data.results) ? {
 					results: hasResultChildren

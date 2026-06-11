@@ -20,6 +20,22 @@ function createPi() {
 }
 
 describe("registerSubagentNotify", () => {
+	it("skips fallback notifications when grouped intercom result delivery already succeeded", () => {
+		const { events, sent } = createPi();
+
+		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			id: "notify-intercom-delivered-1",
+			agent: "worker",
+			success: true,
+			summary: "Delivered over intercom",
+			exitCode: 0,
+			timestamp: 123,
+			intercomResultDelivered: true,
+		});
+
+		assert.deepEqual(sent, []);
+	});
+
 	it("uses a fallback summary when a background completion is empty", () => {
 		const { events, sent } = createPi();
 

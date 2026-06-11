@@ -340,7 +340,8 @@ describe("result watcher", () => {
 			assert.match(message, /Revive child: subagent\(\{ action: "resume", id: "async-1", index: 0, message: "\.\.\." \}\)/);
 			assert.ok(message.includes(`Session: ${firstSession}`));
 			assert.equal(message.includes(missingSession), false);
-			assert.equal(emitted.some((entry) => entry.event === "subagent:async-complete"), true);
+			const completion = emitted.find((entry) => entry.event === "subagent:async-complete")?.data as { intercomResultDelivered?: boolean } | undefined;
+			assert.equal(completion?.intercomResultDelivered, true);
 		} finally {
 			fs.rmSync(resultsDir, { recursive: true, force: true });
 		}
@@ -761,7 +762,8 @@ describe("result watcher", () => {
 			}
 
 			assert.equal(emitted.filter((entry) => entry.event === "subagent:result-intercom").length, 1);
-			assert.equal(emitted.some((entry) => entry.event === "subagent:async-complete"), true);
+			const completion = emitted.find((entry) => entry.event === "subagent:async-complete")?.data as { intercomResultDelivered?: boolean } | undefined;
+			assert.equal(completion?.intercomResultDelivered, false);
 			assert.equal(logged.some((entry) => /Subagent async grouped result intercom delivery was not acknowledged/.test(String(entry[0] ?? ""))), true);
 		} finally {
 			fs.rmSync(resultsDir, { recursive: true, force: true });
