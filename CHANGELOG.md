@@ -4,6 +4,7 @@
 
 ### Changed
 - Marked this personal fork as private, removed the legacy `npx pi-subagents` installer/bin path, and documented local file-path `pi install` as the canonical install/refresh workflow.
+- Added a local pi-fitch-kit agent override smoke check to verify source-managed custom agents are symlinked into `~/.pi/agent/agents` and included it in `npm run ci`.
 - Updated the local Pi development baseline to `@earendil-works/*` `0.79.0` while keeping Pi runtime packages as optional wildcard peers so 0.79.0 is a suggested floor, not a hard requirement.
 - Use Pi 0.78.1 `ctx.mode` when available to restrict terminal-only widget, raw input, and tool-expansion behavior to TUI mode while preserving a `ctx.hasUI` fallback for older compatible Pi installs.
 - Ignore the whole project-local `.pi/` tree so semantic caches and other agent state do not appear as publishable package artifacts.

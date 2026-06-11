@@ -39,7 +39,8 @@
     "typecheck": "tsc --noEmit",
     "smoke:package": "node scripts/package-smoke.mjs",
     "smoke:install": "node scripts/local-install-smoke.mjs",
-    "ci": "npm run typecheck && npm run smoke:package && npm run smoke:install && npm run test:all"
+    "ci": "npm run typecheck && npm run smoke:package && npm run smoke:install && npm run smoke:overrides && npm run test:all",
+    "smoke:overrides": "node scripts/verify-agent-overrides.mjs"
   },
   "pi": {
     "extensions": [

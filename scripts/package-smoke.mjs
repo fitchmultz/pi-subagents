@@ -64,6 +64,7 @@ for (const path of [
 	"agents/reviewer.md",
 	"skills/pi-subagents/SKILL.md",
 	"prompts/review-loop.md",
+	"scripts/verify-agent-overrides.mjs",
 ]) {
 	assertPackedFile(pack.files, path);
 }

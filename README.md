@@ -34,7 +34,25 @@ Run the local completion gate before treating changes as complete:
 npm run ci
 ```
 
-That command runs TypeScript no-emit checking, package shape smoke checks, isolated local path install smoke checks, and the full unit/integration suite. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
+That command runs TypeScript no-emit checking, package shape smoke checks, isolated local path install smoke checks, pi-fitch-kit agent override sync checks, and the full unit/integration suite. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
+
+## Agent override validation
+
+This fork expects the custom agents in `/Users/mitchfultz/Projects/AI/pi-fitch-kit/agents` to override the bundled agents by symlink in `~/.pi/agent/agents`, not `~/.agents/agents`. The local completion gate runs:
+
+```bash
+npm run smoke:overrides
+```
+
+Run it after changes that touch bundled agents, agent discovery, package install behavior, context policy, intercom bridge injection, or real Pi smoke coverage. If it fails, refresh the source-managed overrides without copying agent files into this repo:
+
+```bash
+pi install /Users/mitchfultz/Projects/AI/pi-fitch-kit --approve
+# or, when Pi is not running:
+bash /Users/mitchfultz/Projects/AI/pi-fitch-kit/scripts/sync-agents.sh
+```
+
+Then rerun `npm run smoke:overrides` or the full `npm run ci` gate.
 
 ## Try this first
 
