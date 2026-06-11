@@ -10,6 +10,7 @@
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { MockPi } from "../support/helpers.ts";
@@ -1063,6 +1064,30 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
 	}
 
+	function git(cwd: string, args: string[]): string {
+		const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf-8" });
+		if (result.status !== 0) {
+			const message = result.stderr.trim() || result.stdout.trim() || `git ${args.join(" ")} failed`;
+			throw new Error(message);
+		}
+		return result.stdout.trim();
+	}
+
+	function initGitRepo(cwd: string): void {
+		git(cwd, ["init"]);
+		git(cwd, ["config", "user.email", "tests@example.com"]);
+		git(cwd, ["config", "user.name", "Chain Tests"]);
+		fs.writeFileSync(path.join(cwd, "tracked.txt"), "initial\n", "utf-8");
+		git(cwd, ["add", "-A"]);
+		git(cwd, ["commit", "-m", "initial commit"]);
+	}
+
+	function bestEffortRemovePreservedWorktree(repoDir: string, worktreePath: string, branch: string): void {
+		try { spawnSync("git", ["-C", repoDir, "worktree", "remove", "--force", worktreePath], { encoding: "utf-8" }); } catch {}
+		try { spawnSync("git", ["-C", repoDir, "branch", "-D", branch], { encoding: "utf-8" }); } catch {}
+		try { fs.rmSync(worktreePath, { recursive: true, force: true }); } catch {}
+	}
+
 	it("runs parallel tasks within a chain step", async () => {
 		mockPi.onCall({ output: "Parallel task done" });
 		const agents = [makeAgent("reviewer-a"), makeAgent("reviewer-b")];
@@ -1320,6 +1345,97 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 		assert.ok(result.isError, "chain should reject conflicting task cwd under worktree");
 		assert.match(result.content[0]?.text ?? "", /worktree isolation uses the shared cwd/i);
 		assert.match(result.content[0]?.text ?? "", /task 2 \(b\) sets cwd/i);
+	});
+
+	it("preserves worktrees and reports diff setup failure on parallel step timeout", async () => {
+		initGitRepo(tempDir);
+		mockPi.onCall({ delay: 250, output: "slow worker" });
+		const agents = [makeAgent("a"), makeAgent("b")];
+		const runId = `chain-worktree-timeout-${Date.now().toString(36)}`;
+		const chainBase = createTempDir("pi-chain-worktree-artifacts-");
+		const chainRunDir = path.join(chainBase, runId);
+		fs.mkdirSync(chainRunDir, { recursive: true });
+		fs.writeFileSync(path.join(chainRunDir, "worktree-diffs"), "not a directory", "utf-8");
+		const preserved: Array<{ path: string; branch: string }> = [];
+
+		try {
+			const result = await executeChain(
+				makeChainParams(
+					[
+						{
+							parallel: [
+								{ agent: "a", task: "Task A" },
+								{ agent: "b", task: "Task B" },
+							],
+							worktree: true,
+						},
+					],
+					agents,
+					{ runId, chainDir: chainBase, timeoutMs: 120 },
+				),
+			);
+
+			const output = result.content[0]?.text ?? "";
+			assert.equal(result.isError, true);
+			assert.match(output, /Chain timed out at step 1/);
+			assert.match(output, /--- Task 1 \(a\): 0 files changed, \+0 -0 ---/);
+			assert.match(output, /Diff capture failed:/);
+			assert.match(output, /Preserved worktree:/);
+			const worktreePaths = [...output.matchAll(/Preserved worktree: (.+)/g)].map((match) => match[1]!);
+			const branches = [...output.matchAll(/Preserved branch: (.+)/g)].map((match) => match[1]!);
+			assert.equal(worktreePaths.length, branches.length);
+			for (let i = 0; i < worktreePaths.length; i++) preserved.push({ path: worktreePaths[i]!, branch: branches[i]! });
+			assert.equal(preserved.length, 2);
+			for (const entry of preserved) assert.equal(fs.existsSync(entry.path), true, `preserved worktree should exist: ${entry.path}`);
+		} finally {
+			for (const entry of preserved) bestEffortRemovePreservedWorktree(tempDir, entry.path, entry.branch);
+			removeTempDir(chainBase);
+		}
+	});
+
+	it("reports preserved worktrees on completed parallel chain steps", async () => {
+		initGitRepo(tempDir);
+		mockPi.onCall({ output: "done" });
+		const agents = [makeAgent("a"), makeAgent("b")];
+		const runId = `chain-worktree-success-${Date.now().toString(36)}`;
+		const chainBase = createTempDir("pi-chain-worktree-success-");
+		const chainRunDir = path.join(chainBase, runId);
+		fs.mkdirSync(chainRunDir, { recursive: true });
+		fs.writeFileSync(path.join(chainRunDir, "worktree-diffs"), "not a directory", "utf-8");
+		const preserved: Array<{ path: string; branch: string }> = [];
+
+		try {
+			const result = await executeChain(
+				makeChainParams(
+					[
+						{
+							parallel: [
+								{ agent: "a", task: "Task A" },
+								{ agent: "b", task: "Task B" },
+							],
+							worktree: true,
+						},
+					],
+					agents,
+					{ runId, chainDir: chainBase },
+				),
+			);
+
+			const output = result.content[0]?.text ?? "";
+			assert.equal(result.isError, undefined);
+			assert.match(output, /Chain completed/);
+			assert.match(output, /Diff capture failed:/);
+			assert.match(output, /Preserved worktree:/);
+			const worktreePaths = [...output.matchAll(/Preserved worktree: (.+)/g)].map((match) => match[1]!);
+			const branches = [...output.matchAll(/Preserved branch: (.+)/g)].map((match) => match[1]!);
+			assert.equal(worktreePaths.length, branches.length);
+			for (let i = 0; i < worktreePaths.length; i++) preserved.push({ path: worktreePaths[i]!, branch: branches[i]! });
+			assert.equal(preserved.length, 2);
+			for (const entry of preserved) assert.equal(fs.existsSync(entry.path), true, `preserved worktree should exist: ${entry.path}`);
+		} finally {
+			for (const entry of preserved) bestEffortRemovePreservedWorktree(tempDir, entry.path, entry.branch);
+			removeTempDir(chainBase);
+		}
 	});
 
 	it("sequential → parallel → sequential (mixed chain)", async () => {

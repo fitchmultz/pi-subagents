@@ -184,17 +184,18 @@ function ensureParallelProgressFile(
 	return true;
 }
 
-function appendParallelWorktreeSummary(
-	output: string,
+function formatParallelWorktreeSummary(
 	worktreeSetup: WorktreeSetup | undefined,
 	diffsDir: string,
 	agents: string[],
 ): string {
-	if (!worktreeSetup) return output;
+	if (!worktreeSetup) return "";
 	const diffs = diffWorktrees(worktreeSetup, agents, diffsDir);
-	const diffSummary = formatWorktreeDiffSummary(diffs);
-	if (!diffSummary) return output;
-	return `${output}\n\n${diffSummary}`;
+	return formatWorktreeDiffSummary(diffs);
+}
+
+function appendWorktreeSummary(output: string, worktreeSummary: string): string {
+	return worktreeSummary ? `${output}\n\n${worktreeSummary}` : output;
 }
 
 async function runParallelChainTasks(input: ParallelChainRunInput): Promise<SingleResult[]> {
@@ -450,6 +451,9 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 	const dynamicGroupStatuses: ChainExecutionDetailsInput["dynamicGroupStatuses"] = {};
 	const allProgress: AgentProgress[] = [];
 	const allArtifactPaths: ArtifactPaths[] = [];
+	const worktreeSummaries: string[] = [];
+	const appendCapturedWorktreeSummaries = (text: string): string =>
+		worktreeSummaries.length > 0 ? `${text}\n\n${worktreeSummaries.join("\n\n")}` : text;
 
 	const chainAgents: string[] = chainSteps.map((step) =>
 		isParallelStep(step)
@@ -687,11 +691,16 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					if (result.progress) allProgress.push(result.progress);
 					if (result.artifactPaths) allArtifactPaths.push(result.artifactPaths);
 				}
+				const worktreeSummary = formatParallelWorktreeSummary(
+					worktreeSetup,
+					path.join(chainDir, "worktree-diffs", `step-${stepIndex}`),
+					agentNames,
+				);
 				const timedOutIndexInStep = parallelResults.findIndex((result) => result.timedOut);
 				const timedOut = timedOutIndexInStep >= 0 ? parallelResults[timedOutIndexInStep] : undefined;
 				if (timedOut) {
 					return {
-						content: [{ type: "text", text: `Chain timed out at step ${stepIndex + 1} (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}` }],
+						content: [{ type: "text", text: appendWorktreeSummary(`Chain timed out at step ${stepIndex + 1} (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}`, worktreeSummary) }],
 						isError: true,
 						details: buildChainExecutionDetails(makeDetailsInput({
 							currentStepIndex: stepIndex,
@@ -703,7 +712,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				const interrupted = interruptedIndexInStep >= 0 ? parallelResults[interruptedIndexInStep] : undefined;
 				if (interrupted) {
 					return {
-						content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.` }],
+						content: [{ type: "text", text: appendWorktreeSummary(`Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.`, worktreeSummary) }],
 						details: buildChainExecutionDetails(makeDetailsInput({
 							currentStepIndex: stepIndex,
 							currentFlatIndex: globalTaskIndex - step.parallel.length + interruptedIndexInStep,
@@ -714,7 +723,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				const detached = detachedIndexInStep >= 0 ? parallelResults[detachedIndexInStep] : undefined;
 				if (detached) {
 					return {
-						content: [{ type: "text", text: `Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
+						content: [{ type: "text", text: appendWorktreeSummary(`Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`, worktreeSummary) }],
 						details: buildChainExecutionDetails(makeDetailsInput({
 							currentStepIndex: stepIndex,
 							currentFlatIndex: globalTaskIndex - step.parallel.length + detachedIndexInStep,
@@ -735,7 +744,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 						error: errorMsg,
 					});
 					return {
-						content: [{ type: "text", text: summary }],
+						content: [{ type: "text", text: appendWorktreeSummary(summary, worktreeSummary) }],
 						isError: true,
 						details: buildChainExecutionDetails(makeDetailsInput({
 							currentStepIndex: stepIndex,
@@ -743,6 +752,8 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 						})),
 					};
 				}
+
+				if (worktreeSummary) worktreeSummaries.push(worktreeSummary);
 
 				for (let taskIndex = 0; taskIndex < parallelResults.length; taskIndex++) {
 					const outputName = step.parallel[taskIndex]?.as;
@@ -764,13 +775,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 						outputTargetExists: outputTargetPath ? fs.existsSync(outputTargetPath) : undefined,
 					};
 				});
-				prev = aggregateParallelOutputs(taskResults);
-				prev = appendParallelWorktreeSummary(
-					prev,
-					worktreeSetup,
-					path.join(chainDir, "worktree-diffs", `step-${stepIndex}`),
-					agentNames,
-				);
+				prev = appendWorktreeSummary(aggregateParallelOutputs(taskResults), worktreeSummary);
 			} finally {
 				if (worktreeSetup) cleanupWorktrees(worktreeSetup);
 			}
@@ -937,7 +942,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					error: errorMsg,
 				});
 				return {
-					content: [{ type: "text", text: summary }],
+					content: [{ type: "text", text: appendCapturedWorktreeSummaries(summary) }],
 					isError: true,
 					details: buildChainExecutionDetails(makeDetailsInput({
 						currentStepIndex: stepIndex,
@@ -1134,20 +1139,20 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 
 			if (r.timedOut) {
 				return {
-					content: [{ type: "text", text: `Chain timed out at step ${stepIndex + 1} (${r.agent}): ${r.error ?? "timeout expired"}` }],
+					content: [{ type: "text", text: appendCapturedWorktreeSummaries(`Chain timed out at step ${stepIndex + 1} (${r.agent}): ${r.error ?? "timeout expired"}`) }],
 					isError: true,
 					details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - 1 })),
 				};
 			}
 			if (r.interrupted) {
 				return {
-					content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${r.agent}). Waiting for explicit next action.` }],
+					content: [{ type: "text", text: appendCapturedWorktreeSummaries(`Chain paused after interrupt at step ${stepIndex + 1} (${r.agent}). Waiting for explicit next action.`) }],
 					details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - 1 })),
 				};
 			}
 			if (r.detached) {
 				return {
-					content: [{ type: "text", text: `Chain detached for intercom coordination at step ${stepIndex + 1} (${r.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
+					content: [{ type: "text", text: appendCapturedWorktreeSummaries(`Chain detached for intercom coordination at step ${stepIndex + 1} (${r.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`) }],
 					details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - 1 })),
 				};
 			}
@@ -1158,7 +1163,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					error: r.error || "Chain failed",
 				});
 				return {
-					content: [{ type: "text", text: summary }],
+					content: [{ type: "text", text: appendCapturedWorktreeSummaries(summary) }],
 					details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - 1 })),
 					isError: true,
 				};
@@ -1187,7 +1192,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		}
 	}
 
-	const summary = buildChainSummary(chainSteps, results, chainDir, "completed");
+	const summary = appendCapturedWorktreeSummaries(buildChainSummary(chainSteps, results, chainDir, "completed"));
 
 	return {
 		content: [{ type: "text", text: summary }],

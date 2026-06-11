@@ -203,6 +203,66 @@ describe("worktree", () => {
 		}
 	});
 
+	it("diffWorktrees preserves worktrees and reports artifact directory failures", () => {
+		const repoDir = createRepo("pi-worktree-diff-artifact-failure-");
+		let setup: WorktreeSetup | undefined;
+		try {
+			setup = createWorktrees(repoDir, "diff-artifact-failure", 1);
+			fs.writeFileSync(path.join(setup.worktrees[0]!.path, "tracked.txt"), "modified\n", "utf-8");
+			const diffsDir = path.join(repoDir, "artifacts-file");
+			fs.writeFileSync(diffsDir, "not a directory\n", "utf-8");
+
+			const diffs = diffWorktrees(setup, ["agent-a"], diffsDir);
+			const summary = formatWorktreeDiffSummary(diffs);
+
+			assert.equal(setup.preserveOnCleanup, true);
+			assert.match(setup.preservationReason ?? "", /failed to create worktree diff artifact directory/);
+			assert.match(diffs[0]!.captureError ?? "", /failed to create worktree diff artifact directory/);
+			assert.match(summary, /Diff capture failed:/);
+			assert.match(summary, /Preserved worktree:/);
+
+			const worktreePath = setup.worktrees[0]!.path;
+			cleanupWorktrees(setup);
+			assert.equal(fs.existsSync(worktreePath), true, "cleanup should preserve worktrees after diff artifact failure");
+		} finally {
+			if (setup) {
+				setup.preserveOnCleanup = false;
+				cleanupWorktrees(setup);
+			}
+			cleanupRepo(repoDir);
+		}
+	});
+
+	it("diffWorktrees preserves worktrees and reports per-task diff capture failures", () => {
+		const repoDir = createRepo("pi-worktree-diff-capture-failure-");
+		let setup: WorktreeSetup | undefined;
+		try {
+			setup = createWorktrees(repoDir, "diff-capture-failure", 1);
+			fs.writeFileSync(path.join(setup.worktrees[0]!.path, "tracked.txt"), "modified\n", "utf-8");
+			const diffsDir = path.join(repoDir, "artifacts", "capture-failure");
+			fs.mkdirSync(path.join(diffsDir, "task-0-agent-a.patch"), { recursive: true });
+
+			const diffs = diffWorktrees(setup, ["agent-a"], diffsDir);
+			const summary = formatWorktreeDiffSummary(diffs);
+
+			assert.equal(setup.preserveOnCleanup, true);
+			assert.match(setup.preservationReason ?? "", /failed to capture worktree diff for task 1/);
+			assert.match(diffs[0]!.captureError ?? "", /failed to capture worktree diff for task 1/);
+			assert.match(summary, /Diff capture failed:/);
+			assert.match(summary, /Preserved branch: pi-parallel-diff-capture-failure-0/);
+
+			const worktreePath = setup.worktrees[0]!.path;
+			cleanupWorktrees(setup);
+			assert.equal(fs.existsSync(worktreePath), true, "cleanup should preserve worktrees after diff capture failure");
+		} finally {
+			if (setup) {
+				setup.preserveOnCleanup = false;
+				cleanupWorktrees(setup);
+			}
+			cleanupRepo(repoDir);
+		}
+	});
+
 	it("cleanupWorktrees removes worktrees and branches", () => {
 		const repoDir = createRepo("pi-worktree-cleanup-");
 		let setup: WorktreeSetup | undefined;

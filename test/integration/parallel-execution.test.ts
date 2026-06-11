@@ -10,6 +10,7 @@
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { MockPi } from "../support/helpers.ts";
@@ -112,13 +113,37 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		removeTempDir(tempDir);
 	});
 
-	function makeExecutor(agents = [makeAgent("echo")]) {
+	function git(cwd: string, args: string[]): string {
+		const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf-8" });
+		if (result.status !== 0) {
+			const message = result.stderr.trim() || result.stdout.trim() || `git ${args.join(" ")} failed`;
+			throw new Error(message);
+		}
+		return result.stdout.trim();
+	}
+
+	function initGitRepo(cwd: string): void {
+		git(cwd, ["init"]);
+		git(cwd, ["config", "user.email", "tests@example.com"]);
+		git(cwd, ["config", "user.name", "Parallel Tests"]);
+		fs.writeFileSync(path.join(cwd, "tracked.txt"), "initial\n", "utf-8");
+		git(cwd, ["add", "-A"]);
+		git(cwd, ["commit", "-m", "initial commit"]);
+	}
+
+	function bestEffortRemovePreservedWorktree(repoDir: string, worktreePath: string, branch: string): void {
+		try { spawnSync("git", ["-C", repoDir, "worktree", "remove", "--force", worktreePath], { encoding: "utf-8" }); } catch {}
+		try { spawnSync("git", ["-C", repoDir, "branch", "-D", branch], { encoding: "utf-8" }); } catch {}
+		try { fs.rmSync(worktreePath, { recursive: true, force: true }); } catch {}
+	}
+
+	function makeExecutor(agents = [makeAgent("echo")], artifactsDir = tempDir) {
 		return createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 			config: {},
 			asyncByDefault: false,
-			tempArtifactsDir: tempDir,
+			tempArtifactsDir: artifactsDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (value: string) => value,
 			discoverAgents: () => ({ agents }),
@@ -201,6 +226,54 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(result.details.results[0].timedOut, undefined);
 		assert.equal(result.details.results[1].exitCode, 124);
 		assert.equal(result.details.results[1].timedOut, true);
+	});
+
+	it("top-level foreground parallel timeout preserves worktrees when diff capture setup fails", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		initGitRepo(tempDir);
+		const sessionRoot = createTempDir();
+		const sessionFile = path.join(sessionRoot, "session.jsonl");
+		fs.writeFileSync(sessionFile, "", "utf-8");
+		const artifactsDir = path.join(sessionRoot, "subagent-artifacts");
+		fs.mkdirSync(artifactsDir, { recursive: true });
+		fs.writeFileSync(path.join(artifactsDir, "worktree-diffs"), "not a directory\n", "utf-8");
+		mockPi.onCall({ output: "Fast result" });
+		mockPi.onCall({ delay: 10000 });
+		const executor = makeExecutor([makeAgent("fast"), makeAgent("slow")], artifactsDir);
+		let preservedWorktree = "";
+		let preservedBranch = "";
+		try {
+			const ctx = makeMinimalCtx(tempDir);
+			ctx.sessionManager.getSessionFile = () => sessionFile;
+			const result = await executor.execute(
+				"parallel-timeout-worktree-diff-failure",
+				{
+					tasks: [
+						{ agent: "fast", task: "Finish quickly" },
+						{ agent: "slow", task: "Run too long" },
+					],
+					concurrency: 1,
+					timeoutMs: 1500,
+					worktree: true,
+				},
+				new AbortController().signal,
+				undefined,
+				ctx,
+			) as any;
+
+			const text = result.content[0]?.text ?? "";
+			assert.equal(result.isError, true);
+			assert.match(text, /Parallel run timed out/);
+			assert.match(text, /Diff capture failed:/);
+			assert.match(text, /Preserved worktree:/);
+			preservedWorktree = text.match(/Preserved worktree: (.+)/)?.[1]?.trim() ?? "";
+			preservedBranch = text.match(/Preserved branch: (.+)/)?.[1]?.trim() ?? "";
+			assert.ok(preservedWorktree, "expected preserved worktree path in result text");
+			assert.ok(preservedBranch, "expected preserved branch in result text");
+			assert.equal(fs.existsSync(preservedWorktree), true, "worktree should remain for recovery");
+		} finally {
+			if (preservedWorktree && preservedBranch) bestEffortRemovePreservedWorktree(tempDir, preservedWorktree, preservedBranch);
+			removeTempDir(sessionRoot);
+		}
 	});
 
 	it("top-level parallel output paths are consumed and removed after capture", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {

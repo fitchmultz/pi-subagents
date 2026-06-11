@@ -1390,9 +1390,11 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		})
 		: null;
 	if (intercomReceipt) {
+		const chainText = chainResult.content.map((part) => part.type === "text" ? part.text : "").join("\n");
+		const worktreeSummary = extractWorktreeSummary(chainText);
 		return {
 			...chainResult,
-			content: [{ type: "text", text: intercomReceipt.text }],
+			content: [{ type: "text", text: appendWorktreeSuffix(intercomReceipt.text, worktreeSummary) }],
 			details: intercomReceipt.details,
 		};
 	}
@@ -1508,6 +1510,16 @@ function buildParallelWorktreeSuffix(
 	const diffsDir = path.join(artifactsDir, "worktree-diffs");
 	const diffs = diffWorktrees(worktreeSetup, tasks.map((task) => task.agent), diffsDir);
 	return formatWorktreeDiffSummary(diffs);
+}
+
+function appendWorktreeSuffix(text: string, worktreeSuffix: string): string {
+	return worktreeSuffix ? `${text}\n\n${worktreeSuffix}` : text;
+}
+
+function extractWorktreeSummary(text: string): string {
+	const marker = "=== Worktree Changes ===";
+	const index = text.indexOf(marker);
+	return index >= 0 ? text.slice(index).trim() : "";
 }
 
 function findDuplicateParallelOutputPath(input: {
@@ -1907,16 +1919,17 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		});
 		rememberForegroundRun(deps.state, { runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
+		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks);
 		if (timedOut) {
 			return {
-				content: [{ type: "text", text: `Parallel run timed out (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}` }],
+				content: [{ type: "text", text: appendWorktreeSuffix(`Parallel run timed out (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}`, worktreeSuffix) }],
 				details,
 				isError: true,
 			};
 		}
 		if (interrupted) {
 			return {
-				content: [{ type: "text", text: `Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.` }],
+				content: [{ type: "text", text: appendWorktreeSuffix(`Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.`, worktreeSuffix) }],
 				details,
 			};
 		}
@@ -1924,7 +1937,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		const detached = detachedIndex >= 0 ? results[detachedIndex] : undefined;
 		if (detached) {
 			return {
-				content: [{ type: "text", text: `Parallel run detached for intercom coordination (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
+				content: [{ type: "text", text: appendWorktreeSuffix(`Parallel run detached for intercom coordination (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`, worktreeSuffix) }],
 				details,
 			};
 		}
@@ -1940,12 +1953,11 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		});
 		if (intercomReceipt) {
 			return {
-				content: [{ type: "text", text: intercomReceipt.text }],
+				content: [{ type: "text", text: appendWorktreeSuffix(intercomReceipt.text, worktreeSuffix) }],
 				details: intercomReceipt.details,
 			};
 		}
 
-		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks);
 		const ok = results.filter((result) => result.exitCode === 0).length;
 		const downgradeNote = backgroundRequestedWhileClarifying ? " (background requested, but clarify kept this run foreground)" : "";
 		const aggregatedOutput = aggregateParallelOutputs(

@@ -7,3 +7,6 @@ audit/
 
 context.md
 package-lock.json
+
+# CueLoop local/runtime artifacts (do not commit)
+.cueloop/

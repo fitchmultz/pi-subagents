@@ -1166,19 +1166,20 @@ function prepareParallelTaskRun(
 	};
 }
 
-function appendParallelWorktreeSummary(
-	previousOutput: string,
+function formatParallelWorktreeSummary(
 	worktreeSetup: WorktreeSetup | undefined,
 	asyncDir: string,
 	stepIndex: number,
 	group: Extract<RunnerStep, { parallel: SubagentStep[] }>,
 ): string {
-	if (!worktreeSetup) return previousOutput;
+	if (!worktreeSetup) return "";
 	const diffsDir = path.join(asyncDir, "worktree-diffs", `step-${stepIndex}`);
 	const diffs = diffWorktrees(worktreeSetup, group.parallel.map((task) => task.agent), diffsDir);
-	const diffSummary = formatWorktreeDiffSummary(diffs);
-	if (!diffSummary) return previousOutput;
-	return `${previousOutput}\n\n${diffSummary}`;
+	return formatWorktreeDiffSummary(diffs);
+}
+
+function appendWorktreeSummary(output: string, worktreeSummary: string): string {
+	return worktreeSummary ? `${output}\n\n${worktreeSummary}` : output;
 }
 
 function ensureParallelProgressFile(cwd: string, group: Extract<RunnerStep, { parallel: SubagentStep[] }>): void {
@@ -1193,6 +1194,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	let previousOutput = "";
 	const outputs: ChainOutputMap = {};
 	const results: StepResult[] = [];
+	const worktreeSummaries: string[] = [];
 	const overallStartTime = Date.now();
 	const shareEnabled = config.share === true;
 	const asyncDir = config.asyncDir;
@@ -2173,7 +2175,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					attemptedModels: r.attemptedModels,
 				})),
 				);
-				previousOutput = appendParallelWorktreeSummary(previousOutput, worktreeSetup, asyncDir, stepIndex, group);
+				const worktreeSummary = formatParallelWorktreeSummary(worktreeSetup, asyncDir, stepIndex, group);
+				previousOutput = appendWorktreeSummary(previousOutput, worktreeSummary);
+				if (worktreeSummary) worktreeSummaries.push(worktreeSummary);
 
 				const hasInterruptedParallelResult = parallelResults.some((r) => r.interrupted);
 				const hasFailedParallelResult = parallelResults.some((r) => !r.interrupted && r.exitCode !== 0 && r.exitCode !== -1);
@@ -2348,6 +2352,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	}
 
 	let summary = results.map((r) => `${r.agent}:\n${r.output}`).join("\n\n");
+	if (worktreeSummaries.length > 0) summary = appendWorktreeSummary(summary, worktreeSummaries.join("\n\n"));
 	let truncated = false;
 
 	if (maxOutput) {

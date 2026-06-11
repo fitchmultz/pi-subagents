@@ -7,6 +7,8 @@ export interface WorktreeSetup {
 	cwd: string;
 	worktrees: WorktreeInfo[];
 	baseCommit: string;
+	preserveOnCleanup?: boolean;
+	preservationReason?: string;
 }
 
 interface WorktreeInfo {
@@ -27,6 +29,8 @@ interface WorktreeDiff {
 	insertions: number;
 	deletions: number;
 	patchPath: string;
+	worktreePath?: string;
+	captureError?: string;
 }
 
 interface WorktreeTaskCwdConflict {
@@ -405,7 +409,7 @@ function removeSyntheticPathsBeforeDiff(worktree: WorktreeInfo): void {
 	}
 }
 
-function emptyDiff(index: number, agent: string, branch: string, patchPath: string): WorktreeDiff {
+function emptyDiff(index: number, agent: string, branch: string, patchPath: string, worktreePath?: string, captureError?: string): WorktreeDiff {
 	return {
 		index,
 		agent,
@@ -415,6 +419,8 @@ function emptyDiff(index: number, agent: string, branch: string, patchPath: stri
 		insertions: 0,
 		deletions: 0,
 		patchPath,
+		...(worktreePath ? { worktreePath } : {}),
+		...(captureError ? { captureError } : {}),
 	};
 }
 
@@ -452,7 +458,7 @@ function captureWorktreeDiff(
 	fs.writeFileSync(patchPath, patch, "utf-8");
 
 	if (!patch.trim()) {
-		return emptyDiff(worktree.index, agent, worktree.branch, patchPath);
+		return emptyDiff(worktree.index, agent, worktree.branch, patchPath, worktree.path);
 	}
 
 	const parsed = parseNumstat(numstat);
@@ -465,6 +471,7 @@ function captureWorktreeDiff(
 		insertions: parsed.insertions,
 		deletions: parsed.deletions,
 		patchPath,
+		worktreePath: worktree.path,
 	};
 }
 
@@ -486,7 +493,18 @@ function cleanupSingleWorktree(repoCwd: string, worktree: WorktreeInfo): void {
 }
 
 function hasWorktreeChanges(diff: WorktreeDiff): boolean {
-	return diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0 || diff.diffStat.trim().length > 0;
+	return Boolean(diff.captureError) || diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0 || diff.diffStat.trim().length > 0;
+}
+
+function getErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function markWorktreesForPreservation(setup: WorktreeSetup, reason: string): void {
+	setup.preserveOnCleanup = true;
+	setup.preservationReason = setup.preservationReason
+		? `${setup.preservationReason}; ${reason}`
+		: reason;
 }
 
 export function createWorktrees(cwd: string, runId: string, count: number, options?: CreateWorktreesOptions): WorktreeSetup {
@@ -525,9 +543,14 @@ export function createWorktrees(cwd: string, runId: string, count: number, optio
 export function diffWorktrees(setup: WorktreeSetup, agents: string[], diffsDir: string): WorktreeDiff[] {
 	try {
 		fs.mkdirSync(diffsDir, { recursive: true });
-	} catch {
-		// Returning no diffs is safer than failing the whole command on artifact-dir issues.
-		return [];
+	} catch (error) {
+		const message = `failed to create worktree diff artifact directory '${diffsDir}': ${getErrorMessage(error)}`;
+		markWorktreesForPreservation(setup, message);
+		return setup.worktrees.map((worktree, index) => {
+			const agent = agents[index] ?? `task-${index + 1}`;
+			const patchPath = path.join(diffsDir, `task-${index}-${safePatchAgentName(agent)}.patch`);
+			return emptyDiff(index, agent, worktree.branch, patchPath, worktree.path, message);
+		});
 	}
 
 	const diffs: WorktreeDiff[] = [];
@@ -537,10 +560,11 @@ export function diffWorktrees(setup: WorktreeSetup, agents: string[], diffsDir: 
 		const patchPath = path.join(diffsDir, `task-${index}-${safePatchAgentName(agent)}.patch`);
 		try {
 			diffs.push(captureWorktreeDiff(setup, worktree, agent, patchPath));
-		} catch {
-			// Preserve execution flow; failed diff capture maps to an empty per-task patch.
+		} catch (error) {
+			const message = `failed to capture worktree diff for task ${index + 1} (${agent}) at '${worktree.path}': ${getErrorMessage(error)}`;
+			markWorktreesForPreservation(setup, message);
 			writeEmptyPatch(patchPath);
-			diffs.push(emptyDiff(index, agent, worktree.branch, patchPath));
+			diffs.push(emptyDiff(index, agent, worktree.branch, patchPath, worktree.path, message));
 		}
 	}
 
@@ -548,6 +572,7 @@ export function diffWorktrees(setup: WorktreeSetup, agents: string[], diffsDir: 
 }
 
 export function cleanupWorktrees(setup: WorktreeSetup): void {
+	if (setup.preserveOnCleanup) return;
 	for (let index = setup.worktrees.length - 1; index >= 0; index--) {
 		cleanupSingleWorktree(setup.cwd, setup.worktrees[index]!);
 	}
@@ -565,6 +590,11 @@ export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
 		lines.push(
 			`--- Task ${diff.index + 1} (${diff.agent}): ${diff.filesChanged} files changed, +${diff.insertions} -${diff.deletions} ---`,
 		);
+		if (diff.captureError) {
+			lines.push(`Diff capture failed: ${diff.captureError}`);
+			if (diff.worktreePath) lines.push(`Preserved worktree: ${diff.worktreePath}`);
+			lines.push(`Preserved branch: ${diff.branch}`);
+		}
 		if (diff.diffStat.trim().length > 0) {
 			lines.push(diff.diffStat);
 		}
@@ -572,6 +602,10 @@ export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
 	}
 
 	const patchesDir = path.dirname(changed[0]!.patchPath);
-	lines.push(`Full patches: ${patchesDir}`);
+	if (changed.some((diff) => !diff.captureError)) {
+		lines.push(`Full patches: ${patchesDir}`);
+	} else {
+		lines.push("Patch artifacts unavailable; preserved worktrees contain the recoverable changes.");
+	}
 	return lines.join("\n").trimEnd();
 }

@@ -119,6 +119,12 @@ function createRepo(prefix: string): string {
 	return repoDir;
 }
 
+function bestEffortRemovePreservedWorktree(repoDir: string, worktreePath: string, branch: string): void {
+	try { spawnSync("git", ["-C", repoDir, "worktree", "remove", "--force", worktreePath], { encoding: "utf-8" }); } catch {}
+	try { spawnSync("git", ["-C", repoDir, "branch", "-D", branch], { encoding: "utf-8" }); } catch {}
+	try { fs.rmSync(worktreePath, { recursive: true, force: true }); } catch {}
+}
+
 function writePackageSkill(packageRoot: string, skillName: string): void {
 	const skillDir = path.join(packageRoot, "skills", skillName);
 	fs.mkdirSync(skillDir, { recursive: true });
@@ -377,6 +383,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			maxSubagentDepth: 2,
 		});
 		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.[0]?.status === "running" && typeof status.pid === "number", 10_000);
+		await waitForMockPiCalls(mockPi, 1, 10_000);
 		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
@@ -987,6 +994,65 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			assert.ok(taskArg.includes(`[Read from: ${path.join(worktreeCwd, "input.md")}]`));
 			assert.ok(taskArg.includes(`Write your findings to: ${path.join(worktreeCwd, "report.md")}`));
 		} finally {
+			removeTempDir(repoDir);
+		}
+	});
+
+	it("top-level async worktree parallel reports preserved worktrees when diff capture fails", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		const repoDir = createRepo("pi-subagent-async-worktree-diff-fail-");
+		const preserved: Array<{ path: string; branch: string }> = [];
+		try {
+			mockPi.onCall({ delay: 300, output: "Worktree report" });
+			const executor = createSubagentExecutor!({
+				pi: { events: createEventBus(), getSessionName: () => undefined },
+				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+				config: {},
+				asyncByDefault: false,
+				tempArtifactsDir: repoDir,
+				getSubagentSessionRoot: () => repoDir,
+				expandTilde: (p: string) => p,
+				discoverAgents: () => ({ agents: [makeAgent("worker")] }),
+			});
+
+			const result = await executor.execute(
+				"async-parallel-worktree-diff-fail",
+				{
+					tasks: [{ agent: "worker", task: "Do worktree work" }],
+					async: true,
+					clarify: false,
+					worktree: true,
+				},
+				new AbortController().signal,
+				undefined,
+				makeMinimalCtx(repoDir),
+			);
+
+			const asyncId = result.details?.asyncId;
+			const asyncDir = result.details?.asyncDir;
+			assert.ok(asyncId, "expected asyncId");
+			assert.ok(asyncDir, "expected asyncDir");
+			fs.writeFileSync(path.join(asyncDir, "worktree-diffs"), "not a directory", "utf-8");
+
+			const resultPath = path.join(RESULTS_DIR, `${asyncId}.json`);
+			const deadline = Date.now() + 30_000;
+			while (!fs.existsSync(resultPath)) {
+				if (Date.now() > deadline) assert.fail(`Timed out waiting for async result file: ${resultPath}`);
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			}
+
+			const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+			const output = payload.summary ?? "";
+			assert.equal(payload.success, true);
+			assert.match(output, /Diff capture failed:/);
+			assert.match(output, /Preserved worktree:/);
+			const worktreePaths = [...output.matchAll(/Preserved worktree: (.+)/g)].map((match) => match[1]!);
+			const branches = [...output.matchAll(/Preserved branch: (.+)/g)].map((match) => match[1]!);
+			assert.equal(worktreePaths.length, branches.length);
+			for (let i = 0; i < worktreePaths.length; i++) preserved.push({ path: worktreePaths[i]!, branch: branches[i]! });
+			assert.equal(preserved.length, 1);
+			for (const entry of preserved) assert.equal(fs.existsSync(entry.path), true, `preserved worktree should exist: ${entry.path}`);
+		} finally {
+			for (const entry of preserved) bestEffortRemovePreservedWorktree(repoDir, entry.path, entry.branch);
 			removeTempDir(repoDir);
 		}
 	});

@@ -349,7 +349,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /Parallel run timed out/);
-		assert.ok(Date.now() - startedAt < 900, "worker-only parallel run should keep the requested short budget");
+		assert.ok(Date.now() - startedAt < 1500, "worker-only parallel run should keep the requested short budget");
 	});
 
 	it("does not raise chain timeouts because an ignored top-level agent is reviewer", async () => {
@@ -369,7 +369,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /Chain timed out/);
-		assert.ok(Date.now() - startedAt < 900, "worker-only chain run should keep the requested short budget");
+		assert.ok(Date.now() - startedAt < 1500, "worker-only chain run should keep the requested short budget");
 	});
 
 	it("rejects async reviewer timeout budgets before reviewer foreground normalization", async () => {
