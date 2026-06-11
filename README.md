@@ -54,6 +54,24 @@ bash /Users/mitchfultz/Projects/AI/pi-fitch-kit/scripts/sync-agents.sh
 
 Then rerun `npm run smoke:overrides` or the full `npm run ci` gate.
 
+## Real Pi smoke
+
+The default local gate stays mock-heavy and deterministic. When you need to verify the actual local file-path Pi package boundary, run the opt-in real smoke:
+
+```bash
+npm run smoke:real-pi
+```
+
+It installs this checkout and `/Users/mitchfultz/Projects/AI/pi-fitch-kit` into an isolated temporary Pi home, runs `pi list`, syncs pi-fitch-kit agent overrides, and verifies the overrides point to `~/.pi/agent/agents` inside that isolated home. It never publishes to npm and does not use GitHub Actions.
+
+Live model-backed subagent paths are intentionally opt-in because they can use provider credentials and tokens:
+
+```bash
+PI_REAL_SMOKE_MODEL=openai/gpt-4o-mini npm run smoke:real-pi -- --llm
+```
+
+That mode asks a real Pi session to exercise extension-loaded subagent list, foreground, and async paths. Use `--keep-temp` to preserve the isolated Pi home for debugging.
+
 ## Local test watchdog
 
 `npm test`, `npm run test:unit`, `npm run test:integration`, and `npm run test:all` run through `scripts/run-tests.mjs`, which applies a per-suite local watchdog so hung child-process or worktree tests fail with the command context instead of hanging forever. The default is 300000ms. Override it when debugging slow local runs:
