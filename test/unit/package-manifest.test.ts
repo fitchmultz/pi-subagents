@@ -24,11 +24,17 @@ function collectTsFiles(dir: string): string[] {
 	return files;
 }
 
-test("direct @earendil-works runtime imports are declared for CI installs", () => {
-	const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf-8"));
+function readPackageJson(): Record<string, unknown> {
+	return JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf-8")) as Record<string, unknown>;
+}
+
+test("direct @earendil-works runtime imports are declared for local installs", () => {
+	const packageJson = readPackageJson();
+	const dependencies = packageJson.dependencies && typeof packageJson.dependencies === "object" ? packageJson.dependencies : {};
+	const devDependencies = packageJson.devDependencies && typeof packageJson.devDependencies === "object" ? packageJson.devDependencies : {};
 	const declared = new Set([
-		...Object.keys(packageJson.dependencies ?? {}),
-		...Object.keys(packageJson.devDependencies ?? {}),
+		...Object.keys(dependencies),
+		...Object.keys(devDependencies),
 	]);
 	const imported = new Set<string>();
 
@@ -41,6 +47,15 @@ test("direct @earendil-works runtime imports are declared for CI installs", () =
 
 	const missing = [...imported].filter((specifier) => !declared.has(specifier)).sort();
 	assert.deepEqual(missing, []);
+});
+
+test("package is private and exposes no legacy npx installer", () => {
+	const packageJson = readPackageJson();
+	assert.equal(packageJson.private, true);
+	assert.equal("bin" in packageJson, false);
+	const files = Array.isArray(packageJson.files) ? packageJson.files : [];
+	assert.equal(files.includes("*.mjs"), false);
+	assert.equal(fs.existsSync(path.join(projectRoot, "install.mjs")), false);
 });
 
 test("old pi package scope is not used by source or tests", () => {

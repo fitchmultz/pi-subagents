@@ -7,11 +7,11 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nicobailon/pi-subagents.git"
+    "url": "git+https://github.com/fitchmultz/pi-subagents.git"
   },
-  "homepage": "https://github.com/nicobailon/pi-subagents#readme",
+  "homepage": "https://github.com/fitchmultz/pi-subagents#readme",
   "bugs": {
-    "url": "https://github.com/nicobailon/pi-subagents/issues"
+    "url": "https://github.com/fitchmultz/pi-subagents/issues"
   },
   "keywords": [
     "pi-package",
@@ -22,12 +22,8 @@
     "agents",
     "cli"
   ],
-  "bin": {
-    "pi-subagents": "install.mjs"
-  },
   "files": [
     "src/**/*.ts",
-    "*.mjs",
     "scripts/",
     "agents/",
     "skills/**/*",
@@ -96,5 +92,6 @@
     "brace-expansion": "^5.0.6",
     "ws": "^8.20.1"
   },
-  "packageManager": "npm@11.16.0"
+  "packageManager": "npm@11.16.0",
+  "private": true
 }

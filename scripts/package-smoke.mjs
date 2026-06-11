@@ -41,6 +41,10 @@ function assertPackedFile(files, path) {
 	if (!files.some((file) => file.path === path)) fail(`npm pack output is missing ${path}`);
 }
 
+function assertNotPackedFile(files, path) {
+	if (files.some((file) => file.path === path)) fail(`npm pack output should not include ${path}`);
+}
+
 const packOutput = run("npm", ["pack", "--dry-run", "--json"]);
 let packs;
 try {
@@ -54,7 +58,6 @@ if (!pack || !Array.isArray(pack.files)) fail("npm pack --json did not report a 
 for (const path of [
 	"package.json",
 	"README.md",
-	"install.mjs",
 	"src/extension/index.ts",
 	"src/extension/schemas.ts",
 	"src/shared/types.ts",
@@ -65,6 +68,10 @@ for (const path of [
 	assertPackedFile(pack.files, path);
 }
 
+assertNotPackedFile(pack.files, "install.mjs");
+
+if (packageJson.private !== true) fail("package.json must stay private for this file-path-only fork");
+if (packageJson.bin !== undefined) fail("package.json must not expose an npx/bin installer for this file-path-only fork");
 if (!packageJson.pi?.extensions?.includes("./src/extension/index.ts")) fail("package.json pi.extensions must include ./src/extension/index.ts");
 if (!packageJson.pi?.skills?.includes("./skills")) fail("package.json pi.skills must include ./skills");
 if (!packageJson.pi?.prompts?.includes("./prompts")) fail("package.json pi.prompts must include ./prompts");

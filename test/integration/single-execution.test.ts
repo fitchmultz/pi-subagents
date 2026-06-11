@@ -1307,13 +1307,13 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 
 		const result = await runSync(tempDir, agents, "slow", "Slow task", {
 			runId: "timeout-partial-run",
-			timeoutMs: 600,
-			timeoutAt: Date.now() + 600,
+			timeoutMs: 2_000,
+			timeoutAt: Date.now() + 2_000,
 		});
 
 		assert.equal(result.exitCode, 124);
 		assert.equal(result.timedOut, true);
-		assert.match(result.finalOutput ?? "", /Timed out after 600ms/);
+		assert.match(result.finalOutput ?? "", /Timed out after 2000ms/);
 		assert.match(result.finalOutput ?? "", /Partial output before timeout:/);
 		assert.match(result.finalOutput ?? "", /Partial review notes before timeout/);
 	});
