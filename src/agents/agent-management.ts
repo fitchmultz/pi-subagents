@@ -215,6 +215,9 @@ function parseStepList(raw: unknown): { steps?: ChainStepConfig[]; error?: strin
 			if (typeof s.model === "string") step.model = s.model;
 			else return { error: `config.steps[${i}].model must be a string.` };
 		}
+		if (hasKey(s, "skill")) {
+			return { error: `config.steps[${i}].skill is not supported for saved chains; use skills (array or false).` };
+		}
 		if (hasKey(s, "skills")) {
 			if (s.skills === false) step.skills = false;
 			else if (Array.isArray(s.skills)) step.skills = s.skills.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);

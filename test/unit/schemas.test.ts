@@ -353,6 +353,8 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.equal(configSchema.type, undefined);
 		assert.equal(anyOfBranches(configSchema).some((branch) => branch.type === "object" && branch.additionalProperties === true), true);
 		assert.equal(hasAnyOfType(configSchema, "string"), true);
+		assert.match(String(configSchema.description ?? ""), /skills\?/);
+		assert.doesNotMatch(String(configSchema.description ?? ""), /skill\?/);
 
 		const chainItem = SubagentParams?.properties?.chain?.items;
 		assert.ok(chainItem, "chain item schema should exist");

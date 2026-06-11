@@ -129,6 +129,49 @@ Inspect
 		assert.doesNotMatch(content, /^package:/m);
 	});
 
+	it("creates saved chains with plural step skills", () => {
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const result = handleCreate(
+			{
+				config: {
+					name: "Review Flow",
+					description: "Review flow",
+					scope: "project",
+					steps: [{ agent: "reviewer", task: "Review", skills: ["code-review", "security"] }],
+				},
+			},
+			ctx,
+		);
+
+		assert.equal(result.isError, false);
+		const filePath = path.join(tempDir, ".pi", "chains", "review-flow.chain.md");
+		const content = fs.readFileSync(filePath, "utf-8");
+		assert.match(content, /^skills: code-review, security$/m);
+		assert.doesNotMatch(content, /^skill:/m);
+
+		const got = handleManagementAction("get", { chainName: "review-flow" }, ctx);
+		assert.equal(got.isError, false);
+		assert.match(readText(got), /Skills: code-review, security/);
+	});
+
+	it("rejects singular step skill in saved-chain management config", () => {
+		const result = handleCreate(
+			{
+				config: {
+					name: "Review Flow",
+					description: "Review flow",
+					scope: "project",
+					steps: [{ agent: "reviewer", task: "Review", skill: "code-review" }],
+				},
+			},
+			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(readText(result), /config\.steps\[0\]\.skill is not supported/);
+		assert.match(readText(result), /use skills/);
+	});
+
 	it("creates agents with completion guard disabled", () => {
 		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
 		const result = handleCreate(
