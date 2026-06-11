@@ -958,7 +958,7 @@ Controls whether subagents receive runtime intercom coordination instructions an
 
 Fields:
 
-- `mode`: default `always`; use `fork-only` to inject only for forked runs, or `off` to disable the bridge.
+- `mode`: default `always`; use `fork-only` to inject only for forked children/steps in mixed fresh/fork runs, or `off` to disable the bridge.
 - `instructionFile`: optional Markdown template replacing the default bridge instructions. `{orchestratorTarget}` is interpolated. Relative paths resolve from `~/.pi/agent/extensions/subagent/`.
 
 Bridge activation also requires `pi-intercom` to be installed and enabled through `pi install npm:pi-intercom` or a legacy local extension checkout, a targetable current session name or fallback alias, and `pi-intercom` in any explicit agent `extensions` allowlist.

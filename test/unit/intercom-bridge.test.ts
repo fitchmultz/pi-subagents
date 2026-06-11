@@ -11,6 +11,7 @@ import {
 	resolveIntercomSessionTarget,
 	resolveSubagentIntercomTarget,
 	resolveIntercomBridgeMode,
+	shouldApplyIntercomBridge,
 	type IntercomBridgeState,
 } from "../../src/intercom/intercom-bridge.ts";
 
@@ -38,6 +39,33 @@ describe("resolveIntercomBridgeMode", () => {
 		assert.equal(resolveIntercomBridgeMode("off"), "off");
 		assert.equal(resolveIntercomBridgeMode("fork-only"), "fork-only");
 		assert.equal(resolveIntercomBridgeMode("always"), "always");
+	});
+});
+
+describe("shouldApplyIntercomBridge", () => {
+	it("applies fork-only bridges only to fork context", () => {
+		const bridge: IntercomBridgeState = {
+			active: true,
+			mode: "fork-only",
+			orchestratorTarget: "supervisor",
+			extensionDir: "/tmp/pi-intercom",
+			instruction: "Intercom orchestration channel:",
+		};
+		assert.equal(shouldApplyIntercomBridge(bridge, "fork"), true);
+		assert.equal(shouldApplyIntercomBridge(bridge, "fresh"), false);
+		assert.equal(shouldApplyIntercomBridge(bridge, undefined), false);
+	});
+
+	it("applies always bridges to fresh and fork contexts", () => {
+		const bridge: IntercomBridgeState = {
+			active: true,
+			mode: "always",
+			orchestratorTarget: "supervisor",
+			extensionDir: "/tmp/pi-intercom",
+			instruction: "Intercom orchestration channel:",
+		};
+		assert.equal(shouldApplyIntercomBridge(bridge, "fork"), true);
+		assert.equal(shouldApplyIntercomBridge(bridge, "fresh"), true);
 	});
 });
 

@@ -453,8 +453,7 @@ export function executeAsyncChain(
 	const childIntercomTargets = childIntercomTarget ? steps.flatMap((step) => {
 		if ("parallel" in step) {
 			if (!Array.isArray(step.parallel)) {
-				childTargetIndex++;
-				return [undefined];
+				return [childIntercomTarget(step.parallel.agent, childTargetIndex++)];
 			}
 			return step.parallel.map((task) => childIntercomTarget(task.agent, childTargetIndex++));
 		}

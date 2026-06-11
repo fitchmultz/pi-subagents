@@ -847,8 +847,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 
 	it("async dynamic fanout recomputes later child intercom targets by final flat index", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
-		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" } });
-		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" } });
+		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INTERCOM_SESSION_NAME"], structuredOutput: { ok: "a" } });
+		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INTERCOM_SESSION_NAME"], structuredOutput: { ok: "b" } });
 		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INTERCOM_SESSION_NAME"] });
 		const id = `async-dynamic-targets-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
@@ -874,9 +874,15 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.ok(!result.isError);
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		const expectedReviewerTargetA = `subagent-reviewer-${id}-2`;
+		const expectedReviewerTargetB = `subagent-reviewer-${id}-3`;
 		const expectedConsumerTarget = `subagent-consumer-${id}-4`;
 		assert.equal(payload.success, true);
+		assert.equal(payload.results[1]?.intercomTarget, expectedReviewerTargetA);
+		assert.equal(payload.results[2]?.intercomTarget, expectedReviewerTargetB);
 		assert.equal(payload.results[3]?.intercomTarget, expectedConsumerTarget);
+		assert.deepEqual(JSON.parse(payload.results[1]?.output ?? "{}"), { PI_SUBAGENT_INTERCOM_SESSION_NAME: expectedReviewerTargetA });
+		assert.deepEqual(JSON.parse(payload.results[2]?.output ?? "{}"), { PI_SUBAGENT_INTERCOM_SESSION_NAME: expectedReviewerTargetB });
 		assert.deepEqual(JSON.parse(payload.results[3]?.output ?? "{}"), { PI_SUBAGENT_INTERCOM_SESSION_NAME: expectedConsumerTarget });
 	});
 

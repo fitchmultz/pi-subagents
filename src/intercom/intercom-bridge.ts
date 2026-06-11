@@ -354,8 +354,12 @@ export function resolveIntercomBridge(input: ResolveIntercomBridgeInput): Interc
 	};
 }
 
+export function shouldApplyIntercomBridge(bridge: IntercomBridgeState, context: "fresh" | "fork" | undefined): boolean {
+	return bridge.active && !(bridge.mode === "fork-only" && context !== "fork");
+}
+
 export function applyIntercomBridgeToAgent(agent: AgentConfig, bridge: IntercomBridgeState): AgentConfig {
-	if (!bridge.active || !bridge.orchestratorTarget) return agent;
+	if (!shouldApplyIntercomBridge(bridge, "fork") || !bridge.orchestratorTarget) return agent;
 	if (!extensionSandboxAllowsIntercom(agent.extensions, bridge.extensionDir)) return agent;
 
 	const bridgeTools = ["intercom", "contact_supervisor"];

@@ -1716,9 +1716,19 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					recentTools: [],
 					recentOutput: [],
 				}));
+			const previousChildIntercomTargets = config.childIntercomTargets;
 			statusPayload.steps.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps);
-			if (config.childIntercomTargets) {
-				config.childIntercomTargets = statusPayload.steps.map((statusStep, index) => resolveSubagentIntercomTarget(id, statusStep.agent, index));
+			if (previousChildIntercomTargets) {
+				const dynamicGroupUsesIntercom = previousChildIntercomTargets[groupStartFlatIndex] !== undefined;
+				config.childIntercomTargets = statusPayload.steps.map((statusStep, index) => {
+					if (index >= groupStartFlatIndex && index < groupStartFlatIndex + dynamicStatusSteps.length) {
+						return dynamicGroupUsesIntercom ? resolveSubagentIntercomTarget(id, statusStep.agent, index) : undefined;
+					}
+					const previousIndex = index < groupStartFlatIndex ? index : index - (dynamicStatusSteps.length - 1);
+					return previousChildIntercomTargets[previousIndex] !== undefined
+						? resolveSubagentIntercomTarget(id, statusStep.agent, index)
+						: undefined;
+				});
 			}
 			mutatingFailureStates.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => createMutatingFailureState()));
 			pendingToolResults.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => undefined));

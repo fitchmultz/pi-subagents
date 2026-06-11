@@ -45,6 +45,7 @@ const createSubagentExecutor = executorMod?.createSubagentExecutor;
 const asyncAvailable = asyncExecutionMod?.isAsyncAvailable?.() === true;
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
+const originalPiCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 interface SessionStubOptions {
 	sessionFile?: string;
@@ -112,6 +113,8 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		else process.env.HOME = originalHome;
 		if (originalUserProfile === undefined) delete process.env.USERPROFILE;
 		else process.env.USERPROFILE = originalUserProfile;
+		if (originalPiCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalPiCodingAgentDir;
 		removeTempDir(tempDir);
 	});
 
@@ -187,6 +190,23 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 				return sessionFile;
 			})
 			.filter((sessionFile): sessionFile is string => Boolean(sessionFile));
+	}
+
+	function toolsArg(args: string[]): string {
+		const index = args.indexOf("--tools");
+		return index === -1 ? "" : args[index + 1] ?? "";
+	}
+
+	function callArgsForTaskContaining(text: string): string[] {
+		const args = readAllCallArgs().find((callArgs) => (callArgs.at(-1) ?? "").includes(text));
+		assert.ok(args, `expected recorded call containing task text: ${text}`);
+		return args;
+	}
+
+	function enablePiIntercomBridge(): void {
+		const agentDir = path.join(tempDir, "agent-dir");
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		fs.mkdirSync(path.join(agentDir, "extensions", "pi-intercom"), { recursive: true });
 	}
 
 	function forkedSessionFile(index: number): string {
@@ -561,6 +581,31 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.ok(sessionArgs.includes(forkedSessionFile(1)));
 	});
 
+	it("applies fork-only intercom bridge only to fork-default parallel children", async () => {
+		enablePiIntercomBridge();
+		const parentSessionFile = path.join(tempDir, "parent.jsonl");
+		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
+		const executor = makeExecutorWithDiscoverAgents(() => ({
+			agents: [
+				{ name: "scout", description: "Custom override scout", defaultContext: "fresh", tools: ["read"] },
+				{ name: "worker", description: "Custom override worker", defaultContext: "fork", tools: ["read"] },
+			],
+			projectAgentsDir: null,
+		}), { intercomBridge: { mode: "fork-only" } });
+
+		const result = await executor.execute(
+			"id",
+			{ tasks: [{ agent: "scout", task: "find files" }, { agent: "worker", task: "implement fix" }] },
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.equal(toolsArg(callArgsForTaskContaining("find files")), "read");
+		assert.equal(toolsArg(callArgsForTaskContaining("implement fix")), "read,intercom,contact_supervisor");
+	});
+
 	it("keeps explicit fresh context over top-level parallel agent defaultContext fork", async () => {
 		const parentSessionFile = path.join(tempDir, "parent.jsonl");
 		const { manager, openedPaths } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
@@ -610,6 +655,76 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(sessionArgs.length, 2);
 		assert.equal(countForkedSessionFiles(sessionArgs), 1);
 		assert.ok(sessionArgs.includes(forkedSessionFile(1)));
+	});
+
+	it("applies fork-only intercom bridge only to fork-default chain steps", async () => {
+		enablePiIntercomBridge();
+		const parentSessionFile = path.join(tempDir, "parent.jsonl");
+		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
+		const executor = makeExecutorWithDiscoverAgents(() => ({
+			agents: [
+				{ name: "scout", description: "Custom override scout", defaultContext: "fresh", tools: ["read"] },
+				{ name: "worker", description: "Custom override worker", defaultContext: "fork", tools: ["read"] },
+			],
+			projectAgentsDir: null,
+		}), { intercomBridge: { mode: "fork-only" } });
+
+		const result = await executor.execute(
+			"id",
+			{ chain: [{ agent: "scout", task: "scan" }, { agent: "worker", task: "write" }], clarify: false },
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.equal(toolsArg(callArgsForTaskContaining("scan")), "read");
+		assert.equal(toolsArg(callArgsForTaskContaining("write")), "read,intercom,contact_supervisor");
+	});
+
+	it("applies fork-only intercom bridge to fork-default dynamic fanout children by agent", async () => {
+		enablePiIntercomBridge();
+		mockPi.reset();
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
+		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" } });
+		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" } });
+		mockPi.onCall({ output: "consumer" });
+		const parentSessionFile = path.join(tempDir, "parent.jsonl");
+		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
+		const executor = makeExecutorWithDiscoverAgents(() => ({
+			agents: [
+				{ name: "producer", description: "Custom override producer", defaultContext: "fresh", tools: ["read"] },
+				{ name: "reviewer", description: "Custom override reviewer", defaultContext: "fork", tools: ["read"] },
+				{ name: "consumer", description: "Custom override consumer", defaultContext: "fresh", tools: ["read"] },
+			],
+			projectAgentsDir: null,
+		}), { intercomBridge: { mode: "fork-only" } });
+
+		const result = await executor.execute(
+			"id",
+			{
+				chain: [
+					{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
+					{
+						expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
+						parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: { type: "object" } },
+						collect: { as: "reviews" },
+						concurrency: 1,
+					},
+					{ agent: "consumer", task: "Use reviews" },
+				],
+				clarify: false,
+			},
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, undefined, result.content?.[0]?.text);
+		assert.equal(toolsArg(callArgsForTaskContaining("Produce targets")), "read");
+		assert.equal(toolsArg(callArgsForTaskContaining("Review src/a.ts")), "read,intercom,contact_supervisor");
+		assert.equal(toolsArg(callArgsForTaskContaining("Review src/b.ts")), "read,intercom,contact_supervisor");
+		assert.equal(toolsArg(callArgsForTaskContaining("Use reviews")), "read");
 	});
 
 	it("reports unknown top-level parallel agents before default-fork preconditions", async () => {
