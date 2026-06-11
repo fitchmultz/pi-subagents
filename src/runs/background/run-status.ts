@@ -12,6 +12,7 @@ import { resolveSubagentRunId } from "./run-id-resolver.ts";
 import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot, type NestedRunResolutionScope } from "../shared/nested-events.ts";
+import { readAsyncResultFile } from "./async-result-file.ts";
 
 interface RunStatusParams {
 	action?: "status";
@@ -251,9 +252,8 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 
 	if (resultPath) {
 		try {
-			const raw = fs.readFileSync(resultPath, "utf-8");
-			const data = JSON.parse(raw) as { id?: string; runId?: string; agent?: string; success?: boolean; summary?: string; exitCode?: number; state?: string; sessionFile?: string; results?: Array<{ agent?: string; sessionFile?: string }> };
-			const status = data.success ? "complete" : data.state === "paused" || data.exitCode === 0 ? "paused" : "failed";
+			const data = readAsyncResultFile(resultPath);
+			const status = data.terminalState;
 			const runId = data.runId ?? data.id ?? resolvedId;
 			const lines = [`Run: ${runId}`, `State: ${status}`, `Result: ${resultPath}`];
 			const children = Array.isArray(data.results) ? data.results : data.agent ? [{ agent: data.agent, sessionFile: data.sessionFile }] : [];

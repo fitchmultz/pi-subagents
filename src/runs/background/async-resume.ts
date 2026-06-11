@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus } from "../../shared/types.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { reconcileAsyncRun } from "./stale-run-reconciler.ts";
+import { readAsyncResultFile, type ParsedAsyncResultFile } from "./async-result-file.ts";
 
 export interface AsyncResumeParams {
 	id?: string;
@@ -30,33 +31,10 @@ export type AsyncResumeTarget = {
 	sessionFile?: string;
 };
 
-interface AsyncResultFile {
-	id?: string;
-	runId?: string;
-	agent?: string;
-	mode?: string;
-	state?: string;
-	success?: boolean;
-	cwd?: string;
-	sessionFile?: string;
-	results?: Array<{ agent?: string; success?: boolean; sessionFile?: string; intercomTarget?: string }>;
-}
-
 export interface AsyncRunLocation {
 	asyncDir: string | null;
 	resultPath: string | null;
 	resolvedId?: string;
-}
-
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function ensureObject(value: unknown, source: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		throw new Error(`Async result file '${source}' must contain a JSON object.`);
-	}
-	return value as Record<string, unknown>;
 }
 
 function validateOptionalString(value: Record<string, unknown>, field: string, source: string, displayField = field): string | undefined {
@@ -66,56 +44,33 @@ function validateOptionalString(value: Record<string, unknown>, field: string, s
 	return fieldValue;
 }
 
-function validateResultFile(value: unknown, resultPath: string): AsyncResultFile {
-	const data = ensureObject(value, resultPath);
-	const resultsValue = data.results;
-	let results: AsyncResultFile["results"];
-	if (resultsValue !== undefined) {
-		if (!Array.isArray(resultsValue)) throw new Error(`Invalid async result file '${resultPath}': results must be an array.`);
-		results = resultsValue.map((entry, index) => {
-			const child = ensureObject(entry, `${resultPath} results[${index}]`);
-			const agent = validateOptionalString(child, "agent", resultPath, `results[${index}].agent`);
-			const sessionFile = validateOptionalString(child, "sessionFile", resultPath, `results[${index}].sessionFile`);
-			const intercomTarget = validateOptionalString(child, "intercomTarget", resultPath, `results[${index}].intercomTarget`);
+function validateResultFile(data: ParsedAsyncResultFile, resultPath: string): ParsedAsyncResultFile {
+	if (data.results !== undefined) {
+		if (!Array.isArray(data.results)) throw new Error(`Invalid async result file '${resultPath}': results must be an array.`);
+		data.results.forEach((child, index) => {
+			const record = child as Record<string, unknown>;
+			validateOptionalString(record, "agent", resultPath, `results[${index}].agent`);
+			validateOptionalString(record, "sessionFile", resultPath, `results[${index}].sessionFile`);
+			validateOptionalString(record, "intercomTarget", resultPath, `results[${index}].intercomTarget`);
 			const success = child.success;
 			if (success !== undefined && typeof success !== "boolean") throw new Error(`Invalid async result file '${resultPath}': results[${index}].success must be a boolean.`);
-			return { agent, sessionFile, intercomTarget, ...(typeof success === "boolean" ? { success } : {}) };
 		});
 	}
+	const record = data as Record<string, unknown>;
 	const success = data.success;
 	if (success !== undefined && typeof success !== "boolean") throw new Error(`Invalid async result file '${resultPath}': success must be a boolean.`);
-	return {
-		id: validateOptionalString(data, "id", resultPath),
-		runId: validateOptionalString(data, "runId", resultPath),
-		agent: validateOptionalString(data, "agent", resultPath),
-		mode: validateOptionalString(data, "mode", resultPath),
-		state: validateOptionalString(data, "state", resultPath),
-		cwd: validateOptionalString(data, "cwd", resultPath),
-		sessionFile: validateOptionalString(data, "sessionFile", resultPath),
-		...(typeof success === "boolean" ? { success } : {}),
-		...(results ? { results } : {}),
-	};
+	validateOptionalString(record, "id", resultPath);
+	validateOptionalString(record, "runId", resultPath);
+	validateOptionalString(record, "agent", resultPath);
+	validateOptionalString(record, "mode", resultPath);
+	validateOptionalString(record, "state", resultPath);
+	validateOptionalString(record, "cwd", resultPath);
+	validateOptionalString(record, "sessionFile", resultPath);
+	return data;
 }
 
-function readResultFile(resultPath: string): AsyncResultFile {
-	let raw: string;
-	try {
-		raw = fs.readFileSync(resultPath, "utf-8");
-	} catch (error) {
-		throw new Error(`Failed to read async result file '${resultPath}': ${getErrorMessage(error)}`, {
-			cause: error instanceof Error ? error : undefined,
-		});
-	}
-	try {
-		return validateResultFile(JSON.parse(raw), resultPath);
-	} catch (error) {
-		if (error instanceof SyntaxError) {
-			throw new Error(`Failed to parse async result file '${resultPath}': ${getErrorMessage(error)}`, {
-				cause: error,
-			});
-		}
-		throw error;
-	}
+function readResultFile(resultPath: string): ParsedAsyncResultFile {
+	return validateResultFile(readAsyncResultFile(resultPath), resultPath);
 }
 
 function assertRunId(value: string | undefined, field: "id" | "runId"): string | undefined {
@@ -206,13 +161,6 @@ export function resolveAsyncRunLocation(params: AsyncResumeParams, asyncDirRoot:
 	return matching[0]!.location;
 }
 
-function resultState(result: AsyncResultFile): AsyncStatus["state"] {
-	if (result.state === "complete" || result.state === "failed" || result.state === "paused" || result.state === "running" || result.state === "queued") {
-		return result.state;
-	}
-	return result.success ? "complete" : "failed";
-}
-
 function validateStatusForResume(status: AsyncStatus | null, source: string): void {
 	if (!status) return;
 	if (typeof status.runId !== "string") throw new Error(`Invalid async status '${source}': runId must be a string.`);
@@ -251,7 +199,7 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 	validateStatusForResume(status, location.asyncDir ? path.join(location.asyncDir, "status.json") : "status.json");
 	const result = location.resultPath ? readResultFile(location.resultPath) : undefined;
 	const runId = status?.runId ?? result?.runId ?? result?.id ?? location.resolvedId ?? (location.asyncDir ? path.basename(location.asyncDir) : "unknown");
-	const state = status?.state ?? (result ? resultState(result) : undefined);
+	const state = status?.state ?? result?.terminalState;
 	if (!state) throw new Error(`Status file not found for async run '${runId}'.`);
 
 	const statusSteps = status?.steps ?? [];

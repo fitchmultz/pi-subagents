@@ -509,6 +509,59 @@ export interface AsyncParallelGroupStatus {
 	stepIndex: number;
 }
 
+export type AsyncResultTerminalState = "complete" | "failed" | "paused";
+
+export interface AsyncResultChild {
+	agent?: string;
+	output?: string;
+	error?: string;
+	success?: boolean;
+	skipped?: boolean;
+	sessionFile?: string;
+	intercomTarget?: string;
+	model?: string;
+	attemptedModels?: string[];
+	modelAttempts?: ModelAttempt[];
+	artifactPaths?: Partial<ArtifactPaths>;
+	truncated?: boolean;
+	structuredOutput?: unknown;
+	structuredOutputPath?: string;
+	structuredOutputSchemaPath?: string;
+	acceptance?: AcceptanceLedger;
+	resourceLimitExceeded?: ResourceLimitExceeded;
+	interrupted?: boolean;
+	children?: unknown;
+}
+
+export interface AsyncResultFile {
+	id?: string;
+	runId?: string;
+	agent?: string;
+	mode?: SubagentRunMode;
+	success?: boolean;
+	state?: string;
+	summary?: string;
+	results?: AsyncResultChild[];
+	outputs?: ChainOutputMap;
+	workflowGraph?: WorkflowGraphSnapshot;
+	exitCode?: number;
+	timestamp?: number;
+	durationMs?: number;
+	truncated?: boolean;
+	artifactsDir?: string;
+	cwd?: string;
+	asyncDir?: string;
+	sessionId?: string;
+	sessionFile?: string;
+	intercomTarget?: string;
+	shareUrl?: string;
+	gistUrl?: string;
+	shareError?: string;
+	taskIndex?: number;
+	totalTasks?: number;
+	nestedChildren?: unknown;
+}
+
 export type NestedRunState = "queued" | "running" | "complete" | "failed" | "paused";
 export type NestedOwnerState = "live" | "gone" | "unknown";
 

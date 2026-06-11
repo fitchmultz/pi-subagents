@@ -17,6 +17,7 @@ import {
 	resolveSubagentResultStatus,
 } from "../../intercom/result-intercom.ts";
 import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-events.ts";
+import { parseAsyncResultFileContent, readAsyncResultFile } from "./async-result-file.ts";
 
 const WATCHER_RESTART_DELAY_MS = 3000;
 const POLL_INTERVAL_MS = 3000;
@@ -33,35 +34,6 @@ type ResultWatcherTimers = {
 type ResultWatcherDeps = {
 	fs?: ResultWatcherFs;
 	timers?: ResultWatcherTimers;
-};
-
-type ResultFileChild = {
-	agent?: string;
-	output?: string;
-	error?: string;
-	success?: boolean;
-	sessionFile?: string;
-	artifactPaths?: { outputPath?: string };
-	intercomTarget?: string;
-	interrupted?: boolean;
-	children?: unknown;
-};
-
-type ResultFileData = {
-	id?: string;
-	runId?: string;
-	agent?: string;
-	success?: boolean;
-	state?: string;
-	mode?: string;
-	summary?: string;
-	results?: ResultFileChild[];
-	nestedChildren?: unknown;
-	sessionId?: string;
-	cwd?: string;
-	sessionFile?: string;
-	asyncDir?: string;
-	intercomTarget?: string;
 };
 
 function sanitizeNestedResultChildren(value: unknown, resultPath: string, label: string): NestedRunSummary[] | undefined {
@@ -84,7 +56,9 @@ function getErrorCode(error: unknown): string | undefined {
 }
 
 function isNotFoundError(error: unknown): boolean {
-	return getErrorCode(error) === "ENOENT";
+	if (getErrorCode(error) === "ENOENT") return true;
+	const cause = error instanceof Error ? error.cause : undefined;
+	return getErrorCode(cause) === "ENOENT";
 }
 
 function shouldFallBackToPolling(error: unknown): boolean {
@@ -110,7 +84,7 @@ export function createResultWatcher(
 		const resultPath = path.join(resultsDir, file);
 		if (!fsApi.existsSync(resultPath)) return;
 		try {
-			const data = JSON.parse(fsApi.readFileSync(resultPath, "utf-8")) as ResultFileData;
+			const data = fsApi === fs ? readAsyncResultFile(resultPath) : parseAsyncResultFileContent(fsApi.readFileSync(resultPath, "utf-8"), resultPath);
 			if (data.sessionId && data.sessionId !== state.currentSessionId) return;
 			if (!data.sessionId && data.cwd && (!state.baseCwd || data.cwd !== state.baseCwd)) return;
 
@@ -185,8 +159,9 @@ export function createResultWatcher(
 				}
 			}
 
+			const { terminalState: _terminalState, ...eventData } = data;
 			pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-				...data,
+				...eventData,
 				runId,
 				...(nestedChildren?.length ? { nestedChildren } : {}),
 				...(Array.isArray(data.results) ? {

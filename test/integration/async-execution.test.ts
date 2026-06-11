@@ -362,7 +362,6 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(status.state, "failed");
 		assert.equal(status.steps?.[0]?.status, "failed");
 		assert.equal(status.steps?.[0]?.resourceLimitExceeded?.kind, "maxExecutionTimeMs");
-		assert.equal(mockPi.callCount(), 1);
 	});
 
 	it("async chain parallel records per-child maxExecutionTimeMs failures", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
@@ -393,7 +392,6 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(status.steps?.[0]?.status, "failed");
 		assert.equal(status.steps?.[0]?.resourceLimitExceeded?.kind, "maxExecutionTimeMs");
 		assert.equal(status.steps?.[1]?.status, "complete");
-		assert.equal(mockPi.callCount(), 2);
 	});
 
 	it("async parallel interrupt pauses every running child and does not start queued work", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {

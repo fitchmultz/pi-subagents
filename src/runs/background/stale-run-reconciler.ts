@@ -1,9 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
-import { RESULTS_DIR, type AsyncParallelGroupStatus, type AsyncStatus, type NestedRunSummary, type SubagentRunMode } from "../../shared/types.ts";
+import { RESULTS_DIR, type AsyncParallelGroupStatus, type AsyncResultChild, type AsyncResultTerminalState, type AsyncStatus, type NestedRunSummary, type SubagentRunMode } from "../../shared/types.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { nestedSummaryFromAsyncStatus, projectNestedEvents, resolveNestedAsyncDir, writeNestedEvent, type NestedRoute } from "../shared/nested-events.ts";
+import { readAsyncResultFileIfExists } from "./async-result-file.ts";
 
 export type PidLiveness = "alive" | "dead" | "unknown";
 
@@ -73,36 +74,18 @@ function readStatusFile(asyncDir: string): AsyncStatus | null {
 	}
 }
 
-interface ResultChildOutcome {
-	agent?: string;
-	success?: boolean;
-	interrupted?: boolean;
-	error?: string;
-	sessionFile?: string;
-	model?: string;
-	attemptedModels?: string[];
-	modelAttempts?: NonNullable<AsyncStatus["steps"]>[number]["modelAttempts"];
-}
-
 interface ResultRepairData {
-	state: "complete" | "failed" | "paused";
-	results?: ResultChildOutcome[];
+	state: AsyncResultTerminalState;
+	results?: AsyncResultChild[];
 }
 
 function readResultRepairData(resultPath: string): ResultRepairData | undefined {
-	try {
-		const data = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as { success?: boolean; state?: string; exitCode?: number; results?: ResultChildOutcome[] };
-		const state = data.success ? "complete" : data.state === "paused" || data.exitCode === 0 ? "paused" : "failed";
-		return { state, ...(Array.isArray(data.results) ? { results: data.results } : {}) };
-	} catch (error) {
-		if (isNotFoundError(error)) return undefined;
-		throw new Error(`Failed to read async result file '${resultPath}': ${getErrorMessage(error)}`, {
-			cause: error instanceof Error ? error : undefined,
-		});
-	}
+	const data = readAsyncResultFileIfExists(resultPath);
+	if (!data) return undefined;
+	return { state: data.terminalState, ...(Array.isArray(data.results) ? { results: data.results } : {}) };
 }
 
-function childState(overallState: ResultRepairData["state"], child: ResultChildOutcome | undefined): "complete" | "failed" | "paused" {
+function childState(overallState: ResultRepairData["state"], child: AsyncResultChild | undefined): "complete" | "failed" | "paused" {
 	if (child?.success === true) return "complete";
 	if (child?.interrupted === true) return "paused";
 	if (child?.success === false) return "failed";

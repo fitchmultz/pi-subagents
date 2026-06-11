@@ -10,6 +10,7 @@ import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOut
 import {
 	type AcceptanceFinalizationTurn,
 	type AcceptanceLedger,
+	type AsyncResultFile,
 	type ActivityState,
 	type ArtifactConfig,
 	type ArtifactPaths,
@@ -2486,7 +2487,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	});
 
 	try {
-		writeAtomicJson(resultPath, {
+		const resultData: AsyncResultFile = {
 			id,
 			agent: agentName,
 			mode: resultMode,
@@ -2530,7 +2531,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			shareError,
 			...(taskIndex !== undefined && { taskIndex }),
 			...(totalTasks !== undefined && { totalTasks }),
-		});
+		};
+		writeAtomicJson(resultPath, resultData);
 	} catch (err) {
 		console.error(`Failed to write result file ${resultPath}:`, err);
 	}
