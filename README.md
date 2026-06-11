@@ -34,7 +34,7 @@ Run the local completion gate before treating changes as complete:
 npm run ci
 ```
 
-That command runs TypeScript no-emit checking, package shape smoke checks, isolated local path install smoke checks, and the full unit/integration suite.
+That command runs TypeScript no-emit checking, package shape smoke checks, isolated local path install smoke checks, and the full unit/integration suite. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
 ## Try this first
 
@@ -1050,7 +1050,7 @@ If you are coming from Codex Goals, `acceptance` is the subagent equivalent for 
   acceptance: {
     criteria: ["Patch the bug without widening scope"],
     evidence: ["changed-files", "tests-added", "commands-run", "residual-risks", "no-staged-files"],
-    verify: [{ id: "focused", command: "npm test", timeoutMs: 120000 }],
+    verify: [{ id: "unit", command: "npm run test:unit", timeoutMs: 120000 }],
     maxFinalizationTurns: 3
   }
 }
@@ -1084,7 +1084,7 @@ subagent({
       "Residual risks or skipped checks are reported"
     ],
     evidence: ["changed-files", "commands-run", "validation-output", "residual-risks"],
-    verify: [{ id: "focused", command: "npm test -- --runInBand" }],
+    verify: [{ id: "local-gate", command: "npm run ci" }],
     stopRules: [
       "Do not edit unrelated files",
       "Stop and report if the plan requires an unapproved product decision"
