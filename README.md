@@ -400,7 +400,7 @@ The `oracle` and `worker` builtins are designed for an explicit decision loop. A
 
 ## Clarify and launch UI
 
-Chains open a clarify UI by default so you can preview and edit the workflow before it runs. Single and parallel tool calls can opt into the same flow with `clarify: true`; slash commands launch directly.
+Tool calls launch directly by default. Single, parallel, and chain runs can opt into the clarify UI with `clarify: true` when you want to preview or edit the workflow before it runs; slash commands launch directly.
 
 Common clarify keys:
 
@@ -870,7 +870,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Sequential steps and parallel child tasks support `phase`, `label`, `as`, `outputSchema`, and `acceptance` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`; group-level acceptance is not supported because there is no child session to finalize. |
 | `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `planner`, `worker`, and `oracle` default to `fork`. |
 | `chainDir` | string | temp chain dir | Persistent directory for chain artifacts. |
-| `clarify` | boolean | true for chains | Show TUI preview/edit flow. |
+| `clarify` | boolean | false | Show TUI preview/edit flow only when explicitly set to `true`. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
 | `async` | boolean | false | Background execution. For chains, `clarify: true` explicitly keeps the run foreground for the clarify UI. |
 | `cwd` | string | runtime cwd | Override working directory. |

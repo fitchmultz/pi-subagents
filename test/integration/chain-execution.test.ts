@@ -221,6 +221,31 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.equal(result.details.results[1].agent, "reporter");
 	});
 
+	it("does not show the clarify preview by default even when UI is available", async () => {
+		mockPi.onCall({ output: "default no clarify ok" });
+		const agents = [makeAgent("scout")];
+		const ctx = {
+			...makeMinimalCtx(tempDir),
+			hasUI: true,
+			ui: {
+				custom: async () => {
+					throw new Error("clarify UI should not open unless clarify is true");
+				},
+			},
+		};
+
+		const result = await executeChain(
+			makeChainParams(
+				[{ agent: "scout", task: "Check default clarify" }],
+				agents,
+				{ ctx, clarify: undefined },
+			),
+		);
+
+		assert.ok(!result.isError, `chain should succeed without clarify UI: ${JSON.stringify(result.content)}`);
+		assert.equal(result.details.results[0]?.finalOutput, "default no clarify ok");
+	});
+
 	it("returns partial results when a foreground chain times out", async () => {
 		mockPi.onCall({ output: "First complete" });
 		mockPi.onCall({ delay: 10000 });
