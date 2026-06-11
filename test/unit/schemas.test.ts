@@ -32,6 +32,15 @@ interface SubagentParamsSchema {
 			minimum?: number;
 			description?: string;
 		};
+		maxOutput?: {
+			type?: string;
+			description?: string;
+			additionalProperties?: boolean;
+			properties?: {
+				bytes?: { minimum?: number; description?: string };
+				lines?: { minimum?: number; description?: string };
+			};
+		};
 		id?: {
 			type?: string;
 			description?: string;
@@ -164,6 +173,18 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.ok(maxRuntimeSchema, "maxRuntimeMs schema should exist");
 		assert.equal(maxRuntimeSchema.minimum, 1);
 		assert.match(String(maxRuntimeSchema.description ?? ""), /alias/i);
+	});
+
+	it("includes final output truncation limits", () => {
+		const maxOutputSchema = SubagentParams?.properties?.maxOutput;
+		assert.ok(maxOutputSchema, "maxOutput schema should exist");
+		assert.equal(maxOutputSchema.type, "object");
+		assert.equal(maxOutputSchema.additionalProperties, false);
+		assert.equal(maxOutputSchema.properties?.bytes?.minimum, 1);
+		assert.equal(maxOutputSchema.properties?.lines?.minimum, 1);
+		assert.match(String(maxOutputSchema.description ?? ""), /truncation/i);
+		assert.match(String(maxOutputSchema.properties?.bytes?.description ?? ""), /bytes/i);
+		assert.match(String(maxOutputSchema.properties?.lines?.description ?? ""), /lines/i);
 	});
 
 	it("uses an enum for management and control actions", () => {
@@ -404,6 +425,9 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ agent: "worker", task: "Fix", acceptance: {} },
 			{ config: { name: "reviewer", description: "Review things" } },
 			{ config: JSON.stringify({ name: "reviewer", description: "Review things" }) },
+			{ agent: "scout", task: "Summarize", maxOutput: { bytes: 8192 } },
+			{ agent: "scout", task: "Summarize", maxOutput: { lines: 1000 } },
+			{ agent: "scout", task: "Summarize", maxOutput: { bytes: 8192, lines: 1000 } },
 		];
 		const invalidValues = [
 			{ skill: 123 },
@@ -427,6 +451,9 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ agent: "worker", task: "Fix", acceptance: { criteria: ["Patch"], review: true } },
 			{ config: [] },
 			{ config: null },
+			{ agent: "scout", task: "Summarize", maxOutput: { bytes: 0 } },
+			{ agent: "scout", task: "Summarize", maxOutput: { lines: 0 } },
+			{ agent: "scout", task: "Summarize", maxOutput: { bytes: 8192, chars: 2000 } },
 		];
 
 		for (const value of validValues) {

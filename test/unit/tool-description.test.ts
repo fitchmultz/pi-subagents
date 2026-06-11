@@ -23,5 +23,7 @@ describe("registered subagent tool description", () => {
 		assert.match(description, /executable\/non-disabled/i);
 		assert.doesNotMatch(description, /disabled builtins/i);
 		assert.match(description, /output\?,reads\?,progress\?/i);
+		assert.match(description, /maxOutput/);
+		assert.match(description, /bytes\?: number, lines\?: number/);
 	});
 });

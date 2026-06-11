@@ -35,6 +35,14 @@ const ReadsOverride = Type.Unsafe({
 	description: "Files to read before running (array of filenames), or false to disable",
 });
 
+const MaxOutputOverride = Type.Object({
+	bytes: Type.Optional(Type.Integer({ minimum: 1, description: "Maximum final output bytes to return before truncation." })),
+	lines: Type.Optional(Type.Integer({ minimum: 1, description: "Maximum final output lines to return before truncation." })),
+}, {
+	additionalProperties: false,
+	description: "Final output truncation limits. Defaults are 200KB and 5000 lines.",
+});
+
 const JsonSchemaObject = Type.Unsafe({
 	type: "object",
 	additionalProperties: true,
@@ -256,6 +264,7 @@ export const SubagentParams = Type.Object({
 	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Top-level PARALLEL mode only: max concurrent tasks. Defaults to config.parallel.concurrency or 4." })),
 	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Foreground execution wall-clock timeout in milliseconds. When it expires, running children are soft-interrupted and timed-out results are returned. Foreground only; async/background runs ignore this field." })),
 	maxRuntimeMs: Type.Optional(Type.Integer({ minimum: 1, description: "Alias for timeoutMs. Use only one unless both values are identical." })),
+	maxOutput: Type.Optional(MaxOutputOverride),
 	worktree: Type.Optional(Type.Boolean({
 		description: "Create isolated git worktrees for each parallel task. " +
 			"Prevents filesystem conflicts. Requires clean git state. " +
