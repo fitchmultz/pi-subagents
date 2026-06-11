@@ -332,6 +332,70 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(status.steps?.[0]?.resourceLimitExceeded?.kind, "maxTokens");
 	});
 
+	it("async single enforces agent maxExecutionTimeMs without retrying fallback models", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ delay: 5_000, output: "too slow" });
+		const id = `async-time-limit-${Date.now().toString(36)}`;
+		const startedAt = Date.now();
+
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Run too long",
+			agentConfig: makeAgent("worker", { model: "mock/primary", fallbackModels: ["mock/fallback"], maxExecutionTimeMs: 150 }),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-time-limit" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const elapsedMs = Date.now() - startedAt;
+		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+
+		assert.ok(elapsedMs < 3_000, `resource limit should stop promptly before the 5s mock delay completes; elapsed ${elapsedMs}ms`);
+		assert.equal(result.success, false);
+		assert.equal(result.state, "failed");
+		assert.equal(result.results[0]?.success, false);
+		assert.equal(result.results[0]?.resourceLimitExceeded?.kind, "maxExecutionTimeMs");
+		assert.equal(result.results[0]?.resourceLimitExceeded?.limit, 150);
+		assert.match(result.results[0]?.error ?? "", /Resource limit exceeded.*maxExecutionTimeMs 150ms/);
+		assert.deepEqual(result.results[0]?.attemptedModels, ["mock/primary"], "resource limit should not retry fallback models");
+		assert.equal(status.state, "failed");
+		assert.equal(status.steps?.[0]?.status, "failed");
+		assert.equal(status.steps?.[0]?.resourceLimitExceeded?.kind, "maxExecutionTimeMs");
+		assert.equal(mockPi.callCount(), 1);
+	});
+
+	it("async chain parallel records per-child maxExecutionTimeMs failures", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ delay: 5_000, output: "too slow" });
+		mockPi.onCall({ output: "review ok" });
+		const id = `async-parallel-time-limit-${Date.now().toString(36)}`;
+
+		executeAsyncChain(id, {
+			chain: [{ parallel: [{ agent: "worker", task: "Slow child" }, { agent: "reviewer", task: "Fast child" }], concurrency: 1, failFast: false }],
+			resultMode: "parallel",
+			agents: [makeAgent("worker", { maxExecutionTimeMs: 150 }), makeAgent("reviewer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-parallel-time-limit" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+
+		assert.equal(result.success, false);
+		assert.equal(result.results.length, 2);
+		assert.equal(result.results[0]?.success, false);
+		assert.equal(result.results[0]?.resourceLimitExceeded?.kind, "maxExecutionTimeMs");
+		assert.equal(result.results[0]?.resourceLimitExceeded?.limit, 150);
+		assert.equal(result.results[1]?.success, true);
+		assert.equal(result.results[1]?.output, "review ok");
+		assert.equal(status.steps?.[0]?.status, "failed");
+		assert.equal(status.steps?.[0]?.resourceLimitExceeded?.kind, "maxExecutionTimeMs");
+		assert.equal(status.steps?.[1]?.status, "complete");
+		assert.equal(mockPi.callCount(), 2);
+	});
+
 	it("async parallel interrupt pauses every running child and does not start queued work", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({ delay: 5_000, output: "first should be interrupted" });
 		mockPi.onCall({ delay: 5_000, output: "second should be interrupted" });
