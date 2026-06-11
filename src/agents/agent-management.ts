@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	type AgentConfig,
@@ -20,7 +19,7 @@ import {
 import { serializeAgent } from "./agent-serializer.ts";
 import { serializeChain, serializeJsonChain } from "./chain-serializer.ts";
 import { discoverAvailableSkills } from "./skills.ts";
-import type { Details } from "../shared/types.ts";
+import type { Details, SubagentExecutionResult } from "../shared/types.ts";
 
 type ManagementAction = "list" | "get" | "create" | "update" | "delete";
 type ManagementScope = "user" | "project";
@@ -34,7 +33,7 @@ interface ManagementParams {
 	config?: unknown;
 }
 
-function result(text: string, isError = false): AgentToolResult<Details> {
+function result(text: string, isError = false): SubagentExecutionResult {
 	return { content: [{ type: "text", text }], isError, details: { mode: "management", results: [] } };
 }
 
@@ -131,7 +130,7 @@ function nameExistsInScope(ctx: ManagementContext, scope: ManagementScope, name:
 function unknownChainAgents(ctx: ManagementContext, steps: ChainStepConfig[]): string[] {
 	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
 	const known = new Set(allAgents(d).map((a) => a.name));
-	return [...new Set(steps.map((s) => s.agent).filter((a) => !known.has(a)))].sort((a, b) => a.localeCompare(b));
+	return [...new Set(steps.map((s) => s.agent).filter((agent): agent is string => typeof agent === "string" && !known.has(agent)))].sort((a, b) => a.localeCompare(b));
 }
 
 function chainStepWarnings(ctx: ManagementContext, steps: ChainStepConfig[]): string[] {
@@ -347,14 +346,20 @@ function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknown>): st
 	return undefined;
 }
 
+type MutableTarget<T extends { source: AgentSource }> = T & { source: ManagementScope };
+
+function isMutableTarget<T extends { source: AgentSource }>(target: T): target is MutableTarget<T> {
+	return target.source === "user" || target.source === "project";
+}
+
 function resolveTarget<T extends { source: AgentSource; filePath: string }>(
 	kind: "agent" | "chain",
 	name: string,
 	matches: T[],
 	ctx: ManagementContext,
 	scopeHint?: string,
-): T | AgentToolResult<Details> {
-	const mutable = matches.filter((m) => m.source !== "builtin");
+): MutableTarget<T> | SubagentExecutionResult {
+	const mutable = matches.filter(isMutableTarget);
 	if (mutable.length === 0) {
 		if (matches.length > 0) {
 			return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' is builtin and cannot be modified. Create a same-named ${kind} in user or project scope to override it.`, true);
@@ -468,7 +473,7 @@ function formatChainDetail(chain: ChainConfig): string {
 	return lines.join("\n");
 }
 
-export function handleList(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
+export function handleList(params: ManagementParams, ctx: ManagementContext): SubagentExecutionResult {
 	const scope = normalizeListScope(params.agentScope) ?? "both";
 	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
 	const agents = discoverAgents(ctx.cwd, scope, discoveryOptions(ctx)).agents
@@ -488,7 +493,7 @@ export function handleList(params: ManagementParams, ctx: ManagementContext): Ag
 	return result(lines.join("\n"));
 }
 
-function handleGet(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
+function handleGet(params: ManagementParams, ctx: ManagementContext): SubagentExecutionResult {
 	if (!params.agent && !params.chainName) return result("Specify 'agent' or 'chainName' for get.", true);
 	const hasBoth = Boolean(params.agent && params.chainName);
 	const blocks: string[] = [];
@@ -519,7 +524,7 @@ function handleGet(params: ManagementParams, ctx: ManagementContext): AgentToolR
 	return result(blocks.join("\n\n"), !anyFound);
 }
 
-export function handleCreate(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
+export function handleCreate(params: ManagementParams, ctx: ManagementContext): SubagentExecutionResult {
 	const parsedConfig = configObject(params.config);
 	if (parsedConfig.error) return result(parsedConfig.error, true);
 	const cfg = parsedConfig.value;
@@ -581,7 +586,7 @@ export function handleCreate(params: ManagementParams, ctx: ManagementContext): 
 	return result([`Created agent '${runtimeName}' at ${targetPath}.`, ...warnings].join("\n"));
 }
 
-export function handleUpdate(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
+export function handleUpdate(params: ManagementParams, ctx: ManagementContext): SubagentExecutionResult {
 	if (!params.agent && !params.chainName) return result("Specify 'agent' or 'chainName' for update.", true);
 	if (params.agent && params.chainName) return result("Specify either 'agent' or 'chainName', not both.", true);
 	const parsedConfig = configObject(params.config);
@@ -689,7 +694,7 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 	return result([headline, ...warnings].join("\n"));
 }
 
-function handleDelete(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
+function handleDelete(params: ManagementParams, ctx: ManagementContext): SubagentExecutionResult {
 	if (!params.agent && !params.chainName) return result("Specify 'agent' or 'chainName' for delete.", true);
 	if (params.agent && params.chainName) return result("Specify either 'agent' or 'chainName', not both.", true);
 	const scopeHint = asDisambiguationScope(params.agentScope);
@@ -710,7 +715,7 @@ function handleDelete(params: ManagementParams, ctx: ManagementContext): AgentTo
 	return result(`Deleted chain '${target.name}' at ${target.filePath}.`);
 }
 
-export function handleManagementAction(action: string, params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
+export function handleManagementAction(action: string, params: ManagementParams, ctx: ManagementContext): SubagentExecutionResult {
 	switch (action as ManagementAction) {
 		case "list": return handleList(params, ctx);
 		case "get": return handleGet(params, ctx);

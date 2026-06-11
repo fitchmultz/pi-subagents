@@ -268,6 +268,30 @@ interface RunPiStreamingResult {
 	durationMs?: number;
 }
 
+interface RunSingleStepResult {
+	agent: string;
+	output: string;
+	exitCode: number;
+	error?: string;
+	model?: string;
+	attemptedModels?: string[];
+	modelAttempts?: ModelAttempt[];
+	artifactPaths?: ArtifactPaths;
+	interrupted?: boolean;
+	sessionFile?: string;
+	intercomTarget?: string;
+	completionGuardTriggered?: boolean;
+	structuredOutput?: unknown;
+	structuredOutputPath?: string;
+	structuredOutputSchemaPath?: string;
+	acceptance?: AcceptanceLedger;
+	resourceLimitExceeded?: ResourceLimitExceeded;
+}
+
+type AsyncParallelStepResult = RunSingleStepResult & {
+	skipped?: boolean;
+};
+
 function runPiStreaming(
 	args: string[],
 	cwd: string,
@@ -335,7 +359,7 @@ function runPiStreaming(
 			resourceLimitEscalationTimer.unref?.();
 		};
 
-		const appendChildEvent = (event: Record<string, unknown>) => {
+		const appendChildEvent = (event: object) => {
 			if (!childEventContext) return;
 			appendJsonl(childEventContext.eventsPath, JSON.stringify({
 				...event,
@@ -670,25 +694,7 @@ interface SingleStepContext {
 async function runSingleStep(
 	step: SubagentStep,
 	ctx: SingleStepContext,
-): Promise<{
-	agent: string;
-	output: string;
-	exitCode: number | null;
-	error?: string;
-	model?: string;
-	attemptedModels?: string[];
-	modelAttempts?: ModelAttempt[];
-	artifactPaths?: ArtifactPaths;
-	interrupted?: boolean;
-	sessionFile?: string;
-	intercomTarget?: string;
-	completionGuardTriggered?: boolean;
-	structuredOutput?: unknown;
-	structuredOutputPath?: string;
-	structuredOutputSchemaPath?: string;
-	acceptance?: AcceptanceLedger;
-	resourceLimitExceeded?: ResourceLimitExceeded;
-}> {
+): Promise<RunSingleStepResult> {
 	const effectiveStructuredOutput = step.structuredOutput ?? (step.structuredOutputSchema
 		? createStructuredOutputRuntime(step.structuredOutputSchema, path.join(path.dirname(ctx.outputFile), "structured-output"))
 		: undefined);
@@ -975,7 +981,7 @@ async function runSingleStep(
 				});
 				const finalizationOutput = finalizationRun.finalOutput;
 				if (finalizationRun.exitCode !== 0 || finalizationRun.error || finalizationRun.interrupted) {
-					finalizationInterrupted = finalizationRun.interrupted;
+					finalizationInterrupted = finalizationRun.interrupted === true;
 					finalizationResourceLimitExceeded = finalizationRun.resourceLimitExceeded;
 					const message = finalizationRun.error ?? finalizationRun.resourceLimitExceeded?.message ?? "Acceptance finalization turn did not complete successfully.";
 					finalizationProcessError = message;
@@ -1773,7 +1779,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			const concurrency = step.concurrency ?? MAX_PARALLEL_CONCURRENCY;
 			const failFast = step.failFast ?? false;
 			let aborted = false;
-			const parallelResults = await mapConcurrent(dynamicSteps, concurrency, async (task, taskIdx) => {
+			const parallelResults = await mapConcurrent<SubagentStep, AsyncParallelStepResult>(dynamicSteps, concurrency, async (task, taskIdx) => {
 				const fi = groupStartFlatIndex + taskIdx;
 				if (interrupted) {
 					const pausedAt = Date.now();
@@ -1781,7 +1787,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					statusPayload.lastUpdate = pausedAt;
 					writeStatusPayload();
 					appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.paused", ts: pausedAt, runId: id, stepIndex: fi, agent: task.agent, interrupted: true, durationMs: 0 }));
-					return { agent: task.agent, output: "Paused after interrupt. Waiting for explicit next action.", exitCode: 0 as number | null, interrupted: true };
+					return { agent: task.agent, output: "Paused after interrupt. Waiting for explicit next action.", exitCode: 0, interrupted: true };
 				}
 				if (aborted && failFast) {
 					const skippedAt = Date.now();
@@ -1793,7 +1799,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					statusPayload.steps[fi].exitCode = -1;
 					statusPayload.lastUpdate = skippedAt;
 					writeStatusPayload();
-					return { agent: task.agent, output: "(skipped — fail-fast)", exitCode: -1 as number | null, skipped: true };
+					return { agent: task.agent, output: "(skipped — fail-fast)", exitCode: -1, skipped: true };
 				}
 				const taskStartTime = Date.now();
 				statusPayload.currentStep = fi;
@@ -1997,7 +2003,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					runId: id,
 					stepIndex,
 				});
-				const parallelResults = await mapConcurrent(
+				const parallelResults = await mapConcurrent<SubagentStep, AsyncParallelStepResult>(
 					group.parallel,
 					concurrency,
 					async (task, taskIdx) => {
@@ -2008,7 +2014,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							statusPayload.lastUpdate = pausedAt;
 							writeStatusPayload();
 							appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.paused", ts: pausedAt, runId: id, stepIndex: fi, agent: task.agent, interrupted: true, durationMs: 0 }));
-							return { agent: task.agent, output: "Paused after interrupt. Waiting for explicit next action.", exitCode: 0 as number | null, interrupted: true };
+							return { agent: task.agent, output: "Paused after interrupt. Waiting for explicit next action.", exitCode: 0, interrupted: true };
 						}
 						if (aborted && failFast) {
 							const skippedAt = Date.now();
@@ -2024,7 +2030,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							appendJsonl(eventsPath, JSON.stringify({
 								type: "subagent.step.failed", ts: skippedAt, runId: id, stepIndex: fi, agent: task.agent, exitCode: -1, durationMs: 0,
 							}));
-							return { agent: task.agent, output: "(skipped — fail-fast)", exitCode: -1 as number | null, skipped: true };
+							return { agent: task.agent, output: "(skipped — fail-fast)", exitCode: -1, skipped: true };
 						}
 
 						const taskStartTime = Date.now();
@@ -2416,7 +2422,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		clearInterval(activityTimer);
 		activityTimer = undefined;
 	}
-	const effectiveSessionFile = sessionFile ?? latestSessionFile;
+	const effectiveSessionFile = sessionFile ?? latestSessionFile ?? undefined;
 	const runEndedAt = Date.now();
 	if (interrupted) {
 		for (let index = 0; index < statusPayload.steps.length; index++) {
@@ -2523,7 +2529,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			artifactsDir,
 			cwd,
 			asyncDir,
-			sessionId: config.sessionId,
+			sessionId: config.sessionId ?? undefined,
 			sessionFile: effectiveSessionFile,
 			intercomTarget: config.controlIntercomTarget,
 			shareUrl,

@@ -14,13 +14,29 @@ function listPendingFiles(dir) {
 		.sort();
 }
 
-function claimNextResponse(dir) {
+function responseMatchesArgs(response, args) {
+	const match = response?.matchArgsIncludes;
+	if (match === undefined) return true;
+	const needles = Array.isArray(match) ? match : [match];
+	const haystack = args.join("\n");
+	return needles.every((needle) => typeof needle === "string" && haystack.includes(needle));
+}
+
+function claimNextResponse(dir, args) {
 	for (const fileName of listPendingFiles(dir)) {
 		const sourcePath = path.join(dir, fileName);
+		let response;
+		try {
+			response = JSON.parse(fs.readFileSync(sourcePath, "utf-8"));
+		} catch (error) {
+			if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") continue;
+			throw error;
+		}
+		if (!responseMatchesArgs(response, args)) continue;
 		const targetPath = path.join(dir, fileName.replace(/^pending-/, "consumed-"));
 		try {
 			fs.renameSync(sourcePath, targetPath);
-			return JSON.parse(fs.readFileSync(targetPath, "utf-8"));
+			return response;
 		} catch (error) {
 			if (error && typeof error === "object" && "code" in error) {
 				const code = error.code;
@@ -32,7 +48,8 @@ function claimNextResponse(dir) {
 
 	const defaultPath = path.join(dir, "default-response.json");
 	if (!fs.existsSync(defaultPath)) return undefined;
-	return JSON.parse(fs.readFileSync(defaultPath, "utf-8"));
+	const defaultResponse = JSON.parse(fs.readFileSync(defaultPath, "utf-8"));
+	return responseMatchesArgs(defaultResponse, args) ? defaultResponse : undefined;
 }
 
 function defaultAssistantMessage(output) {
@@ -187,7 +204,7 @@ async function main() {
 
 	const args = process.argv.slice(2);
 	const jsonMode = isJsonMode(args);
-	const response = claimNextResponse(queueDir) ?? defaultResponse();
+	const response = claimNextResponse(queueDir, args) ?? defaultResponse();
 	writeSessionFile(args);
 	fs.writeFileSync(
 		path.join(queueDir, `call-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}.json`),

@@ -10,13 +10,31 @@ https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1
 
 ## Installation
 
+This fork is validated for local path installs:
+
 ```bash
-pi install npm:pi-subagents
+pi install /absolute/path/to/pi-subagents --approve
+```
+
+For example, from a checkout on this machine:
+
+```bash
+pi install /Users/mitchfultz/Projects/AI/pi-subagents --approve
 ```
 
 That is the only required step. You can add optional pieces later.
 
 Pi 0.79.0 or newer is recommended because the extension tracks current extension-mode and project-trust APIs when available. The package does not hard-pin that exact Pi version; Pi core packages stay optional wildcard peers so newer Pi releases are not blocked.
+
+## Local validation
+
+Run the same gate used by CI before treating changes as complete:
+
+```bash
+npm run ci
+```
+
+That command runs TypeScript no-emit checking, package shape smoke checks, isolated local path install smoke checks, and the full unit/integration suite.
 
 ## Try this first
 

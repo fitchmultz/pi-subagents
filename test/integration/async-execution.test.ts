@@ -333,7 +333,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	});
 
 	it("async single enforces agent maxExecutionTimeMs without retrying fallback models", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
-		mockPi.onCall({ delay: 5_000, output: "too slow" });
+		mockPi.onCall({ matchArgsIncludes: "Run too long", delay: 5_000, output: "too slow" });
 		const id = `async-time-limit-${Date.now().toString(36)}`;
 		const startedAt = Date.now();
 
@@ -365,8 +365,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	});
 
 	it("async chain parallel records per-child maxExecutionTimeMs failures", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
-		mockPi.onCall({ delay: 5_000, output: "too slow" });
-		mockPi.onCall({ output: "review ok" });
+		mockPi.onCall({ matchArgsIncludes: "Slow child", delay: 5_000, output: "too slow" });
+		mockPi.onCall({ matchArgsIncludes: "Fast child", output: "review ok" });
 		const id = `async-parallel-time-limit-${Date.now().toString(36)}`;
 
 		executeAsyncChain(id, {

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 interface MockPiResponse {
+	matchArgsIncludes?: string | string[];
 	output?: string;
 	stderr?: string;
 	exitCode?: number;

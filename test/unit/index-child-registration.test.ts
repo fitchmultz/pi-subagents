@@ -184,9 +184,13 @@ describe("subagent extension child mode", () => {
 			};
 			const list = await registeredTool.execute("list-check", { action: "list" }, new AbortController().signal, undefined, ctx);
 			if (list.isError) throw new Error("list should be allowed: " + JSON.stringify(list.content));
-			const create = await registeredTool.execute("create-check", { action: "create", config: { name: "x" } }, new AbortController().signal, undefined, ctx);
-			if (!create.isError) throw new Error("create should be blocked");
-			const text = create.content?.[0]?.text ?? "";
+			let createError;
+			try {
+				await registeredTool.execute("create-check", { action: "create", config: { name: "x" } }, new AbortController().signal, undefined, ctx);
+			} catch (error) {
+				createError = error;
+			}
+			const text = createError instanceof Error ? createError.message : "";
 			if (!text.includes("not available from child-safe subagent fanout mode")) throw new Error("unexpected create error: " + text);
 		`;
 

@@ -39,7 +39,11 @@
     "test": "npm run test:unit",
     "test:unit": "node scripts/run-tests.mjs unit",
     "test:integration": "node scripts/run-tests.mjs integration",
-    "test:all": "node scripts/run-tests.mjs all"
+    "test:all": "node scripts/run-tests.mjs all",
+    "typecheck": "tsc --noEmit",
+    "smoke:package": "node scripts/package-smoke.mjs",
+    "smoke:install": "node scripts/local-install-smoke.mjs",
+    "ci": "npm run typecheck && npm run smoke:package && npm run smoke:install && npm run test:all"
   },
   "pi": {
     "extensions": [
@@ -84,7 +88,9 @@
     "@earendil-works/pi-ai": "0.79.1",
     "@earendil-works/pi-coding-agent": "0.79.1",
     "@earendil-works/pi-tui": "0.79.1",
-    "typebox": "^1.1.39"
+    "@types/node": "^24.13.2",
+    "typebox": "^1.1.39",
+    "typescript": "^6.0.3"
   },
   "overrides": {
     "brace-expansion": "^5.0.6",

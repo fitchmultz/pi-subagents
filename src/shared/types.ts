@@ -7,6 +7,7 @@ import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import type { FSWatcher } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 
 // ============================================================================
 // Basic Types
@@ -30,7 +31,7 @@ export interface ChainOutputMapEntry {
 
 export type ChainOutputMap = Record<string, ChainOutputMapEntry>;
 
-export type WorkflowNodeStatus = "pending" | "running" | "completed" | "failed" | "paused" | "detached" | "timed-out";
+export type WorkflowNodeStatus = "pending" | "running" | "completed" | "complete" | "failed" | "paused" | "detached" | "timed-out";
 
 export interface WorkflowGraphNode {
 	id: string;
@@ -197,7 +198,7 @@ export interface SubagentResultIntercomPayload {
 export interface AgentProgress {
 	index: number;
 	agent: string;
-	status: "pending" | "running" | "completed" | "failed" | "detached";
+	status: "pending" | "running" | "completed" | "complete" | "failed" | "paused" | "detached" | "timed-out";
 	activityState?: ActivityState;
 	task: string;
 	skills?: string[];
@@ -221,7 +222,9 @@ export interface ToolCallSummary {
 	expandedText: string;
 }
 
-interface ProgressSummary {
+interface ProgressSummary extends Partial<Pick<AgentProgress,
+	"index" | "agent" | "status" | "activityState" | "task" | "skills" | "lastActivityAt" | "currentTool" | "currentToolArgs" | "currentToolStartedAt" | "currentPath" | "recentTools" | "recentOutput" | "turnCount" | "error" | "failedTool"
+>> {
 	toolCount: number;
 	tokens: number;
 	durationMs: number;
@@ -479,6 +482,11 @@ export interface Details {
 	outputs?: ChainOutputMap;
 }
 
+export type SubagentExecutionResult = AgentToolResult<Details> & {
+	/** Direct executor/test-layer error marker; Pi runtime tool errors still throw at the tool boundary. */
+	isError?: boolean;
+};
+
 // ============================================================================
 // Artifacts
 // ============================================================================
@@ -576,7 +584,7 @@ export interface NestedRunAddress {
 
 export interface NestedStepSummary {
 	agent: string;
-	status: "pending" | "running" | "complete" | "completed" | "failed" | "paused";
+	status: "pending" | "running" | "complete" | "completed" | "failed" | "paused" | "timed-out";
 	sessionFile?: string;
 	activityState?: ActivityState;
 	lastActivityAt?: number;
@@ -674,7 +682,7 @@ export interface AsyncStatus {
 		label?: string;
 		outputName?: string;
 		structured?: boolean;
-		status: "pending" | "running" | "complete" | "completed" | "failed" | "paused";
+		status: "pending" | "running" | "complete" | "completed" | "failed" | "paused" | "timed-out";
 		children?: NestedRunSummary[];
 		sessionFile?: string;
 		activityState?: ActivityState;
@@ -848,7 +856,7 @@ export interface RunSyncOptions {
 	timeoutAt?: number;
 	allowIntercomDetach?: boolean;
 	intercomEvents?: IntercomEventBus;
-	onUpdate?: (r: import("@earendil-works/pi-agent-core").AgentToolResult<Details>) => void;
+	onUpdate?: (r: SubagentExecutionResult) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig?: ResolvedControlConfig;
 	intercomSessionName?: string;

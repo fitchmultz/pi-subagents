@@ -4,7 +4,6 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { ChainClarifyComponent, type ChainClarifyResult, type BehaviorOverride } from "./chain-clarify.ts";
@@ -53,6 +52,7 @@ import {
 	type ChildProjectTrustPolicy,
 	type ControlEvent,
 	type Details,
+	type SubagentExecutionResult,
 	type IntercomEventBus,
 	type NestedRouteInfo,
 	type ResolvedControlConfig,
@@ -108,7 +108,7 @@ interface ParallelChainRunInput {
 	timeoutAt?: number;
 	artifactsDir: string;
 	signal?: AbortSignal;
-	onUpdate?: (r: AgentToolResult<Details>) => void;
+	onUpdate?: (r: SubagentExecutionResult) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig: ResolvedControlConfig;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
@@ -374,7 +374,7 @@ interface ChainExecutionParams {
 	artifactConfig: ArtifactConfig;
 	includeProgress?: boolean;
 	clarify?: boolean;
-	onUpdate?: (r: AgentToolResult<Details>) => void;
+	onUpdate?: (r: SubagentExecutionResult) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig: ResolvedControlConfig;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;

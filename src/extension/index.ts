@@ -24,7 +24,7 @@ import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
 import { clearLegacyResultAnimationTimer, renderWidget, renderSubagentResult } from "../tui/render.ts";
 import { SubagentParams } from "./schemas.ts";
-import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import { createSubagentExecutor, normalizeSubagentParamsLike, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
@@ -40,6 +40,7 @@ import { isTuiContext } from "../shared/ui-mode.ts";
 import { loadConfig } from "./config.ts";
 import {
 	type Details,
+	type SubagentExecutionResult,
 	type SubagentState,
 	ASYNC_DIR,
 	DEFAULT_ARTIFACT_CONFIG,
@@ -102,13 +103,13 @@ function ensureAccessibleDir(dirPath: string): void {
 	}
 }
 
-function isSlashResultRunning(result: { details?: Details }): boolean {
+function isSlashResultRunning(result: SubagentExecutionResult): boolean {
 	return result.details?.progress?.some((entry) => entry.status === "running")
 		|| result.details?.results.some((entry) => entry.progress?.status === "running")
 		|| false;
 }
 
-function isSlashResultError(result: { details?: Details }): boolean {
+function isSlashResultError(result: SubagentExecutionResult): boolean {
 	return result.details?.results.some((entry) => entry.exitCode !== 0 && entry.progress?.status !== "running") || false;
 }
 
@@ -116,9 +117,15 @@ function isStaleExtensionContextError(error: unknown): boolean {
 	return error instanceof Error && error.message.includes("Extension context no longer active");
 }
 
+function toRegisteredToolResult(result: SubagentExecutionResult): AgentToolResult<Details> {
+	if (!result.isError) return result;
+	const text = result.content.map((part) => part.type === "text" ? part.text : "").filter(Boolean).join("\n").trim();
+	throw new Error(text || "subagent failed");
+}
+
 function rebuildSlashResultContainer(
 	container: Container,
-	result: AgentToolResult<Details>,
+	result: SubagentExecutionResult,
 	options: { expanded: boolean },
 	theme: ExtensionContext["ui"]["theme"],
 ): void {
@@ -327,7 +334,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		return new SubagentControlNoticeComponent({ ...details, noticeText: formatSubagentControlNotice(details, content) }, theme);
 	});
 
-	const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
+	const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal | undefined, onUpdate: ((result: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext) => {
 		if (isTuiContext(ctx)) ctx.ui.setToolsExpanded(false);
 		return executor.execute(id, params, signal, onUpdate, ctx);
 	};
@@ -432,8 +439,8 @@ DIAGNOSTICS:
 		],
 		parameters: SubagentParams,
 
-		execute(id, params, signal, onUpdate, ctx) {
-			return executeSubagentCollapsed(id, params, signal, onUpdate, ctx);
+		async execute(id, params, signal, onUpdate, ctx) {
+			return toRegisteredToolResult(await executeSubagentCollapsed(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx));
 		},
 
 		renderCall(args, theme) {
@@ -515,7 +522,8 @@ DIAGNOSTICS:
 		state.lastUiContext = ctx;
 		if (state.asyncJobs.size > 0) {
 			renderWidget(ctx, Array.from(state.asyncJobs.values()));
-			ctx.ui.requestRender?.();
+			const uiWithRender: ExtensionContext["ui"] & { requestRender?: () => void } = ctx.ui;
+			uiWithRender.requestRender?.();
 			ensurePoller();
 		}
 	});

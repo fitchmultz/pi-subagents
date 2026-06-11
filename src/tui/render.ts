@@ -3,7 +3,6 @@
  */
 
 import * as path from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { getMarkdownTheme, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import {
@@ -12,6 +11,7 @@ import {
 	type AsyncJobStep,
 	type AsyncParallelGroupStatus,
 	type Details,
+	type SubagentExecutionResult,
 	type NestedRunSummary,
 	type NestedStepSummary,
 	type WorkflowNodeStatus,
@@ -253,7 +253,7 @@ function resultGlyph(result: Details["results"][number], output: string, theme: 
 	return theme.fg("success", "✓");
 }
 
-function compactCurrentActivity(progress: AgentProgress): string {
+function compactCurrentActivity(progress: Pick<AgentProgress, "currentTool" | "currentToolArgs" | "currentToolStartedAt" | "activityState" | "lastActivityAt" | "durationMs">): string {
 	const snapshotNow = snapshotNowForProgress(progress);
 	return formatCurrentToolLine(progress, getTermWidth() - 4, false, snapshotNow) ?? buildLiveStatusLine(progress, snapshotNow) ?? "thinking…";
 }
@@ -1176,7 +1176,7 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
  * Render a subagent result
  */
 export function renderSubagentResult(
-	result: AgentToolResult<Details>,
+	result: SubagentExecutionResult,
 	options: { expanded: boolean },
 	theme: Theme,
 ): Component {

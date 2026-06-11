@@ -20,7 +20,5 @@ jobs:
           node-version: 24
       - name: Install devDependencies
         run: npm install
-      - name: Unit tests
-        run: npm test
-      - name: Integration tests
-        run: npm run test:integration
+      - name: Local completion gate
+        run: npm run ci

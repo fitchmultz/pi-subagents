@@ -139,18 +139,29 @@ function parsePromptTemplateRequest(data: unknown): PromptTemplateDelegationRequ
 	if (value.context !== "fresh" && value.context !== "fork") return undefined;
 	const tasks = parseDelegationTasks(value.tasks);
 	const worktree = value.worktree === true ? true : undefined;
-	const hasSingle =
-		typeof value.agent === "string" &&
-		value.agent.length > 0 &&
-		typeof value.task === "string" &&
-		value.task.length > 0;
+	const singleAgent = typeof value.agent === "string" && value.agent.length > 0 ? value.agent : undefined;
+	const singleTask = typeof value.task === "string" && value.task.length > 0 ? value.task : undefined;
+	const hasSingle = singleAgent !== undefined && singleTask !== undefined;
 	if (!hasSingle && tasks.length === 0) return undefined;
 
 	const fallbackTask = tasks[0];
+	if (hasSingle) {
+		return {
+			requestId: value.requestId,
+			agent: singleAgent,
+			task: singleTask,
+			...(tasks.length > 0 ? { tasks } : {}),
+			context: value.context,
+			model: value.model,
+			cwd: value.cwd,
+			...(worktree ? { worktree } : {}),
+		};
+	}
+	if (!fallbackTask) return undefined;
 	return {
 		requestId: value.requestId,
-		agent: hasSingle ? value.agent : fallbackTask!.agent,
-		task: hasSingle ? value.task : fallbackTask!.task,
+		agent: fallbackTask.agent,
+		task: fallbackTask.task,
 		...(tasks.length > 0 ? { tasks } : {}),
 		context: value.context,
 		model: value.model,

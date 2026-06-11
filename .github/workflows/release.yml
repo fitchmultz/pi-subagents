@@ -1,28 +1,24 @@
-name: Release
+name: Local Package Validation
 
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: local-package-validation-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  publish:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
       - name: Install devDependencies
         run: npm install
-      - name: Run tests
-        run: npm run test:all
-      - name: Publish to npm
-        run: npm publish --provenance
+      - name: Run local validation gate
+        run: npm run ci

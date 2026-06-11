@@ -131,7 +131,7 @@ function formatProcessExitFailure(input: { agent: string; exitCode: number; dura
 }
 
 function collectPartialOutput(result: Pick<SingleResult, "messages" | "finalOutput">, progress?: Pick<AgentProgress, "recentOutput">): string | undefined {
-	const fromMessages = getFinalOutput(result.messages);
+	const fromMessages = getFinalOutput(result.messages ?? []);
 	const partial = fromMessages || progress?.recentOutput?.join("\n") || result.finalOutput || "";
 	const trimmed = partial.trim();
 	if (!trimmed) return undefined;
@@ -574,7 +574,7 @@ async function runSingleAttempt(
 		const fireUpdate = () => {
 			if (!options.onUpdate || processClosed) return;
 			progress.durationMs = Date.now() - startTime;
-			emitUpdateSnapshot(getFinalOutput(result.messages) || "(running...)");
+			emitUpdateSnapshot(getFinalOutput(result.messages ?? []) || "(running...)");
 		};
 
 		const processLine = (line: string) => {
@@ -627,7 +627,7 @@ async function runSingleAttempt(
 			}
 
 			if (evt.type === "message_end" && evt.message) {
-				result.messages.push(evt.message);
+				(result.messages ??= []).push(evt.message);
 				if (evt.message.role === "assistant") {
 					result.usage.turns++;
 					progress.turnCount = result.usage.turns;
@@ -662,7 +662,7 @@ async function runSingleAttempt(
 			}
 
 			if (evt.type === "tool_result_end" && evt.message) {
-				result.messages.push(evt.message);
+				(result.messages ??= []).push(evt.message);
 				const resultText = extractTextFromContent(evt.message.content);
 				appendRecentOutput(progress, resultText.split("\n").slice(-10));
 				const toolSnapshot = pendingToolResult;
@@ -890,7 +890,7 @@ async function runSingleAttempt(
 		result.exitCode = 1;
 	}
 	if (result.exitCode === 0 && !result.error) {
-		const errInfo = detectSubagentError(result.messages);
+		const errInfo = detectSubagentError(result.messages ?? []);
 		if (errInfo.hasError) {
 			result.exitCode = errInfo.exitCode ?? 1;
 			result.error = errInfo.details
@@ -934,13 +934,13 @@ async function runSingleAttempt(
 		durationMs: progress.durationMs,
 	};
 
-	const acceptanceOutput = getFinalOutput(result.messages);
+	const acceptanceOutput = getFinalOutput(result.messages ?? []);
 	let fullOutput = stripAcceptanceReport(acceptanceOutput);
 	const completionGuard = result.exitCode === 0 && !result.error && shared.completionPolicy === "mutation-guard"
 		? evaluateCompletionMutationGuard({
 			agent: agent.name,
 			task: shared.originalTask ?? task,
-			messages: result.messages,
+			messages: result.messages ?? [],
 			tools: agent.tools,
 			mcpDirectTools: agent.mcpDirectTools,
 		})
@@ -1066,7 +1066,7 @@ async function runAcceptanceFinalizationLoop(input: {
 		if (finalizationResult.controlEvents?.length) {
 			input.result.controlEvents = [...(input.result.controlEvents ?? []), ...finalizationResult.controlEvents];
 		}
-		const rawOutput = acceptanceOutputByResult.get(finalizationResult) ?? getFinalOutput(finalizationResult.messages) ?? finalizationResult.finalOutput ?? "";
+		const rawOutput = acceptanceOutputByResult.get(finalizationResult) ?? getFinalOutput(finalizationResult.messages ?? []) ?? finalizationResult.finalOutput ?? "";
 		if (finalizationResult.exitCode !== 0 || finalizationResult.error || finalizationResult.detached || finalizationResult.interrupted) {
 			const message = finalizationResult.error ?? "Acceptance finalization turn did not complete successfully.";
 			turns.push(createFinalizationProcessFailureTurn({ turn, prompt, rawOutput, message }));
@@ -1351,7 +1351,7 @@ export async function runSync(
 		});
 	}
 	const acceptanceFailure = acceptanceFailureMessage(result.acceptance);
-	stripAcceptanceReportsFromMessages(result.messages);
+	stripAcceptanceReportsFromMessages(result.messages ?? []);
 	if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.detached && !result.interrupted) {
 		result.exitCode = 1;
 		result.error = result.error ? `${result.error}\n${acceptanceFailure}` : acceptanceFailure;

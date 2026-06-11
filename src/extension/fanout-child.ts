@@ -4,7 +4,7 @@ import * as path from "node:path";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "../agents/agents.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
-import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import { createSubagentExecutor, normalizeSubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { readNestedControlRequests, resolveNestedRouteFromEnv, writeNestedControlResult } from "../runs/shared/nested-events.ts";
 import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.ts";
@@ -168,8 +168,11 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 			"Do not use subagent child-safe mode for agent config mutation actions; create, update, and delete are blocked here.",
 		],
 		parameters: SubagentParams,
-		execute(id, params, signal, onUpdate, ctx) {
-			return executor.execute(id, params as SubagentParamsLike, signal, onUpdate, ctx);
+		async execute(id, params, signal, onUpdate, ctx) {
+			const result = await executor.execute(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx);
+			if (!result.isError) return result;
+			const text = result.content.map((part) => part.type === "text" ? part.text : "").filter(Boolean).join("\n").trim();
+			throw new Error(text || "subagent failed");
 		},
 	};
 

@@ -115,7 +115,7 @@ function isParentOnlySubagentMessage(message: unknown): boolean {
 		&& PARENT_ONLY_CUSTOM_MESSAGE_TYPES.has(m.customType);
 }
 
-function isSubagentToolResultMessage(message: unknown): boolean {
+function isSubagentExecutionResultMessage(message: unknown): boolean {
 	const m = message as { role?: string; toolName?: string };
 	return m?.role === "toolResult" && m.toolName === "subagent";
 }
@@ -138,7 +138,7 @@ export function stripParentOnlySubagentMessages(messages: unknown[]): unknown[] 
 	let changed = false;
 	const filtered: unknown[] = [];
 	for (const message of messages) {
-		if (isParentOnlySubagentMessage(message) || isSubagentToolResultMessage(message)) {
+		if (isParentOnlySubagentMessage(message) || isSubagentExecutionResultMessage(message)) {
 			changed = true;
 			continue;
 		}
@@ -193,13 +193,17 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 	}
 
 	const onRuntimeEvent = pi.on as unknown as (event: string, handler: (event: unknown) => unknown) => void;
-	onRuntimeEvent("context", (event: { messages: unknown[] }) => {
-		const messages = stripParentOnlySubagentMessages(event.messages);
-		if (messages === event.messages) return undefined;
+	onRuntimeEvent("context", (event) => {
+		if (!event || typeof event !== "object" || !Array.isArray((event as { messages?: unknown }).messages)) return undefined;
+		const originalMessages = (event as { messages: unknown[] }).messages;
+		const messages = stripParentOnlySubagentMessages(originalMessages);
+		if (messages === originalMessages) return undefined;
 		return { messages };
 	});
 
-	onRuntimeEvent("before_agent_start", async (event: { systemPrompt: string }) => {
+	onRuntimeEvent("before_agent_start", async (event) => {
+		if (!event || typeof event !== "object" || typeof (event as { systemPrompt?: unknown }).systemPrompt !== "string") return undefined;
+		const systemPrompt = (event as { systemPrompt: string }).systemPrompt;
 		const intercomSessionName = process.env[SUBAGENT_INTERCOM_SESSION_NAME_ENV]?.trim();
 		if (intercomSessionName && typeof pi.setSessionName === "function") {
 			pi.setSessionName(intercomSessionName);
@@ -209,12 +213,12 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 		const inheritSkills = readBooleanEnv(SUBAGENT_INHERIT_SKILLS_ENV);
 		const fanoutChild = readBooleanEnv(SUBAGENT_FANOUT_CHILD_ENV);
 		if (inheritProjectContext === undefined && inheritSkills === undefined && fanoutChild === undefined) return;
-		const rewritten = rewriteSubagentPrompt(event.systemPrompt, {
+		const rewritten = rewriteSubagentPrompt(systemPrompt, {
 			inheritProjectContext: inheritProjectContext ?? true,
 			inheritSkills: inheritSkills ?? true,
 			fanoutChild: fanoutChild === true,
 		});
-		if (rewritten === event.systemPrompt) return;
+		if (rewritten === systemPrompt) return;
 		return { systemPrompt: rewritten };
 	});
 }

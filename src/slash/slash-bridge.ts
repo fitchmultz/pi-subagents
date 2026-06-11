@@ -1,4 +1,3 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import {
@@ -8,6 +7,7 @@ import {
 	SLASH_SUBAGENT_STARTED_EVENT,
 	SLASH_SUBAGENT_UPDATE_EVENT,
 	type Details,
+	type SubagentExecutionResult,
 } from "../shared/types.ts";
 
 interface SlashSubagentRequest {
@@ -17,7 +17,7 @@ interface SlashSubagentRequest {
 
 export interface SlashSubagentResponse {
 	requestId: string;
-	result: AgentToolResult<Details>;
+	result: SubagentExecutionResult;
 	isError: boolean;
 	errorText?: string;
 }
@@ -41,9 +41,9 @@ interface SlashBridgeOptions {
 		id: string,
 		params: SubagentParamsLike,
 		signal: AbortSignal,
-		onUpdate: ((r: AgentToolResult<Details>) => void) | undefined,
+		onUpdate: ((r: SubagentExecutionResult) => void) | undefined,
 		ctx: ExtensionContext,
-	) => Promise<AgentToolResult<Details>>;
+	) => Promise<SubagentExecutionResult>;
 }
 
 export function registerSlashSubagentBridge(options: SlashBridgeOptions): {
