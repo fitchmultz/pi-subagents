@@ -120,6 +120,26 @@ function withPackagedIntercom<T>(fn: (paths: { agentDir: string; cwd: string; gl
 	}
 }
 
+function withLocalPathIntercom<T>(fn: (paths: { agentDir: string; cwd: string; packageDir: string; legacyDir: string; configPath: string }) => T): T {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-local-package-test-"));
+	const agentDir = path.join(tempDir, "agent");
+	const cwd = path.join(tempDir, "workspace");
+	const packageDir = path.join(tempDir, "packages", "pi-intercom");
+	const legacyDir = path.join(agentDir, "extensions", "pi-intercom");
+	const configPath = path.join(agentDir, "intercom", "config.json");
+	fs.mkdirSync(packageDir, { recursive: true });
+	fs.mkdirSync(path.dirname(configPath), { recursive: true });
+	fs.mkdirSync(cwd, { recursive: true });
+	fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: [{ source: "../packages/pi-intercom" }] }, null, 2));
+	fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "pi-intercom", pi: { extensions: ["./index.ts"] } }, null, 2));
+	fs.writeFileSync(configPath, JSON.stringify({ enabled: true }));
+	try {
+		return fn({ agentDir, cwd, packageDir, legacyDir, configPath });
+	} finally {
+		fs.rmSync(tempDir, { recursive: true, force: true });
+	}
+}
+
 describe("diagnoseIntercomBridge", () => {
 	it("reports inactive and unavailable when pi-intercom is missing", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-diagnostic-test-"));
@@ -128,8 +148,10 @@ describe("diagnoseIntercomBridge", () => {
 				config: { mode: "always" },
 				context: "fresh",
 				orchestratorTarget: "main",
+				agentDir: path.join(tempDir, "agent"),
 				extensionDir: path.join(tempDir, "missing-pi-intercom"),
 				configPath: path.join(tempDir, "config.json"),
+				globalNpmRoot: null,
 			});
 			assert.equal(diagnostic.active, false);
 			assert.equal(diagnostic.wantsIntercom, true);
@@ -151,6 +173,24 @@ describe("diagnoseIntercomBridge", () => {
 				globalNpmRoot,
 				extensionDir: legacyDir,
 				configPath,
+			});
+			assert.equal(diagnostic.active, true);
+			assert.equal(diagnostic.piIntercomAvailable, true);
+			assert.equal(diagnostic.extensionDir, path.resolve(packageDir));
+		});
+	});
+
+	it("finds local-path pi-intercom packages from settings", () => {
+		withLocalPathIntercom(({ agentDir, cwd, packageDir, legacyDir, configPath }) => {
+			const diagnostic = diagnoseIntercomBridge({
+				config: { mode: "always" },
+				context: "fresh",
+				orchestratorTarget: "main",
+				agentDir,
+				cwd,
+				extensionDir: legacyDir,
+				configPath,
+				globalNpmRoot: null,
 			});
 			assert.equal(diagnostic.active, true);
 			assert.equal(diagnostic.piIntercomAvailable, true);
@@ -243,6 +283,24 @@ describe("resolveIntercomBridge", () => {
 			});
 			assert.equal(bridge.active, true);
 			assert.equal(bridge.extensionDir, path.resolve(packageDir));
+		});
+	});
+
+	it("activates from a local-path pi-intercom package", () => {
+		withLocalPathIntercom(({ agentDir, cwd, packageDir, legacyDir, configPath }) => {
+			const bridge = resolveIntercomBridge({
+				config: { mode: "always" },
+				context: "fresh",
+				orchestratorTarget: "main",
+				agentDir,
+				cwd,
+				extensionDir: legacyDir,
+				configPath,
+				globalNpmRoot: null,
+			});
+			assert.equal(bridge.active, true);
+			assert.equal(bridge.extensionDir, path.resolve(packageDir));
+			assert.equal(bridge.orchestratorTarget, "main");
 		});
 	});
 

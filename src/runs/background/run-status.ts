@@ -54,6 +54,24 @@ function formatAcceptanceFinalizationSummary(finalization: NonNullable<NonNullab
 	return `, finalization: ${finalization.status} after ${finalization.turns.length}/${finalization.maxTurns} turns`;
 }
 
+function formatOutputExcerpt(outputPath: string | undefined, maxBytes = 4096, maxLines = 12): string[] {
+	if (!outputPath || !fs.existsSync(outputPath)) return [];
+	try {
+		const buffer = fs.readFileSync(outputPath);
+		const truncatedBytes = buffer.length > maxBytes;
+		const text = buffer.subarray(Math.max(0, buffer.length - maxBytes)).toString("utf-8").trim();
+		if (!text) return [];
+		const allLines = text.split(/\r?\n/);
+		const lines = allLines.slice(-maxLines);
+		const truncatedLines = allLines.length > maxLines;
+		const suffix = truncatedBytes || truncatedLines ? " (tail, truncated)" : "";
+		return [`Output excerpt${suffix}:`, ...lines.map((line) => `  ${line}`)];
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return [`Output excerpt unavailable: ${message}`];
+	}
+}
+
 function stepLineLabel(status: AsyncStatus, index: number): string {
 	const steps = status.steps ?? [];
 	if (status.mode === "parallel") return `Agent ${index + 1}/${steps.length || 1}`;
@@ -217,6 +235,8 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				reconciliation.message ? `Diagnosis: ${reconciliation.message}` : undefined,
 				reconciliation.resultPath && fs.existsSync(reconciliation.resultPath) ? `Result: ${reconciliation.resultPath}` : undefined,
 			].filter((line): line is string => Boolean(line));
+			if (status.state !== "running") lines.push(...formatOutputExcerpt(outputPath));
+
 			for (const [index, step] of (status.steps ?? []).entries()) {
 				const stepActivityText = step.status === "running" ? formatActivityLabel(step.lastActivityAt, step.activityState) : undefined;
 				const modelThinking = formatModelThinking(step.model, step.thinking);

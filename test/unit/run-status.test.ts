@@ -118,6 +118,41 @@ describe("async run status inspection", () => {
 		}
 	});
 
+	it("shows a bounded output excerpt for completed async status", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-output-excerpt-"));
+		try {
+			const asyncRoot = path.join(root, "runs");
+			const asyncDir = path.join(asyncRoot, "run-complete");
+			fs.mkdirSync(asyncDir, { recursive: true });
+			const outputPath = path.join(asyncDir, "output-0.log");
+			fs.writeFileSync(outputPath, `${Array.from({ length: 20 }, (_, index) => `prefix line ${index}`).join("\n")}\nfinal child result\nwith detail`, "utf-8");
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+				runId: "run-complete",
+				mode: "single",
+				state: "complete",
+				startedAt: 100,
+				lastUpdate: 200,
+				outputFile: outputPath,
+				steps: [{ agent: "delegate", status: "complete" }],
+			}, null, 2), "utf-8");
+
+			const result = inspectSubagentStatus({ id: "run-complete" }, {
+				asyncDirRoot: asyncRoot,
+				resultsDir: path.join(root, "results"),
+			});
+
+			const text = textContent(result);
+			assert.equal(result.isError, undefined);
+			assert.match(text, /Output: .*output-0\.log/);
+			assert.match(text, /Output excerpt \(tail, truncated\):/);
+			assert.doesNotMatch(text, /prefix line 0/);
+			assert.match(text, /  final child result/);
+			assert.match(text, /  with detail/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("shows acceptance finalization turn counts in detailed async status", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-acceptance-finalization-"));
 		try {

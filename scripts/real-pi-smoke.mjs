@@ -103,6 +103,14 @@ function runLivePrompt(label, prompt, options) {
 	return runPi(label, args, options);
 }
 
+function requireOutput(label, output, pattern) {
+	if (!pattern.test(output)) {
+		throw new Error(`${label} did not include expected evidence ${pattern}.\nOutput:\n${output}`);
+	}
+	const compact = output.trim().split(/\r?\n/).slice(-8).join("\n");
+	console.log(`[real-pi-smoke] ${label} output evidence:\n${compact}`);
+}
+
 async function main() {
 	let options;
 	try {
@@ -133,12 +141,13 @@ async function main() {
 		if (!overrideResult.valid) throw new Error(`override verification failed:\n${overrideJson}`);
 
 		if (options.llm) {
+			const childModelInstruction = process.env.PI_REAL_SMOKE_MODEL ? ` Pass model override '${process.env.PI_REAL_SMOKE_MODEL}' to every subagent run.` : "";
 			const listPrompt = "Use the subagent tool with action list. Reply exactly with 'real-pi-smoke list ok' if reviewer, scout, and oracle are available.";
-			const foregroundPrompt = "Use the subagent tool to run scout with task 'Reply exactly: real-pi-smoke foreground ok', output false, and progress false. Then report the child result.";
-			const asyncPrompt = "Use the subagent tool with async true to run reviewer with task 'Reply exactly: real-pi-smoke async ok', output false, and progress false. Then report the async run id.";
-			runLivePrompt("real Pi subagent list prompt", listPrompt, runOptions);
-			runLivePrompt("real Pi foreground subagent prompt", foregroundPrompt, runOptions);
-			runLivePrompt("real Pi async subagent prompt", asyncPrompt, runOptions);
+			const foregroundPrompt = `Use the subagent tool to run scout with task 'Reply exactly: real-pi-smoke foreground ok', output false, and progress false.${childModelInstruction} Then report the child result.`;
+			const asyncPrompt = `Use the subagent tool with async true to run reviewer with task 'Reply exactly: real-pi-smoke async ok', output false, and progress false.${childModelInstruction} Do not call status and do not wait for completion. Reply with 'real-pi-smoke async launched ok' and quote the exact tool result line beginning 'Async:' including the run id.`;
+			requireOutput("real Pi subagent list prompt", runLivePrompt("real Pi subagent list prompt", listPrompt, runOptions), /real-pi-smoke list ok/);
+			requireOutput("real Pi foreground subagent prompt", runLivePrompt("real Pi foreground subagent prompt", foregroundPrompt, runOptions), /real-pi-smoke foreground ok/);
+			requireOutput("real Pi async subagent prompt", runLivePrompt("real Pi async subagent prompt", asyncPrompt, runOptions), /real-pi-smoke async launched ok[\s\S]*Async:\s+\S+\s+\[[0-9a-f-]{36}\]/i);
 		}
 
 		console.log(`[real-pi-smoke] installed local packages, verified pi list, and verified ${overrideResult.verifiedOverrides}/${overrideResult.bundledAgents} override symlink(s) in ${agentDir}`);

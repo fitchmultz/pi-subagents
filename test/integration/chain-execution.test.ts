@@ -270,6 +270,8 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.match(secondTaskArg, /Output saved to:/);
 		assert.match(secondTaskArg, /2 lines/);
 		assert.doesNotMatch(secondTaskArg, /full chain output/);
+		assert.match(result.content[0]?.text ?? "", /📤 Outputs:/);
+		assert.match(result.content[0]?.text ?? "", /analysis\.md \(30 B, 2 lines\)/);
 	});
 
 	it("persists explicit checked acceptance and rejects missing evidence", async () => {
@@ -878,6 +880,8 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.ok(!result.isError);
 		const summary = result.content[0].text;
 		assert.ok(summary.includes("✅ Chain completed:"), `missing completion marker: ${summary}`);
+		assert.ok(summary.includes("📤 Outputs:"), `missing outputs marker: ${summary}`);
+		assert.ok(summary.includes("worker: Done"), `missing final output: ${summary}`);
 		assert.ok(summary.includes("📁 Artifacts:"), `missing artifacts marker: ${summary}`);
 	});
 

@@ -242,10 +242,12 @@ function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentO
 
 function findNearestProjectRoot(cwd: string): string | null {
 	let currentDir = cwd;
+	const homeDir = path.resolve(os.homedir());
 	while (true) {
-		if (isDirectory(path.join(currentDir, ".pi")) || isDirectory(path.join(currentDir, ".agents"))) {
-			return currentDir;
-		}
+		const resolvedCurrent = path.resolve(currentDir);
+		const hasProjectPi = isDirectory(path.join(currentDir, ".pi"));
+		const hasProjectAgents = resolvedCurrent !== homeDir && isDirectory(path.join(currentDir, ".agents"));
+		if (hasProjectPi || hasProjectAgents) return currentDir;
 
 		const parentDir = path.dirname(currentDir);
 		if (parentDir === currentDir) return null;
@@ -904,7 +906,7 @@ export function discoverAgentsAll(cwd: string, options: AgentDiscoveryOptions = 
 		...projectChainDiagnostics,
 	];
 
-	const userDir = process.env.PI_CODING_AGENT_DIR ? userDirOld : fs.existsSync(userDirNew) ? userDirNew : userDirOld;
+	const userDir = userDirOld;
 
 	return { builtin, user, project, chains, chainDiagnostics, userDir, projectDir, userChainDir, projectChainDir, userSettingsPath, projectSettingsPath };
 }

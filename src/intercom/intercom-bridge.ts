@@ -125,17 +125,27 @@ function readJsonBestEffort(filePath: string): unknown {
 	}
 }
 
+function packageManifest(packageRoot: string): Record<string, unknown> | undefined {
+	const pkg = readJsonBestEffort(path.join(packageRoot, "package.json"));
+	return pkg && typeof pkg === "object" && !Array.isArray(pkg) ? pkg as Record<string, unknown> : undefined;
+}
+
 function packageHasPiExtension(packageRoot: string): boolean {
 	if (!fs.existsSync(packageRoot)) return false;
-	const pkg = readJsonBestEffort(path.join(packageRoot, "package.json"));
-	if (pkg && typeof pkg === "object" && !Array.isArray(pkg)) {
-		const pi = (pkg as { pi?: unknown }).pi;
+	const pkg = packageManifest(packageRoot);
+	if (pkg) {
+		const pi = pkg.pi;
 		if (pi && typeof pi === "object" && !Array.isArray(pi)) {
 			const extensions = (pi as { extensions?: unknown }).extensions;
 			return Array.isArray(extensions) && extensions.some((entry) => typeof entry === "string" && entry.trim() !== "");
 		}
 	}
 	return fs.existsSync(path.join(packageRoot, "extensions"));
+}
+
+function packageRootLooksLikePiIntercom(packageRoot: string): boolean {
+	const manifest = packageManifest(packageRoot);
+	return manifest?.name === PI_INTERCOM_PACKAGE_NAME || path.basename(path.resolve(packageRoot)) === PI_INTERCOM_PACKAGE_NAME;
 }
 
 function isSafePackagePath(value: string): boolean {
@@ -164,6 +174,16 @@ function packageEntryAllowsExtensions(entry: unknown): boolean {
 	if (!entry || typeof entry !== "object" || Array.isArray(entry)) return true;
 	const extensions = (entry as { extensions?: unknown }).extensions;
 	return !Array.isArray(extensions) || extensions.length > 0;
+}
+
+function expandTilde(filePath: string): string {
+	return filePath.startsWith("~/") ? path.join(os.homedir(), filePath.slice(2)) : filePath;
+}
+
+function resolveLocalPackageSource(source: string, settingsDir: string): string | undefined {
+	if (source.startsWith("npm:") || source.startsWith("git:") || /^[a-z][a-z0-9+.-]*:\/\//i.test(source)) return undefined;
+	const expanded = expandTilde(source);
+	return path.resolve(settingsDir, expanded);
 }
 
 function findNearestProjectConfigDir(cwd: string): string | undefined {
@@ -207,17 +227,22 @@ function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agent
 		for (const entry of packages) {
 			if (!packageEntryAllowsExtensions(entry)) continue;
 			const source = packageEntrySource(entry)?.trim();
-			if (!source?.startsWith("npm:")) continue;
-			const packageName = parseNpmPackageName(source);
-			if (packageName !== PI_INTERCOM_PACKAGE_NAME) continue;
-			const candidates = scope === "project"
-				? [path.join(configDir, "npm", "node_modules", packageName)]
-				: [
-					...(globalNpmRoot ? [path.join(globalNpmRoot, packageName)] : []),
-					path.join(agentDir, "npm", "node_modules", packageName),
-				];
-			const packageRoot = candidates.find(packageHasPiExtension);
-			if (packageRoot) return path.resolve(packageRoot);
+			if (!source) continue;
+			if (source.startsWith("npm:")) {
+				const packageName = parseNpmPackageName(source);
+				if (packageName !== PI_INTERCOM_PACKAGE_NAME) continue;
+				const candidates = scope === "project"
+					? [path.join(configDir, "npm", "node_modules", packageName)]
+					: [
+						...(globalNpmRoot ? [path.join(globalNpmRoot, packageName)] : []),
+						path.join(agentDir, "npm", "node_modules", packageName),
+					];
+				const packageRoot = candidates.find(packageHasPiExtension);
+				if (packageRoot) return path.resolve(packageRoot);
+				continue;
+			}
+			const localPackageRoot = resolveLocalPackageSource(source, configDir);
+			if (localPackageRoot && packageRootLooksLikePiIntercom(localPackageRoot) && packageHasPiExtension(localPackageRoot)) return localPackageRoot;
 		}
 	}
 	return undefined;
@@ -242,10 +267,6 @@ function extensionSandboxAllowsIntercom(extensions: string[] | undefined, extens
 		if (normalized.includes("/pi-intercom/")) return true;
 	}
 	return false;
-}
-
-function expandTilde(filePath: string): string {
-	return filePath.startsWith("~/") ? path.join(os.homedir(), filePath.slice(2)) : filePath;
 }
 
 function resolveInstructionTemplate(instructionFile: string, settingsDir: string): string {

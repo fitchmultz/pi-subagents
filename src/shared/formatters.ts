@@ -52,6 +52,26 @@ export function formatDuration(ms: number): string {
 	return `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`;
 }
 
+function clipChainOutput(value: string, maxChars = 500): string {
+	const trimmed = value.trim();
+	return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars).trimEnd()}…` : trimmed;
+}
+
+function formatChainOutputsSummary(results: SingleResult[]): string {
+	const lines: string[] = [];
+	for (const [index, result] of results.entries()) {
+		if (result.outputReference) {
+			lines.push(`  ${index + 1}. ${result.agent}: ${result.outputReference.path} (${result.outputReference.bytes} B, ${result.outputReference.lines} ${result.outputReference.lines === 1 ? "line" : "lines"})`);
+			continue;
+		}
+		if (result.finalOutput?.trim()) lines.push(`  ${index + 1}. ${result.agent}: ${clipChainOutput(result.finalOutput)}`);
+	}
+	if (lines.length === 0) return "";
+	const visible = lines.slice(-5);
+	const hidden = lines.length - visible.length;
+	return `📤 Outputs:${hidden > 0 ? ` (${hidden} earlier omitted)` : ""}\n${visible.join("\n")}`;
+}
+
 /**
  * Build a summary string for a completed/failed chain
  */
@@ -76,19 +96,20 @@ export function buildChainSummary(
 		if (r.skills) r.skills.forEach((s) => allSkills.add(s));
 	}
 	const skillsLine = allSkills.size > 0 ? `🔧 Skills: ${[...allSkills].join(", ")}` : "";
+	const outputsSummary = formatChainOutputsSummary(results);
 
 	if (status === "completed") {
 		const stepWord = results.length === 1 ? "step" : "steps";
 		return `✅ Chain completed: ${stepNames} (${results.length} ${stepWord}, ${durationStr})${skillsLine ? `\n${skillsLine}` : ""}
 
-📋 Progress: ${hasProgress ? progressPath : "(none)"}
+📋 Progress: ${hasProgress ? progressPath : "(none)"}${outputsSummary ? `\n${outputsSummary}` : ""}
 📁 Artifacts: ${chainDir}`;
 	} else {
 		const stepInfo = failedStep ? ` at step ${failedStep.index + 1}` : "";
 		const errorInfo = failedStep?.error ? `: ${failedStep.error}` : "";
 		return `❌ Chain failed${stepInfo}${errorInfo}${skillsLine ? `\n${skillsLine}` : ""}
 
-📋 Progress: ${hasProgress ? progressPath : "(none)"}
+📋 Progress: ${hasProgress ? progressPath : "(none)"}${outputsSummary ? `\n${outputsSummary}` : ""}
 📁 Artifacts: ${chainDir}`;
 	}
 }

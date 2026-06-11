@@ -93,4 +93,20 @@ describe("Path resolution for .agents and ~/.agents", () => {
 		assert.ok(agent);
 		assert.strictEqual(agent?.filePath, path.join(userAgentsDir, "test-agent-2.md"));
 	});
+
+	test("should not treat ~/.agents as a project agent directory", () => {
+		const nestedCwd = path.join(fakeHomeDir, "repo", "subdir");
+		const userAgentsDir = path.join(fakeHomeDir, ".agents");
+		fs.mkdirSync(nestedCwd, { recursive: true });
+		fs.mkdirSync(userAgentsDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(userAgentsDir, "home-agent.md"),
+			"---\nname: home-agent\ndescription: Home agent\n---\nHome content"
+		);
+
+		const projectResult = discoverAgents(nestedCwd, "project");
+		assert.equal(projectResult.agents.some((a) => a.name === "home-agent"), false);
+		const userResult = discoverAgents(nestedCwd, "user");
+		assert.ok(userResult.agents.find((a) => a.name === "home-agent"));
+	});
 });
