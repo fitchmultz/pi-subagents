@@ -28,7 +28,7 @@ Pi 0.79.0 or newer is recommended because the extension tracks current extension
 
 ## Local validation
 
-Run the same gate used by CI before treating changes as complete:
+Run the local completion gate before treating changes as complete:
 
 ```bash
 npm run ci
