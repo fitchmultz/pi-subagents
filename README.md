@@ -54,6 +54,16 @@ bash /Users/mitchfultz/Projects/AI/pi-fitch-kit/scripts/sync-agents.sh
 
 Then rerun `npm run smoke:overrides` or the full `npm run ci` gate.
 
+## Local test watchdog
+
+`npm test`, `npm run test:unit`, `npm run test:integration`, and `npm run test:all` run through `scripts/run-tests.mjs`, which applies a per-suite local watchdog so hung child-process or worktree tests fail with the command context instead of hanging forever. The default is 300000ms. Override it when debugging slow local runs:
+
+```bash
+PI_TEST_TIMEOUT_MS=600000 npm run test:integration
+# or
+node scripts/run-tests.mjs integration --timeout-ms 600000
+```
+
 ## Try this first
 
 You do not need to create agents, write config, or learn slash commands. After installing, ask Pi for delegation in plain language:
