@@ -95,7 +95,7 @@ describe("subagent control notice delivery", () => {
 		assert.equal(recorder.sent.length, 0);
 		await wait(25);
 		assert.equal(recorder.sent.length, 1);
-		assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: false });
+		assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: true });
 	});
 
 	it("drops queued foreground notices when the run finishes before delivery", async () => {

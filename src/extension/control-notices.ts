@@ -52,7 +52,7 @@ function deliverControlNotice(input: {
 			display: true,
 			details: { ...input.details, childIntercomTarget, noticeText },
 		},
-		{ triggerTurn: input.details.source !== "foreground" },
+		{ triggerTurn: true },
 	);
 }
 
