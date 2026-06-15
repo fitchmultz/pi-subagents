@@ -72,6 +72,7 @@ subagent({
 ```ts
 subagent({ agent: "scout", task: "Map the auth flow.", async: true })
 subagent({ action: "status", id: "run-id" })
+subagent({ action: "extend", id: "foreground-run-id", extendMs: 300000 })
 subagent({ action: "resume", id: "run-id", message: "Continue with this clarification..." })
 ```
 

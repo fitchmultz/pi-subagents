@@ -1285,6 +1285,47 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.deepEqual(result.attemptedModels, ["mock/primary"], "timeout should not retry fallback models");
 	});
 
+	it("reports when a foreground timeout extension has no timeout to extend", async () => {
+		mockPi.onCall({ output: "Finished without timeout" });
+		const agents = [makeAgent("quick", { model: "mock/primary" })];
+		let extendTimeout: ((additionalMs: number) => { ok: boolean; timeoutAt?: number; message: string }) | undefined;
+
+		const result = await runSync(tempDir, agents, "quick", "Quick task", {
+			runId: "no-timeout-extension-run",
+			registerTimeoutExtension: (extend: typeof extendTimeout) => { extendTimeout = extend; },
+		});
+		const extension = extendTimeout?.(1000);
+
+		assert.equal(result.exitCode, 0);
+		assert.equal(extension?.ok, false);
+		assert.match(extension?.message ?? "", /does not have a timeout/);
+	});
+
+	it("extends an active foreground timeout", async () => {
+		mockPi.onCall({ delay: 250, output: "Finished after extension" });
+		const agents = [makeAgent("slow", { model: "mock/primary", fallbackModels: ["mock/fallback"] })];
+		let extendTimeout: ((additionalMs: number) => { ok: boolean; timeoutAt?: number; message: string }) | undefined;
+
+		const start = Date.now();
+		const resultPromise = runSync(tempDir, agents, "slow", "Slow task", {
+			runId: "timeout-extend-run",
+			timeoutMs: 100,
+			timeoutAt: Date.now() + 100,
+			registerTimeoutExtension: (extend: typeof extendTimeout) => { extendTimeout = extend; },
+		});
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const extension = extendTimeout?.(500);
+		const result = await resultPromise;
+		const elapsed = Date.now() - start;
+
+		assert.equal(extension?.ok, true);
+		assert.ok(elapsed >= 200, `should allow the delayed child to finish, took ${elapsed}ms`);
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.timedOut, undefined);
+		assert.equal(result.finalOutput, "Finished after extension");
+		assert.deepEqual(result.attemptedModels, ["mock/primary"]);
+	});
+
 	it("foreground timeout preserves partial child output", async () => {
 		mockPi.onCall({
 			steps: [

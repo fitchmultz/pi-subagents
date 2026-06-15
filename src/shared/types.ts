@@ -795,6 +795,8 @@ export interface SubagentState {
 		toolCount?: number;
 		nestedRoute?: NestedRouteInfo;
 		nestedChildren?: NestedRunSummary[];
+		timeoutAt?: number;
+		extendTimeout?: (additionalMs: number) => { ok: boolean; timeoutAt?: number; message: string };
 		interrupt?: () => boolean;
 	}>;
 	lastForegroundControlId: string | null;
@@ -854,6 +856,7 @@ export interface RunSyncOptions {
 	interruptSignal?: AbortSignal;
 	timeoutMs?: number;
 	timeoutAt?: number;
+	registerTimeoutExtension?: (extend: (additionalMs: number) => { ok: boolean; timeoutAt?: number; message: string }) => void;
 	allowIntercomDetach?: boolean;
 	intercomEvents?: IntercomEventBus;
 	onUpdate?: (r: SubagentExecutionResult) => void;
@@ -1025,7 +1028,7 @@ export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
 export const POLL_INTERVAL_MS = 250;
 export const MAX_WIDGET_JOBS = 4;
 export const DEFAULT_SUBAGENT_MAX_DEPTH = 2;
-export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "resume", "doctor"] as const;
+export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "doctor"] as const;
 
 export const DEFAULT_FORK_PREAMBLE =
 	"You are a delegated subagent running from a fork of the parent session. " +

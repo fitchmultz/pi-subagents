@@ -336,6 +336,14 @@ const run = subagent({
 
 Inspect async runs with `subagent({ action: "status", id: "..." })` or `subagent({ action: "status" })` for active runs. If a delegated fanout child launches nested runs, the parent status view shows them as a tree and you can target a nested run directly with its nested id.
 
+Use `extend` when an active foreground child has an explicit timeout and is still doing useful work:
+
+```typescript
+subagent({ action: "extend", id: "foreground-run-id", extendMs: 300000 })
+```
+
+`extend` adds time to the current foreground child deadline. It does not revive an already timed-out child; use `resume` after a timeout or transient failure.
+
 Use `resume` for follow-up work after a delegated run:
 
 ```typescript
@@ -349,6 +357,7 @@ Resume behavior:
 - If an async child has completed, `resume` revives it by starting a new async child from the persisted child session file.
 - Multi-child async runs require `index` unless only one running child is selectable.
 - Completed foreground single, parallel, and chain runs can also be revived by `index` while their run metadata remains in extension state.
+- Timed-out or transient-error foreground children can be revived the same way when their `.jsonl` session file was persisted.
 - Nested runs can be resumed by nested id when a live route or persisted nested session metadata is available.
 - Revive starts a new child process from the old session context; it does not restart the same OS process.
 - If the chosen child has no persisted `.jsonl` session file, resume fails and reports that directly.
@@ -365,7 +374,7 @@ Humans can use `/subagents-doctor` for the same read-only report. It checks runt
 
 Subagent control is the runtime visibility and intervention layer for delegated runs. It is separate from lifecycle status. Lifecycle status says whether a child is `queued`, `running`, `paused`, `complete`, or `failed`. Activity reporting is factual: it tracks the last observed activity time and the current tool when known. It does not pretend to know that a child is truly stuck.
 
-Default behavior is intentionally conservative. When no activity has been observed past the configured threshold, the run emits a `needs_attention` control event. Foreground runs can push this as a `subagent:control-event` event, and async runs persist it to `events.jsonl` so the parent tracker can surface it without constant manual polling. Notification-worthy control events are also inserted into the visible transcript so both the user and the parent agent can see them, with a proactive hint plus concrete `nudge`, `status`, and `interrupt` options. Visible notifications fire once per child run and attention state.
+Default behavior is intentionally conservative. When no activity has been observed past the configured threshold, the run emits a `needs_attention` control event. Foreground runs can push this as a `subagent:control-event` event, and async runs persist it to `events.jsonl` so the parent tracker can surface it without constant manual polling. Notification-worthy control events are also inserted into the visible transcript so both the user and the parent agent can see them, with a proactive hint plus concrete `nudge`, `status`, and `interrupt` options. Use `status` to see an `extend` command when the active foreground child has an extendable timeout. Visible notifications fire once per child run and attention state.
 
 Use soft interrupt when a child is clearly blocked or drifting and the parent needs to regain control:
 

@@ -165,6 +165,7 @@ export interface SubagentParamsLike {
 	concurrency?: number;
 	timeoutMs?: number;
 	maxRuntimeMs?: number;
+	extendMs?: number;
 	worktree?: boolean;
 	context?: "fresh" | "fork";
 	async?: boolean;
@@ -255,6 +256,7 @@ export function normalizeSubagentParamsLike(params: RawSubagentParamsLike): Suba
 		concurrency: numberValue(params, "concurrency"),
 		timeoutMs: numberValue(params, "timeoutMs"),
 		maxRuntimeMs: numberValue(params, "maxRuntimeMs"),
+		extendMs: numberValue(params, "extendMs"),
 		worktree: booleanValue(params, "worktree"),
 		context: contextValue(params),
 		async: booleanValue(params, "async"),
@@ -387,10 +389,43 @@ function foregroundStatusResult(control: SubagentState["foregroundControls"] ext
 		`Mode: ${control.mode}`,
 		control.currentAgent ? `Current: ${control.currentAgent}${control.currentIndex !== undefined ? ` step ${control.currentIndex + 1}` : ""}` : undefined,
 		activity ? `Activity: ${activity}` : undefined,
+		control.timeoutAt ? `Timeout: ${new Date(control.timeoutAt).toISOString()}` : undefined,
+		control.timeoutAt && control.extendTimeout ? `Extend: subagent({ action: "extend", id: "${control.runId}", extendMs: 300000 })` : undefined,
 	].filter((line): line is string => Boolean(line));
 	lines.push(...formatNestedRunStatusLines(control.nestedChildren, { indent: "", commandHints: true, maxLines: 20 }));
 	if (nestedWarning) lines.push(`Warning: ${nestedWarning}`);
 	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
+}
+
+function extendForegroundTimeoutResult(control: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never, additionalMs: number): SubagentExecutionResult {
+	if (!Number.isInteger(additionalMs) || additionalMs <= 0) {
+		return {
+			content: [{ type: "text", text: "action='extend' requires extendMs or timeoutMs to be a positive integer number of milliseconds." }],
+			isError: true,
+			details: { mode: "management", results: [] },
+		};
+	}
+	if (!control.extendTimeout) {
+		return {
+			content: [{ type: "text", text: `Foreground run ${control.runId} does not currently have an extendable timeout.` }],
+			isError: true,
+			details: { mode: "management", results: [] },
+		};
+	}
+	const result = control.extendTimeout(additionalMs);
+	if (!result.ok) {
+		return {
+			content: [{ type: "text", text: result.message }],
+			isError: true,
+			details: { mode: "management", results: [] },
+		};
+	}
+	control.timeoutAt = result.timeoutAt;
+	control.updatedAt = Date.now();
+	return {
+		content: [{ type: "text", text: `Extended foreground run ${control.runId} by ${additionalMs}ms.${result.timeoutAt ? ` New timeout: ${new Date(result.timeoutAt).toISOString()}.` : ""}` }],
+		details: { mode: "management", results: [] },
+	};
 }
 
 function rememberForegroundRun(state: SubagentState, input: { runId: string; mode: "single" | "parallel" | "chain"; cwd: string; results: SingleResult[] }): void {
@@ -2305,12 +2340,13 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		}
 		: undefined;
 
-	const timeoutAt = data.foregroundTimeoutMs !== undefined ? Date.now() + data.foregroundTimeoutMs : undefined;
+	const timeoutAt = foregroundControl?.timeoutAt ?? (data.foregroundTimeoutMs !== undefined ? Date.now() + data.foregroundTimeoutMs : undefined);
 	const r = await runSync(ctx.cwd, agents, params.agent!, task, {
 		cwd: effectiveCwd,
 		signal,
 		interruptSignal: interruptController.signal,
 		...(data.foregroundTimeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: data.foregroundTimeoutMs, timeoutAt } : {}),
+		...(data.foregroundTimeoutMs !== undefined && timeoutAt !== undefined && foregroundControl ? { registerTimeoutExtension: (extend: (additionalMs: number) => { ok: boolean; timeoutAt?: number; message: string }) => { foregroundControl.extendTimeout = extend; } } : {}),
 		allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 		intercomEvents: deps.pi.events,
 		runId,
@@ -2343,6 +2379,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 	});
 	if (foregroundControl?.currentIndex === 0) {
 		foregroundControl.interrupt = undefined;
+		foregroundControl.extendTimeout = undefined;
 		foregroundControl.currentActivityState = r.progress?.activityState;
 		foregroundControl.lastActivityAt = r.progress?.lastActivityAt;
 		foregroundControl.currentTool = r.progress?.currentTool;
@@ -2409,8 +2446,9 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		const timeoutText = r.finalOutput && r.finalOutput !== r.error
 			? `Run timed out (${params.agent}).\n${r.finalOutput}`
 			: `Run timed out (${params.agent}): ${r.error ?? "timeout expired"}`;
+		const resumeText = r.sessionFile ? `\n\nResume without losing session context: subagent({ action: "resume", id: "${runId}", message: "Continue from the timeout and finish the task." })` : "";
 		return {
-			content: [{ type: "text", text: timeoutText }],
+			content: [{ type: "text", text: `${timeoutText}${resumeText}` }],
 			details,
 			isError: true,
 		};
@@ -2423,12 +2461,14 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		};
 	}
 
-	if (r.exitCode !== 0)
+	if (r.exitCode !== 0) {
+		const resumeText = r.sessionFile ? `\n\nIf this was transient, resume without losing session context: subagent({ action: "resume", id: "${runId}", message: "Continue from the failure and finish the task." })` : "";
 		return {
-			content: [{ type: "text", text: r.error || "Failed" }],
+			content: [{ type: "text", text: `${r.error || "Failed"}${resumeText}` }],
 			details,
 			isError: true,
 		};
+	}
 	return {
 		content: [{ type: "text", text: finalizedOutput.displayOutput || "(no output)" }],
 		details,
@@ -2514,6 +2554,27 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 			if (params.action === "resume") {
 				return resumeAsyncRun({ params: paramsWithResolvedCwd, requestCwd, ctx, deps });
+			}
+			if (params.action === "extend") {
+				const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
+				let resolved: ResolvedSubagentRunId | undefined;
+				if (targetRunId) {
+					try {
+						resolved = resolveSubagentRunId(targetRunId, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
+					}
+				}
+				const foreground = getForegroundControl(deps.state, resolved?.kind === "foreground" ? resolved.id : targetRunId);
+				if (!foreground) {
+					return {
+						content: [{ type: "text", text: "No extendable foreground run found in this session." }],
+						isError: true,
+						details: { mode: "management", results: [] },
+					};
+				}
+				return extendForegroundTimeoutResult(foreground, paramsWithResolvedCwd.extendMs ?? paramsWithResolvedCwd.timeoutMs ?? paramsWithResolvedCwd.maxRuntimeMs ?? 0);
 			}
 			if (params.action === "interrupt") {
 				const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
@@ -2729,6 +2790,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		};
 
 		const foregroundMode: "single" | "parallel" | "chain" = hasChain ? "chain" : hasTasks ? "parallel" : "single";
+		const foregroundTimeoutAt = !effectiveAsync && foregroundTimeout.timeoutMs !== undefined ? Date.now() + foregroundTimeout.timeoutMs : undefined;
 		const foregroundControl = effectiveAsync
 			? undefined
 			: {
@@ -2739,6 +2801,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				currentAgent: undefined,
 				currentIndex: undefined,
 				currentActivityState: undefined,
+				...(foregroundTimeoutAt !== undefined ? { timeoutAt: foregroundTimeoutAt } : {}),
 				nestedRoute,
 				interrupt: undefined,
 			};

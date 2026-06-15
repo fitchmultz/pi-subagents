@@ -770,33 +770,49 @@ async function runSingleAttempt(
 			}
 		}
 
-		if (options.timeoutAt !== undefined) {
-			const triggerTimeout = () => {
-				if (processClosed || detached || settled || timedOut || resourceLimited) return;
-				timedOut = true;
-				const message = formatForegroundTimeoutMessage(options.timeoutMs);
-				result.timedOut = true;
-				result.error = message;
-				result.finalOutput = message;
-				progress.status = "failed";
-				progress.durationMs = Date.now() - startTime;
-				appendRecentOutput(progress, [message]);
-				progress.activityState = undefined;
-				fireUpdate();
-				trySignalChild(proc, "SIGINT");
-				timeoutEscalationTimer = setTimeout(() => {
-					if (settled || processClosed || detached) return;
-					trySignalChild(proc, "SIGTERM");
-				}, 1000);
-				timeoutEscalationTimer.unref?.();
-			};
-			const delay = options.timeoutAt - Date.now();
+		let timeoutDeadline = options.timeoutAt;
+		const triggerTimeout = () => {
+			if (processClosed || detached || settled || timedOut || resourceLimited) return;
+			timedOut = true;
+			const message = formatForegroundTimeoutMessage(options.timeoutMs);
+			result.timedOut = true;
+			result.error = message;
+			result.finalOutput = message;
+			progress.status = "failed";
+			progress.durationMs = Date.now() - startTime;
+			appendRecentOutput(progress, [message]);
+			progress.activityState = undefined;
+			fireUpdate();
+			trySignalChild(proc, "SIGINT");
+			timeoutEscalationTimer = setTimeout(() => {
+				if (settled || processClosed || detached) return;
+				trySignalChild(proc, "SIGTERM");
+			}, 1000);
+			timeoutEscalationTimer.unref?.();
+		};
+		const scheduleTimeout = () => {
+			if (timeoutTimer) {
+				clearTimeout(timeoutTimer);
+				timeoutTimer = undefined;
+			}
+			if (timeoutDeadline === undefined) return;
+			const delay = timeoutDeadline - Date.now();
 			if (delay <= 0) triggerTimeout();
 			else {
 				timeoutTimer = setTimeout(triggerTimeout, delay);
 				timeoutTimer.unref?.();
 			}
-		}
+		};
+		options.registerTimeoutExtension?.((additionalMs: number) => {
+			if (!Number.isFinite(additionalMs) || additionalMs <= 0) return { ok: false, message: "additionalMs must be a positive number." };
+			if (timeoutDeadline === undefined) return { ok: false, message: "This foreground run does not have a timeout to extend." };
+			if (settled || processClosed || detached) return { ok: false, message: "This foreground run is no longer active." };
+			if (timedOut) return { ok: false, message: "This foreground run has already timed out; use action='resume' with a follow-up message." };
+			timeoutDeadline = Math.max(timeoutDeadline, Date.now()) + additionalMs;
+			scheduleTimeout();
+			return { ok: true, timeoutAt: timeoutDeadline, message: `Extended timeout until ${new Date(timeoutDeadline).toISOString()}.` };
+		});
+		if (timeoutDeadline !== undefined) scheduleTimeout();
 
 		if (options.maxExecutionTimeMs !== undefined) {
 			const maxExecutionTimeMs = options.maxExecutionTimeMs;
