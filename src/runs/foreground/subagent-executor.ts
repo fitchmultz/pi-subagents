@@ -47,7 +47,7 @@ import {
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { applyIntercomBridgeToAgent, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveSubagentIntercomTarget, shouldApplyIntercomBridge, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import { formatControlIntercomMessage, formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
-import { finalizeSingleOutput, injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
+import { finalizeSingleOutput, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd } from "../../shared/utils.ts";
 import {
 	attachNestedChildrenToResultChildren,
@@ -221,6 +221,31 @@ function outputModeValue(params: RawSubagentParamsLike): SubagentParamsLike["out
 function outputValue(params: RawSubagentParamsLike): SubagentParamsLike["output"] {
 	const value = params.output;
 	return typeof value === "string" || typeof value === "boolean" ? value : undefined;
+}
+
+function usesAgentDefaultOutput(output: string | boolean | undefined): boolean {
+	return output === undefined || output === true || output === "true";
+}
+
+function resolveTopLevelOutputOverride(params: {
+	requestedOutput: string | boolean | undefined;
+	agentDefaultOutput: string | false | undefined;
+	artifactsDir: string;
+	runId: string;
+	agent: string;
+	index?: number;
+}): string | false | undefined {
+	const effectiveOutput = usesAgentDefaultOutput(params.requestedOutput)
+		? normalizeSingleOutputOverride(true, params.agentDefaultOutput)
+		: normalizeSingleOutputOverride(params.requestedOutput, params.agentDefaultOutput);
+	if (!usesAgentDefaultOutput(params.requestedOutput)) return effectiveOutput;
+	return materializeAgentDefaultOutputPath({
+		output: effectiveOutput,
+		artifactsDir: params.artifactsDir,
+		runId: params.runId,
+		agent: params.agent,
+		index: params.index,
+	});
 }
 
 function skillValue(params: RawSubagentParamsLike): SubagentParamsLike["skill"] {
@@ -1340,18 +1365,41 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 			resolveModelCandidate(task.model ?? agentConfigs[index]?.model, availableModels, currentProvider),
 		);
 		const skillOverrides = params.tasks.map((task) => normalizeSkillInput(task.skill));
-		const parallelTasks = params.tasks.map((task, index) => ({
-			agent: task.agent,
-			task: wrapTaskForAgentContext(task.task, params.context, task.agent, agents),
-			cwd: task.cwd,
-			...(modelOverrides[index] ? { model: modelOverrides[index] } : {}),
-			...(skillOverrides[index] !== undefined ? { skill: skillOverrides[index] } : {}),
-			...(task.output === true ? (agentConfigs[index]?.output ? { output: agentConfigs[index]!.output } : {}) : task.output !== undefined ? { output: task.output } : {}),
+		const parallelTasks = params.tasks.map((task, index) => {
+			const output = resolveTopLevelOutputOverride({
+				requestedOutput: task.output,
+				agentDefaultOutput: agentConfigs[index]?.output,
+				artifactsDir,
+				runId: id,
+				agent: task.agent,
+				index,
+			});
+			return {
+				agent: task.agent,
+				task: wrapTaskForAgentContext(task.task, params.context, task.agent, agents),
+				cwd: task.cwd,
+				...(modelOverrides[index] ? { model: modelOverrides[index] } : {}),
+				...(skillOverrides[index] !== undefined ? { skill: skillOverrides[index] } : {}),
+				...(output !== undefined ? { output } : {}),
+				...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
+				...(task.reads !== undefined && task.reads !== true ? { reads: task.reads } : {}),
+				...(task.progress !== undefined ? { progress: task.progress } : {}),
+				...(task.acceptance !== undefined ? { acceptance: task.acceptance } : {}),
+			};
+		});
+		const asyncParallelBehaviors = parallelTasks.map((task, index) => resolveStepBehavior(agentConfigs[index]!, {
+			...(task.output !== undefined ? { output: task.output } : {}),
 			...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
-			...(task.reads !== undefined && task.reads !== true ? { reads: task.reads } : {}),
-			...(task.progress !== undefined ? { progress: task.progress } : {}),
-			...(task.acceptance !== undefined ? { acceptance: task.acceptance } : {}),
 		}));
+		const duplicateOutputError = params.worktree
+			? findDuplicateAbsoluteParallelOutputPath({ tasks: parallelTasks, behaviors: asyncParallelBehaviors })
+			: findDuplicateParallelOutputPath({
+				tasks: parallelTasks,
+				behaviors: asyncParallelBehaviors,
+				paramsCwd: effectiveCwd,
+				ctxCwd: ctx.cwd,
+			});
+		if (duplicateOutputError) return buildParallelModeError(duplicateOutputError);
 		return executeAsyncChain(id, {
 			chain: [{
 				parallel: parallelTasks,
@@ -1420,8 +1468,14 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 				details: { mode: "single" as const, results: [] },
 			};
 		}
-		const rawOutput = params.output !== undefined ? params.output : a.output;
-		const effectiveOutput = normalizeSingleOutputOverride(rawOutput, a.output);
+		const effectiveOutput = resolveTopLevelOutputOverride({
+			requestedOutput: params.output,
+			agentDefaultOutput: a.output,
+			artifactsDir,
+			runId: id,
+			agent: params.agent!,
+			index: 0,
+		});
 		const effectiveOutputMode = params.outputMode ?? "inline";
 		const normalizedSkills = normalizeSkillInput(params.skill);
 		const skills = normalizedSkills === false ? [] : normalizedSkills;
@@ -1731,6 +1785,25 @@ function findDuplicateParallelOutputPath(input: {
 	return undefined;
 }
 
+function findDuplicateAbsoluteParallelOutputPath(input: {
+	tasks: TaskParam[];
+	behaviors: ResolvedStepBehavior[];
+}): string | undefined {
+	const seen = new Map<string, { index: number; agent: string }>();
+	for (let index = 0; index < input.tasks.length; index++) {
+		const behavior = input.behaviors[index];
+		if (typeof behavior?.output !== "string" || !path.isAbsolute(behavior.output)) continue;
+		const outputPath = path.resolve(behavior.output);
+		const task = input.tasks[index]!;
+		const previous = seen.get(outputPath);
+		if (previous) {
+			return `Parallel tasks ${previous.index + 1} (${previous.agent}) and ${index + 1} (${task.agent}) resolve output to the same path: ${outputPath}. Use distinct output paths.`;
+		}
+		seen.set(outputPath, { index, agent: task.agent });
+	}
+	return undefined;
+}
+
 async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Promise<SingleResult[]> {
 	return mapConcurrent(input.tasks, input.concurrencyLimit, async (task, index) => {
 		const behavior = input.behaviors[index];
@@ -1906,6 +1979,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 	const skillOverrides: (string[] | false | undefined)[] = tasks.map((t) =>
 		normalizeSkillInput(t.skill),
 	);
+	const outputUsesAgentDefault = tasks.map((task) => usesAgentDefaultOutput(task.output));
 	const behaviorOverrides: StepOverrides[] = tasks.map((task, index) => ({
 		...(task.output !== undefined ? { output: task.output === true ? agentConfigs[index]?.output ?? false : task.output } : {}),
 		...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
@@ -1953,7 +2027,10 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 				modelOverrides[i] = override.model;
 				behaviorOverrides[i]!.model = override.model;
 			}
-			if (override?.output !== undefined) behaviorOverrides[i]!.output = override.output;
+			if (override?.output !== undefined) {
+				behaviorOverrides[i]!.output = override.output;
+				outputUsesAgentDefault[i] = false;
+			}
 			if (override?.reads !== undefined) behaviorOverrides[i]!.reads = override.reads;
 			if (override?.progress !== undefined) behaviorOverrides[i]!.progress = override.progress;
 			if (override?.skills !== undefined) {
@@ -1980,13 +2057,22 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			const parallelTasks = tasks.map((t, i) => {
 				const taskText = wrapTaskForAgentContext(taskTexts[i]!, params.context, t.agent, agents);
 				const progress = taskDisallowsFileUpdates(taskText) ? false : behaviorOverrides[i]?.progress;
+				const output = outputUsesAgentDefault[i]
+					? materializeAgentDefaultOutputPath({
+						output: resolveStepBehavior(agentConfigs[i]!, behaviorOverrides[i]!).output,
+						artifactsDir,
+						runId: id,
+						agent: t.agent,
+						index: i,
+					})
+					: behaviorOverrides[i]?.output;
 				return {
 					agent: t.agent,
 					task: taskText,
 					cwd: t.cwd,
 					...(modelOverrides[i] ? { model: modelOverrides[i] } : {}),
 					...(skillOverrides[i] !== undefined ? { skill: skillOverrides[i] } : {}),
-					...(behaviorOverrides[i]?.output !== undefined ? { output: behaviorOverrides[i]!.output } : {}),
+					...(output !== undefined ? { output } : {}),
 					...(behaviorOverrides[i]?.outputMode !== undefined ? { outputMode: behaviorOverrides[i]!.outputMode } : {}),
 					...(behaviorOverrides[i]?.reads !== undefined ? { reads: behaviorOverrides[i]!.reads } : {}),
 					...(progress !== undefined ? { progress } : {}),
@@ -2018,7 +2104,20 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		}
 	}
 
-	const behaviors = agentConfigs.map((config, index) => suppressProgressForReadOnlyTask(resolveStepBehavior(config, behaviorOverrides[index]!), taskTexts[index]));
+	const behaviors = agentConfigs.map((config, index) => {
+		const behavior = suppressProgressForReadOnlyTask(resolveStepBehavior(config, behaviorOverrides[index]!), taskTexts[index]);
+		if (!outputUsesAgentDefault[index]) return behavior;
+		return {
+			...behavior,
+			output: materializeAgentDefaultOutputPath({
+				output: behavior.output,
+				artifactsDir,
+				runId,
+				agent: tasks[index]!.agent,
+				index,
+			}) ?? false,
+		};
+	});
 	const firstProgressIndex = behaviors.findIndex((behavior) => behavior.progress);
 	const liveResults: (SingleResult | undefined)[] = new Array(tasks.length).fill(undefined);
 	const liveProgress: (AgentProgress | undefined)[] = new Array(tasks.length).fill(undefined);
@@ -2222,6 +2321,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 	);
 	let skillOverride: string[] | false | undefined = normalizeSkillInput(params.skill);
 	const rawOutput = params.output !== undefined ? params.output : agentConfig.output;
+	let outputUsesAgentDefault = usesAgentDefaultOutput(params.output);
 	let effectiveOutput = normalizeSingleOutputOverride(rawOutput, agentConfig.output);
 	const effectiveOutputMode = params.outputMode ?? "inline";
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth);
@@ -2256,10 +2356,17 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		task = result.templates[0]!;
 		const override = result.behaviorOverrides[0];
 		if (override?.model) modelOverride = override.model;
-		if (override?.output !== undefined) effectiveOutput = normalizeSingleOutputOverride(override.output, agentConfig.output);
+		if (override?.output !== undefined) {
+			effectiveOutput = normalizeSingleOutputOverride(override.output, agentConfig.output);
+			outputUsesAgentDefault = false;
+		}
 		if (override?.skills !== undefined) skillOverride = override.skills;
 
 		if (result.runInBackground) {
+			const id = randomUUID();
+			const output = outputUsesAgentDefault
+				? materializeAgentDefaultOutputPath({ output: effectiveOutput, artifactsDir, runId: id, agent: params.agent!, index: 0 })
+				: effectiveOutput;
 			if (!isAsyncAvailable()) {
 				return {
 					content: [{ type: "text", text: "Background mode requires upstream jiti for TypeScript execution but it could not be found. Ensure the pi-subagents package dependencies are installed." }],
@@ -2267,7 +2374,6 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 					details: { mode: "single" as const, results: [] },
 				};
 			}
-			const id = randomUUID();
 			const asyncCtx = {
 				pi: deps.pi,
 				cwd: ctx.cwd,
@@ -2288,7 +2394,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				sessionRoot,
 				sessionFile: sessionFileForIndex(0),
 				skills: skillOverride === false ? [] : skillOverride,
-				output: effectiveOutput,
+				output,
 				outputMode: effectiveOutputMode,
 				modelOverride,
 				maxSubagentDepth,
@@ -2304,7 +2410,10 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 
 	task = wrapTaskForAgentContext(task, params.context, params.agent, agents);
 	const cleanTask = task;
-	const outputPath = resolveSingleOutputPath(effectiveOutput, ctx.cwd, effectiveCwd);
+	const runOutput = outputUsesAgentDefault
+		? materializeAgentDefaultOutputPath({ output: effectiveOutput, artifactsDir, runId, agent: params.agent!, index: 0 })
+		: effectiveOutput;
+	const outputPath = resolveSingleOutputPath(runOutput, ctx.cwd, effectiveCwd);
 	const validationError = validateFileOnlyOutputMode(effectiveOutputMode, outputPath, `Single run (${params.agent})`);
 	if (validationError) {
 		return { content: [{ type: "text", text: validationError }], isError: true, details: { mode: "single", results: [] } };

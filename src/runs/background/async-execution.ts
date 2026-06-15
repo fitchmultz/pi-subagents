@@ -11,9 +11,9 @@ import { createRequire } from "node:module";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { applyThinkingSuffix } from "../shared/pi-args.ts";
-import { injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
+import { injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { buildChainInstructions, isDynamicParallelStep, isParallelStep, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
-import type { RunnerStep } from "../shared/parallel-utils.ts";
+import type { RunnerStep, RunnerSubagentStep } from "../shared/parallel-utils.ts";
 import { resolvePiPackageRoot } from "../shared/pi-spawn.ts";
 import { buildSkillInjection, normalizeSkillInput, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
@@ -44,6 +44,58 @@ import { nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedPar
 
 const require = createRequire(import.meta.url);
 const piPackageRoot = resolvePiPackageRoot();
+
+function usesAgentDefaultOutput(output: string | boolean | undefined): boolean {
+	return output === undefined || output === true || output === "true";
+}
+
+function materializeAsyncDefaultOutput(params: {
+	output: string | false | undefined;
+	artifactsDir: string | undefined;
+	asyncDir: string;
+	runId: string;
+	agent: string;
+	index?: number | string;
+}): string | false | undefined {
+	return materializeAgentDefaultOutputPath({
+		output: params.output,
+		artifactsDir: params.artifactsDir ?? params.asyncDir,
+		runId: params.runId,
+		agent: params.agent,
+		index: params.index,
+	});
+}
+
+function resolveAsyncOutput(params: {
+	requestedOutput: string | boolean | undefined;
+	agentDefaultOutput: string | false | undefined;
+	artifactsDir: string | undefined;
+	asyncDir: string;
+	runId: string;
+	agent: string;
+	index?: number | string;
+}): string | false | undefined {
+	const effectiveOutput = usesAgentDefaultOutput(params.requestedOutput)
+		? normalizeSingleOutputOverride(true, params.agentDefaultOutput)
+		: normalizeSingleOutputOverride(params.requestedOutput, params.agentDefaultOutput);
+	return usesAgentDefaultOutput(params.requestedOutput)
+		? materializeAsyncDefaultOutput({ output: effectiveOutput, artifactsDir: params.artifactsDir, asyncDir: params.asyncDir, runId: params.runId, agent: params.agent, index: params.index })
+		: effectiveOutput;
+}
+
+function findDuplicateRunnerOutputPath(steps: RunnerSubagentStep[]): string | undefined {
+	const seen = new Map<string, { index: number; agent: string }>();
+	for (let index = 0; index < steps.length; index++) {
+		const outputPath = steps[index]?.outputPath;
+		if (!outputPath) continue;
+		const previous = seen.get(outputPath);
+		if (previous) {
+			return `Parallel tasks ${previous.index + 1} (${previous.agent}) and ${index + 1} (${steps[index]!.agent}) resolve output to the same path: ${outputPath}. Use distinct output paths.`;
+		}
+		seen.set(outputPath, { index, agent: steps[index]!.agent });
+	}
+	return undefined;
+}
 
 function resolveJitiCliFromPackageJson(packageJsonPath: string): string | undefined {
 	if (!fs.existsSync(packageJsonPath)) return undefined;
@@ -308,6 +360,7 @@ export function executeAsyncChain(
 	}
 
 	let progressInstructionCreated = false;
+	let outputMaterializationIndex = 0;
 	const buildStepOverrides = (s: SequentialStep): StepOverrides => {
 		const stepSkillInput = normalizeSkillInput(s.skill);
 		return {
@@ -321,9 +374,14 @@ export function executeAsyncChain(
 	};
 	const buildSeqStep = (s: SequentialStep, sessionFile?: string, behaviorCwd?: string, progressPrecreated = false, resolvedBehavior?: ResolvedStepBehavior) => {
 		const a = agents.find((x) => x.name === s.agent)!;
+		const outputIndex = outputMaterializationIndex++;
 		const stepCwd = resolveChildCwd(runnerCwd, s.cwd);
 		const instructionCwd = behaviorCwd ?? stepCwd;
 		const behavior = suppressProgressForReadOnlyTask(resolvedBehavior ?? resolveStepBehavior(a, buildStepOverrides(s), chainSkills), s.task, originalTask);
+		const outputUsesAgentDefault = usesAgentDefaultOutput(s.output);
+		const output = outputUsesAgentDefault
+			? materializeAsyncDefaultOutput({ output: behavior.output, artifactsDir, asyncDir, runId: id, agent: s.agent, index: outputIndex })
+			: behavior.output;
 		const skillNames = behavior.skills === false ? [] : behavior.skills;
 		const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, stepCwd, ctx.cwd, { projectTrusted: ctx.isProjectTrusted?.() ?? true });
 		if (missingSkills.includes("pi-subagents")) throw new UnavailableSubagentSkillError(UNAVAILABLE_SUBAGENT_SKILL_ERROR);
@@ -338,7 +396,7 @@ export function executeAsyncChain(
 		const isFirstProgressAgent = behavior.progress && !progressPrecreated && !progressInstructionCreated;
 		if (behavior.progress) progressInstructionCreated = true;
 		const progressInstructions = buildChainInstructions({ ...behavior, output: false, reads: false }, runnerCwd, isFirstProgressAgent);
-		const outputPath = resolveSingleOutputPath(behavior.output, ctx.cwd, instructionCwd);
+		const outputPath = resolveSingleOutputPath(output, ctx.cwd, instructionCwd);
 		const validationError = validateFileOnlyOutputMode(behavior.outputMode, outputPath, `Async step (${s.agent})`);
 		if (validationError) throw new AsyncStartValidationError(validationError);
 		let taskTemplate = s.task ?? "{previous}";
@@ -372,6 +430,8 @@ export function executeAsyncChain(
 			skills: resolvedSkills.map((r) => r.name),
 			outputPath,
 			outputMode: behavior.outputMode,
+			...(outputUsesAgentDefault && outputPath ? { outputPathFromAgentDefault: true } : {}),
+			...(outputUsesAgentDefault && typeof behavior.output === "string" && !path.isAbsolute(behavior.output) ? { defaultOutputSource: behavior.output } : {}),
 			sessionFile,
 			maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, a.maxSubagentDepth),
 			maxExecutionTimeMs: a.maxExecutionTimeMs,
@@ -409,18 +469,21 @@ export function executeAsyncChain(
 					if (!s.worktree) writeInitialProgressFile(runnerCwd);
 					progressInstructionCreated = true;
 				}
-				return {
-					parallel: s.parallel.map((t, taskIndex) => {
-						let behaviorCwd: string | undefined;
-						if (s.worktree) {
-							try {
-								behaviorCwd = resolveExpectedWorktreeAgentCwd(runnerCwd, `${id}-s${stepIndex}`, taskIndex);
-							} catch {
-								behaviorCwd = undefined;
-							}
+				const parallelSteps = s.parallel.map((t, taskIndex) => {
+					let behaviorCwd: string | undefined;
+					if (s.worktree) {
+						try {
+							behaviorCwd = resolveExpectedWorktreeAgentCwd(runnerCwd, `${id}-s${stepIndex}`, taskIndex);
+						} catch {
+							behaviorCwd = undefined;
 						}
-						return buildSeqStep(t, nextSessionFile(), behaviorCwd, progressPrecreated, parallelBehaviors[taskIndex]);
-					}),
+					}
+					return buildSeqStep(t, nextSessionFile(), behaviorCwd, progressPrecreated, parallelBehaviors[taskIndex]);
+				});
+				const duplicateOutputError = findDuplicateRunnerOutputPath(parallelSteps);
+				if (duplicateOutputError) throw new AsyncStartValidationError(duplicateOutputError);
+				return {
+					parallel: parallelSteps,
 					concurrency: s.concurrency,
 					failFast: s.failFast,
 					worktree: s.worktree,
@@ -657,7 +720,15 @@ export function executeAsyncSingle(
 		};
 	}
 
-	const effectiveOutput = normalizeSingleOutputOverride(params.output, agentConfig.output);
+	const effectiveOutput = resolveAsyncOutput({
+		requestedOutput: params.output,
+		agentDefaultOutput: agentConfig.output,
+		artifactsDir,
+		asyncDir,
+		runId: id,
+		agent,
+		index: 0,
+	});
 	const outputPath = resolveSingleOutputPath(effectiveOutput, ctx.cwd, runnerCwd);
 	const outputMode = params.outputMode ?? "inline";
 	const validationError = validateFileOnlyOutputMode(outputMode, outputPath, `Async single run (${agent})`);

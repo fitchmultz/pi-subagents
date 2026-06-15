@@ -962,6 +962,53 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(fs.existsSync(outputPath), false);
 	});
 
+	it("materializes agent-default single output under run artifacts instead of the working tree", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "default report" });
+		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);
+
+		const result = await executor.execute(
+			"single-default-output-artifact",
+			{ agent: "echo", task: "Write report" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		const text = result.content[0]?.text ?? "";
+		const details = (result as any).details;
+		const outputReference = details?.results?.[0]?.outputReference?.path ?? "";
+		assert.equal(result.isError, undefined);
+		assert.match(text, /default report/);
+		assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
+		assert.match(outputReference, /requested-outputs/);
+		assert.match(outputReference, /[a-f0-9]{8}_echo_0_default-report\.md$/);
+		assert.equal(details?.results?.[0]?.outputCleanup?.action, "deleted");
+		assert.match(readCallArgs().join("\n"), /requested-outputs/);
+	});
+
+	it("uses a run-artifact path for agent-default single file-only output", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "full default file-only report" });
+		const executor = makeExecutor([makeAgent("echo", { output: "default-file-only.md" })]);
+
+		const result = await executor.execute(
+			"single-default-output-file-only",
+			{ agent: "echo", task: "Write report", outputMode: "file-only" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		const text = result.content[0]?.text ?? "";
+		const details = (result as any).details;
+		const outputPath = details?.results?.[0]?.savedOutputPath ?? "";
+		assert.equal(result.isError, undefined);
+		assert.match(text, /Output saved to:/);
+		assert.doesNotMatch(text, /full default file-only report/);
+		assert.equal(fs.existsSync(path.join(tempDir, "default-file-only.md")), false);
+		assert.match(outputPath, /requested-outputs/);
+		assert.equal(fs.readFileSync(outputPath, "utf-8"), "full default file-only report");
+	});
+
 	it("treats string false as disabled output in foreground single runs", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ output: "inline report" });
 		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);
@@ -1302,24 +1349,28 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 	});
 
 	it("extends an active foreground timeout", async () => {
-		mockPi.onCall({ delay: 250, output: "Finished after extension" });
+		mockPi.onCall({ delay: 650, output: "Finished after extension" });
 		const agents = [makeAgent("slow", { model: "mock/primary", fallbackModels: ["mock/fallback"] })];
 		let extendTimeout: ((additionalMs: number) => { ok: boolean; timeoutAt?: number; message: string }) | undefined;
 
 		const start = Date.now();
 		const resultPromise = runSync(tempDir, agents, "slow", "Slow task", {
 			runId: "timeout-extend-run",
-			timeoutMs: 100,
-			timeoutAt: Date.now() + 100,
+			timeoutMs: 500,
+			timeoutAt: Date.now() + 500,
 			registerTimeoutExtension: (extend: typeof extendTimeout) => { extendTimeout = extend; },
 		});
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		const extension = extendTimeout?.(500);
+		const registrationDeadline = Date.now() + 250;
+		while (!extendTimeout && Date.now() < registrationDeadline) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		assert.ok(extendTimeout, "expected timeout extension callback to be registered before the initial timeout");
+		const extension = extendTimeout(1_000);
 		const result = await resultPromise;
 		const elapsed = Date.now() - start;
 
-		assert.equal(extension?.ok, true);
-		assert.ok(elapsed >= 200, `should allow the delayed child to finish, took ${elapsed}ms`);
+		assert.equal(extension.ok, true);
+		assert.ok(elapsed >= 600, `should allow the delayed child to finish, took ${elapsed}ms`);
 		assert.equal(result.exitCode, 0);
 		assert.equal(result.timedOut, undefined);
 		assert.equal(result.finalOutput, "Finished after extension");

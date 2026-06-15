@@ -392,6 +392,39 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(mockPi.callCount(), 0);
 	});
 
+	it("materializes duplicate agent-default parallel outputs to unique artifact paths", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "Report A" });
+		mockPi.onCall({ output: "Report B" });
+		const artifactsDir = path.join(tempDir, "artifacts");
+		const executor = makeExecutor([makeAgent("scout", { output: "context.md" })], artifactsDir);
+
+		const result = await executor.execute(
+			"parallel-default-output-artifacts",
+			{
+				tasks: [
+					{ agent: "scout", task: "Write A" },
+					{ agent: "scout", task: "Write B" },
+				],
+				concurrency: 2,
+			},
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		const details = (result as any).details;
+		const paths = details?.results?.map((r: any) => r.outputReference?.path).filter(Boolean) ?? [];
+		assert.equal(result.isError, undefined);
+		assert.equal(mockPi.callCount(), 2);
+		assert.equal(fs.existsSync(path.join(tempDir, "context.md")), false);
+		assert.equal(paths.length, 2);
+		assert.notEqual(paths[0], paths[1]);
+		assert.ok(paths.every((p: string) => p.includes(`${path.sep}requested-outputs${path.sep}`)));
+		assert.ok(paths.some((p: string) => /[a-f0-9]{8}_scout_0_context\.md$/.test(p)));
+		assert.ok(paths.some((p: string) => /[a-f0-9]{8}_scout_1_context\.md$/.test(p)));
+		assert.ok(details?.results?.every((r: any) => r.outputCleanup?.action === "deleted"));
+	});
+
 	it("treats string false as disabled output in top-level parallel runs", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ output: "Review done" });
 		const executor = makeExecutor();

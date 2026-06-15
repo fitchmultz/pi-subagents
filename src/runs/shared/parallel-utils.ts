@@ -23,6 +23,8 @@ export interface RunnerSubagentStep {
 	skills?: string[];
 	outputPath?: string;
 	outputMode?: "inline" | "file-only";
+	outputPathFromAgentDefault?: boolean;
+	defaultOutputSource?: string;
 	sessionFile?: string;
 	maxSubagentDepth?: number;
 	maxExecutionTimeMs?: number;

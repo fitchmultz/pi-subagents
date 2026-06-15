@@ -514,6 +514,167 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), true);
 	});
 
+	it("top-level async parallel materializes duplicate agent-default outputs to unique artifact paths", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		mockPi.onCall({ output: "Async default report A" });
+		mockPi.onCall({ output: "Async default report B" });
+		const executor = createSubagentExecutor!({
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			config: {},
+			asyncByDefault: false,
+			tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir,
+			expandTilde: (p: string) => p,
+			discoverAgents: () => ({ agents: [makeAgent("scout", { output: "context.md" })] }),
+		});
+
+		const result = await executor.execute(
+			"async-parallel-default-output-artifacts",
+			{
+				tasks: [
+					{ agent: "scout", task: "Write context A" },
+					{ agent: "scout", task: "Write context B" },
+				],
+				async: true,
+				clarify: false,
+			},
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		const asyncId = result.details?.asyncId;
+		assert.ok(asyncId, "expected asyncId");
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(asyncId), "utf-8")) as AsyncResultPayload;
+		const outputTexts = payload.results.map((r) => r.output ?? "");
+		assert.equal(payload.success, true);
+		assert.equal(fs.existsSync(path.join(tempDir, "context.md")), false);
+		assert.ok(outputTexts.every((text) => text.includes("Output file consumed:")));
+		assert.ok(outputTexts.every((text) => text.includes(`${path.sep}requested-outputs${path.sep}`)));
+		assert.ok(outputTexts.some((text) => /[a-f0-9-]+_scout_0_context\.md/.test(text)));
+		assert.ok(outputTexts.some((text) => /[a-f0-9-]+_scout_1_context\.md/.test(text)));
+	});
+
+	it("rejects duplicate explicit output paths before starting top-level async parallel children", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		const executor = createSubagentExecutor!({
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			config: {},
+			asyncByDefault: false,
+			tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir,
+			expandTilde: (p: string) => p,
+			discoverAgents: () => ({ agents: [makeAgent("reviewer")] }),
+		});
+
+		const result = await executor.execute(
+			"async-parallel-duplicate-explicit-output",
+			{
+				tasks: [
+					{ agent: "reviewer", task: "Review A", output: "same.md" },
+					{ agent: "reviewer", task: "Review B", output: "same.md" },
+				],
+				async: true,
+				clarify: false,
+			},
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /same path/);
+		assert.equal(mockPi.callCount(), 0);
+	});
+
+	it("rejects duplicate explicit output paths before starting async chain parallel children", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		const id = `async-chain-duplicate-output-${Date.now().toString(36)}`;
+		const result = executeAsyncChain!(id, {
+			chain: [{ parallel: [
+				{ agent: "reviewer", task: "Review A", output: "same.md" },
+				{ agent: "reviewer", task: "Review B", output: "same.md" },
+			] }],
+			resultMode: "parallel",
+			agents: [makeAgent("reviewer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-chain-duplicate-output" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /same path/);
+		assert.equal(mockPi.callCount(), 0);
+	});
+
+	it("rejects duplicate explicit absolute output paths before starting async worktree parallel children", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		const outputPath = path.join(tempDir, "same-absolute.md");
+		const executor = createSubagentExecutor!({
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			config: {},
+			asyncByDefault: false,
+			tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir,
+			expandTilde: (p: string) => p,
+			discoverAgents: () => ({ agents: [makeAgent("worker")] }),
+		});
+
+		const result = await executor.execute(
+			"async-worktree-duplicate-absolute-output",
+			{
+				tasks: [
+					{ agent: "worker", task: "Write A", output: outputPath },
+					{ agent: "worker", task: "Write B", output: outputPath },
+				],
+				async: true,
+				clarify: false,
+				worktree: true,
+			},
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /same path/);
+		assert.equal(mockPi.callCount(), 0);
+	});
+
+	it("top-level async single uses an agent-default output for file-only mode without project leftovers", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		mockPi.onCall({ output: "Async single default report" });
+		const executor = createSubagentExecutor!({
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			config: {},
+			asyncByDefault: false,
+			tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir,
+			expandTilde: (p: string) => p,
+			discoverAgents: () => ({ agents: [makeAgent("reviewer", { output: "review.md" })] }),
+		});
+
+		const result = await executor.execute(
+			"async-single-default-output-file-only",
+			{ agent: "reviewer", task: "Review", async: true, clarify: false, outputMode: "file-only" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		const asyncId = result.details?.asyncId;
+		assert.ok(asyncId, "expected asyncId");
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(asyncId), "utf-8")) as AsyncResultPayload;
+		const outputText = payload.results[0]?.output ?? "";
+		const outputPath = outputText.match(/Output saved to: (.*?) \(/)?.[1] ?? "";
+		assert.equal(payload.success, true);
+		assert.match(outputText, /Output saved to:/);
+		assert.doesNotMatch(outputText, /Async single default report/);
+		assert.equal(fs.existsSync(path.join(tempDir, "review.md")), false);
+		assert.match(outputPath, /requested-outputs/);
+		assert.equal(fs.readFileSync(outputPath, "utf-8"), "Async single default report");
+	});
+
 	it("async single lets explicit acceptance own completion for report-only output", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		const report = [
 			"```acceptance-report",
@@ -838,6 +999,112 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.workflowGraph?.nodes?.[1]?.kind, "dynamic-parallel-group");
 		assert.deepEqual(payload.workflowGraph?.nodes?.[1]?.children?.map((child) => child.itemKey), ["src/a.ts", "src/b.ts"]);
 		assert.equal(payload.workflowGraph?.nodes?.[2]?.flatIndex, 3);
+	});
+
+	it("async dynamic fanout materializes agent-default outputs per child", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
+		mockPi.onCall({ output: "review-a" });
+		mockPi.onCall({ output: "review-b" });
+		const id = `async-dynamic-default-output-${Date.now().toString(36)}`;
+		const result = executeAsyncChain!(id, {
+			chain: [
+				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
+				{
+					expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
+					parallel: { agent: "reviewer", task: "Review {target.path}" },
+					collect: { as: "reviews" },
+					concurrency: 2,
+				},
+			],
+			agents: [makeAgent("producer"), makeAgent("reviewer", { output: "review.md" })],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-dynamic-default-output" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+
+		assert.ok(!result.isError);
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
+		const collected = payload.outputs?.reviews?.structured as Array<{ text: string }>;
+		const reviewTexts = collected.map((item) => item.text);
+		assert.equal(payload.success, true);
+		assert.equal(fs.existsSync(path.join(tempDir, "review.md")), false);
+		assert.ok(reviewTexts.every((text) => text.includes("Output file consumed:")));
+		assert.ok(reviewTexts.some((text) => /[^/\\]+_reviewer_d1-0_review\.md/.test(text)));
+		assert.ok(reviewTexts.some((text) => /[^/\\]+_reviewer_d1-1_review\.md/.test(text)));
+		const firstReviewTask = readMockPiArgs(mockPi, 1).at(-1) ?? "";
+		const secondReviewTask = readMockPiArgs(mockPi, 2).at(-1) ?? "";
+		assert.match(firstReviewTask, /requested-outputs/);
+		assert.match(secondReviewTask, /requested-outputs/);
+		assert.notEqual(firstReviewTask.match(/Write your findings to: (.*review\.md)/)?.[1], secondReviewTask.match(/Write your findings to: (.*review\.md)/)?.[1]);
+	});
+
+	it("async dynamic fanout default outputs do not collide with later same-agent defaults", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
+		mockPi.onCall({ output: "review-a" });
+		mockPi.onCall({ output: "review-b" });
+		mockPi.onCall({ output: "final-review" });
+		const id = `async-dynamic-cross-step-output-${Date.now().toString(36)}`;
+		const result = executeAsyncChain!(id, {
+			chain: [
+				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
+				{
+					expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
+					parallel: { agent: "reviewer", task: "Review {target.path}", outputMode: "file-only" },
+					collect: { as: "reviews" },
+					concurrency: 2,
+				},
+				{ agent: "reviewer", task: "Review all collected output", outputMode: "file-only" },
+			],
+			agents: [makeAgent("producer"), makeAgent("reviewer", { output: "review.md" })],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-dynamic-cross-step-output" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+
+		assert.ok(!result.isError);
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
+		const collected = payload.outputs?.reviews?.structured as Array<{ text: string }>;
+		const dynamicOutputPaths = collected.map((item) => item.text.match(/Output saved to: (.*?) \(/)?.[1]);
+		const finalOutputPath = payload.results.at(-1)?.output?.match(/Output saved to: (.*?) \(/)?.[1];
+		assert.equal(payload.success, true);
+		assert.ok(finalOutputPath, "expected final reviewer to save output");
+		assert.ok(dynamicOutputPaths.every((outputPath): outputPath is string => Boolean(outputPath)), "expected dynamic reviewers to save outputs");
+		const allOutputPaths = [...dynamicOutputPaths, finalOutputPath];
+		assert.equal(new Set(allOutputPaths).size, 3);
+		assert.ok(dynamicOutputPaths.some((outputPath) => /_reviewer_d1-0_review\.md$/.test(outputPath)));
+		assert.ok(dynamicOutputPaths.some((outputPath) => /_reviewer_d1-1_review\.md$/.test(outputPath)));
+		assert.match(finalOutputPath, /_reviewer_2_review\.md$/);
+		assert.deepEqual(allOutputPaths.map((outputPath) => fs.readFileSync(outputPath, "utf-8")).sort(), ["final-review", "review-a", "review-b"]);
+	});
+
+	it("async dynamic fanout rejects duplicate explicit output paths before starting children", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
+		const id = `async-dynamic-duplicate-output-${Date.now().toString(36)}`;
+		const result = executeAsyncChain!(id, {
+			chain: [
+				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
+				{
+					expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
+					parallel: { agent: "reviewer", task: "Review {target.path}", output: "same.md" },
+					collect: { as: "reviews" },
+					concurrency: 2,
+				},
+			],
+			agents: [makeAgent("producer"), makeAgent("reviewer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-dynamic-duplicate-output" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+
+		assert.ok(!result.isError);
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, false);
+		assert.match(payload.results.map((entry) => `${entry.error ?? ""}\n${entry.output ?? ""}`).join("\n"), /same path/);
+		assert.equal(mockPi.callCount(), 1);
+		assert.equal(fs.existsSync(path.join(tempDir, "same.md")), false);
 	});
 
 	it("async dynamic empty fanout completes and persists an empty collection", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {

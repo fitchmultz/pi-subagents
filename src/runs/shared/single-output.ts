@@ -18,7 +18,7 @@ export interface SingleOutputCleanupResult {
 
 export function normalizeSingleOutputOverride(
 	output: string | boolean | undefined,
-	defaultOutput: string | undefined,
+	defaultOutput: string | false | undefined,
 ): string | false | undefined {
 	if (output === false || output === "false") return false;
 	if (output === true || output === "true") return defaultOutput;
@@ -37,6 +37,26 @@ export function resolveSingleOutputPath(
 		? (path.isAbsolute(requestedCwd) ? requestedCwd : path.resolve(runtimeCwd, requestedCwd))
 		: runtimeCwd;
 	return path.resolve(baseCwd, output);
+}
+
+function safeOutputSegment(value: string, fallback: string): string {
+	const sanitized = value.replace(/[^\w.-]/g, "_").replace(/^\.+$/, "");
+	return sanitized || fallback;
+}
+
+export function materializeAgentDefaultOutputPath(params: {
+	output: string | false | undefined;
+	artifactsDir: string;
+	runId: string;
+	agent: string;
+	index?: number | string;
+}): string | false | undefined {
+	if (typeof params.output !== "string" || !params.output || params.output === "false" || params.output === "true") return params.output;
+	if (path.isAbsolute(params.output)) return params.output;
+	const suffix = params.index !== undefined ? `_${safeOutputSegment(String(params.index), "index")}` : "";
+	const safeAgent = safeOutputSegment(params.agent, "agent");
+	const safeBaseName = safeOutputSegment(path.basename(params.output), "output.md");
+	return path.join(params.artifactsDir, "requested-outputs", `${params.runId}_${safeAgent}${suffix}_${safeBaseName}`);
 }
 
 export function injectSingleOutputInstruction(task: string, outputPath: string | undefined): string {

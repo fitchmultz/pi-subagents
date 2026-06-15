@@ -6,7 +6,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
 import { PI_CODING_AGENT_PACKAGE, getPiSpawnCommand, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
-import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, formatConsumedOutputReference, formatSavedOutputReference, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
+import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, formatConsumedOutputReference, formatSavedOutputReference, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	type AcceptanceFinalizationTurn,
 	type AcceptanceLedger,
@@ -1195,6 +1195,42 @@ function ensureParallelProgressFile(cwd: string, group: Extract<RunnerStep, { pa
 	writeInitialProgressFile(cwd);
 }
 
+function findDuplicateOutputPath(steps: SubagentStep[]): string | undefined {
+	const seen = new Map<string, { index: number; agent: string }>();
+	for (let index = 0; index < steps.length; index++) {
+		const outputPath = steps[index]?.outputPath;
+		if (!outputPath) continue;
+		const previous = seen.get(outputPath);
+		if (previous) {
+			return `Parallel tasks ${previous.index + 1} (${previous.agent}) and ${index + 1} (${steps[index]!.agent}) resolve output to the same path: ${outputPath}. Use distinct output paths.`;
+		}
+		seen.set(outputPath, { index, agent: steps[index]!.agent });
+	}
+	return undefined;
+}
+
+function materializeDynamicDefaultOutputPath(input: {
+	step: SubagentStep;
+	artifactsDir: string | undefined;
+	asyncDir: string;
+	runId: string;
+	index: number | string;
+}): SubagentStep {
+	if (!input.step.outputPathFromAgentDefault || !input.step.defaultOutputSource || !input.step.outputPath) return input.step;
+	const output = materializeAgentDefaultOutputPath({
+		output: input.step.defaultOutputSource,
+		artifactsDir: input.artifactsDir ?? input.asyncDir,
+		runId: input.runId,
+		agent: input.step.agent,
+		index: input.index,
+	});
+	if (typeof output !== "string" || output === input.step.outputPath) return input.step;
+	const task = input.step.task.includes(input.step.outputPath)
+		? input.step.task.split(input.step.outputPath).join(output)
+		: injectSingleOutputInstruction(input.step.task, output);
+	return { ...input.step, task, outputPath: output };
+}
+
 async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const { id, steps, resultPath, cwd, placeholder, taskIndex, totalTasks, maxOutput, artifactsDir, artifactConfig } =
 		config;
@@ -1701,13 +1737,40 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				continue;
 			}
 
-			const dynamicSteps = materialized.parallel.map((task, itemIndex) => ({
-				...step.parallel,
-				task: task.task ?? step.parallel.task,
-				label: task.label ?? step.parallel.label,
-				structuredOutput: undefined,
-				structuredOutputSchema: step.parallel.structuredOutputSchema ?? step.parallel.structuredOutput?.schema,
+			const dynamicSteps = materialized.parallel.map((task, itemIndex) => materializeDynamicDefaultOutputPath({
+				step: {
+					...step.parallel,
+					task: task.task ?? step.parallel.task,
+					label: task.label ?? step.parallel.label,
+					structuredOutput: undefined,
+					structuredOutputSchema: step.parallel.structuredOutputSchema ?? step.parallel.structuredOutput?.schema,
+				},
+				artifactsDir,
+				asyncDir: config.asyncDir,
+				runId: id,
+				index: `d${stepIndex}-${itemIndex}`,
 			}));
+			const duplicateOutputError = findDuplicateOutputPath(dynamicSteps);
+			if (duplicateOutputError) {
+				const now = Date.now();
+				statusPayload.state = "failed";
+				statusPayload.error = duplicateOutputError;
+				statusPayload.currentStep = flatIndex;
+				const placeholderStep = statusPayload.steps[groupStartFlatIndex];
+				if (placeholderStep) {
+					placeholderStep.status = "failed";
+					placeholderStep.error = duplicateOutputError;
+					placeholderStep.startedAt = now;
+					placeholderStep.endedAt = now;
+					placeholderStep.durationMs = 0;
+					placeholderStep.exitCode = 1;
+				}
+				statusPayload.lastUpdate = now;
+				markDynamicGraphGroup(stepIndex, "failed", duplicateOutputError);
+				writeStatusPayload();
+				results.push({ agent: step.parallel.agent, output: duplicateOutputError, error: duplicateOutputError, success: false, exitCode: 1 });
+				break;
+			}
 			const dynamicStatusSteps: RunnerStatusStep[] = dynamicSteps.map((task) => ({
 					agent: task.agent,
 					phase: task.phase ?? step.phase,

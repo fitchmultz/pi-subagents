@@ -19,7 +19,7 @@ const OutputOverride = Type.Unsafe({
 		{ type: "string" },
 		{ type: "boolean" },
 	],
-	description: "Output filename/path (string), or false to disable file output",
+	description: "Output filename/path (string), or false to disable file output. Explicit paths are honored; relative output paths inherited from an agent default are materialized under the run artifact directory with unique names.",
 });
 
 const OutputModeOverride = Type.String({
