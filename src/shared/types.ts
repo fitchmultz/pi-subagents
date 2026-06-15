@@ -773,32 +773,42 @@ export interface ForegroundResumeRun {
 	children: ForegroundResumeChild[];
 }
 
+export interface TimeoutExtensionResult {
+	ok: boolean;
+	timeoutAt?: number;
+	message: string;
+}
+
+export type TimeoutExtensionCallback = (additionalMs: number) => TimeoutExtensionResult;
+
+export interface ForegroundControlState {
+	runId: string;
+	mode: SubagentRunMode;
+	startedAt: number;
+	updatedAt: number;
+	currentAgent?: string;
+	currentIndex?: number;
+	currentActivityState?: ActivityState;
+	lastActivityAt?: number;
+	currentTool?: string;
+	currentToolStartedAt?: number;
+	currentPath?: string;
+	turnCount?: number;
+	tokens?: number;
+	toolCount?: number;
+	nestedRoute?: NestedRouteInfo;
+	nestedChildren?: NestedRunSummary[];
+	timeoutAt?: number;
+	extendTimeout?: TimeoutExtensionCallback;
+	interrupt?: () => boolean;
+}
+
 export interface SubagentState {
 	baseCwd: string;
 	currentSessionId: string | null;
 	asyncJobs: Map<string, AsyncJobState>;
 	foregroundRuns?: Map<string, ForegroundResumeRun>;
-	foregroundControls: Map<string, {
-		runId: string;
-		mode: SubagentRunMode;
-		startedAt: number;
-		updatedAt: number;
-		currentAgent?: string;
-		currentIndex?: number;
-		currentActivityState?: ActivityState;
-		lastActivityAt?: number;
-		currentTool?: string;
-		currentToolStartedAt?: number;
-		currentPath?: string;
-		turnCount?: number;
-		tokens?: number;
-		toolCount?: number;
-		nestedRoute?: NestedRouteInfo;
-		nestedChildren?: NestedRunSummary[];
-		timeoutAt?: number;
-		extendTimeout?: (additionalMs: number) => { ok: boolean; timeoutAt?: number; message: string };
-		interrupt?: () => boolean;
-	}>;
+	foregroundControls: Map<string, ForegroundControlState>;
 	lastForegroundControlId: string | null;
 	pendingForegroundControlNotices?: Map<string, ReturnType<typeof setTimeout>>;
 	cleanupTimers: Map<string, ReturnType<typeof setTimeout>>;
@@ -856,7 +866,7 @@ export interface RunSyncOptions {
 	interruptSignal?: AbortSignal;
 	timeoutMs?: number;
 	timeoutAt?: number;
-	registerTimeoutExtension?: (extend: (additionalMs: number) => { ok: boolean; timeoutAt?: number; message: string }) => void;
+	registerTimeoutExtension?: (extend: TimeoutExtensionCallback) => void;
 	allowIntercomDetach?: boolean;
 	intercomEvents?: IntercomEventBus;
 	onUpdate?: (r: SubagentExecutionResult) => void;

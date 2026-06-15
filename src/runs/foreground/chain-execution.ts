@@ -32,6 +32,7 @@ import {
 import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skills.ts";
 import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.ts";
 import { runSync } from "./execution.ts";
+import { createForegroundTimeoutExtensionRegistry, type ForegroundTimeoutExtensionRegistry } from "./timeout-extension.ts";
 import { buildChainSummary } from "../../shared/formatters.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, resolveChildCwd } from "../../shared/utils.ts";
 import { recordRun } from "../shared/run-history.ts";
@@ -45,18 +46,19 @@ import {
 	type WorktreeSetup,
 } from "../shared/worktree.ts";
 import {
-	type ActivityState,
 	type AgentProgress,
 	type ArtifactConfig,
 	type ArtifactPaths,
 	type ChildProjectTrustPolicy,
 	type ControlEvent,
 	type Details,
+	type ForegroundControlState,
 	type SubagentExecutionResult,
 	type IntercomEventBus,
 	type NestedRouteInfo,
 	type ResolvedControlConfig,
 	type SingleResult,
+	type TimeoutExtensionCallback,
 	MAX_CONCURRENCY,
 	resolveChildMaxSubagentDepth,
 } from "../../shared/types.ts";
@@ -113,20 +115,8 @@ interface ParallelChainRunInput {
 	controlConfig: ResolvedControlConfig;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	orchestratorIntercomTarget?: string;
-	foregroundControl?: {
-		updatedAt: number;
-		currentAgent?: string;
-		currentIndex?: number;
-		currentActivityState?: ActivityState;
-		lastActivityAt?: number;
-		currentTool?: string;
-		currentToolStartedAt?: number;
-		currentPath?: string;
-		turnCount?: number;
-		tokens?: number;
-		toolCount?: number;
-		interrupt?: () => boolean;
-	};
+	foregroundControl?: ForegroundControlState;
+	timeoutExtensionRegistry?: ForegroundTimeoutExtensionRegistry;
 	results: SingleResult[];
 	allProgress: AgentProgress[];
 	outputs: ChainOutputMap;
@@ -266,11 +256,14 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 			const structuredRuntime = task.outputSchema
 				? createStructuredOutputRuntime(task.outputSchema, path.join(input.chainDir, "structured-output"))
 				: undefined;
+			const timeoutAt = input.foregroundControl?.timeoutAt ?? input.timeoutAt;
+			let unregisterTimeoutExtension: (() => void) | undefined;
 			const result = await runSync(input.ctx.cwd, input.agents, task.agent, taskStr, {
 				cwd: taskCwd,
 				signal: input.signal,
 				interruptSignal: interruptController.signal,
-				...(input.timeoutMs !== undefined && input.timeoutAt !== undefined ? { timeoutMs: input.timeoutMs, timeoutAt: input.timeoutAt } : {}),
+				...(input.timeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: input.timeoutMs, timeoutAt } : {}),
+				...(input.timeoutMs !== undefined && timeoutAt !== undefined && input.timeoutExtensionRegistry ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { unregisterTimeoutExtension = input.timeoutExtensionRegistry?.register(String(input.globalTaskIndex + taskIndex), extend); } } : {}),
 				allowIntercomDetach: taskAgentConfig?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 				intercomEvents: input.intercomEvents,
 				runId: input.runId,
@@ -341,11 +334,13 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 						});
 					}
 					: undefined,
+			}).finally(() => {
+				unregisterTimeoutExtension?.();
+				if (input.foregroundControl?.currentIndex === input.globalTaskIndex + taskIndex) {
+					input.foregroundControl.interrupt = undefined;
+					input.foregroundControl.updatedAt = Date.now();
+				}
 			});
-			if (input.foregroundControl?.currentIndex === input.globalTaskIndex + taskIndex) {
-				input.foregroundControl.interrupt = undefined;
-				input.foregroundControl.updatedAt = Date.now();
-			}
 
 			if (result.exitCode !== 0 && failFast) {
 				aborted = true;
@@ -379,20 +374,7 @@ interface ChainExecutionParams {
 	controlConfig: ResolvedControlConfig;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	orchestratorIntercomTarget?: string;
-	foregroundControl?: {
-		updatedAt: number;
-		currentAgent?: string;
-		currentIndex?: number;
-		currentActivityState?: ActivityState;
-		lastActivityAt?: number;
-		currentTool?: string;
-		currentToolStartedAt?: number;
-		currentPath?: string;
-		turnCount?: number;
-		tokens?: number;
-		toolCount?: number;
-		interrupt?: () => boolean;
-	};
+	foregroundControl?: ForegroundControlState;
 	chainSkills?: string[];
 	chainDir?: string;
 	dynamicFanoutMaxItems?: number;
@@ -594,7 +576,11 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		tuiBehaviorOverrides = result.behaviorOverrides;
 	}
 
-	const timeoutAt = params.timeoutMs !== undefined ? Date.now() + params.timeoutMs : undefined;
+	const timeoutAt = foregroundControl?.timeoutAt ?? (params.timeoutMs !== undefined ? Date.now() + params.timeoutMs : undefined);
+	if (foregroundControl && timeoutAt !== undefined) foregroundControl.timeoutAt = timeoutAt;
+	const timeoutExtensionRegistry = params.timeoutMs !== undefined && timeoutAt !== undefined
+		? createForegroundTimeoutExtensionRegistry(foregroundControl)
+		: undefined;
 	let prev = "";
 	let globalTaskIndex = 0;
 	let progressCreated = false;
@@ -679,6 +665,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					childIntercomTarget,
 					orchestratorIntercomTarget,
 					foregroundControl,
+					timeoutExtensionRegistry,
 					nestedRoute: params.nestedRoute,
 					worktreeSetup,
 					maxSubagentDepth: params.maxSubagentDepth,
@@ -881,6 +868,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				childIntercomTarget,
 				orchestratorIntercomTarget,
 				foregroundControl,
+				timeoutExtensionRegistry,
 				nestedRoute: params.nestedRoute,
 				maxSubagentDepth: params.maxSubagentDepth,
 				projectTrust: params.projectTrust,
@@ -1050,11 +1038,14 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			const structuredRuntime = seqStep.outputSchema
 				? createStructuredOutputRuntime(seqStep.outputSchema, path.join(chainDir, "structured-output"))
 				: undefined;
+			const stepTimeoutAt = foregroundControl?.timeoutAt ?? timeoutAt;
+			let unregisterTimeoutExtension: (() => void) | undefined;
 			const r = await runSync(ctx.cwd, agents, seqStep.agent, stepTask, {
 				cwd: resolveChildCwd(cwd ?? ctx.cwd, seqStep.cwd),
 				signal,
 				interruptSignal: interruptController.signal,
-				...(params.timeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: params.timeoutMs, timeoutAt } : {}),
+				...(params.timeoutMs !== undefined && stepTimeoutAt !== undefined ? { timeoutMs: params.timeoutMs, timeoutAt: stepTimeoutAt } : {}),
+				...(params.timeoutMs !== undefined && stepTimeoutAt !== undefined && timeoutExtensionRegistry ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { unregisterTimeoutExtension = timeoutExtensionRegistry.register(String(globalTaskIndex), extend); } } : {}),
 				allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 				intercomEvents,
 				runId,
@@ -1125,11 +1116,13 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 						});
 					}
 					: undefined,
+			}).finally(() => {
+				unregisterTimeoutExtension?.();
+				if (foregroundControl?.currentIndex === globalTaskIndex) {
+					foregroundControl.interrupt = undefined;
+					foregroundControl.updatedAt = Date.now();
+				}
 			});
-			if (foregroundControl?.currentIndex === globalTaskIndex) {
-				foregroundControl.interrupt = undefined;
-				foregroundControl.updatedAt = Date.now();
-			}
 			recordRun(seqStep.agent, cleanTask, r.exitCode, r.progressSummary?.durationMs ?? 0);
 
 			globalTaskIndex++;

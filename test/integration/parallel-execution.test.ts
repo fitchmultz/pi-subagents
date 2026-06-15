@@ -228,6 +228,43 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(result.details.results[1].timedOut, true);
 	});
 
+	it("extends a top-level foreground parallel timeout", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ delay: 450, output: "Slow result" });
+		mockPi.onCall({ output: "Second result" });
+		const executor = makeExecutor([makeAgent("slow"), makeAgent("second")]);
+
+		const resultPromise = executor.execute(
+			"parallel-extend",
+			{
+				tasks: [
+					{ agent: "slow", task: "Need more time" },
+					{ agent: "second", task: "Starts after extension" },
+				],
+				concurrency: 1,
+				timeoutMs: 250,
+			},
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		) as Promise<any>;
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		const extension = await executor.execute(
+			"parallel-extend-control",
+			{ action: "extend", extendMs: 500 },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		) as any;
+		const result = await resultPromise;
+
+		assert.equal(extension.isError, undefined, JSON.stringify(extension));
+		assert.match(extension.content[0]?.text ?? "", /Extended foreground run/);
+		assert.equal(result.isError, undefined);
+		assert.equal(result.details.results.length, 2);
+		assert.equal(result.details.results[0].exitCode, 0);
+		assert.equal(result.details.results[1].exitCode, 0);
+	});
+
 	it("top-level foreground parallel timeout preserves worktrees when diff capture setup fails", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		initGitRepo(tempDir);
 		const sessionRoot = createTempDir();

@@ -12,6 +12,7 @@ import { handleManagementAction } from "../../agents/agent-management.ts";
 import { buildDoctorReport } from "../../extension/doctor.ts";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.ts";
 import { runSync } from "./execution.ts";
+import { createForegroundTimeoutExtensionRegistry, type ForegroundTimeoutExtensionRegistry } from "./timeout-extension.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
 import { recordRun } from "../shared/run-history.ts";
@@ -84,6 +85,7 @@ import {
 	type Details,
 	type SubagentExecutionResult,
 	type ExtensionConfig,
+	type ForegroundControlState,
 	type IntercomEventBus,
 	type MaxOutputConfig,
 	type NestedRouteInfo,
@@ -92,6 +94,7 @@ import {
 	type SingleResult,
 	type SubagentRunMode,
 	type SubagentState,
+	type TimeoutExtensionCallback,
 	DEFAULT_ARTIFACT_CONFIG,
 	SUBAGENT_ACTIONS,
 	SUBAGENT_CONTROL_EVENT,
@@ -339,14 +342,14 @@ function getForegroundControl(state: SubagentState, runId: string | undefined) {
 		const latest = state.foregroundControls.get(state.lastForegroundControlId);
 		if (latest) return latest;
 	}
-	let newest: (SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never) | undefined;
+	let newest: ForegroundControlState | undefined;
 	for (const control of state.foregroundControls.values()) {
 		if (!newest || control.updatedAt > newest.updatedAt) newest = control;
 	}
 	return newest;
 }
 
-function formatForegroundActivity(control: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never): string | undefined {
+function formatForegroundActivity(control: ForegroundControlState): string | undefined {
 	const facts: string[] = [];
 	if (control.currentTool && control.currentToolStartedAt) facts.push(`tool ${control.currentTool} for ${Math.floor(Math.max(0, Date.now() - control.currentToolStartedAt) / 1000)}s`);
 	else if (control.currentTool) facts.push(`tool ${control.currentTool}`);
@@ -375,7 +378,7 @@ function nestedResolutionScopeForExecutor(deps: ExecutorDeps): NestedRunResoluti
 	};
 }
 
-function foregroundStatusResult(control: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never): SubagentExecutionResult {
+function foregroundStatusResult(control: ForegroundControlState): SubagentExecutionResult {
 	let nestedWarning: string | undefined;
 	try {
 		updateForegroundNestedProjection(control);
@@ -397,7 +400,7 @@ function foregroundStatusResult(control: SubagentState["foregroundControls"] ext
 	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
 }
 
-function extendForegroundTimeoutResult(control: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never, additionalMs: number): SubagentExecutionResult {
+function extendForegroundTimeoutResult(control: ForegroundControlState, additionalMs: number): SubagentExecutionResult {
 	if (!Number.isInteger(additionalMs) || additionalMs <= 0) {
 		return {
 			content: [{ type: "text", text: "action='extend' requires extendMs or timeoutMs to be a positive integer number of milliseconds." }],
@@ -1609,7 +1612,8 @@ interface ForegroundParallelRunInput {
 	onControlEvent?: (event: ControlEvent) => void;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	orchestratorIntercomTarget?: string;
-	foregroundControl?: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never;
+	foregroundControl?: ForegroundControlState;
+	timeoutExtensionRegistry?: ForegroundTimeoutExtensionRegistry;
 	concurrencyLimit: number;
 	liveResults: (SingleResult | undefined)[];
 	liveProgress: (AgentProgress | undefined)[];
@@ -1758,11 +1762,14 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			};
 		}
 		const agentConfig = input.agents.find((agent) => agent.name === task.agent);
+		const timeoutAt = input.foregroundControl?.timeoutAt ?? input.timeoutAt;
+		let unregisterTimeoutExtension: (() => void) | undefined;
 		return runSync(input.ctx.cwd, input.agents, task.agent, taskText, {
 			cwd: taskCwd,
 			signal: input.signal,
 			interruptSignal: interruptController.signal,
-			...(input.timeoutMs !== undefined && input.timeoutAt !== undefined ? { timeoutMs: input.timeoutMs, timeoutAt: input.timeoutAt } : {}),
+			...(input.timeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: input.timeoutMs, timeoutAt } : {}),
+			...(input.timeoutMs !== undefined && timeoutAt !== undefined && input.timeoutExtensionRegistry ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { unregisterTimeoutExtension = input.timeoutExtensionRegistry?.register(String(index), extend); } } : {}),
 			allowIntercomDetach: agentConfig?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 			intercomEvents: input.intercomEvents,
 			runId: input.runId,
@@ -1826,6 +1833,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 					}
 				: undefined,
 		}).finally(() => {
+			unregisterTimeoutExtension?.();
 			if (input.foregroundControl?.currentIndex === index) {
 				input.foregroundControl.interrupt = undefined;
 				input.foregroundControl.updatedAt = Date.now();
@@ -2048,7 +2056,11 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			taskTexts[i] = wrapTaskForAgentContext(taskTexts[i]!, params.context, tasks[i]!.agent, agents);
 		}
 
-		const timeoutAt = data.foregroundTimeoutMs !== undefined ? Date.now() + data.foregroundTimeoutMs : undefined;
+		const timeoutAt = foregroundControl?.timeoutAt ?? (data.foregroundTimeoutMs !== undefined ? Date.now() + data.foregroundTimeoutMs : undefined);
+		if (foregroundControl && timeoutAt !== undefined) foregroundControl.timeoutAt = timeoutAt;
+		const timeoutExtensionRegistry = data.foregroundTimeoutMs !== undefined && timeoutAt !== undefined
+			? createForegroundTimeoutExtensionRegistry(foregroundControl)
+			: undefined;
 		const results = await runForegroundParallelTasks({
 			tasks,
 			taskTexts,
@@ -2074,6 +2086,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(runId, agent, index) : undefined,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 			foregroundControl,
+			timeoutExtensionRegistry,
 			concurrencyLimit: parallelConcurrency,
 			maxSubagentDepths,
 			liveResults,
@@ -2346,7 +2359,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		signal,
 		interruptSignal: interruptController.signal,
 		...(data.foregroundTimeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: data.foregroundTimeoutMs, timeoutAt } : {}),
-		...(data.foregroundTimeoutMs !== undefined && timeoutAt !== undefined && foregroundControl ? { registerTimeoutExtension: (extend: (additionalMs: number) => { ok: boolean; timeoutAt?: number; message: string }) => { foregroundControl.extendTimeout = extend; } } : {}),
+		...(data.foregroundTimeoutMs !== undefined && timeoutAt !== undefined && foregroundControl ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { foregroundControl.extendTimeout = extend; } } : {}),
 		allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 		intercomEvents: deps.pi.events,
 		runId,

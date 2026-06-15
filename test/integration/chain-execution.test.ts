@@ -273,6 +273,62 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.equal(result.details.results[1].timedOut, true);
 	});
 
+	it("extends a foreground sequential chain timeout", async () => {
+		mockPi.onCall({ delay: 250, output: "Extended chain result" });
+		const agents = [makeAgent("slow")];
+		const foregroundControl: any = {
+			runId: "chain-sequential-extend",
+			mode: "chain" as const,
+			startedAt: Date.now(),
+			updatedAt: Date.now(),
+		};
+
+		const resultPromise = executeChain(
+			makeChainParams(
+				[{ agent: "slow", task: "Need more time" }],
+				agents,
+				{ runId: "chain-sequential-extend", timeoutMs: 100, foregroundControl },
+			),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const extension = foregroundControl.extendTimeout?.(500);
+		const result = await resultPromise;
+
+		assert.equal(extension?.ok, true);
+		assert.equal(result.isError, undefined);
+		assert.equal(result.details.results[0]?.exitCode, 0);
+		assert.equal(result.details.results[0]?.finalOutput, "Extended chain result");
+	});
+
+	it("extends a foreground parallel chain timeout", async () => {
+		mockPi.onCall({ delay: 250, output: "Extended parallel result" });
+		mockPi.onCall({ output: "Second parallel result" });
+		const agents = [makeAgent("slow"), makeAgent("second")];
+		const foregroundControl: any = {
+			runId: "chain-parallel-extend",
+			mode: "chain" as const,
+			startedAt: Date.now(),
+			updatedAt: Date.now(),
+		};
+
+		const resultPromise = executeChain(
+			makeChainParams(
+				[{ parallel: [{ agent: "slow", task: "Need more time" }, { agent: "second", task: "Starts after extension" }], concurrency: 1 }],
+				agents,
+				{ runId: "chain-parallel-extend", timeoutMs: 100, foregroundControl },
+			),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const extension = foregroundControl.extendTimeout?.(500);
+		const result = await resultPromise;
+
+		assert.equal(extension?.ok, true);
+		assert.equal(result.isError, undefined);
+		assert.equal(result.details.results.length, 2);
+		assert.equal(result.details.results[0]?.exitCode, 0);
+		assert.equal(result.details.results[1]?.exitCode, 0);
+	});
+
 	it("passes file-only saved-output references through {previous}", async () => {
 		mockPi.onCall({ output: "full chain output\nwith details" });
 		const agents = [makeAgent("analyst"), makeAgent("reporter")];
