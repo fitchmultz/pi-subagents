@@ -28,6 +28,7 @@ import {
 import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT } from "../../src/shared/types.ts";
 import {
 	SUBAGENT_FANOUT_CHILD_ENV,
+	SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV,
 	SUBAGENT_PARENT_CHILD_INDEX_ENV,
 	SUBAGENT_PARENT_CONTROL_INBOX_ENV,
 	SUBAGENT_PARENT_EVENT_SINK_ENV,
@@ -181,15 +182,19 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		removeTempDir(tempDir);
 	});
 
-	function readCallArgs(): string[] {
+	function readLastCall(): { args: string[]; cwd?: string; env?: Record<string, string | null> } {
 		const callFile = fs.readdirSync(mockPi.dir)
 			.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
 			.sort()
 			.at(-1);
 		assert.ok(callFile, "expected a recorded mock pi call");
-		const payload = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")) as { args?: string[] };
+		const payload = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")) as { args?: string[]; cwd?: string; env?: Record<string, string | null> };
 		assert.ok(Array.isArray(payload.args), "expected recorded args");
-		return payload.args;
+		return { args: payload.args, cwd: payload.cwd, env: payload.env };
+	}
+
+	function readCallArgs(): string[] {
+		return readLastCall().args;
 	}
 
 	function makeExecutor(agents = [makeAgent("echo")]) {
@@ -868,6 +873,47 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 			assert.equal(result.skillsWarning, undefined);
 		} finally {
 			removeTempDir(taskCwd);
+		}
+	});
+
+	it("inherits RepoPrompt bridge extensions, permission env, and effective cwd into child pi", async () => {
+		const taskCwd = createTempDir("pi-subagent-inherited-cwd-");
+		const originalInheritedExtensions = process.env[SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV];
+		const originalPermission = process.env.REPOPROMPT_PI_PERMISSION_LEVEL;
+		const originalManagedRun = process.env.REPOPROMPT_PI_MANAGED_RUN;
+		try {
+			process.env[SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV] = JSON.stringify(["/tmp/repoprompt-bridge-window-1.ts"]);
+			process.env.REPOPROMPT_PI_PERMISSION_LEVEL = "readOnly";
+			process.env.REPOPROMPT_PI_MANAGED_RUN = "1";
+			mockPi.onCall({ echoEnv: ["REPOPROMPT_PI_PERMISSION_LEVEL", "REPOPROMPT_PI_MANAGED_RUN"] });
+			const agents = [makeAgent("echo", { extensions: ["./agent-allowed-ext.ts"] })];
+
+			const result = await runSync(tempDir, agents, "echo", "Task", { cwd: taskCwd });
+
+			assert.equal(result.exitCode, 0);
+			assert.deepEqual(JSON.parse(result.finalOutput ?? "{}"), {
+				REPOPROMPT_PI_PERMISSION_LEVEL: "readOnly",
+				REPOPROMPT_PI_MANAGED_RUN: "1",
+			});
+			const call = readLastCall();
+			const extensionArgs = call.args.filter((arg, index) => call.args[index - 1] === "--extension");
+			assert.equal(call.cwd ? fs.realpathSync(call.cwd) : call.cwd, fs.realpathSync(taskCwd));
+			assert.ok(call.args.includes("--no-extensions"));
+			assert.ok(extensionArgs.some((arg) => arg.endsWith(path.join("src", "runs", "shared", "subagent-prompt-runtime.ts"))));
+			assert.ok(extensionArgs.includes("/tmp/repoprompt-bridge-window-1.ts"));
+			assert.ok(extensionArgs.includes("./agent-allowed-ext.ts"));
+			assert.deepEqual(call.env, {
+				REPOPROMPT_PI_PERMISSION_LEVEL: "readOnly",
+				REPOPROMPT_PI_MANAGED_RUN: "1",
+			});
+		} finally {
+			removeTempDir(taskCwd);
+			if (originalInheritedExtensions === undefined) delete process.env[SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV];
+			else process.env[SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV] = originalInheritedExtensions;
+			if (originalPermission === undefined) delete process.env.REPOPROMPT_PI_PERMISSION_LEVEL;
+			else process.env.REPOPROMPT_PI_PERMISSION_LEVEL = originalPermission;
+			if (originalManagedRun === undefined) delete process.env.REPOPROMPT_PI_MANAGED_RUN;
+			else process.env.REPOPROMPT_PI_MANAGED_RUN = originalManagedRun;
 		}
 	});
 

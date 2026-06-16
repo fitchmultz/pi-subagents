@@ -206,9 +206,13 @@ async function main() {
 	const jsonMode = isJsonMode(args);
 	const response = claimNextResponse(queueDir, args) ?? defaultResponse();
 	writeSessionFile(args);
+	const callRecord = { args, cwd: process.cwd() };
+	if (Array.isArray(response.echoEnv) && response.echoEnv.length > 0) {
+		callRecord.env = Object.fromEntries(response.echoEnv.map((key) => [key, process.env[key] ?? null]));
+	}
 	fs.writeFileSync(
 		path.join(queueDir, `call-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}.json`),
-		JSON.stringify({ args }),
+		JSON.stringify(callRecord),
 		"utf-8",
 	);
 
