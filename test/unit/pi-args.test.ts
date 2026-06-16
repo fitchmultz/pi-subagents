@@ -6,6 +6,7 @@ import { afterEach, describe, it } from "node:test";
 import { computeMcpServerHash } from "../../src/runs/shared/mcp-direct-tool-allowlist.ts";
 import {
 	SUBAGENT_FANOUT_CHILD_ENV,
+	SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV,
 	SUBAGENT_PARENT_CHILD_INDEX_ENV,
 	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
 	SUBAGENT_PARENT_CONTROL_INBOX_ENV,
@@ -35,6 +36,7 @@ const originalEnv = {
 	PI_SUBAGENT_PARENT_PATH: process.env.PI_SUBAGENT_PARENT_PATH,
 	PI_SUBAGENT_PARENT_CAPABILITY_TOKEN: process.env.PI_SUBAGENT_PARENT_CAPABILITY_TOKEN,
 	PI_SUBAGENT_RUN_ID: process.env.PI_SUBAGENT_RUN_ID,
+	PI_SUBAGENT_INHERITED_EXTENSIONS_JSON: process.env.PI_SUBAGENT_INHERITED_EXTENSIONS_JSON,
 };
 const originalCwd = process.cwd();
 const tempRoots: string[] = [];
@@ -513,6 +515,40 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		assert.ok(extensionArgs.some((arg) => arg.endsWith(path.join("src", "runs", "shared", "subagent-prompt-runtime.ts"))));
 		assert.ok(extensionArgs.includes("./custom-tool.ts"));
 		assert.ok(extensionArgs.includes("./allowed-ext.ts"));
+	});
+
+	it("adds inherited parent runtime extensions to child runs", () => {
+		process.env[SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV] = JSON.stringify(["/tmp/repoprompt-bridge.ts"]);
+
+		const { args } = buildPiArgs({
+			baseArgs: ["-p"],
+			task: "hello",
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+		});
+
+		const extensionArgs = args.filter((arg, index) => args[index - 1] === "--extension");
+		assert.ok(extensionArgs.some((arg) => arg.endsWith(path.join("src", "runs", "shared", "subagent-prompt-runtime.ts"))));
+		assert.ok(extensionArgs.includes("/tmp/repoprompt-bridge.ts"));
+	});
+
+	it("keeps inherited parent runtime extensions when explicit extensions are allowlisted", () => {
+		process.env[SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV] = JSON.stringify(["/tmp/repoprompt-bridge.ts"]);
+
+		const { args } = buildPiArgs({
+			baseArgs: ["-p"],
+			task: "hello",
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			extensions: ["./agent-allowed-ext.ts"],
+		});
+
+		const extensionArgs = args.filter((arg, index) => args[index - 1] === "--extension");
+		assert.ok(args.includes("--no-extensions"));
+		assert.ok(extensionArgs.includes("/tmp/repoprompt-bridge.ts"));
+		assert.ok(extensionArgs.includes("./agent-allowed-ext.ts"));
 	});
 
 	it("authorizes child fanout only from exact declared builtin subagent", () => {

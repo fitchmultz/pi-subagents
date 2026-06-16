@@ -25,6 +25,7 @@ export const SUBAGENT_PARENT_CHILD_INDEX_ENV = "PI_SUBAGENT_PARENT_CHILD_INDEX";
 export const SUBAGENT_PARENT_DEPTH_ENV = "PI_SUBAGENT_PARENT_DEPTH";
 export const SUBAGENT_PARENT_PATH_ENV = "PI_SUBAGENT_PARENT_PATH";
 export const SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV = "PI_SUBAGENT_PARENT_CAPABILITY_TOKEN";
+export const SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV = "PI_SUBAGENT_INHERITED_EXTENSIONS_JSON";
 
 interface BuildPiArgsInput {
 	baseArgs: string[];
@@ -112,6 +113,18 @@ export function resolveChildProjectTrustArgs(policy: ChildProjectTrustPolicy = "
 	return inherited === "approve" ? ["--approve"] : inherited === "no-approve" ? ["--no-approve"] : [];
 }
 
+function inheritedRuntimeExtensionPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+	const raw = env[SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV]?.trim();
+	if (!raw) return [];
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (!Array.isArray(parsed)) return [];
+		return parsed.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+	} catch {
+		return [];
+	}
+}
+
 export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	const args = [...input.baseArgs];
 	args.push(...resolveChildProjectTrustArgs(input.projectTrust));
@@ -153,8 +166,8 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	}
 
 	const runtimeExtensions = fanoutAuthorized
-		? [PROMPT_RUNTIME_EXTENSION_PATH, FANOUT_CHILD_EXTENSION_PATH]
-		: [PROMPT_RUNTIME_EXTENSION_PATH];
+		? [PROMPT_RUNTIME_EXTENSION_PATH, FANOUT_CHILD_EXTENSION_PATH, ...inheritedRuntimeExtensionPaths()]
+		: [PROMPT_RUNTIME_EXTENSION_PATH, ...inheritedRuntimeExtensionPaths()];
 	if (input.extensions !== undefined) {
 		args.push("--no-extensions");
 		for (const extPath of [...new Set([...runtimeExtensions, ...toolExtensionPaths, ...input.extensions])]) {
