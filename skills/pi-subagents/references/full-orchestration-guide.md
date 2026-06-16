@@ -334,7 +334,7 @@ const run = subagent({
 // Continue local inspection, then later call status with the returned id.
 ```
 
-Inspect async runs with `subagent({ action: "status", id: "..." })` or `subagent({ action: "status" })` for active runs. If a delegated fanout child launches nested runs, the parent status view shows them as a tree and you can target a nested run directly with its nested id.
+Inspect async runs with `subagent({ action: "status", id: "..." })` or `subagent({ action: "status" })` for active runs. After a foreground run completes or times out, `status` can still show the remembered foreground children and revive command by id, or with `subagent({ action: "status", id: "latest" })` / `id: "last"` for the latest remembered foreground run in the current session. If a delegated fanout child launches nested runs, the parent status view shows them as a tree and you can target a nested run directly with its nested id.
 
 Use `extend` when an active foreground child has an explicit timeout and is still doing useful work:
 

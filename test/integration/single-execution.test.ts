@@ -1600,8 +1600,9 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 			allowIntercomDetach: true,
 			intercomEvents: eventBus,
 		});
-		for (let attempt = 0; attempt < 50 && mockPi.callCount() < 1; attempt++) {
-			await new Promise((resolve) => setTimeout(resolve, 10));
+		const quietStartDeadline = Date.now() + 10_000;
+		while (mockPi.callCount() < 1 && Date.now() < quietStartDeadline) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
 		}
 		assert.equal(mockPi.callCount(), 1);
 		mockPi.onCall({

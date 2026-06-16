@@ -436,6 +436,70 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		}
 	});
 
+	it("status action reports remembered foreground runs after child completion", async () => {
+		const session = path.join(tempDir, "remembered-foreground.jsonl");
+		fs.writeFileSync(session, "", "utf-8");
+		const { executor, state } = makeExecutor({ bridgeMode: "off", agents: [makeAgent("a"), makeAgent("b")] });
+		state.foregroundRuns.set("remembered-status-run", {
+			runId: "remembered-status-run",
+			mode: "parallel",
+			cwd: tempDir,
+			updatedAt: Date.parse("2026-06-16T12:00:00.000Z"),
+			children: [
+				{ agent: "a", index: 0, status: "completed", sessionFile: session },
+				{ agent: "b", index: 1, status: "timed-out", sessionFile: session },
+			],
+		});
+
+		const result = await executor.execute(
+			"remembered-foreground-status",
+			{ action: "status", id: "remembered-status" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined);
+		const text = result.content[0]?.text ?? "";
+		assert.match(text, /Run: remembered-status-run/);
+		assert.match(text, /State: remembered foreground/);
+		assert.match(text, /1\. a completed, session:/);
+		assert.match(text, /2\. b timed-out, session:/);
+		assert.match(text, /Revive child: subagent\(\{ action: "resume", id: "remembered-status-run", index: 0, message: "\.\.\." \}\)/);
+		assert.doesNotMatch(text, /Async run not found/);
+	});
+
+	it("status action accepts latest alias for remembered foreground runs", async () => {
+		const session = path.join(tempDir, "remembered-latest.jsonl");
+		fs.writeFileSync(session, "", "utf-8");
+		const { executor, state } = makeExecutor({ bridgeMode: "off", agents: [makeAgent("a")] });
+		state.foregroundRuns.set("older-foreground", {
+			runId: "older-foreground",
+			mode: "single",
+			cwd: tempDir,
+			updatedAt: 100,
+			children: [{ agent: "a", index: 0, status: "completed", sessionFile: session }],
+		});
+		state.foregroundRuns.set("newer-foreground", {
+			runId: "newer-foreground",
+			mode: "single",
+			cwd: tempDir,
+			updatedAt: 200,
+			children: [{ agent: "a", index: 0, status: "completed", sessionFile: session }],
+		});
+
+		const result = await executor.execute(
+			"remembered-foreground-latest-status",
+			{ action: "status", id: "latest" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.match(result.content[0]?.text ?? "", /Run: newer-foreground/);
+	});
+
 	it("resume action revives a completed foreground child by index", async () => {
 		mockPi.onCall({ output: "first child done" });
 		mockPi.onCall({ output: "second child done" });

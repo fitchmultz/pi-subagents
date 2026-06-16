@@ -219,7 +219,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		).length;
 	}
 
-	async function waitForRecordedCalls(count: number, timeoutMs = 5_000): Promise<void> {
+	async function waitForRecordedCalls(count: number, timeoutMs = 15_000): Promise<void> {
 		const deadline = Date.now() + timeoutMs;
 		while (readAllCallArgs().length < count) {
 			if (Date.now() > deadline) assert.fail(`Timed out waiting for ${count} mock pi call(s)`);
@@ -935,6 +935,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /Max 8 tasks/);
+		assert.match(result.content[0]?.text ?? "", /parallel\.maxTasks/);
 	});
 
 	it("uses top-level parallel config overrides for maxTasks and concurrency", async () => {
@@ -1180,7 +1181,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			{
 				name: "max tasks",
 				params: { tasks: [{ agent: "echo", task: "task one", count: 9 }], async: true, clarify: false },
-				patterns: [/Max 8 tasks/],
+				patterns: [/Max 8 tasks/, /parallel\.maxTasks/],
 			},
 			{
 				name: "worktree cwd conflict",

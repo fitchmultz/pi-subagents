@@ -109,7 +109,7 @@ function resolveRepoState(cwd: string): RepoState {
 
 	const status = runGitChecked(toplevel, ["status", "--porcelain"]);
 	if (status.trim().length > 0) {
-		throw new Error("worktree isolation requires a clean git working tree. Commit or stash changes first.");
+		throw new Error("worktree isolation requires a clean git working tree. Commit or stash changes first, or rerun without worktree isolation if shared-checkout edits are intentional.");
 	}
 
 	const baseCommit = runGitChecked(toplevel, ["rev-parse", "HEAD"]).trim();

@@ -86,6 +86,7 @@ import {
 	type SubagentExecutionResult,
 	type ExtensionConfig,
 	type ForegroundControlState,
+	type ForegroundResumeRun,
 	type IntercomEventBus,
 	type MaxOutputConfig,
 	type NestedRouteInfo,
@@ -109,6 +110,10 @@ import {
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
+
+function maxParallelTasksMessage(maxParallelTasks: number): string {
+	return `Max ${maxParallelTasks} tasks. Split the batch into smaller parallel calls or raise parallel.maxTasks in ~/.pi/agent/extensions/subagent/config.json.`;
+}
 
 interface TaskParam {
 	agent: string;
@@ -477,14 +482,47 @@ function rememberForegroundRun(state: SubagentState, input: { runId: string; mod
 	}
 }
 
+const LATEST_FOREGROUND_ALIASES = new Set(["last", "latest"]);
+
+function resolveRememberedForegroundRun(requested: string | undefined, state: SubagentState): ForegroundResumeRun | undefined {
+	if (!requested || !state.foregroundRuns?.size) return undefined;
+	const normalized = requested.trim();
+	if (!normalized) return undefined;
+	if (LATEST_FOREGROUND_ALIASES.has(normalized)) {
+		return [...state.foregroundRuns.values()].sort((left, right) => right.updatedAt - left.updatedAt)[0];
+	}
+	const direct = state.foregroundRuns.get(normalized);
+	const matches = direct ? [direct] : [...state.foregroundRuns.values()].filter((run) => run.runId.startsWith(normalized));
+	if (matches.length === 0) return undefined;
+	if (matches.length > 1) throw new Error(`Ambiguous foreground run id prefix '${normalized}' matched: ${matches.map((run) => run.runId).join(", ")}. Provide a longer id.`);
+	return matches[0]!;
+}
+
+function foregroundResumeGuidance(run: ForegroundResumeRun): string {
+	if (run.children.length === 1) return `Revive: subagent({ action: "resume", id: "${run.runId}", message: "..." })`;
+	const childWithSession = run.children.find((child) => child.sessionFile);
+	if (!childWithSession) return "Revive: unavailable; no child session file was persisted.";
+	return `Revive child: subagent({ action: "resume", id: "${run.runId}", index: ${childWithSession.index}, message: "..." })`;
+}
+
+function rememberedForegroundStatusResult(run: ForegroundResumeRun): SubagentExecutionResult {
+	const lines = [
+		`Run: ${run.runId}`,
+		"State: remembered foreground",
+		`Mode: ${run.mode}`,
+		`Updated: ${new Date(run.updatedAt).toISOString()}`,
+		`Cwd: ${run.cwd}`,
+		"Children:",
+		...run.children.map((child) => `  ${child.index + 1}. ${child.agent} ${child.status}${child.sessionFile ? `, session: ${child.sessionFile}` : ""}`),
+		foregroundResumeGuidance(run),
+	];
+	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
+}
+
 function resolveForegroundResumeTarget(params: SubagentParamsLike, state: SubagentState): { runId: string; mode: "single" | "parallel" | "chain"; state: "complete"; agent: string; index: number; intercomTarget: string; cwd: string; sessionFile: string } | undefined {
 	const requested = (params.id ?? params.runId)?.trim();
-	if (!requested || !state.foregroundRuns?.size) return undefined;
-	const direct = state.foregroundRuns.get(requested);
-	const matches = direct ? [direct] : [...state.foregroundRuns.values()].filter((run) => run.runId.startsWith(requested));
-	if (matches.length === 0) return undefined;
-	if (matches.length > 1) throw new Error(`Ambiguous foreground run id prefix '${requested}' matched: ${matches.map((run) => run.runId).join(", ")}. Provide a longer id.`);
-	const run = matches[0]!;
+	const run = resolveRememberedForegroundRun(requested, state);
+	if (!run) return undefined;
 	if (run.children.length > 1 && params.index === undefined) throw new Error(`Foreground run '${run.runId}' has ${run.children.length} children. Provide index to choose one.`);
 	const index = params.index ?? 0;
 	if (!Number.isInteger(index)) throw new Error(`Foreground run '${run.runId}' index must be an integer.`);
@@ -1328,7 +1366,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 	if (hasTasks && params.tasks) {
 		const maxParallelTasks = resolveTopLevelParallelMaxTasks(deps.config.parallel?.maxTasks);
 		if (params.tasks.length > maxParallelTasks) {
-			return buildParallelModeError(`Max ${maxParallelTasks} tasks`);
+			return buildParallelModeError(maxParallelTasksMessage(maxParallelTasks));
 		}
 		if (params.worktree) {
 			const worktreeTaskCwdError = buildParallelWorktreeTaskCwdError(params.tasks, effectiveCwd);
@@ -1945,7 +1983,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 
 	if (tasks.length > maxParallelTasks)
 		return {
-			content: [{ type: "text", text: `Max ${maxParallelTasks} tasks` }],
+			content: [{ type: "text", text: maxParallelTasksMessage(maxParallelTasks) }],
 			isError: true,
 			details: { mode: "parallel" as const, results: [] },
 		};
@@ -2672,7 +2710,17 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					const foreground = getForegroundControl(deps.state, undefined);
 					if (foreground) return foregroundStatusResult(foreground);
 				}
-				return inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
+				const inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
+				if (targetRunId && inspected.isError && inspected.content[0]?.type === "text" && inspected.content[0].text.startsWith("Async run not found.")) {
+					try {
+						const remembered = resolveRememberedForegroundRun(targetRunId, deps.state);
+						if (remembered) return rememberedForegroundStatusResult(remembered);
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
+					}
+				}
+				return inspected;
 			}
 			if (params.action === "resume") {
 				return resumeAsyncRun({ params: paramsWithResolvedCwd, requestCwd, ctx, deps });
