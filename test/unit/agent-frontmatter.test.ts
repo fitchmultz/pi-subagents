@@ -163,6 +163,45 @@ Validate changes
 	});
 });
 
+describe("agent frontmatter allowSubagents", () => {
+	it("serializes allowSubagents into agent frontmatter", () => {
+		const agent: AgentConfig = {
+			name: "worker",
+			description: "Worker",
+			systemPrompt: "Do work",
+			systemPromptMode: "replace",
+			inheritProjectContext: false,
+			inheritSkills: false,
+			source: "project",
+			filePath: "/tmp/worker.md",
+			allowSubagents: true,
+		};
+
+		const serialized = serializeAgent(agent);
+		assert.match(serialized, /allowSubagents: true/);
+	});
+
+	it("parses allowSubagents from discovered agent frontmatter", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-agent-allow-subagents-"));
+		tempDirs.push(dir);
+		const agentsDir = path.join(dir, ".pi", "agents");
+		fs.mkdirSync(agentsDir, { recursive: true });
+		fs.writeFileSync(path.join(agentsDir, "worker.md"), `---
+name: worker
+description: Worker
+allowSubagents: true
+---
+
+Do work
+`, "utf-8");
+
+		const result = discoverAgents(dir, "project");
+		const worker = result.agents.find((agent) => agent.name === "worker");
+		assert.equal(worker?.allowSubagents, true);
+		assert.equal(worker?.extraFields?.allowSubagents, undefined);
+	});
+});
+
 describe("agent frontmatter maxSubagentDepth", () => {
 	it("serializes maxSubagentDepth into agent frontmatter", () => {
 		const agent: AgentConfig = {

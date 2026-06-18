@@ -46,6 +46,7 @@ export interface BuiltinAgentOverrideBase {
 	skills?: string[];
 	tools?: string[];
 	mcpDirectTools?: string[];
+	allowSubagents?: boolean;
 	maxExecutionTimeMs?: number;
 	maxTokens?: number;
 	completionGuard?: boolean;
@@ -63,6 +64,7 @@ interface BuiltinAgentOverrideConfig {
 	systemPrompt?: string;
 	skills?: string[] | false;
 	tools?: string[] | false;
+	allowSubagents?: boolean;
 	maxExecutionTimeMs?: number | false;
 	maxTokens?: number | false;
 	completionGuard?: boolean;
@@ -81,6 +83,7 @@ export interface AgentConfig {
 	description: string;
 	tools?: string[];
 	mcpDirectTools?: string[];
+	allowSubagents?: boolean;
 	model?: string;
 	fallbackModels?: string[];
 	thinking?: string;
@@ -213,6 +216,7 @@ function cloneOverrideBase(agent: AgentConfig): BuiltinAgentOverrideBase {
 		skills: agent.skills ? [...agent.skills] : undefined,
 		tools: agent.tools ? [...agent.tools] : undefined,
 		mcpDirectTools: agent.mcpDirectTools ? [...agent.mcpDirectTools] : undefined,
+		allowSubagents: agent.allowSubagents,
 		maxExecutionTimeMs: agent.maxExecutionTimeMs,
 		maxTokens: agent.maxTokens,
 		completionGuard: agent.completionGuard,
@@ -234,6 +238,7 @@ function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentO
 		...(override.systemPrompt !== undefined ? { systemPrompt: override.systemPrompt } : {}),
 		...(override.skills !== undefined ? { skills: override.skills === false ? false : [...override.skills] } : {}),
 		...(override.tools !== undefined ? { tools: override.tools === false ? false : [...override.tools] } : {}),
+		...(override.allowSubagents !== undefined ? { allowSubagents: override.allowSubagents } : {}),
 		...(override.maxExecutionTimeMs !== undefined ? { maxExecutionTimeMs: override.maxExecutionTimeMs } : {}),
 		...(override.maxTokens !== undefined ? { maxTokens: override.maxTokens } : {}),
 		...(override.completionGuard !== undefined ? { completionGuard: override.completionGuard } : {}),
@@ -376,6 +381,14 @@ function parseBuiltinOverrideEntry(
 		}
 	}
 
+	if ("allowSubagents" in input) {
+		if (typeof input.allowSubagents === "boolean") {
+			override.allowSubagents = input.allowSubagents;
+		} else {
+			throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'allowSubagents'; expected a boolean.`);
+		}
+	}
+
 	if ("maxExecutionTimeMs" in input) {
 		if (input.maxExecutionTimeMs === false || (typeof input.maxExecutionTimeMs === "number" && Number.isInteger(input.maxExecutionTimeMs) && input.maxExecutionTimeMs >= 1)) {
 			override.maxExecutionTimeMs = input.maxExecutionTimeMs;
@@ -472,6 +485,7 @@ function applyBuiltinOverride(
 		next.tools = tools;
 		next.mcpDirectTools = mcpDirectTools;
 	}
+	if (override.allowSubagents !== undefined) next.allowSubagents = override.allowSubagents;
 	if (override.maxExecutionTimeMs !== undefined) next.maxExecutionTimeMs = override.maxExecutionTimeMs === false ? undefined : override.maxExecutionTimeMs;
 	if (override.maxTokens !== undefined) next.maxTokens = override.maxTokens === false ? undefined : override.maxTokens;
 	if (override.completionGuard !== undefined) next.completionGuard = override.completionGuard;
@@ -514,7 +528,7 @@ function applyBuiltinOverrides(
 
 export function buildBuiltinOverrideConfig(
 	base: BuiltinAgentOverrideBase,
-	draft: Pick<AgentConfig, "model" | "fallbackModels" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritSkills" | "defaultContext" | "disabled" | "systemPrompt" | "skills" | "tools" | "mcpDirectTools" | "maxExecutionTimeMs" | "maxTokens" | "completionGuard">,
+	draft: Pick<AgentConfig, "model" | "fallbackModels" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritSkills" | "defaultContext" | "disabled" | "systemPrompt" | "skills" | "tools" | "mcpDirectTools" | "allowSubagents" | "maxExecutionTimeMs" | "maxTokens" | "completionGuard">,
 ): BuiltinAgentOverrideConfig | undefined {
 	const override: BuiltinAgentOverrideConfig = {};
 
@@ -532,6 +546,7 @@ export function buildBuiltinOverrideConfig(
 	const baseTools = joinToolList(base);
 	const draftTools = joinToolList(draft);
 	if (!arraysEqual(draftTools, baseTools)) override.tools = draftTools ? [...draftTools] : false;
+	if (draft.allowSubagents !== base.allowSubagents) override.allowSubagents = draft.allowSubagents === true;
 	if (draft.maxExecutionTimeMs !== base.maxExecutionTimeMs) override.maxExecutionTimeMs = draft.maxExecutionTimeMs ?? false;
 	if (draft.maxTokens !== base.maxTokens) override.maxTokens = draft.maxTokens ?? false;
 	if ((draft.completionGuard !== false) !== (base.completionGuard !== false)) {
@@ -717,6 +732,7 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			description: frontmatter.description,
 			tools: tools.length > 0 ? tools : undefined,
 			mcpDirectTools: mcpDirectTools.length > 0 ? mcpDirectTools : undefined,
+			allowSubagents: frontmatter.allowSubagents === "true",
 			model: frontmatter.model,
 			fallbackModels: fallbackModels && fallbackModels.length > 0 ? fallbackModels : undefined,
 			thinking: frontmatter.thinking,

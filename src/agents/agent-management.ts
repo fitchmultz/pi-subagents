@@ -321,6 +321,10 @@ function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknown>): st
 		if (typeof cfg.progress !== "boolean") return "config.progress must be a boolean when provided.";
 		target.defaultProgress = cfg.progress;
 	}
+	if (hasKey(cfg, "allowSubagents")) {
+		if (typeof cfg.allowSubagents !== "boolean") return "config.allowSubagents must be a boolean when provided.";
+		target.allowSubagents = cfg.allowSubagents;
+	}
 	if (hasKey(cfg, "maxSubagentDepth")) {
 		if (cfg.maxSubagentDepth === false || cfg.maxSubagentDepth === "") target.maxSubagentDepth = undefined;
 		else if (typeof cfg.maxSubagentDepth === "number" && Number.isInteger(cfg.maxSubagentDepth) && cfg.maxSubagentDepth >= 0) {
@@ -417,6 +421,7 @@ function formatAgentDetail(agent: AgentConfig): string {
 	if (agent.output) lines.push(`Output: ${agent.output}`);
 	if (agent.defaultReads?.length) lines.push(`Reads: ${agent.defaultReads.join(", ")}`);
 	if (agent.defaultProgress) lines.push("Progress: true");
+	if (agent.allowSubagents) lines.push("Allow subagents: true");
 	if (agent.maxSubagentDepth !== undefined) lines.push(`Max subagent depth: ${agent.maxSubagentDepth}`);
 	if (agent.maxExecutionTimeMs !== undefined) lines.push(`Max execution time: ${agent.maxExecutionTimeMs}ms`);
 	if (agent.maxTokens !== undefined) lines.push(`Max tokens: ${agent.maxTokens}`);

@@ -1159,7 +1159,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		});
 	});
 
-	it("passes fanout routing env only when builtin subagent is declared", async () => {
+	it("passes fanout routing env only when subagents are allowed", async () => {
 		const envKeys = [
 			SUBAGENT_FANOUT_CHILD_ENV,
 			SUBAGENT_PARENT_EVENT_SINK_ENV,
@@ -1184,6 +1184,18 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 				PI_SUBAGENT_PARENT_CONTROL_INBOX: "/tmp/inherited/control",
 				PI_SUBAGENT_PARENT_RUN_ID: "fanout-run",
 				PI_SUBAGENT_PARENT_CHILD_INDEX: "2",
+			});
+
+			mockPi.onCall({ echoEnv: envKeys });
+			const implicitToolsFanoutAgents = [makeAgent("worker", { allowSubagents: true })];
+			const implicitToolsFanout = await runSync(tempDir, implicitToolsFanoutAgents, "worker", "Task", { runId: "implicit-tools-fanout-run", index: 3 });
+			assert.equal(implicitToolsFanout.exitCode, 0);
+			assert.deepEqual(JSON.parse(implicitToolsFanout.finalOutput ?? "{}"), {
+				PI_SUBAGENT_FANOUT_CHILD: "1",
+				PI_SUBAGENT_PARENT_EVENT_SINK: "/tmp/inherited/events.jsonl",
+				PI_SUBAGENT_PARENT_CONTROL_INBOX: "/tmp/inherited/control",
+				PI_SUBAGENT_PARENT_RUN_ID: "implicit-tools-fanout-run",
+				PI_SUBAGENT_PARENT_CHILD_INDEX: "3",
 			});
 
 			mockPi.onCall({ echoEnv: envKeys });

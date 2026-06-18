@@ -551,6 +551,56 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		assert.ok(extensionArgs.includes("./agent-allowed-ext.ts"));
 	});
 
+	it("authorizes child fanout without constraining normal tools when allowSubagents is true", () => {
+		const { args, env } = buildPiArgs({
+			baseArgs: ["-p"],
+			task: "hello",
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			allowSubagents: true,
+			runId: "parent-run",
+		});
+
+		const extensionArgs = args.filter((arg, index) => args[index - 1] === "--extension");
+		assert.equal(args.includes("--tools"), false);
+		assert.equal(env[SUBAGENT_FANOUT_CHILD_ENV], "1");
+		assert.ok(extensionArgs.some((arg) => arg.endsWith(path.join("src", "extension", "fanout-child.ts"))));
+	});
+
+	it("keeps path-only tool extension entries from becoming a static allowlist when allowSubagents is true", () => {
+		const { args, env } = buildPiArgs({
+			baseArgs: ["-p"],
+			task: "hello",
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			tools: ["./custom-tool.ts"],
+			allowSubagents: true,
+		});
+
+		const extensionArgs = args.filter((arg, index) => args[index - 1] === "--extension");
+		assert.equal(args.includes("--tools"), false);
+		assert.equal(env[SUBAGENT_FANOUT_CHILD_ENV], "1");
+		assert.ok(extensionArgs.includes("./custom-tool.ts"));
+		assert.ok(extensionArgs.some((arg) => arg.endsWith(path.join("src", "extension", "fanout-child.ts"))));
+	});
+
+	it("adds subagent to explicit tool allowlists when allowSubagents is true", () => {
+		const { args, env } = buildPiArgs({
+			baseArgs: ["-p"],
+			task: "hello",
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			tools: ["read"],
+			allowSubagents: true,
+		});
+
+		assert.equal(args[args.indexOf("--tools") + 1], "read,subagent");
+		assert.equal(env[SUBAGENT_FANOUT_CHILD_ENV], "1");
+	});
+
 	it("authorizes child fanout only from exact declared builtin subagent", () => {
 		const { args, env } = buildPiArgs({
 			baseArgs: ["-p"],

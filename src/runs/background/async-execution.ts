@@ -420,6 +420,7 @@ export function executeAsyncChain(
 				.map((candidate) => applyThinkingSuffix(candidate, a.thinking))
 				.filter((candidate): candidate is string => typeof candidate === "string"),
 			tools: a.tools,
+			allowSubagents: a.allowSubagents,
 			extensions: a.extensions,
 			mcpDirectTools: a.mcpDirectTools,
 			completionGuard: a.completionGuard,
@@ -754,6 +755,7 @@ export function executeAsyncSingle(
 							.map((candidate) => applyThinkingSuffix(candidate, agentConfig.thinking))
 							.filter((candidate): candidate is string => typeof candidate === "string"),
 						tools: agentConfig.tools,
+						allowSubagents: agentConfig.allowSubagents,
 						extensions: agentConfig.extensions,
 						mcpDirectTools: agentConfig.mcpDirectTools,
 						completionGuard: agentConfig.completionGuard,

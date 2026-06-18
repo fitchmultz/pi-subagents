@@ -13,6 +13,7 @@ export interface RunnerSubagentStep {
 	thinking?: string;
 	modelCandidates?: string[];
 	tools?: string[];
+	allowSubagents?: boolean;
 	extensions?: string[];
 	mcpDirectTools?: string[];
 	completionGuard?: boolean;

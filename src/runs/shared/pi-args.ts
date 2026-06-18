@@ -39,6 +39,7 @@ interface BuildPiArgsInput {
 	inheritProjectContext: boolean;
 	inheritSkills: boolean;
 	tools?: string[];
+	allowSubagents?: boolean;
 	extensions?: string[];
 	systemPrompt?: string | null;
 	mcpDirectTools?: string[];
@@ -148,10 +149,11 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	}
 
 	const declaredBuiltinTools = input.tools?.filter((tool) => !(tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) ?? [];
-	const fanoutAuthorized = declaredBuiltinTools.includes("subagent");
+	const fanoutAuthorized = input.allowSubagents === true || declaredBuiltinTools.includes("subagent");
 	const toolExtensionPaths: string[] = [];
 	if (input.tools?.length) {
 		const builtinTools = [...declaredBuiltinTools];
+		if (input.allowSubagents === true && declaredBuiltinTools.length > 0 && !builtinTools.includes("subagent")) builtinTools.push("subagent");
 		for (const tool of input.tools) {
 			if (!declaredBuiltinTools.includes(tool) && (tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) {
 				toolExtensionPaths.push(tool);

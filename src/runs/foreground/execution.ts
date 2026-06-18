@@ -266,6 +266,7 @@ async function runSingleAttempt(
 		inheritProjectContext: agent.inheritProjectContext,
 		inheritSkills: agent.inheritSkills,
 		tools: agent.tools,
+		allowSubagents: agent.allowSubagents,
 		extensions: agent.extensions,
 		systemPrompt: shared.systemPrompt,
 		mcpDirectTools: agent.mcpDirectTools,

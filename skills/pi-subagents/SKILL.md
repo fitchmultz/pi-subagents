@@ -19,7 +19,7 @@ Parent-orchestrator skill for launching focused child Pi sessions. Do not inject
 - Treat child output as evidence to inspect, not automatic truth.
 - Keep writes single-threaded unless writers are isolated with `worktree: true`.
 - Use fresh-context reviewers for adversarial review; use forked `oracle` for inherited-decision/drift review.
-- Do not let ordinary children launch subagents. Only a child explicitly configured with the `subagent` tool may run bounded fanout assigned by the parent.
+- Do not let ordinary children launch subagents. Only a child explicitly configured with `allowSubagents: true` or the `subagent` tool may run bounded fanout assigned by the parent.
 - A reviewer timeout is not sign-off. Rerun, resume, or split the review.
 - When an active Pi goal is incomplete, prefer foreground/blocking subagent runs for goal-critical evidence.
 
