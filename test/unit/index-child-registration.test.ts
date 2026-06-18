@@ -128,21 +128,15 @@ describe("subagent extension child mode", () => {
 		runProbe(script);
 	});
 
-	it("registers only the child-safe subagent tool for fanout children", () => {
+	it("returns before registering anything for fanout children", () => {
 		const script = String.raw`
 			const { default: registerSubagentExtension } = await jiti.import("./src/extension/index.ts");
 			const { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } = await jiti.import("./src/runs/shared/pi-args.ts");
 			process.env[SUBAGENT_CHILD_ENV] = "1";
 			process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
 			const calls = [];
-			let registeredTool;
-			const fakePi = new Proxy({
-				events: { on() { calls.push("events.on"); return () => {}; }, emit() { calls.push("events.emit"); } },
-				registerTool(tool) { calls.push("registerTool"); registeredTool = tool; },
-				getSessionName() { return undefined; },
-			}, {
-				get(target, prop) {
-					if (prop in target) return target[prop];
+			const fakePi = new Proxy({}, {
+				get(_target, prop) {
 					return (..._args) => {
 						calls.push(String(prop));
 						return undefined;
@@ -150,13 +144,9 @@ describe("subagent extension child mode", () => {
 				},
 			});
 			registerSubagentExtension(fakePi);
-			if (!registeredTool || registeredTool.name !== "subagent") throw new Error("child-safe subagent tool not registered");
-			if (!registeredTool.promptSnippet?.includes("child-safe")) throw new Error("missing child-safe promptSnippet");
-			const childGuidelines = registeredTool.promptGuidelines ?? [];
-			if (!childGuidelines.some((line) => line.includes("child-safe fanout mode"))) throw new Error("missing child-safe fanout guideline");
-			if (!childGuidelines.some((line) => line.includes("create, update, and delete are blocked"))) throw new Error("missing child-safe mutation-block guideline");
-			const unexpected = calls.filter((call) => call !== "registerTool");
-			if (unexpected.length > 0) throw new Error("Unexpected parent-surface registrations: " + unexpected.join(", "));
+			if (calls.length > 0) {
+				throw new Error("Unexpected child-mode registrations: " + calls.join(", "));
+			}
 		`;
 
 		runProbe(script);

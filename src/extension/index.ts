@@ -33,8 +33,7 @@ import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
 import { clearSlashSnapshots, getSlashRenderableSnapshot, resolveSlashMessageDetails, restoreSlashFinalSnapshots, type SlashMessageDetails } from "../slash/slash-live-state.ts";
 import { inspectSubagentStatus } from "../runs/background/run-status.ts";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
-import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
-import registerFanoutChildSubagentExtension from "./fanout-child.ts";
+import { SUBAGENT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
 import { loadConfig } from "./config.ts";
@@ -217,7 +216,9 @@ class SubagentControlNoticeComponent implements Component {
 
 export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	if (process.env[SUBAGENT_CHILD_ENV] === "1") {
-		if (process.env[SUBAGENT_FANOUT_CHILD_ENV] === "1") registerFanoutChildSubagentExtension(pi);
+		// Child runs get child-safe nested delegation from the explicit fanout-child
+		// runtime extension injected by buildPiArgs. Keep the parent extension inert
+		// when global package discovery also loads index.ts in the child process.
 		return;
 	}
 	const globalStore = globalThis as Record<string, unknown>;
