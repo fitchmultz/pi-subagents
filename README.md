@@ -70,7 +70,15 @@ Live model-backed subagent paths are intentionally opt-in because they can use p
 PI_REAL_SMOKE_MODEL=openai/gpt-4o-mini npm run smoke:real-pi -- --llm
 ```
 
-That mode asks a real Pi session to exercise extension-loaded subagent list, foreground, and async paths. Use `--keep-temp` to preserve the isolated Pi home for debugging.
+That mode copies local `auth.json` and `models.json` into the isolated Pi agent dir, then asks a real Pi session to exercise extension-loaded subagent list, foreground, async launch, and async completion. Set `PI_REAL_SMOKE_AUTH_AGENT_DIR` if your auth files are not in `~/.pi/agent`.
+
+For a broader live gate, add `--llm-full`:
+
+```bash
+PI_REAL_SMOKE_MODEL=openai/gpt-4o-mini npm run smoke:real-pi -- --llm-full
+```
+
+That also verifies real parallel, chain, file output, and acceptance flows. Use `--keep-temp` to preserve the isolated Pi home for debugging.
 
 ## Local test watchdog
 
@@ -292,6 +300,8 @@ The child can use one dedicated coordination tool:
 - `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` for blocking decisions or clarification, and `reason: "progress_update"` for short non-blocking updates when a discovery changes the plan. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
 
 Child-side routine completion handoffs are still not expected. With the intercom bridge active, parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested child summaries under the parent child that launched them.
+
+When a foreground child raises a blocking supervisor question, `pi-subagents` detaches that foreground run so the parent can answer immediately. The tool result includes the exact `intercom({ action: "pending" })` and `intercom({ action: "reply", to: "..." })` calls to use. After replying, inspect `subagent({ action: "status", id: "..." })` or wait for the normal result delivery.
 
 If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child.
 

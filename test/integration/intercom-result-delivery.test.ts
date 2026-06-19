@@ -469,6 +469,35 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		assert.doesNotMatch(text, /Async run not found/);
 	});
 
+	it("status action refreshes detached foreground children that completed after supervisor reply", async () => {
+		const session = path.join(tempDir, "remembered-detached-complete.jsonl");
+		fs.writeFileSync(session, [
+			JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "contact_supervisor", arguments: { reason: "need_decision", message: "Pick one" } }] } }),
+			JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "UPDATED_DETACH_SMOKE_DONE reply=alpha" }] } }),
+		].join("\n"), "utf-8");
+		const { executor, state } = makeExecutor({ bridgeMode: "off", agents: [makeAgent("a")] });
+		state.foregroundRuns.set("detached-complete-run", {
+			runId: "detached-complete-run",
+			mode: "single",
+			cwd: tempDir,
+			updatedAt: Date.parse("2026-06-16T12:00:00.000Z"),
+			children: [{ agent: "a", index: 0, status: "detached", sessionFile: session }],
+		});
+
+		const result = await executor.execute(
+			"remembered-detached-complete-status",
+			{ action: "status", id: "detached-complete" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined);
+		const text = result.content[0]?.text ?? "";
+		assert.match(text, /1\. a completed, session: .*final: UPDATED_DETACH_SMOKE_DONE reply=alpha/);
+		assert.match(text, /Revive: subagent\(\{ action: "resume", id: "detached-complete-run", message: "\.\.\." \}\)/);
+	});
+
 	it("status action accepts latest alias for remembered foreground runs", async () => {
 		const session = path.join(tempDir, "remembered-latest.jsonl");
 		fs.writeFileSync(session, "", "utf-8");

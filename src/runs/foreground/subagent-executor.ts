@@ -48,6 +48,7 @@ import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { applyIntercomBridgeToAgent, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveSubagentIntercomTarget, shouldApplyIntercomBridge, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import { formatControlIntercomMessage, formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
 import { finalizeSingleOutput, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
+import { formatDetachedIntercomGuidance } from "../shared/intercom-detach.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd } from "../../shared/utils.ts";
 import {
 	attachNestedChildrenToResultChildren,
@@ -505,7 +506,47 @@ function foregroundResumeGuidance(run: ForegroundResumeRun): string {
 	return `Revive child: subagent({ action: "resume", id: "${run.runId}", index: ${childWithSession.index}, message: "..." })`;
 }
 
+function compactStatusText(value: string, maxLength = 240): string {
+	const normalized = value.replace(/\s+/g, " ").trim();
+	return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
+}
+
+function finalAssistantTextFromSession(sessionFile: string | undefined): string | undefined {
+	if (!sessionFile || path.extname(sessionFile) !== ".jsonl" || !fs.existsSync(sessionFile)) return undefined;
+	let finalText: string | undefined;
+	for (const line of fs.readFileSync(sessionFile, "utf-8").split(/\r?\n/)) {
+		if (!line.trim()) continue;
+		let event: unknown;
+		try {
+			event = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (!isRecord(event) || event.type !== "message" || !isRecord(event.message) || event.message.role !== "assistant" || !Array.isArray(event.message.content)) continue;
+		const hasToolCall = event.message.content.some((part) => isRecord(part) && part.type === "toolCall");
+		const text = event.message.content
+			.map((part) => isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : "")
+			.filter(Boolean)
+			.join("\n")
+			.trim();
+		finalText = hasToolCall ? undefined : text || undefined;
+	}
+	return finalText;
+}
+
+function refreshDetachedForegroundChildren(run: ForegroundResumeRun): Array<{ child: ForegroundResumeRun["children"][number]; finalOutput?: string }> {
+	return run.children.map((child) => {
+		const finalOutput = child.status === "detached" ? finalAssistantTextFromSession(child.sessionFile) : undefined;
+		if (finalOutput) {
+			child.status = "completed";
+			run.updatedAt = Date.now();
+		}
+		return { child, finalOutput };
+	});
+}
+
 function rememberedForegroundStatusResult(run: ForegroundResumeRun): SubagentExecutionResult {
+	const children = refreshDetachedForegroundChildren(run);
 	const lines = [
 		`Run: ${run.runId}`,
 		"State: remembered foreground",
@@ -513,7 +554,7 @@ function rememberedForegroundStatusResult(run: ForegroundResumeRun): SubagentExe
 		`Updated: ${new Date(run.updatedAt).toISOString()}`,
 		`Cwd: ${run.cwd}`,
 		"Children:",
-		...run.children.map((child) => `  ${child.index + 1}. ${child.agent} ${child.status}${child.sessionFile ? `, session: ${child.sessionFile}` : ""}`),
+		...children.map(({ child, finalOutput }) => `  ${child.index + 1}. ${child.agent} ${child.status}${child.sessionFile ? `, session: ${child.sessionFile}` : ""}${finalOutput ? `, final: ${compactStatusText(finalOutput)}` : ""}`),
 		foregroundResumeGuidance(run),
 	];
 	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
@@ -523,6 +564,7 @@ function resolveForegroundResumeTarget(params: SubagentParamsLike, state: Subage
 	const requested = (params.id ?? params.runId)?.trim();
 	const run = resolveRememberedForegroundRun(requested, state);
 	if (!run) return undefined;
+	refreshDetachedForegroundChildren(run);
 	if (run.children.length > 1 && params.index === undefined) throw new Error(`Foreground run '${run.runId}' has ${run.children.length} children. Provide index to choose one.`);
 	const index = params.index ?? 0;
 	if (!Number.isInteger(index)) throw new Error(`Foreground run '${run.runId}' index must be an integer.`);
@@ -2270,7 +2312,15 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		const detached = detachedIndex >= 0 ? results[detachedIndex] : undefined;
 		if (detached) {
 			return {
-				content: [{ type: "text", text: appendWorktreeSuffix(`Parallel run detached for intercom coordination (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`, worktreeSuffix) }],
+				content: [{
+					type: "text",
+					text: appendWorktreeSuffix(formatDetachedIntercomGuidance({
+						headline: `Parallel run detached for intercom coordination (${detached.agent}).`,
+						runId,
+						result: detached,
+						childIndex: detachedIndex,
+					}), worktreeSuffix),
+				}],
 				details,
 			};
 		}
@@ -2597,7 +2647,15 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 
 	if (r.detached) {
 		return {
-			content: [{ type: "text", text: `Detached for intercom coordination: ${params.agent}. Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
+			content: [{
+				type: "text",
+				text: formatDetachedIntercomGuidance({
+					headline: `Detached for intercom coordination: ${params.agent}.`,
+					runId,
+					result: r,
+					childIndex: 0,
+				}),
+			}],
 			details,
 		};
 	}

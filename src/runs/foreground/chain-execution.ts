@@ -35,6 +35,7 @@ import { runSync } from "./execution.ts";
 import { createForegroundTimeoutExtensionRegistry, type ForegroundTimeoutExtensionRegistry } from "./timeout-extension.ts";
 import { buildChainSummary } from "../../shared/formatters.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, resolveChildCwd } from "../../shared/utils.ts";
+import { formatDetachedIntercomGuidance } from "../shared/intercom-detach.ts";
 import { recordRun } from "../shared/run-history.ts";
 import {
 	cleanupWorktrees,
@@ -709,11 +710,20 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				const detachedIndexInStep = parallelResults.findIndex((result) => result.detached);
 				const detached = detachedIndexInStep >= 0 ? parallelResults[detachedIndexInStep] : undefined;
 				if (detached) {
+					const detachedFlatIndex = globalTaskIndex - step.parallel.length + detachedIndexInStep;
 					return {
-						content: [{ type: "text", text: appendWorktreeSummary(`Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`, worktreeSummary) }],
+						content: [{
+							type: "text",
+							text: appendWorktreeSummary(formatDetachedIntercomGuidance({
+								headline: `Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}).`,
+								runId,
+								result: detached,
+								childIndex: detachedFlatIndex,
+							}), worktreeSummary),
+						}],
 						details: buildChainExecutionDetails(makeDetailsInput({
 							currentStepIndex: stepIndex,
-							currentFlatIndex: globalTaskIndex - step.parallel.length + detachedIndexInStep,
+							currentFlatIndex: detachedFlatIndex,
 						})),
 					};
 				}
@@ -908,11 +918,20 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			const detachedIndexInStep = parallelResults.findIndex((result) => result.detached);
 			const detached = detachedIndexInStep >= 0 ? parallelResults[detachedIndexInStep] : undefined;
 			if (detached) {
+				const detachedFlatIndex = globalTaskIndex - dynamicParallelStep.parallel.length + detachedIndexInStep;
 				return {
-					content: [{ type: "text", text: `Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
+					content: [{
+						type: "text",
+						text: formatDetachedIntercomGuidance({
+							headline: `Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}).`,
+							runId,
+							result: detached,
+							childIndex: detachedFlatIndex,
+						}),
+					}],
 					details: buildChainExecutionDetails(makeDetailsInput({
 						currentStepIndex: stepIndex,
-						currentFlatIndex: globalTaskIndex - dynamicParallelStep.parallel.length + detachedIndexInStep,
+						currentFlatIndex: detachedFlatIndex,
 					})),
 				};
 			}
@@ -1144,9 +1163,18 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				};
 			}
 			if (r.detached) {
+				const detachedFlatIndex = globalTaskIndex - 1;
 				return {
-					content: [{ type: "text", text: appendCapturedWorktreeSummaries(`Chain detached for intercom coordination at step ${stepIndex + 1} (${r.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`) }],
-					details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - 1 })),
+					content: [{
+						type: "text",
+						text: appendCapturedWorktreeSummaries(formatDetachedIntercomGuidance({
+							headline: `Chain detached for intercom coordination at step ${stepIndex + 1} (${r.agent}).`,
+							runId,
+							result: r,
+							childIndex: detachedFlatIndex,
+						})),
+					}],
+					details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: detachedFlatIndex })),
 				};
 			}
 
