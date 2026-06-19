@@ -1,11 +1,6 @@
 ---
 name: pi-subagents
-description: |
-  Delegate work to builtin or custom subagents with single-agent, chain,
-  parallel, async, forked-context, and intercom-coordinated workflows. Use
-  for advisory review, implementation handoffs, and multi-step tasks where a
-  single agent should stay in control while other agents contribute context,
-  planning, or execution.
+description: "Use this skill when orchestrating Pi subagents: delegate to builtin or custom agents with single, parallel, chain, async/background, forked-context, acceptance, worktree, or intercom-coordinated workflows. Applies to advisory review, implementation handoffs, review loops, research/context fanout, agent/chain management, and subagent status/control. Do not use inside ordinary spawned child subagents or for non-Pi delegation patterns."
 ---
 
 # Pi Subagents
@@ -21,7 +16,10 @@ Parent-orchestrator skill for launching focused child Pi sessions. Do not inject
 - Use fresh-context reviewers for adversarial review; use forked `oracle` for inherited-decision/drift review.
 - Do not let ordinary children launch subagents. Only a child explicitly configured with `allowSubagents: true` or the `subagent` tool may run bounded fanout assigned by the parent.
 - A reviewer timeout is not sign-off. Rerun, resume, or split the review.
+- Use async/background only when the parent can keep doing useful independent work or the user wants chat unblocked. Do not sleep-poll; check status when evidence is needed.
 - When an active Pi goal is incomplete, prefer foreground/blocking subagent runs for goal-critical evidence.
+- Use `acceptance` for goal-style requests and plan/spec/broad-fix worker handoffs; put criteria, evidence, verify commands, stop rules, and loop cap there instead of burying them only in task prose.
+- Do not set `acceptance` on static parallel groups or dynamic fanout aggregate groups; set it on each child task/template that owns a session.
 
 ## Quick tool patterns
 
@@ -107,7 +105,7 @@ subagent({
 - `oracle`: forked advisory second opinion for direction, drift, and assumptions.
 - `delegate`: lightweight generic child.
 
-Builtin `planner`, `worker`, and `oracle` default to forked context. Pass `context: "fresh"` when a fresh child is intended.
+Packaged `planner`, `worker`, and `oracle` default to forked context. User/project agents or `subagents.agentOverrides` can change effective runtime defaults; confirm with `list`/`get` when the default matters. Pass explicit `context: "fresh"` or `"fork"` only when one policy should override every child in the call.
 
 ## Prompt-template workflows
 

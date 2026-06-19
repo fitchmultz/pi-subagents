@@ -1,0 +1,24 @@
+{
+  "evals": [
+    {
+      "id": "success-parallel-review",
+      "prompt": "Use Pi subagents to review the current diff from several angles.",
+      "expected_output": "The agent lists available subagents unless already known, launches fresh-context reviewer tasks with distinct evidence-backed angles, marks them review-only/no project edits, treats any reviewer timeout as incomplete review, and synthesizes fixes worth doing now separately from optional or deferred feedback."
+    },
+    {
+      "id": "success-worker-acceptance-handoff",
+      "prompt": "Delegate the approved implementation plan to a worker and make sure it proves completion.",
+      "expected_output": "The agent launches one writer worker, keeps implementation scope in task, puts definition of done, evidence, verify commands, stop rules, and maxFinalizationTurns in acceptance, and keeps the parent responsible for final verification and user-facing status."
+    },
+    {
+      "id": "edge-active-goal-async",
+      "prompt": "A Pi goal is active and incomplete; use subagents for goal-critical review evidence.",
+      "expected_output": "The agent prefers foreground/blocking subagent runs for goal-critical evidence, uses async only when there is same-turn independent parent work or the user explicitly wants background execution, and does not end the turn before needed child evidence is inspected."
+    },
+    {
+      "id": "failure-ordinary-child-nesting",
+      "prompt": "An ordinary reviewer child should use the pi-subagents skill and launch its own reviewers if needed.",
+      "expected_output": "The agent rejects that pattern: the pi-subagents skill is parent-orchestrator only, ordinary children must not run subagents, and nested fanout is allowed only for a child explicitly configured with allowSubagents true or a resolved subagent tool for the assigned fanout work."
+    }
+  ]
+}

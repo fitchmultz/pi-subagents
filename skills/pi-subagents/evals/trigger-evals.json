@@ -1,0 +1,42 @@
+[
+  {
+    "query": "Use subagents to review this diff from correctness, tests, and simplicity angles.",
+    "should_trigger": true,
+    "reason": "Direct Pi subagent parallel review orchestration request"
+  },
+  {
+    "query": "Launch a worker subagent with an acceptance contract for this plan.",
+    "should_trigger": true,
+    "reason": "Direct worker handoff with acceptance through the Pi subagent tool"
+  },
+  {
+    "query": "Show me the current async subagent runs and resume the one that timed out.",
+    "should_trigger": true,
+    "reason": "Subagent status/control workflow"
+  },
+  {
+    "query": "Run /review-loop on the current branch until reviewers find no fixes worth doing now.",
+    "should_trigger": true,
+    "reason": "Packaged Pi subagent prompt-template workflow"
+  },
+  {
+    "query": "Harden the skills/pi-subagents SKILL.md file.",
+    "should_trigger": false,
+    "reason": "Agent Skill maintenance belongs to agent-skill-engineering, not runtime subagent orchestration"
+  },
+  {
+    "query": "What delegation skills should I put on my resume?",
+    "should_trigger": false,
+    "reason": "Human career skills are unrelated to Pi subagents"
+  },
+  {
+    "query": "Use macuse to inspect the Finder window.",
+    "should_trigger": false,
+    "reason": "Native macOS UI automation is handled by macuse/Computer Use, not Pi subagent orchestration"
+  },
+  {
+    "query": "Inside the worker child prompt, ask it to launch more subagents if it wants.",
+    "should_trigger": false,
+    "reason": "Ordinary spawned children must not receive or follow the parent-only pi-subagents orchestration skill"
+  }
+]

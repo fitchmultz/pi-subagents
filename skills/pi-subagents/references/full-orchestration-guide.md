@@ -1,11 +1,6 @@
 ---
 name: pi-subagents
-description: |
-  Delegate work to builtin or custom subagents with single-agent, chain,
-  parallel, async, forked-context, and intercom-coordinated workflows. Use
-  for advisory review, implementation handoffs, and multi-step tasks where a
-  single agent should stay in control while other agents contribute context,
-  planning, or execution.
+description: "Use this skill when orchestrating Pi subagents: delegate to builtin or custom agents with single, parallel, chain, async/background, forked-context, acceptance, worktree, or intercom-coordinated workflows. Applies to advisory review, implementation handoffs, review loops, research/context fanout, agent/chain management, and subagent status/control. Do not use inside ordinary spawned child subagents or for non-Pi delegation patterns."
 ---
 
 # Pi Subagents
