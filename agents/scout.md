@@ -32,6 +32,31 @@ Output format (`context.md`):
 
 # Code Context
 
+## Summary
+One short paragraph with the actionable finding.
+
+## Counts
+Bullets for useful counts, such as matches, files checked, tests found, or affected entry points.
+
+## Files To Edit
+Use this machine-checkable table when edits may be needed:
+
+| path | line | reason | confidence |
+|---|---:|---|---|
+| `path/to/file.ts` | 42 | Why this file likely needs a change | high |
+
+If the caller provides `outputSchema`, call `structured_output` with this shape:
+
+```json
+{
+  "summary": "short actionable summary",
+  "counts": { "matches": 0, "files_checked": 0 },
+  "files_to_edit": [
+    { "path": "path/to/file.ts", "line": 42, "reason": "why", "confidence": "high" }
+  ]
+}
+```
+
 ## Files Retrieved
 List exact files and line ranges.
 1. `path/to/file.ts` (lines 10-50) - why it matters

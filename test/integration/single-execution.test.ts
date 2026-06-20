@@ -1008,6 +1008,42 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(fs.existsSync(outputPath), false);
 	});
 
+	it("keeps explicit single output paths in the workspace", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "workspace report" });
+		const executor = makeExecutor([makeAgent("echo")]);
+		const outputPath = path.join(tempDir, "explicit-report.md");
+
+		const result = await executor.execute(
+			"single-explicit-output",
+			{ agent: "echo", task: "Write report", output: "explicit-report.md" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		) as any;
+
+		assert.equal(result.isError, undefined);
+		assert.equal(fs.readFileSync(outputPath, "utf-8"), "workspace report");
+		assert.equal(result.details?.results?.[0]?.savedOutputPath, outputPath);
+		assert.equal(result.details?.results?.[0]?.outputCleanup, undefined);
+		assert.match(result.content[0]?.text ?? "", /Output saved to:/);
+	});
+
+	it("supports outputSchema for top-level single runs", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "structured prose", structuredOutput: { ok: true } });
+		const executor = makeExecutor([makeAgent("echo")]);
+
+		const result = await executor.execute(
+			"single-output-schema",
+			{ agent: "echo", task: "Return structured", outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] } },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		) as any;
+
+		assert.equal(result.isError, undefined);
+		assert.deepEqual(result.details?.results?.[0]?.structuredOutput, { ok: true });
+	});
+
 	it("materializes agent-default single output under run artifacts instead of the working tree", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ output: "default report" });
 		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);

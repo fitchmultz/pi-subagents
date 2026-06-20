@@ -872,7 +872,7 @@ async function runSingleStep(
 		? resolveSingleOutput(step.outputPath, outputForPersistence, finalOutputSnapshot)
 		: { fullOutput: outputForPersistence };
 	const output = resolvedOutput.fullOutput;
-	const cleanup = resolvedOutput.savedPath && step.outputMode !== "file-only"
+	const cleanup = resolvedOutput.savedPath && step.outputMode !== "file-only" && step.outputPathFromAgentDefault === true
 		? cleanupSingleOutputFile(resolvedOutput.savedPath, resolvedOutput.fullOutput, finalOutputSnapshot)
 		: undefined;
 	const outputReference = resolvedOutput.savedPath

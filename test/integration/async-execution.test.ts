@@ -503,7 +503,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(status.steps?.[0]?.acceptance?.status, "not-required");
 		const outputPath = path.join(tempDir, "async-top-output.md");
 		assert.equal(payload.results[0]?.output.includes("Async top-level report"), true);
-		assert.equal(fs.existsSync(outputPath), false);
+		assert.equal(fs.readFileSync(outputPath, "utf-8"), "Async top-level report");
 		const callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"));
 		assert.ok(callFile, "expected a recorded mock pi call");
 		const args = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];

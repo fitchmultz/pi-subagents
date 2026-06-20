@@ -872,11 +872,11 @@ Agent definitions are not loaded into context by default. Management actions let
 | `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `extend`, `resume`, or `doctor`. |
 | `chainName` | string | - | Chain name for management actions. |
 | `config` | object/string | - | Agent or chain config for create/update. |
-| `output` | `string \| false` | agent default | Override single-agent output handoff file. In normal inline mode the runtime captures this file and removes it before returning. |
-| `outputMode` | `"inline" \| "file-only"` | `inline` | Inline mode consumes and removes the output file after capture. `file-only` is the explicit persistent-file mode and requires an `output` path. |
+| `output` | `string \| false` | agent default | Override single-agent output handoff file. Explicit caller paths persist at their resolved cwd/workspace path; agent-default relative paths are materialized under run artifacts. |
+| `outputMode` | `"inline" \| "file-only"` | `inline` | Inline mode returns the saved content plus an output reference. `file-only` returns only a compact persistent-file reference and requires an `output` path. |
 | `skill` | `string \| string[] \| false` | agent default | Override skills or disable all. |
 | `model` | string | agent default | Override model. |
-| `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `acceptance`. |
+| `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `outputSchema`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `acceptance`. |
 | `concurrency` | number | config or `4` | Top-level parallel concurrency. |
 | `timeoutMs` / `maxRuntimeMs` | number | - | Foreground wall-clock timeout for single, parallel, and chain runs. Timed-out children return `timedOut: true`; async/background runs reject it. For `action: "extend"`, `timeoutMs`/`maxRuntimeMs` can also supply the extension amount when `extendMs` is omitted. |
 | `extendMs` | number | - | Additional milliseconds for `action: "extend"`. |
@@ -897,11 +897,11 @@ Agent definitions are not loaded into context by default. Management actions let
 
 `context: "fork"` fails fast when the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. It never silently downgrades to `fresh`. When a multi-agent run omits `context`, each child uses its own `defaultContext`: a fresh-default scout or reviewer stays fresh even when batched with a fork-default worker or oracle. Pass explicit `context: "fresh"` or `context: "fork"` only when you intentionally want one context policy to override every child in the call.
 
-By default, `output` paths are handoff scratch files. Explicit `output` paths are resolved from the task cwd. Relative output paths that come only from an agent default are materialized under the run artifact directory as unique files, so parallel defaults like `context.md` or `review.md` do not collide and do not create project-root leftovers. In inline mode, the runtime reads the handoff content into the parent result and then deletes the file. The result records `outputCleanup` when a handoff file was removed or cleanup had to be skipped.
+By default, `output` paths are handoff files. Explicit `output` paths are resolved from the task cwd and left in place, so workspace paths like `.scratchpad/scout.md` remain readable after the run. Relative output paths that come only from an agent default are materialized under the run artifact directory as unique files, so parallel defaults like `context.md` or `review.md` do not collide and do not create project-root leftovers. In inline mode, the runtime reads the handoff content into the parent result and records `savedOutputPath`/`outputReference`; when a materialized agent-default file is consumed, the result records `outputCleanup`. Session artifacts still expose `artifactPaths.outputPath` when artifacts are enabled.
 
-Use `outputMode: "file-only"` only when a saved output is intentionally persistent and the parent only needs a pointer. The returned text is a compact reference like `Output saved to: /abs/report.md (48.2 KB, 2847 lines). Read this file if needed.` Failed runs and save errors still return normal inline output for debugging. In chains, later `{previous}` steps receive the same compact reference when the prior step used file-only mode.
+Use `outputMode: "file-only"` when the parent only needs a pointer. The returned text is a compact reference like `Output saved to: /abs/report.md (48.2 KB, 2847 lines). Read this file if needed.` Failed runs and save errors still return normal inline output for debugging. In chains, later `{previous}` steps receive the same compact reference when the prior step used file-only mode.
 
-Sequential and parallel chain tasks accept `agent`, `task`, `phase`, `label`, `as`, `outputSchema`, `cwd`, `output`, `outputMode`, `reads`, `progress`, `skill`, and `model`. Parallel tasks also accept `count`. Parallel step groups accept `parallel`, `concurrency`, `failFast`, and `worktree`. If `outputSchema` is present, the child must call `structured_output` with schema-valid JSON; prose-only completion or invalid JSON fails the step. Validated structured values are preserved on the step result, and `as` also exposes a compact text representation through `{outputs.name}`.
+Single, top-level parallel, sequential chain, and parallel chain tasks accept `outputSchema`. If `outputSchema` is present, the child must call `structured_output` with schema-valid JSON; prose-only completion or invalid JSON fails the step. Validated structured values are preserved on the step result, and `as` also exposes a compact text representation through `{outputs.name}` for chain steps.
 
 Status and control actions:
 

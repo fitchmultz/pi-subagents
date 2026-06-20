@@ -19,7 +19,7 @@ const OutputOverride = Type.Unsafe({
 		{ type: "string" },
 		{ type: "boolean" },
 	],
-	description: "Output filename/path (string), or false to disable file output. Explicit paths are honored; relative output paths inherited from an agent default are materialized under the run artifact directory with unique names.",
+	description: "Output filename/path (string), or false to disable file output. Explicit caller paths persist at the resolved cwd/workspace path; relative output paths inherited from an agent default are materialized under the run artifact directory with unique names.",
 });
 
 const OutputModeOverride = Type.String({
@@ -112,6 +112,7 @@ const TaskItem = Type.Object({
 	task: Type.String(),
 	cwd: Type.Optional(Type.String()),
 	count: Type.Optional(Type.Integer({ minimum: 1, description: "Repeat this parallel task N times with the same settings." })),
+	outputSchema: Type.Optional(JsonSchemaObject),
 	output: Type.Optional(OutputOverride),
 	outputMode: Type.Optional(OutputModeOverride),
 	reads: Type.Optional(ReadsOverride),
@@ -300,5 +301,6 @@ export const SubagentParams = Type.Object({
 	outputMode: Type.Optional(OutputModeOverride),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
+	outputSchema: Type.Optional(JsonSchemaObject),
 	acceptance: Type.Optional(AcceptanceOverride),
 });

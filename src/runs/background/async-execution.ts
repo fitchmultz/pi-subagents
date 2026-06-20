@@ -29,6 +29,7 @@ import {
 	type ArtifactConfig,
 	type ChildProjectTrustPolicy,
 	type Details,
+	type JsonSchemaObject,
 	type MaxOutputConfig,
 	type NestedRouteInfo,
 	type ResolvedControlConfig,
@@ -193,6 +194,7 @@ interface AsyncSingleParams {
 	skills?: string[];
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
+	outputSchema?: JsonSchemaObject;
 	modelOverride?: string;
 	availableModels?: AvailableModelInfo[];
 	maxSubagentDepth: number;
@@ -378,7 +380,7 @@ export function executeAsyncChain(
 		const stepCwd = resolveChildCwd(runnerCwd, s.cwd);
 		const instructionCwd = behaviorCwd ?? stepCwd;
 		const behavior = suppressProgressForReadOnlyTask(resolvedBehavior ?? resolveStepBehavior(a, buildStepOverrides(s), chainSkills), s.task, originalTask);
-		const outputUsesAgentDefault = usesAgentDefaultOutput(s.output);
+		const outputUsesAgentDefault = usesAgentDefaultOutput(s.output) || s.outputFromAgentDefault === true;
 		const output = outputUsesAgentDefault
 			? materializeAsyncDefaultOutput({ output: behavior.output, artifactsDir, asyncDir, runId: id, agent: s.agent, index: outputIndex })
 			: behavior.output;
@@ -406,6 +408,11 @@ export function executeAsyncChain(
 
 		const primaryModel = resolveModelCandidate(behavior.model ?? a.model, availableModels, ctx.currentModelProvider);
 		const model = applyThinkingSuffix(primaryModel, a.thinking);
+		const defaultOutputSource = typeof s.defaultOutputSource === "string"
+			? s.defaultOutputSource
+			: typeof behavior.output === "string"
+				? behavior.output
+				: undefined;
 		return {
 			agent: s.agent,
 			task,
@@ -432,7 +439,7 @@ export function executeAsyncChain(
 			outputPath,
 			outputMode: behavior.outputMode,
 			...(outputUsesAgentDefault && outputPath ? { outputPathFromAgentDefault: true } : {}),
-			...(outputUsesAgentDefault && typeof behavior.output === "string" && !path.isAbsolute(behavior.output) ? { defaultOutputSource: behavior.output } : {}),
+			...(outputUsesAgentDefault && defaultOutputSource && !path.isAbsolute(defaultOutputSource) ? { defaultOutputSource } : {}),
 			sessionFile,
 			maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, a.maxSubagentDepth),
 			maxExecutionTimeMs: a.maxExecutionTimeMs,
@@ -721,6 +728,7 @@ export function executeAsyncSingle(
 		};
 	}
 
+	const outputUsesAgentDefault = usesAgentDefaultOutput(params.output);
 	const effectiveOutput = resolveAsyncOutput({
 		requestedOutput: params.output,
 		agentDefaultOutput: agentConfig.output,
@@ -766,6 +774,10 @@ export function executeAsyncSingle(
 						skills: resolvedSkills.map((r) => r.name),
 						outputPath,
 						outputMode,
+						...(outputUsesAgentDefault && outputPath ? { outputPathFromAgentDefault: true } : {}),
+						...(outputUsesAgentDefault && typeof agentConfig.output === "string" && !path.isAbsolute(agentConfig.output) ? { defaultOutputSource: agentConfig.output } : {}),
+						...(params.outputSchema ? { structuredOutputSchema: params.outputSchema } : {}),
+						...(params.outputSchema ? { structuredOutput: createStructuredOutputRuntime(params.outputSchema, path.join(asyncDir, "structured-output")) } : {}),
 						sessionFile,
 						maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, agentConfig.maxSubagentDepth),
 						maxExecutionTimeMs: agentConfig.maxExecutionTimeMs,

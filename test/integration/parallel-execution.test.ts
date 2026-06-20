@@ -313,7 +313,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		}
 	});
 
-	it("top-level parallel output paths are consumed and removed after capture", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("top-level parallel explicit output paths persist in the workspace", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ output: "Saved report" });
 		const executor = makeExecutor();
 
@@ -327,9 +327,26 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 
 		const outputPath = path.join(tempDir, "parallel-output.md");
 		assert.equal(result.isError, undefined);
-		assert.equal(fs.existsSync(outputPath), false);
-		assert.equal(result.details?.results?.[0]?.finalOutput, "Saved report");
-		assert.equal(result.details?.results?.[0]?.outputCleanup?.action, "deleted");
+		assert.equal(fs.readFileSync(outputPath, "utf-8"), "Saved report");
+		assert.equal(result.details?.results?.[0]?.savedOutputPath, outputPath);
+		assert.equal(result.details?.results?.[0]?.outputCleanup, undefined);
+		assert.match(result.details?.results?.[0]?.finalOutput ?? "", /Saved report/);
+	});
+
+	it("top-level parallel tasks support outputSchema", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "structured report", structuredOutput: { summary: "ok", counts: { files: 1 }, files_to_edit: [] } });
+		const executor = makeExecutor();
+
+		const result = await executor.execute(
+			"parallel-output-schema",
+			{ tasks: [{ agent: "echo", task: "Return structured", outputSchema: { type: "object", properties: { summary: { type: "string" }, counts: { type: "object" }, files_to_edit: { type: "array" } }, required: ["summary", "counts", "files_to_edit"] } }] },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.deepEqual(result.details?.results?.[0]?.structuredOutput, { summary: "ok", counts: { files: 1 }, files_to_edit: [] });
 	});
 
 	it("top-level parallel file-only output aggregates concise file references", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {

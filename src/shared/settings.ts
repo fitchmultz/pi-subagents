@@ -51,6 +51,8 @@ export interface SequentialStep {
 	cwd?: string;
 	output?: string | false;
 	outputMode?: OutputMode;
+	outputFromAgentDefault?: boolean;
+	defaultOutputSource?: string;
 	reads?: string[] | false;
 	progress?: boolean;
 	skill?: string | string[] | false;
@@ -70,6 +72,8 @@ export interface ParallelTaskItem {
 	count?: number;
 	output?: string | false;
 	outputMode?: OutputMode;
+	outputFromAgentDefault?: boolean;
+	defaultOutputSource?: string;
 	reads?: string[] | false;
 	progress?: boolean;
 	skill?: string | string[] | false;

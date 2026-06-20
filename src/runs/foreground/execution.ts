@@ -985,7 +985,9 @@ async function runSingleAttempt(
 		result.savedOutputPath = resolvedOutput.savedPath;
 		result.outputSaveError = resolvedOutput.saveError;
 		if (resolvedOutput.savedPath) {
-			const cleanup = options.outputMode === "file-only"
+			// Explicit caller output paths persist in the workspace; only agent-default
+			// materialized files (and never file-only outputs) are consumed after capture.
+			const cleanup = (options.persistOutputFile || options.outputMode === "file-only")
 				? undefined
 				: cleanupSingleOutputFile(resolvedOutput.savedPath, resolvedOutput.fullOutput, shared.outputSnapshot);
 			result.outputCleanup = cleanup;

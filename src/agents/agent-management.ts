@@ -478,6 +478,33 @@ function formatChainDetail(chain: ChainConfig): string {
 	return lines.join("\n");
 }
 
+type AgentListRole = "Recon" | "Planning" | "Implementation" | "Review" | "Coordination" | "Specialized" | "Custom/other";
+
+const AGENT_ROLE_HINTS: Record<AgentListRole, string> = {
+	Recon: "Use for read-only codebase mapping, grep/delta sweeps, and external facts.",
+	Planning: "Use when decomposition or an implementation handoff matters.",
+	Implementation: "Use for bounded code/doc changes after scope is clear.",
+	Review: "Use for independent validation, regressions, and drift checks.",
+	Coordination: "Use for generic delegation or high-context decision checks.",
+	Specialized: "Use only when the task matches the skill description.",
+	"Custom/other": "Project/user agents not classified by the builtins.",
+};
+
+function agentListRole(agent: AgentConfig): AgentListRole {
+	const name = agent.name.split(".").at(-1) ?? agent.name;
+	if (["scout", "context-builder", "researcher"].includes(name)) return "Recon";
+	if (name === "planner") return "Planning";
+	if (["worker", "fixer"].includes(name)) return "Implementation";
+	if (name === "reviewer" || name.includes("review")) return "Review";
+	if (["delegate", "oracle"].includes(name)) return "Coordination";
+	if (agent.source === "builtin") return "Specialized";
+	return "Custom/other";
+}
+
+function formatAgentListLine(a: AgentConfig): string {
+	return `- ${a.name} (${a.source}${a.defaultContext ? `, context: ${a.defaultContext}` : ""}): ${a.description}`;
+}
+
 export function handleList(params: ManagementParams, ctx: ManagementContext): SubagentExecutionResult {
 	const scope = normalizeListScope(params.agentScope) ?? "both";
 	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
@@ -485,16 +512,23 @@ export function handleList(params: ManagementParams, ctx: ManagementContext): Su
 		.sort((a, b) => a.name.localeCompare(b.name));
 	const chains = d.chains.filter((c) => scope === "both" || c.source === scope).sort((a, b) => a.name.localeCompare(b.name));
 	const diagnostics = d.chainDiagnostics.filter((entry) => scope === "both" || entry.source === scope);
-	const lines = [
-		"Executable agents:",
-		...(agents.length
-			? agents.map((a) => `- ${a.name} (${a.source}${a.defaultContext ? `, context: ${a.defaultContext}` : ""}): ${a.description}`)
-			: ["- (none)"]),
+	const roleOrder: AgentListRole[] = ["Recon", "Planning", "Implementation", "Review", "Coordination", "Specialized", "Custom/other"];
+	const lines: string[] = ["Executable agents (grouped by role):"];
+	if (!agents.length) {
+		lines.push("- (none)");
+	} else {
+		for (const role of roleOrder) {
+			const group = agents.filter((agent) => agentListRole(agent) === role);
+			if (!group.length) continue;
+			lines.push(``, `**${role}** — ${AGENT_ROLE_HINTS[role]}`, ...group.map(formatAgentListLine));
+		}
+	}
+	lines.push(
 		"",
 		"Chains:",
 		...(chains.length ? chains.map((c) => `- ${c.name} (${c.source}): ${c.description}`) : ["- (none)"]),
 		...(diagnostics.length ? ["", "Chain diagnostics:", ...diagnostics.map((entry) => `- ${entry.filePath}: ${entry.error}`)] : []),
-	];
+	);
 	return result(lines.join("\n"));
 }
 

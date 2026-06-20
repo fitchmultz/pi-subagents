@@ -48,6 +48,7 @@ import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { applyIntercomBridgeToAgent, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveSubagentIntercomTarget, shouldApplyIntercomBridge, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import { formatControlIntercomMessage, formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
 import { finalizeSingleOutput, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
+import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { formatDetachedIntercomGuidance } from "../shared/intercom-detach.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd } from "../../shared/utils.ts";
 import {
@@ -89,6 +90,7 @@ import {
 	type ForegroundControlState,
 	type ForegroundResumeRun,
 	type IntercomEventBus,
+	type JsonSchemaObject,
 	type MaxOutputConfig,
 	type NestedRouteInfo,
 	type NestedRunSummary,
@@ -121,6 +123,7 @@ interface TaskParam {
 	task: string;
 	cwd?: string;
 	count?: number;
+	outputSchema?: JsonSchemaObject;
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
 	reads?: string[] | boolean;
@@ -190,6 +193,7 @@ export interface SubagentParamsLike {
 	skill?: string | string[] | boolean;
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
+	outputSchema?: JsonSchemaObject;
 	agentScope?: string;
 	chainName?: string;
 	config?: unknown;
@@ -306,6 +310,7 @@ export function normalizeSubagentParamsLike(params: RawSubagentParamsLike): Suba
 		skill: skillValue(params),
 		output: outputValue(params),
 		outputMode: outputModeValue(params),
+		outputSchema: isRecord(params.outputSchema) ? params.outputSchema : undefined,
 		agentScope: stringValue(params, "agentScope"),
 		chainName: stringValue(params, "chainName"),
 		config: params.config,
@@ -1446,6 +1451,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 		);
 		const skillOverrides = params.tasks.map((task) => normalizeSkillInput(task.skill));
 		const parallelTasks = params.tasks.map((task, index) => {
+			const outputFromAgentDefault = usesAgentDefaultOutput(task.output);
 			const output = resolveTopLevelOutputOverride({
 				requestedOutput: task.output,
 				agentDefaultOutput: agentConfigs[index]?.output,
@@ -1462,6 +1468,9 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 				...(skillOverrides[index] !== undefined ? { skill: skillOverrides[index] } : {}),
 				...(output !== undefined ? { output } : {}),
 				...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
+				...(outputFromAgentDefault && output !== undefined ? { outputFromAgentDefault: true } : {}),
+				...(outputFromAgentDefault && typeof agentConfigs[index]?.output === "string" ? { defaultOutputSource: agentConfigs[index]!.output } : {}),
+				...(task.outputSchema !== undefined ? { outputSchema: task.outputSchema } : {}),
 				...(task.reads !== undefined && task.reads !== true ? { reads: task.reads } : {}),
 				...(task.progress !== undefined ? { progress: task.progress } : {}),
 				...(task.acceptance !== undefined ? { acceptance: task.acceptance } : {}),
@@ -1577,6 +1586,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 			skills,
 			output: effectiveOutput,
 			outputMode: effectiveOutputMode,
+			outputSchema: params.outputSchema,
 			modelOverride,
 			maxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
@@ -1741,6 +1751,7 @@ interface ForegroundParallelRunInput {
 	availableModels: ModelInfo[];
 	modelOverrides: (string | undefined)[];
 	behaviors: Array<ReturnType<typeof resolveStepBehavior>>;
+	outputUsesAgentDefault: boolean[];
 	firstProgressIndex: number;
 	controlConfig: ResolvedControlConfig;
 	onControlEvent?: (event: ControlEvent) => void;
@@ -1915,6 +1926,9 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			};
 		}
 		const agentConfig = input.agents.find((agent) => agent.name === task.agent);
+		const structuredRuntime = task.outputSchema
+			? createStructuredOutputRuntime(task.outputSchema, path.join(input.artifactsDir, "structured-output"))
+			: undefined;
 		const timeoutAt = input.foregroundControl?.timeoutAt ?? input.timeoutAt;
 		let unregisterTimeoutExtension: (() => void) | undefined;
 		return runSync(input.ctx.cwd, input.agents, task.agent, taskText, {
@@ -1935,6 +1949,8 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			maxOutput: input.maxOutput,
 			outputPath,
 			outputMode: behavior?.outputMode,
+			persistOutputFile: !input.outputUsesAgentDefault[index],
+			structuredOutput: structuredRuntime,
 			maxSubagentDepth: input.maxSubagentDepths[index],
 			maxExecutionTimeMs: agentConfig?.maxExecutionTimeMs,
 			maxTokens: agentConfig?.maxTokens,
@@ -2154,6 +2170,9 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 					...(skillOverrides[i] !== undefined ? { skill: skillOverrides[i] } : {}),
 					...(output !== undefined ? { output } : {}),
 					...(behaviorOverrides[i]?.outputMode !== undefined ? { outputMode: behaviorOverrides[i]!.outputMode } : {}),
+					...(outputUsesAgentDefault[i] && output !== undefined ? { outputFromAgentDefault: true } : {}),
+					...(outputUsesAgentDefault[i] && typeof agentConfigs[i]?.output === "string" ? { defaultOutputSource: agentConfigs[i]!.output } : {}),
+					...(t.outputSchema !== undefined ? { outputSchema: t.outputSchema } : {}),
 					...(behaviorOverrides[i]?.reads !== undefined ? { reads: behaviorOverrides[i]!.reads } : {}),
 					...(progress !== undefined ? { progress } : {}),
 					...(t.acceptance !== undefined ? { acceptance: t.acceptance } : {}),
@@ -2259,6 +2278,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			availableModels,
 			modelOverrides,
 			behaviors,
+			outputUsesAgentDefault,
 			firstProgressIndex: parallelProgressPrecreated ? -1 : firstProgressIndex,
 			controlConfig,
 			onControlEvent,
@@ -2484,6 +2504,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				skills: skillOverride === false ? [] : skillOverride,
 				output,
 				outputMode: effectiveOutputMode,
+				outputSchema: params.outputSchema,
 				modelOverride,
 				maxSubagentDepth,
 				worktreeSetupHook: deps.config.worktreeSetupHook,
@@ -2568,6 +2589,10 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		maxOutput: params.maxOutput,
 		outputPath,
 		outputMode: effectiveOutputMode,
+		persistOutputFile: !outputUsesAgentDefault,
+		structuredOutput: params.outputSchema
+			? createStructuredOutputRuntime(params.outputSchema, path.join(artifactsDir, "structured-output"))
+			: undefined,
 		maxSubagentDepth,
 		maxExecutionTimeMs: agentConfig.maxExecutionTimeMs,
 		maxTokens: agentConfig.maxTokens,

@@ -884,6 +884,8 @@ export interface RunSyncOptions {
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;
+	/** When true, an inline output file is left in place (workspace/cwd) instead of being consumed after capture. */
+	persistOutputFile?: boolean;
 	maxSubagentDepth?: number;
 	maxExecutionTimeMs?: number;
 	maxTokens?: number;
