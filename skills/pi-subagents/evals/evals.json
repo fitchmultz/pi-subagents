@@ -19,6 +19,11 @@
       "id": "failure-ordinary-child-nesting",
       "prompt": "An ordinary reviewer child should use the pi-subagents skill and launch its own reviewers if needed.",
       "expected_output": "The agent rejects that pattern: the pi-subagents skill is parent-orchestrator only, ordinary children must not run subagents, and nested fanout is allowed only for a child explicitly configured with allowSubagents true or a resolved subagent tool for the assigned fanout work."
+    },
+    {
+      "id": "failure-agent-skill-maintenance",
+      "prompt": "Harden the skills/pi-subagents Agent Skill end-to-end.",
+      "expected_output": "The agent does not use the pi-subagents orchestration skill for the maintenance work; it uses agent-skill-engineering, treats skills/pi-subagents as the canonical target folder, validates the skill, applies focused skill-file/eval improvements, and reports validation evidence."
     }
   ]
 }

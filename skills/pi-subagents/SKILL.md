@@ -1,11 +1,15 @@
 ---
 name: pi-subagents
-description: "Use this skill when orchestrating Pi subagents: delegate to builtin or custom agents with single, parallel, chain, async/background, forked-context, acceptance, worktree, or intercom-coordinated workflows. Applies to advisory review, implementation handoffs, review loops, research/context fanout, agent/chain management, and subagent status/control. Do not use inside ordinary spawned child subagents or for non-Pi delegation patterns."
+description: "Use this skill when orchestrating Pi subagents: delegate to builtin or custom agents with single, parallel, chain, async/background, forked-context, acceptance, worktree, or intercom-coordinated workflows. Applies to advisory review, implementation handoffs, review loops, research/context fanout, agent/chain management, and subagent status/control. Do not use for Agent Skill authoring/maintenance, inside ordinary spawned child subagents, or for non-Pi delegation patterns."
 ---
 
 # Pi Subagents
 
 Parent-orchestrator skill for launching focused child Pi sessions. Do not inject or follow this skill inside ordinary spawned child subagents.
+
+## Trigger boundary
+
+Use this for runtime Pi subagent orchestration, not for maintaining Agent Skill files. If the user asks to create, harden, validate, or optimize `SKILL.md`, `skills/...`, evals, scripts, or trigger descriptions, use `agent-skill-engineering` instead.
 
 ## Hard constraints
 
