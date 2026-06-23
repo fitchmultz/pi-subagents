@@ -1,4 +1,4 @@
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai/compat";
 import { isMutatingBashCommand } from "./long-running-guard.ts";
 
 const REVIEW_ONLY_PATTERNS = [

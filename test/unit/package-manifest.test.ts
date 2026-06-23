@@ -28,6 +28,10 @@ function readPackageJson(): Record<string, unknown> {
 	return JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf-8")) as Record<string, unknown>;
 }
 
+function rootPackageName(specifier: string): string {
+	return specifier.split("/").slice(0, 2).join("/");
+}
+
 test("direct @earendil-works runtime imports are declared for local installs", () => {
 	const packageJson = readPackageJson();
 	const dependencies = packageJson.dependencies && typeof packageJson.dependencies === "object" ? packageJson.dependencies : {};
@@ -41,7 +45,7 @@ test("direct @earendil-works runtime imports are declared for local installs", (
 	for (const file of [...collectTsFiles(path.join(projectRoot, "src")), ...collectTsFiles(path.join(projectRoot, "test"))]) {
 		const source = fs.readFileSync(file, "utf-8");
 		for (const match of source.matchAll(sourceImportPattern)) {
-			imported.add(match[1] ?? match[2]!);
+			imported.add(rootPackageName(match[1] ?? match[2]!));
 		}
 	}
 

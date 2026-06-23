@@ -82,10 +82,10 @@
     "jiti": "^2.7.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.79.10",
-    "@earendil-works/pi-ai": "^0.79.10",
-    "@earendil-works/pi-coding-agent": "^0.79.10",
-    "@earendil-works/pi-tui": "^0.79.10",
+    "@earendil-works/pi-agent-core": "^0.80.1",
+    "@earendil-works/pi-ai": "^0.80.1",
+    "@earendil-works/pi-coding-agent": "^0.80.1",
+    "@earendil-works/pi-tui": "^0.80.1",
     "@types/node": "^24.13.2",
     "typebox": "^1.1.39",
     "typescript": "^6.0.3"

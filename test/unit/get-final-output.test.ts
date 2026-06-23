@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai/compat";
 import { getFinalOutput } from "../../src/shared/utils.ts";
 
 function assistantContent(content: unknown[]): Message {

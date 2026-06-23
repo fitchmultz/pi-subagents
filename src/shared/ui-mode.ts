@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
- * Pi 0.79.10 exposes ctx.mode so extensions can distinguish TUI from RPC.
+ * Pi 0.80.1 exposes ctx.mode so extensions can distinguish TUI from RPC.
  * Keep a hasUI fallback for tests and custom contexts that only provide legacy
  * UI hints.
  */
