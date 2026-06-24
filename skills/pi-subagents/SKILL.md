@@ -1,6 +1,6 @@
 ---
 name: pi-subagents
-description: "Use this skill when orchestrating Pi subagents: delegate to builtin or custom agents with single, parallel, chain, async/background, forked-context, acceptance, worktree, or intercom-coordinated workflows. Applies to advisory review, implementation handoffs, review loops, research/context fanout, agent/chain management, and subagent status/control. Do not use for Agent Skill authoring/maintenance, inside ordinary spawned child subagents, or for non-Pi delegation patterns."
+description: "Pi subagent orchestration: delegate to builtin/custom agents; run single, parallel, chain, async/background, forked-context, acceptance, worktree, intercom, status/control, or agent-management workflows. Do not use for Agent Skill maintenance, spawned child prompts, or non-Pi delegation."
 ---
 
 # Pi Subagents

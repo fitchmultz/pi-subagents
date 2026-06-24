@@ -232,14 +232,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	ensureAccessibleDir(RESULTS_DIR);
-	ensureAccessibleDir(ASYNC_DIR);
-	cleanupOldChainDirs();
-
 	const config = loadConfig();
 	const asyncByDefault = config.asyncByDefault === true;
 	const tempArtifactsDir = getArtifactsDir(null);
-	cleanupAllArtifactDirs(DEFAULT_ARTIFACT_CONFIG.cleanupDays);
 
 	const state: SubagentState = {
 		baseCwd: "",
@@ -267,8 +262,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		RESULTS_DIR,
 		10 * 60 * 1000,
 	);
-	startResultWatcher();
-	primeExistingResults();
 
 	const runtimeCleanup = () => {
 		stopResultWatcher();
@@ -396,42 +389,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",
 		label: "Subagent",
-		description: `Delegate to subagents or manage agent definitions.
-
-EXECUTION (use exactly ONE mode):
-• Before executing, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled.
-• SINGLE: { agent, task? } - one task; omit task for self-contained agents
-• CHAIN: { chain: [{agent:"agent-a"}, {parallel:[{agent:"agent-b",count:3}]}] } - sequential pipeline with optional parallel fan-out
-• PARALLEL: { tasks: [{agent,task,count?,output?,reads?,progress?}, ...], concurrency?: number, worktree?: true } - concurrent execution (worktree: isolate each task in a git worktree)
-• Foreground timeout: { timeoutMs } or { maxRuntimeMs } - wall-clock limit for foreground single, parallel, and chain runs. Timed-out children return timedOut:true with completed sibling/prior results preserved and can usually be resumed from their session. Not for async/background runs.
-• Output truncation: { maxOutput: { bytes?: number, lines?: number } } limits final returned output without changing child execution.
-• Optional context: { context: "fresh" | "fork" } (explicit override for all agents in the call; when omitted, each agent uses its own defaultContext from { action: "list" })
-• Goal-style requests: when the user says “/goal”, “goal”, “active goal”, “work until evidence says done”, or “verify against a goal”, model that as explicit acceptance. Use acceptance.criteria for the target, acceptance.evidence/verify for proof, acceptance.stopRules for constraints, and acceptance.maxFinalizationTurns for the bounded loop.
-• Plan/spec implementation handoffs: when delegating a plan, PRD, spec, issue, or broad fix to an editing-capable child, prefer structured acceptance instead of burying validation requirements in task prose. Put the implementation instructions and plan paths in task; put the definition of done, evidence, verification commands, constraints, and loop cap in acceptance.
-
-CHAIN TEMPLATE VARIABLES (use in task strings):
-• {task} - The original task/request from the user
-• {previous} - Text response from the previous step (empty for first step)
-• {chain_dir} - Shared directory for chain files (e.g., <tmpdir>/pi-subagents-<scope>/chain-runs/abc123/)
-
-Example: { chain: [{agent:"agent-a", task:"Analyze {task}"}, {agent:"agent-b", task:"Plan based on {previous}"}] }
-
-MANAGEMENT (use action field, omit agent/task/chain/tasks):
-• { action: "list" } - discover executable agents/chains
-• { action: "get", agent: "name" } - full detail; packaged agents use dotted runtime names like "package.agent"
-• { action: "create", config: { name: "custom-agent", package: "code-analysis", systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext, maxExecutionTimeMs, maxTokens, ... } }
-• { action: "update", agent: "code-analysis.custom-agent", config: { package: "analysis", maxExecutionTimeMs, maxTokens, ... } } - merge
-• { action: "delete", agent: "code-analysis.custom-agent" }
-• Use chainName for chain operations; packaged chains also use dotted runtime names
-
-CONTROL:
-• { action: "status", id: "..." } - inspect an async/background run by id or prefix
-• { action: "interrupt", id?: "..." } - soft-interrupt the current child turn and leave the run paused
-• { action: "extend", id?: "...", extendMs: 300000 } - extend the active foreground timeout when a child needs more time
-• { action: "resume", id: "...", message: "...", index?: 0 } - follow up with a live async child or revive a completed async/foreground child from its session
-
-DIAGNOSTICS:
-• { action: "doctor" } - read-only report for runtime paths, discovery, sessions, and intercom`,
+		description: `Delegate bounded work to configured Pi subagents, chains, or parallel reviewers; manage agent definitions; inspect/control async runs. Use exactly one execution mode (agent, tasks, or chain) or one management/control action. Before execution, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled. Parallel tasks support output?,reads?,progress?. maxOutput accepts { bytes?: number, lines?: number }. Prefer acceptance for goal/spec handoffs and status/resume/interrupt/extend for active runs.`,
 		promptSnippet: "Delegate bounded work to configured subagents, chains, or parallel reviewers while the parent session stays in control.",
 		promptGuidelines: [
 			"Use subagent for materially parallelizable scouting, review, or implementation work where another focused agent adds value.",
@@ -542,6 +500,10 @@ DIAGNOSTICS:
 	};
 
 	const resetSessionState = (ctx: ExtensionContext) => {
+		ensureAccessibleDir(RESULTS_DIR);
+		ensureAccessibleDir(ASYNC_DIR);
+		cleanupOldChainDirs();
+		cleanupAllArtifactDirs(DEFAULT_ARTIFACT_CONFIG.cleanupDays);
 		state.baseCwd = ctx.cwd;
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		state.lastUiContext = ctx;
@@ -549,6 +511,7 @@ DIAGNOSTICS:
 		clearPendingForegroundControlNotices(state);
 		resetJobs(ctx);
 		restoreSlashFinalSnapshots(ctx.sessionManager.getEntries());
+		startResultWatcher();
 		primeExistingResults();
 	};
 

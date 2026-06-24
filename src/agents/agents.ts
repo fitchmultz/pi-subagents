@@ -245,12 +245,19 @@ function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentO
 	};
 }
 
+function hasProjectPiSubagentResource(dir: string): boolean {
+	const piDir = path.join(dir, ".pi");
+	return fs.existsSync(path.join(piDir, "settings.json"))
+		|| isDirectory(path.join(piDir, "agents"))
+		|| isDirectory(path.join(piDir, "chains"));
+}
+
 function findNearestProjectRoot(cwd: string): string | null {
 	let currentDir = cwd;
 	const homeDir = path.resolve(os.homedir());
 	while (true) {
 		const resolvedCurrent = path.resolve(currentDir);
-		const hasProjectPi = isDirectory(path.join(currentDir, ".pi"));
+		const hasProjectPi = hasProjectPiSubagentResource(currentDir);
 		const hasProjectAgents = resolvedCurrent !== homeDir && isDirectory(path.join(currentDir, ".agents"));
 		if (hasProjectPi || hasProjectAgents) return currentDir;
 
@@ -628,10 +635,15 @@ function listFilesRecursive(dir: string, predicate: (fileName: string) => boolea
 	return files;
 }
 
+function isInAgentSkillSubtree(dir: string, filePath: string): boolean {
+	return path.relative(dir, filePath).split(path.sep)[0] === "skills";
+}
+
 function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
 	for (const filePath of listFilesRecursive(dir, (fileName) => fileName.endsWith(".md") && !fileName.endsWith(".chain.md") && fileName !== "SKILL.template.md")) {
+		if (isInAgentSkillSubtree(dir, filePath)) continue;
 		let content: string;
 		try {
 			content = fs.readFileSync(filePath, "utf-8");

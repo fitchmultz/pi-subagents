@@ -2,6 +2,7 @@
  * TypeBox schemas for subagent tool parameters
  */
 
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { SUBAGENT_ACTIONS } from "../shared/types.ts";
 
@@ -22,8 +23,7 @@ const OutputOverride = Type.Unsafe({
 	description: "Output filename/path (string), or false to disable file output. Explicit caller paths persist at the resolved cwd/workspace path; relative output paths inherited from an agent default are materialized under the run artifact directory with unique names.",
 });
 
-const OutputModeOverride = Type.String({
-	enum: ["inline", "file-only"],
+const OutputModeOverride = StringEnum(["inline", "file-only"] as const, {
 	description: "Return saved output inline (default) or only a concise file reference. file-only requires output to be a path.",
 });
 
@@ -49,25 +49,23 @@ const JsonSchemaObject = Type.Unsafe({
 	description: "JSON Schema object for strict structured output. Non-object roots are rejected.",
 });
 
-const AcceptanceEvidenceKind = Type.String({
-	enum: [
-		"changed-files",
-		"tests-added",
-		"commands-run",
-		"validation-output",
-		"residual-risks",
-		"no-staged-files",
-		"diff-summary",
-		"review-findings",
-		"manual-notes",
-	],
-});
+const AcceptanceEvidenceKind = StringEnum([
+	"changed-files",
+	"tests-added",
+	"commands-run",
+	"validation-output",
+	"residual-risks",
+	"no-staged-files",
+	"diff-summary",
+	"review-findings",
+	"manual-notes",
+] as const);
 
 const AcceptanceGateSchema = Type.Object({
 	id: Type.String(),
 	must: Type.String(),
 	evidence: Type.Optional(Type.Array(AcceptanceEvidenceKind)),
-	severity: Type.Optional(Type.String({ enum: ["required", "recommended"] })),
+	severity: Type.Optional(StringEnum(["required", "recommended"] as const)),
 }, { additionalProperties: false });
 
 const AcceptanceVerifyCommandSchema = Type.Object({
@@ -149,7 +147,7 @@ const DynamicExpandSchema = Type.Object({
 	item: Type.Optional(Type.String({ description: "Template variable name for each item. Defaults to item." })),
 	key: Type.Optional(Type.String({ description: "JSON Pointer relative to each item for stable child ids." })),
 	maxItems: Type.Optional(Type.Integer({ minimum: 0, description: "Required fanout bound unless configured globally." })),
-	onEmpty: Type.Optional(Type.String({ enum: ["skip", "fail"], description: "Empty input behavior. Defaults to skip." })),
+	onEmpty: Type.Optional(StringEnum(["skip", "fail"] as const, { description: "Empty input behavior. Defaults to skip." })),
 }, { additionalProperties: false });
 
 const DynamicParallelTemplateSchema = Type.Object({
@@ -222,10 +220,10 @@ const ControlOverrides = Type.Object({
 	activeNoticeAfterTurns: Type.Optional(Type.Integer({ minimum: 1, description: "Optional active-long-running notice threshold by assistant turns (disabled by default)" })),
 	activeNoticeAfterTokens: Type.Optional(Type.Integer({ minimum: 1, description: "Optional active-long-running notice threshold by total tokens (disabled by default)" })),
 	failedToolAttemptsBeforeAttention: Type.Optional(Type.Integer({ minimum: 1, description: "Consecutive mutating-tool failures before escalating to needs_attention (default: 3)" })),
-	notifyOn: Type.Optional(Type.Array(Type.String({ enum: ["active_long_running", "needs_attention"] }), {
+	notifyOn: Type.Optional(Type.Array(StringEnum(["active_long_running", "needs_attention"] as const), {
 		description: "Control event types that should notify the parent/orchestrator. Defaults to active_long_running and needs_attention.",
 	})),
-	notifyChannels: Type.Optional(Type.Array(Type.String({ enum: ["event", "async", "intercom"] }), {
+	notifyChannels: Type.Optional(Type.Array(StringEnum(["event", "async", "intercom"] as const), {
 		description: "Notification channels to use when available. Defaults to event, async, and intercom.",
 	})),
 });
@@ -234,8 +232,7 @@ export const SubagentParams = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Agent name (SINGLE mode) or target for management get/update/delete" })),
 	task: Type.Optional(Type.String({ description: "Task (SINGLE mode, optional for self-contained agents)" })),
 	// Management action (when present, tool operates in management mode)
-	action: Type.Optional(Type.String({
-		enum: [...SUBAGENT_ACTIONS],
+	action: Type.Optional(StringEnum([...SUBAGENT_ACTIONS] as const, {
 		description: "Management/control action. Omit for execution mode."
 	})),
 	id: Type.Optional(Type.String({
@@ -273,8 +270,7 @@ export const SubagentParams = Type.Object({
 			"Per-worktree diffs included in output."
 	})),
 	chain: Type.Optional(Type.Array(ChainItem, { description: "CHAIN mode: sequential pipeline where each step's response becomes {previous} for the next. Use {task}, {previous}, {chain_dir} in task templates." })),
-	context: Type.Optional(Type.String({
-		enum: ["fresh", "fork"],
+	context: Type.Optional(StringEnum(["fresh", "fork"] as const, {
 		description: "'fresh' or 'fork' to branch from parent session. Explicit value overrides all agents in the call. When omitted, each agent uses its own defaultContext.",
 	})),
 	chainDir: Type.Optional(Type.String({ description: "Persistent directory for chain artifacts. Default: a user-scoped temp directory under <tmpdir>/ (auto-cleaned after 24h)" })),

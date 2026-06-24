@@ -800,6 +800,41 @@ Canonical prompt
 		assert.equal(result.projectDir, path.join(dir, ".pi", "agents"));
 	});
 
+	it("does not treat a bare .pi directory as a project agent root", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-bare-pi-root-"));
+		tempDirs.push(dir);
+		const nested = path.join(dir, "packages", "app");
+		fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+		fs.mkdirSync(nested, { recursive: true });
+
+		const result = discoverAgentsAll(nested);
+		assert.equal(result.projectDir, null);
+	});
+
+	it("does not load Agent Skill SKILL.md files as project agents", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-skill-not-agent-"));
+		tempDirs.push(dir);
+		fs.mkdirSync(path.join(dir, ".agents", "skills", "helper", "references"), { recursive: true });
+		fs.writeFileSync(path.join(dir, ".agents", "skills", "helper", "SKILL.md"), `---
+name: helper-skill
+description: Skill, not an agent
+---
+
+Skill instructions
+`, "utf-8");
+		fs.writeFileSync(path.join(dir, ".agents", "skills", "helper", "references", "notes.md"), `---
+name: helper-reference
+description: Reference doc, not an agent
+---
+
+Reference notes
+`, "utf-8");
+
+		const result = discoverAgents(dir, "project");
+		assert.equal(result.agents.some((agent) => agent.name === "helper-skill"), false);
+		assert.equal(result.agents.some((agent) => agent.name === "helper-reference"), false);
+	});
+
 	it("discovers project chains from .pi/chains", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-project-chain-dirs-"));
 		tempDirs.push(dir);

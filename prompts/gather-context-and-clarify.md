@@ -9,6 +9,6 @@ Use `scout` to inspect the relevant local files, existing patterns, constraints,
 
 Give each subagent a specific meta prompt. Ask them to return concise findings plus the remaining clarification questions that matter for implementation confidence.
 
-After they return, synthesize what we know and use the `interview` tool to ask me the unresolved questions needed to reach a shared understanding.
+After they return, synthesize what we know and use the available clarification tool (`ask_question` in pi) to ask only unresolved questions that affect scope, acceptance, constraints, or implementation.
 
 ${ARGUMENTS:-infer the request from the current conversation and repository context}

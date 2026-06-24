@@ -197,7 +197,8 @@ function renderEditor(state: TextEditorState, width: number, viewportHeight: num
  * Factory signature matches ctx.ui.custom: (tui, theme, kb, done) => Component
  */
 export class ChainClarifyComponent implements Component {
-	readonly width = 84;
+	private renderWidth = 84;
+	private get width(): number { return this.renderWidth; }
 
 	private selectedStep = 0;
 	private editingStep: number | null = null;
@@ -275,18 +276,20 @@ export class ChainClarifyComponent implements Component {
 	/** Create a row with border characters */
 	private row(content: string): string {
 		const innerW = this.width - 2;
-		return this.theme.fg("border", "│") + this.pad(content, innerW) + this.theme.fg("border", "│");
+		const clipped = truncateToWidth(content, innerW, "", true);
+		return this.theme.fg("border", "│") + this.pad(clipped, innerW) + this.theme.fg("border", "│");
 	}
 
 	/** Render centered header line with border */
 	private renderHeader(text: string): string {
 		const innerW = this.width - 2;
-		const padLen = Math.max(0, innerW - visibleWidth(text));
+		const clipped = truncateToWidth(text, innerW, "", true);
+		const padLen = Math.max(0, innerW - visibleWidth(clipped));
 		const padLeft = Math.floor(padLen / 2);
 		const padRight = padLen - padLeft;
 		return (
 			this.theme.fg("border", "╭" + "─".repeat(padLeft)) +
-			this.theme.fg("accent", text) +
+			this.theme.fg("accent", clipped) +
 			this.theme.fg("border", "─".repeat(padRight) + "╮")
 		);
 	}
@@ -294,12 +297,13 @@ export class ChainClarifyComponent implements Component {
 	/** Render centered footer line with border */
 	private renderFooter(text: string): string {
 		const innerW = this.width - 2;
-		const padLen = Math.max(0, innerW - visibleWidth(text));
+		const clipped = truncateToWidth(text, innerW, "", true);
+		const padLen = Math.max(0, innerW - visibleWidth(clipped));
 		const padLeft = Math.floor(padLen / 2);
 		const padRight = padLen - padLeft;
 		return (
 			this.theme.fg("border", "╰" + "─".repeat(padLeft)) +
-			this.theme.fg("dim", text) +
+			this.theme.fg("dim", clipped) +
 			this.theme.fg("border", "─".repeat(padRight) + "╯")
 		);
 	}
@@ -878,7 +882,9 @@ export class ChainClarifyComponent implements Component {
 		}
 	}
 
-	render(_width: number): string[] {
+	render(width: number): string[] {
+		if (width < 40) return [truncateToWidth("Subagent clarify: widen terminal", width)];
+		this.renderWidth = Math.min(84, width);
 		if (this.editingStep !== null) {
 			if (this.editMode === "model") {
 				return this.renderModelSelector();

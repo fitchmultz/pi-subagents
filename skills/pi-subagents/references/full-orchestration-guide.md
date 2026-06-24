@@ -1,6 +1,6 @@
 ---
 name: pi-subagents
-description: "Use this skill when orchestrating Pi subagents: delegate to builtin or custom agents with single, parallel, chain, async/background, forked-context, acceptance, worktree, or intercom-coordinated workflows. Applies to advisory review, implementation handoffs, review loops, research/context fanout, agent/chain management, and subagent status/control. Do not use inside ordinary spawned child subagents or for non-Pi delegation patterns."
+description: "Pi subagent orchestration reference for single, parallel, chain, async/background, forked-context, acceptance, worktree, intercom, status/control, and agent-management workflows. Do not use for Agent Skill maintenance, spawned child prompts, or non-Pi delegation."
 ---
 
 # Pi Subagents
@@ -17,7 +17,7 @@ Use this skill when the parent orchestrator needs to launch a specialized subage
 - **Parallel exploration**: run multiple non-conflicting tasks concurrently
 - **Long-running work**: launch async/background runs and inspect them later
 - **Subagent control**: watch needs-attention signals and soft-interrupt only when a delegated run is genuinely blocked
-- **Agent authoring**: create, update, or override agents and chains for a project
+- **Subagent definition management**: create, update, or override Pi agents and chains for a project
 
 ## Tool vs Slash Commands
 
@@ -39,7 +39,7 @@ Packaged prompt shortcuts are also available for repeatable workflows. Treat the
 - `/parallel-research` — combine `researcher` and `scout` for external evidence plus local code context
 - `/parallel-context-build` — parallel `context-builder` passes that produce planning handoff context and meta-prompts
 - `/parallel-handoff-plan` — external-reference research plus local `context-builder` passes, followed by a synthesis handoff plan and implementation-ready meta-prompt
-- `/gather-context-and-clarify` — scout/research first, then ask the user clarifying questions with `interview`
+- `/gather-context-and-clarify` — scout/research first, then ask the user clarifying questions with the available clarification tool (`ask_question` in pi)
 - `/parallel-cleanup` — two fresh-context reviewers (deslop + verbosity passes) for an adversarial cleanup review of the current diff
 
 ## Applying Prompt Techniques Without Slash Commands
@@ -99,7 +99,7 @@ subagent({
 
 ### Gather-context-and-clarify technique
 
-Use this at the start of non-trivial work. Launch `scout` for local context and `researcher` only when external docs, recent sources, ecosystem context, or primary evidence would materially improve understanding. Ask children for concise findings plus remaining clarification questions. Then synthesize what is known and use `interview` to ask the unresolved questions needed for shared understanding before planning or implementing.
+Use this at the start of non-trivial work when material ambiguity remains. Launch `scout` for local context and `researcher` only when external docs, recent sources, ecosystem context, or primary evidence would materially improve understanding. Ask children for concise findings plus remaining clarification questions. Then synthesize what is known and use the available clarification tool (`ask_question` in pi) only for unresolved questions that affect scope, acceptance, constraints, or implementation.
 
 ### Parallel cleanup technique
 
@@ -690,7 +690,7 @@ Keep builtin agent defaults unless the user explicitly asks for a different mode
 
 When the user approves launching a subagent to carry out a plan or workflow, treat that as approval to generate a proper role-specific meta prompt for that subagent. Include the approved plan path or summary, clarified requirements, non-goals, relevant context, role boundaries, files or areas to inspect, acceptance criteria, expected output, and validation expectations. Do not pass vague instructions like “implement the plan fully” or “review this” by themselves.
 
-- `/gather-context-and-clarify` maps to: launch `scout` and, when needed, `researcher`; synthesize findings; then use `interview` to ask every clarification question needed for shared understanding.
+- `/gather-context-and-clarify` maps to: launch `scout` and, when needed, `researcher`; synthesize findings; then use the available clarification tool (`ask_question` in pi) for unresolved material questions.
 - `/parallel-review` maps to: launch fresh-context `reviewer` agents with distinct review angles; synthesize the feedback before applying anything.
 - `/review-loop` maps to: keep the parent in charge of worker → fresh reviewers → synthesized fix worker cycles until no fixes worth doing now remain, an unapproved decision appears, or the review-round cap is reached.
 - `/parallel-research` maps to: combine local `scout` context with external `researcher` evidence when current docs, ecosystem behavior, or API details matter.
@@ -748,7 +748,7 @@ For very large work, split into serial milestones instead of launching a swarm o
 
 Keep orchestration authority in the parent session. Child subagents should not launch more subagents, read this skill, or run their own orchestration loops unless the parent intentionally selected a fanout agent with `allowSubagents: true` or builtin `tools` including `subagent`. Spawned subagents do not receive the `pi-subagents` skill, parent-only status/control/slash messages, or prior parent `subagent` tool-call/tool-result artifacts. Ordinary children also do not receive the `subagent` extension tool. Child context filtering strips old hidden orchestration-instruction messages when they appear in inherited history. Every child receives a boundary instruction: ordinary children are told the parent owns orchestration and they must not propose or run subagents; explicit fanout children are told to use `subagent` only for the assigned fanout work, with `maxSubagentDepth` still enforced. Implementation children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
 
-1. Clarify first. This is mandatory. Gather code context with `scout` or `context-builder`, add `researcher` only when external evidence matters, then ask the user clarifying questions with `interview` until scope, acceptance criteria, constraints, and non-goals are clear.
+1. Clarify only material uncertainty. Gather code context with `scout` or `context-builder`, add `researcher` only when external evidence matters, then ask the user unresolved questions with the available clarification tool (`ask_question` in pi) when the answer changes scope, acceptance criteria, constraints, or non-goals.
 2. Define the validation contract. State acceptance before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the worker handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.
 3. Plan when useful. For complex work, call `planner` or write a plan doc yourself and get approval before implementation. For simple work, confirm shared understanding and explicitly note why planning is skipped.
 4. Implement with one writer. After approval, launch `worker` with a proper meta prompt that includes clarified requirements, relevant context, plan path or summary, the validation contract, and output expectations. Use async when no active goal depends on same-turn child evidence or when the user explicitly wants background execution; under an incomplete active Pi goal, prefer foreground for goal-critical writer work. Packaged `worker` defaults to forked context; pass `context: "fresh"` only when you intentionally want a fresh child. While an async worker runs, prepare validation or inspect adjacent code instead of editing the same worktree.
