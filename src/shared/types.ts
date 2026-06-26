@@ -464,6 +464,7 @@ export interface Details {
 	asyncDir?: string;
 	progress?: AgentProgress[];
 	progressSummary?: ProgressSummary;
+	intercomTargets?: string[];
 	artifacts?: {
 		dir: string;
 		files: ArtifactPaths[];

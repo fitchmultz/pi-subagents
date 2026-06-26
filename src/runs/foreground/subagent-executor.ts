@@ -66,6 +66,7 @@ import { createNestedRoute, readNestedControlResults, resolveInheritedNestedRout
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
+import { formatLiveIntercomActionLines } from "../../shared/status-format.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
 import { validateAcceptanceInput } from "../shared/acceptance.ts";
 import {
@@ -420,20 +421,6 @@ function foregroundIntercomTarget(control: ForegroundControlState): string | und
 	return control.currentAgent ? resolveSubagentIntercomTarget(control.runId, control.currentAgent, control.currentIndex ?? 0) : undefined;
 }
 
-function formatLiveIntercomLines(runId: string, target: string, index?: number, health?: SubagentLiveIntercomHealth): string[] {
-	const indexPart = index !== undefined ? `, index: ${index}` : "";
-	const healthText = !health
-		? `unknown (${target})`
-		: health.status === "registered"
-			? `registered${health.sessionStatus ? `, ${health.sessionStatus}` : ""}${health.acceptsAsks !== undefined ? `, accepts_asks:${health.acceptsAsks}` : ""}${health.pendingAsks !== undefined ? `, pending_asks:${health.pendingAsks}` : ""} (${target})`
-			: `${health.status.replace(/_/g, " ")} (${target})`;
-	return [
-		`Intercom: ${healthText}`,
-		`Nudge: subagent({ action: "nudge", id: "${runId}"${indexPart}, message: "What are you blocked on?" })`,
-		`Ask: intercom({ action: "ask", to: "${target}", delivery: "steer", message: "What are you blocked on?" })`,
-	];
-}
-
 function foregroundStatusResult(control: ForegroundControlState, health?: SubagentLiveIntercomHealth): SubagentExecutionResult {
 	let nestedWarning: string | undefined;
 	try {
@@ -452,7 +439,7 @@ function foregroundStatusResult(control: ForegroundControlState, health?: Subage
 		control.timeoutAt ? `Timeout: ${new Date(control.timeoutAt).toISOString()}` : undefined,
 		control.timeoutAt && control.extendTimeout ? `Extend: subagent({ action: "extend", id: "${control.runId}", extendMs: 300000 })` : undefined,
 	].filter((line): line is string => Boolean(line));
-	if (intercomTarget) lines.push(...formatLiveIntercomLines(control.runId, intercomTarget, control.currentIndex, health));
+	if (intercomTarget) lines.push(...formatLiveIntercomActionLines({ runId: control.runId, target: intercomTarget, index: control.currentIndex, health }));
 	lines.push(...formatNestedRunStatusLines(control.nestedChildren, { indent: "", commandHints: true, maxLines: 20 }));
 	if (nestedWarning) lines.push(`Warning: ${nestedWarning}`);
 	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
@@ -2883,12 +2870,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					}
 				}
 				let inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
-				if (!inspected.isError && inspected.content[0]?.type === "text") {
-					const targets = [...inspected.content[0].text.matchAll(/Intercom: unknown \(([^)]+)\)/g)].map((match) => match[1]).filter((target): target is string => Boolean(target));
-					if (targets.length) {
-						const intercomHealth = await queryLiveIntercomHealth(deps.pi.events, targets);
-						if (intercomHealth.size) inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps), intercomHealth });
-					}
+				const targets = inspected.details.intercomTargets ?? [];
+				if (!inspected.isError && targets.length) {
+					const intercomHealth = await queryLiveIntercomHealth(deps.pi.events, targets);
+					if (intercomHealth.size) inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps), intercomHealth });
 				}
 				if (targetRunId && inspected.isError && inspected.content[0]?.type === "text" && inspected.content[0].text.startsWith("Async run not found.")) {
 					try {

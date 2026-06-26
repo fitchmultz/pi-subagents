@@ -1,4 +1,4 @@
-import type { ActivityState, AsyncJobStep } from "./types.ts";
+import type { ActivityState, AsyncJobStep, SubagentLiveIntercomHealth } from "./types.ts";
 
 type StepStatusLike = Pick<AsyncJobStep, "status">;
 
@@ -34,6 +34,27 @@ export function aggregateStepStatus(steps: StepStatusLike[]): AsyncJobStep["stat
 
 export function formatAgentRunningLabel(count: number): string {
 	return count === 1 ? "1 agent running" : `${count} agents running`;
+}
+
+export function formatLiveIntercomActionLines(input: {
+	runId: string;
+	target: string;
+	index?: number;
+	health?: SubagentLiveIntercomHealth;
+	indent?: string;
+}): string[] {
+	const indexPart = input.index !== undefined ? `, index: ${input.index}` : "";
+	const healthText = !input.health
+		? "unknown"
+		: input.health.status === "registered"
+			? `registered${input.health.sessionStatus ? `, ${input.health.sessionStatus}` : ""}${input.health.acceptsAsks !== undefined ? `, accepts_asks:${input.health.acceptsAsks}` : ""}${input.health.pendingAsks !== undefined ? `, pending_asks:${input.health.pendingAsks}` : ""}`
+			: input.health.status.replace(/_/g, " ");
+	const indent = input.indent ?? "";
+	return [
+		`${indent}Intercom: ${healthText} (${input.target})`,
+		`${indent}Nudge: subagent({ action: "nudge", id: "${input.runId}"${indexPart}, message: "What are you blocked on?" })`,
+		`${indent}Ask: intercom({ action: "ask", to: "${input.target}", delivery: "steer", message: "What are you blocked on?" })`,
+	];
 }
 
 export function formatParallelOutcome(steps: StepStatusLike[], total: number, options: { showRunning?: boolean } = {}): string {

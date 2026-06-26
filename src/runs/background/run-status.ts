@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { formatAsyncRunList, formatAsyncRunOutputPath, formatAsyncRunProgressLabel, listAsyncRuns } from "./async-status.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { formatModelThinking } from "../../shared/formatters.ts";
-import { formatActivityLabel } from "../../shared/status-format.ts";
+import { formatActivityLabel, formatLiveIntercomActionLines } from "../../shared/status-format.ts";
 import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus, type Details, type NestedRunSummary, type SubagentLiveIntercomHealth, type SubagentState, type SubagentExecutionResult } from "../../shared/types.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { resolveAsyncRunLocation } from "./async-resume.ts";
@@ -53,20 +53,6 @@ function formatResumeGuidance(runId: string | undefined, children: Array<{ agent
 function formatAcceptanceFinalizationSummary(finalization: NonNullable<NonNullable<AsyncStatus["steps"]>[number]["acceptance"]>["finalization"] | undefined): string {
 	if (!finalization) return "";
 	return `, finalization: ${finalization.status} after ${finalization.turns.length}/${finalization.maxTurns} turns`;
-}
-
-function formatIntercomActionLines(runId: string, index: number | undefined, target: string, health?: SubagentLiveIntercomHealth): string[] {
-	const indexPart = index !== undefined ? `, index: ${index}` : "";
-	const healthText = !health
-		? "unknown"
-		: health.status === "registered"
-			? `registered${health.sessionStatus ? `, ${health.sessionStatus}` : ""}${health.acceptsAsks !== undefined ? `, accepts_asks:${health.acceptsAsks}` : ""}${health.pendingAsks !== undefined ? `, pending_asks:${health.pendingAsks}` : ""}`
-			: health.status.replace(/_/g, " ");
-	return [
-		`  Intercom: ${healthText} (${target})`,
-		`  Nudge: subagent({ action: "nudge", id: "${runId}"${indexPart}, message: "What are you blocked on?" })`,
-		`  Ask: intercom({ action: "ask", to: "${target}", delivery: "steer", message: "What are you blocked on?" })`,
-	];
 }
 
 function formatOutputExcerpt(outputPath: string | undefined, maxBytes = 4096, maxLines = 12): string[] {
@@ -214,6 +200,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 		const logPath = path.join(asyncDir, `subagent-log-${effectiveRunId}.md`);
 		const eventsPath = path.join(asyncDir, "events.jsonl");
 		if (status) {
+			const intercomTargets: string[] = [];
 			let nestedChildren: NestedRunSummary[] = [];
 			let nestedWarning: string | undefined;
 			try {
@@ -267,7 +254,8 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				if (stepOutputPath !== outputPath && fs.existsSync(stepOutputPath)) lines.push(`  Output: ${stepOutputPath}`);
 				if (step.status === "running") {
 					const target = resolveSubagentIntercomTarget(status.runId, step.agent, index);
-					lines.push(...formatIntercomActionLines(status.runId, index, target, deps.intercomHealth?.get(target)));
+					intercomTargets.push(target);
+					lines.push(...formatLiveIntercomActionLines({ runId: status.runId, index, target, health: deps.intercomHealth?.get(target), indent: "  " }));
 				}
 			}
 			const attached = new Set((status.steps ?? []).flatMap((step) => step.children?.map((child) => child.id) ?? []));
@@ -281,7 +269,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			if (fs.existsSync(logPath)) lines.push(`Log: ${logPath}`);
 			if (fs.existsSync(eventsPath)) lines.push(`Events: ${eventsPath}`);
 
-			return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "single", results: [] } };
+			return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "single", results: [], intercomTargets } };
 		}
 	}
 
