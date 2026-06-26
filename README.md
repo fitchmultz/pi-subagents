@@ -303,7 +303,7 @@ Child-side routine completion handoffs are still not expected. With the intercom
 
 When a foreground child raises a blocking supervisor question, `pi-subagents` detaches that foreground run so the parent can answer immediately. The tool result includes the exact `intercom({ action: "pending" })` and `intercom({ action: "reply", to: "..." })` calls to use. After replying, inspect `subagent({ action: "status", id: "..." })` or wait for the normal result delivery.
 
-If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child.
+If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child. When `pi-intercom` is active and the child is registered, use `subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })` for a non-blocking steered nudge. Use the status-shown `intercom({ action: "ask", to: "...", delivery: "steer", message: "..." })` when you need to wait for a reply.
 
 If messages do not show up, run:
 
@@ -869,7 +869,7 @@ Agent definitions are not loaded into context by default. Management actions let
 |-------|------|---------|-------------|
 | `agent` | string | - | Agent name for single mode, or target for management actions. |
 | `task` | string | - | Task string for single mode. |
-| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `extend`, `resume`, or `doctor`. |
+| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `extend`, `resume`, `nudge`, or `doctor`. |
 | `chainName` | string | - | Chain name for management actions. |
 | `config` | object/string | - | Agent or chain config for create/update. |
 | `output` | `string \| false` | agent default | Override single-agent output handoff file. Explicit caller paths persist at their resolved cwd/workspace path; agent-default relative paths are materialized under run artifacts. |
@@ -915,6 +915,7 @@ subagent({ action: "extend", id: "<run-id>", extendMs: 300000 })
 subagent({ action: "resume", id: "<run-id>", message: "follow-up question" })
 subagent({ action: "resume", id: "<run-id>", index: 1, message: "follow-up for child 2" })
 subagent({ action: "resume", id: "<nested-run-id>", message: "follow-up for a nested child" })
+subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })
 subagent({ action: "doctor" })
 ```
 
@@ -923,6 +924,8 @@ subagent({ action: "doctor" })
 `extend` targets an active foreground run with an existing timeout and adds more milliseconds to the current child deadline. It is useful when progress or a needs-attention notice shows useful work still happening and throwing away the child session would waste context. It cannot revive an already-timed-out run; use `resume` after timeout.
 
 `resume` sends the follow-up directly when an async child is still reachable over intercom. After completion, it revives the child by starting a new async child from the stored child session file. Multi-child async runs and remembered foreground single, parallel, or chain runs can be revived by passing `index` to choose the child. Nested runs can be resumed by nested id when their live route or persisted nested session metadata is available. Timed-out or transient-error foreground children also use this revive path when their `.jsonl` session file was persisted. Revive starts a new child process from the old session context; it does not restart the same OS process, and it requires the chosen child to have a persisted `.jsonl` session file.
+
+`nudge` sends a short non-blocking steered intercom message to a live foreground or async child. It requires `pi-intercom` to be installed/enabled and the child session target to be registered. It does not wait for a reply; use the `Ask:` intercom command shown by `status` when a blocking answer is needed.
 
 ## Worktree isolation
 
@@ -1206,8 +1209,10 @@ Intercom delivery events:
 
 - `subagent:control-intercom`
 - `subagent:result-intercom`
+- `subagent:live-intercom`
+- `subagent:intercom-health-request`
 
-The result watcher emits `subagent:async-complete`; `src/extension/index.ts` registers the notification handler that consumes it. Control/attention events are surfaced as visible parent notices and persisted for async runs. With `pi-intercom`, needs-attention notices and grouped parent-side subagent result deliveries can reach the orchestrator over intercom.
+The result watcher emits `subagent:async-complete`; `src/extension/index.ts` registers the notification handler that consumes it. Control/attention events are surfaced as visible parent notices and persisted for async runs. With `pi-intercom`, needs-attention notices, live nudges, best-effort child health, and grouped parent-side subagent result deliveries can reach the orchestrator over intercom.
 
 ## Prompt-template integration
 

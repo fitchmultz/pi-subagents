@@ -35,6 +35,7 @@ Use contact_supervisor first. It resolves the supervisor session "{orchestratorT
 - Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions. Review-only/no-edit wins; leave files unchanged and mention the conflict in your final result only if it matters.
 - Meaningful progress or unexpected discoveries that change the plan: contact_supervisor({ reason: "progress_update", message: "UPDATE: <summary>" })
 - Generic intercom is lower-level plumbing/fallback only: intercom({ action: "ask", to: "{orchestratorTarget}", message: "<question>" })
+- If the supervisor nudges you through intercom, answer the nudge or continue with the smallest useful next step.
 
 Do not use contact_supervisor or intercom for routine completion handoffs. If no coordination is needed, return a focused task result.`;
 

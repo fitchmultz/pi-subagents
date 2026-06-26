@@ -542,7 +542,9 @@ describe("async run status inspection", () => {
 
 			const text = textContent(result);
 			assert.match(text, /Step 1: scout running/);
-			assert.match(text, /Intercom target: subagent-scout-run-live-1 \(if registered\)/);
+			assert.match(text, /Intercom: unknown \(subagent-scout-run-live-1\)/);
+			assert.match(text, /Nudge: subagent\(\{ action: "nudge", id: "run-live", index: 0/);
+			assert.match(text, /Ask: intercom\(\{ action: "ask", to: "subagent-scout-run-live-1", delivery: "steer"/);
 		} finally {
 			rmrf(root);
 		}

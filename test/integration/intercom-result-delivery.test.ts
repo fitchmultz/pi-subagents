@@ -42,7 +42,7 @@ const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subag
 const available = !!executorMod?.createSubagentExecutor;
 const createSubagentExecutor = executorMod?.createSubagentExecutor;
 
-function createRecordingEventBus(options: { acknowledgeResults?: boolean } = {}) {
+function createRecordingEventBus(options: { acknowledgeResults?: boolean; acknowledgeLive?: boolean; health?: Array<Record<string, unknown>> } = {}) {
 	const listeners = new Map<string, Set<(payload: unknown) => void>>();
 	const emitted: Array<{ channel: string; payload: unknown }> = [];
 	const bus = {
@@ -65,6 +65,18 @@ function createRecordingEventBus(options: { acknowledgeResults?: boolean } = {})
 				const requestId = payload && typeof payload === "object" ? (payload as { requestId?: unknown }).requestId : undefined;
 				if (typeof requestId === "string") {
 					setImmediate(() => bus.emit("subagent:result-intercom-delivery", { requestId, delivered: true }));
+				}
+			}
+			if (options.acknowledgeLive && channel === "subagent:live-intercom") {
+				const requestId = payload && typeof payload === "object" ? (payload as { requestId?: unknown }).requestId : undefined;
+				if (typeof requestId === "string") {
+					setImmediate(() => bus.emit("subagent:live-intercom-delivery", { requestId, delivered: true }));
+				}
+			}
+			if (options.health && channel === "subagent:intercom-health-request") {
+				const requestId = payload && typeof payload === "object" ? (payload as { requestId?: unknown }).requestId : undefined;
+				if (typeof requestId === "string") {
+					setImmediate(() => bus.emit("subagent:intercom-health-response", { requestId, health: options.health }));
 				}
 			}
 		},
@@ -124,8 +136,8 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
 	}
 
-	function makeExecutor(options: { bridgeMode?: "always" | "off"; agents?: ReturnType<typeof makeAgent>[]; acknowledgeResults?: boolean } = {}) {
-		const events = createRecordingEventBus({ acknowledgeResults: options.acknowledgeResults ?? true });
+	function makeExecutor(options: { bridgeMode?: "always" | "off"; agents?: ReturnType<typeof makeAgent>[]; acknowledgeResults?: boolean; acknowledgeLive?: boolean; health?: Array<Record<string, unknown>> } = {}) {
+		const events = createRecordingEventBus({ acknowledgeResults: options.acknowledgeResults ?? true, acknowledgeLive: options.acknowledgeLive, health: options.health });
 		const state = {
 			baseCwd: tempDir,
 			currentSessionId: null,
@@ -344,6 +356,126 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		} finally {
 			fs.rmSync(asyncDir, { recursive: true, force: true });
 		}
+	});
+
+	it("nudge action sends a steered message to a live async child", async () => {
+		const runId = `nudge-live-${Date.now()}`;
+		const asyncDir = path.join(ASYNC_DIR, runId);
+		try {
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+				runId,
+				mode: "single",
+				state: "running",
+				startedAt: 100,
+				lastUpdate: 100,
+				steps: [{ agent: "worker", status: "running" }],
+			}, null, 2), "utf-8");
+			const { executor, events } = makeExecutor({ acknowledgeLive: true });
+
+			const result = await executor.execute(
+				"nudge-live",
+				{ action: "nudge", id: runId, message: "What is blocking you?" },
+				new AbortController().signal,
+				undefined,
+				makeMinimalCtx(tempDir),
+			);
+
+			assert.equal(result.isError, undefined);
+			assert.match(result.content[0]?.text ?? "", /Nudge delivered to live subagent/);
+			const payload = events.emitted.find((entry) => entry.channel === "subagent:live-intercom")?.payload as { to?: string; message?: string; delivery?: string } | undefined;
+			assert.equal(payload?.to, `subagent-worker-${runId}-1`);
+			assert.equal(payload?.delivery, "steer");
+			assert.match(payload?.message ?? "", /What is blocking you\?/);
+		} finally {
+			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
+	it("nudge action rejects non-current foreground child indexes", async () => {
+		const { executor, state } = makeExecutor({ acknowledgeLive: true });
+		state.foregroundControls.set("fg-nudge", {
+			runId: "fg-nudge",
+			mode: "parallel",
+			startedAt: Date.now(),
+			updatedAt: Date.now(),
+			currentAgent: "worker",
+			currentIndex: 0,
+		});
+		state.lastForegroundControlId = "fg-nudge";
+
+		const result = await executor.execute(
+			"nudge-foreground-wrong-index",
+			{ action: "nudge", id: "fg-nudge", index: 1, message: "ping" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /can only nudge the current live child at index 0/);
+	});
+
+	it("status action includes live intercom health when the bridge responds", async () => {
+		const runId = `health-live-${Date.now()}`;
+		const asyncDir = path.join(ASYNC_DIR, runId);
+		const target = `subagent-worker-${runId}-1`;
+		try {
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+				runId,
+				mode: "single",
+				state: "running",
+				startedAt: 100,
+				lastUpdate: 100,
+				steps: [{ agent: "worker", status: "running" }],
+			}, null, 2), "utf-8");
+			const { executor, events } = makeExecutor({
+				health: [{ target, status: "registered", sessionStatus: "idle", acceptsAsks: true, pendingAsks: 0 }],
+			});
+
+			const result = await executor.execute(
+				"status-health",
+				{ action: "status", id: runId },
+				new AbortController().signal,
+				undefined,
+				makeMinimalCtx(tempDir),
+			);
+
+			assert.equal(result.isError, undefined);
+			assert.match(result.content[0]?.text ?? "", /Intercom: registered, idle, accepts_asks:true, pending_asks:0/);
+			assert.equal(events.emitted.some((entry) => entry.channel === "subagent:intercom-health-request"), true);
+		} finally {
+			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
+	it("status action includes live foreground intercom health when the bridge responds", async () => {
+		const target = "subagent-worker-fg-health-1";
+		const { executor, state, events } = makeExecutor({
+			health: [{ target, status: "registered", sessionStatus: "tool:edit", acceptsAsks: false, pendingAsks: 1 }],
+		});
+		state.foregroundControls.set("fg-health", {
+			runId: "fg-health",
+			mode: "single",
+			startedAt: Date.now(),
+			updatedAt: Date.now(),
+			currentAgent: "worker",
+			currentIndex: 0,
+		});
+		state.lastForegroundControlId = "fg-health";
+
+		const result = await executor.execute(
+			"status-foreground-health",
+			{ action: "status", id: "fg-health" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.match(result.content[0]?.text ?? "", /Intercom: registered, tool:edit, accepts_asks:false, pending_asks:1/);
+		assert.equal(events.emitted.some((entry) => entry.channel === "subagent:intercom-health-request"), true);
 	});
 
 	it("resume action revives completed multi-child async runs by index", async () => {

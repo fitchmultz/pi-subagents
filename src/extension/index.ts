@@ -389,12 +389,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",
 		label: "Subagent",
-		description: `Delegate bounded work to configured Pi subagents, chains, or parallel reviewers; manage agent definitions; inspect/control async runs. Use exactly one execution mode (agent, tasks, or chain) or one management/control action. Before execution, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled. Parallel tasks support output?,reads?,progress?. maxOutput accepts { bytes?: number, lines?: number }. Prefer acceptance for goal/spec handoffs and status/resume/interrupt/extend for active runs.`,
+		description: `Delegate bounded work to configured Pi subagents, chains, or parallel reviewers; manage agent definitions; inspect/control async runs. Use exactly one execution mode (agent, tasks, or chain) or one management/control action. Before execution, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled. Parallel tasks support output?,reads?,progress?. maxOutput accepts { bytes?: number, lines?: number }. Prefer acceptance for goal/spec handoffs and status/resume/interrupt/extend/nudge for active runs.`,
 		promptSnippet: "Delegate bounded work to configured subagents, chains, or parallel reviewers while the parent session stays in control.",
 		promptGuidelines: [
 			"Use subagent for materially parallelizable scouting, review, or implementation work where another focused agent adds value.",
 			"Before executing subagent runs, call subagent with { action: \"list\" } unless the requested executable agent or chain is already known from this conversation.",
 			"Keep the parent session responsible for final decisions, verification, and user-facing status; treat subagent output as evidence to review, not automatic truth.",
+			"For live children that stall or need clarification, inspect status, then use action='nudge' or the shown intercom ask before interrupting or relaunching.",
 			"Do not use subagent when a direct local tool call or small edit is cheaper than delegation.",
 		],
 		parameters: SubagentParams,

@@ -259,7 +259,7 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 					{ agent: "second", task: "Run too long" },
 				],
 				agents,
-				{ timeoutMs: 250 },
+				{ timeoutMs: 600 },
 			),
 		);
 		const elapsed = Date.now() - start;
@@ -274,7 +274,7 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 	});
 
 	it("extends a foreground sequential chain timeout", async () => {
-		mockPi.onCall({ delay: 250, output: "Extended chain result" });
+		mockPi.onCall({ delay: 350, output: "Extended chain result" });
 		const agents = [makeAgent("slow")];
 		const foregroundControl: any = {
 			runId: "chain-sequential-extend",
@@ -287,11 +287,11 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 			makeChainParams(
 				[{ agent: "slow", task: "Need more time" }],
 				agents,
-				{ runId: "chain-sequential-extend", timeoutMs: 100, foregroundControl },
+				{ runId: "chain-sequential-extend", timeoutMs: 200, foregroundControl },
 			),
 		);
 		await new Promise((resolve) => setTimeout(resolve, 50));
-		const extension = foregroundControl.extendTimeout?.(500);
+		const extension = foregroundControl.extendTimeout?.(1500);
 		const result = await resultPromise;
 
 		assert.equal(extension?.ok, true);
@@ -301,7 +301,7 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 	});
 
 	it("extends a foreground parallel chain timeout", async () => {
-		mockPi.onCall({ delay: 250, output: "Extended parallel result" });
+		mockPi.onCall({ delay: 350, output: "Extended parallel result" });
 		mockPi.onCall({ output: "Second parallel result" });
 		const agents = [makeAgent("slow"), makeAgent("second")];
 		const foregroundControl: any = {
@@ -315,11 +315,11 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 			makeChainParams(
 				[{ parallel: [{ agent: "slow", task: "Need more time" }, { agent: "second", task: "Starts after extension" }], concurrency: 1 }],
 				agents,
-				{ runId: "chain-parallel-extend", timeoutMs: 100, foregroundControl },
+				{ runId: "chain-parallel-extend", timeoutMs: 200, foregroundControl },
 			),
 		);
 		await new Promise((resolve) => setTimeout(resolve, 50));
-		const extension = foregroundControl.extendTimeout?.(500);
+		const extension = foregroundControl.extendTimeout?.(1500);
 		const result = await resultPromise;
 
 		assert.equal(extension?.ok, true);

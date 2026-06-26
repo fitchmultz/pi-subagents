@@ -165,7 +165,8 @@ describe("subagent control attention state", () => {
 			"Run: 78f659a3",
 			"Signal: worker needs attention",
 			"Hint: Inspect status first unless the run is clearly blocked.",
-			"Nudge: intercom({ action: \"ask\", to: \"subagent-worker-78f659a3\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
+			"Nudge: subagent({ action: \"nudge\", id: \"78f659a3\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
+			"Ask: intercom({ action: \"ask\", to: \"subagent-worker-78f659a3\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
 			"Status: subagent({ action: \"status\", id: \"78f659a3\" })",
 			"Interrupt: subagent({ action: \"interrupt\", id: \"78f659a3\" })",
 		].join("\n"));
@@ -193,7 +194,8 @@ describe("subagent control attention state", () => {
 			"Signal: worker is still active but long-running",
 			"Facts: 15 turns | 160000 tokens | 42 tools | tool edit | path src/runs/background/async-status.ts",
 			"Hint: Inspect status, then nudge if the work seems stuck.",
-			"Nudge: intercom({ action: \"ask\", to: \"subagent-worker-78f659a3-1\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
+			"Nudge: subagent({ action: \"nudge\", id: \"78f659a3\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
+			"Ask: intercom({ action: \"ask\", to: \"subagent-worker-78f659a3-1\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
 			"Status: subagent({ action: \"status\", id: \"78f659a3\" })",
 			"Interrupt: subagent({ action: \"interrupt\", id: \"78f659a3\" })",
 		].join("\n"));
@@ -233,7 +235,8 @@ describe("subagent control attention state", () => {
 			"Run: 78f659a3",
 			"Signal: worker needs attention",
 			"Hint: Inspect status first unless the run is clearly blocked.",
-			"Nudge: intercom({ action: \"ask\", to: \"subagent-worker-78f659a3\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
+			"Nudge: subagent({ action: \"nudge\", id: \"78f659a3\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
+			"Ask: intercom({ action: \"ask\", to: \"subagent-worker-78f659a3\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
 			"Status: subagent({ action: \"status\", id: \"78f659a3\" })",
 			"Interrupt: subagent({ action: \"interrupt\", id: \"78f659a3\" })",
 		].join("\n"));

@@ -349,6 +349,7 @@ subagent({ action: "resume", id: "nested-run-id", message: "Continue this nested
 
 Resume behavior:
 - If an async child is still running and reachable, `resume` sends the follow-up to that live child over intercom.
+- If a live foreground or async child needs a prompt but not a blocking reply, `nudge` sends a steered intercom message through the same bridge.
 - If an async child has completed, `resume` revives it by starting a new async child from the persisted child session file.
 - Multi-child async runs require `index` unless only one running child is selectable.
 - Completed foreground single, parallel, and chain runs can also be revived by `index` while their run metadata remains in extension state.
@@ -399,7 +400,7 @@ subagent({
 })
 ```
 
-If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. Active-long-running notices stay local but may include the same nudge command. When a child route is available, the nudge uses the exact `intercom({ action: "ask", to: "...", delivery: "steer" })` target. Do not invent a target or ask the child to self-report when no bridge exists.
+If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. Active-long-running notices stay local but may include the same nudge command. Prefer `subagent({ action: "nudge", id: "...", message: "..." })` for a non-blocking live child nudge. Use the status-shown `intercom({ action: "ask", to: "...", delivery: "steer" })` when the parent must wait for a reply. Do not invent a target or ask the child to self-report when no bridge exists.
 
 ## Clarify TUI
 

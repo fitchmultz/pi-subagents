@@ -726,7 +726,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const runDir = path.join(asyncRoot, "run-3");
-			const noticeText = "Subagent needs attention: worker\nNudge: intercom({ action: \"ask\", to: \"subagent-worker-run-3-1\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })";
+			const noticeText = "Subagent needs attention: worker\nNudge: subagent({ action: \"nudge\", id: \"run-3\", index: 0, message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })\nAsk: intercom({ action: \"ask\", to: \"subagent-worker-run-3-1\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })";
 			fs.mkdirSync(runDir, { recursive: true });
 			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
 				runId: "run-3",

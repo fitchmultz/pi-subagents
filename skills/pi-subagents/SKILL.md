@@ -77,6 +77,7 @@ subagent({ action: "status", id: "run-id" })
 subagent({ action: "status", id: "latest" }) // latest remembered foreground run in this session
 subagent({ action: "extend", id: "foreground-run-id", extendMs: 300000 })
 subagent({ action: "resume", id: "run-id", message: "Continue with this clarification..." })
+subagent({ action: "nudge", id: "run-id", message: "What are you blocked on?" })
 ```
 
 ### Worker handoff with acceptance
@@ -129,6 +130,7 @@ When a request matches a packaged workflow, apply the same pattern directly with
 
 - `contact_supervisor({ reason: "need_decision", message })`: blocking decision/clarification.
 - `contact_supervisor({ reason: "progress_update", message })`: concise non-blocking plan-changing update.
+- Use `subagent({ action: "status", id })`, then `subagent({ action: "nudge", id, message })` for a non-blocking live child ping; use the status-shown `intercom({ action: "ask", delivery: "steer" })` when a reply must block.
 - Do not use intercom/contact_supervisor for routine completion handoffs; return normal child results.
 - If bridge messages do not appear, run `subagent({ action: "doctor" })`.
 

@@ -233,19 +233,19 @@ export const SubagentParams = Type.Object({
 	task: Type.Optional(Type.String({ description: "Task (SINGLE mode, optional for self-contained agents)" })),
 	// Management action (when present, tool operates in management mode)
 	action: Type.Optional(StringEnum([...SUBAGENT_ACTIONS] as const, {
-		description: "Management/control action. Omit for execution mode."
+		description: "Management/control action. Omit for execution mode. Use nudge to send a live intercom nudge to a running child."
 	})),
 	id: Type.Optional(Type.String({
-		description: "Run id or prefix for action='status', action='interrupt', action='extend', or action='resume'."
+		description: "Run id or prefix for action='status', action='interrupt', action='extend', action='resume', or action='nudge'."
 	})),
 	runId: Type.Optional(Type.String({
-		description: "Target run ID for action='interrupt', action='extend', or action='resume'. Defaults to the most recently active controllable run for interrupt/extend. Prefer id for new calls."
+		description: "Target run ID for action='interrupt', action='extend', action='resume', or action='nudge'. Defaults to the most recently active controllable run for interrupt/extend/nudge. Prefer id for new calls."
 	})),
 	dir: Type.Optional(Type.String({
 		description: "Async run directory for action='status' or action='resume'."
 	})),
 	index: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based child index for actions that target a specific child." })),
-	message: Type.Optional(Type.String({ description: "Follow-up message for action='resume'. Use index to choose a child from multi-child runs." })),
+	message: Type.Optional(Type.String({ description: "Follow-up message for action='resume', or nudge text for action='nudge'. Use index to choose a child from multi-child runs." })),
 	extendMs: Type.Optional(Type.Integer({ minimum: 1, description: "Additional milliseconds for action='extend'. If omitted, action='extend' uses timeoutMs/maxRuntimeMs as the extension amount." })),
 	// Chain identifier for management (can't reuse 'chain' — that's the execution array)
 	chainName: Type.Optional(Type.String({

@@ -60,6 +60,7 @@ import {
 	resolveSubagentResultStatus,
 	stripDetailsOutputsForIntercomReceipt,
 } from "../../intercom/result-intercom.ts";
+import { queryLiveIntercomHealth, sendLiveSubagentMessage } from "../../intercom/live-intercom.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
 import { createNestedRoute, readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNestedAsyncDir, resolveNestedParentAddressFromEnv, updateForegroundNestedProjection, writeNestedControlRequest, writeNestedEvent, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
@@ -86,6 +87,7 @@ import {
 	type ControlEvent,
 	type Details,
 	type SubagentExecutionResult,
+	type SubagentLiveIntercomHealth,
 	type ExtensionConfig,
 	type ForegroundControlState,
 	type ForegroundResumeRun,
@@ -414,7 +416,25 @@ function nestedResolutionScopeForExecutor(deps: ExecutorDeps): NestedRunResoluti
 	};
 }
 
-function foregroundStatusResult(control: ForegroundControlState): SubagentExecutionResult {
+function foregroundIntercomTarget(control: ForegroundControlState): string | undefined {
+	return control.currentAgent ? resolveSubagentIntercomTarget(control.runId, control.currentAgent, control.currentIndex ?? 0) : undefined;
+}
+
+function formatLiveIntercomLines(runId: string, target: string, index?: number, health?: SubagentLiveIntercomHealth): string[] {
+	const indexPart = index !== undefined ? `, index: ${index}` : "";
+	const healthText = !health
+		? `unknown (${target})`
+		: health.status === "registered"
+			? `registered${health.sessionStatus ? `, ${health.sessionStatus}` : ""}${health.acceptsAsks !== undefined ? `, accepts_asks:${health.acceptsAsks}` : ""}${health.pendingAsks !== undefined ? `, pending_asks:${health.pendingAsks}` : ""} (${target})`
+			: `${health.status.replace(/_/g, " ")} (${target})`;
+	return [
+		`Intercom: ${healthText}`,
+		`Nudge: subagent({ action: "nudge", id: "${runId}"${indexPart}, message: "What are you blocked on?" })`,
+		`Ask: intercom({ action: "ask", to: "${target}", delivery: "steer", message: "What are you blocked on?" })`,
+	];
+}
+
+function foregroundStatusResult(control: ForegroundControlState, health?: SubagentLiveIntercomHealth): SubagentExecutionResult {
 	let nestedWarning: string | undefined;
 	try {
 		updateForegroundNestedProjection(control);
@@ -422,6 +442,7 @@ function foregroundStatusResult(control: ForegroundControlState): SubagentExecut
 		nestedWarning = `Nested status unavailable: ${error instanceof Error ? error.message : String(error)}`;
 	}
 	const activity = formatForegroundActivity(control);
+	const intercomTarget = foregroundIntercomTarget(control);
 	const lines = [
 		`Run: ${control.runId}`,
 		"State: running",
@@ -431,6 +452,7 @@ function foregroundStatusResult(control: ForegroundControlState): SubagentExecut
 		control.timeoutAt ? `Timeout: ${new Date(control.timeoutAt).toISOString()}` : undefined,
 		control.timeoutAt && control.extendTimeout ? `Extend: subagent({ action: "extend", id: "${control.runId}", extendMs: 300000 })` : undefined,
 	].filter((line): line is string => Boolean(line));
+	if (intercomTarget) lines.push(...formatLiveIntercomLines(control.runId, intercomTarget, control.currentIndex, health));
 	lines.push(...formatNestedRunStatusLines(control.nestedChildren, { indent: "", commandHints: true, maxLines: 20 }));
 	if (nestedWarning) lines.push(`Warning: ${nestedWarning}`);
 	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
@@ -848,6 +870,65 @@ async function resumeLiveNestedRun(input: { target: ResolvedSubagentRunId & { ki
 	const result = await sendNestedControlRequest(input.target, "resume", input.message);
 	if (result) return { content: [{ type: "text", text: result.message }], isError: result.ok ? undefined : true, details: { mode: "management", results: [] } };
 	return { content: [{ type: "text", text: `Nested run ${run.id} appears live but its owner route is not reachable. Wait for completion, then retry action='resume'.` }], isError: true, details: { mode: "management", results: [] } };
+}
+
+async function nudgeSubagentRun(input: {
+	params: SubagentParamsLike;
+	deps: ExecutorDeps;
+}): Promise<SubagentExecutionResult> {
+	const message = input.params.message?.trim() || "What are you blocked on? Reply with the smallest next step, or state the exact decision you need.";
+	const requestedId = input.params.id ?? input.params.runId;
+	let runId: string;
+	let agent: string;
+	let index: number;
+	let target: string;
+
+	try {
+		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
+		if (resolved?.kind === "nested") {
+			return { content: [{ type: "text", text: "Nested live nudges are not supported yet. Use status for the nested run, then resume/interrupt or message the advertised intercom target directly." }], isError: true, details: { mode: "management", results: [] } };
+		}
+		if (resolved?.kind === "foreground" || (!resolved && !requestedId)) {
+			const control = getForegroundControl(input.deps.state, resolved?.kind === "foreground" ? resolved.id : requestedId);
+			if (control?.currentAgent) {
+				const currentIndex = control.currentIndex ?? 0;
+				if (input.params.index !== undefined && input.params.index !== currentIndex) {
+					throw new Error(`Foreground run '${control.runId}' can only nudge the current live child at index ${currentIndex}. Inspect status before targeting another child.`);
+				}
+				runId = control.runId;
+				agent = control.currentAgent;
+				index = currentIndex;
+				target = resolveSubagentIntercomTarget(runId, agent, index);
+			} else if (resolved?.kind === "foreground") {
+				throw new Error(`Foreground run '${resolved.id}' has no live child to nudge.`);
+			} else {
+				throw new Error("No live foreground child found. Provide id for a running async child or inspect status first.");
+			}
+		} else {
+			const asyncTarget = resolveAsyncResumeTarget({ id: input.params.id, runId: input.params.runId, dir: input.params.dir, index: input.params.index });
+			if (asyncTarget.kind !== "live") {
+				return { content: [{ type: "text", text: `Run ${asyncTarget.runId} is not live. Use subagent({ action: "resume", id: "${asyncTarget.runId}", message: "..." }) for a completed child.` }], isError: true, details: { mode: "management", results: [] } };
+			}
+			runId = asyncTarget.runId;
+			agent = asyncTarget.agent;
+			index = asyncTarget.index;
+			target = asyncTarget.intercomTarget;
+		}
+	} catch (error) {
+		const text = error instanceof Error ? error.message : String(error);
+		return { content: [{ type: "text", text }], isError: true, details: { mode: "management", results: [] } };
+	}
+
+	const result = await sendLiveSubagentMessage(input.deps.pi.events, {
+		to: target,
+		message: `Nudge for subagent run ${runId} (${agent}${index !== undefined ? ` step ${index + 1}` : ""}):\n\n${message}`,
+		delivery: "steer",
+		extra: { source: "subagent-nudge", runId, agent, index },
+	});
+	if (!result.delivered) {
+		return { content: [{ type: "text", text: [`Nudge was not delivered.`, `Run: ${runId}`, `Intercom target: ${target}`, result.reason ? `Reason: ${result.reason}` : undefined].filter((line): line is string => Boolean(line)).join("\n") }], isError: true, details: { mode: "management", results: [] } };
+	}
+	return { content: [{ type: "text", text: [`Nudge delivered to live subagent.`, `Run: ${runId}`, `Agent: ${agent}`, `Intercom target: ${target}`].join("\n") }], details: { mode: "management", results: [] } };
 }
 
 async function resumeAsyncRun(input: {
@@ -2783,7 +2864,11 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						const resolved = resolveSubagentRunId(targetRunId, { state: deps.state, nested: nestedScope });
 						if (resolved?.kind === "foreground") {
 							const foreground = getForegroundControl(deps.state, resolved.id);
-							if (foreground) return foregroundStatusResult(foreground);
+							if (foreground) {
+								const target = foregroundIntercomTarget(foreground);
+								const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
+								return foregroundStatusResult(foreground, health);
+							}
 						}
 					} catch (error) {
 						const message = error instanceof Error ? error.message : String(error);
@@ -2791,9 +2876,20 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					}
 				} else {
 					const foreground = getForegroundControl(deps.state, undefined);
-					if (foreground) return foregroundStatusResult(foreground);
+					if (foreground) {
+						const target = foregroundIntercomTarget(foreground);
+						const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
+						return foregroundStatusResult(foreground, health);
+					}
 				}
-				const inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
+				let inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
+				if (!inspected.isError && inspected.content[0]?.type === "text") {
+					const targets = [...inspected.content[0].text.matchAll(/Intercom: unknown \(([^)]+)\)/g)].map((match) => match[1]).filter((target): target is string => Boolean(target));
+					if (targets.length) {
+						const intercomHealth = await queryLiveIntercomHealth(deps.pi.events, targets);
+						if (intercomHealth.size) inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps), intercomHealth });
+					}
+				}
 				if (targetRunId && inspected.isError && inspected.content[0]?.type === "text" && inspected.content[0].text.startsWith("Async run not found.")) {
 					try {
 						const remembered = resolveRememberedForegroundRun(targetRunId, deps.state);
@@ -2804,6 +2900,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					}
 				}
 				return inspected;
+			}
+			if (params.action === "nudge") {
+				return nudgeSubagentRun({ params: paramsWithResolvedCwd, deps });
 			}
 			if (params.action === "resume") {
 				return resumeAsyncRun({ params: paramsWithResolvedCwd, requestCwd, ctx, deps });

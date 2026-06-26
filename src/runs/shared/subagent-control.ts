@@ -173,7 +173,8 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 		].filter((line): line is string => Boolean(line)).join("\n");
 	}
 
-	const nudgeCommand = childIntercomTarget
+	const nudgeCommand = `subagent({ action: "nudge", id: "${runTarget}"${event.index !== undefined ? `, index: ${event.index}` : ""}, message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })`;
+	const askCommand = childIntercomTarget
 		? `intercom({ action: "ask", to: "${childIntercomTarget}", delivery: "steer", message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })`
 		: undefined;
 	if (event.type === "active_long_running") {
@@ -184,9 +185,8 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 			`Signal: ${event.message}`,
 			facts ? `Facts: ${facts}` : undefined,
 			"Hint: Inspect status, then nudge if the work seems stuck.",
-			childIntercomTarget
-				? `Nudge: ${nudgeCommand}`
-				: "Nudge: no child message route registered",
+			`Nudge: ${nudgeCommand}`,
+			childIntercomTarget ? `Ask: ${askCommand}` : "Ask: no child message route registered",
 			`Status: subagent({ action: "status", id: "${runTarget}" })`,
 			`Interrupt: subagent({ action: "interrupt", id: "${runTarget}" })`,
 		].filter((line): line is string => Boolean(line)).join("\n");
@@ -198,9 +198,8 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 		`Signal: ${event.message}`,
 		event.recentFailureSummary ? `Recent failures: ${event.recentFailureSummary}` : undefined,
 		"Hint: Inspect status first unless the run is clearly blocked.",
-		childIntercomTarget
-			? `Nudge: ${nudgeCommand}`
-			: "Nudge: no child message route registered",
+		`Nudge: ${nudgeCommand}`,
+		childIntercomTarget ? `Ask: ${askCommand}` : "Ask: no child message route registered",
 		`Status: subagent({ action: "status", id: "${runTarget}" })`,
 		`Interrupt: subagent({ action: "interrupt", id: "${runTarget}" })`,
 	].filter((line): line is string => Boolean(line)).join("\n");

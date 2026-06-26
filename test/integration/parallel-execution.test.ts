@@ -247,10 +247,10 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 			undefined,
 			makeMinimalCtx(tempDir),
 		) as Promise<any>;
-		await new Promise((resolve) => setTimeout(resolve, 150));
+		await new Promise((resolve) => setTimeout(resolve, 75));
 		const extension = await executor.execute(
 			"parallel-extend-control",
-			{ action: "extend", extendMs: 500 },
+			{ action: "extend", extendMs: 1500 },
 			new AbortController().signal,
 			undefined,
 			makeMinimalCtx(tempDir),

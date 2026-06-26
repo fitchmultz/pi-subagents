@@ -855,6 +855,23 @@ export const SUBAGENT_CONTROL_EVENT = "subagent:control-event";
 export const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 export const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 export const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
+export const SUBAGENT_LIVE_INTERCOM_EVENT = "subagent:live-intercom";
+export const SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT = "subagent:live-intercom-delivery";
+export const SUBAGENT_INTERCOM_HEALTH_REQUEST_EVENT = "subagent:intercom-health-request";
+export const SUBAGENT_INTERCOM_HEALTH_RESPONSE_EVENT = "subagent:intercom-health-response";
+
+export interface SubagentLiveIntercomHealth {
+	target: string;
+	status: "registered" | "none" | "missing" | "ambiguous" | "prefix_too_short";
+	resolvedTarget?: string;
+	sessionId?: string;
+	sessionName?: string;
+	sessionStatus?: string;
+	acceptsAsks?: boolean;
+	pendingAsks?: number;
+	lastSeen?: number;
+	lastIntercomActivity?: number;
+}
 
 // ============================================================================
 // Execution Options
@@ -1040,7 +1057,7 @@ export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
 export const POLL_INTERVAL_MS = 250;
 export const MAX_WIDGET_JOBS = 4;
 export const DEFAULT_SUBAGENT_MAX_DEPTH = 2;
-export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "doctor"] as const;
+export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "doctor"] as const;
 
 export const DEFAULT_FORK_PREAMBLE =
 	"You are a delegated subagent running from a fork of the parent session. " +
