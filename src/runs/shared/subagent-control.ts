@@ -174,7 +174,7 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 	}
 
 	const nudgeCommand = childIntercomTarget
-		? `intercom({ action: "send", to: "${childIntercomTarget}", message: "What are you blocked on? Reply with the smallest next step or ask for a decision." })`
+		? `intercom({ action: "ask", to: "${childIntercomTarget}", delivery: "steer", message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })`
 		: undefined;
 	if (event.type === "active_long_running") {
 		const facts = formatLongRunningFacts(event);

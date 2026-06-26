@@ -726,6 +726,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const runDir = path.join(asyncRoot, "run-3");
+			const noticeText = "Subagent needs attention: worker\nNudge: intercom({ action: \"ask\", to: \"subagent-worker-run-3-1\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })";
 			fs.mkdirSync(runDir, { recursive: true });
 			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
 				runId: "run-3",
@@ -739,7 +740,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 				type: "subagent.control",
 				channels: ["event", "intercom"],
 				childIntercomTarget: "subagent-worker-run-3-1",
-				noticeText: "Subagent needs attention: worker\nNudge: intercom({ action: \"send\", to: \"subagent-worker-run-3-1\", message: \"<message>\" })",
+				noticeText,
 				event: {
 					type: "needs_attention",
 					to: "needs_attention",
@@ -748,7 +749,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 					agent: "worker",
 					message: "worker needs attention",
 				},
-				intercom: { to: "main", message: "SUBAGENT NEEDS ATTENTION: worker in run run-3." },
+				intercom: { to: "main", message: noticeText },
 			})}\n`, "utf-8");
 
 			const state = createState();
@@ -763,7 +764,9 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			const controlEvent = recorder.events.find((event) => event.channel === "subagent:control-event");
 			assert.ok(controlEvent);
 			assert.match((controlEvent.data as { noticeText?: string }).noticeText ?? "", /subagent-worker-run-3-1/);
-			assert.equal(recorder.events.some((event) => event.channel === "subagent:control-intercom"), true);
+			const intercomEvent = recorder.events.find((event) => event.channel === "subagent:control-intercom");
+			assert.ok(intercomEvent);
+			assert.match((intercomEvent.data as { message?: string }).message ?? "", /intercom\({ action: "ask", to: "subagent-worker-run-3-1", delivery: "steer"/);
 		} finally {
 			removeTempDir(asyncRoot);
 		}

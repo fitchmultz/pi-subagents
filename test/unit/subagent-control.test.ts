@@ -160,12 +160,15 @@ describe("subagent control attention state", () => {
 
 		const message = formatControlNoticeMessage(event, "subagent-worker-78f659a3");
 
-		assert.match(message, /Subagent needs attention: worker/);
-		assert.match(message, /Hint: Inspect status first unless the run is clearly blocked/);
-		assert.match(message, /Nudge: intercom\(\{ action: "send", to: "subagent-worker-78f659a3"/);
-		assert.match(message, /Status: subagent\(\{ action: "status", id: "78f659a3" \}\)/);
-		assert.match(message, /Interrupt: subagent\(\{ action: "interrupt", id: "78f659a3" \}\)/);
-		assert.doesNotMatch(message, /Wait:/);
+		assert.equal(message, [
+			"Subagent needs attention: worker",
+			"Run: 78f659a3",
+			"Signal: worker needs attention",
+			"Hint: Inspect status first unless the run is clearly blocked.",
+			"Nudge: intercom({ action: \"ask\", to: \"subagent-worker-78f659a3\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
+			"Status: subagent({ action: \"status\", id: \"78f659a3\" })",
+			"Interrupt: subagent({ action: \"interrupt\", id: \"78f659a3\" })",
+		].join("\n"));
 	});
 
 	it("formats active-long-running notices as informational", () => {
@@ -184,12 +187,16 @@ describe("subagent control attention state", () => {
 
 		const message = formatControlNoticeMessage(event, "subagent-worker-78f659a3-1");
 
-		assert.match(message, /Subagent active but long-running: worker/);
-		assert.match(message, /Inspect status/);
-		assert.match(message, /15 turns/);
-		assert.match(message, /160000 tokens/);
-		assert.match(message, /path src\/runs\/background\/async-status\.ts/);
-		assert.doesNotMatch(message, /Subagent needs attention/);
+		assert.equal(message, [
+			"Subagent active but long-running: worker",
+			"Run: 78f659a3",
+			"Signal: worker is still active but long-running",
+			"Facts: 15 turns | 160000 tokens | 42 tools | tool edit | path src/runs/background/async-status.ts",
+			"Hint: Inspect status, then nudge if the work seems stuck.",
+			"Nudge: intercom({ action: \"ask\", to: \"subagent-worker-78f659a3-1\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
+			"Status: subagent({ action: \"status\", id: \"78f659a3\" })",
+			"Interrupt: subagent({ action: \"interrupt\", id: \"78f659a3\" })",
+		].join("\n"));
 	});
 
 	it("formats terminal completion guard notices without live-run commands", () => {
@@ -217,8 +224,19 @@ describe("subagent control attention state", () => {
 
 		const message = formatControlIntercomMessage(event, "subagent-worker-78f659a3");
 
-		assert.match(message, /worker needs attention in run 78f659a3/);
-		assert.match(message, /Nudge: intercom\(\{ action: "send", to: "subagent-worker-78f659a3"/);
+		assert.equal(message, [
+			"subagent needs attention",
+			"",
+			"worker needs attention in run 78f659a3.",
+			"",
+			"Subagent needs attention: worker",
+			"Run: 78f659a3",
+			"Signal: worker needs attention",
+			"Hint: Inspect status first unless the run is clearly blocked.",
+			"Nudge: intercom({ action: \"ask\", to: \"subagent-worker-78f659a3\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
+			"Status: subagent({ action: \"status\", id: \"78f659a3\" })",
+			"Interrupt: subagent({ action: \"interrupt\", id: \"78f659a3\" })",
+		].join("\n"));
 	});
 
 	it("dedupes notifications once per child target and attention state", () => {

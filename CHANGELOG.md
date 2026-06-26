@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- Control nudge hints now use `intercom({ action: "ask", delivery: "steer" })` because they request a child reply and should reach active children promptly.
 - Marked this personal fork as private, removed the legacy `npx pi-subagents` installer/bin path, and documented local file-path `pi install` as the canonical install/refresh workflow.
 - Added a local pi-fitch-kit agent override smoke check to verify source-managed custom agents are symlinked into `~/.pi/agent/agents` and included it in `npm run ci`.
 - Added a per-suite local watchdog to `scripts/run-tests.mjs`, with timeout diagnostics and `PI_TEST_TIMEOUT_MS` / `--timeout-ms` overrides for slow debug runs.
@@ -17,6 +18,7 @@
 - Run local test scripts through a small wrapper that clears inherited `PI_SUBAGENT_*` runtime variables before starting the Node test runner.
 
 ### Fixed
+- Active-long-running control notices now surface locally instead of being formatted and then dropped by the extension notice bridge.
 - Return the last non-empty text part from the latest assistant message so multi-part assistant outputs prefer the final answer over progress text.
 - Keep path-resolution tests hermetic by using a temporary fake home and Pi agent directory instead of touching the real `~/.agents` tree.
 - Updated per-agent context documentation to describe the fork's fixed behavior rather than upstream whole-invocation fork promotion.

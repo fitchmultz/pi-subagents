@@ -38,6 +38,16 @@ function needsAttentionEvent(overrides: Partial<ControlEvent> = {}): ControlEven
 	};
 }
 
+function activeLongRunningEvent(overrides: Partial<ControlEvent> = {}): ControlEvent {
+	return needsAttentionEvent({
+		type: "active_long_running",
+		to: "active_long_running",
+		message: "worker is still active but long-running",
+		reason: "active_long_running",
+		...overrides,
+	});
+}
+
 function makeRecorder() {
 	const sent: Array<{ message: unknown; options: unknown }> = [];
 	return {
@@ -64,6 +74,22 @@ describe("subagent control notice delivery", () => {
 			state,
 			visibleControlNotices: new Set(),
 			details: { source: "async", event: needsAttentionEvent() },
+			foregroundDelayMs: 20,
+		});
+
+		assert.equal(recorder.sent.length, 1);
+		assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: true });
+	});
+
+	it("delivers active-long-running notices immediately", () => {
+		const state = makeState();
+		const recorder = makeRecorder();
+
+		handleSubagentControlNotice({
+			pi: recorder.pi,
+			state,
+			visibleControlNotices: new Set(),
+			details: { source: "foreground", event: activeLongRunningEvent() },
 			foregroundDelayMs: 20,
 		});
 

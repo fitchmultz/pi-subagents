@@ -399,7 +399,7 @@ subagent({
 })
 ```
 
-If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. When a child route is available, the ping tells the orchestrator which agent needs attention and includes the exact `intercom({ action: "send", to: "..." })` target for a nudge. Do not invent a target or ask the child to self-report when no bridge exists.
+If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. Active-long-running notices stay local but may include the same nudge command. When a child route is available, the nudge uses the exact `intercom({ action: "ask", to: "...", delivery: "steer" })` target. Do not invent a target or ask the child to self-report when no bridge exists.
 
 ## Clarify TUI
 
