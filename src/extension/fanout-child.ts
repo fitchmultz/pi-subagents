@@ -137,6 +137,16 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	if (registeredApis.has(pi)) return;
 	registeredApis.add(pi);
 
+	const controlInboxCleanupStoreKey = "__piSubagentFanoutChildControlInboxCleanup";
+	const previousControlInboxCleanup = globalStore[controlInboxCleanupStoreKey];
+	if (typeof previousControlInboxCleanup === "function") {
+		try {
+			previousControlInboxCleanup();
+		} catch {
+			// Best effort cleanup for stale timers from an older reload.
+		}
+	}
+
 	const config = loadConfig();
 	const state = createChildSafeState();
 	const executor = createSubagentExecutor({
@@ -177,5 +187,17 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	};
 
 	pi.registerTool(tool);
-	startNestedControlInboxListener(pi, state);
+
+	const controlInboxTimer = startNestedControlInboxListener(pi, state);
+	const clearControlInboxTimer = (): void => {
+		if (controlInboxTimer) clearInterval(controlInboxTimer);
+	};
+	globalStore[controlInboxCleanupStoreKey] = clearControlInboxTimer;
+
+	pi.on("session_shutdown", () => {
+		clearControlInboxTimer();
+		if (globalStore[controlInboxCleanupStoreKey] === clearControlInboxTimer) {
+			delete globalStore[controlInboxCleanupStoreKey];
+		}
+	});
 }

@@ -162,6 +162,7 @@ describe("subagent extension child mode", () => {
 			const fakePi = {
 				events: { on() { return () => {}; }, emit() {} },
 				registerTool(tool) { registeredTool = tool; },
+				on() {},
 				getSessionName() { return undefined; },
 			};
 			registerFanoutChildSubagentExtension(fakePi);

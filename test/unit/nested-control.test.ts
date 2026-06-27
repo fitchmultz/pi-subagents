@@ -375,6 +375,7 @@ describe("nested control routing", () => {
 		const pi = {
 			events: { emit() {}, on() { return () => {}; } },
 			registerTool() {},
+			on() {},
 			getSessionName() { return "child"; },
 		} as any;
 		fs.rmSync(route.controlInbox, { recursive: true, force: true });
@@ -413,6 +414,7 @@ describe("nested control routing", () => {
 		const pi = {
 			events: { emit() {}, on() { return () => {}; } },
 			registerTool() {},
+			on() {},
 			getSessionName() { return "child"; },
 		} as any;
 		fs.rmSync(route.eventSink, { recursive: true, force: true });
@@ -451,6 +453,7 @@ describe("nested control routing", () => {
 		const pi = {
 			events: { emit() {}, on() { return () => {}; } },
 			registerTool() {},
+			on() {},
 			getSessionName() { return "child"; },
 		} as any;
 		const requestPath = writeNestedControlRequest(route, {
@@ -466,5 +469,52 @@ describe("nested control routing", () => {
 		assert.equal(fs.existsSync(requestPath), false);
 		const result = readNestedControlResults(route).find((item) => item.requestId === "ownerless-request");
 		assert.match(result?.message ?? "", /not active/);
+	});
+
+	it("clears the nested control inbox interval on reload and shutdown", async () => {
+		const route = createNestedRoute("root-inbox-cleanup");
+		routeRoots.push(path.dirname(route.eventSink));
+		setNestedRouteEnv(route, "root-inbox-cleanup");
+		process.env[SUBAGENT_CHILD_ENV] = "1";
+		process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
+
+		const globalStore = globalThis as Record<string, unknown>;
+		const cleanupKey = "__piSubagentFanoutChildControlInboxCleanup";
+		delete globalStore[cleanupKey];
+
+		const realClearInterval = globalThis.clearInterval.bind(globalThis);
+		const cleared: unknown[] = [];
+		(globalThis as { clearInterval: (handle: unknown) => void }).clearInterval = (handle) => {
+			cleared.push(handle);
+			realClearInterval(handle as NodeJS.Timeout);
+		};
+
+		let shutdownHandler: (() => void) | undefined;
+		const makePi = () => ({
+			events: { emit() {}, on() { return () => {}; } },
+			registerTool() {},
+			on(_event: string, handler: () => void) { shutdownHandler = handler; },
+			getSessionName() { return "child"; },
+		}) as any;
+
+		try {
+			registerFanoutChildSubagentExtension(makePi());
+			const firstCleanup = globalStore[cleanupKey];
+			assert.equal(typeof firstCleanup, "function", "cleanup function stored after registration");
+
+			// Reload with a new pi instance must clear the stale polling interval.
+			registerFanoutChildSubagentExtension(makePi());
+			assert.ok(cleared.length >= 1, "expected stale interval cleared on re-register, got " + cleared.length);
+			assert.notEqual(globalStore[cleanupKey], firstCleanup, "new cleanup function stored after re-register");
+
+			// Graceful shutdown clears the active interval and the store entry.
+			assert.equal(typeof shutdownHandler, "function", "session_shutdown handler registered");
+			shutdownHandler!();
+			assert.ok(cleared.length >= 2, "expected active interval cleared on session_shutdown, got " + cleared.length);
+			assert.equal(globalStore[cleanupKey], undefined, "cleanup store cleared on session_shutdown");
+		} finally {
+			(globalThis as { clearInterval: typeof clearInterval }).clearInterval = realClearInterval as typeof clearInterval;
+			delete globalStore[cleanupKey];
+		}
 	});
 });
