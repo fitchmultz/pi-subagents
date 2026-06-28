@@ -750,6 +750,10 @@ function modelThinkingBadge(theme: Theme, model?: string, thinking?: string): st
 	return label ? theme.fg("dim", ` (${label})`) : "";
 }
 
+function modelStat(theme: Theme, model?: string): string {
+	return model ? ` ${theme.fg("dim", "·")} ${theme.fg("dim", model)}` : "";
+}
+
 function widgetStepActivityLine(step: NonNullable<AsyncJobState["steps"]>[number], width: number, expanded: boolean, snapshotNow?: number): string {
 	if ((step.status === "failed" || step.status === "timed-out") && step.error) return firstOutputLine(step.error);
 	const toolLine = formatCurrentToolLine(step, width, expanded, snapshotNow);
@@ -1155,7 +1159,7 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 		const glyph = rPending ? theme.fg("dim", "◦") : resultGlyph(r, output, theme, rRunning, progressRunningSeed(rProg));
 		const pendingLabel = rPending ? ` ${theme.fg("dim", "· pending")}` : "";
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);
-		const line = `${glyph} ${stepLabel}: ${themeBold(theme, agentName)}${stepStats ? ` ${theme.fg("dim", "·")} ${stepStats}` : ""}${pendingLabel}`;
+		const line = `${glyph} ${stepLabel}: ${themeBold(theme, agentName)}${modelStat(theme, r.model)}${stepStats ? ` ${theme.fg("dim", "·")} ${stepStats}` : ""}${pendingLabel}`;
 		c.addChild(new Text(truncLine(`  ${line}`, width), 0, 0));
 		if (rRunning && rProg && "status" in rProg) {
 			const activity = compactCurrentActivity(rProg);

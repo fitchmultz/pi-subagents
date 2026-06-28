@@ -49,6 +49,23 @@ test("row keeps styled multiline content within the available width", () => {
 	assert.doesNotMatch(rendered, /[\r\n\t]/);
 });
 
+test("compact parallel rendering shows each child model", () => {
+	const component = renderSubagentResult({
+		content: [{ type: "text", text: "done" }],
+		details: {
+			mode: "parallel",
+			results: [
+				{ ...result("scout", "a"), model: "cursor/composer-2-5", progressSummary: { toolCount: 28, tokens: 18_000, durationMs: 51_300 } },
+				{ ...result("researcher", "b"), model: "openai-codex/gpt-5.5:high", progressSummary: { toolCount: 24, tokens: 119_000, durationMs: 207_000 } },
+			],
+		},
+	}, { expanded: false }, theme as any);
+
+	const text = componentText(component);
+	assert.match(text, /Agent 1\/2: scout · cursor\/composer-2-5 · 28 tool uses · 18k token/);
+	assert.match(text, /Agent 2\/2: researcher · openai-codex\/gpt-5\.5:high · 24 tool uses · 119k token/);
+});
+
 test("compact chain rendering uses workflow graph spans for dynamic fanout results", () => {
 	const component = renderSubagentResult({
 		content: [{ type: "text", text: "done" }],
