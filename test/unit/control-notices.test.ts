@@ -81,7 +81,7 @@ describe("subagent control notice delivery", () => {
 		assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: true });
 	});
 
-	it("delivers active-long-running notices immediately", () => {
+	it("delivers async active-long-running notices immediately", () => {
 		const state = makeState();
 		const recorder = makeRecorder();
 
@@ -89,10 +89,37 @@ describe("subagent control notice delivery", () => {
 			pi: recorder.pi,
 			state,
 			visibleControlNotices: new Set(),
-			details: { source: "foreground", event: activeLongRunningEvent() },
+			details: { source: "async", event: activeLongRunningEvent() },
 			foregroundDelayMs: 20,
 		});
 
+		assert.equal(recorder.sent.length, 1);
+		assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: true });
+	});
+
+	it("queues foreground active-long-running notices until the same step is still active", async () => {
+		const state = makeState();
+		state.foregroundControls.set("run-1", {
+			runId: "run-1",
+			mode: "parallel",
+			startedAt: 0,
+			updatedAt: 0,
+			currentAgent: "worker",
+			currentIndex: 0,
+			currentActivityState: "active_long_running",
+		});
+		const recorder = makeRecorder();
+
+		handleSubagentControlNotice({
+			pi: recorder.pi,
+			state,
+			visibleControlNotices: new Set(),
+			details: { source: "foreground", event: activeLongRunningEvent() },
+			foregroundDelayMs: 10,
+		});
+
+		assert.equal(recorder.sent.length, 0);
+		await wait(25);
 		assert.equal(recorder.sent.length, 1);
 		assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: true });
 	});
@@ -142,6 +169,33 @@ describe("subagent control notice delivery", () => {
 			state,
 			visibleControlNotices: new Set(),
 			details: { source: "foreground", event: needsAttentionEvent() },
+			foregroundDelayMs: 20,
+		});
+		clearPendingForegroundControlNotices(state, "run-1");
+		state.foregroundControls.delete("run-1");
+
+		await wait(35);
+		assert.equal(recorder.sent.length, 0);
+	});
+
+	it("drops queued foreground active-long-running notices when the run finishes before delivery", async () => {
+		const state = makeState();
+		state.foregroundControls.set("run-1", {
+			runId: "run-1",
+			mode: "parallel",
+			startedAt: 0,
+			updatedAt: 0,
+			currentAgent: "worker",
+			currentIndex: 0,
+			currentActivityState: "active_long_running",
+		});
+		const recorder = makeRecorder();
+
+		handleSubagentControlNotice({
+			pi: recorder.pi,
+			state,
+			visibleControlNotices: new Set(),
+			details: { source: "foreground", event: activeLongRunningEvent() },
 			foregroundDelayMs: 20,
 		});
 		clearPendingForegroundControlNotices(state, "run-1");

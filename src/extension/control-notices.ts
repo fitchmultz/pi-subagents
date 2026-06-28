@@ -61,7 +61,7 @@ function isForegroundNoticeStillActionable(state: SubagentState, details: Subage
 	if (!control) return false;
 	if (control.currentAgent && control.currentAgent !== details.event.agent) return false;
 	if (details.event.index !== undefined && control.currentIndex !== details.event.index) return false;
-	return control.currentActivityState === "needs_attention";
+	return control.currentActivityState === details.event.type;
 }
 
 export function handleSubagentControlNotice(input: {
@@ -72,10 +72,6 @@ export function handleSubagentControlNotice(input: {
 	foregroundDelayMs?: number;
 }): void {
 	if (!input.details?.event) return;
-	if (input.details.event.type === "active_long_running") {
-		deliverControlNotice(input);
-		return;
-	}
 	if (input.details.source !== "foreground") {
 		deliverControlNotice(input);
 		return;

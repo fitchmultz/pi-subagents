@@ -1406,6 +1406,23 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(mockPi.callCount(), 2);
 	});
 
+	it("retries the same model once after transient cursor database lock", async () => {
+		mockPi.onCall({ exitCode: 1, stderr: "database is locked" });
+		mockPi.onCall({ output: "Recovered after database lock retry" });
+		const agents = [makeAgent("cursor", { model: "cursor/composer-2-5" })];
+
+		const result = await runSync(tempDir, agents, "cursor", "Inspect files", {
+			runId: "database-lock-retry-run",
+		});
+
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.finalOutput, "Recovered after database lock retry");
+		assert.deepEqual(result.attemptedModels, ["cursor/composer-2-5", "cursor/composer-2-5"]);
+		assert.equal(result.modelAttempts?.length, 2);
+		assert.match(result.modelAttempts?.[0]?.error ?? "", /database is locked/);
+		assert.equal(mockPi.callCount(), 2);
+	});
+
 	it("times out the current foreground run without retrying fallback models", async () => {
 		mockPi.onCall({ delay: 10000 });
 		const agents = [makeAgent("slow", { model: "mock/primary", fallbackModels: ["mock/fallback"] })];

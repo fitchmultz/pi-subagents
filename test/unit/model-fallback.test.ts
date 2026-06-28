@@ -67,11 +67,14 @@ describe("model fallback helpers", () => {
 		assert.equal(isRetryableModelFailure("rate limit exceeded for provider"), true);
 		assert.equal(isRetryableModelFailure("model unavailable"), true);
 		assert.equal(isRetryableModelFailure("authentication failed"), true);
+		assert.equal(isRetryableModelFailure("database is locked"), true);
 	});
 
 	it("detects same-model transport recovery failures without retrying auth or quota loops", () => {
 		assert.equal(isRecoverableSameModelFailure("WebSocket closed before response completed", 1), true);
 		assert.equal(isRecoverableSameModelFailure("provider transport timed out", 1), true);
+		assert.equal(isRecoverableSameModelFailure("database is locked", 1), true);
+		assert.equal(isRecoverableSameModelFailure("SQLITE_BUSY: database is locked", 1), true);
 		assert.equal(isRecoverableSameModelFailure(undefined, 143), true);
 		assert.equal(isRecoverableSameModelFailure("429 quota exceeded", 1), false);
 		assert.equal(isRecoverableSameModelFailure("authentication failed", 1), false);
