@@ -459,6 +459,12 @@ export interface Details {
 	progress?: AgentProgress[];
 	progressSummary?: ProgressSummary;
 	intercomTargets?: string[];
+	intercomDelivery?: {
+		delivered: boolean;
+		to: string;
+		status: SubagentResultStatus;
+		summary: string;
+	};
 	artifacts?: {
 		dir: string;
 		files: ArtifactPaths[];

@@ -21,8 +21,9 @@ interface ExecutorResult {
 	details?: {
 		mode?: string;
 		runId?: string;
-		results?: Array<{ agent?: string; finalOutput?: string }>;
+		results?: Array<{ agent?: string; finalOutput?: string; exitCode?: number }>;
 		asyncId?: string;
+		intercomDelivery?: { delivered?: boolean; to?: string; status?: string; summary?: string };
 	};
 }
 
@@ -200,6 +201,31 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		assert.doesNotMatch(result.content[0]?.text ?? "", /Full child output from worker/);
 		assert.equal(result.details?.results?.[0]?.finalOutput, undefined);
 		assert.match(String(payload.message ?? ""), /Full child output from worker/);
+	});
+
+	it("keeps child failure visible when intercom delivery succeeds", async () => {
+		mockPi.onCall({ output: "Child failed loudly", exitCode: 1 });
+		const { executor, events } = makeExecutor();
+
+		const result = await executor.execute(
+			"single-failed-intercom",
+			{ agent: "worker", task: "Fail the task" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /Delivered single subagent result via intercom\./);
+		assert.match(result.content[0]?.text ?? "", /Child outcome: failed/);
+		assert.match(result.content[0]?.text ?? "", /Non-completed children:\n- worker \[failed\]:/);
+		assert.equal(result.details?.intercomDelivery?.delivered, true);
+		assert.equal(result.details?.intercomDelivery?.status, "failed");
+		assert.equal(result.details?.results?.[0]?.finalOutput, undefined);
+		const payload = events.emitted.find((entry) => entry.channel === "subagent:result-intercom")?.payload as { status?: string; children?: Array<{ status?: string; summary?: string }> } | undefined;
+		assert.equal(payload?.status, "failed");
+		assert.equal(payload?.children?.[0]?.status, "failed");
+		assert.match(payload?.children?.[0]?.summary ?? "", /Child failed loudly/);
 	});
 
 	it("falls back to legacy foreground output when the bridge is inactive", async () => {
@@ -934,6 +960,8 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		assert.equal(payload.status, "failed");
 		assert.match(String(payload.summary ?? ""), /1 completed, 1 failed/);
 		assert.match(String(payload.message ?? ""), /Status: failed/);
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /Child outcome: failed/);
 		assert.match(result.content[0]?.text ?? "", /Children: 1 completed, 1 failed/);
 	});
 });

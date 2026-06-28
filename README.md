@@ -219,7 +219,7 @@ Use `~/.pi/agent/settings.json` for a user override or `.pi/settings.json` for a
 
 ## Where running subagents show up
 
-Foreground runs stream progress in the conversation while they run. Use `timeoutMs` or its alias `maxRuntimeMs` when a foreground run must return within a wall-clock budget. While a foreground child is still active, `subagent({ action: "extend", id: "...", extendMs: 300000 })` can extend that timeout. When the timeout expires, running children are soft-interrupted, completed children stay in the result, and timed-out children return `timedOut: true` with a stable timeout message plus resume guidance when a child session was persisted. Foreground reviewer runs automatically raise short timeout budgets to at least 15 minutes because a timed-out reviewer is incomplete review, not sign-off.
+Foreground runs stream progress in the conversation while they run. Use `timeoutMs` or its alias `maxRuntimeMs` when a foreground run must return within a wall-clock budget. While a foreground child is still active, `subagent({ action: "extend", id: "...", extendMs: 300000 })` can extend that timeout. When the timeout expires, running children are soft-interrupted, completed children stay in the result, and timed-out children return `timedOut: true` with a stable timeout message plus resume guidance when a child session was persisted. Foreground reviewer runs automatically raise short timeout budgets to at least 15 minutes. Planner/researcher-style roles raise short foreground budgets only when local run history shows they need longer.
 
 Background runs keep working after control returns to you. Inspect active runs with `subagent({ action: "status" })`, or a specific run with `subagent({ action: "status", id: "..." })`.
 
@@ -878,7 +878,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `model` | string | agent default | Override model. |
 | `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `outputSchema`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `acceptance`. |
 | `concurrency` | number | config or `4` | Top-level parallel concurrency. |
-| `timeoutMs` / `maxRuntimeMs` | number | - | Foreground wall-clock timeout for single, parallel, and chain runs. Timed-out children return `timedOut: true`; async/background runs reject it. For `action: "extend"`, `timeoutMs`/`maxRuntimeMs` can also supply the extension amount when `extendMs` is omitted. |
+| `timeoutMs` / `maxRuntimeMs` | number | - | Foreground wall-clock timeout for single, parallel, and chain runs. Timed-out children return `timedOut: true`; async/background runs reject it. Short reviewer budgets are raised to a safe floor; planner/researcher-style budgets are raised only from local run-history duration data. For `action: "extend"`, `timeoutMs`/`maxRuntimeMs` can also supply the extension amount when `extendMs` is omitted. |
 | `extendMs` | number | - | Additional milliseconds for `action: "extend"`. |
 | `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. |
 | `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Sequential steps and parallel child tasks support `phase`, `label`, `as`, `outputSchema`, and `acceptance` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`; group-level acceptance is not supported because there is no child session to finalize. |

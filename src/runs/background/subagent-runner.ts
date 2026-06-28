@@ -1699,6 +1699,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					...step.parallel,
 					task: task.task ?? step.parallel.task,
 					label: task.label ?? step.parallel.label,
+					sessionFile: step.sessionFiles?.[itemIndex],
 					structuredOutput: undefined,
 					structuredOutputSchema: step.parallel.structuredOutputSchema ?? step.parallel.structuredOutput?.schema,
 				},
@@ -1844,7 +1845,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					piPackageRoot: config.piPackageRoot,
 					piArgv1: config.piArgv1,
 					childIntercomTarget: config.childIntercomTargets?.[fi],
-					orchestratorIntercomTarget: config.controlIntercomTarget,
+					orchestratorIntercomTarget: config.childIntercomTargets?.[fi] ? config.controlIntercomTarget : undefined,
 					nestedRoute: config.nestedRoute,
 					projectTrust: config.projectTrust,
 					registerInterrupt: (interrupt) => {
@@ -2087,7 +2088,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							piPackageRoot: config.piPackageRoot,
 							piArgv1: config.piArgv1,
 							childIntercomTarget: config.childIntercomTargets?.[fi],
-							orchestratorIntercomTarget: config.controlIntercomTarget,
+							orchestratorIntercomTarget: config.childIntercomTargets?.[fi] ? config.controlIntercomTarget : undefined,
 							nestedRoute: config.nestedRoute,
 							projectTrust: config.projectTrust,
 							registerInterrupt: (interrupt) => {
@@ -2267,7 +2268,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				piPackageRoot: config.piPackageRoot,
 				piArgv1: config.piArgv1,
 				childIntercomTarget: config.childIntercomTargets?.[flatIndex],
-				orchestratorIntercomTarget: config.controlIntercomTarget,
+				orchestratorIntercomTarget: config.childIntercomTargets?.[flatIndex] ? config.controlIntercomTarget : undefined,
 				nestedRoute: config.nestedRoute,
 				projectTrust: config.projectTrust,
 				registerInterrupt: (interrupt) => {

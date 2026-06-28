@@ -54,6 +54,7 @@ export interface DynamicRunnerGroup {
 	failFast?: boolean;
 	phase?: string;
 	label?: string;
+	sessionFiles?: Array<string | undefined>;
 }
 
 export type RunnerStep = RunnerSubagentStep | ParallelStepGroup | DynamicRunnerGroup;

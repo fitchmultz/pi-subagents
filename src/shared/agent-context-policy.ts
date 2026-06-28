@@ -128,14 +128,21 @@ export function wrapChainTasksForAgentContext(
 export function createPerAgentForkContextResolver(
 	sessionManager: ForkableSessionManager,
 	resolveContextForIndex: (index?: number) => SubagentExecutionContext,
-	options: ForkContextResolverOptions = {},
-): { sessionFileForIndex(index?: number): string | undefined } {
+	options: ForkContextResolverOptions & { resolveContextForAgentIndex?: (agentName: string | undefined, index?: number) => SubagentExecutionContext } = {},
+): { sessionFileForIndex(index?: number): string | undefined; sessionFileForAgentIndex(agentName: string | undefined, index?: number): string | undefined } {
 	let forkResolver: ReturnType<typeof createForkContextResolver> | undefined;
+	const sessionFileForContext = (context: SubagentExecutionContext, index = 0): string | undefined => {
+		if (context !== "fork") return undefined;
+		if (!forkResolver) forkResolver = createForkContextResolver(sessionManager, "fork", options);
+		return forkResolver.sessionFileForIndex(index);
+	};
 	return {
 		sessionFileForIndex(index = 0): string | undefined {
-			if (resolveContextForIndex(index) !== "fork") return undefined;
-			if (!forkResolver) forkResolver = createForkContextResolver(sessionManager, "fork", options);
-			return forkResolver.sessionFileForIndex(index);
+			return sessionFileForContext(resolveContextForIndex(index), index);
+		},
+		sessionFileForAgentIndex(agentName, index = 0): string | undefined {
+			const context = options.resolveContextForAgentIndex?.(agentName, index) ?? resolveContextForIndex(index);
+			return sessionFileForContext(context, index);
 		},
 	};
 }

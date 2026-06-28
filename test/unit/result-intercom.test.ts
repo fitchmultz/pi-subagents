@@ -192,10 +192,13 @@ describe("result intercom formatter", () => {
 		});
 
 		assert.match(receipt, /Delivered parallel subagent results via intercom\./);
+		assert.match(receipt, /Delivery: succeeded/);
+		assert.match(receipt, /Child outcome: failed/);
 		assert.match(receipt, /Children: 1 completed, 1 failed/);
 		assert.match(receipt, /Artifacts:\n- a \[completed\]: \/tmp\/a\.md/);
 		assert.match(receipt, /Run intercom targets \(may be inactive after completion\):\n- a \[completed\]: subagent-a-run-abc-1/);
 		assert.match(receipt, /Sessions:\n- b \[failed\]: \/tmp\/b\.jsonl/);
+		assert.match(receipt, /Non-completed children:\n- b \[failed\]: failed/);
 		assert.match(receipt, /Full grouped output was sent over intercom\./);
 	});
 
@@ -215,6 +218,18 @@ describe("result intercom formatter", () => {
 		assert.equal(stripped.results[0]?.messages, undefined);
 		assert.equal(stripped.results[0]?.finalOutput, undefined);
 		assert.equal(stripped.results[0]?.truncation, undefined);
+		const withDelivery = stripDetailsOutputsForIntercomReceipt({ mode: "single", results: [] }, {
+			delivered: true,
+			to: "chat",
+			status: "completed",
+			summary: "1 completed",
+		});
+		assert.deepEqual(withDelivery.intercomDelivery, {
+			delivered: true,
+			to: "chat",
+			status: "completed",
+			summary: "1 completed",
+		});
 	});
 
 	it("resolves paused and detached statuses", () => {

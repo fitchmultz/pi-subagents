@@ -165,19 +165,27 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 	}
 
 	function readAllCallArgs(): string[][] {
+		return readAllCallRecords().map((record) => record.args);
+	}
+
+	function readAllCallRecords(): Array<{ args: string[]; env?: Record<string, string | null> }> {
 		return fs.readdirSync(mockPi.dir)
 			.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
 			.sort()
-			.map(readRecordedArgs);
+			.map(readRecordedCall);
 	}
 
-	function readRecordedArgs(callFile: string): string[] {
+	function readRecordedCall(callFile: string): { args: string[]; env?: Record<string, string | null> } {
 		const payload = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8"));
 		assert.equal(typeof payload, "object", "expected recorded args payload");
 		assert.notEqual(payload, null, "expected recorded args payload");
 		assert.ok("args" in payload, "expected recorded args payload");
 		assert.ok(Array.isArray(payload.args), "expected recorded args");
-		return payload.args;
+		return payload;
+	}
+
+	function readRecordedArgs(callFile: string): string[] {
+		return readRecordedCall(callFile).args;
 	}
 
 	function readSessionArgsFromCalls(): string[] {
@@ -198,9 +206,14 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 	}
 
 	function callArgsForTaskContaining(text: string): string[] {
-		const args = readAllCallArgs().find((callArgs) => (callArgs.at(-1) ?? "").includes(text));
-		assert.ok(args, `expected recorded call containing task text: ${text}`);
-		return args;
+		const record = callRecordForTaskContaining(text);
+		return record.args;
+	}
+
+	function callRecordForTaskContaining(text: string): { args: string[]; env?: Record<string, string | null> } {
+		const record = readAllCallRecords().find((call) => (call.args.at(-1) ?? "").includes(text));
+		assert.ok(record, `expected recorded call containing task text: ${text}`);
+		return record;
 	}
 
 	function enablePiIntercomBridge(): void {
@@ -350,6 +363,35 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 
 		assert.equal(result.isError, undefined);
 		assert.equal(fs.readdirSync(mockPi.dir).some((name) => name.startsWith("call-")), true);
+	});
+
+	it("uses local duration history before raising planner foreground budgets", async () => {
+		const agentDir = path.join(tempDir, "agent-dir");
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.writeFileSync(path.join(agentDir, "run-history.jsonl"), [
+			JSON.stringify({ agent: "planner", task: "old", ts: 1, status: "ok", duration: 1000 }),
+			JSON.stringify({ agent: "planner", task: "old", ts: 2, status: "ok", duration: 1000 }),
+			JSON.stringify({ agent: "planner", task: "old", ts: 3, status: "ok", duration: 1000 }),
+		].join("\n") + "\n", "utf-8");
+		const { manager } = makeSessionManagerRecorder();
+		const executor = makeExecutorWithDiscoverAgents(() => ({
+			agents: [{ name: "planner", description: "Planner" }],
+			projectAgentsDir: null,
+		}));
+		mockPi.reset();
+		mockPi.onCall({ delay: 250, output: "planner complete" });
+
+		const result = await executor.execute(
+			"id",
+			{ agent: "planner", task: "Plan slowly", timeoutMs: 180 },
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.match(result.content[0]?.text ?? "", /planner complete/);
 	});
 
 	it("does not raise parallel timeouts because an ignored top-level agent is reviewer", async () => {
@@ -583,6 +625,9 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 
 	it("applies fork-only intercom bridge only to fork-default parallel children", async () => {
 		enablePiIntercomBridge();
+		mockPi.reset();
+		mockPi.onCall({ output: "fresh child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
+		mockPi.onCall({ output: "fork child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
 		const parentSessionFile = path.join(tempDir, "parent.jsonl");
 		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
@@ -602,8 +647,12 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		);
 
 		assert.equal(result.isError, undefined);
-		assert.equal(toolsArg(callArgsForTaskContaining("find files")), "read");
-		assert.equal(toolsArg(callArgsForTaskContaining("implement fix")), "read,intercom,contact_supervisor");
+		const freshCall = callRecordForTaskContaining("find files");
+		const forkCall = callRecordForTaskContaining("implement fix");
+		assert.equal(toolsArg(freshCall.args), "read");
+		assert.equal(toolsArg(forkCall.args), "read,intercom,contact_supervisor");
+		assert.equal(freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, null);
+		assert.equal(forkCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
 	});
 
 	it("keeps explicit fresh context over top-level parallel agent defaultContext fork", async () => {
@@ -686,9 +735,9 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		enablePiIntercomBridge();
 		mockPi.reset();
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
-		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" } });
-		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" } });
-		mockPi.onCall({ output: "consumer" });
+		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" }, echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
+		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" }, echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
+		mockPi.onCall({ output: "consumer", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
 		const parentSessionFile = path.join(tempDir, "parent.jsonl");
 		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
@@ -721,10 +770,63 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		);
 
 		assert.equal(result.isError, undefined, result.content?.[0]?.text);
-		assert.equal(toolsArg(callArgsForTaskContaining("Produce targets")), "read");
-		assert.equal(toolsArg(callArgsForTaskContaining("Review src/a.ts")), "read,intercom,contact_supervisor");
-		assert.equal(toolsArg(callArgsForTaskContaining("Review src/b.ts")), "read,intercom,contact_supervisor");
-		assert.equal(toolsArg(callArgsForTaskContaining("Use reviews")), "read");
+		const producerCall = callRecordForTaskContaining("Produce targets");
+		const reviewACall = callRecordForTaskContaining("Review src/a.ts");
+		const reviewBCall = callRecordForTaskContaining("Review src/b.ts");
+		const consumerCall = callRecordForTaskContaining("Use reviews");
+		assert.equal(toolsArg(producerCall.args), "read");
+		assert.equal(toolsArg(reviewACall.args), "read,intercom,contact_supervisor");
+		assert.equal(toolsArg(reviewBCall.args), "read,intercom,contact_supervisor");
+		assert.equal(toolsArg(consumerCall.args), "read");
+		assert.equal(reviewACall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
+		assert.equal(reviewBCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
+		assert.equal(consumerCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, null);
+		assert.equal(countForkedSessionFiles(readSessionArgsFromCalls()), 2);
+	});
+
+	it("keeps fresh dynamic fanout children from inheriting later fork step sessions", async () => {
+		mockPi.reset();
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }] } });
+		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" } });
+		mockPi.onCall({ output: "write" });
+		const parentSessionFile = path.join(tempDir, "parent.jsonl");
+		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
+		const executor = makeExecutorWithDiscoverAgents(() => ({
+			agents: [
+				{ name: "producer", description: "Producer", defaultContext: "fresh" },
+				{ name: "reviewer", description: "Reviewer", defaultContext: "fresh" },
+				{ name: "worker", description: "Worker", defaultContext: "fork" },
+			],
+			projectAgentsDir: null,
+		}));
+
+		const result = await executor.execute(
+			"id",
+			{
+				chain: [
+					{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
+					{
+						expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 1 },
+						parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: { type: "object" } },
+						collect: { as: "reviews" },
+					},
+					{ agent: "worker", task: "Write after reviews" },
+				],
+				clarify: false,
+			},
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, undefined, result.content?.[0]?.text);
+		const reviewArgs = callArgsForTaskContaining("Review src/a.ts");
+		const workerArgs = callArgsForTaskContaining("Write after reviews");
+		const reviewSession = reviewArgs.at(reviewArgs.indexOf("--session") + 1);
+		const workerSession = workerArgs.at(workerArgs.indexOf("--session") + 1);
+		assert.ok(reviewSession?.endsWith(path.join("run-1", "session.jsonl")), `expected fresh dynamic child session, got ${reviewSession}`);
+		assert.match(workerSession ?? "", /fork-\d+\.jsonl$/);
+		assert.equal(countForkedSessionFiles(readSessionArgsFromCalls()), 1);
 	});
 
 	it("reports unknown top-level parallel agents before default-fork preconditions", async () => {
@@ -1098,6 +1200,47 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(sessionArgs.length, 2);
 		assert.equal(countForkedSessionFiles(sessionArgs), 1);
 		assert.ok(sessionArgs.includes(forkedSessionFile(1)));
+	});
+
+	it("applies fork-only intercom bridge only to fork-default async children", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
+		enablePiIntercomBridge();
+		mockPi.reset();
+		mockPi.onCall({ output: "async fresh child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
+		mockPi.onCall({ output: "async fork child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
+		const parentSessionFile = path.join(tempDir, "parent.jsonl");
+		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
+		const executor = makeExecutorWithDiscoverAgents(() => ({
+			agents: [
+				{ name: "scout", description: "Scout", defaultContext: "fresh", tools: ["read"] },
+				{ name: "worker", description: "Worker", defaultContext: "fork", tools: ["read"] },
+			],
+			projectAgentsDir: null,
+		}), { intercomBridge: { mode: "fork-only" } });
+
+		const result = await executor.execute(
+			"id",
+			{
+				tasks: [
+					{ agent: "scout", task: "async find files" },
+					{ agent: "worker", task: "async implement fix" },
+				],
+				async: true,
+				clarify: false,
+			},
+			new AbortController().signal,
+			undefined,
+			makeCtx(manager),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.equal(result.details?.context, "fork");
+		await waitForRecordedCalls(2);
+		const freshCall = callRecordForTaskContaining("async find files");
+		const forkCall = callRecordForTaskContaining("async implement fix");
+		assert.equal(toolsArg(freshCall.args), "read");
+		assert.equal(toolsArg(forkCall.args), "read,intercom,contact_supervisor");
+		assert.equal(freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, null);
+		assert.equal(forkCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
 	});
 
 	it("runs async chain requests in the background when clarify is omitted", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {

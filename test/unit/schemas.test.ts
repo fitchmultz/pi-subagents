@@ -165,6 +165,9 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.equal(timeoutSchema.minimum, 1);
 		assert.match(String(timeoutSchema.description ?? ""), /foreground/i);
 		assert.match(String(timeoutSchema.description ?? ""), /soft-interrupted/i);
+		assert.match(String(timeoutSchema.description ?? ""), /reviewer/i);
+		assert.match(String(timeoutSchema.description ?? ""), /planner\/researcher/i);
+		assert.match(String(timeoutSchema.description ?? ""), /run-history/i);
 
 		const maxRuntimeSchema = SubagentParams?.properties?.maxRuntimeMs;
 		assert.ok(maxRuntimeSchema, "maxRuntimeMs schema should exist");

@@ -15,7 +15,7 @@ import { runSync } from "./execution.ts";
 import { createForegroundTimeoutExtensionRegistry, type ForegroundTimeoutExtensionRegistry } from "./timeout-extension.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
-import { recordRun } from "../shared/run-history.ts";
+import { loadRunsForAgent, recordRun } from "../shared/run-history.ts";
 import {
 	buildChainInstructions,
 	writeInitialProgressFile,
@@ -359,6 +359,7 @@ interface ExecutionContextData {
 	sessionRoot: string;
 	sessionDirForIndex: (idx?: number) => string;
 	sessionFileForIndex: (idx?: number) => string | undefined;
+	sessionFileForAgentIndex: (agentName: string | undefined, idx?: number) => string | undefined;
 	artifactConfig: ArtifactConfig;
 	artifactsDir: string;
 	backgroundRequestedWhileClarifying: boolean;
@@ -1078,6 +1079,7 @@ async function emitForegroundResultIntercom(input: {
 	results: SingleResult[];
 	chainSteps?: number;
 	nestedChildren?: NestedRunSummary[];
+	shouldApplyIntercomBridgeForChild?: (agentName: string | undefined, index: number) => boolean;
 }): Promise<ReturnType<typeof buildSubagentResultIntercomPayload> | null> {
 	if (!input.intercomBridge.active || !input.intercomBridge.orchestratorTarget) return null;
 	const children = input.results.flatMap((result, index) => result.detached ? [] : [{
@@ -1092,7 +1094,7 @@ async function emitForegroundResultIntercom(input: {
 		index,
 		artifactPath: result.artifactPaths?.outputPath,
 		sessionPath: result.sessionFile,
-		intercomTarget: resolveSubagentIntercomTarget(input.runId, result.agent, index),
+		...(input.shouldApplyIntercomBridgeForChild?.(result.agent, index) !== false ? { intercomTarget: resolveSubagentIntercomTarget(input.runId, result.agent, index) } : {}),
 	}]);
 	if (children.length === 0) return null;
 	const payload = buildSubagentResultIntercomPayload({
@@ -1115,7 +1117,8 @@ async function maybeBuildForegroundIntercomReceipt(input: {
 	mode: SubagentRunMode;
 	details: Details;
 	nestedChildren?: NestedRunSummary[];
-}): Promise<{ text: string; details: Details } | null> {
+	shouldApplyIntercomBridgeForChild?: (agentName: string | undefined, index: number) => boolean;
+}): Promise<{ text: string; details: Details; status: ReturnType<typeof buildSubagentResultIntercomPayload>["status"] } | null> {
 	const payload = await emitForegroundResultIntercom({
 		pi: input.pi,
 		intercomBridge: input.intercomBridge,
@@ -1124,11 +1127,18 @@ async function maybeBuildForegroundIntercomReceipt(input: {
 		results: input.details.results,
 		...(typeof input.details.totalSteps === "number" ? { chainSteps: input.details.totalSteps } : {}),
 		...(input.nestedChildren?.length ? { nestedChildren: input.nestedChildren } : {}),
+		shouldApplyIntercomBridgeForChild: input.shouldApplyIntercomBridgeForChild,
 	});
 	if (!payload) return null;
 	return {
 		text: formatSubagentResultReceipt({ mode: input.mode, runId: input.runId, payload }),
-		details: stripDetailsOutputsForIntercomReceipt(input.details),
+		details: stripDetailsOutputsForIntercomReceipt(input.details, {
+			delivered: true,
+			to: payload.to,
+			status: payload.status,
+			summary: payload.summary,
+		}),
+		status: payload.status,
 	};
 }
 
@@ -1137,6 +1147,39 @@ function validationErrorResult(mode: Details["mode"], text: string): SubagentExe
 }
 
 const MIN_REVIEWER_FOREGROUND_TIMEOUT_MS = 900_000;
+const LONG_RUNNING_HISTORY_SAMPLE_SIZE = 20;
+const LONG_RUNNING_HISTORY_MIN_SAMPLES = 3;
+const LONG_RUNNING_HISTORY_HEADROOM = 1.25;
+const LONG_RUNNING_HISTORY_MAX_TIMEOUT_MS = 1_800_000;
+
+type TimeoutRole = "reviewer" | "planner" | "researcher";
+
+function resolveTimeoutRole(agentName: string | undefined): TimeoutRole | undefined {
+	if (typeof agentName !== "string") return undefined;
+	if (/(^|[._-])reviewer($|[._-])/i.test(agentName)) return "reviewer";
+	if (/(^|[._-])planner($|[._-])/i.test(agentName)) return "planner";
+	if (/(^|[._-])researcher($|[._-])/i.test(agentName)) return "researcher";
+	return undefined;
+}
+
+function historicalForegroundTimeoutFloor(agentName: string): number | undefined {
+	const durations = loadRunsForAgent(agentName)
+		.filter((entry) => entry.status === "ok" && Number.isFinite(entry.duration) && entry.duration > 0)
+		.slice(0, LONG_RUNNING_HISTORY_SAMPLE_SIZE)
+		.map((entry) => entry.duration)
+		.sort((left, right) => left - right);
+	if (durations.length < LONG_RUNNING_HISTORY_MIN_SAMPLES) return undefined;
+	const p75 = durations[Math.ceil(durations.length * 0.75) - 1];
+	return p75 ? Math.min(LONG_RUNNING_HISTORY_MAX_TIMEOUT_MS, Math.ceil(p75 * LONG_RUNNING_HISTORY_HEADROOM)) : undefined;
+}
+
+function roleForegroundTimeoutFloor(agentName: string): number | undefined {
+	const role = resolveTimeoutRole(agentName);
+	if (!role) return undefined;
+	const historical = historicalForegroundTimeoutFloor(agentName);
+	if (role === "reviewer") return Math.max(MIN_REVIEWER_FOREGROUND_TIMEOUT_MS, historical ?? 0);
+	return historical;
+}
 
 function resolveForegroundTimeoutMs(params: SubagentParamsLike): { timeoutMs?: number; error?: string } {
 	const rawTimeout = (params as { timeoutMs?: unknown }).timeoutMs;
@@ -1153,33 +1196,34 @@ function resolveForegroundTimeoutMs(params: SubagentParamsLike): { timeoutMs?: n
 	return timeoutMs === undefined ? {} : { timeoutMs };
 }
 
-function isReviewerLikeAgentName(agentName: string | undefined): boolean {
-	return typeof agentName === "string" && /(^|[._-])reviewer($|[._-])/i.test(agentName);
-}
-
-function reviewerAgentsInRequest(params: SubagentParamsLike): string[] {
+function timeoutRoleAgentsInRequest(params: SubagentParamsLike): string[] {
 	const names = new Set<string>();
 	if ((params.chain?.length ?? 0) > 0) {
 		for (const step of params.chain ?? []) {
 			for (const agent of getStepAgents(step as ChainStep)) {
-				if (isReviewerLikeAgentName(agent)) names.add(agent);
+				if (resolveTimeoutRole(agent)) names.add(agent);
 			}
 		}
 		return [...names];
 	}
 	if ((params.tasks?.length ?? 0) > 0) {
 		for (const task of params.tasks ?? []) {
-			if (isReviewerLikeAgentName(task.agent)) names.add(task.agent);
+			if (resolveTimeoutRole(task.agent)) names.add(task.agent);
 		}
 		return [...names];
 	}
-	if (isReviewerLikeAgentName(params.agent)) names.add(params.agent!);
+	if (resolveTimeoutRole(params.agent)) names.add(params.agent!);
 	return [...names];
 }
 
-function normalizeReviewerForegroundTimeout(params: SubagentParamsLike, timeoutMs: number | undefined): number | undefined {
-	if (timeoutMs === undefined || timeoutMs >= MIN_REVIEWER_FOREGROUND_TIMEOUT_MS) return timeoutMs;
-	return reviewerAgentsInRequest(params).length > 0 ? MIN_REVIEWER_FOREGROUND_TIMEOUT_MS : timeoutMs;
+function normalizeRoleForegroundTimeout(params: SubagentParamsLike, timeoutMs: number | undefined): number | undefined {
+	if (timeoutMs === undefined) return timeoutMs;
+	let normalized = timeoutMs;
+	for (const agentName of timeoutRoleAgentsInRequest(params)) {
+		const floor = roleForegroundTimeoutFloor(agentName);
+		if (floor !== undefined && normalized < floor) normalized = floor;
+	}
+	return normalized;
 }
 
 function validateAcceptanceForExecution(params: SubagentParamsLike): SubagentExecutionResult | null {
@@ -1423,22 +1467,30 @@ function toExecutionErrorResult(
 function collectChainSessionFiles(
 	chain: ChainStep[],
 	sessionFileForIndex: (idx?: number) => string | undefined,
+	sessionFileForAgentIndex: (agentName: string | undefined, idx?: number) => string | undefined,
+	dynamicFanoutMaxItems?: number,
 ): (string | undefined)[] {
 	const sessionFiles: (string | undefined)[] = [];
 	let flatIndex = 0;
 	for (const step of chain) {
 		if (isParallelStep(step)) {
 			for (let i = 0; i < step.parallel.length; i++) {
-				sessionFiles.push(sessionFileForIndex(flatIndex));
+				const agentName = step.parallel[i]?.agent;
+				sessionFiles.push(sessionFileForAgentIndex(agentName, flatIndex) ?? sessionFileForIndex(flatIndex));
 				flatIndex++;
 			}
 			continue;
 		}
 		if (isDynamicParallelStep(step)) {
-			sessionFiles.push(undefined);
+			const maxItems = step.expand.maxItems ?? dynamicFanoutMaxItems ?? 0;
+			for (let i = 0; i < maxItems; i++) {
+				sessionFiles.push(sessionFileForAgentIndex(step.parallel.agent, flatIndex) ?? sessionFileForIndex(flatIndex));
+				flatIndex++;
+			}
 			continue;
 		}
-		sessionFiles.push(sessionFileForIndex(flatIndex));
+		const agentName = getStepAgents(step)[0];
+		sessionFiles.push(sessionFileForAgentIndex(agentName, flatIndex) ?? sessionFileForIndex(flatIndex));
 		flatIndex++;
 	}
 	return sessionFiles;
@@ -1453,6 +1505,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 		shareEnabled,
 		sessionRoot,
 		sessionFileForIndex,
+		sessionFileForAgentIndex,
 		artifactConfig,
 		artifactsDir,
 		effectiveAsync,
@@ -1601,7 +1654,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 			shareEnabled,
 			sessionRoot,
 			chainSkills,
-			sessionFilesByFlatIndex: collectChainSessionFiles(chain, sessionFileForIndex),
+			sessionFilesByFlatIndex: collectChainSessionFiles(chain, sessionFileForIndex, sessionFileForAgentIndex, deps.config.chain?.dynamicFanout?.maxItems),
 			dynamicFanoutMaxItems: deps.config.chain?.dynamicFanout?.maxItems,
 			maxSubagentDepth: currentMaxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
@@ -1680,6 +1733,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		shareEnabled,
 		sessionDirForIndex,
 		sessionFileForIndex,
+		sessionFileForAgentIndex,
 		artifactsDir,
 		artifactConfig,
 		onUpdate,
@@ -1707,6 +1761,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		shareEnabled,
 		sessionDirForIndex,
 		sessionFileForIndex,
+		sessionFileForAgentIndex,
 		artifactsDir,
 		artifactConfig,
 		includeProgress: params.includeProgress,
@@ -1757,7 +1812,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			shareEnabled,
 			sessionRoot,
 			chainSkills: chainResult.requestedAsync.chainSkills,
-			sessionFilesByFlatIndex: collectChainSessionFiles(asyncChain, sessionFileForIndex),
+			sessionFilesByFlatIndex: collectChainSessionFiles(asyncChain, sessionFileForIndex, sessionFileForAgentIndex, deps.config.chain?.dynamicFanout?.maxItems),
 			dynamicFanoutMaxItems: deps.config.chain?.dynamicFanout?.maxItems,
 			maxSubagentDepth: currentMaxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
@@ -1781,6 +1836,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			mode: "chain",
 			details: chainDetails,
 			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
+			shouldApplyIntercomBridgeForChild: (agentName) => data.shouldApplyIntercomBridgeForAgent(agentName),
 		})
 		: null;
 	if (intercomReceipt) {
@@ -1790,6 +1846,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			...chainResult,
 			content: [{ type: "text", text: appendWorktreeSuffix(intercomReceipt.text, worktreeSummary) }],
 			details: intercomReceipt.details,
+			...(intercomReceipt.status !== "completed" ? { isError: true } : {}),
 		};
 	}
 
@@ -1996,6 +2053,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			? createStructuredOutputRuntime(task.outputSchema, path.join(input.artifactsDir, "structured-output"))
 			: undefined;
 		const timeoutAt = input.foregroundControl?.timeoutAt ?? input.timeoutAt;
+		const runIntercomTarget = input.childIntercomTarget?.(task.agent, index);
 		let unregisterTimeoutExtension: (() => void) | undefined;
 		return runSync(input.ctx.cwd, input.agents, task.agent, taskText, {
 			cwd: taskCwd,
@@ -2022,8 +2080,8 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			maxTokens: agentConfig?.maxTokens,
 			controlConfig: input.controlConfig,
 			onControlEvent: input.onControlEvent,
-			intercomSessionName: input.childIntercomTarget?.(task.agent, index),
-			orchestratorIntercomTarget: input.orchestratorIntercomTarget,
+			intercomSessionName: runIntercomTarget,
+			orchestratorIntercomTarget: runIntercomTarget ? input.orchestratorIntercomTarget : undefined,
 			nestedRoute: input.foregroundControl?.nestedRoute,
 			modelOverride: input.modelOverrides[index],
 			availableModels: input.availableModels,
@@ -2419,11 +2477,13 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			mode: "parallel",
 			details,
 			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
+			shouldApplyIntercomBridgeForChild: (agentName) => data.shouldApplyIntercomBridgeForAgent(agentName),
 		});
 		if (intercomReceipt) {
 			return {
 				content: [{ type: "text", text: appendWorktreeSuffix(intercomReceipt.text, worktreeSuffix) }],
 				details: intercomReceipt.details,
+				...(intercomReceipt.status !== "completed" ? { isError: true } : {}),
 			};
 		}
 
@@ -2666,7 +2726,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		controlConfig,
 		onControlEvent,
 		intercomSessionName: childIntercomTarget,
-		orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
+		orchestratorIntercomTarget: childIntercomTarget ? data.intercomBridge.orchestratorTarget : undefined,
 		nestedRoute: foregroundControl?.nestedRoute,
 		index: 0,
 		modelOverride,
@@ -2726,6 +2786,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			mode: "single",
 			details,
 			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
+			shouldApplyIntercomBridgeForChild: (agentName) => data.shouldApplyIntercomBridgeForAgent(agentName),
 		});
 		if (intercomReceipt) {
 			return {
@@ -3050,8 +3111,13 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		if (validationError) return validationError;
 
 		let sessionFileForIndex: (idx?: number) => string | undefined = () => undefined;
+		let forkSessionFileForAgentIndex: (agentName: string | undefined, idx?: number) => string | undefined = () => undefined;
 		try {
-			sessionFileForIndex = createPerAgentForkContextResolver(ctx.sessionManager, resolveContextForIndex).sessionFileForIndex;
+			const forkContextResolver = createPerAgentForkContextResolver(ctx.sessionManager, resolveContextForIndex, {
+				resolveContextForAgentIndex: (agentName) => resolveContextForAgent(agentName),
+			});
+			sessionFileForIndex = forkContextResolver.sessionFileForIndex;
+			forkSessionFileForAgentIndex = forkContextResolver.sessionFileForAgentIndex;
 		} catch (error) {
 			return toExecutionErrorResult(effectiveParams, error, invocationContext);
 		}
@@ -3063,7 +3129,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		if (effectiveAsync && foregroundTimeout.timeoutMs !== undefined) {
 			return buildRequestedModeError(effectiveParams, "timeoutMs/maxRuntimeMs only applies to foreground subagent runs. Omit async:true or use action:'interrupt' for background runs.");
 		}
-		if (!effectiveAsync) foregroundTimeout.timeoutMs = normalizeReviewerForegroundTimeout(effectiveParams, foregroundTimeout.timeoutMs);
+		if (!effectiveAsync) foregroundTimeout.timeoutMs = normalizeRoleForegroundTimeout(effectiveParams, foregroundTimeout.timeoutMs);
 		const controlConfig = resolveControlConfig(deps.config.control, effectiveParams.control);
 
 		const artifactConfig: ArtifactConfig = {
@@ -3095,6 +3161,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			path.join(sessionRoot, `run-${idx ?? 0}`);
 		const childSessionFileForIndex = (idx?: number) =>
 			sessionFileForIndex(idx) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
+		const childSessionFileForAgentIndex = (agentName: string | undefined, idx?: number) =>
+			forkSessionFileForAgentIndex(agentName, idx) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
 
 		const onUpdateWithContext = onUpdate
 			? (r: SubagentExecutionResult) => onUpdate(withForkContext(r, invocationContext))
@@ -3112,6 +3180,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			sessionRoot,
 			sessionDirForIndex,
 			sessionFileForIndex: childSessionFileForIndex,
+			sessionFileForAgentIndex: childSessionFileForAgentIndex,
 			artifactConfig,
 			artifactsDir,
 			backgroundRequestedWhileClarifying,

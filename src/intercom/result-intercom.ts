@@ -329,11 +329,18 @@ function stripSingleResultOutputs(result: SingleResult): SingleResult {
 	};
 }
 
-export function stripDetailsOutputsForIntercomReceipt(details: Details): Details {
+export function stripDetailsOutputsForIntercomReceipt(details: Details, delivery?: Details["intercomDelivery"]): Details {
 	return {
 		...details,
 		results: details.results.map(stripSingleResultOutputs),
+		...(delivery ? { intercomDelivery: delivery } : {}),
 	};
+}
+
+function compactReceiptSummary(summary: string): string {
+	const withoutOutput = summary.split(/\n\nOutput:\n|\sOutput:\s/)[0] ?? summary;
+	const normalized = withoutOutput.replace(/\s+/g, " ").trim();
+	return normalized.length > 240 ? `${normalized.slice(0, 239)}…` : normalized;
 }
 
 export function formatSubagentResultReceipt(input: {
@@ -349,7 +356,9 @@ export function formatSubagentResultReceipt(input: {
 			: "chain subagent results";
 	const lines = [
 		`Delivered ${modeLabel} via intercom.`,
+		"Delivery: succeeded",
 		`Run: ${input.runId}`,
+		`Child outcome: ${input.payload.status}`,
 		`Children: ${formatStatusCounts(counts)}`,
 	];
 
@@ -374,6 +383,14 @@ export function formatSubagentResultReceipt(input: {
 		lines.push("Sessions:");
 		for (const child of sessions) {
 			lines.push(`- ${child.agent} [${child.status}]: ${child.sessionPath}`);
+		}
+	}
+
+	const nonCompleted = input.payload.children.filter((child) => child.status !== "completed");
+	if (nonCompleted.length > 0) {
+		lines.push("Non-completed children:");
+		for (const child of nonCompleted) {
+			lines.push(`- ${child.agent} [${child.status}]: ${compactReceiptSummary(child.summary)}`);
 		}
 	}
 

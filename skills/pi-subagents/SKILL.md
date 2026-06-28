@@ -19,7 +19,7 @@ Use this for runtime Pi subagent orchestration, not for maintaining Agent Skill 
 - Keep writes single-threaded unless writers are isolated with `worktree: true`.
 - Use fresh-context reviewers for adversarial review; use forked `oracle` for inherited-decision/drift review.
 - Do not let ordinary children launch subagents. Only a child explicitly configured with `allowSubagents: true` or the `subagent` tool may run bounded fanout assigned by the parent.
-- A reviewer timeout is not sign-off. Rerun, resume, or split the review.
+- A reviewer timeout is not sign-off. Foreground reviewer budgets are raised to a safe floor; planner/researcher budgets are raised only from local history. Rerun, resume, or split timed-out work.
 - Use async/background only when the parent can keep doing useful independent work or the user wants chat unblocked. Do not sleep-poll; check status when evidence is needed.
 - When an active Pi goal is incomplete, prefer foreground/blocking subagent runs for goal-critical evidence.
 - Use `acceptance` for goal-style requests and plan/spec/broad-fix worker handoffs; put criteria, evidence, verify commands, stop rules, and loop cap there instead of burying them only in task prose.

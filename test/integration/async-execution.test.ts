@@ -183,15 +183,19 @@ function readLastMockPiArgs(mockPi: MockPi): string[] {
 	return payload.args;
 }
 
-function readMockPiArgs(mockPi: MockPi, index: number): string[] {
+function readMockPiRecord(mockPi: MockPi, index: number): { args: string[]; env?: Record<string, string | null> } {
 	const callFile = fs.readdirSync(mockPi.dir)
 		.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
 		.sort()
 		.at(index);
 	assert.ok(callFile, `expected recorded call ${index}`);
-	const payload = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")) as { args?: string[] };
+	const payload = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")) as { args?: string[]; env?: Record<string, string | null> };
 	assert.ok(Array.isArray(payload.args), "expected recorded args");
-	return payload.args;
+	return { args: payload.args, env: payload.env };
+}
+
+function readMockPiArgs(mockPi: MockPi, index: number): string[] {
+	return readMockPiRecord(mockPi, index).args;
 }
 
 describe("async execution utilities", { skip: !available ? "pi packages not available" : undefined }, () => {
@@ -999,6 +1003,50 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.workflowGraph?.nodes?.[1]?.kind, "dynamic-parallel-group");
 		assert.deepEqual(payload.workflowGraph?.nodes?.[1]?.children?.map((child) => child.itemKey), ["src/a.ts", "src/b.ts"]);
 		assert.equal(payload.workflowGraph?.nodes?.[2]?.flatIndex, 3);
+	});
+
+	it("async dynamic fanout applies preallocated fork sessions and intercom env to each materialized child", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
+		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" }, echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
+		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" }, echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
+		mockPi.onCall({ output: "used reviews" });
+		const id = `async-dynamic-context-${Date.now().toString(36)}`;
+		const forkA = path.join(tempDir, "fork-a.jsonl");
+		const forkB = path.join(tempDir, "fork-b.jsonl");
+		fs.writeFileSync(forkA, "");
+		fs.writeFileSync(forkB, "");
+		const result = executeAsyncChain!(id, {
+			chain: [
+				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
+				{
+					expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 2 },
+					parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: { type: "object" } },
+					collect: { as: "reviews" },
+					concurrency: 1,
+				},
+				{ agent: "consumer", task: "Use {outputs.reviews}" },
+			],
+			agents: [makeAgent("producer"), makeAgent("reviewer"), makeAgent("consumer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-dynamic-context" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+			sessionFilesByFlatIndex: [undefined, forkA, forkB, undefined],
+			controlIntercomTarget: "subagent-supervisor",
+			childIntercomTarget: (agent: string, index: number) => agent === "reviewer" ? `subagent-${agent}-${index}` : undefined,
+		});
+
+		assert.ok(!result.isError);
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, true);
+		assert.equal(mockPi.callCount(), 4);
+		const reviewA = readMockPiRecord(mockPi, 1);
+		const reviewB = readMockPiRecord(mockPi, 2);
+		assert.deepEqual(reviewA.args.slice(reviewA.args.indexOf("--session"), reviewA.args.indexOf("--session") + 2), ["--session", forkA]);
+		assert.deepEqual(reviewB.args.slice(reviewB.args.indexOf("--session"), reviewB.args.indexOf("--session") + 2), ["--session", forkB]);
+		assert.equal(reviewA.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-supervisor");
+		assert.equal(reviewB.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-supervisor");
 	});
 
 	it("async dynamic fanout materializes agent-default outputs per child", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {

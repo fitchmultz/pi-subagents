@@ -105,6 +105,7 @@ interface ParallelChainRunInput {
 	globalTaskIndex: number;
 	sessionDirForIndex: (idx?: number) => string | undefined;
 	sessionFileForIndex?: (idx?: number) => string | undefined;
+	sessionFileForAgentIndex?: (agentName: string | undefined, idx?: number) => string | undefined;
 	shareEnabled: boolean;
 	artifactConfig: ArtifactConfig;
 	timeoutMs?: number;
@@ -258,6 +259,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				? createStructuredOutputRuntime(task.outputSchema, path.join(input.chainDir, "structured-output"))
 				: undefined;
 			const timeoutAt = input.foregroundControl?.timeoutAt ?? input.timeoutAt;
+			const runIntercomTarget = input.childIntercomTarget?.(task.agent, input.globalTaskIndex + taskIndex);
 			let unregisterTimeoutExtension: (() => void) | undefined;
 			const result = await runSync(input.ctx.cwd, input.agents, task.agent, taskStr, {
 				cwd: taskCwd,
@@ -270,7 +272,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				runId: input.runId,
 				index: input.globalTaskIndex + taskIndex,
 				sessionDir: input.sessionDirForIndex(input.globalTaskIndex + taskIndex),
-				sessionFile: input.sessionFileForIndex?.(input.globalTaskIndex + taskIndex),
+				sessionFile: input.sessionFileForAgentIndex?.(task.agent, input.globalTaskIndex + taskIndex) ?? input.sessionFileForIndex?.(input.globalTaskIndex + taskIndex),
 				share: input.shareEnabled,
 				artifactsDir: input.artifactConfig.enabled ? input.artifactsDir : undefined,
 				artifactConfig: input.artifactConfig,
@@ -282,8 +284,8 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				maxTokens: taskAgentConfig?.maxTokens,
 				controlConfig: input.controlConfig,
 				onControlEvent: input.onControlEvent,
-				intercomSessionName: input.childIntercomTarget?.(task.agent, input.globalTaskIndex + taskIndex),
-				orchestratorIntercomTarget: input.orchestratorIntercomTarget,
+				intercomSessionName: runIntercomTarget,
+				orchestratorIntercomTarget: runIntercomTarget ? input.orchestratorIntercomTarget : undefined,
 				nestedRoute: input.nestedRoute,
 				modelOverride: effectiveModel,
 				availableModels: input.availableModels,
@@ -367,6 +369,7 @@ interface ChainExecutionParams {
 	shareEnabled: boolean;
 	sessionDirForIndex: (idx?: number) => string | undefined;
 	sessionFileForIndex?: (idx?: number) => string | undefined;
+	sessionFileForAgentIndex?: (agentName: string | undefined, idx?: number) => string | undefined;
 	artifactsDir: string;
 	artifactConfig: ArtifactConfig;
 	includeProgress?: boolean;
@@ -413,6 +416,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		shareEnabled,
 		sessionDirForIndex,
 		sessionFileForIndex,
+		sessionFileForAgentIndex,
 		artifactsDir,
 		artifactConfig,
 		includeProgress,
@@ -648,6 +652,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					globalTaskIndex,
 					sessionDirForIndex,
 					sessionFileForIndex,
+					sessionFileForAgentIndex,
 					shareEnabled,
 					artifactConfig,
 					artifactsDir,
@@ -860,6 +865,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				globalTaskIndex,
 				sessionDirForIndex,
 				sessionFileForIndex,
+				sessionFileForAgentIndex,
 				shareEnabled,
 				artifactConfig,
 				artifactsDir,
@@ -1060,6 +1066,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				: undefined;
 			const stepTimeoutAt = foregroundControl?.timeoutAt ?? timeoutAt;
 			let unregisterTimeoutExtension: (() => void) | undefined;
+			const runIntercomTarget = childIntercomTarget?.(seqStep.agent, globalTaskIndex);
 			const r = await runSync(ctx.cwd, agents, seqStep.agent, stepTask, {
 				cwd: resolveChildCwd(cwd ?? ctx.cwd, seqStep.cwd),
 				signal,
@@ -1071,7 +1078,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				runId,
 				index: globalTaskIndex,
 				sessionDir: sessionDirForIndex(globalTaskIndex),
-				sessionFile: sessionFileForIndex?.(globalTaskIndex),
+				sessionFile: sessionFileForAgentIndex?.(seqStep.agent, globalTaskIndex) ?? sessionFileForIndex?.(globalTaskIndex),
 				share: shareEnabled,
 				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
 				artifactConfig,
@@ -1083,8 +1090,8 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				maxTokens: agentConfig.maxTokens,
 				controlConfig,
 				onControlEvent,
-				intercomSessionName: childIntercomTarget?.(seqStep.agent, globalTaskIndex),
-				orchestratorIntercomTarget,
+				intercomSessionName: runIntercomTarget,
+				orchestratorIntercomTarget: runIntercomTarget ? orchestratorIntercomTarget : undefined,
 				nestedRoute: params.nestedRoute,
 				modelOverride: effectiveModel,
 				availableModels,

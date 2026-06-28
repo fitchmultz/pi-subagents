@@ -463,6 +463,12 @@ export function executeAsyncChain(
 		flatStepIndex++;
 		return sessionFile;
 	};
+	const takeDynamicSessionFiles = (count: number): Array<string | undefined> | undefined => {
+		if (!sessionFilesByFlatIndex || count <= 0) return undefined;
+		const sessionFiles = sessionFilesByFlatIndex.slice(flatStepIndex, flatStepIndex + count);
+		flatStepIndex += count;
+		return sessionFiles;
+	};
 
 	let steps: RunnerStep[];
 	try {
@@ -505,6 +511,7 @@ export function executeAsyncChain(
 					writeInitialProgressFile(runnerCwd);
 					progressInstructionCreated = true;
 				}
+				const maxItems = s.expand.maxItems ?? params.dynamicFanoutMaxItems ?? 0;
 				return {
 					expand: s.expand,
 					parallel: buildSeqStep(s.parallel as SequentialStep, undefined, undefined, progressPrecreated, behavior),
@@ -513,6 +520,7 @@ export function executeAsyncChain(
 					failFast: s.failFast,
 					phase: s.phase,
 					label: s.label,
+					sessionFiles: takeDynamicSessionFiles(maxItems),
 				};
 			}
 			return buildSeqStep(s as SequentialStep, nextSessionFile());
