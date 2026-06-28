@@ -377,31 +377,6 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 	});
 
 
-	it("emits an active-long-running notice after the turn threshold", async () => {
-		mockPi.onCall({
-			jsonl: [
-				events.assistantMessage("first update"),
-				events.assistantMessage("second update"),
-			],
-		});
-		const agents = makeAgentConfigs(["echo"]);
-		const controlEvents: NonNullable<RunSyncResult["controlEvents"]> = [];
-
-		const result = await runSync(tempDir, agents, "echo", "Investigate behavior", {
-			runId: "run-active",
-			controlConfig: { enabled: true, activeNoticeAfterTurns: 2, activeNoticeAfterMs: 999_999, activeNoticeAfterTokens: 999_999, notifyOn: ["active_long_running", "needs_attention"] },
-			onControlEvent: (event: NonNullable<RunSyncResult["controlEvents"]>[number]) => controlEvents.push(event),
-		});
-
-		assert.equal(result.exitCode, 0);
-		assert.equal(controlEvents.length, 1);
-		assert.equal(controlEvents[0]?.type, "active_long_running");
-		assert.equal(controlEvents[0]?.reason, "turn_threshold");
-		assert.equal(controlEvents[0]?.turns, 2);
-		assert.equal(result.controlEvents?.[0]?.type, "active_long_running");
-		assert.equal(result.progress.activityState, "active_long_running");
-	});
-
 	it("escalates repeated mutating tool failures to needs attention", async () => {
 		mockPi.onCall({
 			jsonl: [
@@ -422,7 +397,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 
 		const result = await runSync(tempDir, agents, "worker", "Implement the approved fixes", {
 			runId: "run-failures",
-			controlConfig: { enabled: true, failedToolAttemptsBeforeAttention: 3, notifyOn: ["active_long_running", "needs_attention"] },
+			controlConfig: { enabled: true, failedToolAttemptsBeforeAttention: 3, notifyOn: ["needs_attention"] },
 			onControlEvent: (event: NonNullable<RunSyncResult["controlEvents"]>[number]) => controlEvents.push(event),
 		});
 
@@ -446,7 +421,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 
 		const result = await runSync(tempDir, agents, "echo", "Investigate behavior", {
 			runId: "run-control-disabled",
-			controlConfig: { enabled: false, activeNoticeAfterTurns: 1, activeNoticeAfterMs: 1, activeNoticeAfterTokens: 1, notifyOn: ["active_long_running", "needs_attention"] },
+			controlConfig: { enabled: false, notifyOn: ["needs_attention"] },
 			onControlEvent: (event: NonNullable<RunSyncResult["controlEvents"]>[number]) => controlEvents.push(event),
 		});
 

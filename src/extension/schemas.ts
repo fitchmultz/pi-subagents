@@ -216,12 +216,9 @@ const ChainItem = Type.Object({
 const ControlOverrides = Type.Object({
 	enabled: Type.Optional(Type.Boolean({ description: "Enable/disable subagent control attention tracking for this run" })),
 	needsAttentionAfterMs: Type.Optional(Type.Integer({ minimum: 1, description: "No-observed-activity window before a run needs attention" })),
-	activeNoticeAfterMs: Type.Optional(Type.Integer({ minimum: 1, description: "Active-long-running notice threshold by elapsed ms (default: 240000)" })),
-	activeNoticeAfterTurns: Type.Optional(Type.Integer({ minimum: 1, description: "Optional active-long-running notice threshold by assistant turns (disabled by default)" })),
-	activeNoticeAfterTokens: Type.Optional(Type.Integer({ minimum: 1, description: "Optional active-long-running notice threshold by total tokens (disabled by default)" })),
 	failedToolAttemptsBeforeAttention: Type.Optional(Type.Integer({ minimum: 1, description: "Consecutive mutating-tool failures before escalating to needs_attention (default: 3)" })),
-	notifyOn: Type.Optional(Type.Array(StringEnum(["active_long_running", "needs_attention"] as const), {
-		description: "Control event types that should notify the parent/orchestrator. Defaults to active_long_running and needs_attention.",
+	notifyOn: Type.Optional(Type.Array(StringEnum(["needs_attention"] as const), {
+		description: "Control event types that should notify the parent/orchestrator. Defaults to needs_attention.",
 	})),
 	notifyChannels: Type.Optional(Type.Array(StringEnum(["event", "async", "intercom"] as const), {
 		description: "Notification channels to use when available. Defaults to event, async, and intercom.",

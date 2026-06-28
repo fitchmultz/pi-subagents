@@ -680,13 +680,13 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 		}
 	});
 
-	it("does not bridge active-long-running records to intercom", async () => {
+	it("ignores stale removed async control event types", async () => {
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
-			const runDir = path.join(asyncRoot, "run-active-intercom");
+			const runDir = path.join(asyncRoot, "run-stale-active");
 			fs.mkdirSync(runDir, { recursive: true });
 			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
-				runId: "run-active-intercom",
+				runId: "run-stale-active",
 				mode: "single",
 				state: "running",
 				startedAt: Date.now() - 1000,
@@ -700,9 +700,9 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 					type: "active_long_running",
 					to: "active_long_running",
 					ts: 123,
-					runId: "run-active-intercom",
+					runId: "run-stale-active",
 					agent: "worker",
-					message: "worker is still active but long-running",
+					message: "stale active notice",
 				},
 				intercom: { to: "main", message: "stale active notice" },
 			})}\n`, "utf-8");
@@ -712,10 +712,10 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				pollIntervalMs: 10,
 			});
-			tracker.handleStarted({ id: "run-active-intercom", asyncDir: runDir, agent: "worker" });
+			tracker.handleStarted({ id: "run-stale-active", asyncDir: runDir, agent: "worker" });
 
 			await new Promise((resolve) => setTimeout(resolve, 30));
-			assert.equal(recorder.events.some((event) => event.channel === "subagent:control-event"), true);
+			assert.equal(recorder.events.some((event) => event.channel === "subagent:control-event"), false);
 			assert.equal(recorder.events.some((event) => event.channel === "subagent:control-intercom"), false);
 		} finally {
 			removeTempDir(asyncRoot);

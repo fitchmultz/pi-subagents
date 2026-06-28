@@ -88,7 +88,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				}
 				if (!parsed || typeof parsed !== "object" || (parsed as { type?: unknown }).type !== "subagent.control") continue;
 				const record = parsed as { event?: ControlEvent; channels?: string[]; childIntercomTarget?: string; noticeText?: string; intercom?: { to?: string; message?: string } };
-				if (!record.event || !Array.isArray(record.channels)) continue;
+				if (!record.event || record.event.type !== "needs_attention" || !Array.isArray(record.channels)) continue;
 				const payload = {
 					event: record.event,
 					source: "async" as const,
@@ -99,7 +99,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				if (record.channels.includes("event")) {
 					pi.events.emit(SUBAGENT_CONTROL_EVENT, payload);
 				}
-				if (record.event.type !== "active_long_running" && record.channels.includes("intercom") && record.intercom?.to && record.intercom.message) {
+				if (record.channels.includes("intercom") && record.intercom?.to && record.intercom.message) {
 					pi.events.emit(SUBAGENT_CONTROL_INTERCOM_EVENT, {
 						...payload,
 						to: record.intercom.to,

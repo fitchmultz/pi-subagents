@@ -65,13 +65,12 @@ import {
 	createMutatingFailureState,
 	didMutatingToolFail,
 	isMutatingTool,
-	nextLongRunningTrigger,
 	recordMutatingFailure,
 	resetMutatingFailureState,
 	resolveCurrentPath,
 	shouldEscalateMutatingFailures,
 	summarizeRecentMutatingFailures,
-} from "../shared/long-running-guard.ts";
+} from "../shared/mutating-tool-guard.ts";
 import {
 	acceptanceFailureMessage,
 	acceptanceSelfReviewConfig,
@@ -459,7 +458,6 @@ async function runSingleAttempt(
 			return events;
 		};
 
-		let activeLongRunningNotified = false;
 		let pendingToolResult: { tool: string; path?: string; mutates: boolean; startedAt?: number } | undefined;
 		const mutatingFailures = createMutatingFailureState();
 		const mutatingFailureWindowMs = 5 * 60_000;
@@ -490,31 +488,6 @@ async function runSingleAttempt(
 			emitControlEvent(event);
 			return previous !== "needs_attention";
 		};
-		const emitActiveLongRunning = (now: number, reason: ControlEvent["reason"]): boolean => {
-			if (!controlConfig.enabled || activeLongRunningNotified || progress.activityState === "needs_attention") return false;
-			activeLongRunningNotified = true;
-			const previous = progress.activityState;
-			progress.activityState = "active_long_running";
-			emitControlEvent(buildControlEvent({
-				type: "active_long_running",
-				from: previous,
-				to: "active_long_running",
-				runId: options.runId,
-				agent: agent.name,
-				index: options.index,
-				ts: now,
-				message: `${agent.name} is still active but long-running`,
-				reason,
-				turns: result.usage.turns,
-				tokens: progress.tokens,
-				toolCount: progress.toolCount,
-				currentTool: progress.currentTool,
-				currentToolDurationMs: currentToolDurationMs(now),
-				currentPath: progress.currentPath,
-				elapsedMs: now - startTime,
-			}));
-			return true;
-		};
 		const updateActivityState = (now: number): boolean => {
 			if (!controlConfig.enabled) return false;
 			const idleState = deriveActivityState({
@@ -523,16 +496,7 @@ async function runSingleAttempt(
 				lastActivityAt: progress.lastActivityAt,
 				now,
 			});
-			if (idleState === "needs_attention") {
-				return progress.activityState === "needs_attention" ? false : emitNeedsAttention(now);
-			}
-			const activeReason = nextLongRunningTrigger(controlConfig, {
-				startedAt: startTime,
-				now,
-				turns: result.usage.turns,
-				tokens: progress.tokens,
-			});
-			return activeReason ? emitActiveLongRunning(now, activeReason) : false;
+			return idleState === "needs_attention" && progress.activityState !== "needs_attention" ? emitNeedsAttention(now) : false;
 		};
 
 

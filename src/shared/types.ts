@@ -95,16 +95,13 @@ export interface TokenUsage {
 	total: number;
 }
 
-export type ActivityState = "active_long_running" | "needs_attention";
-export type ControlEventType = "active_long_running" | "needs_attention";
+export type ActivityState = "needs_attention";
+export type ControlEventType = "needs_attention";
 export type ControlNotificationChannel = "event" | "async" | "intercom";
 
 export interface ControlConfig {
 	enabled?: boolean;
 	needsAttentionAfterMs?: number;
-	activeNoticeAfterMs?: number;
-	activeNoticeAfterTurns?: number;
-	activeNoticeAfterTokens?: number;
 	failedToolAttemptsBeforeAttention?: number;
 	notifyOn?: ControlEventType[];
 	notifyChannels?: ControlNotificationChannel[];
@@ -113,9 +110,6 @@ export interface ControlConfig {
 export interface ResolvedControlConfig {
 	enabled: boolean;
 	needsAttentionAfterMs: number;
-	activeNoticeAfterMs: number;
-	activeNoticeAfterTurns?: number;
-	activeNoticeAfterTokens?: number;
 	failedToolAttemptsBeforeAttention: number;
 	notifyOn: ControlEventType[];
 	notifyChannels: ControlNotificationChannel[];
@@ -132,7 +126,7 @@ export interface ControlEvent {
 	nestedRunId?: string;
 	nestingPath?: NestedRunAddress["path"];
 	message: string;
-	reason?: "idle" | "completion_guard" | "active_long_running" | "tool_failures" | "time_threshold" | "turn_threshold" | "token_threshold";
+	reason?: "idle" | "completion_guard" | "tool_failures";
 	turns?: number;
 	tokens?: number;
 	toolCount?: number;

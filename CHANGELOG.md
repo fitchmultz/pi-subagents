@@ -19,7 +19,7 @@
 - Run local test scripts through a small wrapper that clears inherited `PI_SUBAGENT_*` runtime variables before starting the Node test runner.
 
 ### Fixed
-- Active-long-running control notices now surface locally instead of being formatted and then dropped by the extension notice bridge.
+- Removed active-long-running control notices and their thresholds; control notifications now only fire for needs-attention states.
 - Return the last non-empty text part from the latest assistant message so multi-part assistant outputs prefer the final answer over progress text.
 - Keep path-resolution tests hermetic by using a temporary fake home and Pi agent directory instead of touching the real `~/.agents` tree.
 - Updated per-agent context documentation to describe the fork's fixed behavior rather than upstream whole-invocation fork promotion.

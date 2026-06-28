@@ -398,12 +398,10 @@ function formatForegroundActivity(control: ForegroundControlState): string | und
 	if (control.toolCount !== undefined) facts.push(`${control.toolCount} tools`);
 	if (!control.lastActivityAt) {
 		if (control.currentActivityState === "needs_attention") return ["needs attention", ...facts].join(" | ");
-		if (control.currentActivityState === "active_long_running") return ["active but long-running", ...facts].join(" | ");
 		return facts.length ? facts.join(" | ") : undefined;
 	}
 	const seconds = Math.floor(Math.max(0, Date.now() - control.lastActivityAt) / 1000);
 	if (control.currentActivityState === "needs_attention") return [`no activity for ${seconds}s`, ...facts].join(" | ");
-	if (control.currentActivityState === "active_long_running") return [`active but long-running; last activity ${seconds}s ago`, ...facts].join(" | ");
 	return [`active ${seconds}s ago`, ...facts].join(" | ");
 }
 
@@ -705,7 +703,7 @@ function emitControlNotification(input: {
 	if (input.controlConfig.notifyChannels.includes("event")) {
 		input.pi.events.emit(SUBAGENT_CONTROL_EVENT, payload);
 	}
-	if (input.event.type !== "active_long_running" && input.controlConfig.notifyChannels.includes("intercom") && input.intercomBridge.active && input.intercomBridge.orchestratorTarget) {
+	if (input.controlConfig.notifyChannels.includes("intercom") && input.intercomBridge.active && input.intercomBridge.orchestratorTarget) {
 		input.pi.events.emit(SUBAGENT_CONTROL_INTERCOM_EVENT, {
 			...payload,
 			to: input.intercomBridge.orchestratorTarget,

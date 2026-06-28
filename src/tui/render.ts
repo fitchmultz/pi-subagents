@@ -189,7 +189,6 @@ function formatCurrentToolLine(
 function buildLiveStatusLine(progress: Pick<AgentProgress, "activityState" | "lastActivityAt">, snapshotNow?: number): string | undefined {
 	if (progress.lastActivityAt !== undefined && snapshotNow !== undefined) return formatActivityLabel(progress.lastActivityAt, progress.activityState, snapshotNow);
 	if (progress.activityState === "needs_attention") return "needs attention";
-	if (progress.activityState === "active_long_running") return "active but long-running";
 	if (progress.lastActivityAt !== undefined) return "active";
 	return undefined;
 }

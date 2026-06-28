@@ -7,7 +7,6 @@ describe("status format helpers", () => {
 	it("formats activity labels consistently", () => {
 		assert.equal(formatActivityLabel(1_000, undefined, 1_500), "active now");
 		assert.equal(formatActivityLabel(1_000, "needs_attention", 4_000), "no activity for 3s");
-		assert.equal(formatActivityLabel(undefined, "active_long_running", 4_000), "active but long-running");
 	});
 
 	it("aggregates step status and parallel outcomes", () => {

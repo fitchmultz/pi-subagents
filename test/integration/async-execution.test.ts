@@ -2346,74 +2346,6 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.results[0].error, "provider exploded");
 	});
 
-	it("background runs emit active-long-running control events from child turns", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
-		mockPi.onCall({
-			steps: [
-				{ jsonl: [events.assistantMessage("still working")] },
-				{ delay: 2_000, jsonl: [events.assistantMessage("done")] },
-			],
-		});
-
-		const id = `async-active-long-${Date.now().toString(36)}`;
-		const asyncDir = path.join(ASYNC_DIR, id);
-		const eventsPath = path.join(asyncDir, "events.jsonl");
-		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
-
-		executeAsyncSingle(id, {
-			agent: "scout",
-			task: "Investigate behavior",
-			agentConfig: makeAgent("scout"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
-			shareEnabled: false,
-			sessionRoot: path.join(tempDir, "sessions"),
-			maxSubagentDepth: 2,
-			controlConfig: {
-				enabled: true,
-				needsAttentionAfterMs: 999_999,
-				activeNoticeAfterTurns: 1,
-				activeNoticeAfterMs: 999_999,
-				activeNoticeAfterTokens: 999_999,
-				failedToolAttemptsBeforeAttention: 3,
-				notifyOn: ["active_long_running", "needs_attention"],
-				notifyChannels: ["event", "async", "intercom"],
-			},
-		});
-
-		const statusPath = path.join(asyncDir, "status.json");
-		const deadline = Date.now() + 10_000;
-		let eventText = "";
-		let statusDuringEvent: AsyncStatusPayload | undefined;
-		while (Date.now() < deadline) {
-			if (fs.existsSync(eventsPath)) {
-				eventText = fs.readFileSync(eventsPath, "utf-8");
-			}
-			if (eventText.includes('"type":"active_long_running"') && fs.existsSync(statusPath)) {
-				const status = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as AsyncStatusPayload;
-				if (status.activityState === "active_long_running" && status.steps?.[0]?.activityState === "active_long_running") {
-					statusDuringEvent = status;
-					break;
-				}
-			}
-			if (eventText.includes('"type":"active_long_running"') && fs.existsSync(resultPath)) {
-				assert.fail("run completed before status.json exposed active_long_running");
-			}
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
-
-		assert.match(eventText, /"type":"active_long_running"/);
-		assert.match(eventText, /"reason":"turn_threshold"/);
-		assert.ok(statusDuringEvent, "expected status.json to expose active_long_running while the run is still active");
-		assert.equal(statusDuringEvent.activityState, "active_long_running");
-		assert.equal(statusDuringEvent.steps?.[0]?.activityState, "active_long_running");
-
-		const doneDeadline = Date.now() + 10_000;
-		while (!fs.existsSync(resultPath)) {
-			if (Date.now() > doneDeadline) assert.fail(`Timed out waiting for async result file: ${resultPath}`);
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
-	});
-
 	it("background runs escalate repeated mutating tool failures", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({
 			steps: [
@@ -2441,11 +2373,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			controlConfig: {
 				enabled: true,
 				needsAttentionAfterMs: 999_999,
-				activeNoticeAfterTurns: 999_999,
-				activeNoticeAfterMs: 999_999,
-				activeNoticeAfterTokens: 999_999,
 				failedToolAttemptsBeforeAttention: 3,
-				notifyOn: ["active_long_running", "needs_attention"],
+				notifyOn: ["needs_attention"],
 				notifyChannels: ["event", "async", "intercom"],
 			},
 		});

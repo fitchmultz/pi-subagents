@@ -1,5 +1,5 @@
 import type { Message } from "@earendil-works/pi-ai/compat";
-import { isMutatingBashCommand } from "./long-running-guard.ts";
+import { isMutatingBashCommand } from "./mutating-tool-guard.ts";
 
 const REVIEW_ONLY_PATTERNS = [
 	/\breview only\b/i,

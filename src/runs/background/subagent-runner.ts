@@ -62,13 +62,12 @@ import {
 	createMutatingFailureState,
 	didMutatingToolFail,
 	isMutatingTool,
-	nextLongRunningTrigger,
 	recordMutatingFailure,
 	resetMutatingFailureState,
 	resolveCurrentPath,
 	shouldEscalateMutatingFailures,
 	summarizeRecentMutatingFailures,
-} from "../shared/long-running-guard.ts";
+} from "../shared/mutating-tool-guard.ts";
 import { parseSessionTokens } from "../../shared/session-tokens.ts";
 import {
 	cleanupWorktrees,
@@ -1416,16 +1415,13 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		return lastActivityAt;
 	};
 	const emittedControlEventKeys = new Set<string>();
-	const activeLongRunningSteps = new Set<number>();
 	const mutatingFailureStates = initialStatusSteps.map(() => createMutatingFailureState());
 	const pendingToolResults: Array<{ tool: string; path?: string; mutates: boolean; startedAt?: number } | undefined> = initialStatusSteps.map(() => undefined);
 	const mutatingFailureWindowMs = 5 * 60_000;
 	const appendControlEvent = (event: ReturnType<typeof buildControlEvent>) => {
 		if (!controlConfig.enabled) return;
 		const childIntercomTarget = config.childIntercomTargets?.[event.index ?? statusPayload.currentStep];
-		const channels = event.type === "active_long_running"
-			? controlConfig.notifyChannels.filter((channel) => channel !== "intercom")
-			: controlConfig.notifyChannels;
+		const channels = controlConfig.notifyChannels;
 		if (channels.length === 0 || !claimControlNotification(controlConfig, event, emittedControlEventKeys, childIntercomTarget)) return;
 		appendJsonl(eventsPath, JSON.stringify({
 			type: "subagent.control",
@@ -1448,42 +1444,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		statusPayload.currentTool = activeStep?.currentTool;
 		statusPayload.currentToolStartedAt = activeStep?.currentToolStartedAt;
 		statusPayload.currentPath = activeStep?.currentPath;
-	};
-	const maybeEmitActiveLongRunning = (flatIndex: number, now: number): boolean => {
-		if (!controlConfig.enabled || activeLongRunningSteps.has(flatIndex)) return false;
-		const step = statusPayload.steps[flatIndex];
-		if (!step || step.status !== "running" || step.activityState === "needs_attention") return false;
-		const reason = nextLongRunningTrigger(controlConfig, {
-			startedAt: step.startedAt ?? overallStartTime,
-			now,
-			turns: step.turnCount ?? 0,
-			tokens: step.tokens?.total ?? 0,
-		});
-		if (!reason) return false;
-		activeLongRunningSteps.add(flatIndex);
-		const previous = step.activityState;
-		step.activityState = "active_long_running";
-		statusPayload.activityState = statusPayload.activityState === "needs_attention" ? "needs_attention" : "active_long_running";
-		const event = buildControlEvent({
-			type: "active_long_running",
-			from: previous,
-			to: "active_long_running",
-			runId: id,
-			agent: step.agent,
-			index: flatIndex,
-			ts: now,
-			message: `${step.agent} is still active but long-running`,
-			reason,
-			turns: step.turnCount,
-			tokens: step.tokens?.total,
-			toolCount: step.toolCount,
-			currentTool: step.currentTool,
-			currentToolDurationMs: step.currentToolStartedAt ? Math.max(0, now - step.currentToolStartedAt) : undefined,
-			currentPath: step.currentPath,
-			elapsedMs: now - (step.startedAt ?? overallStartTime),
-		});
-		appendControlEvent(event);
-		return true;
 	};
 	const updateStepModel = (flatIndex: number, model: string | undefined, thinking: string | undefined, now = Date.now()): void => {
 		const step = statusPayload.steps[flatIndex];
@@ -1578,7 +1538,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		step.lastActivityAt = now;
 		statusPayload.lastActivityAt = now;
 		statusPayload.lastUpdate = now;
-		maybeEmitActiveLongRunning(flatIndex, now);
 		writeStatusPayload();
 	};
 	const updateRunnerActivityState = (now: number): boolean => {
@@ -1615,8 +1574,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					}));
 					changed = true;
 				}
-			} else if (maybeEmitActiveLongRunning(index, now)) {
-				changed = true;
 			}
 		}
 		if (statusPayload.lastActivityAt !== runLastActivityAt) {
@@ -1625,9 +1582,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		}
 		const nextRunState = statusPayload.steps.some((step) => step.activityState === "needs_attention")
 			? "needs_attention"
-			: statusPayload.steps.some((step) => step.activityState === "active_long_running")
-				? "active_long_running"
-				: undefined;
+			: undefined;
 		if (nextRunState !== currentActivityState) {
 			currentActivityState = nextRunState;
 			statusPayload.activityState = nextRunState;

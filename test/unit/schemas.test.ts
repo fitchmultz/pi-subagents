@@ -61,9 +61,6 @@ interface SubagentParamsSchema {
 		control?: {
 			properties?: {
 				needsAttentionAfterMs?: { minimum?: number };
-				activeNoticeAfterMs?: { minimum?: number };
-				activeNoticeAfterTurns?: { minimum?: number };
-				activeNoticeAfterTokens?: { minimum?: number };
 				failedToolAttemptsBeforeAttention?: { minimum?: number };
 				notifyOn?: { items?: { enum?: string[] } };
 				notifyChannels?: { items?: { enum?: string[] } };
@@ -218,11 +215,8 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		const controlSchema = SubagentParams?.properties?.control;
 		assert.ok(controlSchema, "control schema should exist");
 		assert.equal(controlSchema.properties?.needsAttentionAfterMs?.minimum, 1);
-		assert.equal(controlSchema.properties?.activeNoticeAfterMs?.minimum, 1);
-		assert.equal(controlSchema.properties?.activeNoticeAfterTurns?.minimum, 1);
-		assert.equal(controlSchema.properties?.activeNoticeAfterTokens?.minimum, 1);
 		assert.equal(controlSchema.properties?.failedToolAttemptsBeforeAttention?.minimum, 1);
-		assert.deepEqual(controlSchema.properties?.notifyOn?.items?.enum, ["active_long_running", "needs_attention"]);
+		assert.deepEqual(controlSchema.properties?.notifyOn?.items?.enum, ["needs_attention"]);
 		assert.deepEqual(controlSchema.properties?.notifyChannels?.items?.enum, ["event", "async", "intercom"]);
 	});
 

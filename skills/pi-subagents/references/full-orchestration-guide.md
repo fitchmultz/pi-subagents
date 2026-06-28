@@ -400,7 +400,7 @@ subagent({
 })
 ```
 
-If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. Active-long-running notices stay local but may include the same nudge command. Prefer `subagent({ action: "nudge", id: "...", message: "..." })` for a non-blocking live child nudge. Use the status-shown `intercom({ action: "ask", to: "...", delivery: "steer" })` when the parent must wait for a reply. Do not invent a target or ask the child to self-report when no bridge exists.
+If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. Prefer `subagent({ action: "nudge", id: "...", message: "..." })` for a non-blocking live child nudge. Use the status-shown `intercom({ action: "ask", to: "...", delivery: "steer" })` when the parent must wait for a reply. Do not invent a target or ask the child to self-report when no bridge exists.
 
 ## Clarify TUI
 
