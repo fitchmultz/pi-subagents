@@ -72,6 +72,10 @@ import {
 	summarizeRecentMutatingFailures,
 } from "../shared/mutating-tool-guard.ts";
 import {
+	createRepeatedSubagentListGuardState,
+	recordToolStartForSubagentListLoopGuard,
+} from "../shared/subagent-tool-loop-guard.ts";
+import {
 	acceptanceFailureMessage,
 	acceptanceSelfReviewConfig,
 	attachFinalizationToLedger,
@@ -459,6 +463,7 @@ async function runSingleAttempt(
 		};
 
 		let pendingToolResult: { tool: string; path?: string; mutates: boolean; startedAt?: number } | undefined;
+		const subagentListLoopGuard = createRepeatedSubagentListGuardState();
 		const mutatingFailures = createMutatingFailureState();
 		const mutatingFailureWindowMs = 5 * 60_000;
 		const currentToolDurationMs = (now: number) => progress.currentToolStartedAt ? Math.max(0, now - progress.currentToolStartedAt) : undefined;
@@ -499,6 +504,24 @@ async function runSingleAttempt(
 			return idleState === "needs_attention" && progress.activityState !== "needs_attention" ? emitNeedsAttention(now) : false;
 		};
 
+
+		const failForToolLoop = (message: string) => {
+			if (processClosed || detached || settled || timedOut || resourceLimited) return;
+			resourceLimited = true;
+			result.error = message;
+			result.finalOutput = message;
+			progress.status = "failed";
+			progress.durationMs = Date.now() - startTime;
+			appendRecentOutput(progress, [message]);
+			progress.activityState = undefined;
+			fireUpdate();
+			trySignalChild(proc, "SIGINT");
+			resourceLimitEscalationTimer = setTimeout(() => {
+				if (settled || processClosed || detached) return;
+				trySignalChild(proc, "SIGTERM");
+			}, 1000);
+			resourceLimitEscalationTimer.unref?.();
+		};
 
 		const triggerResourceLimit = (kind: "maxExecutionTimeMs" | "maxTokens", limit: number, observed?: number) => {
 			if (processClosed || detached || settled || timedOut || resourceLimited) return;
@@ -559,6 +582,15 @@ async function runSingleAttempt(
 			updateActivityState(now);
 
 			if (evt.type === "tool_execution_start") {
+				const loopFailure = recordToolStartForSubagentListLoopGuard({
+					state: subagentListLoopGuard,
+					toolName: evt.toolName,
+					args: evt.args,
+				});
+				if (loopFailure) {
+					failForToolLoop(loopFailure);
+					return;
+				}
 				const toolArgs = evt.args && typeof evt.args === "object" && !Array.isArray(evt.args)
 					? evt.args as Record<string, unknown>
 					: {};

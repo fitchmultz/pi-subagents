@@ -68,6 +68,10 @@ import {
 	shouldEscalateMutatingFailures,
 	summarizeRecentMutatingFailures,
 } from "../shared/mutating-tool-guard.ts";
+import {
+	createRepeatedSubagentListGuardState,
+	recordToolStartForSubagentListLoopGuard,
+} from "../shared/subagent-tool-loop-guard.ts";
 import { parseSessionTokens } from "../../shared/session-tokens.ts";
 import {
 	cleanupWorktrees,
@@ -332,6 +336,7 @@ function runPiStreaming(
 		let observedMutationAttempt = false;
 		let resourceLimitTimer: NodeJS.Timeout | undefined;
 		let resourceLimitEscalationTimer: NodeJS.Timeout | undefined;
+		const subagentListLoopGuard = createRepeatedSubagentListGuardState();
 		const rawStdoutLines: string[] = [];
 
 		const writeOutputLine = (line: string) => {
@@ -343,6 +348,17 @@ function runPiStreaming(
 			for (const line of text.split("\n")) {
 				writeOutputLine(line);
 			}
+		};
+
+		const failForToolLoop = (message: string) => {
+			if (settled || resourceLimitExceeded) return;
+			error = message;
+			writeOutputLine(message);
+			trySignalChild(child, "SIGINT");
+			resourceLimitEscalationTimer = setTimeout(() => {
+				if (!settled) trySignalChild(child, "SIGTERM");
+			}, 1000);
+			resourceLimitEscalationTimer.unref?.();
 		};
 
 		const triggerResourceLimit = (kind: ResourceLimitExceeded["kind"], limit: number, observed?: number) => {
@@ -390,6 +406,15 @@ function runPiStreaming(
 			onChildEvent?.(event);
 
 			if (event.type === "tool_execution_start" && event.toolName) {
+				const loopFailure = recordToolStartForSubagentListLoopGuard({
+					state: subagentListLoopGuard,
+					toolName: event.toolName,
+					args: event.args,
+				});
+				if (loopFailure) {
+					failForToolLoop(loopFailure);
+					return;
+				}
 				observedMutationAttempt = observedMutationAttempt || isMutatingTool(event.toolName, event.args);
 				const toolArgs = extractToolArgsPreview(event.args ?? {});
 				writeOutputLine(toolArgs ? `${event.toolName}: ${toolArgs}` : event.toolName);

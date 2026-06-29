@@ -122,6 +122,22 @@ describe("acceptance gates", () => {
 		assert.match(finalizationPrompt, /exactly one fenced JSON block/);
 	});
 
+	it("tells children that review gates are parent-owned", () => {
+		const resolved = resolveEffectiveAcceptance({
+			agentName: "worker",
+			task: "Implement a risky fix",
+			explicit: {
+				criteria: ["Patch the bug"],
+				review: { agent: "reviewer", required: true, focus: "Correctness" },
+			},
+		});
+
+		const prompt = formatAcceptancePrompt(resolved);
+		assert.match(prompt, /owned by the parent\/runtime/);
+		assert.match(prompt, /Do not launch reviewer subagents yourself/);
+		assert.match(prompt, /Review focus for the parent\/runtime reviewer: Correctness/);
+	});
+
 	it("parses only explicit acceptance-report fences", () => {
 		const parsed = parseAcceptanceReport(report());
 

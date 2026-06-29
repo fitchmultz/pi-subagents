@@ -289,8 +289,13 @@ export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig): st
 		for (const command of acceptance.verify) lines.push(`- ${command.id}: ${command.command}`);
 	}
 	if (acceptance.review) {
-		lines.push("", `Independent review gate: ${acceptance.review.required === false ? "optional" : "required"}${acceptance.review.agent ? ` by ${acceptance.review.agent}` : ""}.`);
-		if (acceptance.review.focus) lines.push(`Review focus: ${acceptance.review.focus}`);
+		lines.push(
+			"",
+			`Independent review gate: ${acceptance.review.required === false ? "optional" : "required"}${acceptance.review.agent ? ` by ${acceptance.review.agent}` : ""}.`,
+			"This review gate is owned by the parent/runtime after your final acceptance report.",
+			"Do not launch reviewer subagents yourself to satisfy this gate unless the task explicitly asks you to delegate review.",
+		);
+		if (acceptance.review.focus) lines.push(`Review focus for the parent/runtime reviewer: ${acceptance.review.focus}`);
 	}
 	if (acceptance.stopRules.length > 0) {
 		lines.push("", "Stop rules:", ...acceptance.stopRules.map((rule) => `- ${rule}`));
