@@ -155,10 +155,12 @@ describe("checkSubagentDepth", () => {
 		assert.equal(result.maxDepth, 2);
 	});
 
-	it("not blocked when depth is invalid (NaN)", () => {
+	it("blocks when depth is invalid", () => {
 		process.env.PI_SUBAGENT_DEPTH = "garbage";
 		process.env.PI_SUBAGENT_MAX_DEPTH = "2";
-		assert.equal(checkSubagentDepth().blocked, false);
+		const result = checkSubagentDepth();
+		assert.equal(result.blocked, true);
+		assert.equal(result.depth, 2);
 	});
 });
 
@@ -203,10 +205,10 @@ describe("getSubagentDepthEnv", () => {
 		assert.equal(env.PI_SUBAGENT_MAX_DEPTH, "1");
 	});
 
-	it("falls back to depth=1 when env var is invalid (NaN)", () => {
+	it("preserves the depth block when env var is invalid", () => {
 		process.env.PI_SUBAGENT_DEPTH = "not-a-number";
 		delete process.env.PI_SUBAGENT_MAX_DEPTH;
 		const env = getSubagentDepthEnv();
-		assert.equal(env.PI_SUBAGENT_DEPTH, "1");
+		assert.equal(env.PI_SUBAGENT_DEPTH, "2");
 	});
 });

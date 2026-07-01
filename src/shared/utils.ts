@@ -340,24 +340,6 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 			}
 		}
 
-		// NOTE: These patterns can match legitimate output (grep results, logs,
-		// testing). With the assistant-message check above, most false positives
-		// are mitigated since the agent will have responded after routine errors.
-		const fatalPatterns = [
-			/command not found/i,
-			/permission denied/i,
-			/no such file or directory/i,
-			/segmentation fault/i,
-			/killed|terminated/i,
-			/out of memory/i,
-			/connection refused/i,
-			/timeout/i,
-		];
-		for (const pattern of fatalPatterns) {
-			if (pattern.test(output)) {
-				return { hasError: true, exitCode: 1, errorType: "bash", details: output.slice(0, 200) };
-			}
-		}
 	}
 
 	return { hasError: false };

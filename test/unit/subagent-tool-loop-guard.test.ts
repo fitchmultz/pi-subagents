@@ -17,12 +17,15 @@ describe("subagent tool loop guard", () => {
 		);
 	});
 
-	it("resets when another tool starts", () => {
+	it("catches non-consecutive list ping-pong within the recent window", () => {
 		const state = createRepeatedSubagentListGuardState();
 		for (let i = 0; i < 4; i++) {
-			recordToolStartForSubagentListLoopGuard({ state, toolName: "subagent", args: { action: "list" } });
+			assert.equal(recordToolStartForSubagentListLoopGuard({ state, toolName: "subagent", args: { action: "list" } }), undefined);
+			recordToolStartForSubagentListLoopGuard({ state, toolName: "read", args: { path: "file.ts" } });
 		}
-		recordToolStartForSubagentListLoopGuard({ state, toolName: "read", args: { path: "file.ts" } });
-		assert.equal(recordToolStartForSubagentListLoopGuard({ state, toolName: "subagent", args: { action: "list" } }), undefined);
+		assert.match(
+			recordToolStartForSubagentListLoopGuard({ state, toolName: "subagent", args: { action: "list" } }) ?? "",
+			/stuck repeating subagent\(\{ action: "list" \}\) 5 times/,
+		);
 	});
 });

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 interface CompletionDataLike {
 	id?: unknown;
 	agent?: unknown;
@@ -19,9 +21,20 @@ function asFiniteNumber(value: unknown): number | undefined {
 	return Number.isFinite(value) ? value : undefined;
 }
 
+function stableStringify(value: unknown): string {
+	if (value === null || typeof value !== "object") return JSON.stringify(value);
+	if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+	const record = value as Record<string, unknown>;
+	return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+}
+
+function payloadDigest(value: unknown): string {
+	return createHash("sha256").update(stableStringify(value)).digest("hex").slice(0, 16);
+}
+
 export function buildCompletionKey(data: CompletionDataLike, fallback: string): string {
 	const id = asNonEmptyString(data.id);
-	if (id) return `id:${id}`;
+	if (id) return `id:${id}:${payloadDigest(data)}`;
 	const sessionId = asNonEmptyString(data.sessionId) ?? "no-session";
 	const agent = asNonEmptyString(data.agent) ?? "unknown";
 	const timestamp = asFiniteNumber(data.timestamp);

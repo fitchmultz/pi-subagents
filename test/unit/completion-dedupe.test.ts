@@ -3,9 +3,15 @@ import { describe, it } from "node:test";
 import { buildCompletionKey, getGlobalSeenMap, markSeenWithTtl } from "../../src/runs/background/completion-dedupe.ts";
 
 describe("buildCompletionKey", () => {
-	it("uses id as canonical key when present", () => {
+	it("uses id plus payload digest as canonical key when present", () => {
 		const key = buildCompletionKey({ id: "run-123", agent: "reviewer", timestamp: 123 }, "fallback");
-		assert.equal(key, "id:run-123");
+		assert.match(key, /^id:run-123:[a-f0-9]{16}$/);
+	});
+
+	it("does not collapse corrected payloads with the same id", () => {
+		const first = buildCompletionKey({ id: "run-123", success: false, timestamp: 123 }, "fallback");
+		const corrected = buildCompletionKey({ id: "run-123", success: true, timestamp: 123 }, "fallback");
+		assert.notEqual(first, corrected);
 	});
 
 	it("builds deterministic fallback key when id is missing", () => {

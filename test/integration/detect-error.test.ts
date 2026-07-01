@@ -80,13 +80,12 @@ describe("detectSubagentError", { skip: !available ? "utils not importable" : un
 		assert.match(result.details!, /EISDIR/);
 	});
 
-	it("detects bash fatal pattern (permission denied, no assistant response)", () => {
+	it("does not infer bash failure from benign fatal-looking text", () => {
 		const messages = [
-			toolResult("bash", "ls: permission denied: /root/secret"),
+			toolResult("bash", "log scan: timeout terminated permission denied strings found in fixture text"),
 		];
 		const result = detectSubagentError(messages);
-		assert.equal(result.hasError, true);
-		assert.equal(result.errorType, "bash");
+		assert.equal(result.hasError, false);
 	});
 
 	it("detects bash exit code in output", () => {
@@ -165,14 +164,14 @@ describe("detectSubagentError", { skip: !available ? "utils not importable" : un
 
 	// ---- Edge cases ----
 
-	it("flags error when no assistant messages at all", () => {
+	it("flags explicit tool error when no assistant messages at all", () => {
 		const messages = [
 			toolResult("read", "ok"),
-			toolResult("bash", "segmentation fault"),
+			toolResult("bash", "segmentation fault", true),
 		];
 		const result = detectSubagentError(messages);
 		assert.equal(result.hasError, true,
-			"no assistant response = no recovery evidence");
+			"no assistant response = no recovery evidence for explicit tool errors");
 	});
 
 	it("does not treat tool-call-only assistant message as recovery", () => {
@@ -181,7 +180,7 @@ describe("detectSubagentError", { skip: !available ? "utils not importable" : un
 		// assistant message doesn't count as recovery. The final tool result is
 		// successful to ensure this test actually distinguishes correct behavior.
 		const messages = [
-			toolResult("bash", "permission denied: /etc/shadow"),
+			toolResult("bash", "process exited with code 1"),
 			assistantToolCall("bash"),
 			toolResult("bash", "command succeeded"),
 		];

@@ -1,5 +1,5 @@
 import type { Message } from "@earendil-works/pi-ai/compat";
-import { isMutatingBashCommand } from "./mutating-tool-guard.ts";
+import { createMutationCompletionTracker } from "./mutating-tool-guard.ts";
 
 const REVIEW_ONLY_PATTERNS = [
 	/\breview only\b/i,
@@ -87,7 +87,7 @@ interface CompletionMutationGuardInput {
 
 interface CompletionMutationGuardResult {
 	expectedMutation: boolean;
-	attemptedMutation: boolean;
+	completedMutation: boolean;
 	triggered: boolean;
 }
 
@@ -129,18 +129,25 @@ export function expectsImplementationMutation(agent: string, task: string): bool
 	return GENERAL_IMPLEMENTATION_PATTERNS.some((pattern) => pattern.test(taskText));
 }
 
-export function hasMutationToolCall(messages: Message[]): boolean {
+export function hasCompletedMutationToolCall(messages: Message[]): boolean {
+	const mutations = createMutationCompletionTracker();
 	for (const message of messages) {
-		if (message.role !== "assistant") continue;
-		for (const part of message.content) {
-			if (part.type !== "toolCall") continue;
-			if (part.name === "edit" || part.name === "write") return true;
-			if (part.name !== "bash") continue;
-			const args = typeof part.arguments === "object" && part.arguments !== null && !Array.isArray(part.arguments)
-				? part.arguments as Record<string, unknown>
-				: {};
-			if (typeof args.command === "string" && isMutatingBashCommand(args.command)) return true;
+		if (message.role === "assistant") {
+			for (const part of message.content) {
+				if (part.type !== "toolCall") continue;
+				const args = typeof part.arguments === "object" && part.arguments !== null && !Array.isArray(part.arguments)
+					? part.arguments as Record<string, unknown>
+					: {};
+				mutations.recordToolStart({
+					id: typeof part.id === "string" ? part.id : undefined,
+					toolName: typeof part.name === "string" ? part.name : undefined,
+					args,
+				});
+			}
+			continue;
 		}
+		if (message.role !== "toolResult") continue;
+		if (mutations.recordToolResult(message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown })?.completedMutation) return true;
 	}
 	return false;
 }
@@ -161,10 +168,10 @@ export function evaluateCompletionMutationGuard(input: CompletionMutationGuardIn
 		tools: input.tools,
 		mcpDirectTools: input.mcpDirectTools,
 	}) === "mutation-guard";
-	const attemptedMutation = hasMutationToolCall(input.messages);
+	const completedMutation = hasCompletedMutationToolCall(input.messages);
 	return {
 		expectedMutation,
-		attemptedMutation,
-		triggered: expectedMutation && !attemptedMutation,
+		completedMutation,
+		triggered: expectedMutation && !completedMutation,
 	};
 }

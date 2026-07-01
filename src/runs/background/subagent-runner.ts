@@ -60,8 +60,8 @@ import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, fo
 import { evaluateCompletionMutationGuard, resolveCompletionPolicy } from "../shared/completion-guard.ts";
 import {
 	createMutatingFailureState,
+	createMutationCompletionTracker,
 	didMutatingToolFail,
-	isMutatingTool,
 	recordMutatingFailure,
 	resetMutatingFailureState,
 	resolveCurrentPath,
@@ -266,7 +266,7 @@ interface RunPiStreamingResult {
 	error?: string;
 	finalOutput: string;
 	interrupted?: boolean;
-	observedMutationAttempt?: boolean;
+	observedCompletedMutation?: boolean;
 	resourceLimitExceeded?: ResourceLimitExceeded;
 	durationMs?: number;
 }
@@ -333,7 +333,8 @@ function runPiStreaming(
 		let assistantError: string | undefined;
 		let interrupted = false;
 		let resourceLimitExceeded: ResourceLimitExceeded | undefined;
-		let observedMutationAttempt = false;
+		let observedCompletedMutation = false;
+		const mutationTracker = createMutationCompletionTracker();
 		let resourceLimitTimer: NodeJS.Timeout | undefined;
 		let resourceLimitEscalationTimer: NodeJS.Timeout | undefined;
 		const subagentListLoopGuard = createRepeatedSubagentListGuardState();
@@ -415,7 +416,7 @@ function runPiStreaming(
 					failForToolLoop(loopFailure);
 					return;
 				}
-				observedMutationAttempt = observedMutationAttempt || isMutatingTool(event.toolName, event.args);
+				mutationTracker.recordToolStart({ toolName: event.toolName, args: event.args });
 				const toolArgs = extractToolArgsPreview(event.args ?? {});
 				writeOutputLine(toolArgs ? `${event.toolName}: ${toolArgs}` : event.toolName);
 				return;
@@ -425,6 +426,10 @@ function runPiStreaming(
 				messages.push(event.message);
 				const text = extractTextFromContent(event.message.content);
 				if (text) writeOutputText(text);
+				if (event.type === "tool_result_end") {
+					const toolSnapshot = mutationTracker.recordToolResult(event.message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown });
+					if (toolSnapshot?.completedMutation) observedCompletedMutation = true;
+				}
 
 				if (event.type !== "message_end" || event.message.role !== "assistant") return;
 				if (event.message.model) model = event.message.model;
@@ -564,7 +569,7 @@ function runPiStreaming(
 				error: interrupted || forcedDrainAfterFinalSuccess ? undefined : finalError,
 				finalOutput,
 				interrupted,
-				observedMutationAttempt,
+				observedCompletedMutation,
 				resourceLimitExceeded,
 				durationMs,
 			});
@@ -578,7 +583,7 @@ function runPiStreaming(
 			outputStream.end();
 			const finalOutput = resourceLimitExceeded?.message ?? (getFinalOutput(messages) || rawStdoutLines.join("\n").trim());
 			const spawnErrorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
-			resolve({ stderr, exitCode: 1, messages, usage, model, error: resourceLimitExceeded?.message ?? error ?? assistantError ?? spawnErrorMessage, finalOutput, observedMutationAttempt, resourceLimitExceeded, durationMs: Date.now() - startTime });
+			resolve({ stderr, exitCode: 1, messages, usage, model, error: resourceLimitExceeded?.message ?? error ?? assistantError ?? spawnErrorMessage, finalOutput, observedCompletedMutation, resourceLimitExceeded, durationMs: Date.now() - startTime });
 		});
 	});
 }
@@ -842,7 +847,7 @@ async function runSingleStep(
 				mcpDirectTools: step.mcpDirectTools,
 			})
 			: undefined;
-		const completionGuardTriggered = completionGuard?.triggered === true && !run.observedMutationAttempt;
+		const completionGuardTriggered = completionGuard?.triggered === true && !run.observedCompletedMutation;
 		const completionGuardError = completionGuardTriggered
 			? "Subagent completed without making edits for an implementation task.\nIt appears to have returned planning or scratchpad output instead of applying changes."
 			: undefined;
@@ -1441,7 +1446,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	};
 	const emittedControlEventKeys = new Set<string>();
 	const mutatingFailureStates = initialStatusSteps.map(() => createMutatingFailureState());
-	const pendingToolResults: Array<{ tool: string; path?: string; mutates: boolean; startedAt?: number } | undefined> = initialStatusSteps.map(() => undefined);
+	const mutationTrackers = initialStatusSteps.map(() => createMutationCompletionTracker());
 	const mutatingFailureWindowMs = 5 * 60_000;
 	const appendControlEvent = (event: ReturnType<typeof buildControlEvent>) => {
 		if (!controlConfig.enabled) return;
@@ -1484,14 +1489,13 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		const now = Date.now();
 		statusPayload.currentStep = flatIndex;
 		if (event.type === "tool_execution_start" && event.toolName) {
-			const mutates = isMutatingTool(event.toolName, event.args);
 			const currentPath = resolveCurrentPath(event.toolName, event.args);
 			step.toolCount = (step.toolCount ?? 0) + 1;
 			step.currentTool = event.toolName;
 			step.currentToolArgs = extractToolArgsPreview(event.args ?? {});
 			step.currentToolStartedAt = now;
 			step.currentPath = currentPath;
-			pendingToolResults[flatIndex] = { tool: event.toolName, path: currentPath, mutates, startedAt: now };
+			mutationTrackers[flatIndex]?.recordToolStart({ toolName: event.toolName, args: event.args, path: currentPath, startedAt: now });
 			statusPayload.toolCount = (statusPayload.toolCount ?? 0) + 1;
 			syncTopLevelCurrentTool();
 		} else if (event.type === "tool_execution_end") {
@@ -1505,11 +1509,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			step.currentPath = undefined;
 			syncTopLevelCurrentTool();
 		} else if (event.type === "tool_result_end" && event.message) {
-			const toolSnapshot = pendingToolResults[flatIndex];
-			pendingToolResults[flatIndex] = undefined;
+			const toolSnapshot = mutationTrackers[flatIndex]?.recordToolResult(event.message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown });
 			const resultText = extractTextFromContent(event.message.content);
 			appendRecentStepOutput(step, resultText.split("\n").slice(-10));
-			if (toolSnapshot?.mutates && didMutatingToolFail(resultText)) {
+			if (toolSnapshot?.mutates && (toolSnapshot.errored || didMutatingToolFail(resultText))) {
 				const state = mutatingFailureStates[flatIndex]!;
 				recordMutatingFailure(state, {
 					tool: toolSnapshot.tool,
@@ -1784,7 +1787,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				});
 			}
 			mutatingFailureStates.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => createMutatingFailureState()));
-			pendingToolResults.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => undefined));
+			mutationTrackers.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => createMutationCompletionTracker()));
 			const materializedDelta = dynamicStatusSteps.length - 1;
 			for (const group of statusPayload.parallelGroups) {
 				if (group.stepIndex === stepIndex) {

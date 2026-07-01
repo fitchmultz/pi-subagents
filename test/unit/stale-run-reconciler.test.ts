@@ -71,6 +71,38 @@ describe("async stale-run reconciliation", () => {
 		}
 	});
 
+	it("marks a queued async run failed when the runner pid is dead and no result exists", () => {
+		const root = tempRoot("pi-stale-queued-run-");
+		try {
+			const asyncDir = path.join(root, "run-queued-dead");
+			const resultsDir = path.join(root, "results");
+			writeStatus(asyncDir, {
+				runId: "run-queued-dead",
+				mode: "parallel",
+				state: "queued",
+				pid: 12345,
+				startedAt: 1000,
+				lastUpdate: 1000,
+				steps: [{ agent: "worker", status: "queued", startedAt: 1000 }],
+			});
+
+			const result = reconcileAsyncRun(asyncDir, {
+				resultsDir,
+				kill: () => { throw errno("ESRCH"); },
+				now: () => 2000,
+			});
+
+			assert.equal(result.repaired, true);
+			assert.equal(result.status?.state, "failed");
+			const status = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8"));
+			assert.equal(status.state, "failed");
+			assert.equal(status.steps[0].status, "failed");
+			assert.equal(JSON.parse(fs.readFileSync(path.join(resultsDir, "run-queued-dead.json"), "utf-8")).success, false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("repairs stale status with per-child result outcomes", () => {
 		const root = tempRoot("pi-stale-mixed-result-");
 		try {

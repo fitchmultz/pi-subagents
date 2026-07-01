@@ -1759,7 +1759,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 
 	it("background runs detect hidden tool failures even when the child exits 0", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({
-			jsonl: [events.toolResult("bash", "connection refused")],
+			jsonl: [events.toolResult("bash", "connection refused", true)],
 		});
 
 		const id = `async-hidden-failure-${Date.now().toString(36)}`;
@@ -1844,6 +1844,45 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(eventsText, /Subagent failed: worker/);
 		assert.doesNotMatch(eventsText, /Status:/);
 		assert.doesNotMatch(eventsText, /Interrupt:/);
+	});
+
+	it("background implementation runs count successful mutating results even when output mentions failure words", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({
+			jsonl: [
+				events.toolStart("edit", { path: "src/file.ts" }),
+				events.toolEnd("edit"),
+				events.toolResult("edit", "edited src/file.ts; tests failed later but the edit succeeded"),
+				events.assistantMessage("Applied edit"),
+			],
+		});
+
+		const id = `async-mutation-success-text-${Date.now().toString(36)}`;
+		const sessionRoot = path.join(tempDir, "sessions");
+
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Implement the approved fixes",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			artifactConfig: {
+				enabled: false,
+				includeInput: false,
+				includeOutput: false,
+				includeJsonl: false,
+				includeMetadata: false,
+				cleanupDays: 7,
+			},
+			shareEnabled: false,
+			sessionRoot,
+			maxSubagentDepth: 2,
+		});
+
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+		assert.equal(payload.success, true);
+		assert.equal(payload.exitCode, 0);
+		assert.equal(payload.results[0].success, true);
+		assert.equal(payload.results[0].output, "Applied edit");
 	});
 
 	it("background bash-enabled non-implementation agents can opt out of the completion guard", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {

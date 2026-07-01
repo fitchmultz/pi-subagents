@@ -49,19 +49,18 @@ describe("detectSubagentError", { skip: !detectSubagentError ? "utils not import
 		assert.equal(result.hasError, false);
 	});
 
-	it("detects fatal bash error in last tool result", () => {
+	it("does not infer fatal bash error from output text alone", () => {
 		const messages = [
 			{ role: "assistant", content: [{ type: "text", text: "Running..." }] },
 			{
 				role: "toolResult",
 				toolName: "bash",
 				isError: false,
-				content: [{ type: "text", text: "command not found" }],
+				content: [{ type: "text", text: "command not found in fixture output" }],
 			},
 		];
 		const result = detectSubagentError(messages);
-		assert.equal(result.hasError, true);
-		assert.equal(result.errorType, "bash");
+		assert.equal(result.hasError, false);
 	});
 
 	it("detects non-zero exit code in bash output", () => {
@@ -148,7 +147,7 @@ describe("runSync error handling", { skip: !piAvailable ? "pi packages not avail
 			jsonl: [
 				events.toolStart("bash", { command: "deploy" }),
 				events.toolEnd("bash"),
-				events.toolResult("bash", "connection refused"),
+				events.toolResult("bash", "connection refused", true),
 			],
 		});
 		const agents = makeAgentConfigs(["deployer"]);

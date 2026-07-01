@@ -98,6 +98,59 @@ export function isMutatingTool(toolName: string | undefined, args: Record<string
 	return isMutatingBashCommand(command);
 }
 
+export interface PendingMutationTool {
+	id?: string;
+	tool: string;
+	path?: string;
+	mutates: boolean;
+	startedAt?: number;
+}
+
+export interface MutationToolResult extends PendingMutationTool {
+	completedMutation: boolean;
+	errored: boolean;
+}
+
+export function createMutationCompletionTracker(): {
+	recordToolStart(input: { id?: string; toolName?: string; args?: Record<string, unknown>; path?: string; mutates?: boolean; startedAt?: number }): PendingMutationTool;
+	recordToolResult(input?: { toolCallId?: unknown; toolName?: unknown; isError?: unknown }): MutationToolResult | undefined;
+} {
+	const pending: PendingMutationTool[] = [];
+	const take = (input?: { toolCallId?: unknown; toolName?: unknown }): PendingMutationTool | undefined => {
+		const id = typeof input?.toolCallId === "string" ? input.toolCallId : undefined;
+		if (id) {
+			const index = pending.findIndex((tool) => tool.id === id);
+			if (index >= 0) return pending.splice(index, 1)[0];
+		}
+		const name = typeof input?.toolName === "string" ? input.toolName : undefined;
+		if (name) {
+			const index = pending.findIndex((tool) => tool.tool === name);
+			if (index >= 0) return pending.splice(index, 1)[0];
+		}
+		return pending.shift();
+	};
+	return {
+		recordToolStart(input) {
+			const tool = input.toolName ?? "tool";
+			const entry = {
+				id: input.id,
+				tool,
+				path: input.path,
+				mutates: input.mutates ?? isMutatingTool(input.toolName, input.args),
+				startedAt: input.startedAt,
+			};
+			pending.push(entry);
+			return entry;
+		},
+		recordToolResult(input) {
+			const entry = take(input);
+			if (!entry) return undefined;
+			const errored = input?.isError === true;
+			return { ...entry, errored, completedMutation: entry.mutates && !errored };
+		},
+	};
+}
+
 export function didMutatingToolFail(text: string): boolean {
 	const lowered = text.toLowerCase();
 	return MUTATING_FAILURE_HINTS.some((hint) => lowered.includes(hint));

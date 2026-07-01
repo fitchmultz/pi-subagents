@@ -63,8 +63,8 @@ import {
 } from "../shared/model-fallback.ts";
 import {
 	createMutatingFailureState,
+	createMutationCompletionTracker,
 	didMutatingToolFail,
-	isMutatingTool,
 	recordMutatingFailure,
 	resetMutatingFailureState,
 	resolveCurrentPath,
@@ -335,7 +335,7 @@ async function runSingleAttempt(
 	};
 	result.progress = progress;
 	const spawnEnv = { ...process.env, ...sharedEnv, ...getSubagentDepthEnv(options.maxSubagentDepth) };
-	let observedMutationAttempt = false;
+	let observedCompletedMutation = false;
 
 	const exitCode = await new Promise<number>((resolve) => {
 		const spawnSpec = getPiSpawnCommand(args);
@@ -462,7 +462,7 @@ async function runSingleAttempt(
 			return events;
 		};
 
-		let pendingToolResult: { tool: string; path?: string; mutates: boolean; startedAt?: number } | undefined;
+		const mutationTracker = createMutationCompletionTracker();
 		const subagentListLoopGuard = createRepeatedSubagentListGuardState();
 		const mutatingFailures = createMutatingFailureState();
 		const mutatingFailureWindowMs = 5 * 60_000;
@@ -602,9 +602,7 @@ async function runSingleAttempt(
 				progress.currentToolArgs = extractToolArgsPreview(toolArgs);
 				progress.currentToolStartedAt = now;
 				progress.currentPath = resolveCurrentPath(evt.toolName, toolArgs);
-				const mutates = isMutatingTool(evt.toolName, toolArgs);
-				observedMutationAttempt = observedMutationAttempt || mutates;
-				pendingToolResult = { tool: evt.toolName ?? "tool", path: progress.currentPath, mutates, startedAt: now };
+				mutationTracker.recordToolStart({ toolName: evt.toolName, args: toolArgs, path: progress.currentPath, startedAt: now });
 				fireUpdate();
 			}
 
@@ -662,9 +660,9 @@ async function runSingleAttempt(
 				(result.messages ??= []).push(evt.message);
 				const resultText = extractTextFromContent(evt.message.content);
 				appendRecentOutput(progress, resultText.split("\n").slice(-10));
-				const toolSnapshot = pendingToolResult;
-				pendingToolResult = undefined;
-				if (toolSnapshot?.mutates && didMutatingToolFail(resultText)) {
+				const toolSnapshot = mutationTracker.recordToolResult(evt.message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown });
+				if (toolSnapshot?.completedMutation) observedCompletedMutation = true;
+				if (toolSnapshot?.mutates && (toolSnapshot.errored || didMutatingToolFail(resultText))) {
 					recordMutatingFailure(mutatingFailures, {
 						tool: toolSnapshot.tool,
 						path: toolSnapshot.path,
@@ -958,7 +956,7 @@ async function runSingleAttempt(
 			mcpDirectTools: agent.mcpDirectTools,
 		})
 		: undefined;
-	const completionGuardTriggered = completionGuard?.triggered === true && !observedMutationAttempt;
+	const completionGuardTriggered = completionGuard?.triggered === true && !observedCompletedMutation;
 	if (completionGuardTriggered) {
 		result.exitCode = 1;
 		result.error = "Subagent completed without making edits for an implementation task.\nIt appears to have returned planning or scratchpad output instead of applying changes.";

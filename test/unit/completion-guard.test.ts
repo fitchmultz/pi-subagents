@@ -6,14 +6,14 @@ import type { Message } from "@earendil-works/pi-ai/compat";
 import {
 	evaluateCompletionMutationGuard,
 	expectsImplementationMutation,
-	hasMutationToolCall,
+	hasCompletedMutationToolCall,
 	resolveCompletionPolicy,
 } from "../../src/runs/shared/completion-guard.ts";
 
-function assistantToolCall(name: string, args: Record<string, unknown> = {}): Message {
+function assistantToolCall(name: string, args: Record<string, unknown> = {}, id?: string): Message {
 	return {
 		role: "assistant",
-		content: [{ type: "toolCall", name, arguments: args }],
+		content: [{ type: "toolCall", name, arguments: args, ...(id ? { id } : {}) }],
 	} as unknown as Message;
 }
 
@@ -21,6 +21,16 @@ function assistantText(text: string): Message {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }],
+	} as unknown as Message;
+}
+
+function toolResult(text: string, isError = false, toolCallId?: string, toolName?: string): Message {
+	return {
+		role: "toolResult",
+		content: [{ type: "text", text }],
+		isError,
+		...(toolCallId ? { toolCallId } : {}),
+		...(toolName ? { toolName } : {}),
 	} as unknown as Message;
 }
 
@@ -67,7 +77,7 @@ test("implementation task with no mutation triggers the completion guard", () =>
 
 	assert.deepEqual(result, {
 		expectedMutation: true,
-		attemptedMutation: false,
+		completedMutation: false,
 		triggered: true,
 	});
 });
@@ -82,7 +92,7 @@ test("declared read-only builtin tools suppress implementation-word false positi
 
 	assert.deepEqual(result, {
 		expectedMutation: false,
-		attemptedMutation: false,
+		completedMutation: false,
 		triggered: false,
 	});
 });
@@ -112,7 +122,7 @@ test("worker with mutating-capable tools still triggers when no mutation is obse
 
 	assert.deepEqual(result, {
 		expectedMutation: true,
-		attemptedMutation: false,
+		completedMutation: false,
 		triggered: true,
 	});
 });
@@ -157,30 +167,75 @@ test("worker edit intent covers common docs, config, and source tasks", () => {
 	assert.equal(expectsImplementationMutation("worker", "Implement the fix. Do not edit unrelated files."), true);
 });
 
-test("edit and write tool calls count as mutation attempts", () => {
-	assert.equal(hasMutationToolCall([assistantToolCall("edit", { path: "a.ts" })]), true);
-	assert.equal(hasMutationToolCall([assistantToolCall("write", { path: "a.ts" })]), true);
+test("edit and write tool calls require successful tool results to count as completed mutation", () => {
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("edit", { path: "a.ts" })]), false);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("edit", { path: "a.ts" }), toolResult("edited a.ts")]), true);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("write", { path: "a.ts" }), toolResult("permission denied", true)]), false);
 });
 
-test("obvious mutating bash commands count as mutation attempts", () => {
-	assert.equal(hasMutationToolCall([assistantToolCall("bash", { command: "mkdir -p src && cat > src/file.ts <<'EOF'\nhi\nEOF" })]), true);
-	assert.equal(hasMutationToolCall([assistantToolCall("bash", { command: "cat <<'EOF' > src/file.ts\nhi\nEOF" })]), true);
-	assert.equal(hasMutationToolCall([assistantToolCall("bash", { command: "python3 -c \"from pathlib import Path; Path('x').write_text('hi')\"" })]), true);
-	assert.equal(hasMutationToolCall([assistantToolCall("bash", { command: "node script.js > generated.txt" })]), true);
-	assert.equal(hasMutationToolCall([assistantToolCall("bash", { command: "echo 'a > b'" })]), false);
-	assert.equal(hasMutationToolCall([assistantToolCall("bash", { command: "node -e \"console.log(a > b)\"" })]), false);
-	assert.equal(hasMutationToolCall([assistantToolCall("bash", { command: "python3 <<'PY'\nprint('inspect only')\nPY" })]), false);
-	assert.equal(hasMutationToolCall([assistantToolCall("bash", { command: "echo 'rm file'" })]), false);
-	assert.equal(hasMutationToolCall([assistantToolCall("bash", { command: "printf \"mkdir x\"" })]), false);
-	assert.equal(hasMutationToolCall([assistantToolCall("bash", { command: "git apply patch.diff" })]), true);
-	assert.equal(hasMutationToolCall([assistantToolCall("bash", { command: "patch -p0 < fix.patch" })]), true);
+test("successful mutating tool results count even when output mentions failure words", () => {
+	assert.equal(hasCompletedMutationToolCall([
+		assistantToolCall("edit", { path: "a.ts" }),
+		toolResult("edited a.ts; tests failed later but the edit succeeded"),
+	]), true);
+	assert.equal(hasCompletedMutationToolCall([
+		assistantToolCall("write", { path: "error.log" }),
+		toolResult("wrote error.log; no error found"),
+	]), true);
 });
 
-test("implementation task with mutation attempts does not trigger", () => {
+test("obvious mutating bash commands require successful tool results to count as completed mutation", () => {
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("bash", { command: "mkdir -p src && cat > src/file.ts <<'EOF'\nhi\nEOF" }), toolResult("ok")]), true);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("bash", { command: "cat <<'EOF' > src/file.ts\nhi\nEOF" }), toolResult("ok")]), true);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("bash", { command: "python3 -c \"from pathlib import Path; Path('x').write_text('hi')\"" }), toolResult("ok")]), true);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("bash", { command: "node script.js > generated.txt" }), toolResult("ok")]), true);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("bash", { command: "echo 'a > b'" }), toolResult("ok")]), false);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("bash", { command: "node -e \"console.log(a > b)\"" }), toolResult("ok")]), false);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("bash", { command: "python3 <<'PY'\nprint('inspect only')\nPY" }), toolResult("ok")]), false);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("bash", { command: "echo 'rm file'" }), toolResult("ok")]), false);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("bash", { command: "printf \"mkdir x\"" }), toolResult("ok")]), false);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("bash", { command: "git apply patch.diff" }), toolResult("ok")]), true);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("bash", { command: "patch -p0 < fix.patch" }), toolResult("ok")]), true);
+});
+
+test("completed mutation matching ignores earlier non-mutating tool results", () => {
+	assert.equal(hasCompletedMutationToolCall([
+		assistantToolCall("read", { path: "a.ts" }),
+		assistantToolCall("edit", { path: "a.ts" }),
+		toolResult("file contents"),
+	]), false);
+	assert.equal(hasCompletedMutationToolCall([
+		assistantToolCall("read", { path: "a.ts" }),
+		assistantToolCall("edit", { path: "a.ts" }),
+		toolResult("file contents"),
+		toolResult("edited a.ts"),
+	]), true);
+});
+
+test("completed mutation matching uses toolCallId when parallel tool results finish out of order", () => {
+	assert.equal(hasCompletedMutationToolCall([
+		assistantToolCall("edit", { path: "a.ts" }, "edit-1"),
+		assistantToolCall("read", { path: "a.ts" }, "read-1"),
+		toolResult("file contents", false, "read-1", "read"),
+		toolResult("edited a.ts", false, "edit-1", "edit"),
+	]), true);
+});
+
+test("implementation task with only a mutating tool start still triggers", () => {
 	const result = evaluateCompletionMutationGuard({
 		agent: "worker",
 		task: "Fix the failing test",
 		messages: [assistantToolCall("edit", { path: "test.ts" })],
+	});
+
+	assert.equal(result.triggered, true);
+});
+
+test("implementation task with completed mutation does not trigger", () => {
+	const result = evaluateCompletionMutationGuard({
+		agent: "worker",
+		task: "Fix the failing test",
+		messages: [assistantToolCall("edit", { path: "test.ts" }), toolResult("edited test.ts")],
 	});
 
 	assert.equal(result.triggered, false);

@@ -173,7 +173,7 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 	const pid = typeof status.pid === "number" ? status.pid : "unknown";
 	const message = reason ?? `Async runner process ${pid} exited or disappeared before writing a result. Marked run failed by stale-run reconciliation.`;
 	const steps = status.steps?.length ? status.steps : [{ agent: "subagent", status: "running" as const }];
-	const repairedSteps = steps.map((step) => step.status === "running" || step.status === "pending"
+	const repairedSteps = steps.map((step) => step.status === "running" || String(step.status) === "queued" || step.status === "pending"
 		? withoutLiveActivity({
 			...step,
 			status: "failed" as const,
@@ -317,7 +317,7 @@ export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOp
 		return { status: effectiveStatus, repaired: false, resultPath };
 	}
 
-	if (effectiveStatus.state !== "running" || typeof effectiveStatus.pid !== "number") {
+	if ((effectiveStatus.state !== "running" && effectiveStatus.state !== "queued") || typeof effectiveStatus.pid !== "number") {
 		return { status: status ?? null, repaired: false, resultPath };
 	}
 

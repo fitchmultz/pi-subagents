@@ -70,6 +70,39 @@ describe("result watcher", () => {
 		}
 	});
 
+	it("delivers corrected same-id result payloads instead of deduping by id only", async () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-corrected-"));
+		try {
+			const emitted: Array<{ event: string; data: { success?: boolean; summary?: string } }> = [];
+			const pi = {
+				events: {
+					on: () => () => {},
+					emit(event: string, data: { success?: boolean; summary?: string }) {
+						emitted.push({ event, data });
+					},
+				},
+			};
+			const state = createState();
+			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			try {
+				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", cwd: "/repo", success: false, summary: "old" }), "utf-8");
+				watcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", cwd: "/repo", success: true, summary: "corrected" }), "utf-8");
+				watcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			} finally {
+				watcher.stopResultWatcher();
+			}
+
+			const completes = emitted.filter((entry) => entry.event === "subagent:async-complete");
+			assert.deepEqual(completes.map((entry) => entry.data.summary), ["old", "corrected"]);
+			assert.deepEqual(completes.map((entry) => entry.data.success), [false, true]);
+		} finally {
+			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
 	it("logs malformed result files instead of swallowing them silently", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
 		try {

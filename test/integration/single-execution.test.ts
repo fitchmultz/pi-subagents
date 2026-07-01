@@ -354,6 +354,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 						usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
 					},
 				},
+				events.toolResult("edit", "Applied edit; tests failed later but the edit succeeded"),
 				events.assistantMessage("Applied edit"),
 			],
 		});
@@ -401,7 +402,8 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 			onControlEvent: (event: NonNullable<RunSyncResult["controlEvents"]>[number]) => controlEvents.push(event),
 		});
 
-		assert.equal(result.exitCode, 0);
+		assert.equal(result.exitCode, 1);
+		assert.match(result.error ?? "", /completed without making edits/);
 		const failureEvent = controlEvents.find((event) => event.reason === "tool_failures");
 		assert.equal(failureEvent?.type, "needs_attention");
 		assert.equal(failureEvent?.currentPath, "src/runs/background/async-status.ts");

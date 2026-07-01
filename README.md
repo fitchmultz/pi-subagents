@@ -1196,7 +1196,7 @@ export PI_SUBAGENT_MAX_DEPTH=1
 export PI_SUBAGENT_MAX_DEPTH=0
 ```
 
-`PI_SUBAGENT_DEPTH` is internal and propagated automatically. Do not set it manually.
+`PI_SUBAGENT_DEPTH` is internal and propagated automatically. Do not set it manually; invalid values block nested subagents instead of resetting to zero.
 
 ## Events
 
