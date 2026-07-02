@@ -13,7 +13,7 @@ const DEFAULT_NOTIFY_ON: ControlEventType[] = ["needs_attention"];
 
 export const DEFAULT_CONTROL_CONFIG: ResolvedControlConfig = {
 	enabled: true,
-	needsAttentionAfterMs: 60_000,
+	needsAttentionAfterMs: 10 * 60_000,
 	failedToolAttemptsBeforeAttention: 3,
 	notifyOn: DEFAULT_NOTIFY_ON,
 	notifyChannels: CONTROL_NOTIFICATION_CHANNELS,

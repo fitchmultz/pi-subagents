@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- Raised the default subagent no-activity needs-attention threshold from 1 minute to 10 minutes so long test/build commands do not trigger early nudge reminders.
 - Added `subagent({ action: "nudge" })` as a first-class live child nudge that routes through `pi-intercom` with `delivery:"steer"` when the child is registered, and updated status/control hints to show both the subagent nudge and direct blocking intercom ask paths.
 - Control nudge hints now use live intercom steering because they request a child reply and should reach active children promptly.
 - Marked this personal fork as private, removed the legacy `npx pi-subagents` installer/bin path, and documented local file-path `pi install` as the canonical install/refresh workflow.

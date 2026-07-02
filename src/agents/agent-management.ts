@@ -19,6 +19,7 @@ import {
 import { serializeAgent } from "./agent-serializer.ts";
 import { serializeChain, serializeJsonChain } from "./chain-serializer.ts";
 import { discoverAvailableSkills } from "./skills.ts";
+import { isClaudeCodeModel } from "../runs/shared/claude-code.ts";
 import type { Details, SubagentExecutionResult } from "../shared/types.ts";
 
 type ManagementAction = "list" | "get" | "create" | "update" | "delete";
@@ -138,7 +139,7 @@ function chainStepWarnings(ctx: ManagementContext, steps: ChainStepConfig[]): st
 	const available = new Set(discoverAvailableSkills(ctx.cwd, discoveryOptions(ctx)).map((s) => s.name));
 	for (let i = 0; i < steps.length; i++) {
 		const s = steps[i]!;
-		if (s.model) {
+		if (s.model && !isClaudeCodeModel(s.model)) {
 			const found = ctx.modelRegistry.getAvailable().some((m) => `${m.provider}/${m.id}` === s.model || m.id === s.model);
 			if (!found) warnings.push(`Warning: step ${i + 1} (${s.agent}): model '${s.model}' is not in the current model registry.`);
 		}
@@ -151,7 +152,7 @@ function chainStepWarnings(ctx: ManagementContext, steps: ChainStepConfig[]): st
 }
 
 function modelWarning(ctx: ManagementContext, model: string | undefined): string | undefined {
-	if (!model) return undefined;
+	if (!model || isClaudeCodeModel(model)) return undefined;
 	const found = ctx.modelRegistry.getAvailable().some((m) => `${m.provider}/${m.id}` === model || m.id === model);
 	return found ? undefined : `Warning: model '${model}' is not in the current model registry.`;
 }
@@ -159,7 +160,7 @@ function modelWarning(ctx: ManagementContext, model: string | undefined): string
 function fallbackModelsWarning(ctx: ManagementContext, fallbackModels: string[] | undefined): string | undefined {
 	if (!fallbackModels || fallbackModels.length === 0) return undefined;
 	const available = new Set(ctx.modelRegistry.getAvailable().flatMap((m) => [`${m.provider}/${m.id}`, m.id]));
-	const missing = fallbackModels.filter((model) => !available.has(model));
+	const missing = fallbackModels.filter((model) => !isClaudeCodeModel(model) && !available.has(model));
 	return missing.length ? `Warning: fallback models not in the current model registry: ${missing.join(", ")}.` : undefined;
 }
 

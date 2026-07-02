@@ -8,7 +8,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const defaultFitchKitRoot = "/Users/mitchfultz/Projects/AI/pi-fitch-kit";
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-	console.log(`Usage: node scripts/verify-agent-overrides.mjs [--json]\n\nVerifies this personal fork's pi-fitch-kit agent overrides are synced.\n\nChecks:\n  - pi-fitch-kit/agents exists\n  - every bundled pi-subagents agent name has a source-managed pi-fitch-kit agent\n  - ~/.pi/agent/agents/<name>.md is a symlink to that source file\n  - symlinks point at ~/.pi/agent/agents, not ~/.agents/agents\n\nEnvironment:\n  PI_FITCH_KIT_DIR    Override pi-fitch-kit repo path (default: ${defaultFitchKitRoot})\n  PI_CODING_AGENT_DIR Override Pi user agent dir (default: ~/.pi/agent)\n\nRepair if this fails:\n  pi install ${defaultFitchKitRoot} --approve\n  # or fallback when Pi is not running:\n  bash ${defaultFitchKitRoot}/scripts/sync-agents.sh\n\nExit codes:\n  0  overrides are synced\n  1  override source or symlink verification failed`);
+	console.log(`Usage: node scripts/verify-agent-overrides.mjs [--json]\n\nVerifies this personal fork's pi-fitch-kit agent sources are synced.\n\nChecks:\n  - pi-fitch-kit/agents exists\n  - every source-managed pi-fitch-kit agent is synced into ~/.pi/agent/agents\n  - matching source-managed agents override bundled pi-subagents agents by symlink\n  - symlinks point at ~/.pi/agent/agents, not ~/.agents/agents\n\nEnvironment:\n  PI_FITCH_KIT_DIR    Override pi-fitch-kit repo path (default: ${defaultFitchKitRoot})\n  PI_CODING_AGENT_DIR Override Pi user agent dir (default: ~/.pi/agent)\n\nRepair if this fails:\n  pi install ${defaultFitchKitRoot} --approve\n  # or fallback when Pi is not running:\n  bash ${defaultFitchKitRoot}/scripts/sync-agents.sh\n\nExit codes:\n  0  overrides are synced\n  1  override source or symlink verification failed`);
 	process.exit(0);
 }
 
@@ -54,11 +54,7 @@ if (!fs.existsSync(targetDir)) {
 
 const sourceSet = new Set(sourceFiles);
 let verified = 0;
-for (const name of bundledAgentFiles) {
-	if (!sourceSet.has(name)) {
-		failures.push(`missing pi-fitch-kit override source for bundled agent ${name}: ${path.join(sourceDir, name)}`);
-		continue;
-	}
+for (const name of sourceFiles) {
 	const sourcePath = path.join(sourceDir, name);
 	const targetPath = path.join(targetDir, name);
 	if (!fs.existsSync(targetPath)) {
@@ -90,13 +86,14 @@ const result = {
 	bundledAgents: bundledAgentFiles.length,
 	sourceAgents: sourceFiles.length,
 	verifiedOverrides: verified,
+	unoverriddenBundledAgents: bundledAgentFiles.filter((name) => !sourceSet.has(name)),
 	failures,
 };
 
 if (json) {
 	console.log(JSON.stringify(result, null, 2));
 } else if (result.valid) {
-	console.log(`[agent-overrides] verified ${verified}/${bundledAgentFiles.length} bundled agent override symlink(s) from ${sourceDir} to ${targetDir}`);
+	console.log(`[agent-overrides] verified ${verified}/${sourceFiles.length} source-managed agent symlink(s) from ${sourceDir} to ${targetDir}`);
 } else {
 	console.error(`[agent-overrides] verification failed for ${targetDir}`);
 	for (const failure of failures) console.error(`- ${failure}`);

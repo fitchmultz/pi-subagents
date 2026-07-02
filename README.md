@@ -303,7 +303,7 @@ Child-side routine completion handoffs are still not expected. With the intercom
 
 When a foreground child raises a blocking supervisor question, `pi-subagents` detaches that foreground run so the parent can answer immediately. The tool result includes the exact `intercom({ action: "pending" })` and `intercom({ action: "reply", to: "..." })` calls to use. After replying, inspect `subagent({ action: "status", id: "..." })` or wait for the normal result delivery.
 
-If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child. When `pi-intercom` is active and the child is registered, use `subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })` for a non-blocking steered nudge. Use the status-shown `intercom({ action: "ask", to: "...", delivery: "steer", message: "..." })` when you need to wait for a reply.
+After 10 minutes of no observed child activity by default, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child. When `pi-intercom` is active and the child is registered, use `subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })` for a non-blocking steered nudge. Use the status-shown `intercom({ action: "ask", to: "...", delivery: "steer", message: "..." })` when you need to wait for a reply.
 
 If messages do not show up, run:
 
@@ -891,6 +891,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `maxOutput` | object | 200KB, 5000 lines | Final output truncation limits. |
 | `artifacts` | boolean | true | Write debug artifacts. |
 | `includeProgress` | boolean | false | Include full progress in result. |
+| `control` | object | enabled, 10-minute idle threshold | Override needs-attention tracking (`enabled`, `needsAttentionAfterMs`, `failedToolAttemptsBeforeAttention`, `notifyOn`, `notifyChannels`). |
 | `share` | boolean | false | Upload session export to GitHub Gist. |
 | `sessionDir` | string | derived | Override session log directory. |
 | `acceptance` | object | omitted | Explicit acceptance contract. When present, the child gets a structured contract, then the runtime continues the same session for a bounded self-review/repair loop before evaluating acceptance. |

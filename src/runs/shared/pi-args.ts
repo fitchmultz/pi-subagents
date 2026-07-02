@@ -7,7 +7,7 @@ import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
 import type { ChildProjectTrustPolicy, JsonSchemaObject } from "../../shared/types.ts";
 
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const TASK_ARG_LIMIT = 8000;
 const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-prompt-runtime.ts");
 const FANOUT_CHILD_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "extension", "fanout-child.ts");

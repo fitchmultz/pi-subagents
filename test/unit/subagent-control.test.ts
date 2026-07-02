@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+	DEFAULT_CONTROL_CONFIG,
 	buildControlEvent,
 	claimControlNotification,
 	controlNotificationKey,
@@ -16,12 +17,19 @@ const config = resolveControlConfig(undefined, {
 });
 
 describe("subagent control attention state", () => {
+	it("uses a ten-minute default idle threshold", () => {
+		assert.equal(DEFAULT_CONTROL_CONFIG.needsAttentionAfterMs, 600_000);
+		const defaultConfig = resolveControlConfig();
+		assert.equal(defaultConfig.needsAttentionAfterMs, 600_000);
+		assert.equal(deriveActivityState({ config: defaultConfig, startedAt: 0, lastActivityAt: 0, now: 600_000 }), undefined);
+		assert.equal(deriveActivityState({ config: defaultConfig, startedAt: 0, lastActivityAt: 0, now: 600_001 }), "needs_attention");
+	});
+
 	it("marks a run as needing attention only after the idle threshold", () => {
 		assert.equal(deriveActivityState({ config, startedAt: 0, lastActivityAt: 0, now: 50 }), undefined);
 		assert.equal(deriveActivityState({ config, startedAt: 0, lastActivityAt: 0, now: 400 }), "needs_attention");
 		assert.equal(deriveActivityState({ config, startedAt: 0, now: 400 }), "needs_attention");
 	});
-
 
 	it("builds compact needs-attention control events", () => {
 		const event = buildControlEvent({

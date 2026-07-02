@@ -52,6 +52,15 @@ import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
+import {
+	appendClaudeCodeMessage,
+	buildClaudeCodeInvocation,
+	claudeCodeMessageFromResult,
+	isClaudeCodeModel,
+	writeClaudeCodeSessionMetadata,
+	type ClaudeCodeInvocation,
+	type ClaudeCodeResultEvent,
+} from "../shared/claude-code.ts";
 import { readStructuredOutput } from "../shared/structured-output.ts";
 import { captureSingleOutputSnapshot, cleanupSingleOutputFile, formatConsumedOutputReference, formatSavedOutputReference, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
@@ -257,36 +266,76 @@ async function runSingleAttempt(
 	},
 ): Promise<SingleResult> {
 	const modelArg = applyThinkingSuffix(model, agent.thinking);
-	const { args, env: sharedEnv, tempDir } = buildPiArgs({
-		baseArgs: ["--mode", "json", "-p"],
-		task,
-		sessionEnabled: shared.sessionEnabled,
-		sessionDir: options.sessionDir,
-		sessionFile: options.sessionFile,
-		model,
-		thinking: agent.thinking,
-		systemPromptMode: agent.systemPromptMode,
-		inheritProjectContext: agent.inheritProjectContext,
-		inheritSkills: agent.inheritSkills,
-		tools: agent.tools,
-		allowSubagents: agent.allowSubagents,
-		extensions: agent.extensions,
-		systemPrompt: shared.systemPrompt,
-		mcpDirectTools: agent.mcpDirectTools,
-		cwd: options.cwd ?? runtimeCwd,
-		promptFileStem: agent.name,
-		intercomSessionName: options.intercomSessionName,
-		orchestratorIntercomTarget: options.orchestratorIntercomTarget,
-		runId: options.runId,
-		childAgentName: agent.name,
-		childIndex: options.index ?? 0,
-		parentEventSink: options.nestedRoute?.eventSink,
-		parentControlInbox: options.nestedRoute?.controlInbox,
-		parentRootRunId: options.nestedRoute?.rootRunId,
-		parentCapabilityToken: options.nestedRoute?.capabilityToken,
-		structuredOutput: options.structuredOutput,
-		projectTrust: options.projectTrust,
-	});
+	let args: string[];
+	let sharedEnv: Record<string, string | undefined>;
+	let tempDir: string | undefined;
+	let claudeCodeInvocation: ClaudeCodeInvocation | undefined;
+	try {
+		if (modelArg && isClaudeCodeModel(modelArg)) {
+			claudeCodeInvocation = buildClaudeCodeInvocation({
+				model: modelArg,
+				task,
+				systemPrompt: shared.systemPrompt,
+				systemPromptMode: agent.systemPromptMode,
+				sessionFile: options.sessionFile,
+				sessionName: options.intercomSessionName,
+				tools: agent.tools,
+				mcpDirectTools: agent.mcpDirectTools,
+				allowSubagents: agent.allowSubagents,
+			});
+			args = claudeCodeInvocation.args;
+			sharedEnv = claudeCodeInvocation.env;
+		} else {
+			const built = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task,
+				sessionEnabled: shared.sessionEnabled,
+				sessionDir: options.sessionDir,
+				sessionFile: options.sessionFile,
+				model,
+				thinking: agent.thinking,
+				systemPromptMode: agent.systemPromptMode,
+				inheritProjectContext: agent.inheritProjectContext,
+				inheritSkills: agent.inheritSkills,
+				tools: agent.tools,
+				allowSubagents: agent.allowSubagents,
+				extensions: agent.extensions,
+				systemPrompt: shared.systemPrompt,
+				mcpDirectTools: agent.mcpDirectTools,
+				cwd: options.cwd ?? runtimeCwd,
+				promptFileStem: agent.name,
+				intercomSessionName: options.intercomSessionName,
+				orchestratorIntercomTarget: options.orchestratorIntercomTarget,
+				runId: options.runId,
+				childAgentName: agent.name,
+				childIndex: options.index ?? 0,
+				parentEventSink: options.nestedRoute?.eventSink,
+				parentControlInbox: options.nestedRoute?.controlInbox,
+				parentRootRunId: options.nestedRoute?.rootRunId,
+				parentCapabilityToken: options.nestedRoute?.capabilityToken,
+				structuredOutput: options.structuredOutput,
+				projectTrust: options.projectTrust,
+			});
+			args = built.args;
+			sharedEnv = built.env;
+			tempDir = built.tempDir;
+		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return {
+			agent: agent.name,
+			task: shared.originalTask ?? task,
+			exitCode: 1,
+			messages: [],
+			usage: emptyUsage(),
+			model: modelArg,
+			error: message,
+			finalOutput: message,
+			artifactPaths: shared.artifactPaths,
+			skills: shared.resolvedSkillNames,
+			skillsWarning: shared.skillsWarning,
+		};
+	}
 
 	const result: SingleResult = {
 		agent: agent.name,
@@ -338,7 +387,9 @@ async function runSingleAttempt(
 	let observedCompletedMutation = false;
 
 	const exitCode = await new Promise<number>((resolve) => {
-		const spawnSpec = getPiSpawnCommand(args);
+		const spawnSpec = claudeCodeInvocation
+			? { command: claudeCodeInvocation.command, args: claudeCodeInvocation.args }
+			: getPiSpawnCommand(args);
 		const proc = spawn(spawnSpec.command, spawnSpec.args, {
 			cwd: options.cwd ?? runtimeCwd,
 			env: spawnEnv,
@@ -574,6 +625,22 @@ async function runSingleAttempt(
 			} catch {
 				// Non-JSON stdout lines are expected; only structured events are parsed.
 				return;
+			}
+			if (claudeCodeInvocation && evt.type === "result") {
+				const resultEvent = evt as ClaudeCodeResultEvent;
+				const message = claudeCodeMessageFromResult(resultEvent, modelArg ?? claudeCodeInvocation.model.inputModel);
+				if (options.sessionFile) {
+					writeClaudeCodeSessionMetadata(options.sessionFile, {
+						sessionId: resultEvent.session_id || claudeCodeInvocation.sessionId,
+						model: claudeCodeInvocation.model.inputModel,
+						cliModel: claudeCodeInvocation.model.cliModel,
+						family: claudeCodeInvocation.model.family,
+						context: claudeCodeInvocation.model.context,
+						updatedAt: Date.now(),
+					});
+					appendClaudeCodeMessage(options.sessionFile, message);
+				}
+				evt = { type: "message_end", message };
 			}
 
 			const now = Date.now();

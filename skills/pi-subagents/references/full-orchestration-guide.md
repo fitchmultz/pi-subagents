@@ -370,7 +370,7 @@ Humans can use `/subagents-doctor` for the same read-only report. It checks runt
 
 Subagent control is the runtime visibility and intervention layer for delegated runs. It is separate from lifecycle status. Lifecycle status says whether a child is `queued`, `running`, `paused`, `complete`, or `failed`. Activity reporting is factual: it tracks the last observed activity time and the current tool when known. It does not pretend to know that a child is truly stuck.
 
-Default behavior is intentionally conservative. When no activity has been observed past the configured threshold, the run emits a `needs_attention` control event. Foreground runs can push this as a `subagent:control-event` event, and async runs persist it to `events.jsonl` so the parent tracker can surface it without constant manual polling. Notification-worthy control events are also inserted into the visible transcript so both the user and the parent agent can see them, with a proactive hint plus concrete `nudge`, `status`, and `interrupt` options. Use `status` to see an `extend` command when the active foreground child has an extendable timeout. Visible notifications fire once per child run and attention state.
+Default behavior is intentionally conservative. When no activity has been observed past the configured threshold (10 minutes by default), the run emits a `needs_attention` control event. Foreground runs can push this as a `subagent:control-event` event, and async runs persist it to `events.jsonl` so the parent tracker can surface it without constant manual polling. Notification-worthy control events are also inserted into the visible transcript so both the user and the parent agent can see them, with a proactive hint plus concrete `nudge`, `status`, and `interrupt` options. Use `status` to see an `extend` command when the active foreground child has an extendable timeout. Visible notifications fire once per child run and attention state.
 
 Use soft interrupt when a child is clearly blocked or drifting and the parent needs to regain control:
 
@@ -394,7 +394,7 @@ subagent({
   agent: "worker",
   task: "Run the slow migration test suite",
   control: {
-    needsAttentionAfterMs: 300000,
+    needsAttentionAfterMs: 1800000,
     notifyOn: ["needs_attention"]
   }
 })

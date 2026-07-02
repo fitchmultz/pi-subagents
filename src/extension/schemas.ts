@@ -215,7 +215,7 @@ const ChainItem = Type.Object({
 
 const ControlOverrides = Type.Object({
 	enabled: Type.Optional(Type.Boolean({ description: "Enable/disable subagent control attention tracking for this run" })),
-	needsAttentionAfterMs: Type.Optional(Type.Integer({ minimum: 1, description: "No-observed-activity window before a run needs attention" })),
+	needsAttentionAfterMs: Type.Optional(Type.Integer({ minimum: 1, description: "No-observed-activity window before a run needs attention. Default is 600000ms (10 minutes)." })),
 	failedToolAttemptsBeforeAttention: Type.Optional(Type.Integer({ minimum: 1, description: "Consecutive mutating-tool failures before escalating to needs_attention (default: 3)" })),
 	notifyOn: Type.Optional(Type.Array(StringEnum(["needs_attention"] as const), {
 		description: "Control event types that should notify the parent/orchestrator. Defaults to needs_attention.",

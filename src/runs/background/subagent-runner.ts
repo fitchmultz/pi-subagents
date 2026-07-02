@@ -50,6 +50,15 @@ import {
 	MAX_PARALLEL_CONCURRENCY,
 } from "../shared/parallel-utils.ts";
 import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
+import {
+	appendClaudeCodeMessage,
+	buildClaudeCodeInvocation,
+	claudeCodeMessageFromResult,
+	isClaudeCodeModel,
+	writeClaudeCodeSessionMetadata,
+	type ClaudeCodeInvocation,
+	type ClaudeCodeResultEvent,
+} from "../shared/claude-code.ts";
 import { outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
 import { createStructuredOutputRuntime, readStructuredOutput } from "../shared/structured-output.ts";
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
@@ -308,15 +317,19 @@ function runPiStreaming(
 	onChildEvent?: (event: ChildEvent) => void,
 	maxExecutionTimeMs?: number,
 	maxTokens?: number,
+	claudeCodeInvocation?: ClaudeCodeInvocation,
+	sessionFile?: string,
 ): Promise<RunPiStreamingResult> {
 	return new Promise((resolve) => {
 		const startTime = Date.now();
 		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
 		const spawnEnv = { ...process.env, ...(env ?? {}), ...getSubagentDepthEnv(maxSubagentDepth) };
-		const spawnSpec = getPiSpawnCommand(args, {
-			...(piPackageRoot ? { piPackageRoot } : {}),
-			...(piArgv1 ? { argv1: piArgv1 } : {}),
-		});
+		const spawnSpec = claudeCodeInvocation
+			? { command: claudeCodeInvocation.command, args: claudeCodeInvocation.args }
+			: getPiSpawnCommand(args, {
+				...(piPackageRoot ? { piPackageRoot } : {}),
+				...(piArgv1 ? { argv1: piArgv1 } : {}),
+			});
 		const child = spawn(spawnSpec.command, spawnSpec.args, {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -401,6 +414,22 @@ function runPiStreaming(
 				writeOutputLine(line);
 				appendChildLine("subagent.child.stdout", line);
 				return;
+			}
+			if (claudeCodeInvocation && event.type === "result") {
+				const resultEvent = event as ClaudeCodeResultEvent;
+				const message = claudeCodeMessageFromResult(resultEvent, claudeCodeInvocation.model.inputModel);
+				if (sessionFile) {
+					writeClaudeCodeSessionMetadata(sessionFile, {
+						sessionId: resultEvent.session_id || claudeCodeInvocation.sessionId,
+						model: claudeCodeInvocation.model.inputModel,
+						cliModel: claudeCodeInvocation.model.cliModel,
+						family: claudeCodeInvocation.model.family,
+						context: claudeCodeInvocation.model.context,
+						updatedAt: Date.now(),
+					});
+					appendClaudeCodeMessage(sessionFile, message);
+				}
+				event = { type: "message_end", message } as ChildEvent;
 			}
 
 			appendChildEvent(event);
@@ -773,35 +802,65 @@ async function runSingleStep(
 				// Missing/stale structured-output files are handled after the child exits.
 			}
 		}
-		const { args, env, tempDir } = buildPiArgs({
-			baseArgs: ["--mode", "json", "-p"],
-			task,
-			sessionEnabled,
-			sessionDir,
-			sessionFile: step.sessionFile,
-			model: candidate,
-			inheritProjectContext: step.inheritProjectContext,
-			inheritSkills: step.inheritSkills,
-			tools: step.tools,
-			allowSubagents: step.allowSubagents,
-			extensions: step.extensions,
-			systemPrompt: step.systemPrompt,
-			systemPromptMode: step.systemPromptMode,
-			mcpDirectTools: step.mcpDirectTools,
-			cwd: step.cwd ?? ctx.cwd,
-			promptFileStem: step.agent,
-			intercomSessionName: ctx.childIntercomTarget,
-			orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
-			runId: ctx.id,
-			childAgentName: step.agent,
-			childIndex: ctx.flatIndex,
-			parentEventSink: ctx.nestedRoute?.eventSink,
-			parentControlInbox: ctx.nestedRoute?.controlInbox,
-			parentRootRunId: ctx.nestedRoute?.rootRunId,
-			parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
-			structuredOutput: effectiveStructuredOutput,
-			projectTrust: ctx.projectTrust,
-		});
+		let args: string[];
+		let env: Record<string, string | undefined>;
+		let tempDir: string | undefined;
+		let claudeCodeInvocation: ClaudeCodeInvocation | undefined;
+		try {
+			if (candidate && isClaudeCodeModel(candidate)) {
+				claudeCodeInvocation = buildClaudeCodeInvocation({
+					model: candidate,
+					task,
+					systemPrompt: step.systemPrompt ?? undefined,
+					systemPromptMode: step.systemPromptMode,
+					sessionFile: step.sessionFile,
+					sessionName: ctx.childIntercomTarget,
+					tools: step.tools,
+					mcpDirectTools: step.mcpDirectTools,
+					allowSubagents: step.allowSubagents,
+				});
+				args = claudeCodeInvocation.args;
+				env = claudeCodeInvocation.env;
+			} else {
+				const built = buildPiArgs({
+					baseArgs: ["--mode", "json", "-p"],
+					task,
+					sessionEnabled,
+					sessionDir,
+					sessionFile: step.sessionFile,
+					model: candidate,
+					inheritProjectContext: step.inheritProjectContext,
+					inheritSkills: step.inheritSkills,
+					tools: step.tools,
+					allowSubagents: step.allowSubagents,
+					extensions: step.extensions,
+					systemPrompt: step.systemPrompt,
+					systemPromptMode: step.systemPromptMode,
+					mcpDirectTools: step.mcpDirectTools,
+					cwd: step.cwd ?? ctx.cwd,
+					promptFileStem: step.agent,
+					intercomSessionName: ctx.childIntercomTarget,
+					orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
+					runId: ctx.id,
+					childAgentName: step.agent,
+					childIndex: ctx.flatIndex,
+					parentEventSink: ctx.nestedRoute?.eventSink,
+					parentControlInbox: ctx.nestedRoute?.controlInbox,
+					parentRootRunId: ctx.nestedRoute?.rootRunId,
+					parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
+					structuredOutput: effectiveStructuredOutput,
+					projectTrust: ctx.projectTrust,
+				});
+				args = built.args;
+				env = built.env;
+				tempDir = built.tempDir;
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			finalResult = { stderr: message, exitCode: 1, messages: [], usage: emptyUsage(), model: candidate, error: message, finalOutput: message };
+			modelAttempts.push({ model: candidate ?? step.model ?? "default", success: false, exitCode: 1, error: message, usage: emptyUsage() });
+			break;
+		}
 		const run = await runPiStreaming(
 			args,
 			step.cwd ?? ctx.cwd,
@@ -815,6 +874,8 @@ async function runSingleStep(
 			ctx.onChildEvent,
 			step.maxExecutionTimeMs,
 			step.maxTokens,
+			claudeCodeInvocation,
+			step.sessionFile,
 		);
 		cleanupTempDir(tempDir);
 
@@ -959,35 +1020,59 @@ async function runSingleStep(
 					maxTurns,
 					...(previousFailure ? { previousFailure } : {}),
 				});
-				const { args, env, tempDir } = buildPiArgs({
-					baseArgs: ["--mode", "json", "-p"],
-					task: prompt,
-					sessionEnabled: true,
-					sessionFile,
-					model: finalResult?.model ?? step.model,
-					thinking: step.thinking,
-					inheritProjectContext: step.inheritProjectContext,
-					inheritSkills: step.inheritSkills,
-					tools: step.tools,
-					allowSubagents: step.allowSubagents,
-					extensions: step.extensions,
-					systemPrompt: step.systemPrompt,
-					systemPromptMode: step.systemPromptMode,
-					mcpDirectTools: step.mcpDirectTools,
-					cwd: step.cwd ?? ctx.cwd,
-					promptFileStem: `${step.agent}-acceptance-finalization`,
-					intercomSessionName: ctx.childIntercomTarget,
-					orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
-					runId: ctx.id,
-					childAgentName: step.agent,
-					childIndex: ctx.flatIndex,
-					parentEventSink: ctx.nestedRoute?.eventSink,
-					parentControlInbox: ctx.nestedRoute?.controlInbox,
-					parentRootRunId: ctx.nestedRoute?.rootRunId,
-					parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
-					projectTrust: ctx.projectTrust,
-				});
-				ctx.onAttemptStart?.({ model: finalResult?.model ?? step.model, thinking: resolveEffectiveThinking(finalResult?.model ?? step.model, step.thinking) });
+				const finalizationModel = finalResult?.model ?? step.model;
+				let args: string[];
+				let env: Record<string, string | undefined>;
+				let tempDir: string | undefined;
+				let claudeCodeInvocation: ClaudeCodeInvocation | undefined;
+				if (finalizationModel && isClaudeCodeModel(finalizationModel)) {
+					claudeCodeInvocation = buildClaudeCodeInvocation({
+						model: finalizationModel,
+						task: prompt,
+						systemPrompt: step.systemPrompt ?? undefined,
+						systemPromptMode: step.systemPromptMode,
+						sessionFile,
+						sessionName: ctx.childIntercomTarget,
+						tools: step.tools,
+						mcpDirectTools: step.mcpDirectTools,
+						allowSubagents: step.allowSubagents,
+					});
+					args = claudeCodeInvocation.args;
+					env = claudeCodeInvocation.env;
+				} else {
+					const built = buildPiArgs({
+						baseArgs: ["--mode", "json", "-p"],
+						task: prompt,
+						sessionEnabled: true,
+						sessionFile,
+						model: finalizationModel,
+						thinking: step.thinking,
+						inheritProjectContext: step.inheritProjectContext,
+						inheritSkills: step.inheritSkills,
+						tools: step.tools,
+						allowSubagents: step.allowSubagents,
+						extensions: step.extensions,
+						systemPrompt: step.systemPrompt,
+						systemPromptMode: step.systemPromptMode,
+						mcpDirectTools: step.mcpDirectTools,
+						cwd: step.cwd ?? ctx.cwd,
+						promptFileStem: `${step.agent}-acceptance-finalization`,
+						intercomSessionName: ctx.childIntercomTarget,
+						orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
+						runId: ctx.id,
+						childAgentName: step.agent,
+						childIndex: ctx.flatIndex,
+						parentEventSink: ctx.nestedRoute?.eventSink,
+						parentControlInbox: ctx.nestedRoute?.controlInbox,
+						parentRootRunId: ctx.nestedRoute?.rootRunId,
+						parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
+						projectTrust: ctx.projectTrust,
+					});
+					args = built.args;
+					env = built.env;
+					tempDir = built.tempDir;
+				}
+				ctx.onAttemptStart?.({ model: finalizationModel, thinking: resolveEffectiveThinking(finalizationModel, step.thinking) });
 				const finalizationRun = await runPiStreaming(
 					args,
 					step.cwd ?? ctx.cwd,
@@ -1001,6 +1086,8 @@ async function runSingleStep(
 					ctx.onChildEvent,
 					step.maxExecutionTimeMs,
 					step.maxTokens,
+					claudeCodeInvocation,
+					sessionFile,
 				);
 				cleanupTempDir(tempDir);
 				modelAttempts.push({

@@ -250,6 +250,7 @@ describe("buildPiArgs model wiring", () => {
 		});
 
 		assert.equal(applyThinkingSuffix("openai-codex/gpt-5.4-mini", "high"), "openai-codex/gpt-5.4-mini:high");
+		assert.equal(applyThinkingSuffix("claude-code/sonnet:max", "high"), "claude-code/sonnet:max");
 		assert.ok(args.includes("--model"));
 		assert.ok(args.includes("openai-codex/gpt-5.4-mini:high"));
 	});
