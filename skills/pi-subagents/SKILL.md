@@ -14,7 +14,7 @@ Use this for runtime Pi subagent orchestration, not for maintaining Agent Skill 
 ## Hard constraints
 
 - The parent session owns orchestration, decisions, review synthesis, and final user-facing status.
-- Before executing subagents in a session, call `subagent({ action: "list" })` unless the executable agent/chain is already known.
+- Before executing subagents in a session, call `subagent({ action: "list" })` unless the executable agent/chain is already known; treat its descriptions as the current role/model policy.
 - Treat child output as evidence to inspect, not automatic truth.
 - Keep writes single-threaded unless writers are isolated with `worktree: true`.
 - Use fresh-context reviewers for adversarial review; use forked `oracle` for inherited-decision/drift review.
@@ -99,7 +99,9 @@ subagent({
 })
 ```
 
-## Builtin agents
+## Agent selection
+
+Use the effective agents from `subagent({ action: "list" })`; user/project profiles may replace builtin role behavior. Common roles:
 
 - `scout`: fast codebase recon and handoff context.
 - `researcher`: external/web/docs research with sources.
@@ -108,9 +110,9 @@ subagent({
 - `reviewer`: review and small fixes when explicitly allowed.
 - `context-builder`: stronger context/meta-prompt handoff builder.
 - `oracle`: forked advisory second opinion for direction, drift, and assumptions.
-- `delegate`: lightweight generic child.
+- `delegate` if present: lightweight generic child; prefer a specialist or `worker` when the task has a real role.
 
-Packaged `planner`, `worker`, and `oracle` default to forked context. User/project agents or `subagents.agentOverrides` can change effective runtime defaults; confirm with `list`/`get` when the default matters. Pass explicit `context: "fresh"` or `"fork"` only when one policy should override every child in the call.
+Keep configured defaults for routine runs. Pass `model`/`thinking` only when the listed agent description, user request, or clear task risk justifies it; put the override in the subagent call, not only in prose. Pass explicit `context: "fresh"` or `"fork"` only when one policy should override every child in the call.
 
 ## Prompt-template workflows
 
