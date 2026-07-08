@@ -141,6 +141,68 @@ describe("result watcher", () => {
 		}
 	});
 
+	it("periodically scans result files when fs.watch stays quiet", async () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-quiet-"));
+		try {
+			const emitted: Array<{ event: string; data: unknown }> = [];
+			const pi = {
+				events: {
+					on: () => () => {},
+					emit(event: string, data: unknown) {
+						emitted.push({ event, data });
+					},
+				},
+			};
+			const state = createState();
+			state.currentSessionId = "session-1";
+			let poll: (() => void) | undefined;
+			const fakeWatcher = {
+				on() { return fakeWatcher; },
+				close() {},
+				unref() {},
+			} as fs.FSWatcher;
+			const watcher = createResultWatcher(pi, state, resultsDir, 60_000, {
+				fs: {
+					...fs,
+					watch: () => fakeWatcher,
+				},
+				timers: {
+					setTimeout,
+					clearTimeout,
+					setInterval(handler: () => void) {
+						poll = handler;
+						return { unref() {} } as NodeJS.Timeout;
+					},
+					clearInterval() {
+						poll = undefined;
+					},
+				},
+			});
+			try {
+				watcher.startResultWatcher();
+				assert.equal(state.watcher, fakeWatcher);
+				assert.ok(poll, "expected active watcher to keep a periodic safety scan");
+
+				fs.writeFileSync(path.join(resultsDir, "missed.json"), JSON.stringify({
+					id: "missed",
+					sessionId: "session-1",
+					success: true,
+					state: "complete",
+					summary: "done despite a missed watch event",
+				}), "utf-8");
+				poll?.();
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			} finally {
+				watcher.stopResultWatcher();
+			}
+
+			assert.equal(emitted.filter((entry) => entry.event === "subagent:async-complete").length, 1);
+			assert.equal(fs.existsSync(path.join(resultsDir, "missed.json")), false);
+		} finally {
+			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
 	it("falls back to polling when fs.watch throws EMFILE and preserves grouped intercom delivery", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
 		try {

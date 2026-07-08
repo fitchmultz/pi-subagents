@@ -79,6 +79,7 @@ export function createResultWatcher(
 } {
 	const fsApi = deps.fs ?? fs;
 	const timers = deps.timers ?? { setTimeout, clearTimeout, setInterval, clearInterval };
+	let periodicScanTimer: ReturnType<typeof setInterval> | null = null;
 
 	const handleResult = async (file: string) => {
 		const resultPath = path.join(resultsDir, file);
@@ -203,9 +204,22 @@ export function createResultWatcher(
 		}
 	};
 
+	const ensurePeriodicScan = () => {
+		if (periodicScanTimer) return;
+		periodicScanTimer = timers.setInterval(primeExistingResults, POLL_INTERVAL_MS);
+		periodicScanTimer.unref?.();
+	};
+
+	const clearPeriodicScan = () => {
+		if (!periodicScanTimer) return;
+		timers.clearInterval(periodicScanTimer);
+		periodicScanTimer = null;
+	};
+
 	const startPollingFallback = (reason: unknown) => {
 		state.watcher?.close();
 		state.watcher = null;
+		clearPeriodicScan();
 		if (state.watcherRestartTimer) return;
 
 		console.error(
@@ -236,7 +250,10 @@ export function createResultWatcher(
 	};
 
 	const startResultWatcher = () => {
-		if (state.watcher) return;
+		if (state.watcher) {
+			ensurePeriodicScan();
+			return;
+		}
 		if (state.watcherRestartTimer) {
 			timers.clearTimeout(state.watcherRestartTimer);
 			timers.clearInterval(state.watcherRestartTimer);
@@ -260,6 +277,7 @@ export function createResultWatcher(
 				scheduleRestart();
 			});
 			state.watcher.unref?.();
+			ensurePeriodicScan();
 		} catch (error) {
 			if (shouldFallBackToPolling(error)) {
 				startPollingFallback(error);
@@ -274,6 +292,7 @@ export function createResultWatcher(
 	const stopResultWatcher = () => {
 		state.watcher?.close();
 		state.watcher = null;
+		clearPeriodicScan();
 		if (state.watcherRestartTimer) {
 			timers.clearTimeout(state.watcherRestartTimer);
 			timers.clearInterval(state.watcherRestartTimer);
