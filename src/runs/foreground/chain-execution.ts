@@ -30,6 +30,7 @@ import {
 	type ResolvedTemplates,
 } from "../../shared/settings.ts";
 import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skills.ts";
+import { validateForkContextModelPolicy, type SubagentExecutionContext } from "../../shared/agent-context-policy.ts";
 import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.ts";
 import { runSync } from "./execution.ts";
 import { createForegroundTimeoutExtensionRegistry, type ForegroundTimeoutExtensionRegistry } from "./timeout-extension.ts";
@@ -374,6 +375,7 @@ interface ChainExecutionParams {
 	artifactConfig: ArtifactConfig;
 	includeProgress?: boolean;
 	clarify?: boolean;
+	context?: SubagentExecutionContext;
 	onUpdate?: (r: SubagentExecutionResult) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig: ResolvedControlConfig;
@@ -421,6 +423,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		artifactConfig,
 		includeProgress,
 		clarify,
+		context,
 		onUpdate,
 		onControlEvent,
 		controlConfig,
@@ -555,22 +558,36 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			};
 		}
 
+		const updatedChain: ChainStep[] = chainSteps.map((step, i) => {
+			if (isParallelStep(step)) return step;
+			const override = result.behaviorOverrides[i];
+			return {
+				...step,
+				task: result.templates[i]!,
+				...(override?.model ? { model: override.model } : {}),
+				...(override?.output !== undefined ? { output: override.output } : {}),
+				...("outputMode" in step && step.outputMode !== undefined ? { outputMode: step.outputMode } : {}),
+				...(override?.reads !== undefined ? { reads: override.reads } : {}),
+				...(override?.progress !== undefined ? { progress: override.progress } : {}),
+				...(override?.skills !== undefined ? { skill: override.skills } : {}),
+			};
+		});
+		const forkModelPolicyError = validateForkContextModelPolicy(
+			{ chain: updatedChain, context },
+			agents,
+			(model) => resolveModelCandidate(model, availableModels, ctx.model?.provider),
+		);
+		if (forkModelPolicyError) {
+			removeChainDir(chainDir);
+			return {
+				content: [{ type: "text", text: forkModelPolicyError }],
+				isError: true,
+				details: buildChainExecutionDetails(makeDetailsInput()),
+			};
+		}
+
 		if (result.runInBackground) {
 			removeChainDir(chainDir);
-			const updatedChain: ChainStep[] = chainSteps.map((step, i) => {
-				if (isParallelStep(step)) return step;
-				const override = result.behaviorOverrides[i];
-				return {
-					...step,
-					task: result.templates[i]!,
-					...(override?.model ? { model: override.model } : {}),
-					...(override?.output !== undefined ? { output: override.output } : {}),
-					...("outputMode" in step && step.outputMode !== undefined ? { outputMode: step.outputMode } : {}),
-					...(override?.reads !== undefined ? { reads: override.reads } : {}),
-					...(override?.progress !== undefined ? { progress: override.progress } : {}),
-					...(override?.skills !== undefined ? { skill: override.skills } : {}),
-				};
-			});
 			return {
 				content: [{ type: "text", text: "Launching in background..." }],
 				details: buildChainExecutionDetails(makeDetailsInput()),

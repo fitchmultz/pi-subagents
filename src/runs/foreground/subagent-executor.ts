@@ -41,6 +41,7 @@ import {
 	createPerAgentForkContextResolver,
 	invocationUsesForkContext,
 	resolveAgentContext,
+	validateForkContextModelPolicy,
 	wrapChainTasksForAgentContext,
 	wrapTaskForAgentContext,
 } from "../../shared/agent-context-policy.ts";
@@ -1766,6 +1767,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		artifactConfig,
 		includeProgress: params.includeProgress,
 		clarify: params.clarify,
+		context: params.context,
 		onUpdate,
 		onControlEvent,
 		controlConfig,
@@ -2258,6 +2260,11 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 				behaviorOverrides[i]!.skills = override.skills;
 			}
 		}
+		const forkModelPolicyError = validateForkContextModelPolicy({
+			tasks: tasks.map((task, index) => ({ agent: task.agent, model: modelOverrides[index] })),
+			context: params.context,
+		}, agents, (model) => resolveModelCandidate(model, availableModels, currentProvider));
+		if (forkModelPolicyError) return buildParallelModeError(forkModelPolicyError);
 
 		if (result.runInBackground) {
 			if (!isAsyncAvailable()) {
@@ -2595,6 +2602,12 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			outputUsesAgentDefault = false;
 		}
 		if (override?.skills !== undefined) skillOverride = override.skills;
+		const forkModelPolicyError = validateForkContextModelPolicy({
+			agent: params.agent,
+			model: modelOverride,
+			context: params.context,
+		}, agents, (model) => resolveModelCandidate(model, availableModels, currentProvider));
+		if (forkModelPolicyError) return buildRequestedModeError(params, forkModelPolicyError);
 
 		if (result.runInBackground) {
 			const id = randomUUID();
@@ -3109,6 +3122,22 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			allowClarifyTaskPrompt,
 		);
 		if (validationError) return validationError;
+		if (invocationContext === "fork") {
+			let availableModels: ModelInfo[];
+			try {
+				availableModels = ctx.modelRegistry.getAvailable().map(toModelInfo);
+			} catch (error) {
+				return toExecutionErrorResult(effectiveParams, error, invocationContext);
+			}
+			const forkModelPolicyError = validateForkContextModelPolicy(
+				effectiveParams,
+				discoveredAgents,
+				(model) => resolveModelCandidate(model, availableModels, ctx.model?.provider),
+			);
+			if (forkModelPolicyError) {
+				return toExecutionErrorResult(effectiveParams, new Error(forkModelPolicyError), invocationContext);
+			}
+		}
 
 		let sessionFileForIndex: (idx?: number) => string | undefined = () => undefined;
 		let forkSessionFileForAgentIndex: (agentName: string | undefined, idx?: number) => string | undefined = () => undefined;

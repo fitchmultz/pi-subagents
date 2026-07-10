@@ -247,7 +247,10 @@ subagent({
 `context: "fork"` creates a branched child session from the current persisted
 parent session. It does **not** create a fresh minimal review context or filter
 history down to only the relevant parts. Use it when you want a separate review
-or execution thread that can still reference the parent session history.
+or execution thread that can still reference the parent session history. Fork
+is rejected when an affected agent's effective primary or fallback model uses
+the `anthropic/` provider; explicit context/model overrides cannot bypass this
+restriction.
 
 ### Parallel execution
 
@@ -687,7 +690,7 @@ subagent({
 
 When you are the orchestrating agent for a new feature or non-trivial change, factor in the packaged prompt workflows without literally invoking slash commands. Use the same patterns through tools and subagents.
 
-Keep effective agent defaults for routine runs. User/project agent descriptions and frontmatter may encode when to override model, thinking level, skills, output behavior, or context mode; follow that policy when risk warrants it, but do not add overrides just because you are orchestrating. In particular, packaged `planner`, `worker`, and `oracle` default to forked context unless user/project profiles override them.
+Keep effective agent defaults for routine runs. User/project agent descriptions and frontmatter may encode when to override model, thinking level, skills, output behavior, or context mode; follow that policy when risk warrants it, but do not add overrides just because you are orchestrating. In particular, packaged `planner`, `worker`, and `oracle` default to forked context unless user/project profiles override them. Fork is never available to effective `anthropic/` primary or fallback models; other providers continue to use the configured context policy normally.
 
 When the user approves launching a subagent to carry out a plan or workflow, treat that as approval to generate a proper role-specific meta prompt for that subagent. Include the approved plan path or summary, clarified requirements, non-goals, relevant context, role boundaries, files or areas to inspect, acceptance criteria, expected output, and validation expectations. Do not pass vague instructions like “implement the plan fully” or “review this” by themselves.
 

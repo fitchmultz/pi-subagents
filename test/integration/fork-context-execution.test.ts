@@ -491,12 +491,12 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(args.at(-1) ?? "", "Task: parallel task");
 	});
 
-	it("uses agent defaultContext fork when launch context is omitted", async () => {
+	it("uses non-Anthropic agent model and defaultContext configs as usual", async () => {
 		const parentSessionFile = path.join(tempDir, "parent.jsonl");
 		const { manager, openedPaths, branchedLeafIds } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "worker", description: "Worker", defaultContext: "fork" },
+				{ name: "worker", description: "Worker", model: "openai/gpt-5-main", defaultContext: "fork" },
 			],
 			projectAgentsDir: null,
 		}));
@@ -514,6 +514,96 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.deepEqual(openedPaths, [parentSessionFile]);
 		assert.deepEqual(branchedLeafIds, ["leaf-current"]);
 		assert.deepEqual(readSessionArgsFromCalls(), [path.join(tempDir, "fork-1.jsonl")]);
+		const args = readCallArgs();
+		assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), ["--model", "openai/gpt-5-main"]);
+	});
+
+	it("rejects Anthropic models before forking, including an explicit context override", async () => {
+		const parentSessionFile = path.join(tempDir, "parent.jsonl");
+		for (const testCase of [
+			{
+				name: "agent default",
+				agent: { name: "worker", description: "Worker", model: "anthropic/claude-opus-4-6", defaultContext: "fork" as const },
+				params: { agent: "worker", task: "test" },
+			},
+			{
+				name: "explicit override",
+				agent: { name: "worker", description: "Worker", model: "openai/gpt-5-main", defaultContext: "fresh" as const },
+				params: { agent: "worker", task: "test", model: "anthropic/claude-sonnet-4-6", context: "fork" },
+			},
+			{
+				name: "bare model resolved through registry",
+				agent: { name: "worker", description: "Worker", model: "claude-sonnet-4-6", defaultContext: "fork" as const },
+				params: { agent: "worker", task: "test" },
+				availableModel: { provider: "anthropic", id: "claude-sonnet-4-6" },
+			},
+			{
+				name: "async bare fallback resolved through registry",
+				agent: {
+					name: "worker",
+					description: "Worker",
+					model: "openai/gpt-5-main",
+					fallbackModels: ["claude-sonnet-4-6"],
+					defaultContext: "fork" as const,
+				},
+				params: { agent: "worker", task: "test", async: true },
+				availableModel: { provider: "anthropic", id: "claude-sonnet-4-6" },
+			},
+		]) {
+			const { manager, openedPaths } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
+			const executor = makeExecutorWithDiscoverAgents(() => ({ agents: [testCase.agent], projectAgentsDir: null }));
+			const ctx = makeCtx(manager);
+			if (testCase.availableModel) ctx.modelRegistry.getAvailable = () => [testCase.availableModel];
+			const result = await executor.execute(
+				"id",
+				testCase.params,
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
+
+			assert.equal(result.isError, true, testCase.name);
+			assert.match(result.content[0]?.text ?? "", /Fork context cannot be used with anthropic\/\* models/, testCase.name);
+			assert.match(result.content[0]?.text ?? "", /restriction cannot be overridden/, testCase.name);
+			assert.deepEqual(openedPaths, [], testCase.name);
+		}
+		assert.deepEqual(readAllCallArgs(), []);
+	});
+
+	it("rejects Anthropic model changes from clarify UI in every foreground mode", async () => {
+		const parentSessionFile = path.join(tempDir, "parent.jsonl");
+		const executor = makeExecutorWithDiscoverAgents(() => ({
+			agents: [{ name: "worker", description: "Worker", model: "openai/gpt-5-main", defaultContext: "fresh" }],
+			projectAgentsDir: null,
+		}));
+		for (const testCase of [
+			{ name: "single", params: { agent: "worker", task: "test", context: "fork", clarify: true } },
+			{ name: "parallel", params: { tasks: [{ agent: "worker", task: "test" }], context: "fork", clarify: true } },
+			{ name: "chain", params: { chain: [{ agent: "worker", task: "test" }], context: "fork", clarify: true } },
+		]) {
+			const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
+			const ctx = makeCtx(manager);
+			ctx.hasUI = true;
+			Object.assign(ctx.ui, {
+				custom: async () => ({
+					confirmed: true,
+					templates: ["test"],
+					behaviorOverrides: [{ model: "anthropic/claude-sonnet-4-6" }],
+					runInBackground: false,
+				}),
+			});
+			const result = await executor.execute(
+				"id",
+				testCase.params,
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
+
+			assert.equal(result.isError, true, testCase.name);
+			assert.match(result.content[0]?.text ?? "", /Fork context cannot be used with anthropic\/\* models/, testCase.name);
+		}
+		assert.deepEqual(readAllCallArgs(), []);
 	});
 
 	it("keeps default-fork context on run-path errors", async () => {

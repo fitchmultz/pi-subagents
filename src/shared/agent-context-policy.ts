@@ -15,9 +15,15 @@ interface ForkableSessionManager {
 
 export interface SubagentParamsLikeForContext {
 	agent?: string;
-	tasks?: Array<{ agent: string }>;
+	model?: string;
+	tasks?: Array<{ agent: string; model?: string }>;
 	chain?: ChainStep[];
 	context?: SubagentExecutionContext;
+}
+
+interface InvocationAgentTarget {
+	agent: string;
+	model?: string;
 }
 
 export function resolveAgentContext(
@@ -33,12 +39,51 @@ export function resolveAgentContext(
 	return agent?.defaultContext === "fork" ? "fork" : "fresh";
 }
 
+function collectInvocationAgentTargets(params: SubagentParamsLikeForContext): InvocationAgentTarget[] {
+	if (params.tasks?.length) {
+		return params.tasks.map((task) => ({ agent: task.agent, model: task.model }));
+	}
+	if (params.chain?.length) {
+		const targets: InvocationAgentTarget[] = [];
+		for (const step of params.chain) {
+			if (isParallelStep(step)) {
+				for (const task of step.parallel) targets.push({ agent: task.agent, model: task.model });
+			} else if (isDynamicParallelStep(step)) {
+				targets.push({ agent: step.parallel.agent, model: step.parallel.model });
+			} else {
+				targets.push({ agent: step.agent, model: step.model });
+			}
+		}
+		return targets;
+	}
+	return params.agent ? [{ agent: params.agent, model: params.model }] : [];
+}
+
 export function collectInvocationAgentNames(params: SubagentParamsLikeForContext): string[] {
 	const names: string[] = [];
 	if (params.agent) names.push(params.agent);
 	for (const task of params.tasks ?? []) names.push(task.agent);
 	for (const step of params.chain ?? []) names.push(...getStepAgents(step));
 	return names;
+}
+
+export function validateForkContextModelPolicy(
+	params: SubagentParamsLikeForContext,
+	agents: readonly AgentConfig[],
+	resolveModel?: (model: string) => string | undefined,
+): string | undefined {
+	for (const target of collectInvocationAgentTargets(params)) {
+		const agent = agents.find((entry) => entry.name === target.agent);
+		if (!agent || resolveAgentContext(params.context, target.agent, agents) !== "fork") continue;
+		const anthropicModel = [target.model ?? agent.model, ...(agent.fallbackModels ?? [])]
+			.filter((model): model is string => Boolean(model?.trim()))
+			.map((model) => resolveModel?.(model) ?? model)
+			.find((model) => model.trim().toLowerCase().startsWith("anthropic/"));
+		if (anthropicModel) {
+			return `Fork context cannot be used with anthropic/* models. Agent '${target.agent}' has effective model candidate '${anthropicModel}'. Use context: "fresh" or a non-Anthropic model; this restriction cannot be overridden.`;
+		}
+	}
+	return undefined;
 }
 
 export function invocationUsesForkContext(

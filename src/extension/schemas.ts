@@ -268,7 +268,7 @@ export const SubagentParams = Type.Object({
 	})),
 	chain: Type.Optional(Type.Array(ChainItem, { description: "CHAIN mode: sequential pipeline where each step's response becomes {previous} for the next. Use {task}, {previous}, {chain_dir} in task templates." })),
 	context: Type.Optional(StringEnum(["fresh", "fork"] as const, {
-		description: "'fresh' or 'fork' to branch from parent session. Explicit value overrides all agents in the call. When omitted, each agent uses its own defaultContext.",
+		description: "'fresh' or 'fork' to branch from parent session. Explicit value overrides all agents in the call. When omitted, each agent uses its own defaultContext. Fork is rejected when an affected agent's effective primary or fallback model uses the anthropic/ provider; this restriction cannot be overridden.",
 	})),
 	chainDir: Type.Optional(Type.String({ description: "Persistent directory for chain artifacts. Default: a user-scoped temp directory under <tmpdir>/ (auto-cleaned after 24h)" })),
 	async: Type.Optional(Type.Boolean({ description: "Run in background (default: false, or per config)" })),

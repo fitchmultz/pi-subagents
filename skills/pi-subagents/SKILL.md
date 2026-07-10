@@ -112,7 +112,7 @@ Use the effective agents from `subagent({ action: "list" })`; user/project profi
 - `oracle`: forked advisory second opinion for direction, drift, and assumptions.
 - `delegate` if present: lightweight generic child; prefer a specialist or `worker` when the task has a real role.
 
-Keep configured defaults for routine runs. Pass `model`/`thinking` only when the listed agent description, user request, or clear task risk justifies it; put the override in the subagent call, not only in prose. Pass explicit `context: "fresh"` or `"fork"` only when one policy should override every child in the call.
+Keep configured defaults for routine runs. Pass `model`/`thinking` only when the listed agent description, user request, or clear task risk justifies it; put the override in the subagent call, not only in prose. Pass explicit `context: "fresh"` or `"fork"` only when one policy should override every child in the call. Fork is rejected for effective `anthropic/` primary or fallback models, and explicit overrides cannot bypass that restriction.
 
 ## Prompt-template workflows
 

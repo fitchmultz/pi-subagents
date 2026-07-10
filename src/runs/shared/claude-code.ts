@@ -184,8 +184,8 @@ export function buildClaudeCodeInvocation(input: {
 	}
 	if (input.allowSubagents) throw new Error("Claude Code backend does not support nested subagent fanout. Use a Pi-backed model for allowSubagents.");
 	const mappedTools = mapClaudeCodeTools(input.tools, input.mcpDirectTools);
-	if (mappedTools) args.push("--tools", mappedTools);
 	args.push(input.task);
+	if (mappedTools) args.push("--tools", mappedTools);
 	return {
 		command: "claude",
 		args,

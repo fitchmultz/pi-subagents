@@ -53,9 +53,10 @@ describe("Claude Code backend model mapping", () => {
 		);
 	});
 
-	it("maps supported explicit tools to Claude Code tool names", () => {
+	it("maps supported explicit tools without letting Claude Code consume the prompt as a variadic tool", () => {
 		const invocation = buildClaudeCodeInvocation({ model: "claude-code/sonnet", task: "hi", tools: ["read", "bash", "web_search"] });
 		assert.deepEqual(invocation.args.slice(invocation.args.indexOf("--tools"), invocation.args.indexOf("--tools") + 2), ["--tools", "Read,Bash,WebSearch"]);
+		assert.ok(invocation.args.indexOf("hi") < invocation.args.indexOf("--tools"));
 	});
 
 	it("resumes from stored Claude Code session metadata", () => {
