@@ -448,6 +448,7 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ agent: "worker", task: "Fix", acceptance: false },
 			{ agent: "worker", task: "Fix", acceptance: { level: "checked" } },
 			{ agent: "worker", task: "Fix", acceptance: { criteria: ["Patch"], review: true } },
+			{ agent: "worker", task: "Fix", acceptance: { criteria: ["Patch"], review: { agent: "reviewer", required: true } } },
 			{ config: [] },
 			{ config: null },
 			{ agent: "scout", task: "Summarize", maxOutput: { bytes: 0 } },

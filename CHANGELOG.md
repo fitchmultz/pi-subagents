@@ -21,6 +21,7 @@
 - Run local test scripts through a small wrapper that clears inherited `PI_SUBAGENT_*` runtime variables before starting the Node test runner.
 
 ### Fixed
+- Removed the unsupported public `acceptance.review` gate and reject legacy uses during preflight, preventing completed, verified workers from being marked failed for an automatic reviewer result the runtime never creates; independent review remains a separate parent-controlled run.
 - Pass Claude Code child prompts before the variadic `--tools` option so current Claude Code releases do not consume the prompt as another tool name.
 - Removed active-long-running control notices and their thresholds; control notifications now only fire for needs-attention states.
 - Return the last non-empty text part from the latest assistant message so multi-part assistant outputs prefer the final answer over progress text.

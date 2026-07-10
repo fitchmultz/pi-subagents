@@ -236,7 +236,7 @@ export interface ModelAttempt {
 	usage?: Usage;
 }
 
-export type AcceptanceProvenanceLevel = "none" | "attested" | "checked" | "verified" | "reviewed";
+export type AcceptanceProvenanceLevel = "none" | "attested" | "checked" | "verified";
 
 export type AcceptanceEvidenceKind =
 	| "changed-files"
@@ -265,17 +265,10 @@ export interface AcceptanceVerifyCommand {
 	allowFailure?: boolean;
 }
 
-export interface AcceptanceReviewGate {
-	agent?: string;
-	focus?: string;
-	required?: boolean;
-}
-
 export interface AcceptanceConfig {
 	criteria?: Array<string | AcceptanceGate>;
 	evidence?: AcceptanceEvidenceKind[];
 	verify?: AcceptanceVerifyCommand[];
-	review?: AcceptanceReviewGate;
 	stopRules?: string[];
 	maxFinalizationTurns?: number;
 }
@@ -296,7 +289,6 @@ export interface ResolvedAcceptanceConfig {
 	criteria: ResolvedAcceptanceGate[];
 	evidence: AcceptanceEvidenceKind[];
 	verify: AcceptanceVerifyCommand[];
-	review?: AcceptanceReviewGate;
 	stopRules: string[];
 	finalization: {
 		mode: "none" | "self-review-loop";
@@ -345,23 +337,12 @@ export interface AcceptanceVerifyResult {
 	durationMs: number;
 }
 
-export interface AcceptanceReviewResult {
-	status: "no-blockers" | "blockers" | "needs-parent-decision";
-	findings: Array<{
-		severity: "blocker" | "non-blocking";
-		file?: string;
-		issue: string;
-		rationale: string;
-	}>;
-}
-
 export type AcceptanceLedgerStatus =
 	| "not-required"
 	| "claimed"
 	| "attested"
 	| "checked"
 	| "verified"
-	| "reviewed"
 	| "accepted"
 	| "rejected";
 
@@ -396,7 +377,6 @@ export interface AcceptanceLedger {
 	initialChildReportParseError?: string;
 	runtimeChecks: AcceptanceRuntimeCheck[];
 	verifyRuns: AcceptanceVerifyResult[];
-	reviewResult?: AcceptanceReviewResult;
 	finalization?: AcceptanceFinalizationLedger;
 	parentDecision?: {
 		status: "accepted" | "rejected";

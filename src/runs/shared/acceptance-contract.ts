@@ -27,12 +27,11 @@ const ACCEPTANCE_KEYS = new Set([
 	"criteria",
 	"evidence",
 	"verify",
-	"review",
 	"stopRules",
 	"maxFinalizationTurns",
 ]);
 
-const REMOVED_ACCEPTANCE_KEYS = new Set(["level", "finalization", "reason"]);
+const REMOVED_ACCEPTANCE_KEYS = new Set(["level", "finalization", "reason", "review"]);
 
 const EVIDENCE_REPORT_FIELDS: Record<AcceptanceEvidenceKind, string> = {
 	"changed-files": "changedFiles: array of changed file paths",
@@ -68,7 +67,10 @@ export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"
 
 	const value = input as Record<string, unknown>;
 	if (Object.hasOwn(value, "level")) {
-		errors.push(`${pathLabel}.level is no longer supported; configure criteria, evidence, verify, and review directly.`);
+		errors.push(`${pathLabel}.level is no longer supported; configure criteria, evidence, and verify directly.`);
+	}
+	if (Object.hasOwn(value, "review")) {
+		errors.push(`${pathLabel}.review is not supported; launch a separate parent-controlled reviewer after the worker completes.`);
 	}
 	if (Object.hasOwn(value, "finalization")) {
 		errors.push(`${pathLabel}.finalization is not supported; acceptance contracts always run the self-review loop.`);
@@ -148,17 +150,6 @@ export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"
 		}
 	}
 
-	if (value.review !== undefined) {
-		if (!value.review || typeof value.review !== "object" || Array.isArray(value.review)) {
-			errors.push(`${pathLabel}.review must be an object.`);
-		} else {
-			const review = value.review as Record<string, unknown>;
-			if (review.agent !== undefined && typeof review.agent !== "string") errors.push(`${pathLabel}.review.agent must be a string.`);
-			if (review.focus !== undefined && typeof review.focus !== "string") errors.push(`${pathLabel}.review.focus must be a string.`);
-			if (review.required !== undefined && typeof review.required !== "boolean") errors.push(`${pathLabel}.review.required must be a boolean.`);
-		}
-	}
-
 	if (value.stopRules !== undefined) {
 		if (!Array.isArray(value.stopRules)) {
 			errors.push(`${pathLabel}.stopRules must be an array.`);
@@ -178,10 +169,9 @@ export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"
 	const hasContract = hasArrayItems(value.criteria)
 		|| hasArrayItems(value.evidence)
 		|| hasArrayItems(value.verify)
-		|| value.review !== undefined
 		|| hasArrayItems(value.stopRules);
 	if (!hasContract) {
-		errors.push(`${pathLabel} must include at least one of criteria, evidence, verify, review, or stopRules.`);
+		errors.push(`${pathLabel} must include at least one of criteria, evidence, verify, or stopRules.`);
 	}
 
 	return errors;
@@ -202,7 +192,6 @@ function normalizeCriteria(criteria: AcceptanceConfig["criteria"], evidence: Acc
 }
 
 function deriveAcceptanceLevel(config: AcceptanceConfig): AcceptanceProvenanceLevel {
-	if (config.review) return "reviewed";
 	if ((config.verify?.length ?? 0) > 0) return "verified";
 	return "checked";
 }
@@ -243,7 +232,6 @@ export function resolveEffectiveAcceptance(input: {
 		criteria,
 		evidence,
 		verify,
-		...(explicit.review ? { review: explicit.review } : {}),
 		stopRules,
 		finalization: { mode: "self-review-loop", maxTurns: explicit.maxFinalizationTurns ?? DEFAULT_FINALIZATION_MAX_TURNS },
 	};
@@ -254,10 +242,9 @@ export function shouldRunAcceptanceFinalization(acceptance: ResolvedAcceptanceCo
 }
 
 export function acceptanceSelfReviewConfig(acceptance: ResolvedAcceptanceConfig): ResolvedAcceptanceConfig {
-	if (!acceptance.review && acceptance.verify.length === 0) return acceptance;
-	const { review: _review, verify: _verify, ...selfReview } = acceptance;
+	if (acceptance.verify.length === 0) return acceptance;
 	return {
-		...selfReview,
+		...acceptance,
 		level: "checked",
 		verify: [],
 	};
@@ -287,15 +274,6 @@ export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig): st
 	if (acceptance.verify.length > 0) {
 		lines.push("", "Runtime verification commands configured by parent:");
 		for (const command of acceptance.verify) lines.push(`- ${command.id}: ${command.command}`);
-	}
-	if (acceptance.review) {
-		lines.push(
-			"",
-			`Independent review gate: ${acceptance.review.required === false ? "optional" : "required"}${acceptance.review.agent ? ` by ${acceptance.review.agent}` : ""}.`,
-			"This review gate is owned by the parent/runtime after your final acceptance report.",
-			"Do not launch reviewer subagents yourself to satisfy this gate unless the task explicitly asks you to delegate review.",
-		);
-		if (acceptance.review.focus) lines.push(`Review focus for the parent/runtime reviewer: ${acceptance.review.focus}`);
 	}
 	if (acceptance.stopRules.length > 0) {
 		lines.push("", "Stop rules:", ...acceptance.stopRules.map((rule) => `- ${rule}`));

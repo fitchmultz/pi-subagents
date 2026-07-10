@@ -54,14 +54,6 @@ export function formatAcceptanceFinalizationPrompt(input: {
 	if (input.acceptance.verify.length > 0) {
 		lines.push("", "Runtime verification commands that must pass:", ...input.acceptance.verify.map((command) => `- ${command.id}: ${command.command}`));
 	}
-	if (input.acceptance.review) {
-		lines.push(
-			"",
-			`Independent review gate after self-review: ${input.acceptance.review.required === false ? "optional" : "required"}${input.acceptance.review.agent ? ` by ${input.acceptance.review.agent}` : ""}.`,
-			"This review gate is owned by the parent/runtime after your final acceptance report.",
-			"Do not launch reviewer subagents yourself to satisfy this gate.",
-		);
-	}
 	if (input.acceptance.stopRules.length > 0) {
 		lines.push("", "Stop rules are hard constraints while deciding whether to continue, stop as blocked, or report success:", ...input.acceptance.stopRules.map((rule) => `- ${rule}`));
 	}

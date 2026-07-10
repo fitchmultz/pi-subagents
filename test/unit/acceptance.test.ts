@@ -122,20 +122,15 @@ describe("acceptance gates", () => {
 		assert.match(finalizationPrompt, /exactly one fenced JSON block/);
 	});
 
-	it("tells children that review gates are parent-owned", () => {
-		const resolved = resolveEffectiveAcceptance({
-			agentName: "worker",
-			task: "Implement a risky fix",
-			explicit: {
-				criteria: ["Patch the bug"],
-				review: { agent: "reviewer", required: true, focus: "Correctness" },
-			},
-		});
-
-		const prompt = formatAcceptancePrompt(resolved);
-		assert.match(prompt, /owned by the parent\/runtime/);
-		assert.match(prompt, /Do not launch reviewer subagents yourself/);
-		assert.match(prompt, /Review focus for the parent\/runtime reviewer: Correctness/);
+	it("rejects unsupported review gates before resolving acceptance", () => {
+		const review = { criteria: ["Patch the bug"], review: { agent: "reviewer", required: true, focus: "Correctness" } };
+		assert.deepEqual(validateAcceptanceInput(review), [
+			"acceptance.review is not supported; launch a separate parent-controlled reviewer after the worker completes.",
+		]);
+		assert.throws(
+			() => resolveEffectiveAcceptance({ agentName: "worker", task: "Implement a risky fix", explicit: review }),
+			/acceptance\.review is not supported/,
+		);
 	});
 
 	it("parses only explicit acceptance-report fences", () => {
@@ -268,38 +263,7 @@ describe("acceptance gates", () => {
 		assert.equal(failLedger.verifyRuns[0]?.status, "failed");
 	}));
 
-	it("review gates require independent reviewer provenance", async () => withTempRepo(async (cwd) => {
-		const acceptance = resolveEffectiveAcceptance({
-			agentName: "worker",
-			task: "Implement a risky fix",
-			explicit: { criteria: ["Patch bug"], review: { agent: "reviewer", required: true } },
-		});
-		const noBlockers = await evaluateAcceptance({
-			acceptance,
-			output: report(),
-			cwd,
-			reviewResult: { status: "no-blockers", findings: [] },
-		});
-		assert.equal(noBlockers.status, "reviewed");
-
-		const blockers = await evaluateAcceptance({
-			acceptance,
-			output: report(),
-			cwd,
-			reviewResult: {
-				status: "blockers",
-				findings: [{ severity: "blocker", issue: "Missing test", rationale: "Acceptance requires test evidence." }],
-			},
-		});
-		assert.equal(blockers.status, "rejected");
-		assert.equal(blockers.reviewResult?.status, "blockers");
-
-		const unavailable = await evaluateAcceptance({ acceptance, output: report(), cwd });
-		assert.equal(unavailable.status, "rejected");
-		assert.equal(unavailable.reviewResult?.status, "needs-parent-decision");
-	}));
-
-	it("self-review finalization does not mark a run reviewed or verified by itself", async () => withTempRepo(async (cwd) => {
+	it("self-review finalization does not mark a run verified by itself", async () => withTempRepo(async (cwd) => {
 		const acceptance = resolveEffectiveAcceptance({
 			agentName: "worker",
 			task: "Implement a fix",
@@ -315,16 +279,15 @@ describe("acceptance gates", () => {
 		assert.equal(ledger.childReport?.criteriaSatisfied?.[0]?.status, "satisfied");
 		assert.equal(ledger.finalization?.status, "completed");
 		assert.notEqual(ledger.status, "verified");
-		assert.notEqual(ledger.status, "reviewed");
 	}));
 
 
 	it("validates removed level API, empty contracts, verify shapes, and loop bounds", () => {
 		assert.deepEqual(validateAcceptanceInput({ level: "none" }), [
-			"acceptance.level is no longer supported; configure criteria, evidence, verify, and review directly.",
-			"acceptance must include at least one of criteria, evidence, verify, review, or stopRules.",
+			"acceptance.level is no longer supported; configure criteria, evidence, and verify directly.",
+			"acceptance must include at least one of criteria, evidence, verify, or stopRules.",
 		]);
-		assert.deepEqual(validateAcceptanceInput({}), ["acceptance must include at least one of criteria, evidence, verify, review, or stopRules."]);
+		assert.deepEqual(validateAcceptanceInput({}), ["acceptance must include at least one of criteria, evidence, verify, or stopRules."]);
 		assert.deepEqual(validateAcceptanceInput({ criteria: [{ must: "Patch bug" }] }), ["acceptance.criteria[0].id is required."]);
 		assert.deepEqual(validateAcceptanceInput({ verify: [{ id: "missing-command" }] }), ["acceptance.verify[0].command is required."]);
 		assert.deepEqual(validateAcceptanceInput({ criteria: ["Patch bug"], maxFinalizationTurns: 0 }), ["acceptance.maxFinalizationTurns must be an integer from 1 to 10."]);

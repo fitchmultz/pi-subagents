@@ -1380,6 +1380,28 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.doesNotMatch(result.content[0]?.text ?? "", /Async chain:/);
 	});
 
+	it("rejects unsupported acceptance.review before any child launch", async () => {
+		const executor = makeExecutor();
+		for (const testCase of [
+			{ name: "single", params: { agent: "echo", task: "test", acceptance: { criteria: ["Patch"], review: { agent: "reviewer" } } } },
+			{ name: "parallel", params: { tasks: [{ agent: "echo", task: "test", acceptance: { criteria: ["Patch"], review: { agent: "reviewer" } } }], async: true } },
+			{ name: "chain", params: { chain: [{ agent: "echo", task: "test", acceptance: { criteria: ["Patch"], review: { agent: "reviewer" } } }] } },
+		]) {
+			const result = await executor.execute(
+				"id",
+				testCase.params,
+				new AbortController().signal,
+				undefined,
+				makeCtx(makeSessionManagerRecorder().manager),
+			);
+
+			assert.equal(result.isError, true, testCase.name);
+			assert.match(result.content[0]?.text ?? "", /acceptance\.review is not supported/, testCase.name);
+			assert.match(result.content[0]?.text ?? "", /separate parent-controlled reviewer/, testCase.name);
+		}
+		assert.deepEqual(readAllCallArgs(), []);
+	});
+
 	it("rejects group-level chain acceptance during executor preflight", async () => {
 		const executor = makeExecutor();
 

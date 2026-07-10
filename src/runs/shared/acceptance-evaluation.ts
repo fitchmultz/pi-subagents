@@ -6,7 +6,6 @@ import type {
 	AcceptanceProvenanceLevel,
 	AcceptanceReport,
 	AcceptanceRuntimeCheck,
-	AcceptanceReviewResult,
 	AcceptanceVerifyCommand,
 	AcceptanceVerifyResult,
 	ResolvedAcceptanceConfig,
@@ -19,7 +18,6 @@ const LEVEL_RANK: Record<AcceptanceProvenanceLevel, number> = {
 	attested: 1,
 	checked: 2,
 	verified: 3,
-	reviewed: 4,
 };
 
 function isStringArray(value: unknown): value is string[] {
@@ -143,7 +141,6 @@ export async function evaluateAcceptance(input: {
 	output: string;
 	cwd: string;
 	report?: AcceptanceReport;
-	reviewResult?: AcceptanceReviewResult;
 }): Promise<AcceptanceLedger> {
 	const acceptance = input.acceptance;
 	const ledger: AcceptanceLedger = {
@@ -187,24 +184,6 @@ export async function evaluateAcceptance(input: {
 		ledger.status = "verified";
 	}
 
-	if (acceptance.review) {
-		if (input.reviewResult) {
-			ledger.reviewResult = input.reviewResult;
-			ledger.status = input.reviewResult.status === "no-blockers" ? "reviewed" : "rejected";
-		} else {
-			const optionalReview = acceptance.review.required === false;
-			ledger.reviewResult = {
-				status: "needs-parent-decision",
-				findings: [{
-					severity: optionalReview ? "non-blocking" : "blocker",
-					issue: "Reviewed acceptance requires an independent reviewer result.",
-					rationale: "The run cannot be marked reviewed from child self-review or evidence alone.",
-				}],
-			};
-			if (!optionalReview) ledger.status = "rejected";
-		}
-	}
-
 	return ledger;
 }
 
@@ -215,7 +194,5 @@ export function acceptanceFailureMessage(ledger: AcceptanceLedger): string | und
 	if (failedCheck) return `Acceptance rejected: ${failedCheck.message}`;
 	const failedVerify = ledger.verifyRuns.find((run) => run.status === "failed" || run.status === "timed-out");
 	if (failedVerify) return `Acceptance verification '${failedVerify.id}' ${failedVerify.status}.`;
-	if (ledger.reviewResult?.status === "needs-parent-decision") return "Acceptance review required but no automatic reviewer result is available.";
-	if (ledger.reviewResult?.status === "blockers") return "Acceptance review found blockers.";
 	return "Acceptance rejected.";
 }

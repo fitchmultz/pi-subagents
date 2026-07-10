@@ -395,6 +395,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			"Use subagent for materially parallelizable scouting, review, or implementation work where another focused agent adds value.",
 			"Before executing subagent runs, call subagent with { action: \"list\" } unless the requested executable agent or chain is already known from this conversation.",
 			"Keep the parent session responsible for final decisions, verification, and user-facing status; treat subagent output as evidence to review, not automatic truth.",
+			"Keep independent review as a separate parent-launched reviewer run after the worker; acceptance.review is unsupported.",
 			"For live children that stall or need clarification, inspect status, then use action='nudge' or the shown intercom ask before interrupting or relaunching.",
 			"Do not use subagent when a direct local tool call or small edit is cheaper than delegation.",
 		],
