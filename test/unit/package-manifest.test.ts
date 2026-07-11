@@ -53,6 +53,11 @@ test("direct @earendil-works runtime imports are declared for local installs", (
 	assert.deepEqual(missing, []);
 });
 
+test("detached runner installs TypeBox as a production dependency", () => {
+	const dependencies = readPackageJson().dependencies as Record<string, unknown>;
+	assert.equal(dependencies.typebox, "^1.1.39");
+});
+
 test("package is private and exposes no legacy npx installer", () => {
 	const packageJson = readPackageJson();
 	assert.equal(packageJson.private, true);

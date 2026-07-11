@@ -15,12 +15,13 @@
 - Use Pi 0.78.1 `ctx.mode` when available to restrict terminal-only widget, raw input, and tool-expansion behavior to TUI mode while preserving a `ctx.hasUI` fallback for older compatible Pi installs.
 - Ignore the whole project-local `.pi/` tree so semantic caches and other agent state do not appear as publishable package artifacts.
 - Added dev-only dependency overrides for current transitive `brace-expansion` and `ws` advisories without changing runtime package dependencies.
-- Declared all pi-bundled runtime packages (`@earendil-works/pi-*`, `typebox`) as optional wildcard peers and kept them only as development dependencies, so npm peer ranges do not block future pi releases.
+- Declared Pi runtime packages (`@earendil-works/pi-*`) as optional wildcard peers so npm peer ranges do not block future Pi releases; TypeBox stays a direct dependency because the detached async runner resolves it from this package.
 - Added explicit `subagent` tool prompt snippet/guidelines so Pi 0.77+ tool metadata attribution has concise delegation guidance separate from the full schema description.
 - Switched the local TypeScript test loader to `jiti` so validation does not depend on Node's removed `--experimental-transform-types` flag on newer Node releases.
 - Run local test scripts through a small wrapper that clears inherited `PI_SUBAGENT_*` runtime variables before starting the Node test runner.
 
 ### Fixed
+- Install TypeBox as a production dependency so detached async runners can load `typebox/compile` instead of exiting before creating child status or session files.
 - Removed the unsupported public `acceptance.review` gate and reject legacy uses during preflight, preventing completed, verified workers from being marked failed for an automatic reviewer result the runtime never creates; independent review remains a separate parent-controlled run.
 - Pass Claude Code child prompts before the variadic `--tools` option so current Claude Code releases do not consume the prompt as another tool name.
 - Removed active-long-running control notices and their thresholds; control notifications now only fire for needs-attention states.

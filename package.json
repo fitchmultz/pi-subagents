@@ -58,8 +58,7 @@
     "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "typebox": "*"
+    "@earendil-works/pi-tui": "*"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-agent-core": {
@@ -73,13 +72,11 @@
     },
     "@earendil-works/pi-tui": {
       "optional": true
-    },
-    "typebox": {
-      "optional": true
     }
   },
   "dependencies": {
-    "jiti": "^2.7.0"
+    "jiti": "^2.7.0",
+    "typebox": "^1.1.39"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "^0.80.1",
@@ -87,7 +84,6 @@
     "@earendil-works/pi-coding-agent": "^0.80.1",
     "@earendil-works/pi-tui": "^0.80.1",
     "@types/node": "^24.13.2",
-    "typebox": "^1.1.39",
     "typescript": "^6.0.3"
   },
   "overrides": {
