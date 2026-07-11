@@ -36,6 +36,7 @@ import {
 	type SubagentRunMode,
 	ASYNC_DIR,
 	RESULTS_DIR,
+	RUNNER_ERROR_LOG_FILE,
 	SUBAGENT_ASYNC_STARTED_EVENT,
 	TEMP_ROOT_DIR,
 	getAsyncConfigPath,
@@ -234,7 +235,7 @@ export function isAsyncAvailable(): boolean {
 /**
  * Spawn the async runner process
  */
-function spawnRunner(cfg: object, suffix: string, cwd: string): { pid?: number; error?: string } {
+function spawnRunner(cfg: object, suffix: string, cwd: string, asyncDir: string): { pid?: number; error?: string } {
 	if (!jitiCliPath) {
 		return { error: "upstream jiti for TypeScript execution could not be found; ensure package dependencies are installed" };
 	}
@@ -253,20 +254,25 @@ function spawnRunner(cfg: object, suffix: string, cwd: string): { pid?: number; 
 	fs.writeFileSync(cfgPath, JSON.stringify(cfg));
 	const runner = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-runner.ts");
 
-	const proc = spawn(process.execPath, [jitiCliPath, runner, cfgPath], {
-		cwd,
-		detached: true,
-		stdio: "ignore",
-		windowsHide: true,
-	});
-	proc.on("error", (error) => {
-		console.error(`[pi-subagents] async spawn failed: ${error.message}`);
-	});
-	if (typeof proc.pid !== "number") {
-		return { error: `async runner did not produce a pid for cwd: ${cwd}` };
+	const errorLogFd = fs.openSync(path.join(asyncDir, RUNNER_ERROR_LOG_FILE), "a");
+	try {
+		const proc = spawn(process.execPath, [jitiCliPath, runner, cfgPath], {
+			cwd,
+			detached: true,
+			stdio: ["ignore", "ignore", errorLogFd],
+			windowsHide: true,
+		});
+		proc.on("error", (error) => {
+			console.error(`[pi-subagents] async spawn failed: ${error.message}`);
+		});
+		if (typeof proc.pid !== "number") {
+			return { error: `async runner did not produce a pid for cwd: ${cwd}` };
+		}
+		proc.unref();
+		return { pid: proc.pid };
+	} finally {
+		fs.closeSync(errorLogFd);
 	}
-	proc.unref();
-	return { pid: proc.pid };
 }
 
 function formatAsyncStartError(mode: SubagentRunMode, message: string): AsyncExecutionResult {
@@ -577,6 +583,7 @@ export function executeAsyncChain(
 			},
 			id,
 			runnerCwd,
+			asyncDir,
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -828,6 +835,7 @@ export function executeAsyncSingle(
 			},
 			id,
 			runnerCwd,
+			asyncDir,
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);

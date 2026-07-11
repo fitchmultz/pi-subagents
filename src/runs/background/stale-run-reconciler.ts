@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
-import { RESULTS_DIR, type AsyncParallelGroupStatus, type AsyncResultChild, type AsyncResultTerminalState, type AsyncStatus, type NestedRunSummary, type SubagentRunMode } from "../../shared/types.ts";
+import { RESULTS_DIR, RUNNER_ERROR_LOG_FILE, type AsyncParallelGroupStatus, type AsyncResultChild, type AsyncResultTerminalState, type AsyncStatus, type NestedRunSummary, type SubagentRunMode } from "../../shared/types.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { nestedSummaryFromAsyncStatus, projectNestedEvents, resolveNestedAsyncDir, writeNestedEvent, type NestedRoute } from "../shared/nested-events.ts";
 import { readAsyncResultFileIfExists } from "./async-result-file.ts";
@@ -168,10 +168,35 @@ function readCompletedStepOutput(asyncDir: string, index: number): string {
 	}
 }
 
+const RUNNER_STDERR_EXCERPT_BYTES = 16 * 1024;
+const UNSAFE_CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+
+function readRunnerStderr(asyncDir: string): string | undefined {
+	let fd: number | undefined;
+	try {
+		fd = fs.openSync(path.join(asyncDir, RUNNER_ERROR_LOG_FILE), "r");
+		const size = fs.fstatSync(fd).size;
+		const length = Math.min(size, RUNNER_STDERR_EXCERPT_BYTES);
+		const buffer = Buffer.alloc(length);
+		const bytesRead = fs.readSync(fd, buffer, 0, length, Math.max(0, size - length));
+		const excerpt = buffer.subarray(0, bytesRead).toString("utf-8").replace(UNSAFE_CONTROL_CHARACTERS, "�").trim();
+		if (!excerpt) return undefined;
+		return size > length ? `[runner stderr truncated to last ${length} bytes]\n${excerpt}` : excerpt;
+	} catch {
+		return undefined;
+	} finally {
+		if (fd !== undefined) {
+			try { fs.closeSync(fd); } catch {}
+		}
+	}
+}
+
 function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, reason?: string): { status: AsyncStatus; result: object; message: string } {
 	const runId = status.runId || path.basename(asyncDir);
 	const pid = typeof status.pid === "number" ? status.pid : "unknown";
-	const message = reason ?? `Async runner process ${pid} exited or disappeared before writing a result. Marked run failed by stale-run reconciliation.`;
+	const defaultMessage = `Async runner process ${pid} exited or disappeared before writing a result. Marked run failed by stale-run reconciliation.`;
+	const runnerStderr = reason ? undefined : readRunnerStderr(asyncDir);
+	const message = reason ?? (runnerStderr ? `${defaultMessage}\n\nRunner stderr:\n${runnerStderr}` : defaultMessage);
 	const steps = status.steps?.length ? status.steps : [{ agent: "subagent", status: "running" as const }];
 	const repairedSteps = steps.map((step) => step.status === "running" || String(step.status) === "queued" || step.status === "pending"
 		? withoutLiveActivity({

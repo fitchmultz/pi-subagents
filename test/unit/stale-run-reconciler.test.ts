@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { checkPidLiveness, reconcileAsyncRun } from "../../src/runs/background/stale-run-reconciler.ts";
+import { RUNNER_ERROR_LOG_FILE } from "../../src/shared/types.ts";
 
 function tempRoot(prefix: string): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -44,6 +45,8 @@ describe("async stale-run reconciliation", () => {
 				currentStep: 0,
 				steps: [{ agent: "scout", status: "running", startedAt: 1000 }],
 			});
+			const runnerStderr = `${"noisy bootstrap output\n".repeat(1000)}\u001b[31mCannot find module 'typebox/compile'\u001b[0m\n`;
+			fs.writeFileSync(path.join(asyncDir, RUNNER_ERROR_LOG_FILE), runnerStderr, "utf-8");
 
 			const result = reconcileAsyncRun(asyncDir, {
 				resultsDir,
@@ -54,11 +57,16 @@ describe("async stale-run reconciliation", () => {
 			assert.equal(result.repaired, true);
 			assert.equal(result.status?.state, "failed");
 			assert.match(result.message ?? "", /process 12345 exited or disappeared/);
+			assert.match(result.message ?? "", /Runner stderr:\n\[runner stderr truncated to last 16384 bytes\]/);
+			assert.match(result.message ?? "", /Cannot find module 'typebox\/compile'/);
+			assert.doesNotMatch(result.message ?? "", /\u001b/);
+			assert.ok((result.message?.length ?? Infinity) < runnerStderr.length);
 			const status = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8"));
 			assert.equal(status.state, "failed");
 			assert.equal(status.sessionId, "session-current");
 			assert.equal(status.steps[0].status, "failed");
 			assert.match(status.steps[0].error, /process 12345 exited or disappeared/);
+			assert.match(status.steps[0].error, /Cannot find module 'typebox\/compile'/);
 			const resultJson = JSON.parse(fs.readFileSync(path.join(resultsDir, "run-dead.json"), "utf-8"));
 			assert.equal(resultJson.success, false);
 			assert.equal(resultJson.sessionId, "session-current");

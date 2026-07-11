@@ -21,6 +21,7 @@
 - Run local test scripts through a small wrapper that clears inherited `PI_SUBAGENT_*` runtime variables before starting the Node test runner.
 
 ### Fixed
+- Preserve detached runner stderr in each async run directory and include it in stale-run failures so bootstrap errors remain actionable.
 - Install TypeBox as a production dependency so detached async runners can load `typebox/compile` instead of exiting before creating child status or session files.
 - Removed the unsupported public `acceptance.review` gate and reject legacy uses during preflight, preventing completed, verified workers from being marked failed for an automatic reviewer result the runtime never creates; independent review remains a separate parent-controlled run.
 - Pass Claude Code child prompts before the variadic `--tools` option so current Claude Code releases do not consume the prompt as another tool name.

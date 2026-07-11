@@ -76,6 +76,7 @@ interface UtilsModule {
 interface TypesModule {
 	ASYNC_DIR: string;
 	RESULTS_DIR: string;
+	RUNNER_ERROR_LOG_FILE: string;
 	TEMP_ROOT_DIR: string;
 }
 
@@ -97,6 +98,7 @@ const executeAsyncChain = asyncMod?.executeAsyncChain;
 const readStatus = utils?.readStatus;
 const ASYNC_DIR = typesMod?.ASYNC_DIR;
 const RESULTS_DIR = typesMod?.RESULTS_DIR;
+const RUNNER_ERROR_LOG_FILE = typesMod?.RUNNER_ERROR_LOG_FILE;
 const TEMP_ROOT_DIR = typesMod?.TEMP_ROOT_DIR;
 const createSubagentExecutor = executorMod?.createSubagentExecutor;
 
@@ -307,6 +309,32 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(chainResult.content[0]?.text ?? "", /Async chain:/);
 		assert.match(chainResult.content[0]?.text ?? "", /Do not run sleep timers or polling loops/);
 		await waitForAsyncResultFile(chainId, 10_000);
+	});
+
+	it("captures detached runner stderr in the async run directory", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		const marker = `runner-stderr-${Date.now().toString(36)}`;
+		const preloadPath = path.join(tempDir, "runner-stderr.cjs");
+		fs.writeFileSync(preloadPath, `if (process.argv.some((arg) => arg.endsWith("subagent-runner.ts"))) process.stderr.write(${JSON.stringify(`${marker}\n`)});\n`, "utf-8");
+		const originalNodeOptions = process.env.NODE_OPTIONS;
+		process.env.NODE_OPTIONS = [originalNodeOptions, `--require ${JSON.stringify(preloadPath)}`].filter(Boolean).join(" ");
+		try {
+			mockPi.onCall({ output: "done" });
+			const id = `async-runner-stderr-${Date.now().toString(36)}`;
+			executeAsyncSingle(id, {
+				agent: "worker",
+				task: "Do work",
+				agentConfig: makeAgent("worker"),
+				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-runner-stderr" },
+				artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+				shareEnabled: false,
+				maxSubagentDepth: 2,
+			});
+			await waitForAsyncResultFile(id, 10_000);
+			assert.match(fs.readFileSync(path.join(ASYNC_DIR, id, RUNNER_ERROR_LOG_FILE), "utf-8"), new RegExp(marker));
+		} finally {
+			if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+			else process.env.NODE_OPTIONS = originalNodeOptions;
+		}
 	});
 
 	it("async single enforces agent maxTokens from observed usage", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
