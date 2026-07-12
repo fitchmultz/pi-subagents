@@ -43,7 +43,7 @@ const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subag
 const available = !!executorMod?.createSubagentExecutor;
 const createSubagentExecutor = executorMod?.createSubagentExecutor;
 
-function createRecordingEventBus(options: { acknowledgeResults?: boolean; acknowledgeLive?: boolean; health?: Array<Record<string, unknown>> } = {}) {
+function createRecordingEventBus(options: { acknowledgeResults?: boolean; acknowledgeLive?: boolean; health?: Array<Record<string, unknown>>; identity?: string } = {}) {
 	const listeners = new Map<string, Set<(payload: unknown) => void>>();
 	const emitted: Array<{ channel: string; payload: unknown }> = [];
 	const bus = {
@@ -61,6 +61,10 @@ function createRecordingEventBus(options: { acknowledgeResults?: boolean; acknow
 			emitted.push({ channel, payload });
 			for (const handler of listeners.get(channel) ?? []) {
 				handler(payload);
+			}
+			if (options.identity && channel === "subagent:intercom-identity-request") {
+				const requestId = payload && typeof payload === "object" ? (payload as { requestId?: unknown }).requestId : undefined;
+				if (typeof requestId === "string") bus.emit("subagent:intercom-identity-response", { requestId, sessionId: options.identity });
 			}
 			if (options.acknowledgeResults && channel === "subagent:result-intercom") {
 				const requestId = payload && typeof payload === "object" ? (payload as { requestId?: unknown }).requestId : undefined;
@@ -137,8 +141,8 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
 	}
 
-	function makeExecutor(options: { bridgeMode?: "always" | "off"; agents?: ReturnType<typeof makeAgent>[]; acknowledgeResults?: boolean; acknowledgeLive?: boolean; health?: Array<Record<string, unknown>> } = {}) {
-		const events = createRecordingEventBus({ acknowledgeResults: options.acknowledgeResults ?? true, acknowledgeLive: options.acknowledgeLive, health: options.health });
+	function makeExecutor(options: { bridgeMode?: "always" | "off"; agents?: ReturnType<typeof makeAgent>[]; acknowledgeResults?: boolean; acknowledgeLive?: boolean; health?: Array<Record<string, unknown>>; identity?: string } = {}) {
+		const events = createRecordingEventBus({ acknowledgeResults: options.acknowledgeResults ?? true, acknowledgeLive: options.acknowledgeLive, health: options.health, identity: options.identity });
 		const state = {
 			baseCwd: tempDir,
 			currentSessionId: null,
@@ -175,6 +179,23 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		});
 		return { executor, events, state };
 	}
+
+	it("passes the exact connected orchestrator identity to child supervisor metadata", async () => {
+		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
+		const { executor, events } = makeExecutor({ identity: "exact-parent-session-id" });
+
+		const result = await executor.execute(
+			"exact-parent",
+			{ agent: "worker", task: "Contact supervisor" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined, result.content[0]?.text);
+		const payload = events.emitted.find((entry) => entry.channel === "subagent:result-intercom")?.payload as { message?: string } | undefined;
+		assert.match(payload?.message ?? "", /exact-parent-session-id/);
+	});
 
 	it("single foreground runs emit one grouped event and return a compact receipt", async () => {
 		mockPi.onCall({ output: "Full child output from worker" });
@@ -418,6 +439,30 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		}
 	});
 
+	it("nudge action rejects completed work with exact resume and status targets", async () => {
+		const runId = `nudge-complete-${Date.now()}`;
+		const asyncDir = path.join(ASYNC_DIR, runId);
+		const sessionFile = path.join(tempDir, `${runId}.jsonl`);
+		try {
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.writeFileSync(sessionFile, "", "utf-8");
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+				runId, mode: "single", state: "complete", startedAt: 100, lastUpdate: 200,
+				steps: [{ agent: "worker", status: "complete", sessionFile }],
+			}, null, 2), "utf-8");
+			const { executor } = makeExecutor();
+			const result = await executor.execute("nudge-complete", { action: "nudge", id: runId }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+			const text = result.content[0]?.text ?? "";
+			assert.equal(result.isError, true);
+			assert.match(text, new RegExp(`action: "resume", id: "${runId}"`));
+			assert.match(text, new RegExp(`action: "status", id: "${runId}"`));
+			assert.equal(result.details?.managementControl?.state, "completed");
+			assert.equal(result.details?.managementControl?.capabilities.includes("nudge"), false);
+		} finally {
+			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
 	it("nudge action rejects non-current foreground child indexes", async () => {
 		const { executor, state } = makeExecutor({ acknowledgeLive: true });
 		state.foregroundControls.set("fg-nudge", {
@@ -580,8 +625,13 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 			assert.match(result.content[0]?.text ?? "", /Do not run sleep timers or polling loops/);
 			assert.match(result.content[0]?.text ?? "", /end your turn now/);
 			assert.match(result.content[0]?.text ?? "", /Status if needed: subagent\(\{ action: "status"/);
+			assert.match(result.content[0]?.text ?? "", new RegExp(`Run mapping: ${runId} ->`));
+			assert.match(result.content[0]?.text ?? "", /Prior pending-reply context .* is invalid/);
 			assert.doesNotMatch(result.content[0]?.text ?? "", /Follow:/);
 			const revivedId = result.details?.asyncId;
+			assert.equal(result.details?.managementControl?.revivedFromRunId, runId);
+			assert.equal(result.details?.managementControl?.pendingReplyContextValid, false);
+			assert.deepEqual(result.details?.managementControl?.capabilities, ["status", "interrupt"]);
 			assert.ok(revivedId, "expected revived async id");
 			const resultPath = path.join(RESULTS_DIR, `${revivedId}.json`);
 			const deadline = Date.now() + 10_000;
@@ -625,6 +675,20 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		assert.match(text, /2\. b timed-out, session:/);
 		assert.match(text, /Revive child: subagent\(\{ action: "resume", id: "remembered-status-run", index: 0, message: "\.\.\." \}\)/);
 		assert.doesNotMatch(text, /Async run not found/);
+		assert.equal(result.details?.managementControl?.state, "failed");
+		assert.equal(result.details?.managementControl?.capabilities.includes("nudge"), false);
+
+		const nudge = await executor.execute(
+			"remembered-foreground-nudge",
+			{ action: "nudge", id: "remembered-status-run" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+		assert.equal(nudge.isError, true);
+		assert.match(nudge.content[0]?.text ?? "", /action: "resume", id: "remembered-status-run", index: 0/);
+		assert.match(nudge.content[0]?.text ?? "", /action: "status", id: "remembered-status-run"/);
+		assert.equal(nudge.details?.managementControl?.capabilities.includes("nudge"), false);
 	});
 
 	it("status action refreshes detached foreground children that completed after supervisor reply", async () => {

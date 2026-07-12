@@ -22,7 +22,7 @@ interface ExecutorModule {
 				context?: "fresh" | "fork";
 				mode?: "single" | "parallel" | "chain";
 				asyncId?: string;
-				results?: Array<{ detached?: boolean; exitCode?: number; skills?: string[] }>;
+				results?: Array<{ detached?: boolean; exitCode?: number; error?: string; skills?: string[] }>;
 			};
 		}>;
 	};
@@ -230,6 +230,14 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const deadline = Date.now() + timeoutMs;
 		while (readAllCallArgs().length < count) {
 			if (Date.now() > deadline) assert.fail(`Timed out waiting for ${count} mock pi call(s)`);
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+	}
+
+	async function waitForTaskCalls(tasks: string[], timeoutMs = 15_000): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (!tasks.every((task) => readAllCallArgs().some((args) => (args.at(-1) ?? "").includes(task)))) {
+			if (Date.now() > deadline) assert.fail(`Timed out waiting for mock pi tasks: ${tasks.join(", ")}`);
 			await new Promise((resolve) => setTimeout(resolve, 25));
 		}
 	}
@@ -1224,6 +1232,44 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.details?.results?.some((entry) => entry.detached === true && entry.exitCode === 0), true);
 	});
 
+	it("reports failed siblings when a parallel child detaches for intercom handoff", async () => {
+		mockPi.reset();
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] },
+				{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
+			],
+		});
+		mockPi.onCall({ stderr: "sibling exploded", exitCode: 1 });
+		const executor = makeExecutorWithDiscoverAgents(() => ({
+			agents: [
+				{ name: "echo", description: "Echo", systemPrompt: "Intercom orchestration channel:" },
+				{ name: "second", description: "Second", systemPrompt: "Intercom orchestration channel:" },
+			],
+			projectAgentsDir: null,
+		}));
+		let detachEmitted = false;
+		const result = await executor.execute(
+			"intercom-parallel-mixed",
+			{ tasks: [{ agent: "echo", task: "send handoff" }, { agent: "second", task: "fail" }] },
+			new AbortController().signal,
+			(update: ProgressUpdate) => {
+				if (detachEmitted || !update.details?.progress?.some((entry) => entry.currentTool === "intercom")) return;
+				detachEmitted = true;
+				executor.eventsApi.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "parallel-detach-mixed" });
+			},
+			makeCtx(makeSessionManagerRecorder().manager),
+		);
+
+		const text = result.content[0]?.text ?? "";
+		assert.equal(result.isError, undefined);
+		assert.match(text, /Parallel run detached for intercom coordination/);
+		assert.match(text, /second.*sibling exploded/s);
+		assert.equal(result.details?.results?.length, 2);
+		assert.equal(result.details?.results?.some((entry) => entry.detached === true && entry.exitCode === 0), true);
+		assert.equal(result.details?.results?.some((entry) => entry.exitCode === 1 && entry.error?.includes("sibling exploded")), true);
+	});
+
 	it("runs top-level parallel async requests in the background", async () => {
 		const executor = makeExecutor();
 
@@ -1318,7 +1364,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 
 		assert.equal(result.isError, undefined);
 		assert.equal(result.details?.context, "fork");
-		await waitForRecordedCalls(2);
+		await waitForTaskCalls(["async find files", "async implement fix"]);
 		const freshCall = callRecordForTaskContaining("async find files");
 		const forkCall = callRecordForTaskContaining("async implement fix");
 		assert.equal(toolsArg(freshCall.args), "read");

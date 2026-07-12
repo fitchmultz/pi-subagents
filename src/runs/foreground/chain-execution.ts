@@ -734,15 +734,20 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				const detached = detachedIndexInStep >= 0 ? parallelResults[detachedIndexInStep] : undefined;
 				if (detached) {
 					const detachedFlatIndex = globalTaskIndex - step.parallel.length + detachedIndexInStep;
+					const failedSummary = parallelResults
+						.map((result, index) => ({ result, index }))
+						.filter(({ result }) => !result.detached && result.exitCode !== 0)
+						.map(({ result, index }) => `- Task ${index + 1} (${result.agent}): ${result.error || "failed"}`)
+						.join("\n");
 					return {
 						content: [{
 							type: "text",
-							text: appendWorktreeSummary(formatDetachedIntercomGuidance({
+							text: appendWorktreeSummary(`${formatDetachedIntercomGuidance({
 								headline: `Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}).`,
 								runId,
 								result: detached,
 								childIndex: detachedFlatIndex,
-							}), worktreeSummary),
+							})}${failedSummary ? `\n\nFailed siblings:\n${failedSummary}` : ""}`, worktreeSummary),
 						}],
 						details: buildChainExecutionDetails(makeDetailsInput({
 							currentStepIndex: stepIndex,
@@ -943,15 +948,20 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			const detached = detachedIndexInStep >= 0 ? parallelResults[detachedIndexInStep] : undefined;
 			if (detached) {
 				const detachedFlatIndex = globalTaskIndex - dynamicParallelStep.parallel.length + detachedIndexInStep;
+				const failedSummary = parallelResults
+					.map((result, index) => ({ result, index }))
+					.filter(({ result }) => !result.detached && result.exitCode !== 0)
+					.map(({ result, index }) => `- Item ${index + 1} (${result.agent}, key ${materialized.items[index]?.key ?? index}): ${result.error || "failed"}`)
+					.join("\n");
 				return {
 					content: [{
 						type: "text",
-						text: formatDetachedIntercomGuidance({
+						text: `${formatDetachedIntercomGuidance({
 							headline: `Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}).`,
 							runId,
 							result: detached,
 							childIndex: detachedFlatIndex,
-						}),
+						})}${failedSummary ? `\n\nFailed items:\n${failedSummary}` : ""}`,
 					}],
 					details: buildChainExecutionDetails(makeDetailsInput({
 						currentStepIndex: stepIndex,

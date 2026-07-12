@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { formatAsyncRunList, formatAsyncRunOutputPath, formatAsyncRunProgressLabel, listAsyncRuns } from "./async-status.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { formatModelThinking } from "../../shared/formatters.ts";
-import { formatActivityLabel, formatLiveIntercomActionLines } from "../../shared/status-format.ts";
+import { buildManagementControl, formatActivityLabel, formatLiveIntercomActionLines } from "../../shared/status-format.ts";
 import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus, type NestedRunSummary, type SubagentLiveIntercomHealth, type SubagentState, type SubagentExecutionResult } from "../../shared/types.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { resolveAsyncRunLocation } from "./async-resume.ts";
@@ -92,6 +92,13 @@ function nestedRunDisplayName(run: NestedRunSummary): string {
 	return run.id;
 }
 
+function normalizedState(state: AsyncStatus["state"] | NestedRunSummary["state"]): "live" | "completed" | "paused" | "failed" | "unknown" {
+	if (state === "running" || state === "queued") return "live";
+	if (state === "complete") return "completed";
+	if (state === "paused" || state === "failed") return state;
+	return "unknown";
+}
+
 function formatNestedExactStatus(rootRunId: string, run: NestedRunSummary): string {
 	const lines = [
 		`Nested run: ${run.id}`,
@@ -118,7 +125,11 @@ function formatNestedExactStatus(rootRunId: string, run: NestedRunSummary): stri
 		}
 	}
 	lines.push(...formatNestedRunStatusLines(run.children, { indent: "  ", commandHints: true }));
-	lines.push("Commands:", `  Status: subagent({ action: "status", id: "${run.id}" })`, `  Interrupt: subagent({ action: "interrupt", id: "${run.id}" })`, `  Resume: subagent({ action: "resume", id: "${run.id}", message: "..." })`, `  Root status: subagent({ action: "status", id: "${rootRunId}" })`);
+	const state = normalizedState(run.state);
+	lines.push("Commands:", `  Status: subagent({ action: "status", id: "${run.id}" })`);
+	if (state === "live") lines.push(`  Interrupt: subagent({ action: "interrupt", id: "${run.id}" })`);
+	if (state === "live" || run.sessionFile) lines.push(`  Resume: subagent({ action: "resume", id: "${run.id}", message: "..." })`);
+	lines.push(`  Root status: subagent({ action: "status", id: "${rootRunId}" })`);
 	return lines.join("\n");
 }
 
@@ -137,7 +148,14 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			const runs = listAsyncRuns(asyncDirRoot, { states: ["queued", "running"], resultsDir, kill: deps.kill, now: deps.now });
 			return {
 				content: [{ type: "text", text: formatAsyncRunList(runs) }],
-				details: { mode: "single", results: [] },
+				details: {
+					mode: "single", results: [],
+					managementControls: runs.map((run) => {
+						const running = run.steps.find((step) => step.status === "running");
+						const target = running ? resolveSubagentIntercomTarget(run.id, running.agent, running.index) : undefined;
+						return buildManagementControl({ state: normalizedState(run.state), runId: run.id, index: running?.index, intercomTarget: target, canNudge: Boolean(running), canResume: Boolean(running), canInterrupt: run.state === "running" });
+					}),
+				},
 			};
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -158,7 +176,16 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				reconcileNestedAsyncDescendants(resolved.match.route, { resultsDir, kill: deps.kill, now: deps.now });
 				const refreshed = resolveSubagentRunId(requestedId, { asyncDirRoot, resultsDir, state: deps.state, nested: deps.nested });
 				const nested = refreshed?.kind === "nested" ? refreshed : resolved;
-				return { content: [{ type: "text", text: formatNestedExactStatus(nested.match.rootRunId, nested.match.run) }], details: { mode: "single", results: [] } };
+				const run = nested.match.run;
+				const state = normalizedState(run.state);
+				const intercomTarget = run.intercomTarget ?? run.leafIntercomTarget;
+				return {
+					content: [{ type: "text", text: formatNestedExactStatus(nested.match.rootRunId, run) }],
+					details: {
+						mode: "single", results: [],
+						managementControl: buildManagementControl({ state, runId: run.id, intercomTarget, canNudge: false, canResume: state === "live" || Boolean(run.sessionFile), canInterrupt: state === "live" }),
+					},
+				};
 			}
 			if (resolved?.kind === "async") location = resolved.location;
 			else location = { asyncDir: null, resultPath: null, resolvedId: requestedId };
@@ -269,7 +296,18 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			if (fs.existsSync(logPath)) lines.push(`Log: ${logPath}`);
 			if (fs.existsSync(eventsPath)) lines.push(`Events: ${eventsPath}`);
 
-			return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "single", results: [], intercomTargets } };
+			const state = normalizedState(status.state);
+			const runningStep = (status.steps ?? []).map((step, index) => ({ step, index })).find(({ step }) => step.status === "running");
+			const target = runningStep ? resolveSubagentIntercomTarget(status.runId, runningStep.step.agent, runningStep.index) : undefined;
+			const resumableStep = (status.steps ?? []).map((step, index) => ({ step, index })).find(({ step }) => hasExistingSessionFile(step.sessionFile));
+			const canResume = state !== "live" && Boolean(resumableStep || ((status.steps?.length ?? 0) <= 1 && hasExistingSessionFile(status.sessionFile)));
+			return {
+				content: [{ type: "text", text: lines.join("\n") }],
+				details: {
+					mode: "single", results: [], intercomTargets,
+					managementControl: buildManagementControl({ state, runId: status.runId, index: runningStep?.index ?? resumableStep?.index, intercomTarget: target, canNudge: Boolean(runningStep), canResume: state === "live" ? Boolean(runningStep) : canResume, canInterrupt: status.state === "running" }),
+				},
+			};
 		}
 	}
 
@@ -282,7 +320,15 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			const children = Array.isArray(data.results) ? data.results : data.agent ? [{ agent: data.agent, sessionFile: data.sessionFile }] : [];
 			lines.push(formatResumeGuidance(runId, children, data.sessionFile));
 			if (data.summary) lines.push("", data.summary);
-			return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "single", results: [] } };
+			const state = normalizedState(status);
+			const resumableChild = children.map((child, index) => ({ child, index })).find(({ child }) => hasExistingSessionFile(child.sessionFile));
+			return {
+				content: [{ type: "text", text: lines.join("\n") }],
+				details: {
+					mode: "single", results: [],
+					managementControl: buildManagementControl({ state, runId: runId ?? "unknown", index: resumableChild?.index, canResume: state !== "live" && Boolean(resumableChild) }),
+				},
+			};
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			return {

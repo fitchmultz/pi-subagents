@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- Added additive `managementControl` details to status and control responses with normalized lifecycle state, supported capabilities, exact next-action targets, and explicit revival mapping.
 - Updated the local Pi development baseline and compatibility imports for Pi 0.80.6.
 - Reject forked context before launch when an affected agent's effective primary or fallback model uses the `anthropic/` provider; explicit context/model overrides cannot bypass the restriction, while other providers keep normal agent context configuration.
 - Raised the default subagent no-activity needs-attention threshold from 1 minute to 10 minutes so long test/build commands do not trigger early nudge reminders.
@@ -22,6 +23,8 @@
 - Run local test scripts through a small wrapper that clears inherited `PI_SUBAGENT_*` runtime variables before starting the Node test runner.
 
 ### Fixed
+- Keep failed sibling results visible when top-level, static-chain, or dynamic-chain parallel work detaches for supervisor coordination.
+- Prefer the supervisor's exact connected `pi-intercom` broker ID for child escalation metadata, with immediate safe fallback to the existing session-derived target.
 - Preserve detached runner stderr in each async run directory and include it in stale-run failures so bootstrap errors remain actionable.
 - Install TypeBox as a production dependency so detached async runners can load `typebox/compile` instead of exiting before creating child status or session files.
 - Removed the unsupported public `acceptance.review` gate and reject legacy uses during preflight, preventing completed, verified workers from being marked failed for an automatic reviewer result the runtime never creates; independent review remains a separate parent-controlled run.

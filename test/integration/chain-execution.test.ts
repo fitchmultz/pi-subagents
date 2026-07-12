@@ -1311,7 +1311,7 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 				{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
 			],
 		});
-		mockPi.onCall({ output: "Other task done" });
+		mockPi.onCall({ stderr: "Other task failed", exitCode: 1 });
 		const agents = [
 			makeAgent("a", { systemPrompt: "Intercom orchestration channel:" }),
 			makeAgent("b", { systemPrompt: "Intercom orchestration channel:" }),
@@ -1344,9 +1344,43 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 
 		assert.equal(result.isError, undefined);
 		assert.match(result.content[0]?.text ?? "", /Chain detached for intercom coordination/);
+		assert.match(result.content[0]?.text ?? "", /Failed siblings:.*Task \d+ \([ab]\): Other task failed/s);
 		assert.doesNotMatch(result.content[0]?.text ?? "", /resume/);
 		assert.equal(detachEmitted, true);
 		assert.equal(result.details.results.some((entry) => entry.detached === true && entry.exitCode === 0), true);
+		assert.equal(result.details.results.some((entry) => entry.exitCode === 1), true);
+	});
+
+	it("reports failed dynamic items while preserving a sibling detach", async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "a" }, { path: "b" }] } });
+		mockPi.onCall({ steps: [{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] }, { delay: 1000 }] });
+		mockPi.onCall({ stderr: "Item b failed", exitCode: 1 });
+		const agents = [makeAgent("scout"), makeAgent("reviewer", { systemPrompt: "Intercom orchestration channel:" })];
+		const intercomEvents = createEventBus();
+		let detachEmitted = false;
+
+		const result = await executeChain(makeChainParams([
+			{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
+			{
+				expand: { from: { output: "targets", path: "/items" }, key: "/path", maxItems: 2 },
+				parallel: { agent: "reviewer", task: "Review {item.path}" },
+				collect: { as: "reviews" },
+				failFast: false,
+			},
+		], agents, {
+			intercomEvents,
+			onUpdate(update: { details?: { progress?: Array<{ currentTool?: string }> } }) {
+				if (detachEmitted || !update.details?.progress?.some((entry) => entry.currentTool === "intercom")) return;
+				detachEmitted = true;
+				intercomEvents.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "chain-dynamic-detach" });
+			},
+		}));
+
+		assert.equal(result.isError, undefined, result.content[0]?.text);
+		assert.match(result.content[0]?.text ?? "", /Chain detached for intercom coordination/);
+		assert.match(result.content[0]?.text ?? "", /Failed items:.*Item \d+ \(reviewer, key [ab]\): Item b failed/s);
+		assert.equal(result.details.results.some((entry) => entry.detached === true), true);
+		assert.equal(result.details.results.some((entry) => entry.exitCode === 1), true);
 	});
 
 	it("stops a sequential chain when a child detaches for intercom coordination", async () => {

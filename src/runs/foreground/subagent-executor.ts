@@ -46,7 +46,7 @@ import {
 	wrapTaskForAgentContext,
 } from "../../shared/agent-context-policy.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
-import { applyIntercomBridgeToAgent, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveSubagentIntercomTarget, shouldApplyIntercomBridge, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
+import { applyIntercomBridgeToAgent, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget, resolveSubagentIntercomTarget, shouldApplyIntercomBridge, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import { formatControlIntercomMessage, formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
 import { finalizeSingleOutput, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
@@ -67,7 +67,7 @@ import { createNestedRoute, readNestedControlResults, resolveInheritedNestedRout
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
-import { formatLiveIntercomActionLines } from "../../shared/status-format.ts";
+import { buildManagementControl, formatLiveIntercomActionLines } from "../../shared/status-format.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
 import { validateAcceptanceInput } from "../shared/acceptance.ts";
 import {
@@ -441,7 +441,13 @@ function foregroundStatusResult(control: ForegroundControlState, health?: Subage
 	if (intercomTarget) lines.push(...formatLiveIntercomActionLines({ runId: control.runId, target: intercomTarget, index: control.currentIndex, health }));
 	lines.push(...formatNestedRunStatusLines(control.nestedChildren, { indent: "", commandHints: true, maxLines: 20 }));
 	if (nestedWarning) lines.push(`Warning: ${nestedWarning}`);
-	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
+	return {
+		content: [{ type: "text", text: lines.join("\n") }],
+		details: {
+			mode: "management", results: [],
+			managementControl: buildManagementControl({ state: "live", runId: control.runId, index: control.currentIndex, intercomTarget, canNudge: true, canResume: true, canInterrupt: true, canExtend: Boolean(control.timeoutAt && control.extendTimeout) }),
+		},
+	};
 }
 
 function extendForegroundTimeoutResult(control: ForegroundControlState, additionalMs: number): SubagentExecutionResult {
@@ -471,7 +477,7 @@ function extendForegroundTimeoutResult(control: ForegroundControlState, addition
 	control.updatedAt = Date.now();
 	return {
 		content: [{ type: "text", text: `Extended foreground run ${control.runId} by ${additionalMs}ms.${result.timeoutAt ? ` New timeout: ${new Date(result.timeoutAt).toISOString()}.` : ""}` }],
-		details: { mode: "management", results: [] },
+		details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: control.runId, index: control.currentIndex, intercomTarget: foregroundIntercomTarget(control), canNudge: true, canResume: true, canInterrupt: true, canExtend: true }) },
 	};
 }
 
@@ -558,8 +564,16 @@ function refreshDetachedForegroundChildren(run: ForegroundResumeRun): Array<{ ch
 	});
 }
 
+function rememberedForegroundState(children: ReturnType<typeof refreshDetachedForegroundChildren>): "completed" | "paused" | "failed" | "unknown" {
+	if (children.some(({ child }) => child.status === "failed" || child.status === "timed-out")) return "failed";
+	if (children.some(({ child }) => child.status === "paused")) return "paused";
+	return children.some(({ child }) => child.status === "detached") ? "unknown" : "completed";
+}
+
 function rememberedForegroundStatusResult(run: ForegroundResumeRun): SubagentExecutionResult {
 	const children = refreshDetachedForegroundChildren(run);
+	const state = rememberedForegroundState(children);
+	const resumable = children.find(({ child }) => child.sessionFile && child.status !== "detached")?.child;
 	const lines = [
 		`Run: ${run.runId}`,
 		"State: remembered foreground",
@@ -570,7 +584,13 @@ function rememberedForegroundStatusResult(run: ForegroundResumeRun): SubagentExe
 		...children.map(({ child, finalOutput }) => `  ${child.index + 1}. ${child.agent} ${child.status}${child.sessionFile ? `, session: ${child.sessionFile}` : ""}${finalOutput ? `, final: ${compactStatusText(finalOutput)}` : ""}`),
 		foregroundResumeGuidance(run),
 	];
-	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
+	return {
+		content: [{ type: "text", text: lines.join("\n") }],
+		details: {
+			mode: "management", results: [],
+			managementControl: buildManagementControl({ state, runId: run.runId, index: resumable?.index, canResume: Boolean(resumable) }),
+		},
+	};
 }
 
 function resolveForegroundResumeTarget(params: SubagentParamsLike, state: SubagentState): { runId: string; mode: "single" | "parallel" | "chain"; state: "complete"; agent: string; index: number; intercomTarget: string; cwd: string; sessionFile: string } | undefined {
@@ -733,7 +753,7 @@ function interruptAsyncRun(state: SubagentState, runId: string | undefined): Sub
 		}
 		return {
 			content: [{ type: "text", text: `Interrupt requested for async run ${target.asyncId}.` }],
-			details: { mode: "management", results: [] },
+			details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: target.asyncId }) },
 		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -832,7 +852,7 @@ function directNestedAsyncInterrupt(target: ResolvedSubagentRunId & { kind: "nes
 	if (!status || status.state !== "running" || typeof pid !== "number" || pid <= 0) return undefined;
 	try {
 		process.kill(pid, ASYNC_INTERRUPT_SIGNAL);
-		return { content: [{ type: "text", text: `Interrupt requested for nested async run ${run.id}.` }], details: { mode: "management", results: [] } };
+		return { content: [{ type: "text", text: `Interrupt requested for nested async run ${run.id}.` }], details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: run.id, intercomTarget: run.intercomTarget ?? run.leafIntercomTarget, canInterrupt: true }) } };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return { content: [{ type: "text", text: `Failed to interrupt nested async run ${run.id}: ${message}` }], isError: true, details: { mode: "management", results: [] } };
@@ -845,7 +865,14 @@ async function interruptNestedRun(target: ResolvedSubagentRunId & { kind: "neste
 	if (run.state === "failed") return { content: [{ type: "text", text: `Nested run ${run.id} has failed and cannot be interrupted.` }], isError: true, details: { mode: "management", results: [] } };
 	if (run.state === "paused") return { content: [{ type: "text", text: `Nested run ${run.id} is already paused.` }], isError: true, details: { mode: "management", results: [] } };
 	const result = await sendNestedControlRequest(target, "interrupt");
-	if (result) return { content: [{ type: "text", text: result.message }], isError: result.ok ? undefined : true, details: { mode: "management", results: [] } };
+	if (result) return {
+		content: [{ type: "text", text: result.message }],
+		isError: result.ok ? undefined : true,
+		details: {
+			mode: "management", results: [],
+			...(result.ok ? { managementControl: buildManagementControl({ state: "live", runId: run.id, intercomTarget: run.intercomTarget ?? run.leafIntercomTarget, canResume: true, canInterrupt: true }) } : {}),
+		},
+	};
 	const direct = directNestedAsyncInterrupt(target);
 	if (direct) return direct;
 	return { content: [{ type: "text", text: `Nested run ${run.id} owner is not reachable and no safe direct async interrupt fallback is available.` }], isError: true, details: { mode: "management", results: [] } };
@@ -871,10 +898,21 @@ async function nudgeSubagentRun(input: {
 
 	try {
 		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
+		const remembered = !resolved && requestedId ? resolveRememberedForegroundRun(requestedId, input.deps.state) : undefined;
 		if (resolved?.kind === "nested") {
-			return { content: [{ type: "text", text: "Nested live nudges are not supported yet. Use status for the nested run, then resume/interrupt or message the advertised intercom target directly." }], isError: true, details: { mode: "management", results: [] } };
+			const run = resolved.match.run;
+			const state = run.state === "running" || run.state === "queued" ? "live" : run.state === "complete" ? "completed" : run.state === "paused" || run.state === "failed" ? run.state : "unknown";
+			const intercomTarget = run.intercomTarget ?? run.leafIntercomTarget;
+			const valid = [`subagent({ action: "status", id: "${run.id}" })`];
+			if (state === "live" || run.sessionFile) valid.push(`subagent({ action: "resume", id: "${run.id}", message: "..." })`);
+			if (state === "live") valid.push(`subagent({ action: "interrupt", id: "${run.id}" })`);
+			return {
+				content: [{ type: "text", text: `Nested run ${run.id} cannot be nudged. Valid actions: ${valid.join(" or ")}${intercomTarget ? `. Intercom target: ${intercomTarget}` : "."}` }],
+				isError: true,
+				details: { mode: "management", results: [], managementControl: buildManagementControl({ state, runId: run.id, intercomTarget, canNudge: false, canResume: state === "live" || Boolean(run.sessionFile), canInterrupt: state === "live", unavailableActions: { nudge: "Nested runs do not support nudge; use an advertised exact action or intercom target." } }) },
+			};
 		}
-		if (resolved?.kind === "foreground" || (!resolved && !requestedId)) {
+		if (resolved?.kind === "foreground" || remembered || (!resolved && !requestedId)) {
 			const control = getForegroundControl(input.deps.state, resolved?.kind === "foreground" ? resolved.id : requestedId);
 			if (control?.currentAgent) {
 				const currentIndex = control.currentIndex ?? 0;
@@ -885,15 +923,35 @@ async function nudgeSubagentRun(input: {
 				agent = control.currentAgent;
 				index = currentIndex;
 				target = resolveSubagentIntercomTarget(runId, agent, index);
-			} else if (resolved?.kind === "foreground") {
-				throw new Error(`Foreground run '${resolved.id}' has no live child to nudge.`);
+			} else if (resolved?.kind === "foreground" || remembered) {
+				const rememberedRun = remembered ?? resolveRememberedForegroundRun(resolved?.id, input.deps.state);
+				if (!rememberedRun) throw new Error(`Foreground run '${resolved?.id}' has no live child to nudge.`);
+				const children = refreshDetachedForegroundChildren(rememberedRun);
+				const resumable = children.find(({ child }) => child.sessionFile && child.status !== "detached")?.child;
+				const indexPart = rememberedRun.children.length > 1 && resumable ? `, index: ${resumable.index}` : "";
+				const valid = resumable
+					? `subagent({ action: "resume", id: "${rememberedRun.runId}"${indexPart}, message: "..." }) or subagent({ action: "status", id: "${rememberedRun.runId}" })`
+					: `subagent({ action: "status", id: "${rememberedRun.runId}" })`;
+				return {
+					content: [{ type: "text", text: `Foreground run ${rememberedRun.runId} is not live. Valid actions: ${valid}.` }],
+					isError: true,
+					details: { mode: "management", results: [], managementControl: buildManagementControl({ state: rememberedForegroundState(children), runId: rememberedRun.runId, index: resumable?.index, canResume: Boolean(resumable), unavailableActions: { nudge: "Run is not live; revive it with resume when available or inspect it with status." } }) },
+				};
 			} else {
 				throw new Error("No live foreground child found. Provide id for a running async child or inspect status first.");
 			}
 		} else {
 			const asyncTarget = resolveAsyncResumeTarget({ id: input.params.id, runId: input.params.runId, dir: input.params.dir, index: input.params.index });
 			if (asyncTarget.kind !== "live") {
-				return { content: [{ type: "text", text: `Run ${asyncTarget.runId} is not live. Use subagent({ action: "resume", id: "${asyncTarget.runId}", message: "..." }) for a completed child.` }], isError: true, details: { mode: "management", results: [] } };
+				const state = asyncTarget.state === "complete" ? "completed" : asyncTarget.state === "paused" || asyncTarget.state === "failed" ? asyncTarget.state : "unknown";
+				return {
+					content: [{ type: "text", text: `Run ${asyncTarget.runId} is not live. Valid actions: subagent({ action: "resume", id: "${asyncTarget.runId}"${input.params.index !== undefined ? `, index: ${input.params.index}` : ""}, message: "..." }) or subagent({ action: "status", id: "${asyncTarget.runId}" }).` }],
+					isError: true,
+					details: {
+						mode: "management", results: [],
+						managementControl: buildManagementControl({ state, runId: asyncTarget.runId, index: asyncTarget.index, canResume: true, unavailableActions: { nudge: "Run is not live; revive it with resume or inspect it with status." } }),
+					},
+				};
 			}
 			runId = asyncTarget.runId;
 			agent = asyncTarget.agent;
@@ -914,7 +972,10 @@ async function nudgeSubagentRun(input: {
 	if (!result.delivered) {
 		return { content: [{ type: "text", text: [`Nudge was not delivered.`, `Run: ${runId}`, `Intercom target: ${target}`, result.reason ? `Reason: ${result.reason}` : undefined].filter((line): line is string => Boolean(line)).join("\n") }], isError: true, details: { mode: "management", results: [] } };
 	}
-	return { content: [{ type: "text", text: [`Nudge delivered to live subagent.`, `Run: ${runId}`, `Agent: ${agent}`, `Intercom target: ${target}`].join("\n") }], details: { mode: "management", results: [] } };
+	return {
+		content: [{ type: "text", text: [`Nudge delivered to live subagent.`, `Run: ${runId}`, `Agent: ${agent}`, `Intercom target: ${target}`].join("\n") }],
+		details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId, index, intercomTarget: target, canNudge: true, canResume: true, canInterrupt: true }) },
+	};
 }
 
 async function resumeAsyncRun(input: {
@@ -965,7 +1026,7 @@ async function resumeAsyncRun(input: {
 		if (delivered) {
 			return {
 				content: [{ type: "text", text: [`Delivered follow-up to live async child.`, `Run: ${target.runId}`, `Intercom target: ${target.intercomTarget}`].join("\n") }],
-				details: { mode: "management", results: [] },
+				details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: target.runId, index: target.index, intercomTarget: target.intercomTarget, canNudge: true, canResume: true, canInterrupt: true }) },
 			};
 		}
 		return {
@@ -988,11 +1049,12 @@ async function resumeAsyncRun(input: {
 	const effectiveCwd = target.cwd ?? input.requestCwd;
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
 	const discoveredAgents = input.deps.discoverAgents(effectiveCwd, scope, { projectTrusted: input.ctx.isProjectTrusted?.() ?? true }).agents;
-	const sessionName = resolveIntercomSessionTarget(input.deps.pi.getSessionName(), input.ctx.sessionManager.getSessionId());
+	const fallbackTarget = resolveIntercomSessionTarget(input.deps.pi.getSessionName(), input.ctx.sessionManager.getSessionId());
+	const orchestratorTarget = resolveOrchestratorIntercomTarget(input.deps.pi.events, fallbackTarget);
 	const intercomBridge = resolveIntercomBridge({
 		config: input.deps.config.intercomBridge,
 		context: input.params.context,
-		orchestratorTarget: sessionName,
+		orchestratorTarget,
 		cwd: effectiveCwd,
 	});
 	const agents = intercomBridge.active
@@ -1043,14 +1105,22 @@ async function resumeAsyncRun(input: {
 	const sourceLabel = target.source;
 	const lines = [
 		`Revived ${sourceLabel} subagent from ${target.runId}.`,
+		`Run mapping: ${target.runId} -> ${revivedId}`,
 		`Revived run: ${revivedId}`,
 		`Agent: ${target.agent}`,
 		`Session: ${target.sessionFile}`,
 		result.details.asyncDir ? `Async dir: ${result.details.asyncDir}` : undefined,
 		revivedTarget ? `Intercom target: ${revivedTarget} (if registered)` : undefined,
+		`Prior pending-reply context for ${target.runId} is invalid; use the revived run and target only.`,
 		`Status if needed: subagent({ action: "status", id: "${revivedId}" })`,
 	].filter((line): line is string => Boolean(line));
-	return { content: [{ type: "text", text: formatAsyncStartedMessage(lines.join("\n")) }], details: result.details };
+	return {
+		content: [{ type: "text", text: formatAsyncStartedMessage(lines.join("\n")) }],
+		details: {
+			...result.details,
+			managementControl: buildManagementControl({ state: "live", runId: revivedId, index: 0, intercomTarget: revivedTarget, canInterrupt: true, revivedFromRunId: target.runId }),
+		},
+	};
 }
 
 function resultSummaryForIntercom(result: SingleResult): string {
@@ -2439,15 +2509,25 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		const detachedIndex = results.findIndex((result) => result.detached);
 		const detached = detachedIndex >= 0 ? results[detachedIndex] : undefined;
 		if (detached) {
+			const failedSiblings = results.flatMap((result, taskIndex) => !result.detached && result.exitCode !== 0 ? [{
+				agent: result.agent,
+				taskIndex,
+				output: result.truncation?.text || getSingleResultOutput(result),
+				exitCode: result.exitCode,
+				error: result.error,
+			}] : []);
+			const failedSummary = failedSiblings.length
+				? `\n\nFailed siblings:\n${aggregateParallelOutputs(failedSiblings, (i, agent) => `=== Task ${i + 1}: ${agent} ===`)}`
+				: "";
 			return {
 				content: [{
 					type: "text",
-					text: appendWorktreeSuffix(formatDetachedIntercomGuidance({
+					text: appendWorktreeSuffix(`${formatDetachedIntercomGuidance({
 						headline: `Parallel run detached for intercom coordination (${detached.agent}).`,
 						runId,
 						result: detached,
 						childIndex: detachedIndex,
-					}), worktreeSuffix),
+					})}${failedSummary}`, worktreeSuffix),
 				}],
 				details,
 			};
@@ -2863,7 +2943,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				}
 				let orchestratorTarget: string | undefined;
 				try {
-					orchestratorTarget = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
+					const fallbackTarget = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
+					orchestratorTarget = resolveOrchestratorIntercomTarget(deps.pi.events, fallbackTarget);
 				} catch {}
 				return {
 					content: [{
@@ -2975,7 +3056,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						foreground.currentActivityState = undefined;
 						return {
 							content: [{ type: "text", text: `Interrupt requested for foreground run ${foreground.runId}.` }],
-							details: { mode: "management", results: [] },
+							details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: foreground.runId, index: foreground.currentIndex, intercomTarget: foregroundIntercomTarget(foreground), canNudge: true, canResume: true, canInterrupt: true, canExtend: Boolean(foreground.timeoutAt && foreground.extendTimeout) }) },
 						};
 					}
 					return {
@@ -3049,11 +3130,12 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		)
 			? "fork"
 			: undefined;
-		const sessionName = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
+		const fallbackTarget = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
+		const orchestratorTarget = resolveOrchestratorIntercomTarget(deps.pi.events, fallbackTarget);
 		const intercomBridge = resolveIntercomBridge({
 			config: deps.config.intercomBridge,
 			context: invocationContext,
-			orchestratorTarget: sessionName,
+			orchestratorTarget,
 			cwd: effectiveCwd,
 		});
 		const runId = randomUUID().slice(0, 8);

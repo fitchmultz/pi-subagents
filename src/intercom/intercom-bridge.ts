@@ -1,9 +1,17 @@
 import { execSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentConfig } from "../agents/agents.ts";
-import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "../shared/types.ts";
+import {
+	SUBAGENT_INTERCOM_IDENTITY_REQUEST_EVENT,
+	SUBAGENT_INTERCOM_IDENTITY_RESPONSE_EVENT,
+	type ExtensionConfig,
+	type IntercomBridgeConfig,
+	type IntercomBridgeMode,
+	type IntercomEventBus,
+} from "../shared/types.ts";
 import { getAgentDir } from "../shared/utils.ts";
 
 const PI_INTERCOM_PACKAGE_NAME = "pi-intercom";
@@ -77,6 +85,27 @@ export function resolveIntercomSessionTarget(sessionName: string | undefined, se
 	if (trimmedName) return trimmedName;
 	const normalizedSessionId = sessionId.startsWith("session-") ? sessionId.slice("session-".length) : sessionId;
 	return `${DEFAULT_INTERCOM_TARGET_PREFIX}-${normalizedSessionId.slice(0, 8)}`;
+}
+
+export function resolveOrchestratorIntercomTarget(events: IntercomEventBus, fallback: string): string {
+	if (typeof events.on !== "function" || typeof events.emit !== "function") return fallback;
+	const requestId = randomUUID();
+	let exactTarget: string | undefined;
+	let unsubscribe: (() => void) | undefined;
+	let failed = false;
+	try {
+		unsubscribe = events.on(SUBAGENT_INTERCOM_IDENTITY_RESPONSE_EVENT, (payload) => {
+			if (!payload || typeof payload !== "object") return;
+			const response = payload as { requestId?: unknown; sessionId?: unknown };
+			if (response.requestId === requestId && typeof response.sessionId === "string" && response.sessionId.trim()) exactTarget = response.sessionId;
+		});
+		events.emit(SUBAGENT_INTERCOM_IDENTITY_REQUEST_EVENT, { requestId });
+	} catch {
+		failed = true;
+	} finally {
+		try { unsubscribe?.(); } catch { failed = true; }
+	}
+	return failed ? fallback : exactTarget ?? fallback;
 }
 
 function sanitizeIntercomTargetPart(value: string): string {

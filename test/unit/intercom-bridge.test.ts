@@ -9,6 +9,7 @@ import {
 	diagnoseIntercomBridge,
 	resolveIntercomBridge,
 	resolveIntercomSessionTarget,
+	resolveOrchestratorIntercomTarget,
 	resolveSubagentIntercomTarget,
 	resolveIntercomBridgeMode,
 	shouldApplyIntercomBridge,
@@ -77,6 +78,49 @@ describe("resolveIntercomSessionTarget", () => {
 	it("uses a runtime-only subagent chat alias when unnamed", () => {
 		assert.equal(resolveIntercomSessionTarget(undefined, "session-12345678"), "subagent-chat-12345678");
 	});
+});
+
+describe("resolveOrchestratorIntercomTarget", () => {
+	it("uses an exact connected identity and immediately falls back when unavailable", () => {
+		const listeners = new Map<string, (payload: unknown) => void>();
+		const events = {
+			on(channel: string, handler: (payload: unknown) => void) {
+				listeners.set(channel, handler);
+				return () => listeners.delete(channel);
+			},
+			emit(channel: string, payload: unknown) {
+				if (channel === "subagent:intercom-identity-request") {
+					const requestId = (payload as { requestId: string }).requestId;
+					listeners.get("subagent:intercom-identity-response")?.({ requestId, sessionId: "exact-broker-session" });
+				}
+			},
+		};
+		assert.equal(resolveOrchestratorIntercomTarget(events, "duplicate-name"), "exact-broker-session");
+		events.emit = () => {};
+		assert.equal(resolveOrchestratorIntercomTarget(events, "duplicate-name"), "duplicate-name");
+		assert.equal(listeners.size, 0);
+	});
+
+	for (const failure of ["listener", "emit", "unsubscribe"] as const) {
+		it(`falls back without leaking when ${failure} throws`, () => {
+			const listeners = new Set<(payload: unknown) => void>();
+			const events = {
+				on(_channel: string, handler: (payload: unknown) => void) {
+					if (failure === "listener") throw new Error("listener failed");
+					listeners.add(handler);
+					return () => {
+						listeners.delete(handler);
+						if (failure === "unsubscribe") throw new Error("unsubscribe failed");
+					};
+				},
+				emit() {
+					if (failure === "emit") throw new Error("emit failed");
+				},
+			};
+			assert.equal(resolveOrchestratorIntercomTarget(events, "fallback"), "fallback");
+			assert.equal(listeners.size, 0);
+		});
+	}
 });
 
 describe("resolveSubagentIntercomTarget", () => {

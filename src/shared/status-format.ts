@@ -1,4 +1,38 @@
-import type { ActivityState, AsyncJobStep, SubagentLiveIntercomHealth } from "./types.ts";
+import type { ActivityState, AsyncJobStep, ManagementAction, ManagementControl, ManagementRunState, SubagentLiveIntercomHealth } from "./types.ts";
+
+export function buildManagementControl(input: {
+	state: ManagementRunState;
+	runId: string;
+	index?: number;
+	intercomTarget?: string;
+	canExtend?: boolean;
+	canResume?: boolean;
+	canNudge?: boolean;
+	canInterrupt?: boolean;
+	unavailableActions?: Partial<Record<ManagementAction, string>>;
+	revivedFromRunId?: string;
+}): ManagementControl {
+	const capabilities: ManagementAction[] = ["status"];
+	if (input.state === "live") {
+		if (input.canNudge) capabilities.push("nudge");
+		if (input.canResume) capabilities.push("resume");
+		if (input.canInterrupt) capabilities.push("interrupt");
+	} else if (input.canResume) capabilities.push("resume");
+	if (input.state === "live" && input.canExtend) capabilities.push("extend");
+	return {
+		state: input.state,
+		runId: input.runId,
+		capabilities,
+		nextActions: capabilities.map((action) => ({
+			action,
+			runId: input.runId,
+			...(input.index !== undefined && (action === "nudge" || action === "resume") ? { index: input.index } : {}),
+			...(input.intercomTarget && (action === "nudge" || action === "resume") ? { intercomTarget: input.intercomTarget } : {}),
+		})),
+		...(input.unavailableActions ? { unavailableActions: input.unavailableActions } : {}),
+		...(input.revivedFromRunId ? { revivedFromRunId: input.revivedFromRunId, pendingReplyContextValid: false } : {}),
+	};
+}
 
 type StepStatusLike = Pick<AsyncJobStep, "status">;
 

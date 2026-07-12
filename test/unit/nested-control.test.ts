@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, describe, it, mock } from "node:test";
 import registerFanoutChildSubagentExtension from "../../src/extension/fanout-child.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { createNestedRoute, projectNestedEvents, readNestedControlRequests, readNestedControlResults, writeNestedControlRequest, writeNestedControlResult, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
@@ -16,7 +16,7 @@ import {
 	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
 	SUBAGENT_PARENT_RUN_ID_ENV,
 } from "../../src/runs/shared/pi-args.ts";
-import { ASYNC_DIR, type SubagentState } from "../../src/shared/types.ts";
+import { ASYNC_DIR, TEMP_ROOT_DIR, type SubagentState } from "../../src/shared/types.ts";
 
 const routeRoots: string[] = [];
 const savedEnv = {
@@ -143,8 +143,48 @@ describe("nested control routing", () => {
 			const result = await executor.execute("interrupt", { action: "interrupt", id: "nested-live" }, new AbortController().signal, undefined, ctx(root));
 			assert.equal(result.isError, undefined);
 			assert.match(text(result), /nested interrupt accepted/);
+			assert.deepEqual(result.details.managementControl?.capabilities, ["status", "resume", "interrupt"]);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("advertises only status and interrupt after a direct nested async interrupt", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-direct-interrupt-"));
+		const asyncDir = path.join(TEMP_ROOT_DIR, "nested-subagent-runs", "root-control", "nested-direct");
+		try {
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ state: "running", pid: 12345 }), "utf-8");
+			const route = createNestedRun("nested-direct", "running", { asyncDir, intercomTarget: "nested-target" });
+			const kill = mock.method(process, "kill", () => true);
+			const result = await createExecutor(stateWithNestedRoute(route)).execute("interrupt", { action: "interrupt", id: "nested-direct" }, new AbortController().signal, undefined, ctx(root));
+
+			assert.equal(result.isError, undefined);
+			assert.equal(kill.mock.callCount(), 1);
+			assert.deepEqual(result.details.managementControl?.capabilities, ["status", "interrupt"]);
+		} finally {
+			mock.restoreAll();
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
+	it("advertises only status immediately after a top-level async interrupt", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-interrupt-"));
+		const asyncDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-interrupt-run-"));
+		try {
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ state: "running", pid: 12345 }), "utf-8");
+			const state = createState();
+			state.asyncJobs.set("async-live", { asyncId: "async-live", asyncDir, status: "running", updatedAt: 1 } as any);
+			mock.method(process, "kill", () => true);
+			const result = await createExecutor(state).execute("interrupt", { action: "interrupt", id: "async-live" }, new AbortController().signal, undefined, ctx(root));
+
+			assert.equal(result.isError, undefined);
+			assert.deepEqual(result.details.managementControl?.capabilities, ["status"]);
+		} finally {
+			mock.restoreAll();
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(asyncDir, { recursive: true, force: true });
 		}
 	});
 

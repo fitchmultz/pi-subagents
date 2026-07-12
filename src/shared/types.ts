@@ -428,6 +428,24 @@ export interface SingleResult {
 	acceptance?: AcceptanceLedger;
 }
 
+export type ManagementRunState = "live" | "completed" | "paused" | "failed" | "unknown";
+export type ManagementAction = "status" | "nudge" | "resume" | "interrupt" | "extend";
+
+export interface ManagementControl {
+	state: ManagementRunState;
+	runId: string;
+	capabilities: ManagementAction[];
+	nextActions: Array<{
+		action: ManagementAction;
+		runId: string;
+		index?: number;
+		intercomTarget?: string;
+	}>;
+	unavailableActions?: Partial<Record<ManagementAction, string>>;
+	revivedFromRunId?: string;
+	pendingReplyContextValid?: boolean;
+}
+
 export interface Details {
 	mode: SubagentRunMode | "management";
 	runId?: string;
@@ -439,6 +457,8 @@ export interface Details {
 	progress?: AgentProgress[];
 	progressSummary?: ProgressSummary;
 	intercomTargets?: string[];
+	managementControl?: ManagementControl;
+	managementControls?: ManagementControl[];
 	intercomDelivery?: {
 		delivered: boolean;
 		to: string;
@@ -840,6 +860,8 @@ export const SUBAGENT_LIVE_INTERCOM_EVENT = "subagent:live-intercom";
 export const SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT = "subagent:live-intercom-delivery";
 export const SUBAGENT_INTERCOM_HEALTH_REQUEST_EVENT = "subagent:intercom-health-request";
 export const SUBAGENT_INTERCOM_HEALTH_RESPONSE_EVENT = "subagent:intercom-health-response";
+export const SUBAGENT_INTERCOM_IDENTITY_REQUEST_EVENT = "subagent:intercom-identity-request";
+export const SUBAGENT_INTERCOM_IDENTITY_RESPONSE_EVENT = "subagent:intercom-identity-response";
 
 export interface SubagentLiveIntercomHealth {
 	target: string;
