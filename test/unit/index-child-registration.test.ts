@@ -19,9 +19,7 @@ function runProbe(script: string, options: { env?: NodeJS.ProcessEnv } = {}): vo
 		[
 			"--input-type=module",
 			"--eval",
-			String.raw`import { createJiti } from "jiti";
-const jiti = createJiti(import.meta.url);
-${script}`,
+			String.raw`${script}`,
 		],
 		{ cwd: projectRoot, stdio: "pipe", ...options },
 	);
@@ -30,7 +28,7 @@ ${script}`,
 describe("subagent extension child mode", () => {
 	it("collapses tool detail before direct subagent tool execution", () => {
 		const script = String.raw`
-			const { default: registerSubagentExtension } = await jiti.import("./src/extension/index.ts");
+			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
 			const events = { on() { return () => {}; }, emit() {} };
 			let registeredTool;
 			const fakePi = new Proxy({
@@ -75,7 +73,7 @@ describe("subagent extension child mode", () => {
 
 	it("does not show async badge for explicit foreground clarify chain calls", () => {
 		const script = String.raw`
-			const { default: registerSubagentExtension } = await jiti.import("./src/extension/index.ts");
+			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
 			const events = { on() { return () => {}; }, emit() {} };
 			let registeredTool;
 			const fakePi = new Proxy({
@@ -106,8 +104,8 @@ describe("subagent extension child mode", () => {
 
 	it("returns before registering anything for non-fanout children", () => {
 		const script = String.raw`
-			const { default: registerSubagentExtension } = await jiti.import("./src/extension/index.ts");
-			const { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } = await jiti.import("./src/runs/shared/pi-args.ts");
+			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
+			const { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } = await import("./src/runs/shared/pi-args.ts");
 			process.env[SUBAGENT_CHILD_ENV] = "1";
 			process.env[SUBAGENT_FANOUT_CHILD_ENV] = "0";
 			const calls = [];
@@ -130,8 +128,8 @@ describe("subagent extension child mode", () => {
 
 	it("returns before registering anything for fanout children", () => {
 		const script = String.raw`
-			const { default: registerSubagentExtension } = await jiti.import("./src/extension/index.ts");
-			const { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } = await jiti.import("./src/runs/shared/pi-args.ts");
+			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
+			const { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } = await import("./src/runs/shared/pi-args.ts");
 			process.env[SUBAGENT_CHILD_ENV] = "1";
 			process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
 			const calls = [];
@@ -154,8 +152,8 @@ describe("subagent extension child mode", () => {
 
 	it("lets fanout children call read-only list but blocks mutating management actions", () => {
 		const script = String.raw`
-			const { default: registerFanoutChildSubagentExtension } = await jiti.import("./src/extension/fanout-child.ts");
-			const { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } = await jiti.import("./src/runs/shared/pi-args.ts");
+			const { default: registerFanoutChildSubagentExtension } = await import("./src/extension/fanout-child.ts");
+			const { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } = await import("./src/runs/shared/pi-args.ts");
 			process.env[SUBAGENT_CHILD_ENV] = "1";
 			process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
 			let registeredTool;

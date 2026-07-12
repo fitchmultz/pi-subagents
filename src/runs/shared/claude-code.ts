@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai/compat";
-import type { Usage } from "../../shared/types.ts";
 
 const PREFIX = "claude-code/";
 const DEFAULT_CONTEXT = "300k";
@@ -245,17 +244,6 @@ export function claudeCodeMessageFromResult(event: ClaudeCodeResultEvent, fallba
 			cost: { total: event.total_cost_usd ?? 0 },
 		},
 	} as Message;
-}
-
-export function usageFromClaudeCodeResult(event: ClaudeCodeResultEvent): Usage {
-	return {
-		input: event.usage?.input_tokens ?? 0,
-		output: event.usage?.output_tokens ?? 0,
-		cacheRead: event.usage?.cache_read_input_tokens ?? 0,
-		cacheWrite: event.usage?.cache_creation_input_tokens ?? 0,
-		cost: event.total_cost_usd ?? 0,
-		turns: 1,
-	};
 }
 
 export function resolveClaudeCodeResultModel(event: ClaudeCodeResultEvent): string | undefined {

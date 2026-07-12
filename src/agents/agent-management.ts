@@ -20,7 +20,7 @@ import { serializeAgent } from "./agent-serializer.ts";
 import { serializeChain, serializeJsonChain } from "./chain-serializer.ts";
 import { discoverAvailableSkills } from "./skills.ts";
 import { isClaudeCodeModel } from "../runs/shared/claude-code.ts";
-import type { Details, SubagentExecutionResult } from "../shared/types.ts";
+import type { SubagentExecutionResult } from "../shared/types.ts";
 
 type ManagementAction = "list" | "get" | "create" | "update" | "delete";
 type ManagementScope = "user" | "project";

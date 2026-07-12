@@ -104,8 +104,6 @@ Inspect env.
 
 		const worker = discovered.builtin.find((agent) => agent.name === "worker");
 		assert.equal(worker?.systemPrompt, "Use env-rooted settings.");
-		assert.equal(worker?.override?.path, settingsPath);
-		assert.equal(worker?.override?.scope, "user");
 
 		const createdName = "created-env-agent";
 		const created = handleCreate(

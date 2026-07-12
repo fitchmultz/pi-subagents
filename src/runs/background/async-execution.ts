@@ -4,10 +4,8 @@
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { applyThinkingSuffix } from "../shared/pi-args.ts";
@@ -44,7 +42,6 @@ import {
 } from "../../shared/types.ts";
 import { nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
 
-const require = createRequire(import.meta.url);
 const piPackageRoot = resolvePiPackageRoot();
 
 function usesAgentDefaultOutput(output: string | boolean | undefined): boolean {
@@ -98,52 +95,6 @@ function findDuplicateRunnerOutputPath(steps: RunnerSubagentStep[]): string | un
 	}
 	return undefined;
 }
-
-function resolveJitiCliFromPackageJson(packageJsonPath: string): string | undefined {
-	if (!fs.existsSync(packageJsonPath)) return undefined;
-	const packageRoot = path.dirname(packageJsonPath);
-	const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as {
-		bin?: string | Record<string, string>;
-	};
-	const binField = pkg.bin;
-	const binPath = typeof binField === "string"
-		? binField
-		: binField?.jiti ?? Object.values(binField ?? {})[0];
-	const candidates = [binPath, "lib/jiti-cli.mjs"].filter((candidate): candidate is string => Boolean(candidate));
-	for (const candidate of candidates) {
-		const cliPath = path.resolve(packageRoot, candidate);
-		if (fs.existsSync(cliPath)) return cliPath;
-	}
-	return undefined;
-}
-
-function resolveJitiCliPath(): string | undefined {
-	const candidates: Array<() => string | undefined> = [
-		() => require.resolve("jiti/package.json"),
-		() => piPackageRoot
-			? createRequire(path.join(piPackageRoot, "package.json")).resolve("jiti/package.json")
-			: undefined,
-		() => {
-			if (!process.argv[1]) return undefined;
-			const piEntry = fs.realpathSync(process.argv[1]);
-			return createRequire(piEntry).resolve("jiti/package.json");
-		},
-		() => piPackageRoot ? path.join(piPackageRoot, "node_modules", "jiti", "package.json") : undefined,
-	];
-	for (const candidate of candidates) {
-		try {
-			const packageJsonPath = candidate();
-			if (!packageJsonPath) continue;
-			const cliPath = resolveJitiCliFromPackageJson(packageJsonPath);
-			if (cliPath) return cliPath;
-		} catch {
-			// Candidate not available in this install, continue probing.
-		}
-	}
-	return undefined;
-}
-
-const jitiCliPath = resolveJitiCliPath();
 
 interface AsyncExecutionContext {
 	pi: ExtensionAPI;
@@ -226,20 +177,9 @@ export function formatAsyncStartedMessage(headline: string): string {
 }
 
 /**
- * Check if jiti is available for async execution
- */
-export function isAsyncAvailable(): boolean {
-	return jitiCliPath !== undefined;
-}
-
-/**
  * Spawn the async runner process
  */
 function spawnRunner(cfg: object, suffix: string, cwd: string, asyncDir: string): { pid?: number; error?: string } {
-	if (!jitiCliPath) {
-		return { error: "upstream jiti for TypeScript execution could not be found; ensure package dependencies are installed" };
-	}
-
 	try {
 		const cwdStats = fs.statSync(cwd);
 		if (!cwdStats.isDirectory()) {
@@ -256,7 +196,7 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, asyncDir: string)
 
 	const errorLogFd = fs.openSync(path.join(asyncDir, RUNNER_ERROR_LOG_FILE), "a");
 	try {
-		const proc = spawn(process.execPath, [jitiCliPath, runner, cfgPath], {
+		const proc = spawn(process.execPath, [runner, cfgPath], {
 			cwd,
 			detached: true,
 			stdio: ["ignore", "ignore", errorLogFd],

@@ -112,13 +112,8 @@ function runNodeTest(label, imports, files, timeoutMs) {
 }
 
 const { mode, timeoutMs } = parseArgs(process.argv.slice(2));
-const unit = () => runNodeTest("unit tests", ["jiti/register"], testFiles("test/unit"), timeoutMs);
-const integration = () => runNodeTest(
-  "integration tests",
-  ["jiti/register", "./test/support/register-loader.mjs"],
-  testFiles("test/integration"),
-  timeoutMs,
-);
+const unit = () => runNodeTest("unit tests", [], testFiles("test/unit"), timeoutMs);
+const integration = () => runNodeTest("integration tests", [], testFiles("test/integration"), timeoutMs);
 
 let status;
 switch (mode) {

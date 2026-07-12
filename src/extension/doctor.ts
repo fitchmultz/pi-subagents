@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { discoverAgentsAll, type AgentSource } from "../agents/agents.ts";
-import { isAsyncAvailable } from "../runs/background/async-execution.ts";
 import { diagnoseIntercomBridge, type IntercomBridgeDiagnostic } from "../intercom/intercom-bridge.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
 import {
@@ -21,7 +20,6 @@ interface DoctorPaths {
 }
 
 interface DoctorDeps {
-	isAsyncAvailable: () => boolean;
 	discoverAgentsAll: typeof discoverAgentsAll;
 	discoverAvailableSkills: typeof discoverAvailableSkills;
 	diagnoseIntercomBridge: typeof diagnoseIntercomBridge;
@@ -51,7 +49,6 @@ const DEFAULT_PATHS: DoctorPaths = {
 };
 
 const DEFAULT_DEPS: DoctorDeps = {
-	isAsyncAvailable,
 	discoverAgentsAll,
 	discoverAvailableSkills,
 	diagnoseIntercomBridge,
@@ -176,7 +173,7 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		"",
 		"Runtime",
 		`- cwd: ${input.cwd}`,
-		lineFromCheck("async support", () => `- async support: ${deps.isAsyncAvailable() ? "available" : "unavailable"}`),
+		"- async support: available (Node >=22.19)",
 		...formatSessionLines(input),
 		"",
 		"Filesystem",

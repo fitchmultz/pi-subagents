@@ -2,14 +2,12 @@
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
-import { createJiti } from "jiti";
 
 const require = createRequire(import.meta.url);
 const packageJson = require("../package.json");
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-	console.log(`Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing or installing it.\n\nChecks:\n  - npm pack --dry-run includes runtime Pi resources\n  - package.json pi manifest points at extension, skills, and prompts\n  - src/extension/index.ts loads through jiti and exports a registration function\n\nExit codes:\n  0  smoke passed\n  1  package shape or extension load check failed`);
+	console.log(`Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing or installing it.\n\nChecks:\n  - npm pack --dry-run includes runtime Pi resources\n  - package.json pi manifest points at extension, skills, and prompts\n  - src/extension/index.ts loads through native Node TypeScript stripping and exports a registration function\n\nExit codes:\n  0  smoke passed\n  1  package shape or extension load check failed`);
 	process.exit(0);
 }
 
@@ -78,9 +76,8 @@ if (!packageJson.pi?.extensions?.includes("./src/extension/index.ts")) fail("pac
 if (!packageJson.pi?.skills?.includes("./skills")) fail("package.json pi.skills must include ./skills");
 if (!packageJson.pi?.prompts?.includes("./prompts")) fail("package.json pi.prompts must include ./prompts");
 
-const jiti = createJiti(import.meta.url, { interopDefault: true });
-const extensionModule = await jiti.import(fileURLToPath(new URL("../src/extension/index.ts", import.meta.url)));
-const register = extensionModule.default ?? extensionModule;
+const extensionModule = await import(new URL("../src/extension/index.ts", import.meta.url));
+const register = extensionModule.default;
 if (typeof register !== "function") fail("extension entrypoint did not load a default registration function");
 
 console.log(`[package-smoke] ${pack.name}@${pack.version}: ${pack.files.length} files packed; extension entrypoint loaded`);

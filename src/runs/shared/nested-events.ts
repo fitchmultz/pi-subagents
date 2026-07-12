@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-	ASYNC_DIR,
 	RESULTS_DIR,
 	TEMP_ROOT_DIR,
 	type AsyncJobState,
@@ -487,11 +486,6 @@ export function findNestedRunMatchesById(id: string, options: { prefix?: boolean
 	return matches;
 }
 
-export function findNestedRunById(id: string): { rootRunId: string; run: NestedRunSummary } | undefined {
-	const match = findNestedRunMatchesById(id)[0];
-	return match ? { rootRunId: match.rootRunId, run: match.run } : undefined;
-}
-
 export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 	validateRouteShape(route);
 	try {
@@ -709,15 +703,6 @@ export function readNestedControlResults(route: NestedRoute): NestedControlResul
 	return results;
 }
 
-export function nestedRouteEnv(route: NestedRoute): Record<string, string> {
-	return {
-		[SUBAGENT_PARENT_EVENT_SINK_ENV]: route.eventSink,
-		[SUBAGENT_PARENT_CONTROL_INBOX_ENV]: route.controlInbox,
-		[SUBAGENT_PARENT_ROOT_RUN_ID_ENV]: route.rootRunId,
-		[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV]: route.capabilityToken,
-	};
-}
-
 export function attachRootChildrenToSteps<T extends { children?: NestedRunSummary[]; index?: number }>(rootRunId: string, steps: T[] | undefined, children: NestedRunSummary[] | undefined): void {
 	if (!steps?.length) return;
 	for (const step of steps) {
@@ -798,18 +783,6 @@ export function nestedSummaryFromAsyncStatus(status: AsyncStatus, asyncDir: stri
 			...(step.error ? { error: step.error } : {}),
 		})).slice(0, MAX_STEPS) } : {}),
 	};
-}
-
-export function nestedArtifactEnv(rootRunId: string, parentRunId: string): Record<string, string> {
-	return {
-		PI_SUBAGENT_NESTED_ROOT_RUN_ID: rootRunId,
-		PI_SUBAGENT_NESTED_PARENT_RUN_ID: parentRunId,
-	};
-}
-
-export function isTopLevelAsyncDir(asyncDir: string): boolean {
-	const resolved = path.resolve(asyncDir);
-	return containedPath(ASYNC_DIR, resolved) && !containedPath(path.join(TEMP_ROOT_DIR, "nested-subagent-runs"), resolved);
 }
 
 export function nestedResultsPath(rootRunId: string, id: string): string {

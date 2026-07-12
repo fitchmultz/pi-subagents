@@ -75,7 +75,6 @@
     }
   },
   "dependencies": {
-    "jiti": "^2.7.0",
     "typebox": "^1.1.39"
   },
   "devDependencies": {
@@ -91,5 +90,8 @@
     "ws": "^8.20.1"
   },
   "packageManager": "npm@11.16.0",
-  "private": true
+  "private": true,
+  "engines": {
+    "node": ">=22.19.0"
+  }
 }

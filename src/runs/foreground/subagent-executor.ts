@@ -33,7 +33,7 @@ import {
 	type StepOverrides,
 } from "../../shared/settings.ts";
 import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skills.ts";
-import { executeAsyncChain, executeAsyncSingle, formatAsyncStartedMessage, isAsyncAvailable } from "../background/async-execution.ts";
+import { executeAsyncChain, executeAsyncSingle, formatAsyncStartedMessage } from "../background/async-execution.ts";
 import { resolveConfiguredChildProjectTrustPolicy } from "../shared/pi-args.ts";
 import {
 	buildFlatAgentNameResolver,
@@ -112,7 +112,6 @@ import {
 	resolveTopLevelParallelMaxTasks,
 	resolveChildMaxSubagentDepth,
 	resolveCurrentMaxSubagentDepth,
-	wrapForkTask,
 } from "../../shared/types.ts";
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
@@ -1540,14 +1539,6 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 			if (worktreeTaskCwdError) return buildParallelModeError(worktreeTaskCwdError);
 		}
 	}
-
-	if (!isAsyncAvailable()) {
-		return {
-			content: [{ type: "text", text: "Async mode requires upstream jiti for TypeScript execution but it could not be found. Ensure the pi-subagents package dependencies are installed." }],
-			isError: true,
-			details: { mode: "single" as const, results: [] },
-		};
-	}
 	const id = randomUUID();
 	const asyncCtx = {
 		pi: deps.pi,
@@ -1786,13 +1777,6 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 	});
 
 	if (chainResult.requestedAsync) {
-		if (!isAsyncAvailable()) {
-			return {
-				content: [{ type: "text", text: "Background mode requires upstream jiti for TypeScript execution but it could not be found. Ensure the pi-subagents package dependencies are installed." }],
-				isError: true,
-				details: { mode: "chain" as const, results: [] },
-			};
-		}
 		const id = randomUUID();
 		const asyncCtx = {
 			pi: deps.pi,
@@ -2267,13 +2251,6 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		if (forkModelPolicyError) return buildParallelModeError(forkModelPolicyError);
 
 		if (result.runInBackground) {
-			if (!isAsyncAvailable()) {
-				return {
-					content: [{ type: "text", text: "Background mode requires upstream jiti for TypeScript execution but it could not be found. Ensure the pi-subagents package dependencies are installed." }],
-					isError: true,
-					details: { mode: "parallel" as const, results: [] },
-				};
-			}
 			const id = randomUUID();
 			const asyncCtx = {
 				pi: deps.pi,
@@ -2614,13 +2591,6 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			const output = outputUsesAgentDefault
 				? materializeAgentDefaultOutputPath({ output: effectiveOutput, artifactsDir, runId: id, agent: params.agent!, index: 0 })
 				: effectiveOutput;
-			if (!isAsyncAvailable()) {
-				return {
-					content: [{ type: "text", text: "Background mode requires upstream jiti for TypeScript execution but it could not be found. Ensure the pi-subagents package dependencies are installed." }],
-					isError: true,
-					details: { mode: "single" as const, results: [] },
-				};
-			}
 			const asyncCtx = {
 				pi: deps.pi,
 				cwd: ctx.cwd,

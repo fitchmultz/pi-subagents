@@ -1,20 +1,6 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
 import type { TokenUsage } from "./types.ts";
-
-function findLatestSessionFile(sessionDir: string): string | null {
-	try {
-		const files = fs.readdirSync(sessionDir)
-			.filter((f) => f.endsWith(".jsonl"))
-			.map((f) => path.join(sessionDir, f));
-		if (files.length === 0) return null;
-		files.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-		return files[0] ?? null;
-	} catch {
-		// Session token lookup is optional metadata.
-		return null;
-	}
-}
+import { findLatestSessionFile } from "./utils.ts";
 
 export function parseSessionTokens(sessionDir: string): TokenUsage | null {
 	const sessionFile = findLatestSessionFile(sessionDir);

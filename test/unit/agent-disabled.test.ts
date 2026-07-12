@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { buildBuiltinOverrideConfig, discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
+import { discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
 import { handleList, handleManagementAction } from "../../src/agents/agent-management.ts";
 
 let tempHome = "";
@@ -65,7 +65,6 @@ describe("builtin agent disabling", () => {
 		const allReviewer = discoverAgentsAll(tempProject).builtin.find((agent) => agent.name === "reviewer");
 		assert.ok(allReviewer);
 		assert.equal(allReviewer.disabled, true);
-		assert.equal(allReviewer.override?.scope, "user");
 	});
 
 	it("surfaces malformed disabled overrides instead of silently ignoring them", () => {
@@ -98,7 +97,6 @@ describe("builtin agent disabling", () => {
 		const allBuiltins = discoverAgentsAll(tempProject).builtin;
 		assert.ok(allBuiltins.length > 0);
 		assert.ok(allBuiltins.every((agent) => agent.disabled === true));
-		assert.ok(allBuiltins.every((agent) => agent.override?.scope === "user"));
 	});
 
 	it("an explicit user override opts a builtin out of user-scope bulk disable", () => {
@@ -115,7 +113,6 @@ describe("builtin agent disabling", () => {
 		assert.ok(reviewer);
 		assert.equal(reviewer.disabled, undefined);
 		assert.equal(reviewer.model, "openai/gpt-5.4");
-		assert.equal(reviewer.override?.scope, "user");
 	});
 
 	it("project disableBuiltins false re-enables builtins hidden by user bulk disable", () => {
@@ -150,7 +147,6 @@ describe("builtin agent disabling", () => {
 		const allReviewer = discoverAgentsAll(tempProject).builtin.find((agent) => agent.name === "reviewer");
 		assert.ok(allReviewer);
 		assert.equal(allReviewer.disabled, true);
-		assert.equal(allReviewer.override?.scope, "project");
 	});
 
 	it("surfaces malformed disableBuiltins values instead of silently ignoring them", () => {
@@ -263,30 +259,4 @@ describe("builtin agent disabling", () => {
 		assert.doesNotMatch(text, /Agent: reviewer \(project\)/);
 	});
 
-	it("buildBuiltinOverrideConfig emits disabled false when re-enabling a builtin", () => {
-		const override = buildBuiltinOverrideConfig(
-			{
-				systemPromptMode: "replace",
-				inheritProjectContext: false,
-				inheritSkills: false,
-				disabled: undefined,
-				systemPrompt: "Base prompt",
-			},
-			{
-				model: undefined,
-				fallbackModels: undefined,
-				thinking: undefined,
-				systemPromptMode: "replace",
-				inheritProjectContext: false,
-				inheritSkills: false,
-				disabled: false,
-				systemPrompt: "Base prompt",
-				skills: undefined,
-				tools: undefined,
-				mcpDirectTools: undefined,
-			},
-		);
-
-		assert.deepEqual(override, { disabled: false });
-	});
 });

@@ -1,7 +1,7 @@
 /**
  * Integration tests for async (background) agent execution.
  *
- * Tests the async support utilities: jiti availability check,
+ * Tests async execution utilities,
  * status file reading/caching.
  *
  * Requires pi packages to be importable. Skips gracefully if unavailable.
@@ -64,7 +64,6 @@ interface AsyncStatusPayload {
 }
 
 interface AsyncExecutionModule {
-	isAsyncAvailable(): boolean;
 	executeAsyncSingle(id: string, params: Record<string, unknown>): AsyncExecutionResult;
 	executeAsyncChain(id: string, params: Record<string, unknown>): AsyncExecutionResult;
 }
@@ -92,7 +91,6 @@ const typesMod = await tryImport<TypesModule>("./src/shared/types.ts");
 const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subagent-executor.ts");
 const available = !!(asyncMod && utils && typesMod);
 
-const isAsyncAvailable = asyncMod?.isAsyncAvailable;
 const executeAsyncSingle = asyncMod?.executeAsyncSingle;
 const executeAsyncChain = asyncMod?.executeAsyncChain;
 const readStatus = utils?.readStatus;
@@ -221,10 +219,6 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	afterEach(() => {
 		removeTempDir(tempDir);
 	});
-	it("reports jiti availability as boolean", () => {
-		const result = isAsyncAvailable();
-		assert.equal(typeof result, "boolean");
-	});
 
 	it("readStatus returns null for missing directory", () => {
 		const status = readStatus("/nonexistent/path/abc123");
@@ -254,7 +248,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		}
 	});
 
-	it("async launch messages tell the parent not to sleep-poll", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async launch messages tell the parent not to sleep-poll", async () => {
 		const artifactConfig = {
 			enabled: false,
 			includeInput: false,
@@ -311,7 +305,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		await waitForAsyncResultFile(chainId, 10_000);
 	});
 
-	it("captures detached runner stderr in the async run directory", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("captures detached runner stderr in the async run directory", async () => {
 		const marker = `runner-stderr-${Date.now().toString(36)}`;
 		const preloadPath = path.join(tempDir, "runner-stderr.cjs");
 		fs.writeFileSync(preloadPath, `if (process.argv.some((arg) => arg.endsWith("subagent-runner.ts"))) process.stderr.write(${JSON.stringify(`${marker}\n`)});\n`, "utf-8");
@@ -337,7 +331,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		}
 	});
 
-	it("async single enforces agent maxTokens from observed usage", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async single enforces agent maxTokens from observed usage", async () => {
 		mockPi.onCall({ output: "Used async tokens" });
 		const id = `async-token-limit-${Date.now().toString(36)}`;
 
@@ -364,7 +358,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(status.steps?.[0]?.resourceLimitExceeded?.kind, "maxTokens");
 	});
 
-	it("async single enforces agent maxExecutionTimeMs without retrying fallback models", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async single enforces agent maxExecutionTimeMs without retrying fallback models", async () => {
 		mockPi.onCall({ matchArgsIncludes: "Run too long", delay: 5_000, output: "too slow" });
 		const id = `async-time-limit-${Date.now().toString(36)}`;
 		const startedAt = Date.now();
@@ -396,7 +390,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(status.steps?.[0]?.resourceLimitExceeded?.kind, "maxExecutionTimeMs");
 	});
 
-	it("async chain parallel records per-child maxExecutionTimeMs failures", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async chain parallel records per-child maxExecutionTimeMs failures", async () => {
 		mockPi.onCall({ matchArgsIncludes: "Slow child", delay: 5_000, output: "too slow" });
 		mockPi.onCall({ matchArgsIncludes: "Fast child", output: "review ok" });
 		const id = `async-parallel-time-limit-${Date.now().toString(36)}`;
@@ -426,7 +420,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(status.steps?.[1]?.status, "complete");
 	});
 
-	it("async parallel interrupt pauses every running child and does not start queued work", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async parallel interrupt pauses every running child and does not start queued work", async () => {
 		mockPi.onCall({ delay: 5_000, output: "first should be interrupted" });
 		mockPi.onCall({ delay: 5_000, output: "second should be interrupted" });
 		const id = `async-parallel-interrupt-${Date.now().toString(36)}`;
@@ -462,7 +456,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.ok(events.some((event) => event.type === "subagent.parallel.completed" && event.success === false && event.state === "paused"));
 	});
 
-	it("async sequential interrupt does not publish named output", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async sequential interrupt does not publish named output", async () => {
 		mockPi.onCall({ delay: 5_000, output: "first should be interrupted", structuredOutput: { value: "partial" } });
 		const id = `async-sequential-interrupt-${Date.now().toString(36)}`;
 		executeAsyncChain(id, {
@@ -491,7 +485,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 1);
 	});
 
-	it("top-level async parallel conversion preserves output, reads, and progress", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+	it("top-level async parallel conversion preserves output, reads, and progress", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
 		mockPi.onCall({ output: "Async top-level report" });
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
@@ -546,7 +540,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), true);
 	});
 
-	it("top-level async parallel materializes duplicate agent-default outputs to unique artifact paths", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+	it("top-level async parallel materializes duplicate agent-default outputs to unique artifact paths", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
 		mockPi.onCall({ output: "Async default report A" });
 		mockPi.onCall({ output: "Async default report B" });
 		const executor = createSubagentExecutor!({
@@ -587,7 +581,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.ok(outputTexts.some((text) => /[a-f0-9-]+_scout_1_context\.md/.test(text)));
 	});
 
-	it("rejects duplicate explicit output paths before starting top-level async parallel children", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+	it("rejects duplicate explicit output paths before starting top-level async parallel children", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
@@ -619,7 +613,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("rejects duplicate explicit output paths before starting async chain parallel children", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("rejects duplicate explicit output paths before starting async chain parallel children", async () => {
 		const id = `async-chain-duplicate-output-${Date.now().toString(36)}`;
 		const result = executeAsyncChain!(id, {
 			chain: [{ parallel: [
@@ -639,7 +633,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("rejects duplicate explicit absolute output paths before starting async worktree parallel children", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+	it("rejects duplicate explicit absolute output paths before starting async worktree parallel children", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
 		const outputPath = path.join(tempDir, "same-absolute.md");
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
@@ -673,7 +667,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("top-level async single uses an agent-default output for file-only mode without project leftovers", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+	it("top-level async single uses an agent-default output for file-only mode without project leftovers", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
 		mockPi.onCall({ output: "Async single default report" });
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
@@ -707,7 +701,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(fs.readFileSync(outputPath, "utf-8"), "Async single default report");
 	});
 
-	it("async single lets explicit acceptance own completion for report-only output", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async single lets explicit acceptance own completion for report-only output", async () => {
 		const report = [
 			"```acceptance-report",
 			JSON.stringify({
@@ -749,7 +743,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 2);
 	});
 
-	it("async single pauses when interrupted during acceptance finalization", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async single pauses when interrupted during acceptance finalization", async () => {
 		const report = [
 			"```acceptance-report",
 			JSON.stringify({
@@ -786,7 +780,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(finalStatus.steps?.[0]?.status, "paused");
 	});
 
-	it("top-level async chain suppresses progress for {task} review-only tasks", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+	it("top-level async chain suppresses progress for {task} review-only tasks", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
 		mockPi.onCall({ output: "Async review" });
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
@@ -827,7 +821,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), false);
 	});
 
-	it("async chains reject malformed named output references before spawning", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async chains reject malformed named output references before spawning", async () => {
 		const id = `async-malformed-output-ref-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
 			chain: [{ agent: "consumer", task: "Use {outputs.bad-name}" }],
@@ -843,7 +837,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("async chains persist structured outputs, named outputs, and graph labels", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async chains persist structured outputs, named outputs, and graph labels", async () => {
 		const schema = {
 			type: "object",
 			required: ["value"],
@@ -888,7 +882,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.workflowGraph?.nodes?.[1]?.status, "completed");
 	});
 
-	it("async dynamic status shows a placeholder before materialization", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async dynamic status shows a placeholder before materialization", async () => {
 		mockPi.onCall({ delay: 800, output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" } });
 		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" } });
@@ -934,7 +928,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.deepEqual(finalStatus.parallelGroups, [{ start: 1, count: 2, stepIndex: 1 }]);
 	});
 
-	it("async chains expand dynamic fanout and persist collected output", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async chains expand dynamic fanout and persist collected output", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" } });
 		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" } });
@@ -982,7 +976,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.workflowGraph?.nodes?.[2]?.flatIndex, 3);
 	});
 
-	it("async dynamic fanout applies preallocated fork sessions and intercom env to each materialized child", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async dynamic fanout applies preallocated fork sessions and intercom env to each materialized child", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" }, echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
 		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" }, echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
@@ -1026,7 +1020,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(reviewB.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-supervisor");
 	});
 
-	it("async dynamic fanout materializes agent-default outputs per child", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async dynamic fanout materializes agent-default outputs per child", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		mockPi.onCall({ output: "review-a" });
 		mockPi.onCall({ output: "review-b" });
@@ -1064,7 +1058,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.notEqual(firstReviewTask.match(/Write your findings to: (.*review\.md)/)?.[1], secondReviewTask.match(/Write your findings to: (.*review\.md)/)?.[1]);
 	});
 
-	it("async dynamic fanout default outputs do not collide with later same-agent defaults", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async dynamic fanout default outputs do not collide with later same-agent defaults", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		mockPi.onCall({ output: "review-a" });
 		mockPi.onCall({ output: "review-b" });
@@ -1104,7 +1098,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.deepEqual(allOutputPaths.map((outputPath) => fs.readFileSync(outputPath, "utf-8")).sort(), ["final-review", "review-a", "review-b"]);
 	});
 
-	it("async dynamic fanout rejects duplicate explicit output paths before starting children", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async dynamic fanout rejects duplicate explicit output paths before starting children", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		const id = `async-dynamic-duplicate-output-${Date.now().toString(36)}`;
 		const result = executeAsyncChain!(id, {
@@ -1132,7 +1126,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(fs.existsSync(path.join(tempDir, "same.md")), false);
 	});
 
-	it("async dynamic empty fanout completes and persists an empty collection", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async dynamic empty fanout completes and persists an empty collection", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [] } });
 		const id = `async-dynamic-empty-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
@@ -1163,7 +1157,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 1);
 	});
 
-	it("async dynamic fanout interrupt pauses without publishing collected outputs", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async dynamic fanout interrupt pauses without publishing collected outputs", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		mockPi.onCall({ delay: 5_000, output: "review-a", structuredOutput: { ok: "a" } });
 		mockPi.onCall({ delay: 5_000, output: "review-b", structuredOutput: { ok: "b" } });
@@ -1199,7 +1193,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.ok(events.some((event) => event.type === "subagent.dynamic.completed" && event.success === false && event.state === "paused"));
 	});
 
-	it("async dynamic fanout recomputes later child intercom targets by final flat index", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async dynamic fanout recomputes later child intercom targets by final flat index", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INTERCOM_SESSION_NAME"], structuredOutput: { ok: "a" } });
 		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INTERCOM_SESSION_NAME"], structuredOutput: { ok: "b" } });
@@ -1240,7 +1234,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.deepEqual(JSON.parse(payload.results[3]?.output ?? "{}"), { PI_SUBAGENT_INTERCOM_SESSION_NAME: expectedConsumerTarget });
 	});
 
-	it("async dynamic pre-spawn failures persist failed graph status and error", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async dynamic pre-spawn failures persist failed graph status and error", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		const id = `async-dynamic-prespawn-fail-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
@@ -1272,7 +1266,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(status.workflowGraph?.nodes?.[1]?.status, "failed");
 	});
 
-	it("async dynamic collect schema failures persist failed graph status and details", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("async dynamic collect schema failures persist failed graph status and details", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }] } });
 		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" } });
 		const id = `async-dynamic-collect-fail-${Date.now().toString(36)}`;
@@ -1302,7 +1296,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(payload.workflowGraph?.nodes?.[1]?.error ?? "", /Collected output validation failed/);
 	});
 
-	it("top-level async worktree parallel resolves reads and output against the worktree cwd", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+	it("top-level async worktree parallel resolves reads and output against the worktree cwd", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
 		const repoDir = createRepo("pi-subagent-async-worktree-");
 		try {
 			mockPi.onCall({ output: "Worktree report" });
@@ -1358,7 +1352,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		}
 	});
 
-	it("top-level async worktree parallel reports preserved worktrees when diff capture fails", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+	it("top-level async worktree parallel reports preserved worktrees when diff capture fails", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
 		const repoDir = createRepo("pi-subagent-async-worktree-diff-fail-");
 		const preserved: Array<{ path: string; branch: string }> = [];
 		try {
@@ -1448,7 +1442,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		}
 	});
 
-	it("background runs record fallback attempts and final model", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background runs record fallback attempts and final model", async () => {
 		mockPi.onCall({
 			jsonl: [{
 				type: "message_end",
@@ -1516,7 +1510,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 2);
 	});
 
-	it("background runs fail zero-exit provider errors when no fallback succeeds", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background runs fail zero-exit provider errors when no fallback succeeds", async () => {
 		mockPi.onCall({
 			jsonl: [{
 				type: "message_end",
@@ -1558,7 +1552,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(statusPayload.steps?.[0]?.error ?? "", /429 quota exceeded/);
 	});
 
-	it("background runs treat recovered child errors as successful", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background runs treat recovered child errors as successful", async () => {
 		mockPi.onCall({
 			jsonl: [
 				events.toolResult("read", "EISDIR: illegal operation on a directory", true),
@@ -1609,7 +1603,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(statusPayload.steps?.[0]?.exitCode, 0);
 	});
 
-	it("background runs keep provider errors failed when followed only by empty assistant output", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background runs keep provider errors failed when followed only by empty assistant output", async () => {
 		mockPi.onCall({
 			jsonl: [
 				{
@@ -1659,7 +1653,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(statusPayload.steps?.[0]?.exitCode, 1);
 	});
 
-	it("background file-only runs write full output but return only a file reference", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background file-only runs write full output but return only a file reference", async () => {
 		mockPi.onCall({ output: "async full output\nwith details" });
 		const id = `async-file-only-${Date.now().toString(36)}`;
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
@@ -1701,7 +1695,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(fs.readFileSync(outputPath, "utf-8"), "async full output\nwith details");
 	});
 
-	it("background single runs treat string false as disabled output", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background single runs treat string false as disabled output", async () => {
 		mockPi.onCall({ output: "async inline report" });
 		const id = `async-string-false-output-${Date.now().toString(36)}`;
 		const run = executeAsyncSingle(id, {
@@ -1734,7 +1728,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.doesNotMatch(readLastMockPiArgs(mockPi).at(-1) ?? "", /Write your findings to:/);
 	});
 
-	it("background runs detect hidden tool failures even when the child exits 0", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background runs detect hidden tool failures even when the child exits 0", async () => {
 		mockPi.onCall({
 			jsonl: [events.toolResult("bash", "connection refused", true)],
 		});
@@ -1775,7 +1769,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.results[0].success, false);
 	});
 
-	it("background implementation runs fail when no mutation attempt occurred", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background implementation runs fail when no mutation attempt occurred", async () => {
 		mockPi.onCall({ output: "I’ll do that now and report back after implementing." });
 
 		const id = `async-no-mutation-${Date.now().toString(36)}`;
@@ -1823,7 +1817,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.doesNotMatch(eventsText, /Interrupt:/);
 	});
 
-	it("background implementation runs count successful mutating results even when output mentions failure words", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background implementation runs count successful mutating results even when output mentions failure words", async () => {
 		mockPi.onCall({
 			jsonl: [
 				events.toolStart("edit", { path: "src/file.ts" }),
@@ -1862,7 +1856,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.results[0].output, "Applied edit");
 	});
 
-	it("background bash-enabled non-implementation agents can opt out of the completion guard", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background bash-enabled non-implementation agents can opt out of the completion guard", async () => {
 		mockPi.onCall({ output: "cold start test after patch" });
 
 		const id = `async-completion-guard-optout-${Date.now().toString(36)}`;
@@ -1898,7 +1892,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.doesNotMatch(eventsText, /"reason":"completion_guard"/);
 	});
 
-	it("background runs prefer the parent session provider for ambiguous bare model ids", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background runs prefer the parent session provider for ambiguous bare model ids", async () => {
 		mockPi.onCall({ output: "Done asynchronously" });
 
 		const id = `async-provider-${Date.now().toString(36)}`;
@@ -1946,7 +1940,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.deepEqual(payload.results[0].attemptedModels, ["github-copilot/gpt-5-mini"]);
 	});
 
-	it("background runs resolve skills from the effective task cwd", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background runs resolve skills from the effective task cwd", async () => {
 		mockPi.onCall({ output: "Done asynchronously" });
 		const taskCwd = createTempDir("pi-subagent-async-task-cwd-");
 		const id = `async-skill-cwd-${Date.now().toString(36)}`;
@@ -2042,7 +2036,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(result.content[0]?.text ?? "", /Skills not found: pi-subagents/);
 	});
 
-	it("background chains resolve relative step cwd values against the shared cwd", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background chains resolve relative step cwd values against the shared cwd", async () => {
 		mockPi.onCall({ output: "Done asynchronously" });
 		const chainCwd = createTempDir("pi-subagent-async-chain-cwd-");
 		const id = `async-chain-skill-cwd-${Date.now().toString(36)}`;
@@ -2089,7 +2083,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		}
 	});
 
-	it("keeps top-level current tool/path aligned with still-running parallel children", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("keeps top-level current tool/path aligned with still-running parallel children", async () => {
 		mockPi.onCall({
 			steps: [
 				{ jsonl: [events.toolStart("read", { path: "README.md" })] },
@@ -2145,7 +2139,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(invariantViolated, false, "top-level currentTool drifted from running step tools");
 	});
 
-	it("returns a tool error when the detached runner config cannot be written", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, () => {
+	it("returns a tool error when the detached runner config cannot be written", () => {
 		const id = `async-write-fail-${Date.now().toString(36)}`;
 		assert.ok(TEMP_ROOT_DIR, "TEMP_ROOT_DIR should be available for async tests");
 		fs.mkdirSync(TEMP_ROOT_DIR, { recursive: true });
@@ -2174,7 +2168,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(result.content[0]?.text ?? "", /async-cfg-/);
 	});
 
-	it("returns a tool error when an async run uses a missing cwd", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, () => {
+	it("returns a tool error when an async run uses a missing cwd", () => {
 		const id = `async-missing-cwd-${Date.now().toString(36)}`;
 		const missingCwd = path.join(tempDir, "missing-cwd");
 
@@ -2225,7 +2219,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(chainResult.content[0]?.text ?? "", /cwd does not exist/);
 	});
 
-	it("returns a tool error when the async runner process cannot spawn", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, () => {
+	it("returns a tool error when the async runner process cannot spawn", () => {
 		const originalExecPath = process.execPath;
 		process.execPath = path.join(tempDir, "missing-node");
 		try {
@@ -2256,7 +2250,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		}
 	});
 
-	it("returns a tool error when an async chain cannot write its detached runner config", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, () => {
+	it("returns a tool error when an async chain cannot write its detached runner config", () => {
 		const id = `async-chain-write-fail-${Date.now().toString(36)}`;
 		assert.ok(TEMP_ROOT_DIR, "TEMP_ROOT_DIR should be available for async tests");
 		fs.mkdirSync(TEMP_ROOT_DIR, { recursive: true });
@@ -2284,7 +2278,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(result.content[0]?.text ?? "", /async-cfg-/);
 	});
 
-	it("background forced drain after final assistant output is cleanup success", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background forced drain after final assistant output is cleanup success", async () => {
 		mockPi.onCall({
 			jsonl: [events.assistantMessage("async-done-before-drain")],
 			stderr: "Done after 1 turn(s). Ready for input.\n",
@@ -2331,7 +2325,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.results[0].output, "async-done-before-drain");
 	});
 
-	it("background forced drain after empty terminal assistant output is cleanup success", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background forced drain after empty terminal assistant output is cleanup success", async () => {
 		mockPi.onCall({
 			jsonl: [events.assistantMessage("")],
 			keepAliveAfterFinalMessageMs: 10000,
@@ -2367,7 +2361,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.results[0].output, "");
 	});
 
-	it("background final-drain cleanup preserves explicit assistant errors", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background final-drain cleanup preserves explicit assistant errors", async () => {
 		mockPi.onCall({
 			jsonl: [{
 				type: "message_end",
@@ -2410,7 +2404,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.results[0].error, "provider exploded");
 	});
 
-	it("background runs escalate repeated mutating tool failures", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background runs escalate repeated mutating tool failures", async () => {
 		mockPi.onCall({
 			steps: [
 				{ jsonl: [events.toolStart("edit", { path: "src/runs/background/subagent-runner.ts" }), events.toolEnd("edit"), events.toolResult("edit", "No exact match found for subagent-runner.ts", true)] },
@@ -2478,7 +2472,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		}
 	});
 
-	it("background runs stream child events and live output while active", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background runs stream child events and live output while active", async () => {
 		mockPi.onCall({
 			steps: [
 				{ delay: 200, jsonl: [events.toolStart("bash", { command: "ls" })] },

@@ -271,7 +271,6 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	return { args, env, tempDir };
 }
 
-export const parseParentPathEnv = parseNestedPathEnv;
 
 export function cleanupTempDir(tempDir: string | null | undefined): void {
 	if (!tempDir) return;

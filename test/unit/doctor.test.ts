@@ -69,7 +69,6 @@ describe("buildDoctorReport", () => {
 				expandTilde: (value) => value.replace(/^~\//, `${root}/home/`),
 				paths,
 				deps: {
-					isAsyncAvailable: () => true,
 					discoverAgentsAll: () => ({
 						builtin: [makeAgent("builtin-a", "builtin")],
 						user: [makeAgent("user-a", "user")],
@@ -132,7 +131,6 @@ describe("buildDoctorReport", () => {
 					chainRunsDir: path.join(root, "missing-chains"),
 				},
 				deps: {
-					isAsyncAvailable: () => false,
 					discoverAgentsAll: () => {
 						throw new Error("discovery exploded");
 					},
@@ -149,7 +147,7 @@ describe("buildDoctorReport", () => {
 				},
 			});
 
-			assert.match(report, /- async support: unavailable/);
+			assert.match(report, /- async support: available \(Node >=22\.19\)/);
 			assert.match(report, /- async runs: failed .*Error: not a directory:/);
 			assert.match(report, /- results: missing /);
 			assert.match(report, /- agents\/chains: failed — Error: discovery exploded/);

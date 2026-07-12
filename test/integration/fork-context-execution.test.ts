@@ -28,10 +28,6 @@ interface ExecutorModule {
 	};
 }
 
-interface AsyncExecutionModule {
-	isAsyncAvailable?: () => boolean;
-}
-
 interface ProgressUpdate {
 	details?: {
 		progress?: Array<{ status?: string; currentTool?: string }>;
@@ -39,10 +35,8 @@ interface ProgressUpdate {
 }
 
 const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subagent-executor.ts");
-const asyncExecutionMod = await tryImport<AsyncExecutionModule>("./src/runs/background/async-execution.ts");
 const available = !!executorMod;
 const createSubagentExecutor = executorMod?.createSubagentExecutor;
-const asyncAvailable = asyncExecutionMod?.isAsyncAvailable?.() === true;
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
 const originalPiCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -1230,7 +1224,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.details?.results?.some((entry) => entry.detached === true && entry.exitCode === 0), true);
 	});
 
-	it("runs top-level parallel async requests in the background", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
+	it("runs top-level parallel async requests in the background", async () => {
 		const executor = makeExecutor();
 
 		const result = await executor.execute(
@@ -1254,7 +1248,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.match(result.content[0]?.text ?? "", /Async parallel:/);
 	});
 
-	it("forks only fork-default agents in top-level parallel async when launch context is omitted", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
+	it("forks only fork-default agents in top-level parallel async when launch context is omitted", async () => {
 		const parentSessionFile = path.join(tempDir, "parent.jsonl");
 		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
@@ -1292,7 +1286,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.ok(sessionArgs.includes(forkedSessionFile(1)));
 	});
 
-	it("applies fork-only intercom bridge only to fork-default async children", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
+	it("applies fork-only intercom bridge only to fork-default async children", async () => {
 		enablePiIntercomBridge();
 		mockPi.reset();
 		mockPi.onCall({ output: "async fresh child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
@@ -1333,7 +1327,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(forkCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
 	});
 
-	it("runs async chain requests in the background when clarify is omitted", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
+	it("runs async chain requests in the background when clarify is omitted", async () => {
 		const executor = makeExecutor();
 
 		const result = await executor.execute(

@@ -86,96 +86,22 @@ export function readStatus(asyncDir: string): AsyncStatus | null {
 	return status;
 }
 
-const outputTailCache = new Map<string, { mtime: number; size: number; lines: string[] }>();
-
-/**
- * Get the last N lines from an output file (with mtime/size-based caching)
- */
-function getOutputTail(outputFile: string | undefined, maxLines: number = 3): string[] {
-	if (!outputFile) return [];
-	let fd: number | null = null;
-	try {
-		const stat = fs.statSync(outputFile);
-		if (stat.size === 0) return [];
-
-		const cached = outputTailCache.get(outputFile);
-		if (cached && cached.mtime === stat.mtimeMs && cached.size === stat.size) {
-			return cached.lines;
-		}
-
-		const tailBytes = 4096;
-		const start = Math.max(0, stat.size - tailBytes);
-		fd = fs.openSync(outputFile, "r");
-		const buffer = Buffer.alloc(Math.min(tailBytes, stat.size));
-		fs.readSync(fd, buffer, 0, buffer.length, start);
-		const content = buffer.toString("utf-8");
-		const allLines = content.split("\n").filter((l) => l.trim());
-		const lines = allLines.slice(-maxLines).map((l) => l.slice(0, 120) + (l.length > 120 ? "..." : ""));
-
-		outputTailCache.set(outputFile, { mtime: stat.mtimeMs, size: stat.size, lines });
-		if (outputTailCache.size > 20) {
-			const firstKey = outputTailCache.keys().next().value;
-			if (firstKey) outputTailCache.delete(firstKey);
-		}
-
-		return lines;
-	} catch {
-		// Output tails are UI-only hints; unreadable or missing files should render as no tail.
-		return [];
-	} finally {
-		if (fd !== null) {
-			try {
-				fs.closeSync(fd);
-			} catch {
-				// Closing the best-effort tail file handle should not surface over the main status view.
-			}
-		}
-	}
-}
-
-/**
- * Get human-readable last activity time for a file
- */
-	export function getLastActivity(outputFile: string | undefined): string {
-	if (!outputFile) return "";
-	try {
-		const stat = fs.statSync(outputFile);
-		const ago = Date.now() - stat.mtimeMs;
-		if (ago < 1000) return "active now";
-		if (ago < 60000) return `active ${Math.floor(ago / 1000)}s ago`;
-		return `active ${Math.floor(ago / 60000)}m ago`;
-	} catch {
-		// Last-activity text is best effort; missing files should simply omit the hint.
-		return "";
-	}
-}
-
 /**
  * Find the latest session file in a directory
  */
 export function findLatestSessionFile(sessionDir: string): string | null {
-	if (!fs.existsSync(sessionDir)) return null;
-	const files = fs.readdirSync(sessionDir)
-		.filter((f) => f.endsWith(".jsonl"))
-		.map((f) => {
-			const filePath = path.join(sessionDir, f);
-			return {
-				path: filePath,
-				mtime: fs.statSync(filePath).mtimeMs,
-			};
-		})
-		.sort((a, b) => b.mtime - a.mtime);
-	return files.length > 0 ? files[0].path : null;
-}
-
-/**
- * Write a prompt to a temporary file
- */
-function writePrompt(agent: string, prompt: string): { dir: string; path: string } {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
-	const p = path.join(dir, `${agent.replace(/[^\w.-]/g, "_")}.md`);
-	fs.writeFileSync(p, prompt, { mode: 0o600 });
-	return { dir, path: p };
+	try {
+		let latest: { path: string; mtime: number } | undefined;
+		for (const file of fs.readdirSync(sessionDir)) {
+			if (!file.endsWith(".jsonl")) continue;
+			const filePath = path.join(sessionDir, file);
+			const mtime = fs.statSync(filePath).mtimeMs;
+			if (!latest || mtime > latest.mtime) latest = { path: filePath, mtime };
+		}
+		return latest?.path ?? null;
+	} catch {
+		return null;
+	}
 }
 
 // ============================================================================

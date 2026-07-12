@@ -18,7 +18,7 @@
 - Added dev-only dependency overrides for current transitive `brace-expansion` and `ws` advisories without changing runtime package dependencies.
 - Declared Pi runtime packages (`@earendil-works/pi-*`) as optional wildcard peers so npm peer ranges do not block future Pi releases; TypeBox stays a direct dependency because the detached async runner resolves it from this package.
 - Added explicit `subagent` tool prompt snippet/guidelines so Pi 0.77+ tool metadata attribution has concise delegation guidance separate from the full schema description.
-- Switched the local TypeScript test loader to `jiti` so validation does not depend on Node's removed `--experimental-transform-types` flag on newer Node releases.
+- Use native TypeScript stripping on the Pi 0.80.6 Node >=22.19 baseline for tests and detached async runners, removing the direct Jiti dependency.
 - Run local test scripts through a small wrapper that clears inherited `PI_SUBAGENT_*` runtime variables before starting the Node test runner.
 
 ### Fixed
