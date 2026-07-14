@@ -6,7 +6,8 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir } from "../shared/utils.ts";
+import { parseNpmPackageName } from "../shared/package-spec.ts";
+import { expandTilde, getAgentDir } from "../shared/utils.ts";
 
 export type SkillSource =
 	| "project"
@@ -198,12 +199,8 @@ function collectSettingsSkillPaths(cwd: string, agentDir: string): SkillSearchPa
 		if (!Array.isArray(skills)) continue;
 		for (const entry of skills) {
 			if (typeof entry !== "string") continue;
-			let resolved = entry;
-			if (resolved.startsWith("~/")) {
-				resolved = path.join(os.homedir(), resolved.slice(2));
-			} else if (!path.isAbsolute(resolved)) {
-				resolved = path.resolve(base, resolved);
-			}
+			let resolved = expandTilde(entry);
+			if (!path.isAbsolute(resolved)) resolved = path.resolve(base, resolved);
 			results.push({ path: resolved, source });
 		}
 	}
@@ -215,14 +212,6 @@ function isSafePackagePath(value: string): boolean {
 	return value.length > 0
 		&& !path.isAbsolute(value)
 		&& value.split(/[\\/]/).every((part) => part.length > 0 && part !== "." && part !== "..");
-}
-
-function parseNpmPackageName(source: string): string | undefined {
-	const spec = source.slice(4).trim();
-	if (!spec) return undefined;
-	const match = spec.match(/^(@?[^@]+(?:\/[^@]+)?)(?:@(.+))?$/);
-	const packageName = match?.[1] ?? spec;
-	return isSafePackagePath(packageName) ? packageName : undefined;
 }
 
 function stripGitRef(repoPath: string): string {
@@ -275,9 +264,7 @@ function resolveSettingsPackageRoot(source: string, baseDir: string): string | u
 		const packageName = parseNpmPackageName(trimmed);
 		return packageName ? path.join(baseDir, "npm", "node_modules", packageName) : undefined;
 	}
-	const normalized = trimmed.startsWith("file:") ? trimmed.slice(5) : trimmed;
-	if (normalized === "~") return os.homedir();
-	if (normalized.startsWith("~/")) return path.join(os.homedir(), normalized.slice(2));
+	const normalized = expandTilde(trimmed.startsWith("file:") ? trimmed.slice(5) : trimmed);
 	if (path.isAbsolute(normalized)) return normalized;
 	if (normalized === "." || normalized === ".." || normalized.startsWith("./") || normalized.startsWith("../")) {
 		return path.resolve(baseDir, normalized);

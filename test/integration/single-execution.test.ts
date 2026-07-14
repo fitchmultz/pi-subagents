@@ -22,6 +22,7 @@ import {
 	makeAgentConfigs,
 	makeAgent,
 	makeMinimalCtx,
+	makeSubagentState,
 	events,
 	tryImport,
 } from "../support/helpers.ts";
@@ -112,7 +113,18 @@ interface UtilsModule {
 
 interface ExecutorModule {
 	createSubagentExecutor?: (...args: unknown[]) => {
-		execute: (...args: unknown[]) => Promise<{ content: Array<{ text?: string }>; isError?: boolean }>;
+		execute: (...args: unknown[]) => Promise<{
+			content: Array<{ text?: string }>;
+			isError?: boolean;
+			details?: {
+				results?: Array<{
+					savedOutputPath?: string;
+					outputCleanup?: { action?: string };
+					structuredOutput?: unknown;
+					outputReference?: { path?: string };
+				}>;
+			};
+		}>;
 	};
 }
 
@@ -200,7 +212,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 	function makeExecutor(agents = [makeAgent("echo")]) {
 		return createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: makeSubagentState({ baseCwd: tempDir }),
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -996,7 +1008,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 			new AbortController().signal,
 			undefined,
 			makeMinimalCtx(tempDir),
-		) as any;
+		);
 
 		assert.equal(result.isError, undefined);
 		assert.equal(fs.readFileSync(outputPath, "utf-8"), "workspace report");
@@ -1015,7 +1027,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 			new AbortController().signal,
 			undefined,
 			makeMinimalCtx(tempDir),
-		) as any;
+		);
 
 		assert.equal(result.isError, undefined);
 		assert.deepEqual(result.details?.results?.[0]?.structuredOutput, { ok: true });
@@ -1034,7 +1046,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		);
 
 		const text = result.content[0]?.text ?? "";
-		const details = (result as any).details;
+		const details = result.details;
 		const outputReference = details?.results?.[0]?.outputReference?.path ?? "";
 		assert.equal(result.isError, undefined);
 		assert.match(text, /default report/);
@@ -1058,7 +1070,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		);
 
 		const text = result.content[0]?.text ?? "";
-		const details = (result as any).details;
+		const details = result.details;
 		const outputPath = details?.results?.[0]?.savedOutputPath ?? "";
 		assert.equal(result.isError, undefined);
 		assert.match(text, /Output saved to:/);

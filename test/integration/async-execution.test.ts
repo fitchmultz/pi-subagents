@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, removeTempDir, tryImport } from "../support/helpers.ts";
+import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, makeSubagentState, removeTempDir, tryImport } from "../support/helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
 
 interface AsyncExecutionResult {
@@ -489,7 +489,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		mockPi.onCall({ output: "Async top-level report" });
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: makeSubagentState({ baseCwd: tempDir }),
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -545,7 +545,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		mockPi.onCall({ output: "Async default report B" });
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: makeSubagentState({ baseCwd: tempDir }),
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -584,7 +584,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	it("rejects duplicate explicit output paths before starting top-level async parallel children", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: makeSubagentState({ baseCwd: tempDir }),
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -637,7 +637,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const outputPath = path.join(tempDir, "same-absolute.md");
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: makeSubagentState({ baseCwd: tempDir }),
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -671,7 +671,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		mockPi.onCall({ output: "Async single default report" });
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: makeSubagentState({ baseCwd: tempDir }),
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -784,7 +784,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		mockPi.onCall({ output: "Async review" });
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: makeSubagentState({ baseCwd: tempDir }),
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -1302,7 +1302,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			mockPi.onCall({ output: "Worktree report" });
 			const executor = createSubagentExecutor!({
 				pi: { events: createEventBus(), getSessionName: () => undefined },
-				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+				state: makeSubagentState({ baseCwd: repoDir }),
 				config: {},
 				asyncByDefault: false,
 				tempArtifactsDir: repoDir,
@@ -1359,7 +1359,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			mockPi.onCall({ delay: 300, output: "Worktree report" });
 			const executor = createSubagentExecutor!({
 				pi: { events: createEventBus(), getSessionName: () => undefined },
-				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+				state: makeSubagentState({ baseCwd: repoDir }),
 				config: {},
 				asyncByDefault: false,
 				tempArtifactsDir: repoDir,

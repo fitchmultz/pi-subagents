@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir } from "../../shared/utils.ts";
+import { expandTilde, getAgentDir } from "../../shared/utils.ts";
 
 const CACHE_VERSION = 1;
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -342,11 +342,7 @@ function interpolateEnvVars(value: string): string {
 }
 
 function resolveConfigPath(value: string | undefined): string | undefined {
-	if (typeof value !== "string") return undefined;
-	const resolved = interpolateEnvVars(value);
-	if (resolved === "~") return os.homedir();
-	if (resolved.startsWith("~/") || resolved.startsWith("~\\")) return path.join(os.homedir(), resolved.slice(2));
-	return resolved;
+	return typeof value === "string" ? expandTilde(interpolateEnvVars(value)) : undefined;
 }
 
 function resolveBearerToken(definition: Pick<ServerEntry, "bearerToken" | "bearerTokenEnv">): string | undefined {

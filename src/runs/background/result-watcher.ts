@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { buildCompletionKey, markSeenWithTtl } from "./completion-dedupe.ts";
-import { createFileCoalescer } from "../../shared/file-coalescer.ts";
 import {
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
 	type IntercomEventBus,
@@ -189,9 +188,22 @@ export function createResultWatcher(
 		}
 	};
 
-	state.resultFileCoalescer = createFileCoalescer((file) => {
-		void handleResult(file);
-	}, 50);
+	const pendingResults = new Map<string, ReturnType<typeof setTimeout>>();
+	state.resultFileCoalescer = {
+		schedule(file, delayMs = 50) {
+			if (pendingResults.has(file)) return false;
+			const timer = timers.setTimeout(() => {
+				pendingResults.delete(file);
+				void handleResult(file);
+			}, delayMs);
+			pendingResults.set(file, timer);
+			return true;
+		},
+		clear() {
+			for (const timer of pendingResults.values()) timers.clearTimeout(timer);
+			pendingResults.clear();
+		},
+	};
 
 	const primeExistingResults = () => {
 		try {

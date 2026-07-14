@@ -21,14 +21,51 @@ import {
 	makeAgent,
 	makeAgentConfigs,
 	makeMinimalCtx,
+	makeSubagentState,
 	removeTempDir,
 	tryImport,
 } from "../support/helpers.ts";
 
+interface UtilsModule {
+	mapConcurrent<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]>;
+}
+
+interface ExecutionModule {
+	runSync(
+		runtimeCwd: string,
+		agents: ReturnType<typeof makeAgentConfigs>,
+		agentName: string,
+		task: string,
+		options: Record<string, unknown>,
+	): Promise<{ exitCode: number; agent: string }>;
+}
+
+interface ExecutorResult {
+	content: Array<{ text?: string }>;
+	isError?: boolean;
+	details: {
+		results: Array<{
+			exitCode?: number;
+			timedOut?: boolean;
+			outputReference?: { path?: string };
+			outputCleanup?: { action?: string };
+			savedOutputPath?: string;
+			structuredOutput?: unknown;
+			finalOutput?: string;
+		}>;
+	};
+}
+
+interface ExecutorModule {
+	createSubagentExecutor?: (...args: unknown[]) => {
+		execute: (...args: unknown[]) => Promise<ExecutorResult>;
+	};
+}
+
 // Top-level await: try importing pi-dependent modules
-const utils = await tryImport<any>("./src/shared/utils.ts");
-const execution = await tryImport<any>("./src/runs/foreground/execution.ts");
-const executorMod = await tryImport<any>("./src/runs/foreground/subagent-executor.ts");
+const utils = await tryImport<UtilsModule>("./src/shared/utils.ts");
+const execution = await tryImport<ExecutionModule>("./src/runs/foreground/execution.ts");
+const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subagent-executor.ts");
 const piAvailable = !!(execution && utils);
 
 const runSync = execution?.runSync;
@@ -140,7 +177,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 	function makeExecutor(agents = [makeAgent("echo")], artifactsDir = tempDir) {
 		return createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: makeSubagentState({ baseCwd: tempDir }),
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: artifactsDir,
@@ -164,13 +201,13 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		const results = await mapConcurrent(
 			tasks.map((task, i) => ({ agent: agents[i].name, task, index: i })),
 			3,
-			async ({ agent, task, index }: any) => {
+			async ({ agent, task, index }) => {
 				return runSync(tempDir, agents, agent, task, { index });
 			},
 		);
 
 		assert.equal(results.length, 3);
-		assert.ok(results.every((r: any) => r.exitCode === 0));
+		assert.ok(results.every((result) => result.exitCode === 0));
 		assert.equal(results[0].agent, "agent-a");
 		assert.equal(results[1].agent, "agent-b");
 		assert.equal(results[2].agent, "agent-c");
@@ -186,13 +223,13 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 				{ agent: "b", task: "Task B" },
 			],
 			2,
-			async ({ agent, task }: any, i: number) => runSync(tempDir, agents, agent, task, { index: i }),
+			async ({ agent, task }, i) => runSync(tempDir, agents, agent, task, { index: i }),
 		);
 
 		assert.equal(results.length, 2);
 		assert.equal(results[0].agent, "a");
 		assert.equal(results[1].agent, "b");
-		const ok = results.filter((r: any) => r.exitCode === 0).length;
+		const ok = results.filter((result) => result.exitCode === 0).length;
 		assert.equal(ok, 2);
 	});
 
@@ -215,7 +252,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 			new AbortController().signal,
 			undefined,
 			makeMinimalCtx(tempDir),
-		) as any;
+		);
 		const elapsed = Date.now() - start;
 
 		assert.ok(elapsed < 5000, `should time out early, took ${elapsed}ms`);
@@ -246,7 +283,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 			new AbortController().signal,
 			undefined,
 			makeMinimalCtx(tempDir),
-		) as Promise<any>;
+		);
 		await new Promise((resolve) => setTimeout(resolve, 75));
 		const extension = await executor.execute(
 			"parallel-extend-control",
@@ -254,7 +291,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 			new AbortController().signal,
 			undefined,
 			makeMinimalCtx(tempDir),
-		) as any;
+		);
 		const result = await resultPromise;
 
 		assert.equal(extension.isError, undefined, JSON.stringify(extension));
@@ -295,7 +332,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 				new AbortController().signal,
 				undefined,
 				ctx,
-			) as any;
+			);
 
 			const text = result.content[0]?.text ?? "";
 			assert.equal(result.isError, true);
@@ -429,8 +466,8 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 			makeMinimalCtx(tempDir),
 		);
 
-		const details = (result as any).details;
-		const paths = details?.results?.map((r: any) => r.outputReference?.path).filter(Boolean) ?? [];
+		const details = result.details;
+		const paths = details.results.map((r) => r.outputReference?.path).filter((value): value is string => Boolean(value));
 		assert.equal(result.isError, undefined);
 		assert.equal(mockPi.callCount(), 2);
 		assert.equal(fs.existsSync(path.join(tempDir, "context.md")), false);
@@ -439,7 +476,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.ok(paths.every((p: string) => p.includes(`${path.sep}requested-outputs${path.sep}`)));
 		assert.ok(paths.some((p: string) => /[a-f0-9]{8}_scout_0_context\.md$/.test(p)));
 		assert.ok(paths.some((p: string) => /[a-f0-9]{8}_scout_1_context\.md$/.test(p)));
-		assert.ok(details?.results?.every((r: any) => r.outputCleanup?.action === "deleted"));
+		assert.ok(details.results.every((r) => r.outputCleanup?.action === "deleted"));
 	});
 
 	it("treats string false as disabled output in top-level parallel runs", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {

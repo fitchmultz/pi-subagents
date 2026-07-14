@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { createEventBus, createTempDir, makeMinimalCtx, removeTempDir, tryImport } from "../support/helpers.ts";
+import { createEventBus, createTempDir, makeMinimalCtx, makeSubagentState, removeTempDir, tryImport } from "../support/helpers.ts";
 
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
@@ -22,22 +22,7 @@ try {
 }
 const createSubagentExecutor = executorMod?.createSubagentExecutor;
 
-function makeState(cwd: string) {
-	return {
-		baseCwd: cwd,
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
-	};
-}
+const makeState = (cwd: string) => makeSubagentState({ baseCwd: cwd });
 
 describe("doctor action executor routing", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, () => {
 	let tempDir = "";

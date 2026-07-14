@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import type { SubagentState } from "../../src/shared/types.ts";
 import { resolveSubagentRunId } from "../../src/runs/background/run-id-resolver.ts";
+import { makeSubagentState } from "../support/helpers.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 
 const routeRoots: string[] = [];
@@ -14,22 +15,10 @@ afterEach(() => {
 });
 
 function stateWithForeground(id: string): SubagentState {
-	return {
-		baseCwd: "",
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		foregroundRuns: new Map(),
+	return makeSubagentState({
 		foregroundControls: new Map([[id, { runId: id, mode: "single", startedAt: 1, updatedAt: 1 }]]),
 		lastForegroundControlId: id,
-		pendingForegroundControlNotices: new Map(),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
-	};
+	});
 }
 
 function nested(rootRunId: string, id: string) {

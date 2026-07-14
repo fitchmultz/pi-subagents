@@ -9,9 +9,9 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { applyThinkingSuffix } from "../shared/pi-args.ts";
-import { injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
+import { findDuplicateOutputPath, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { buildChainInstructions, isDynamicParallelStep, isParallelStep, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
-import type { RunnerStep, RunnerSubagentStep } from "../shared/parallel-utils.ts";
+import type { RunnerStep } from "../shared/parallel-utils.ts";
 import { resolvePiPackageRoot } from "../shared/pi-spawn.ts";
 import { buildSkillInjection, normalizeSkillInput, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
@@ -80,20 +80,6 @@ function resolveAsyncOutput(params: {
 	return usesAgentDefaultOutput(params.requestedOutput)
 		? materializeAsyncDefaultOutput({ output: effectiveOutput, artifactsDir: params.artifactsDir, asyncDir: params.asyncDir, runId: params.runId, agent: params.agent, index: params.index })
 		: effectiveOutput;
-}
-
-function findDuplicateRunnerOutputPath(steps: RunnerSubagentStep[]): string | undefined {
-	const seen = new Map<string, { index: number; agent: string }>();
-	for (let index = 0; index < steps.length; index++) {
-		const outputPath = steps[index]?.outputPath;
-		if (!outputPath) continue;
-		const previous = seen.get(outputPath);
-		if (previous) {
-			return `Parallel tasks ${previous.index + 1} (${previous.agent}) and ${index + 1} (${steps[index]!.agent}) resolve output to the same path: ${outputPath}. Use distinct output paths.`;
-		}
-		seen.set(outputPath, { index, agent: steps[index]!.agent });
-	}
-	return undefined;
 }
 
 interface AsyncExecutionContext {
@@ -440,7 +426,7 @@ export function executeAsyncChain(
 					}
 					return buildSeqStep(t, nextSessionFile(), behaviorCwd, progressPrecreated, parallelBehaviors[taskIndex]);
 				});
-				const duplicateOutputError = findDuplicateRunnerOutputPath(parallelSteps);
+				const duplicateOutputError = findDuplicateOutputPath(parallelSteps);
 				if (duplicateOutputError) throw new AsyncStartValidationError(duplicateOutputError);
 				return {
 					parallel: parallelSteps,

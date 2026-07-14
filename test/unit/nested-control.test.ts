@@ -17,6 +17,7 @@ import {
 	SUBAGENT_PARENT_RUN_ID_ENV,
 } from "../../src/runs/shared/pi-args.ts";
 import { ASYNC_DIR, TEMP_ROOT_DIR, type SubagentState } from "../../src/shared/types.ts";
+import { makeSubagentState } from "../support/helpers.ts";
 
 const routeRoots: string[] = [];
 const savedEnv = {
@@ -38,24 +39,7 @@ afterEach(() => {
 	}
 });
 
-function createState(): SubagentState {
-	return {
-		baseCwd: "",
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		foregroundRuns: new Map(),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		pendingForegroundControlNotices: new Map(),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
-	};
-}
+const createState = () => makeSubagentState();
 
 function createExecutor(state = createState(), agents: Array<Record<string, unknown>> = [], allowMutatingManagementActions = true, events: any = { emit() {}, on() { return () => {}; } }) {
 	return createSubagentExecutor({

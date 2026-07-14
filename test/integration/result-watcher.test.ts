@@ -5,29 +5,93 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import { createResultWatcher } from "../../src/runs/background/result-watcher.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
-import type { SubagentState } from "../../src/shared/types.ts";
+import { makeSubagentState } from "../support/helpers.ts";
 
-function createState(): SubagentState {
-	return {
-		baseCwd: "/repo",
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
-	};
-}
+const createState = () => makeSubagentState({ baseCwd: "/repo" });
 
 describe("result watcher", () => {
+	it("coalesces duplicate notifications per file without combining distinct results", async () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-coalesce-"));
+		try {
+			const emitted: string[] = [];
+			let watchListener: ((event: string, file: string) => void) | undefined;
+			const timeouts: Array<{ handler: () => void; cancelled: boolean }> = [];
+			const fakeWatcher = { on() { return fakeWatcher; }, close() {}, unref() {} } as fs.FSWatcher;
+			const state = createState();
+			fs.writeFileSync(path.join(resultsDir, "done.json"), JSON.stringify({ cwd: "/repo", summary: "done" }));
+			fs.writeFileSync(path.join(resultsDir, "other.json"), JSON.stringify({ cwd: "/repo", summary: "other" }));
+			const watcher = createResultWatcher({ events: { on: () => () => {}, emit: (event: string) => emitted.push(event) } }, state, resultsDir, 60_000, {
+				fs: { ...fs, watch: (_path, listener) => { watchListener = listener as (event: string, file: string) => void; return fakeWatcher; } },
+				timers: {
+					setTimeout(handler: () => void) {
+						const timer = { handler, cancelled: false };
+						timeouts.push(timer);
+						return Object.assign(timer, { unref() {} }) as unknown as NodeJS.Timeout;
+					},
+					clearTimeout(timer) {
+						(timer as unknown as { cancelled: boolean }).cancelled = true;
+					},
+					setInterval: () => ({ unref() {} }) as NodeJS.Timeout,
+					clearInterval() {},
+				},
+			});
+			try {
+				watcher.startResultWatcher();
+				watchListener?.("rename", "done.json");
+				watchListener?.("rename", "done.json");
+				watchListener?.("rename", "other.json");
+				assert.equal(timeouts.length, 2);
+				for (const timer of timeouts) if (!timer.cancelled) timer.handler();
+				await new Promise((resolve) => setImmediate(resolve));
+			} finally {
+				watcher.stopResultWatcher();
+			}
+			assert.equal(emitted.filter((event) => event === "subagent:async-complete").length, 2);
+		} finally {
+			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
+	it("cancels pending coalesced callbacks when stopped", async () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-stop-"));
+		try {
+			const emitted: string[] = [];
+			let watchListener: ((event: string, file: string) => void) | undefined;
+			const timeouts: Array<{ handler: () => void; cancelled: boolean }> = [];
+			const fakeWatcher = { on() { return fakeWatcher; }, close() {}, unref() {} } as fs.FSWatcher;
+			const resultPath = path.join(resultsDir, "pending.json");
+			fs.writeFileSync(resultPath, JSON.stringify({ cwd: "/repo", summary: "pending" }));
+			const watcher = createResultWatcher({ events: { on: () => () => {}, emit: (event: string) => emitted.push(event) } }, createState(), resultsDir, 60_000, {
+				fs: { ...fs, watch: (_path, listener) => { watchListener = listener as (event: string, file: string) => void; return fakeWatcher; } },
+				timers: {
+					setTimeout(handler: () => void) {
+						const timer = { handler, cancelled: false };
+						timeouts.push(timer);
+						return Object.assign(timer, { unref() {} }) as unknown as NodeJS.Timeout;
+					},
+					clearTimeout(timer) {
+						(timer as unknown as { cancelled: boolean }).cancelled = true;
+					},
+					setInterval: () => ({ unref() {} }) as NodeJS.Timeout,
+					clearInterval() {},
+				},
+			});
+
+			watcher.startResultWatcher();
+			watchListener?.("rename", "pending.json");
+			watcher.stopResultWatcher();
+			assert.equal(timeouts.length, 1);
+			assert.equal(timeouts[0]?.cancelled, true);
+			for (const timer of timeouts) if (!timer.cancelled) timer.handler();
+			await new Promise((resolve) => setImmediate(resolve));
+
+			assert.equal(emitted.length, 0);
+			assert.equal(fs.existsSync(resultPath), true);
+		} finally {
+			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
 	it("processes deferred session-scoped results after session identity is restored", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-session-"));
 		try {

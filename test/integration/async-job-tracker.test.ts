@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { createTempDir, removeTempDir, tryImport } from "../support/helpers.ts";
+import { createTempDir, makeSubagentState, removeTempDir, tryImport } from "../support/helpers.ts";
 
 interface AsyncJobTrackerModule {
 	createAsyncJobTracker(
@@ -26,23 +26,7 @@ interface AsyncJobTrackerModule {
 const trackerMod = await tryImport<AsyncJobTrackerModule>("./src/runs/background/async-job-tracker.ts");
 const available = !!trackerMod;
 
-function createState() {
-	return {
-		baseCwd: "/repo",
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
-	};
-}
+const createState = () => makeSubagentState({ baseCwd: "/repo" });
 
 function createEventRecorder() {
 	const events: Array<{ channel: string; data: unknown }> = [];

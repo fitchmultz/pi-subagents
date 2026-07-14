@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { expandTilde } from "../../shared/utils.ts";
 
 export interface WorktreeSetup {
 	cwd: string;
@@ -209,7 +210,7 @@ function resolveWorktreeSetupHook(
 		throw new Error("worktree setup hook path cannot be empty");
 	}
 
-	const expandedHookPath = hookPath.startsWith("~/") ? path.join(os.homedir(), hookPath.slice(2)) : hookPath;
+	const expandedHookPath = expandTilde(hookPath);
 	let resolvedPath: string;
 	if (path.isAbsolute(expandedHookPath)) {
 		resolvedPath = expandedHookPath;

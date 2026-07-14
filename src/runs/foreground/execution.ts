@@ -50,17 +50,20 @@ import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/ski
 import { evaluateCompletionMutationGuard, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
-import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
+import { attachPostExitStdioGuard } from "../../shared/post-exit-stdio-guard.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
-	appendClaudeCodeMessage,
 	buildClaudeCodeInvocation,
-	claudeCodeMessageFromResult,
 	isClaudeCodeModel,
-	writeClaudeCodeSessionMetadata,
 	type ClaudeCodeInvocation,
-	type ClaudeCodeResultEvent,
 } from "../shared/claude-code.ts";
+import {
+	clearTimer,
+	createFinalDrain,
+	FINAL_STOP_GRACE_MS,
+	parseChildProcessEvent,
+	stopChildWithEscalation,
+} from "../shared/child-process-runtime.ts";
 import { readStructuredOutput } from "../shared/structured-output.ts";
 import { captureSingleOutputSnapshot, cleanupSingleOutputFile, formatConsumedOutputReference, formatSavedOutputReference, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
@@ -407,6 +410,7 @@ async function runSingleAttempt(
 		let resourceLimited = false;
 		let timeoutTimer: NodeJS.Timeout | undefined;
 		let timeoutEscalationTimer: NodeJS.Timeout | undefined;
+		let abortEscalationTimer: NodeJS.Timeout | undefined;
 		let resourceLimitTimer: NodeJS.Timeout | undefined;
 		let resourceLimitEscalationTimer: NodeJS.Timeout | undefined;
 		let removeAbortListener: (() => void) | undefined;
@@ -428,43 +432,11 @@ async function runSingleAttempt(
 			finish(-2);
 		};
 
-		// If the child emits a terminal assistant stop but never exits,
-		// give it a short grace period to flush naturally, then clean it up.
-		const FINAL_STOP_GRACE_MS = 1000;
-		const HARD_KILL_MS = 3000;
-		let childExited = false;
-		let forcedTerminationSignal = false;
-		let cleanTerminalAssistantStopReceived = false;
-		let finalDrainTimer: NodeJS.Timeout | undefined;
-		let finalHardKillTimer: NodeJS.Timeout | undefined;
-		const clearFinalDrainTimers = () => {
-			if (finalDrainTimer) {
-				clearTimeout(finalDrainTimer);
-				finalDrainTimer = undefined;
+		const finalDrain = createFinalDrain(proc, () => settled || processClosed || detached, (cleanTerminalStop) => {
+			if (!cleanTerminalStop && !assistantError) {
+				result.error ??= `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
 			}
-			if (finalHardKillTimer) {
-				clearTimeout(finalHardKillTimer);
-				finalHardKillTimer = undefined;
-			}
-		};
-		const startFinalDrain = () => {
-			if (childExited || finalDrainTimer || settled || processClosed || detached) return;
-			finalDrainTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
-				const termSent = trySignalChild(proc, "SIGTERM");
-				if (!termSent) return;
-				forcedTerminationSignal = true;
-				if (!cleanTerminalAssistantStopReceived && !assistantError) {
-					result.error = result.error ?? `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
-				}
-				finalHardKillTimer = setTimeout(() => {
-					if (settled || processClosed || detached) return;
-					forcedTerminationSignal = trySignalChild(proc, "SIGKILL") || forcedTerminationSignal;
-				}, HARD_KILL_MS);
-				finalHardKillTimer.unref?.();
-			}, FINAL_STOP_GRACE_MS);
-			finalDrainTimer.unref?.();
-		};
+		});
 
 		const unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
 			if (!options.allowIntercomDetach || detached || processClosed || !intercomStarted) return;
@@ -478,24 +450,13 @@ async function runSingleAttempt(
 		const finish = (code: number) => {
 			if (settled) return;
 			settled = true;
-			clearFinalDrainTimers();
+			finalDrain.clear();
 			clearStdioGuard();
-			if (timeoutTimer) {
-				clearTimeout(timeoutTimer);
-				timeoutTimer = undefined;
-			}
-			if (timeoutEscalationTimer) {
-				clearTimeout(timeoutEscalationTimer);
-				timeoutEscalationTimer = undefined;
-			}
-			if (resourceLimitTimer) {
-				clearTimeout(resourceLimitTimer);
-				resourceLimitTimer = undefined;
-			}
-			if (resourceLimitEscalationTimer) {
-				clearTimeout(resourceLimitEscalationTimer);
-				resourceLimitEscalationTimer = undefined;
-			}
+			timeoutTimer = clearTimer(timeoutTimer);
+			timeoutEscalationTimer = clearTimer(timeoutEscalationTimer);
+			abortEscalationTimer = clearTimer(abortEscalationTimer);
+			resourceLimitTimer = clearTimer(resourceLimitTimer);
+			resourceLimitEscalationTimer = clearTimer(resourceLimitEscalationTimer);
 			if (activityTimer) {
 				clearInterval(activityTimer);
 				activityTimer = undefined;
@@ -566,12 +527,7 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
-			trySignalChild(proc, "SIGINT");
-			resourceLimitEscalationTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
-				trySignalChild(proc, "SIGTERM");
-			}, 1000);
-			resourceLimitEscalationTimer.unref?.();
+			resourceLimitEscalationTimer = stopChildWithEscalation(proc, () => settled || processClosed || detached);
 		};
 
 		const triggerResourceLimit = (kind: "maxExecutionTimeMs" | "maxTokens", limit: number, observed?: number) => {
@@ -586,12 +542,7 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
-			trySignalChild(proc, "SIGINT");
-			resourceLimitEscalationTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
-				trySignalChild(proc, "SIGTERM");
-			}, 1000);
-			resourceLimitEscalationTimer.unref?.();
+			resourceLimitEscalationTimer = stopChildWithEscalation(proc, () => settled || processClosed || detached);
 		};
 
 		const emitUpdateSnapshot = (text: string) => {
@@ -619,29 +570,12 @@ async function runSingleAttempt(
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
 			jsonlWriter.writeLine(line);
-			let evt: { type?: string; message?: Message; toolName?: string; args?: unknown };
-			try {
-				evt = JSON.parse(line) as { type?: string; message?: Message; toolName?: string; args?: unknown };
-			} catch {
-				// Non-JSON stdout lines are expected; only structured events are parsed.
-				return;
-			}
-			if (claudeCodeInvocation && evt.type === "result") {
-				const resultEvent = evt as ClaudeCodeResultEvent;
-				const message = claudeCodeMessageFromResult(resultEvent, modelArg ?? claudeCodeInvocation.model.inputModel);
-				if (options.sessionFile) {
-					writeClaudeCodeSessionMetadata(options.sessionFile, {
-						sessionId: resultEvent.session_id || claudeCodeInvocation.sessionId,
-						model: claudeCodeInvocation.model.inputModel,
-						cliModel: claudeCodeInvocation.model.cliModel,
-						family: claudeCodeInvocation.model.family,
-						context: claudeCodeInvocation.model.context,
-						updatedAt: Date.now(),
-					});
-					appendClaudeCodeMessage(options.sessionFile, message);
-				}
-				evt = { type: "message_end", message };
-			}
+			const evt = parseChildProcessEvent(line, {
+				claudeCodeInvocation,
+				sessionFile: options.sessionFile,
+				model: modelArg,
+			});
+			if (!evt) return;
 
 			const now = Date.now();
 			progress.durationMs = now - startTime;
@@ -715,8 +649,7 @@ async function runSingleAttempt(
 						&& evt.message.content.some((part) => (part as { type?: string }).type === "toolCall");
 					if (stopReason === "stop" && !hasToolCall) {
 						if (!evt.message.errorMessage && assistantText.trim()) assistantError = undefined;
-						cleanTerminalAssistantStopReceived ||= !evt.message.errorMessage;
-						startFinalDrain();
+						finalDrain.start(!evt.message.errorMessage);
 					}
 				}
 				updateActivityState(now);
@@ -777,12 +710,9 @@ async function runSingleAttempt(
 		proc.stderr.on("data", (d) => {
 			stderrBuf += d.toString();
 		});
-		proc.on("exit", () => {
-			childExited = true;
-			clearFinalDrainTimers();
-		});
+		proc.on("exit", () => finalDrain.markExited());
 		proc.on("close", (code, signal) => {
-			clearFinalDrainTimers();
+			finalDrain.clear();
 			clearStdioGuard();
 			void jsonlWriter.close().catch(() => {
 				// JSONL artifact flush is best effort.
@@ -795,15 +725,15 @@ async function runSingleAttempt(
 			processClosed = true;
 			if (buf.trim()) processLine(buf);
 			if (!result.error && assistantError) result.error = assistantError;
-			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !result.error;
+			const forcedDrainAfterFinalSuccess = finalDrain.forcedTerminationSignal && finalDrain.cleanTerminalStop && !result.error;
 			if (code !== 0 && stderrBuf.trim() && !result.error && !forcedDrainAfterFinalSuccess) {
 				result.error = stderrBuf.trim();
 			}
-			const finalCode = forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (code ?? 1) : (code ?? 0);
+			const finalCode = forcedDrainAfterFinalSuccess ? 0 : finalDrain.forcedTerminationSignal || signal ? (code ?? 1) : (code ?? 0);
 			finish(finalCode);
 		});
 		proc.on("error", (error) => {
-			clearFinalDrainTimers();
+			finalDrain.clear();
 			clearStdioGuard();
 			void jsonlWriter.close().catch(() => {
 				// JSONL artifact flush is best effort.
@@ -817,13 +747,16 @@ async function runSingleAttempt(
 
 		if (options.signal) {
 			const kill = () => {
-				if (processClosed || detached) return;
+				if (settled || processClosed || detached) return;
 				if (options.allowIntercomDetach && intercomStarted && !detached) {
 					detachForIntercom();
 					return;
 				}
-				proc.kill("SIGTERM");
-				setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 3000);
+				abortEscalationTimer = stopChildWithEscalation(
+					proc,
+					() => settled || processClosed || detached,
+					{ initialSignal: "SIGTERM", escalationSignal: "SIGKILL", delayMs: 3000 },
+				);
 			};
 			if (options.signal.aborted) kill();
 			else {
@@ -845,12 +778,7 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
-			trySignalChild(proc, "SIGINT");
-			timeoutEscalationTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
-				trySignalChild(proc, "SIGTERM");
-			}, 1000);
-			timeoutEscalationTimer.unref?.();
+			timeoutEscalationTimer = stopChildWithEscalation(proc, () => settled || processClosed || detached);
 		};
 		const scheduleTimeout = () => {
 			if (timeoutTimer) {
@@ -894,11 +822,7 @@ async function runSingleAttempt(
 				result.finalOutput = "Interrupted. Waiting for explicit next action.";
 				progress.activityState = undefined;
 				fireUpdate();
-				trySignalChild(proc, "SIGINT");
-				setTimeout(() => {
-					if (settled || processClosed || detached) return;
-					trySignalChild(proc, "SIGTERM");
-				}, 1000).unref?.();
+				stopChildWithEscalation(proc, () => settled || processClosed || detached);
 			};
 			if (options.interruptSignal.aborted) interrupt();
 			else {

@@ -16,6 +16,19 @@ export interface SingleOutputCleanupResult {
 	error?: string;
 }
 
+export function findDuplicateOutputPath(entries: Array<{ agent: string; outputPath?: string }>): string | undefined {
+	const seen = new Map<string, { index: number; agent: string }>();
+	for (const [index, entry] of entries.entries()) {
+		if (!entry.outputPath) continue;
+		const previous = seen.get(entry.outputPath);
+		if (previous) {
+			return `Parallel tasks ${previous.index + 1} (${previous.agent}) and ${index + 1} (${entry.agent}) resolve output to the same path: ${entry.outputPath}. Use distinct output paths.`;
+		}
+		seen.set(entry.outputPath, { index, agent: entry.agent });
+	}
+	return undefined;
+}
+
 export function normalizeSingleOutputOverride(
 	output: string | boolean | undefined,
 	defaultOutput: string | false | undefined,

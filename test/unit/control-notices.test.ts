@@ -4,25 +4,10 @@ import {
 	clearPendingForegroundControlNotices,
 	handleSubagentControlNotice,
 } from "../../src/extension/control-notices.ts";
-import type { ControlEvent, SubagentState } from "../../src/shared/types.ts";
+import type { ControlEvent } from "../../src/shared/types.ts";
+import { makeSubagentState } from "../support/helpers.ts";
 
-function makeState(): SubagentState {
-	return {
-		baseCwd: "/tmp/project",
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		pendingForegroundControlNotices: new Map(),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
-	};
-}
+const makeState = () => makeSubagentState({ baseCwd: "/tmp/project" });
 
 function needsAttentionEvent(overrides: Partial<ControlEvent> = {}): ControlEvent {
 	return {

@@ -11,6 +11,7 @@ import {
 	events,
 	makeAgent,
 	makeMinimalCtx,
+	makeSubagentState,
 	removeTempDir,
 	tryImport,
 } from "../support/helpers.ts";
@@ -143,24 +144,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 
 	function makeExecutor(options: { bridgeMode?: "always" | "off"; agents?: ReturnType<typeof makeAgent>[]; acknowledgeResults?: boolean; acknowledgeLive?: boolean; health?: Array<Record<string, unknown>>; identity?: string } = {}) {
 		const events = createRecordingEventBus({ acknowledgeResults: options.acknowledgeResults ?? true, acknowledgeLive: options.acknowledgeLive, health: options.health, identity: options.identity });
-		const state = {
-			baseCwd: tempDir,
-			currentSessionId: null,
-			asyncJobs: new Map(),
-			foregroundRuns: new Map(),
-			foregroundControls: new Map(),
-			lastForegroundControlId: null,
-			cleanupTimers: new Map(),
-			lastUiContext: null,
-			poller: null,
-			completionSeen: new Map(),
-			watcher: null,
-			watcherRestartTimer: null,
-			resultFileCoalescer: {
-				schedule: () => false,
-				clear: () => {},
-			},
-		};
+		const state = makeSubagentState({ baseCwd: tempDir });
 		const executor = createSubagentExecutor!({
 			pi: {
 				events,

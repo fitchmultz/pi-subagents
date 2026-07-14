@@ -28,7 +28,6 @@ import {
 	type ChainStep,
 	type DynamicParallelStep,
 	type ParallelStep,
-	type ResolvedStepBehavior,
 	type SequentialStep,
 	type StepOverrides,
 } from "../../shared/settings.ts";
@@ -48,7 +47,7 @@ import {
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { applyIntercomBridgeToAgent, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget, resolveSubagentIntercomTarget, shouldApplyIntercomBridge, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import { formatControlIntercomMessage, formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
-import { finalizeSingleOutput, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
+import { finalizeSingleOutput, findDuplicateOutputPath, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { formatDetachedIntercomGuidance } from "../shared/intercom-detach.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd } from "../../shared/utils.ts";
@@ -1661,14 +1660,14 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 			...(task.output !== undefined ? { output: task.output } : {}),
 			...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
 		}));
-		const duplicateOutputError = params.worktree
-			? findDuplicateAbsoluteParallelOutputPath({ tasks: parallelTasks, behaviors: asyncParallelBehaviors })
-			: findDuplicateParallelOutputPath({
-				tasks: parallelTasks,
-				behaviors: asyncParallelBehaviors,
-				paramsCwd: effectiveCwd,
-				ctxCwd: ctx.cwd,
-			});
+		const duplicateOutputError = findDuplicateOutputPath(parallelTasks.map((task, index) => ({
+			agent: task.agent,
+			outputPath: params.worktree
+				? typeof asyncParallelBehaviors[index]?.output === "string" && path.isAbsolute(asyncParallelBehaviors[index].output)
+					? path.resolve(asyncParallelBehaviors[index].output)
+					: undefined
+				: resolveSingleOutputPath(asyncParallelBehaviors[index]?.output, ctx.cwd, resolveParallelTaskCwd(task, effectiveCwd, undefined, index)),
+		})));
 		if (duplicateOutputError) return buildParallelModeError(duplicateOutputError);
 		return executeAsyncChain(id, {
 			chain: [{
@@ -2031,49 +2030,6 @@ function extractWorktreeSummary(text: string): string {
 	return index >= 0 ? text.slice(index).trim() : "";
 }
 
-function findDuplicateParallelOutputPath(input: {
-	tasks: TaskParam[];
-	behaviors: ResolvedStepBehavior[];
-	paramsCwd: string;
-	ctxCwd: string;
-	worktreeSetup?: WorktreeSetup;
-}): string | undefined {
-	const seen = new Map<string, { index: number; agent: string }>();
-	for (let index = 0; index < input.tasks.length; index++) {
-		const behavior = input.behaviors[index];
-		if (!behavior?.output) continue;
-		const task = input.tasks[index]!;
-		const taskCwd = resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index);
-		const outputPath = resolveSingleOutputPath(behavior.output, input.ctxCwd, taskCwd);
-		if (!outputPath) continue;
-		const previous = seen.get(outputPath);
-		if (previous) {
-			return `Parallel tasks ${previous.index + 1} (${previous.agent}) and ${index + 1} (${task.agent}) resolve output to the same path: ${outputPath}. Use distinct output paths.`;
-		}
-		seen.set(outputPath, { index, agent: task.agent });
-	}
-	return undefined;
-}
-
-function findDuplicateAbsoluteParallelOutputPath(input: {
-	tasks: TaskParam[];
-	behaviors: ResolvedStepBehavior[];
-}): string | undefined {
-	const seen = new Map<string, { index: number; agent: string }>();
-	for (let index = 0; index < input.tasks.length; index++) {
-		const behavior = input.behaviors[index];
-		if (typeof behavior?.output !== "string" || !path.isAbsolute(behavior.output)) continue;
-		const outputPath = path.resolve(behavior.output);
-		const task = input.tasks[index]!;
-		const previous = seen.get(outputPath);
-		if (previous) {
-			return `Parallel tasks ${previous.index + 1} (${previous.agent}) and ${index + 1} (${task.agent}) resolve output to the same path: ${outputPath}. Use distinct output paths.`;
-		}
-		seen.set(outputPath, { index, agent: task.agent });
-	}
-	return undefined;
-}
-
 async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Promise<SingleResult[]> {
 	return mapConcurrent(input.tasks, input.concurrencyLimit, async (task, index) => {
 		const behavior = input.behaviors[index];
@@ -2410,13 +2366,14 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 	if (errorResult) return errorResult;
 
 	try {
-		const duplicateOutputError = findDuplicateParallelOutputPath({
-			tasks,
-			behaviors,
-			paramsCwd: effectiveCwd,
-			ctxCwd: ctx.cwd,
-			worktreeSetup,
-		});
+		const duplicateOutputError = findDuplicateOutputPath(tasks.map((task, index) => ({
+			agent: task.agent,
+			outputPath: resolveSingleOutputPath(
+				behaviors[index]?.output,
+				ctx.cwd,
+				resolveParallelTaskCwd(task, effectiveCwd, worktreeSetup, index),
+			),
+		})));
 		if (duplicateOutputError) return buildParallelModeError(duplicateOutputError);
 		for (let index = 0; index < tasks.length; index++) {
 			const taskCwd = resolveParallelTaskCwd(tasks[index]!, effectiveCwd, worktreeSetup, index);

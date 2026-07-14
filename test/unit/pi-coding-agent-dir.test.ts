@@ -10,7 +10,7 @@ import { loadConfig } from "../../src/extension/config.ts";
 import { diagnoseIntercomBridge, resolveIntercomBridge } from "../../src/intercom/intercom-bridge.ts";
 import { loadRunsForAgent, recordRun } from "../../src/runs/shared/run-history.ts";
 import { cleanupAllArtifactDirs } from "../../src/shared/artifacts.ts";
-import { getAgentDir } from "../../src/shared/utils.ts";
+import { expandTilde, getAgentDir } from "../../src/shared/utils.ts";
 
 let tempDir = "";
 let agentDir = "";
@@ -48,6 +48,13 @@ describe("PI_CODING_AGENT_DIR runtime paths", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
+	it("expands supported tilde path forms and leaves other paths unchanged", () => {
+		assert.equal(expandTilde("~"), os.homedir());
+		assert.equal(expandTilde("~/nested"), path.join(os.homedir(), "nested"));
+		assert.equal(expandTilde("~\\nested"), path.join(os.homedir(), "nested"));
+		assert.equal(expandTilde("relative/path"), "relative/path");
+	});
+
 	it("resolves the agent dir dynamically and loads extension config from it", () => {
 		assert.equal(getAgentDir(), agentDir);
 
@@ -55,6 +62,9 @@ describe("PI_CODING_AGENT_DIR runtime paths", () => {
 		assert.equal(getAgentDir(), os.homedir());
 
 		process.env.PI_CODING_AGENT_DIR = "~/custom-agent-dir";
+		assert.equal(getAgentDir(), path.join(os.homedir(), "custom-agent-dir"));
+
+		process.env.PI_CODING_AGENT_DIR = "~\\custom-agent-dir";
 		assert.equal(getAgentDir(), path.join(os.homedir(), "custom-agent-dir"));
 
 		delete process.env.PI_CODING_AGENT_DIR;

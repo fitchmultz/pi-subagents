@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { SubagentState } from "../../src/shared/types.ts";
 import { createMockPi as _createMockPi } from "./mock-pi.ts";
 import type { MockPi } from "./mock-pi.ts";
 
@@ -21,6 +22,26 @@ export function removeTempDir(dir: string): void {
 	try {
 		fs.rmSync(dir, { recursive: true, force: true });
 	} catch {}
+}
+
+export function makeSubagentState(overrides: Partial<SubagentState> = {}): SubagentState {
+	return {
+		baseCwd: "",
+		currentSessionId: null,
+		asyncJobs: new Map(),
+		foregroundRuns: new Map(),
+		foregroundControls: new Map(),
+		lastForegroundControlId: null,
+		pendingForegroundControlNotices: new Map(),
+		cleanupTimers: new Map(),
+		lastUiContext: null,
+		poller: null,
+		completionSeen: new Map(),
+		watcher: null,
+		watcherRestartTimer: null,
+		resultFileCoalescer: { schedule: () => false, clear: () => {} },
+		...overrides,
+	};
 }
 
 export function createEventBus() {

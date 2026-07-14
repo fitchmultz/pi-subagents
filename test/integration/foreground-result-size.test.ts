@@ -1,7 +1,7 @@
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import type { MockPi } from "../support/helpers.ts";
-import { createMockPi, createTempDir, removeTempDir, events, tryImport } from "../support/helpers.ts";
+import { createMockPi, createTempDir, removeTempDir, events, makeSubagentState, tryImport } from "../support/helpers.ts";
 
 interface ResultContent {
 	text?: string;
@@ -41,23 +41,7 @@ const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subag
 const available = !!executorMod?.createSubagentExecutor;
 const createSubagentExecutor = executorMod?.createSubagentExecutor;
 
-function makeState(cwd: string) {
-	return {
-		baseCwd: cwd,
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
-	};
-}
+const makeState = (cwd: string) => makeSubagentState({ baseCwd: cwd });
 
 function makeExecutor(cwd: string) {
 	return createSubagentExecutor!({

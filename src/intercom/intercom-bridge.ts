@@ -1,9 +1,9 @@
 import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentConfig } from "../agents/agents.ts";
+import { parseNpmPackageName } from "../shared/package-spec.ts";
 import {
 	SUBAGENT_INTERCOM_IDENTITY_REQUEST_EVENT,
 	SUBAGENT_INTERCOM_IDENTITY_RESPONSE_EVENT,
@@ -12,7 +12,7 @@ import {
 	type IntercomBridgeMode,
 	type IntercomEventBus,
 } from "../shared/types.ts";
-import { getAgentDir } from "../shared/utils.ts";
+import { expandTilde, getAgentDir } from "../shared/utils.ts";
 
 const PI_INTERCOM_PACKAGE_NAME = "pi-intercom";
 const CONFIG_DIR = ".pi";
@@ -178,20 +178,6 @@ function packageRootLooksLikePiIntercom(packageRoot: string): boolean {
 	return manifest?.name === PI_INTERCOM_PACKAGE_NAME || path.basename(path.resolve(packageRoot)) === PI_INTERCOM_PACKAGE_NAME;
 }
 
-function isSafePackagePath(value: string): boolean {
-	return value.length > 0
-		&& !path.isAbsolute(value)
-		&& value.split(/[\\/]/).every((part) => part.length > 0 && part !== "." && part !== "..");
-}
-
-function parseNpmPackageName(source: string): string | undefined {
-	const spec = source.slice(4).trim();
-	if (!spec) return undefined;
-	const match = spec.match(/^(@?[^@]+(?:\/[^@]+)?)(?:@(.+))?$/);
-	const packageName = match?.[1] ?? spec;
-	return isSafePackagePath(packageName) ? packageName : undefined;
-}
-
 function packageEntrySource(entry: unknown): string | undefined {
 	if (typeof entry === "string") return entry;
 	if (entry && typeof entry === "object" && !Array.isArray(entry) && typeof (entry as { source?: unknown }).source === "string") {
@@ -204,10 +190,6 @@ function packageEntryAllowsExtensions(entry: unknown): boolean {
 	if (!entry || typeof entry !== "object" || Array.isArray(entry)) return true;
 	const extensions = (entry as { extensions?: unknown }).extensions;
 	return !Array.isArray(extensions) || extensions.length > 0;
-}
-
-function expandTilde(filePath: string): string {
-	return filePath.startsWith("~/") ? path.join(os.homedir(), filePath.slice(2)) : filePath;
 }
 
 function resolveLocalPackageSource(source: string, settingsDir: string): string | undefined {

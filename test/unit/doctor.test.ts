@@ -5,24 +5,9 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import { buildDoctorReport } from "../../src/extension/doctor.ts";
 import type { AgentConfig, ChainConfig } from "../../src/agents/agents.ts";
-import type { SubagentState } from "../../src/shared/types.ts";
+import { makeSubagentState } from "../support/helpers.ts";
 
-function makeState(cwd: string): SubagentState {
-	return {
-		baseCwd: cwd,
-		currentSessionId: "session-current",
-		asyncJobs: new Map(),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
-	};
-}
+const makeState = (cwd: string) => makeSubagentState({ baseCwd: cwd, currentSessionId: "session-current" });
 
 function makeAgent(name: string, source: AgentConfig["source"]): AgentConfig {
 	return {

@@ -6,7 +6,7 @@ import type { Message } from "@earendil-works/pi-ai/compat";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
 import { PI_CODING_AGENT_PACKAGE, getPiSpawnCommand, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
-import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, formatConsumedOutputReference, formatSavedOutputReference, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
+import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, findDuplicateOutputPath, formatConsumedOutputReference, formatSavedOutputReference, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	type AcceptanceFinalizationTurn,
 	type AcceptanceLedger,
@@ -51,20 +51,24 @@ import {
 } from "../shared/parallel-utils.ts";
 import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
-	appendClaudeCodeMessage,
 	buildClaudeCodeInvocation,
-	claudeCodeMessageFromResult,
 	isClaudeCodeModel,
-	writeClaudeCodeSessionMetadata,
 	type ClaudeCodeInvocation,
-	type ClaudeCodeResultEvent,
 } from "../shared/claude-code.ts";
+import {
+	clearTimer,
+	createFinalDrain,
+	FINAL_STOP_GRACE_MS,
+	parseChildProcessEvent,
+	stopChildWithEscalation,
+	type ChildProcessEvent as ChildEvent,
+} from "../shared/child-process-runtime.ts";
 import { outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
 import { createStructuredOutputRuntime, readStructuredOutput } from "../shared/structured-output.ts";
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { formatModelAttemptNote, formatModelRecoveryAttemptNote, isRecoverableSameModelFailure, isRetryableModelFailure } from "../shared/model-fallback.ts";
-import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
+import { attachPostExitStdioGuard } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
 import { evaluateCompletionMutationGuard, resolveCompletionPolicy } from "../shared/completion-guard.ts";
 import {
@@ -228,29 +232,6 @@ interface ChildEventContext {
 	agent: string;
 }
 
-interface ChildUsage {
-	input?: number;
-	inputTokens?: number;
-	output?: number;
-	outputTokens?: number;
-	cacheRead?: number;
-	cacheWrite?: number;
-	cost?: { total?: number };
-}
-
-type ChildMessage = Message & {
-	model?: string;
-	errorMessage?: string;
-	usage?: ChildUsage;
-};
-
-interface ChildEvent {
-	type?: string;
-	message?: ChildMessage;
-	toolName?: string;
-	args?: Record<string, unknown>;
-}
-
 interface RunPiStreamingResult {
 	stderr: string;
 	exitCode: number | null;
@@ -353,11 +334,7 @@ function runPiStreaming(
 			if (settled || resourceLimitExceeded) return;
 			error = message;
 			writeOutputLine(message);
-			trySignalChild(child, "SIGINT");
-			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!settled) trySignalChild(child, "SIGTERM");
-			}, 1000);
-			resourceLimitEscalationTimer.unref?.();
+			resourceLimitEscalationTimer = stopChildWithEscalation(child, () => settled);
 		};
 
 		const triggerResourceLimit = (kind: ResourceLimitExceeded["kind"], limit: number, observed?: number) => {
@@ -366,11 +343,7 @@ function runPiStreaming(
 			resourceLimitExceeded = { kind, limit, ...(observed !== undefined ? { observed } : {}), message };
 			error = message;
 			writeOutputLine(message);
-			trySignalChild(child, "SIGINT");
-			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!settled) trySignalChild(child, "SIGTERM");
-			}, 1000);
-			resourceLimitEscalationTimer.unref?.();
+			resourceLimitEscalationTimer = stopChildWithEscalation(child, () => settled);
 		};
 
 		const appendChildEvent = (event: object) => {
@@ -391,30 +364,12 @@ function runPiStreaming(
 
 		const processStdoutLine = (line: string) => {
 			if (!line.trim()) return;
-			let event: ChildEvent;
-			try {
-				event = JSON.parse(line) as ChildEvent;
-			} catch {
+			const event = parseChildProcessEvent(line, { claudeCodeInvocation, sessionFile });
+			if (!event) {
 				rawStdoutLines.push(line);
 				writeOutputLine(line);
 				appendChildLine("subagent.child.stdout", line);
 				return;
-			}
-			if (claudeCodeInvocation && event.type === "result") {
-				const resultEvent = event as ClaudeCodeResultEvent;
-				const message = claudeCodeMessageFromResult(resultEvent, claudeCodeInvocation.model.inputModel);
-				if (sessionFile) {
-					writeClaudeCodeSessionMetadata(sessionFile, {
-						sessionId: resultEvent.session_id || claudeCodeInvocation.sessionId,
-						model: claudeCodeInvocation.model.inputModel,
-						cliModel: claudeCodeInvocation.model.cliModel,
-						family: claudeCodeInvocation.model.family,
-						context: claudeCodeInvocation.model.context,
-						updatedAt: Date.now(),
-					});
-					appendClaudeCodeMessage(sessionFile, message);
-				}
-				event = { type: "message_end", message } as ChildEvent;
 			}
 
 			appendChildEvent(event);
@@ -466,8 +421,7 @@ function runPiStreaming(
 					&& event.message.content.some((part) => (part as { type?: string }).type === "toolCall");
 				if (stopReason === "stop" && !hasToolCall) {
 					if (!event.message.errorMessage && extractTextFromContent(event.message.content).trim()) assistantError = undefined;
-					cleanTerminalAssistantStopReceived ||= !event.message.errorMessage;
-					startFinalDrain();
+					finalDrain.start(!event.message.errorMessage);
 				}
 			}
 		};
@@ -485,16 +439,12 @@ function runPiStreaming(
 			}
 		};
 
-		// Guard both cases that can leave the parent waiting on `close` forever:
-		// a lingering stdio holder after `exit`, or a child that never exits.
-		const FINAL_STOP_GRACE_MS = 1000;
-		const HARD_KILL_MS = 3000;
-		let childExited = false;
-		let forcedTerminationSignal = false;
-		let cleanTerminalAssistantStopReceived = false;
-		let finalDrainTimer: NodeJS.Timeout | undefined;
-		let finalHardKillTimer: NodeJS.Timeout | undefined;
 		let settled = false;
+		const finalDrain = createFinalDrain(child, () => settled, (cleanTerminalStop) => {
+			if (!cleanTerminalStop && !error && !assistantError) {
+				error = `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
+			}
+		});
 		if (maxExecutionTimeMs !== undefined) {
 			resourceLimitTimer = setTimeout(() => {
 				triggerResourceLimit("maxExecutionTimeMs", maxExecutionTimeMs);
@@ -517,50 +467,17 @@ function runPiStreaming(
 			if (settled || resourceLimitExceeded) return;
 			interrupted = true;
 			if (!error) error = "Interrupted. Waiting for explicit next action.";
-			trySignalChild(child, "SIGINT");
-			setTimeout(() => {
-				if (!settled) trySignalChild(child, "SIGTERM");
-			}, 1000).unref?.();
+			stopChildWithEscalation(child, () => settled);
 		});
 		const clearDrainTimers = () => {
-			if (finalDrainTimer) {
-				clearTimeout(finalDrainTimer);
-				finalDrainTimer = undefined;
-			}
-			if (finalHardKillTimer) {
-				clearTimeout(finalHardKillTimer);
-				finalHardKillTimer = undefined;
-			}
-			if (resourceLimitTimer) {
-				clearTimeout(resourceLimitTimer);
-				resourceLimitTimer = undefined;
-			}
-			if (resourceLimitEscalationTimer) {
-				clearTimeout(resourceLimitEscalationTimer);
-				resourceLimitEscalationTimer = undefined;
-			}
+			finalDrain.clear();
+			resourceLimitTimer = clearTimer(resourceLimitTimer);
+			resourceLimitEscalationTimer = clearTimer(resourceLimitEscalationTimer);
 		};
-		function startFinalDrain(): void {
-			if (childExited || finalDrainTimer || settled) return;
-			finalDrainTimer = setTimeout(() => {
-				if (settled) return;
-				const termSent = trySignalChild(child, "SIGTERM");
-				if (!termSent) return;
-				forcedTerminationSignal = true;
-				if (!cleanTerminalAssistantStopReceived && !error && !assistantError) {
-					error = `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
-				}
-				finalHardKillTimer = setTimeout(() => {
-					if (settled) return;
-					forcedTerminationSignal = trySignalChild(child, "SIGKILL") || forcedTerminationSignal;
-				}, HARD_KILL_MS);
-				finalHardKillTimer.unref?.();
-			}, FINAL_STOP_GRACE_MS);
-			finalDrainTimer.unref?.();
-		}
 		child.on("exit", () => {
-			childExited = true;
-			clearDrainTimers();
+			finalDrain.markExited();
+			resourceLimitTimer = clearTimer(resourceLimitTimer);
+			resourceLimitEscalationTimer = clearTimer(resourceLimitEscalationTimer);
 		});
 		child.on("close", (exitCode, signal) => {
 			settled = true;
@@ -573,10 +490,10 @@ function runPiStreaming(
 			const durationMs = Date.now() - startTime;
 			const finalOutput = resourceLimitExceeded?.message ?? (getFinalOutput(messages) || rawStdoutLines.join("\n").trim());
 			const finalError = resourceLimitExceeded?.message ?? error ?? assistantError;
-			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !finalError;
+			const forcedDrainAfterFinalSuccess = finalDrain.forcedTerminationSignal && finalDrain.cleanTerminalStop && !finalError;
 			resolve({
 				stderr,
-				exitCode: resourceLimitExceeded ? 1 : interrupted || forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (exitCode ?? 1) : exitCode,
+				exitCode: resourceLimitExceeded ? 1 : interrupted || forcedDrainAfterFinalSuccess ? 0 : finalDrain.forcedTerminationSignal || signal ? (exitCode ?? 1) : exitCode,
 				messages,
 				usage,
 				model,
@@ -1296,20 +1213,6 @@ function ensureParallelProgressFile(cwd: string, group: Extract<RunnerStep, { pa
 	const progressPath = path.join(cwd, "progress.md");
 	if (!group.parallel.some((task) => task.task.includes(`Update progress at: ${progressPath}`))) return;
 	writeInitialProgressFile(cwd);
-}
-
-function findDuplicateOutputPath(steps: SubagentStep[]): string | undefined {
-	const seen = new Map<string, { index: number; agent: string }>();
-	for (let index = 0; index < steps.length; index++) {
-		const outputPath = steps[index]?.outputPath;
-		if (!outputPath) continue;
-		const previous = seen.get(outputPath);
-		if (previous) {
-			return `Parallel tasks ${previous.index + 1} (${previous.agent}) and ${index + 1} (${steps[index]!.agent}) resolve output to the same path: ${outputPath}. Use distinct output paths.`;
-		}
-		seen.set(outputPath, { index, agent: steps[index]!.agent });
-	}
-	return undefined;
 }
 
 function materializeDynamicDefaultOutputPath(input: {

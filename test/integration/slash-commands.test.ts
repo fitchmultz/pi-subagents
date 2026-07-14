@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { beforeEach, describe, it } from "node:test";
 
-import { ASYNC_DIR } from "../../src/shared/types.ts";
+import { ASYNC_DIR, type SubagentState } from "../../src/shared/types.ts";
+import { makeSubagentState } from "../support/helpers.ts";
 
 const SLASH_RESULT_TYPE = "subagent-slash-result";
 const SLASH_SUBAGENT_REQUEST_EVENT = "subagent:slash:request";
@@ -29,18 +30,7 @@ interface RegisterSlashCommandsModule {
 			registerShortcut(key: string, spec: { handler(ctx: unknown): Promise<void> }): void;
 			sendMessage(message: unknown): void;
 		},
-		state: {
-			baseCwd: string;
-			currentSessionId: string | null;
-			asyncJobs: Map<string, unknown>;
-			cleanupTimers: Map<string, ReturnType<typeof setTimeout>>;
-			lastUiContext: unknown;
-			poller: NodeJS.Timeout | null;
-			completionSeen: Map<string, number>;
-			watcher: unknown;
-			watcherRestartTimer: ReturnType<typeof setTimeout> | null;
-			resultFileCoalescer: { schedule(file: string, delayMs?: number): boolean; clear(): void };
-		},
+		state: SubagentState,
 	) => void;
 }
 
@@ -82,22 +72,8 @@ function createEventBus(): EventBus {
 	};
 }
 
-function createState(cwd: string) {
-	return {
-		baseCwd: cwd,
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
-	};
+function createState(cwd: string): SubagentState {
+	return makeSubagentState({ baseCwd: cwd });
 }
 
 async function withIsolatedHome<T>(fn: () => Promise<T>): Promise<T> {

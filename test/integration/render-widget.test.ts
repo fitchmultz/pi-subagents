@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-const { buildWidgetLines, clearLegacyResultAnimationTimer, renderWidget } = await import("../../src/tui/render.ts") as {
+const { buildWidgetLines, renderWidget } = await import("../../src/tui/render.ts") as {
 	buildWidgetLines: (jobs: Array<Record<string, unknown>>, theme: { fg(name: string, text: string): string; bold(text: string): string }, width?: number, expanded?: boolean) => string[];
-	clearLegacyResultAnimationTimer: (context: { state: { subagentResultAnimationTimer?: ReturnType<typeof setInterval> } }) => void;
 	renderWidget: (ctx: Record<string, unknown>, jobs: Array<Record<string, unknown>>) => void;
 };
 
@@ -507,21 +506,6 @@ describe("subagent async widget rendering", () => {
 		await new Promise((resolve) => setTimeout(resolve, 190));
 		assert.equal(ui.widgets.length, initialWidgetCount, "static queued widget should not refresh at animation cadence");
 		assert.equal(ui.renderRequests, 0);
-	});
-
-	it("clears legacy result row animation timers", async () => {
-		let ticks = 0;
-		const context = {
-			state: { subagentResultAnimationTimer: setInterval(() => { ticks += 1; }, 10) },
-		};
-		try {
-			clearLegacyResultAnimationTimer(context);
-			await new Promise((resolve) => setTimeout(resolve, 50));
-			assert.equal(context.state.subagentResultAnimationTimer, undefined);
-			assert.equal(ticks, 0, "legacy timer should be cleared before it can tick");
-		} finally {
-			if (context.state.subagentResultAnimationTimer) clearInterval(context.state.subagentResultAnimationTimer);
-		}
 	});
 
 	it("does not refresh running widgets at animation cadence", async () => {

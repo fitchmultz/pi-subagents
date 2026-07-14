@@ -15,9 +15,14 @@ import type { AgentProgress, AsyncStatus, Details, DisplayItem, ErrorInfo, Singl
 
 export function getAgentDir(): string {
 	const configured = process.env.PI_CODING_AGENT_DIR;
-	if (configured === "~") return os.homedir();
-	if (configured?.startsWith("~/")) return path.join(os.homedir(), configured.slice(2));
-	return configured || path.join(os.homedir(), ".pi", "agent");
+	return configured ? expandTilde(configured) : path.join(os.homedir(), ".pi", "agent");
+}
+
+export function expandTilde(value: string): string {
+	if (value === "~") return os.homedir();
+	return value.startsWith("~/") || value.startsWith("~\\")
+		? path.join(os.homedir(), value.slice(2))
+		: value;
 }
 
 const statusCache = new Map<string, { mtime: number; status: AsyncStatus }>();
