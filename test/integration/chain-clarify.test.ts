@@ -8,7 +8,7 @@ interface ClarifyTestModel {
 	id: string;
 	fullId: string;
 	reasoning?: boolean;
-	thinkingLevelMap?: Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh", string | null>>;
+	thinkingLevelMap?: Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>>;
 }
 
 interface ClarifyTestComponent {
@@ -98,7 +98,7 @@ describe("chain clarify model display", { skip: !available ? "pi packages not av
 				id: "deepseek-v4-pro",
 				fullId: "deepseek/deepseek-v4-pro",
 				reasoning: true,
-				thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: "max" },
+				thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: "xhigh", max: "max" },
 			}],
 			"deepseek",
 			[],
@@ -112,7 +112,8 @@ describe("chain clarify model display", { skip: !available ? "pi packages not av
 
 		assert.match(rendered, /off - No extended thinking/);
 		assert.match(rendered, /high - Deep reasoning/);
-		assert.match(rendered, /xhigh - Maximum reasoning/);
+		assert.match(rendered, /xhigh - Extra-high reasoning/);
+		assert.match(rendered, /max - Maximum reasoning/);
 		assert.doesNotMatch(rendered, /minimal - Brief reasoning/);
 		assert.doesNotMatch(rendered, /low - Light reasoning/);
 		assert.doesNotMatch(rendered, /medium - Moderate reasoning/);

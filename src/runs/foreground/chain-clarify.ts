@@ -1009,7 +1009,8 @@ export class ChainClarifyComponent implements Component {
 			"low": "Light reasoning",
 			"medium": "Moderate reasoning",
 			"high": "Deep reasoning",
-			"xhigh": "Maximum reasoning (ultrathink)",
+			"xhigh": "Extra-high reasoning (ultrathink)",
+			"max": "Maximum reasoning",
 		};
 
 		const levels = this.getAvailableThinkingLevels(this.editingStep!);

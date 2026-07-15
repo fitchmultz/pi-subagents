@@ -20,30 +20,34 @@ describe("model info helpers", () => {
 		assert.equal(findModelInfo("openai/gpt-5-mini:high", ambiguousModels, "github-copilot")?.fullId, "openai/gpt-5-mini");
 	});
 
-	it("keeps the legacy full thinking list for reasoning models without per-level metadata", () => {
+	it("offers every level before a model is selected", () => {
+		assert.deepEqual(getSupportedThinkingLevels(undefined), ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+	});
+
+	it("requires reasoning models to opt in to xhigh and max", () => {
 		assert.deepEqual(
 			getSupportedThinkingLevels({ provider: "openai", id: "gpt-5", fullId: "openai/gpt-5", reasoning: true }),
-			["off", "minimal", "low", "medium", "high", "xhigh"],
+			["off", "minimal", "low", "medium", "high"],
 		);
 	});
 
-	it("keeps the legacy full thinking list when older model metadata omits reasoning", () => {
+	it("uses Pi's default levels when older model metadata omits reasoning", () => {
 		assert.deepEqual(
 			getSupportedThinkingLevels({ provider: "openai", id: "gpt-5", fullId: "openai/gpt-5" }),
-			["off", "minimal", "low", "medium", "high", "xhigh"],
+			["off", "minimal", "low", "medium", "high"],
 		);
 	});
 
-	it("filters levels only when per-level metadata is present", () => {
+	it("filters unsupported levels and preserves explicit xhigh and max mappings", () => {
 		assert.deepEqual(
 			getSupportedThinkingLevels({
 				provider: "deepseek",
 				id: "deepseek-v4-pro",
 				fullId: "deepseek/deepseek-v4-pro",
 				reasoning: true,
-				thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: "max" },
+				thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: "xhigh", max: "max" },
 			}),
-			["off", "high", "xhigh"],
+			["off", "high", "xhigh", "max"],
 		);
 	});
 

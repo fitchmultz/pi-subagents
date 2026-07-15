@@ -4,7 +4,8 @@
 
 ### Changed
 - Added additive `managementControl` details to status and control responses with normalized lifecycle state, supported capabilities, exact next-action targets, and explicit revival mapping.
-- Updated the local Pi development baseline and compatibility imports for Pi 0.80.6.
+- Updated the local Pi development baseline and compatibility imports for Pi 0.80.7.
+- Added Pi's opt-in `max` thinking level to model filtering and the clarify selector while keeping `xhigh` and `max` distinct.
 - Reject forked context before launch when an affected agent's effective primary or fallback model uses the `anthropic/` provider; explicit context/model overrides cannot bypass the restriction, while other providers keep normal agent context configuration.
 - Raised the default subagent no-activity needs-attention threshold from 1 minute to 10 minutes so long test/build commands do not trigger early nudge reminders.
 - Added `subagent({ action: "nudge" })` as a first-class live child nudge that routes through `pi-intercom` with `delivery:"steer"` when the child is registered, and updated status/control hints to show both the subagent nudge and direct blocking intercom ask paths.
