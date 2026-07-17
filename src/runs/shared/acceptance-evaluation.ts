@@ -138,6 +138,7 @@ function runVerifyCommand(command: AcceptanceVerifyCommand, defaultCwd: string):
 
 export async function evaluateAcceptance(input: {
 	acceptance: ResolvedAcceptanceConfig;
+	governing?: ResolvedAcceptanceConfig;
 	output: string;
 	cwd: string;
 	report?: AcceptanceReport;
@@ -146,7 +147,7 @@ export async function evaluateAcceptance(input: {
 	const ledger: AcceptanceLedger = {
 		status: acceptance.level === "none" ? "not-required" : "claimed",
 		explicit: acceptance.explicit,
-		effectiveAcceptance: acceptance,
+		effectiveAcceptance: input.governing ?? acceptance,
 		inferredReason: acceptance.inferredReason,
 		criteria: acceptance.criteria,
 		runtimeChecks: [],

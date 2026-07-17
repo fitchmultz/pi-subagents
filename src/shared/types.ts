@@ -764,6 +764,7 @@ export interface ForegroundResumeChild {
 	index: number;
 	sessionFile?: string;
 	status: SubagentResultStatus;
+	effectiveAcceptance?: ResolvedAcceptanceConfig;
 }
 
 export interface ForegroundResumeRun {

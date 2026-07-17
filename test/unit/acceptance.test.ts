@@ -5,6 +5,8 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import {
 	acceptanceFailureMessage,
+	acceptanceInputFromResolved,
+	acceptanceSelfReviewConfig,
 	attachFinalizationToLedger,
 	createFinalizationTurn,
 	evaluateAcceptance,
@@ -70,6 +72,28 @@ describe("acceptance gates", () => {
 		assert.equal(resolved.finalization.mode, "self-review-loop");
 		assert.equal(resolved.finalization.maxTurns, 2);
 		assert.equal(shouldRunAcceptanceFinalization(resolved), true);
+	});
+
+	it("maps every resolved acceptance input field for resume inheritance", () => {
+		const resolved = resolveEffectiveAcceptance({
+			agentName: "worker",
+			explicit: {
+				criteria: [{ id: "criterion-custom", must: "Patch the bug", evidence: ["changed-files"], severity: "recommended" }],
+				evidence: ["commands-run"],
+				verify: [{ id: "verify", command: "npm test", timeoutMs: 5_000, cwd: "test", env: { MODE: "resume" }, allowFailure: true }],
+				stopRules: ["Do not publish"],
+				maxFinalizationTurns: 4,
+			},
+		});
+
+		assert.deepEqual(acceptanceInputFromResolved(resolved), {
+			criteria: resolved.criteria,
+			evidence: resolved.evidence,
+			verify: resolved.verify,
+			stopRules: resolved.stopRules,
+			maxFinalizationTurns: 4,
+		});
+		assert.equal(acceptanceInputFromResolved(resolveEffectiveAcceptance({ agentName: "worker" })), undefined);
 	});
 
 	it("formats child and finalization prompt sections without public levels", () => {
@@ -279,6 +303,28 @@ describe("acceptance gates", () => {
 		assert.equal(ledger.childReport?.criteriaSatisfied?.[0]?.status, "satisfied");
 		assert.equal(ledger.finalization?.status, "completed");
 		assert.notEqual(ledger.status, "verified");
+	}));
+
+	it("exhausted self-review keeps the full governing contract on the attached ledger", async () => withTempRepo(async (cwd) => {
+		const full = resolveEffectiveAcceptance({
+			agentName: "worker",
+			task: "Implement a fix",
+			explicit: { criteria: ["Patch bug"], verify: [{ id: "unit-verify", command: "node -e \"process.exit(0)\"", timeoutMs: 30_000 }], maxFinalizationTurns: 1 },
+		});
+		const selfReview = acceptanceSelfReviewConfig(full);
+		const failingOutput = report({ criteriaSatisfied: [{ id: "criterion-1", status: "not-satisfied", evidence: "missing" }] });
+		const initial = await evaluateAcceptance({ acceptance: selfReview, governing: full, output: failingOutput, cwd });
+		const lastTurn = await evaluateAcceptance({ acceptance: selfReview, governing: full, output: failingOutput, cwd });
+		assert.equal(initial.effectiveAcceptance, full);
+		assert.equal(lastTurn.effectiveAcceptance, full);
+		const turn = createFinalizationTurn({ turn: 1, prompt: "finalize", rawOutput: failingOutput, ledger: lastTurn });
+		const ledger = attachFinalizationToLedger({ initialLedger: initial, authoritativeLedger: lastTurn, turns: [turn], status: "failed", maxTurns: 1 });
+
+		assert.equal(ledger.status, "rejected");
+		assert.equal(ledger.finalization?.status, "failed");
+		assert.equal(ledger.effectiveAcceptance?.level, "verified");
+		assert.deepEqual(ledger.effectiveAcceptance?.verify.map((command) => command.id), ["unit-verify"]);
+		assert.equal(ledger.effectiveAcceptance?.finalization.maxTurns, 1);
 	}));
 
 

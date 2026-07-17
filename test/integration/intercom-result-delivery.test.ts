@@ -3,7 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
-import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, RESULTS_DIR } from "../../src/shared/types.ts";
+import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, RESULTS_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
+import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createMockPi,
@@ -21,7 +22,14 @@ interface ExecutorResult {
 	details?: {
 		mode?: string;
 		runId?: string;
-		results?: Array<{ agent?: string; finalOutput?: string; exitCode?: number }>;
+		results?: Array<{
+			agent?: string;
+			finalOutput?: string;
+			exitCode?: number;
+			sessionFile?: string;
+			timedOut?: boolean;
+			acceptance?: { status?: string; verifyRuns?: Array<{ id?: string; status?: string }>; finalization?: { status?: string }; effectiveAcceptance?: { explicit?: boolean; criteria?: Array<{ id?: string; must?: string }>; verify?: Array<{ id?: string }>; finalization?: { maxTurns?: number } } };
+		}>;
 		asyncId?: string;
 		intercomDelivery?: { delivered?: boolean; to?: string; status?: string; summary?: string };
 	};
@@ -389,7 +397,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 
 			const result = await executor.execute(
 				"resume-live",
-				{ action: "resume", id: runId, message: "Can you clarify the last change?" },
+				{ action: "resume", id: runId, message: "Can you clarify the last change?", acceptance: { criteria: ["New contract"] } },
 				new AbortController().signal,
 				undefined,
 				makeMinimalCtx(tempDir),
@@ -397,6 +405,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 
 			assert.equal(result.isError, undefined);
 			assert.match(result.content[0]?.text ?? "", /Delivered follow-up to live async child/);
+			assert.match(result.content[0]?.text ?? "", /Acceptance override applies only to revive and was not applied/);
 			const payload = events.emitted.find((entry) => entry.channel === "subagent:result-intercom")?.payload as { to?: string; message?: string } | undefined;
 			assert.equal(payload?.to, `subagent-worker-${runId}-1`);
 			assert.match(payload?.message ?? "", /Can you clarify the last change\?/);
@@ -555,6 +564,16 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		const asyncDir = path.join(ASYNC_DIR, runId);
 		const firstSession = path.join(tempDir, "child-a.jsonl");
 		const secondSession = path.join(tempDir, "child-b.jsonl");
+		const effectiveAcceptance = {
+			level: "checked",
+			explicit: true,
+			inferredReason: ["explicit acceptance contract"],
+			criteria: [{ id: "criterion-1", must: "Original async acceptance", evidence: [], severity: "required" }],
+			evidence: [],
+			verify: [],
+			stopRules: [],
+			finalization: { mode: "self-review-loop", maxTurns: 1 },
+		};
 		try {
 			fs.mkdirSync(asyncDir, { recursive: true });
 			fs.writeFileSync(firstSession, "", "utf-8");
@@ -568,7 +587,12 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 				cwd: tempDir,
 				steps: [
 					{ agent: "a", status: "complete", sessionFile: firstSession },
-					{ agent: "b", status: "complete", sessionFile: secondSession },
+					{
+						agent: "b",
+						status: "complete",
+						sessionFile: secondSession,
+						acceptance: { status: "rejected", explicit: true, effectiveAcceptance, inferredReason: effectiveAcceptance.inferredReason, criteria: effectiveAcceptance.criteria, runtimeChecks: [], verifyRuns: [] },
+					},
 				],
 			}, null, 2), "utf-8");
 			const { executor } = makeExecutor({ agents: [makeAgent("a"), makeAgent("b")] });
@@ -587,7 +611,92 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 			assert.match(result.content[0]?.text ?? "", new RegExp(secondSession.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 			const args = await readMockCallArgs(0);
 			assert.equal(args[args.indexOf("--session") + 1], secondSession);
+			assert.equal(args.some((arg) => arg.includes("Original async acceptance")), true);
+			const revivedId = result.details?.asyncId;
+			assert.ok(revivedId, "expected revived async id");
+			const resultPath = path.join(RESULTS_DIR, `${revivedId}.json`);
+			const deadline = Date.now() + 10_000;
+			while (!fs.existsSync(resultPath)) {
+				if (Date.now() > deadline) assert.fail(`Timed out waiting for revived result file: ${resultPath}`);
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
 		} finally {
+			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
+	it("nested resume inherits the acceptance contract persisted by its async child", async () => {
+		const acceptedReport = `done\n\`\`\`acceptance-report\n${JSON.stringify({ criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "done" }], residualRisks: [] })}\n\`\`\``;
+		mockPi.onCall({ output: acceptedReport });
+		mockPi.onCall({ output: acceptedReport });
+		const rootRunId = `nested-root-${Date.now().toString(36)}`;
+		const nestedRunId = `nested-resume-${Date.now().toString(36)}`;
+		const asyncDir = path.join(TEMP_ROOT_DIR, "nested-subagent-runs", rootRunId, nestedRunId);
+		const sessionFile = path.join(tempDir, nestedRunId, "session.jsonl");
+		const parentSessionFile = path.join(tempDir, "parent.jsonl");
+		const route = createNestedRoute(rootRunId);
+		const effectiveAcceptance = {
+			level: "checked",
+			explicit: true,
+			inferredReason: ["explicit acceptance contract"],
+			criteria: [{ id: "criterion-1", must: "Nested inherited criterion", evidence: [], severity: "required" }],
+			evidence: [],
+			verify: [],
+			stopRules: ["Do not publish"],
+			finalization: { mode: "self-review-loop", maxTurns: 1 },
+		};
+		try {
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+			fs.writeFileSync(sessionFile, "", "utf-8");
+			fs.writeFileSync(parentSessionFile, "", "utf-8");
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+				runId: nestedRunId,
+				mode: "single",
+				state: "complete",
+				startedAt: 100,
+				lastUpdate: 200,
+				steps: [{ agent: "worker", status: "complete", sessionFile, acceptance: { effectiveAcceptance } }],
+			}), "utf-8");
+			writeNestedEvent(route, {
+				type: "subagent.nested.completed",
+				ts: Date.now(),
+				parentRunId: rootRunId,
+				parentStepIndex: 0,
+				child: { id: nestedRunId, parentRunId: rootRunId, parentStepIndex: 0, depth: 1, path: [{ runId: rootRunId, stepIndex: 0 }], state: "complete", agent: "worker", ownerState: "gone", asyncDir, sessionFile },
+			});
+			const { executor, state } = makeExecutor({ bridgeMode: "off" });
+			state.foregroundControls.set(rootRunId, { runId: rootRunId, mode: "single", startedAt: 1, updatedAt: 1, nestedRoute: route });
+			state.lastForegroundControlId = rootRunId;
+			const testCtx = {
+				...makeMinimalCtx(tempDir),
+				sessionManager: { getSessionId: () => "session-123", getSessionFile: () => parentSessionFile },
+			};
+
+			const result = await executor.execute(
+				"nested-resume-inherits-acceptance",
+				{ action: "resume", id: nestedRunId, message: "Finish the nested work" },
+				new AbortController().signal,
+				undefined,
+				testCtx,
+			);
+
+			assert.equal(result.isError, undefined);
+			const args = await readMockCallArgs(0);
+			assert.equal(args.some((arg) => arg.includes("Nested inherited criterion")), true);
+			assert.equal(args.some((arg) => arg.includes("Do not publish")), true);
+			const revivedId = result.details?.asyncId;
+			assert.ok(revivedId, "expected revived nested async id");
+			const resultPath = path.join(RESULTS_DIR, `${revivedId}.json`);
+			const deadline = Date.now() + 10_000;
+			while (!fs.existsSync(resultPath)) {
+				if (Date.now() > deadline) assert.fail(`Timed out waiting for revived nested result file: ${resultPath}`);
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+			assert.equal(payload.results[0].acceptance?.effectiveAcceptance?.criteria?.[0]?.must, "Nested inherited criterion");
+		} finally {
+			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
 			fs.rmSync(asyncDir, { recursive: true, force: true });
 		}
 	});
@@ -614,7 +723,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 
 			const result = await executor.execute(
 				"resume-revive",
-				{ action: "resume", id: runId, message: "What changed?" },
+				{ action: "resume", id: runId, message: "What changed?", acceptance: { criteria: ["Resume override contract"] } },
 				new AbortController().signal,
 				undefined,
 				makeMinimalCtx(tempDir),
@@ -639,6 +748,11 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 				if (Date.now() > deadline) assert.fail(`Timed out waiting for revived result file: ${resultPath}`);
 				await new Promise((resolve) => setTimeout(resolve, 50));
 			}
+			const args = await readMockCallArgs(0);
+			assert.equal(args.some((arg) => arg.includes("Resume override contract")), true);
+			const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+			assert.equal(payload.results[0].acceptance?.effectiveAcceptance?.explicit, true);
+			assert.notEqual(payload.results[0].acceptance?.status, "not-required");
 		} finally {
 			fs.rmSync(asyncDir, { recursive: true, force: true });
 		}
@@ -789,6 +903,267 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		while (!fs.existsSync(resultPath)) {
 			if (Date.now() > deadline) assert.fail(`Timed out waiting for revived result file: ${resultPath}`);
 			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+	});
+
+	it("timeout resume preserves acceptance and accepts a validation-only continuation", async () => {
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.toolStart("edit", { path: "src/incident.ts" }), events.toolEnd("edit"), events.toolResult("edit", "applied prior work")] },
+				{ delay: 1_000, jsonl: [events.assistantMessage("late completion")] },
+			],
+		});
+		mockPi.onCall({ output: "Validated prior edits and committed the existing work without a new edit." });
+		const { executor } = makeExecutor({ bridgeMode: "off" });
+		const acceptance = {
+			criteria: [{ id: "criterion-1", must: "Validate and finish the implementation" }],
+			evidence: ["changed-files"],
+			verify: [{ id: "resume-verify", command: `${JSON.stringify(process.execPath)} -e "process.exit(0)"` }],
+			maxFinalizationTurns: 1,
+		};
+
+		const original = await executor.execute(
+			"foreground-timeout-resume-original",
+			{ agent: "worker", task: "Implement the incident fix", timeoutMs: 150, acceptance },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+		const originalChild = original.details?.results?.[0];
+		const runId = original.details?.runId;
+		assert.ok(runId, "expected foreground run id");
+		assert.equal(originalChild?.timedOut, true);
+		assert.notEqual(originalChild?.acceptance?.status, "not-required");
+		assert.equal(originalChild?.acceptance?.effectiveAcceptance?.explicit, true);
+		assert.deepEqual(originalChild?.acceptance?.effectiveAcceptance?.verify?.map((entry) => entry.id), ["resume-verify"]);
+
+		const resumed = await executor.execute(
+			"foreground-timeout-resume",
+			{ action: "resume", id: runId, message: "Format, validate, and commit the work already created before timeout." },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+		assert.equal(resumed.isError, undefined);
+		const revivedId = resumed.details?.asyncId;
+		assert.ok(revivedId, "expected revived async id");
+		const resultPath = path.join(RESULTS_DIR, `${revivedId}.json`);
+		const deadline = Date.now() + 10_000;
+		while (!fs.existsSync(resultPath)) {
+			if (Date.now() > deadline) assert.fail(`Timed out waiting for revived result file: ${resultPath}`);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+		assert.equal(payload.success, true);
+		assert.equal(payload.results[0].success, true);
+		assert.notEqual(payload.results[0].acceptance?.status, "not-required");
+		assert.equal(payload.results[0].acceptance?.effectiveAcceptance?.explicit, true);
+		assert.deepEqual(payload.results[0].acceptance?.effectiveAcceptance?.verify?.map((entry: { id: string }) => entry.id), ["resume-verify"]);
+		assert.doesNotMatch(String(payload.results[0].error ?? ""), /completed without making edits/);
+		const resumedArgs = await readMockCallArgs(1);
+		assert.equal(resumedArgs.some((arg) => arg.includes("## Acceptance Contract")), true);
+		assert.doesNotMatch(fs.readFileSync(path.join(ASYNC_DIR, revivedId, "events.jsonl"), "utf-8"), /"reason":"completion_guard"/);
+	});
+
+	it("exhausted self-review persists the full contract and resume runs the inherited verify", async () => {
+		const failingReport = [
+			"still not done",
+			"```acceptance-report",
+			JSON.stringify({
+				criteriaSatisfied: [{ id: "criterion-1", status: "not-satisfied", evidence: "missing" }],
+				changedFiles: ["src/incident.ts"],
+				residualRisks: ["not finished"],
+			}),
+			"```",
+		].join("\n");
+		mockPi.onCall({ output: failingReport });
+		mockPi.onCall({ output: failingReport });
+		mockPi.onCall({ output: "Revived work done" });
+		mockPi.onCall({ output: "Revived self-review done" });
+		const { executor } = makeExecutor({ bridgeMode: "off" });
+		const acceptance = {
+			criteria: [{ id: "criterion-1", must: "Finish the incident fix" }],
+			evidence: ["changed-files"],
+			verify: [{ id: "exhaust-verify", command: `${JSON.stringify(process.execPath)} -e "process.exit(0)"` }],
+			maxFinalizationTurns: 1,
+		};
+
+		const original = await executor.execute(
+			"foreground-exhaust-original",
+			{ agent: "worker", task: "Implement the incident fix", acceptance },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+		const originalChild = original.details?.results?.[0];
+		const runId = original.details?.runId;
+		assert.ok(runId, "expected foreground run id");
+		assert.equal(originalChild?.exitCode, 1);
+		assert.equal(originalChild?.acceptance?.status, "rejected");
+		assert.equal(originalChild?.acceptance?.finalization?.status, "failed");
+		assert.equal(originalChild?.acceptance?.effectiveAcceptance?.explicit, true);
+		assert.deepEqual(originalChild?.acceptance?.effectiveAcceptance?.verify?.map((entry) => entry.id), ["exhaust-verify"]);
+		assert.equal(originalChild?.acceptance?.effectiveAcceptance?.finalization?.maxTurns, 1);
+
+		const resumed = await executor.execute(
+			"foreground-exhaust-resume",
+			{ action: "resume", id: runId, message: "Repair the remaining criterion and finish." },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+		assert.equal(resumed.isError, undefined);
+		const revivedId = resumed.details?.asyncId;
+		assert.ok(revivedId, "expected revived async id");
+		const resultPath = path.join(RESULTS_DIR, `${revivedId}.json`);
+		const deadline = Date.now() + 10_000;
+		while (!fs.existsSync(resultPath)) {
+			if (Date.now() > deadline) assert.fail(`Timed out waiting for revived result file: ${resultPath}`);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+		assert.equal(payload.success, true);
+		assert.equal(payload.results[0].acceptance?.status, "verified");
+		assert.deepEqual(payload.results[0].acceptance?.effectiveAcceptance?.verify?.map((entry: { id: string }) => entry.id), ["exhaust-verify"]);
+		const verifyRun = payload.results[0].acceptance?.verifyRuns?.find((run: { id?: string }) => run.id === "exhaust-verify");
+		assert.equal(verifyRun?.status, "passed");
+		const resumedArgs = await readMockCallArgs(2);
+		assert.equal(resumedArgs.some((arg) => arg.includes("## Acceptance Contract")), true);
+	});
+
+	it("resume-supplied acceptance overrides a persisted inherited contract", async () => {
+		mockPi.onCall({ output: "override initial output" });
+		mockPi.onCall({ output: "override self-review output" });
+		const runId = `resume-override-stored-${Date.now()}`;
+		const asyncDir = path.join(ASYNC_DIR, runId);
+		const sessionFile = path.join(tempDir, "override-child-session.jsonl");
+		const storedAcceptance = {
+			level: "verified",
+			explicit: true,
+			inferredReason: ["explicit acceptance contract"],
+			criteria: [{ id: "criterion-1", must: "Original inherited criterion", evidence: [], severity: "required" }],
+			evidence: [],
+			verify: [{ id: "original-verify", command: `${JSON.stringify(process.execPath)} -e "process.exit(7)"` }],
+			stopRules: [],
+			finalization: { mode: "self-review-loop", maxTurns: 1 },
+		};
+		try {
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.writeFileSync(sessionFile, "", "utf-8");
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+				runId,
+				mode: "single",
+				state: "complete",
+				startedAt: 100,
+				lastUpdate: 200,
+				cwd: tempDir,
+				sessionFile,
+				steps: [{
+					agent: "worker",
+					status: "complete",
+					sessionFile,
+					acceptance: { status: "rejected", explicit: true, effectiveAcceptance: storedAcceptance, inferredReason: storedAcceptance.inferredReason, criteria: storedAcceptance.criteria, runtimeChecks: [], verifyRuns: [] },
+				}],
+			}, null, 2), "utf-8");
+			const { executor } = makeExecutor();
+
+			const result = await executor.execute(
+				"resume-override-stored",
+				{ action: "resume", id: runId, message: "Redo with new contract", acceptance: { criteria: ["Override resume contract"] } },
+				new AbortController().signal,
+				undefined,
+				makeMinimalCtx(tempDir),
+			);
+
+			assert.equal(result.isError, undefined);
+			const revivedId = result.details?.asyncId;
+			assert.ok(revivedId, "expected revived async id");
+			const resultPath = path.join(RESULTS_DIR, `${revivedId}.json`);
+			const deadline = Date.now() + 10_000;
+			while (!fs.existsSync(resultPath)) {
+				if (Date.now() > deadline) assert.fail(`Timed out waiting for revived result file: ${resultPath}`);
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			const args = await readMockCallArgs(0);
+			assert.equal(args.some((arg) => arg.includes("Override resume contract")), true);
+			assert.equal(args.some((arg) => arg.includes("Original inherited criterion")), false);
+			const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+			const revivedAcceptance = payload.results[0].acceptance;
+			assert.equal(revivedAcceptance?.effectiveAcceptance?.explicit, true);
+			assert.equal(revivedAcceptance?.effectiveAcceptance?.criteria?.[0]?.must, "Override resume contract");
+			assert.deepEqual(revivedAcceptance?.effectiveAcceptance?.verify, []);
+			assert.equal(revivedAcceptance?.verifyRuns?.some((run: { id?: string }) => run.id === "original-verify"), false);
+			assert.notEqual(revivedAcceptance?.status, "rejected");
+		} finally {
+			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
+	it("malformed persisted acceptance resumes with defaults instead of a TypeError", async () => {
+		mockPi.onCall({ output: "malformed-recovery initial output" });
+		mockPi.onCall({ output: "malformed-recovery self-review output" });
+		const runId = `resume-malformed-acceptance-${Date.now()}`;
+		const asyncDir = path.join(ASYNC_DIR, runId);
+		const sessionFile = path.join(tempDir, "malformed-child-session.jsonl");
+		try {
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.writeFileSync(sessionFile, "", "utf-8");
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+				runId,
+				mode: "single",
+				state: "complete",
+				startedAt: 100,
+				lastUpdate: 200,
+				cwd: tempDir,
+				sessionFile,
+				steps: [{
+					agent: "worker",
+					status: "complete",
+					sessionFile,
+					acceptance: {
+						status: "rejected",
+						explicit: true,
+						// Corrupted persisted contract: finalization is missing entirely.
+						effectiveAcceptance: {
+							level: "checked",
+							explicit: true,
+							inferredReason: ["explicit acceptance contract"],
+							criteria: [{ id: "criterion-1", must: "Recovered criterion", evidence: [], severity: "required" }],
+							evidence: [],
+							verify: [],
+							stopRules: [],
+						},
+						runtimeChecks: [],
+						verifyRuns: [],
+					},
+				}],
+			}, null, 2), "utf-8");
+			const { executor } = makeExecutor();
+
+			const result = await executor.execute(
+				"resume-malformed-acceptance",
+				{ action: "resume", id: runId, message: "Continue the work" },
+				new AbortController().signal,
+				undefined,
+				makeMinimalCtx(tempDir),
+			);
+
+			assert.equal(result.isError, undefined);
+			const revivedId = result.details?.asyncId;
+			assert.ok(revivedId, "expected revived async id");
+			const resultPath = path.join(RESULTS_DIR, `${revivedId}.json`);
+			const deadline = Date.now() + 10_000;
+			while (!fs.existsSync(resultPath)) {
+				if (Date.now() > deadline) assert.fail(`Timed out waiting for revived result file: ${resultPath}`);
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+			const revivedAcceptance = payload.results[0].acceptance;
+			assert.equal(revivedAcceptance?.effectiveAcceptance?.explicit, true);
+			assert.equal(revivedAcceptance?.effectiveAcceptance?.criteria?.[0]?.must, "Recovered criterion");
+			assert.equal(revivedAcceptance?.effectiveAcceptance?.finalization?.maxTurns, 3);
+		} finally {
+			fs.rmSync(asyncDir, { recursive: true, force: true });
 		}
 	});
 

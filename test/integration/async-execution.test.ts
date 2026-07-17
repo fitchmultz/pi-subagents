@@ -29,7 +29,7 @@ interface AsyncResultPayload {
 	sessionId?: string;
 	mode?: string;
 	summary?: string;
-	results: Array<{ output?: string; success?: boolean; error?: string; model?: string; attemptedModels?: string[]; modelAttempts?: Array<{ success?: boolean; error?: string }>; structuredOutput?: unknown; intercomTarget?: string; acceptance?: { status?: string; childReport?: unknown }; resourceLimitExceeded?: { kind?: string; limit?: number; observed?: number; message?: string }; interrupted?: boolean }>;
+	results: Array<{ output?: string; success?: boolean; error?: string; model?: string; attemptedModels?: string[]; modelAttempts?: Array<{ success?: boolean; error?: string }>; structuredOutput?: unknown; intercomTarget?: string; acceptance?: { status?: string; childReport?: unknown; finalization?: { status?: string }; effectiveAcceptance?: { level?: string; verify?: Array<{ id?: string }>; finalization?: { maxTurns?: number } } }; resourceLimitExceeded?: { kind?: string; limit?: number; observed?: number; message?: string }; interrupted?: boolean }>;
 	outputs?: Record<string, { text?: string; structured?: unknown }>;
 	workflowGraph?: { nodes?: Array<{ kind?: string; label?: string; phase?: string; status?: string; error?: string; outputName?: string; structured?: boolean; children?: Array<{ label?: string; outputName?: string; itemKey?: string; status?: string; error?: string }> }> };
 }
@@ -57,7 +57,7 @@ interface AsyncStatusPayload {
 		model?: string;
 		thinking?: string;
 		tokens?: { total: number };
-		acceptance?: { status?: string };
+		acceptance?: { status?: string; effectiveAcceptance?: { level?: string; verify?: Array<{ id?: string }> } };
 		resourceLimitExceeded?: { kind?: string; limit?: number; observed?: number; message?: string };
 	}>;
 	workflowGraph?: { nodes?: Array<{ status?: string }> };
@@ -741,6 +741,48 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(result.results[0]?.acceptance?.status, "checked");
 		assert.equal(result.results[0]?.acceptance?.finalization?.status, "completed");
 		assert.equal(mockPi.callCount(), 2);
+	});
+
+	it("async self-review exhaustion persists the full governing contract including verify", async () => {
+		const failingReport = [
+			"still not done",
+			"```acceptance-report",
+			JSON.stringify({
+				criteriaSatisfied: [{ id: "criterion-1", status: "not-satisfied", evidence: "missing" }],
+				residualRisks: ["not finished"],
+			}),
+			"```",
+		].join("\n");
+		mockPi.onCall({ output: failingReport });
+		mockPi.onCall({ output: failingReport });
+		const id = `async-acceptance-exhaust-${Date.now().toString(36)}`;
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Complete accepted work",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-acceptance-exhaust" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+			sessionFile: path.join(tempDir, "async-acceptance-exhaust-session.jsonl"),
+			acceptance: {
+				criteria: ["Complete accepted work"],
+				verify: [{ id: "exhaust-verify", command: `${JSON.stringify(process.execPath)} -e "process.exit(0)"` }],
+				maxFinalizationTurns: 1,
+			},
+		});
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+
+		assert.equal(result.success, false);
+		assert.equal(result.results[0]?.acceptance?.status, "rejected");
+		assert.equal(result.results[0]?.acceptance?.finalization?.status, "failed");
+		assert.equal(result.results[0]?.acceptance?.effectiveAcceptance?.level, "verified");
+		assert.deepEqual(result.results[0]?.acceptance?.effectiveAcceptance?.verify?.map((entry) => entry.id), ["exhaust-verify"]);
+		assert.equal(result.results[0]?.acceptance?.effectiveAcceptance?.finalization?.maxTurns, 1);
+		const finalStatus = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		assert.equal(finalStatus.steps?.[0]?.acceptance?.effectiveAcceptance?.level, "verified");
+		assert.deepEqual(finalStatus.steps?.[0]?.acceptance?.effectiveAcceptance?.verify?.map((entry) => entry.id), ["exhaust-verify"]);
 	});
 
 	it("async single pauses when interrupted during acceptance finalization", async () => {
@@ -1806,6 +1848,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.success, false);
 		assert.equal(payload.exitCode, 1);
 		assert.equal(payload.results[0].success, false);
+		assert.equal(payload.results[0].acceptance?.status, "not-required");
 		assert.match(String(payload.results[0].error ?? ""), /completed without making edits/);
 		assert.match(String(payload.results[0].modelAttempts?.[0]?.error ?? ""), /completed without making edits/);
 

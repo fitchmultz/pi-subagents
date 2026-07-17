@@ -24,6 +24,8 @@
 - Run local test scripts through a small wrapper that clears inherited `PI_SUBAGENT_*` runtime variables before starting the Node test runner.
 
 ### Fixed
+- Preserve the full explicit acceptance contract across completed, timed-out, and failed run revival, including verification commands after self-review exhaustion; a resume-supplied acceptance contract explicitly overrides the inherited contract.
+- Keep async completion-guard notices visible while leaving the matching completion result as the single automatic parent wakeup, avoiding duplicate triggered turns for one terminal child result.
 - Keep failed sibling results visible when top-level, static-chain, or dynamic-chain parallel work detaches for supervisor coordination.
 - Prefer the supervisor's exact connected `pi-intercom` broker ID for child escalation metadata, with immediate safe fallback to the existing session-derived target.
 - Preserve detached runner stderr in each async run directory and include it in stale-run failures so bootstrap errors remain actionable.

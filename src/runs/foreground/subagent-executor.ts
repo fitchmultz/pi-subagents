@@ -69,7 +69,7 @@ import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
 import { buildManagementControl, formatLiveIntercomActionLines } from "../../shared/status-format.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
-import { validateAcceptanceInput } from "../shared/acceptance.ts";
+import { acceptanceInputFromResolved, validateAcceptanceInput } from "../shared/acceptance.ts";
 import {
 	cleanupWorktrees,
 	createWorktrees,
@@ -98,6 +98,7 @@ import {
 	type MaxOutputConfig,
 	type NestedRouteInfo,
 	type NestedRunSummary,
+	type ResolvedAcceptanceConfig,
 	type ResolvedControlConfig,
 	type SingleResult,
 	type SubagentRunMode,
@@ -493,6 +494,7 @@ function rememberForegroundRun(state: SubagentState, input: { runId: string; mod
 			index,
 			status: resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted, detached: result.detached, timedOut: result.timedOut }),
 			...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
+			...(result.acceptance?.effectiveAcceptance ? { effectiveAcceptance: result.acceptance.effectiveAcceptance } : {}),
 		})),
 	});
 	while (state.foregroundRuns.size > 50) {
@@ -593,7 +595,7 @@ function rememberedForegroundStatusResult(run: ForegroundResumeRun): SubagentExe
 	};
 }
 
-function resolveForegroundResumeTarget(params: SubagentParamsLike, state: SubagentState): { runId: string; mode: "single" | "parallel" | "chain"; state: "complete"; agent: string; index: number; intercomTarget: string; cwd: string; sessionFile: string } | undefined {
+function resolveForegroundResumeTarget(params: SubagentParamsLike, state: SubagentState): { runId: string; mode: "single" | "parallel" | "chain"; state: "complete"; agent: string; index: number; intercomTarget: string; cwd: string; sessionFile: string; effectiveAcceptance?: ResolvedAcceptanceConfig } | undefined {
 	const requested = (params.id ?? params.runId)?.trim();
 	const run = resolveRememberedForegroundRun(requested, state);
 	if (!run) return undefined;
@@ -608,7 +610,7 @@ function resolveForegroundResumeTarget(params: SubagentParamsLike, state: Subage
 	if (path.extname(child.sessionFile) !== ".jsonl") throw new Error(`Foreground run '${run.runId}' child ${index} session file must be a .jsonl file: ${child.sessionFile}`);
 	const sessionFile = path.resolve(child.sessionFile);
 	if (!fs.existsSync(sessionFile)) throw new Error(`Foreground run '${run.runId}' child ${index} session file does not exist: ${child.sessionFile}`);
-	return { runId: run.runId, mode: run.mode, state: "complete", agent: child.agent, index, intercomTarget: resolveSubagentIntercomTarget(run.runId, child.agent, index), cwd: run.cwd, sessionFile };
+	return { runId: run.runId, mode: run.mode, state: "complete", agent: child.agent, index, intercomTarget: resolveSubagentIntercomTarget(run.runId, child.agent, index), cwd: run.cwd, sessionFile, effectiveAcceptance: child.effectiveAcceptance };
 }
 
 type AsyncResumeSourceTarget = ReturnType<typeof resolveAsyncResumeTarget> & { source: "async" };
@@ -623,6 +625,7 @@ type NestedResumeSourceTarget = {
 	intercomTarget: string;
 	cwd?: string;
 	sessionFile: string;
+	effectiveAcceptance?: ResolvedAcceptanceConfig;
 };
 type ResumeSourceTarget = AsyncResumeSourceTarget | ForegroundResumeSourceTarget | NestedResumeSourceTarget;
 
@@ -808,6 +811,7 @@ function resolveNestedResumeTarget(match: ResolvedSubagentRunId & { kind: "neste
 	if (!agent) throw new Error(`Could not determine child agent for nested run '${run.id}'.`);
 	const state = run.state === "complete" || run.state === "failed" || run.state === "paused" ? run.state : "failed";
 	const asyncDir = resolveNestedAsyncDir(match.match.rootRunId, run);
+	const effectiveAcceptance = asyncDir ? readStatus(asyncDir)?.steps?.[0]?.acceptance?.effectiveAcceptance : undefined;
 	return {
 		kind: "revive",
 		source: "nested",
@@ -818,6 +822,7 @@ function resolveNestedResumeTarget(match: ResolvedSubagentRunId & { kind: "neste
 		intercomTarget: resolveSubagentIntercomTarget(run.id, agent, 0),
 		cwd: asyncDir ? path.dirname(asyncDir) : undefined,
 		sessionFile: validateNestedSessionFile(run, trustedSessionRoots),
+		effectiveAcceptance,
 	};
 }
 
@@ -878,10 +883,12 @@ async function interruptNestedRun(target: ResolvedSubagentRunId & { kind: "neste
 	return { content: [{ type: "text", text: `Nested run ${run.id} owner is not reachable and no safe direct async interrupt fallback is available.` }], isError: true, details: { mode: "management", results: [] } };
 }
 
-async function resumeLiveNestedRun(input: { target: ResolvedSubagentRunId & { kind: "nested" }; message: string }): Promise<SubagentExecutionResult> {
+const LIVE_ACCEPTANCE_OVERRIDE_NOTICE = "Acceptance override applies only to revive and was not applied to this live delivery.";
+
+async function resumeLiveNestedRun(input: { target: ResolvedSubagentRunId & { kind: "nested" }; message: string; acceptanceOverrideSupplied: boolean }): Promise<SubagentExecutionResult> {
 	const run = input.target.match.run;
 	const result = await sendNestedControlRequest(input.target, "resume", input.message);
-	if (result) return { content: [{ type: "text", text: result.message }], isError: result.ok ? undefined : true, details: { mode: "management", results: [] } };
+	if (result) return { content: [{ type: "text", text: [result.message, input.acceptanceOverrideSupplied ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined].filter(Boolean).join("\n") }], isError: result.ok ? undefined : true, details: { mode: "management", results: [] } };
 	return { content: [{ type: "text", text: `Nested run ${run.id} appears live but its owner route is not reachable. Wait for completion, then retry action='resume'.` }], isError: true, details: { mode: "management", results: [] } };
 }
 
@@ -1000,7 +1007,7 @@ async function resumeAsyncRun(input: {
 		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
 		if (resolved?.kind === "nested") {
 			if (resolved.match.run.state === "running" || resolved.match.run.state === "queued") {
-				return resumeLiveNestedRun({ target: resolved, message: followUp });
+				return resumeLiveNestedRun({ target: resolved, message: followUp, acceptanceOverrideSupplied: input.params.acceptance !== undefined });
 			}
 			const trustedSessionRoots = [
 				...(input.deps.config.defaultSessionDir ? [path.resolve(input.deps.expandTilde(input.deps.config.defaultSessionDir))] : []),
@@ -1025,7 +1032,7 @@ async function resumeAsyncRun(input: {
 		);
 		if (delivered) {
 			return {
-				content: [{ type: "text", text: [`Delivered follow-up to live async child.`, `Run: ${target.runId}`, `Intercom target: ${target.intercomTarget}`].join("\n") }],
+				content: [{ type: "text", text: [`Delivered follow-up to live async child.`, `Run: ${target.runId}`, `Intercom target: ${target.intercomTarget}`, input.params.acceptance !== undefined ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined].filter(Boolean).join("\n") }],
 				details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: target.runId, index: target.index, intercomTarget: target.intercomTarget, canNudge: true, canResume: true, canInterrupt: true }) },
 			};
 		}
@@ -1096,6 +1103,7 @@ async function resumeAsyncRun(input: {
 		controlIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
 		childIntercomTarget: intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(runId, agent, index) : undefined,
 		availableModels,
+		acceptance: input.params.acceptance ?? acceptanceInputFromResolved(target.effectiveAcceptance),
 		projectTrust: resolveConfiguredChildProjectTrustPolicy(input.deps.config.projectTrust),
 	});
 	if (result.isError) return result;

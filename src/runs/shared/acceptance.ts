@@ -1,4 +1,5 @@
 export {
+	acceptanceInputFromResolved,
 	acceptanceSelfReviewConfig,
 	formatAcceptancePrompt,
 	resolveEffectiveAcceptance,

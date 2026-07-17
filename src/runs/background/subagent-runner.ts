@@ -977,6 +977,7 @@ async function runSingleStep(
 	let acceptance = acceptanceForInitialReport
 		? await evaluateAcceptance({
 			acceptance: acceptanceForInitialReport,
+			governing: step.effectiveAcceptance,
 			output: outputForAcceptance,
 			cwd: step.cwd ?? ctx.cwd,
 		})
@@ -1094,6 +1095,7 @@ async function runSingleStep(
 				}
 				const selfReviewLedger = await evaluateAcceptance({
 					acceptance: selfReviewAcceptance,
+					governing: step.effectiveAcceptance,
 					output: finalizationOutput,
 					cwd: step.cwd ?? ctx.cwd,
 				});

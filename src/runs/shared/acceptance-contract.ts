@@ -237,6 +237,18 @@ export function resolveEffectiveAcceptance(input: {
 	};
 }
 
+export function acceptanceInputFromResolved(acceptance: ResolvedAcceptanceConfig | undefined): AcceptanceInput | undefined {
+	if (!acceptance?.explicit) return undefined;
+	const maxTurns = acceptance.finalization?.maxTurns;
+	return {
+		criteria: acceptance.criteria,
+		evidence: acceptance.evidence,
+		verify: acceptance.verify,
+		stopRules: acceptance.stopRules,
+		...(maxTurns !== undefined ? { maxFinalizationTurns: maxTurns } : {}),
+	};
+}
+
 export function shouldRunAcceptanceFinalization(acceptance: ResolvedAcceptanceConfig): boolean {
 	return acceptance.explicit && acceptance.finalization.mode === "self-review-loop" && acceptance.finalization.maxTurns > 0;
 }

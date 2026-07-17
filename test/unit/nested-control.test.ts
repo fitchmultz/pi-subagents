@@ -313,10 +313,11 @@ describe("nested control routing", () => {
 				writeNestedControlResult(route, { ts: Date.now(), requestId: request.requestId, targetRunId: request.targetRunId, ok: true, message: "nested resume accepted" });
 			}, 50);
 
-			const result = await executor.execute("resume", { action: "resume", id: "nested-live-resume", message: "continue please" }, new AbortController().signal, undefined, ctx(root));
+			const result = await executor.execute("resume", { action: "resume", id: "nested-live-resume", message: "continue please", acceptance: { criteria: ["New contract"] } }, new AbortController().signal, undefined, ctx(root));
 
 			assert.equal(result.isError, undefined);
 			assert.match(text(result), /nested resume accepted/);
+			assert.match(text(result), /Acceptance override applies only to revive and was not applied/);
 			assert.equal(emitted.some((event) => {
 				const payload = event.payload as { to?: unknown };
 				return payload.to === "attacker-target" || payload.to === "attacker-leaf";

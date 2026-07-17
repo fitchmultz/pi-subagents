@@ -52,7 +52,11 @@ function deliverControlNotice(input: {
 			display: true,
 			details: { ...input.details, childIntercomTarget, noticeText },
 		},
-		{ triggerTurn: true },
+		// Async completion-guard notices stay visible but let the matching completion
+		// result deliver the single automatic wakeup. In a parallel group that result
+		// arrives only after all siblings finish, so reaction to a mid-group guard
+		// notice is bounded by the longest-running sibling.
+		{ triggerTurn: !(input.details.source === "async" && input.details.event.reason === "completion_guard") },
 	);
 }
 

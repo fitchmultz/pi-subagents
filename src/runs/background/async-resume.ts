@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus } from "../../shared/types.ts";
+import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus, type ResolvedAcceptanceConfig } from "../../shared/types.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { reconcileAsyncRun } from "./stale-run-reconciler.ts";
 import { readAsyncResultFile, type ParsedAsyncResultFile } from "./async-result-file.ts";
@@ -29,6 +29,7 @@ export type AsyncResumeTarget = {
 	intercomTarget: string;
 	cwd?: string;
 	sessionFile?: string;
+	effectiveAcceptance?: ResolvedAcceptanceConfig;
 };
 
 export interface AsyncRunLocation {
@@ -263,6 +264,8 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 		?? (stepCount === 1 ? status?.sessionFile ?? result?.sessionFile : undefined);
 	if (!sessionFile) throw new Error(`Async run '${runId}' child ${index} does not have a persisted session file to resume from.`);
 	const resolvedSessionFile = validateResumeSessionFile(runId, sessionFile);
+	const effectiveAcceptance = statusSteps[index]?.acceptance?.effectiveAcceptance
+		?? resultSteps[index]?.acceptance?.effectiveAcceptance;
 
 	return {
 		kind: "revive",
@@ -274,6 +277,7 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 		intercomTarget: resolveSubagentIntercomTarget(runId, agent, index),
 		cwd: status?.cwd ?? result?.cwd,
 		sessionFile: resolvedSessionFile,
+		effectiveAcceptance,
 	};
 }
 

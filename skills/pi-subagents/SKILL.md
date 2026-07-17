@@ -22,7 +22,7 @@ Use this for runtime Pi subagent orchestration, not for maintaining Agent Skill 
 - A reviewer timeout is not sign-off. Foreground reviewer budgets are raised to a safe floor; planner/researcher budgets are raised only from local history. Rerun, resume, or split timed-out work.
 - Use async/background only when the parent can keep doing useful independent work or the user wants chat unblocked. Do not sleep-poll; check status when evidence is needed.
 - When an active Pi goal is incomplete, prefer foreground/blocking subagent runs for goal-critical evidence.
-- Use `acceptance` for goal-style requests and plan/spec/broad-fix worker handoffs; put criteria, evidence, verify commands, stop rules, and loop cap there instead of burying them only in task prose.
+- Use `acceptance` for goal-style requests and plan/spec/broad-fix worker handoffs; put criteria, evidence, verify commands, stop rules, and loop cap there instead of burying them only in task prose. Revived runs inherit that contract unless the resume call explicitly overrides `acceptance`.
 - Independent review stays parent-controlled: never put `review` inside `acceptance`; launch reviewer subagents separately after the worker completes.
 - Do not set `acceptance` on static parallel groups or dynamic fanout aggregate groups; set it on each child task/template that owns a session.
 

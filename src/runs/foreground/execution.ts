@@ -1154,6 +1154,7 @@ async function runAcceptanceFinalizationLoop(input: {
 		}
 		const selfReviewLedger = await evaluateAcceptance({
 			acceptance: selfReviewAcceptance,
+			governing: input.acceptance,
 			output: rawOutput,
 			cwd: input.options.cwd ?? input.runtimeCwd,
 		});
@@ -1412,6 +1413,7 @@ export async function runSync(
 		: effectiveAcceptance;
 	const initialAcceptance = await evaluateAcceptance({
 		acceptance: acceptanceForInitialReport,
+		governing: effectiveAcceptance,
 		output: initialAcceptanceOutput,
 		cwd: options.cwd ?? runtimeCwd,
 	});

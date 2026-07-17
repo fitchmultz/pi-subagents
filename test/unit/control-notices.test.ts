@@ -71,6 +71,22 @@ describe("subagent control notice delivery", () => {
 		assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: true });
 	});
 
+	it("keeps async completion-guard notices visible without a second automatic wakeup", () => {
+		const state = makeState();
+		const recorder = makeRecorder();
+
+		handleSubagentControlNotice({
+			pi: recorder.pi,
+			state,
+			visibleControlNotices: new Set(),
+			details: { source: "async", event: needsAttentionEvent({ reason: "completion_guard" }) },
+		});
+
+		assert.equal(recorder.sent.length, 1);
+		assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: false });
+		assert.match(String((recorder.sent[0]?.message as { content?: unknown })?.content ?? ""), /Subagent failed: worker/);
+	});
+
 	it("queues foreground needs-attention notices until the same step is still actionable", async () => {
 		const state = makeState();
 		state.foregroundControls.set("run-1", {
