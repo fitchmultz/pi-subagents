@@ -363,34 +363,43 @@ function registryPath(route: NestedRoute): string {
 	return path.join(commonRouteRoot(route), REGISTRY_FILE);
 }
 
-export function findNestedRouteForRootId(rootRunId: string): NestedRoute | undefined {
-	assertSafeId("rootRunId", rootRunId);
+function readNestedRoute(routeRoot: string): NestedRoute {
+	const metadata = JSON.parse(fs.readFileSync(path.join(routeRoot, ROUTE_FILE), "utf-8")) as { rootRunId?: unknown; capabilityToken?: unknown };
+	if (typeof metadata.rootRunId !== "string" || typeof metadata.capabilityToken !== "string") throw new Error("Invalid nested route metadata.");
+	const route = {
+		rootRunId: metadata.rootRunId,
+		eventSink: path.join(routeRoot, "events"),
+		controlInbox: path.join(routeRoot, "controls"),
+		capabilityToken: metadata.capabilityToken,
+	};
+	validateRouteShape(route);
+	return route;
+}
+
+function listNestedRoutes(rootRunId?: string): NestedRoute[] {
 	let entries: string[];
 	try {
 		entries = fs.readdirSync(NESTED_EVENTS_DIR);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
 		throw error;
 	}
+	const routes: NestedRoute[] = [];
 	for (const entry of entries) {
-		if (!entry.startsWith(`${rootRunId}-`)) continue;
-		const routeRoot = path.join(NESTED_EVENTS_DIR, entry);
+		if (rootRunId && !entry.startsWith(`${rootRunId}-`)) continue;
 		try {
-			const metadata = JSON.parse(fs.readFileSync(path.join(routeRoot, ROUTE_FILE), "utf-8")) as { rootRunId?: unknown; capabilityToken?: unknown };
-			if (metadata.rootRunId !== rootRunId || typeof metadata.capabilityToken !== "string") continue;
-			const route = {
-				rootRunId,
-				eventSink: path.join(routeRoot, "events"),
-				controlInbox: path.join(routeRoot, "controls"),
-				capabilityToken: metadata.capabilityToken,
-			};
-			validateRouteShape(route);
-			return route;
+			const route = readNestedRoute(path.join(NESTED_EVENTS_DIR, entry));
+			if (!rootRunId || route.rootRunId === rootRunId) routes.push(route);
 		} catch {
 			continue;
 		}
 	}
-	return undefined;
+	return routes;
+}
+
+export function findNestedRouteForRootId(rootRunId: string): NestedRoute | undefined {
+	assertSafeId("rootRunId", rootRunId);
+	return listNestedRoutes(rootRunId)[0];
 }
 
 export function projectNestedRegistryForRoot(rootRunId: string): NestedRegistry | undefined {
@@ -441,35 +450,6 @@ function collectScopedNestedRuns(children: NestedRunSummary[] | undefined, scope
 	return output;
 }
 
-function listNestedRoutes(): NestedRoute[] {
-	let entries: string[];
-	try {
-		entries = fs.readdirSync(NESTED_EVENTS_DIR);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-		throw error;
-	}
-	const routes: NestedRoute[] = [];
-	for (const entry of entries) {
-		const routeRoot = path.join(NESTED_EVENTS_DIR, entry);
-		try {
-			const metadata = JSON.parse(fs.readFileSync(path.join(routeRoot, ROUTE_FILE), "utf-8")) as { rootRunId?: unknown; capabilityToken?: unknown };
-			if (typeof metadata.rootRunId !== "string" || typeof metadata.capabilityToken !== "string") continue;
-			const route = {
-				rootRunId: metadata.rootRunId,
-				eventSink: path.join(routeRoot, "events"),
-				controlInbox: path.join(routeRoot, "controls"),
-				capabilityToken: metadata.capabilityToken,
-			};
-			validateRouteShape(route);
-			routes.push(route);
-		} catch {
-			continue;
-		}
-	}
-	return routes;
-}
-
 export function findNestedRunMatchesById(id: string, options: { prefix?: boolean; scope?: NestedRunResolutionScope } = {}): NestedRunMatch[] {
 	assertSafeId("id", id);
 	const matches: NestedRunMatch[] = [];
@@ -502,29 +482,32 @@ export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 	}
 }
 
+function readRouteFiles(dir: string, include: (entry: string) => boolean): Array<{ entry: string; filePath: string; content: string }> {
+	let entries: string[];
+	try {
+		entries = fs.readdirSync(dir).filter(include).sort();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+	return entries.flatMap((entry) => {
+		const filePath = path.join(dir, entry);
+		if (!containedPath(dir, filePath)) return [];
+		try {
+			const stat = fs.statSync(filePath);
+			return stat.isFile() && stat.size <= MAX_EVENT_BYTES ? [{ entry, filePath, content: fs.readFileSync(filePath, "utf-8") }] : [];
+		} catch {
+			return [];
+		}
+	});
+}
+
 export function projectNestedEvents(route: NestedRoute): NestedRegistry {
 	validateRouteShape(route);
 	let registry = readNestedRegistry(route);
 	const seen = new Set(registry.processedEvents);
 	let changed = false;
-	let entries: string[] = [];
-	try {
-		entries = fs.readdirSync(route.eventSink).filter((entry) => entry.endsWith(".json") || entry.endsWith(".jsonl")).sort();
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-	}
-	for (const entry of entries) {
-		if (seen.has(entry)) continue;
-		const eventPath = path.join(route.eventSink, entry);
-		if (!containedPath(route.eventSink, eventPath)) continue;
-		let content: string;
-		try {
-			const stat = fs.statSync(eventPath);
-			if (!stat.isFile() || stat.size > MAX_EVENT_BYTES) continue;
-			content = fs.readFileSync(eventPath, "utf-8");
-		} catch {
-			continue;
-		}
+	for (const { entry, content } of readRouteFiles(route.eventSink, (name) => !seen.has(name) && (name.endsWith(".json") || name.endsWith(".jsonl")))) {
 		for (const event of parseNestedEventRecords(content, route)) {
 			registry = applyNestedEvent(registry, event);
 			changed = true;
@@ -638,26 +621,10 @@ export function writeNestedControlRequest(route: NestedRoute, request: Omit<Nest
 
 export function readNestedControlRequests(route: NestedRoute): Array<NestedControlRequestRecord & { filePath: string }> {
 	validateRouteShape(route);
-	let entries: string[] = [];
-	try {
-		entries = fs.readdirSync(route.controlInbox).filter((entry) => entry.endsWith(".json")).sort();
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-	}
-	const requests: Array<NestedControlRequestRecord & { filePath: string }> = [];
-	for (const entry of entries) {
-		const filePath = path.join(route.controlInbox, entry);
-		if (!containedPath(route.controlInbox, filePath)) continue;
-		try {
-			const stat = fs.statSync(filePath);
-			if (!stat.isFile() || stat.size > MAX_EVENT_BYTES) continue;
-			const request = parseControlRequest(fs.readFileSync(filePath, "utf-8"), route);
-			if (request) requests.push({ ...request, filePath });
-		} catch {
-			continue;
-		}
-	}
-	return requests;
+	return readRouteFiles(route.controlInbox, (entry) => entry.endsWith(".json")).flatMap(({ filePath, content }) => {
+		const request = parseControlRequest(content, route);
+		return request ? [{ ...request, filePath }] : [];
+	});
 }
 
 export function writeNestedControlResult(route: NestedRoute, result: Omit<NestedControlResultRecord, "type" | "rootRunId" | "capabilityToken">): void {
@@ -677,30 +644,10 @@ export function writeNestedControlResult(route: NestedRoute, result: Omit<Nested
 
 export function readNestedControlResults(route: NestedRoute): NestedControlResultRecord[] {
 	validateRouteShape(route);
-	let entries: string[] = [];
-	try {
-		entries = fs.readdirSync(route.eventSink).filter((entry) => entry.endsWith(".json") || entry.endsWith(".jsonl")).sort();
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-	}
-	const results: NestedControlResultRecord[] = [];
-	for (const entry of entries) {
-		const eventPath = path.join(route.eventSink, entry);
-		if (!containedPath(route.eventSink, eventPath)) continue;
-		try {
-			const stat = fs.statSync(eventPath);
-			if (!stat.isFile() || stat.size > MAX_EVENT_BYTES) continue;
-			const content = fs.readFileSync(eventPath, "utf-8");
-			const lines = content.includes("\n") ? content.split("\n").filter((line) => line.trim()) : [content];
-			for (const line of lines) {
-				const result = parseControlResult(line, route);
-				if (result) results.push(result);
-			}
-		} catch {
-			continue;
-		}
-	}
-	return results;
+	return readRouteFiles(route.eventSink, (entry) => entry.endsWith(".json") || entry.endsWith(".jsonl")).flatMap(({ content }) =>
+		(content.includes("\n") ? content.split("\n").filter((line) => line.trim()) : [content])
+			.map((line) => parseControlResult(line, route))
+			.filter((result): result is NestedControlResultRecord => Boolean(result)));
 }
 
 export function attachRootChildrenToSteps<T extends { children?: NestedRunSummary[]; index?: number }>(rootRunId: string, steps: T[] | undefined, children: NestedRunSummary[] | undefined): void {

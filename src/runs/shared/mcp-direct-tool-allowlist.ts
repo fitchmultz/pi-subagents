@@ -36,7 +36,6 @@ interface ServerEntry {
 	bearerTokenEnv?: string;
 	exposeResources?: boolean;
 	excludeTools?: string[];
-	directTools?: boolean | string[];
 }
 
 interface McpConfig {
@@ -44,7 +43,6 @@ interface McpConfig {
 	imports?: ImportKind[];
 	settings?: {
 		toolPrefix?: ToolPrefix;
-		directTools?: boolean;
 	};
 }
 

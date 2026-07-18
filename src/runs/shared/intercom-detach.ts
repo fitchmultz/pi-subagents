@@ -75,7 +75,6 @@ export function formatDetachedIntercomGuidance(input: {
 	runId: string;
 	result: Pick<SingleResult, "agent" | "messages" | "toolCalls">;
 	childIndex: number;
-	includeStatusHint?: boolean;
 }): string {
 	const request = extractDetachedCoordinationRequest(input.result);
 	const childTarget = resolveSubagentIntercomTarget(input.runId, input.result.agent, input.childIndex);
@@ -98,9 +97,7 @@ export function formatDetachedIntercomGuidance(input: {
 		"1. Inspect pending asks: intercom({ action: \"pending\" })",
 		`2. Reply: intercom({ action: \"reply\", to: \"${childTarget}\", message: \"<answer>\" })`,
 	);
-	if (input.includeStatusHint !== false) {
-		lines.push(`3. Then inspect the child: subagent({ action: \"status\", id: \"${input.runId}\" })`);
-	}
+	lines.push(`3. Then inspect the child: subagent({ action: \"status\", id: \"${input.runId}\" })`);
 	lines.push("After the child exits, start a fresh follow-up if needed.");
 
 	return lines.join("\n");

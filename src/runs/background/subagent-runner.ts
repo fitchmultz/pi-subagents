@@ -1737,6 +1737,126 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		}),
 	);
 
+	const runParallelChild = async (input: {
+		task: SubagentStep;
+		flatIndex: number;
+		failFast: boolean;
+		aborted: boolean;
+		taskCwd: string;
+		sessionDir?: string;
+		flatStepCount: number;
+		resetTiming?: boolean;
+		emitSkippedEvent?: boolean;
+		trackSession?: boolean;
+		notifyCompletionGuard?: boolean;
+	}): Promise<AsyncParallelStepResult> => {
+		const { task, flatIndex: fi } = input;
+		if (interrupted) {
+			const pausedAt = Date.now();
+			markStepPaused(statusPayload.steps[fi], pausedAt);
+			statusPayload.lastUpdate = pausedAt;
+			writeStatusPayload();
+			appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.paused", ts: pausedAt, runId: id, stepIndex: fi, agent: task.agent, interrupted: true, durationMs: 0 }));
+			return { agent: task.agent, output: "Paused after interrupt. Waiting for explicit next action.", exitCode: 0, interrupted: true };
+		}
+		if (input.aborted && input.failFast) {
+			const skippedAt = Date.now();
+			const statusStep = statusPayload.steps[fi];
+			statusStep.status = "failed";
+			statusStep.error = "Skipped due to fail-fast";
+			statusStep.startedAt = skippedAt;
+			statusStep.endedAt = skippedAt;
+			statusStep.durationMs = 0;
+			statusStep.exitCode = -1;
+			if (input.emitSkippedEvent) statusStep.activityState = undefined;
+			statusPayload.lastUpdate = skippedAt;
+			writeStatusPayload();
+			if (input.emitSkippedEvent) appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.failed", ts: skippedAt, runId: id, stepIndex: fi, agent: task.agent, exitCode: -1, durationMs: 0 }));
+			return { agent: task.agent, output: "(skipped — fail-fast)", exitCode: -1, skipped: true };
+		}
+
+		const taskStartTime = Date.now();
+		const statusStep = statusPayload.steps[fi];
+		statusPayload.currentStep = fi;
+		statusStep.status = "running";
+		statusStep.error = undefined;
+		statusStep.activityState = undefined;
+		resetStepLiveDetail(statusStep);
+		statusStep.startedAt = taskStartTime;
+		if (input.resetTiming) {
+			statusStep.endedAt = undefined;
+			statusStep.durationMs = undefined;
+		}
+		statusStep.lastActivityAt = taskStartTime;
+		statusPayload.outputFile = path.join(asyncDir, `output-${fi}.log`);
+		statusPayload.lastActivityAt = taskStartTime;
+		statusPayload.lastUpdate = taskStartTime;
+		writeStatusPayload();
+		appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.started", ts: taskStartTime, runId: id, stepIndex: fi, agent: task.agent }));
+
+		const singleResult = await runSingleStep(task, {
+			previousOutput, placeholder, cwd: input.taskCwd, sessionEnabled,
+			outputs,
+			sessionDir: input.sessionDir,
+			artifactsDir, artifactConfig, id,
+			flatIndex: fi, flatStepCount: input.flatStepCount,
+			outputFile: path.join(asyncDir, `output-${fi}.log`),
+			piPackageRoot: config.piPackageRoot,
+			piArgv1: config.piArgv1,
+			childIntercomTarget: config.childIntercomTargets?.[fi],
+			orchestratorIntercomTarget: config.childIntercomTargets?.[fi] ? config.controlIntercomTarget : undefined,
+			nestedRoute: config.nestedRoute,
+			projectTrust: config.projectTrust,
+			registerInterrupt: (interrupt) => {
+				if (interrupt) activeChildInterrupts.set(fi, interrupt);
+				else activeChildInterrupts.delete(fi);
+			},
+			onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking),
+			onChildEvent: (event) => updateStepFromChildEvent(fi, event),
+		});
+		activeChildInterrupts.delete(fi);
+		if (input.trackSession && task.sessionFile) latestSessionFile = task.sessionFile;
+
+		const taskEndTime = Date.now();
+		statusStep.status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
+		clearStepCurrentActivity(statusStep);
+		statusStep.endedAt = taskEndTime;
+		statusStep.durationMs = taskEndTime - taskStartTime;
+		statusStep.exitCode = singleResult.exitCode;
+		statusStep.model = singleResult.model;
+		statusStep.thinking = resolveEffectiveThinking(singleResult.model, statusStep.thinking);
+		statusStep.attemptedModels = singleResult.attemptedModels;
+		statusStep.modelAttempts = singleResult.modelAttempts;
+		statusStep.error = singleResult.error;
+		statusStep.structuredOutput = singleResult.structuredOutput;
+		statusStep.structuredOutputPath = singleResult.structuredOutputPath;
+		statusStep.structuredOutputSchemaPath = singleResult.structuredOutputSchemaPath;
+		statusStep.acceptance = singleResult.acceptance;
+		statusStep.resourceLimitExceeded = singleResult.resourceLimitExceeded;
+		statusPayload.lastUpdate = taskEndTime;
+		writeStatusPayload();
+		appendJsonl(eventsPath, JSON.stringify({
+			type: singleResult.interrupted ? "subagent.step.paused" : singleResult.exitCode === 0 ? "subagent.step.completed" : "subagent.step.failed",
+			ts: taskEndTime, runId: id, stepIndex: fi, agent: task.agent,
+			exitCode: singleResult.exitCode, durationMs: taskEndTime - taskStartTime,
+			interrupted: singleResult.interrupted,
+			resourceLimitExceeded: singleResult.resourceLimitExceeded,
+		}));
+		if (input.notifyCompletionGuard && singleResult.completionGuardTriggered) {
+			appendControlEvent(buildControlEvent({
+				from: statusStep.activityState,
+				to: "needs_attention",
+				runId: id,
+				agent: task.agent,
+				index: fi,
+				ts: taskEndTime,
+				message: `${task.agent} completed without making edits for an implementation task`,
+				reason: "completion_guard",
+			}));
+		}
+		return { ...singleResult, skipped: false };
+	};
+
 	let flatIndex = 0;
 
 	for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
@@ -1903,88 +2023,17 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			const failFast = step.failFast ?? false;
 			let aborted = false;
 			const parallelResults = await mapConcurrent<SubagentStep, AsyncParallelStepResult>(dynamicSteps, concurrency, async (task, taskIdx) => {
-				const fi = groupStartFlatIndex + taskIdx;
-				if (interrupted) {
-					const pausedAt = Date.now();
-					markStepPaused(statusPayload.steps[fi], pausedAt);
-					statusPayload.lastUpdate = pausedAt;
-					writeStatusPayload();
-					appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.paused", ts: pausedAt, runId: id, stepIndex: fi, agent: task.agent, interrupted: true, durationMs: 0 }));
-					return { agent: task.agent, output: "Paused after interrupt. Waiting for explicit next action.", exitCode: 0, interrupted: true };
-				}
-				if (aborted && failFast) {
-					const skippedAt = Date.now();
-					statusPayload.steps[fi].status = "failed";
-					statusPayload.steps[fi].error = "Skipped due to fail-fast";
-					statusPayload.steps[fi].startedAt = skippedAt;
-					statusPayload.steps[fi].endedAt = skippedAt;
-					statusPayload.steps[fi].durationMs = 0;
-					statusPayload.steps[fi].exitCode = -1;
-					statusPayload.lastUpdate = skippedAt;
-					writeStatusPayload();
-					return { agent: task.agent, output: "(skipped — fail-fast)", exitCode: -1, skipped: true };
-				}
-				const taskStartTime = Date.now();
-				statusPayload.currentStep = fi;
-				statusPayload.steps[fi].status = "running";
-				statusPayload.steps[fi].error = undefined;
-				statusPayload.steps[fi].activityState = undefined;
-				resetStepLiveDetail(statusPayload.steps[fi]);
-				statusPayload.steps[fi].startedAt = taskStartTime;
-				statusPayload.steps[fi].lastActivityAt = taskStartTime;
-				statusPayload.outputFile = path.join(asyncDir, `output-${fi}.log`);
-				statusPayload.lastActivityAt = taskStartTime;
-				statusPayload.lastUpdate = taskStartTime;
-				writeStatusPayload();
-				appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.started", ts: taskStartTime, runId: id, stepIndex: fi, agent: task.agent }));
-				const singleResult = await runSingleStep(task, {
-					previousOutput, placeholder, cwd, sessionEnabled,
-					outputs,
+				const result = await runParallelChild({
+					task,
+					flatIndex: groupStartFlatIndex + taskIdx,
+					failFast,
+					aborted,
+					taskCwd: cwd,
 					sessionDir: config.sessionDir ? path.join(config.sessionDir, `dynamic-${stepIndex}-${taskIdx}`) : undefined,
-					artifactsDir, artifactConfig, id,
-					flatIndex: fi, flatStepCount: Math.max(statusPayload.steps.length, 1),
-					outputFile: path.join(asyncDir, `output-${fi}.log`),
-					piPackageRoot: config.piPackageRoot,
-					piArgv1: config.piArgv1,
-					childIntercomTarget: config.childIntercomTargets?.[fi],
-					orchestratorIntercomTarget: config.childIntercomTargets?.[fi] ? config.controlIntercomTarget : undefined,
-					nestedRoute: config.nestedRoute,
-					projectTrust: config.projectTrust,
-					registerInterrupt: (interrupt) => {
-						if (interrupt) activeChildInterrupts.set(fi, interrupt);
-						else activeChildInterrupts.delete(fi);
-					},
-					onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking),
-					onChildEvent: (event) => updateStepFromChildEvent(fi, event),
+					flatStepCount: Math.max(statusPayload.steps.length, 1),
 				});
-				activeChildInterrupts.delete(fi);
-				const taskEndTime = Date.now();
-				statusPayload.steps[fi].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
-				clearStepCurrentActivity(statusPayload.steps[fi]);
-				statusPayload.steps[fi].endedAt = taskEndTime;
-				statusPayload.steps[fi].durationMs = taskEndTime - taskStartTime;
-				statusPayload.steps[fi].exitCode = singleResult.exitCode;
-				statusPayload.steps[fi].model = singleResult.model;
-				statusPayload.steps[fi].thinking = resolveEffectiveThinking(singleResult.model, statusPayload.steps[fi].thinking);
-				statusPayload.steps[fi].attemptedModels = singleResult.attemptedModels;
-				statusPayload.steps[fi].modelAttempts = singleResult.modelAttempts;
-				statusPayload.steps[fi].error = singleResult.error;
-				statusPayload.steps[fi].structuredOutput = singleResult.structuredOutput;
-				statusPayload.steps[fi].structuredOutputPath = singleResult.structuredOutputPath;
-				statusPayload.steps[fi].structuredOutputSchemaPath = singleResult.structuredOutputSchemaPath;
-				statusPayload.steps[fi].acceptance = singleResult.acceptance;
-				statusPayload.steps[fi].resourceLimitExceeded = singleResult.resourceLimitExceeded;
-				statusPayload.lastUpdate = taskEndTime;
-				writeStatusPayload();
-				appendJsonl(eventsPath, JSON.stringify({
-					type: singleResult.interrupted ? "subagent.step.paused" : singleResult.exitCode === 0 ? "subagent.step.completed" : "subagent.step.failed",
-					ts: taskEndTime, runId: id, stepIndex: fi, agent: task.agent,
-					exitCode: singleResult.exitCode, durationMs: taskEndTime - taskStartTime,
-					interrupted: singleResult.interrupted,
-					resourceLimitExceeded: singleResult.resourceLimitExceeded,
-				}));
-				if (singleResult.exitCode !== 0 && failFast) aborted = true;
-				return { ...singleResult, skipped: false };
+				if (result.exitCode !== 0 && failFast) aborted = true;
+				return result;
 			});
 
 			flatIndex += dynamicSteps.length;
@@ -2130,125 +2179,22 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					group.parallel,
 					concurrency,
 					async (task, taskIdx) => {
-						const fi = groupStartFlatIndex + taskIdx;
-						if (interrupted) {
-							const pausedAt = Date.now();
-							markStepPaused(statusPayload.steps[fi], pausedAt);
-							statusPayload.lastUpdate = pausedAt;
-							writeStatusPayload();
-							appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.paused", ts: pausedAt, runId: id, stepIndex: fi, agent: task.agent, interrupted: true, durationMs: 0 }));
-							return { agent: task.agent, output: "Paused after interrupt. Waiting for explicit next action.", exitCode: 0, interrupted: true };
-						}
-						if (aborted && failFast) {
-							const skippedAt = Date.now();
-							statusPayload.steps[fi].status = "failed";
-							statusPayload.steps[fi].error = "Skipped due to fail-fast";
-							statusPayload.steps[fi].startedAt = skippedAt;
-							statusPayload.steps[fi].endedAt = skippedAt;
-							statusPayload.steps[fi].durationMs = 0;
-							statusPayload.steps[fi].exitCode = -1;
-							statusPayload.steps[fi].activityState = undefined;
-							statusPayload.lastUpdate = skippedAt;
-							writeStatusPayload();
-							appendJsonl(eventsPath, JSON.stringify({
-								type: "subagent.step.failed", ts: skippedAt, runId: id, stepIndex: fi, agent: task.agent, exitCode: -1, durationMs: 0,
-							}));
-							return { agent: task.agent, output: "(skipped — fail-fast)", exitCode: -1, skipped: true };
-						}
-
-						const taskStartTime = Date.now();
-						statusPayload.currentStep = fi;
-						statusPayload.steps[fi].status = "running";
-						statusPayload.steps[fi].error = undefined;
-						statusPayload.steps[fi].activityState = undefined;
-						resetStepLiveDetail(statusPayload.steps[fi]);
-						statusPayload.steps[fi].startedAt = taskStartTime;
-						statusPayload.steps[fi].endedAt = undefined;
-						statusPayload.steps[fi].durationMs = undefined;
-						statusPayload.steps[fi].lastActivityAt = taskStartTime;
-						statusPayload.outputFile = path.join(asyncDir, `output-${fi}.log`);
-						statusPayload.lastActivityAt = taskStartTime;
-						statusPayload.lastUpdate = taskStartTime;
-						writeStatusPayload();
-
-						appendJsonl(eventsPath, JSON.stringify({
-							type: "subagent.step.started", ts: taskStartTime, runId: id, stepIndex: fi, agent: task.agent,
-						}));
-
-						const taskSessionDir = config.sessionDir
-							? path.join(config.sessionDir, `parallel-${taskIdx}`)
-							: undefined;
 						const { taskForRun, taskCwd } = prepareParallelTaskRun(task, cwd, worktreeSetup, taskIdx);
-
-						const singleResult = await runSingleStep(taskForRun, {
-							previousOutput, placeholder, cwd: taskCwd, sessionEnabled,
-							outputs,
-							sessionDir: taskSessionDir,
-							artifactsDir, artifactConfig, id,
-							flatIndex: fi, flatStepCount: flatSteps.length,
-							outputFile: path.join(asyncDir, `output-${fi}.log`),
-							piPackageRoot: config.piPackageRoot,
-							piArgv1: config.piArgv1,
-							childIntercomTarget: config.childIntercomTargets?.[fi],
-							orchestratorIntercomTarget: config.childIntercomTargets?.[fi] ? config.controlIntercomTarget : undefined,
-							nestedRoute: config.nestedRoute,
-							projectTrust: config.projectTrust,
-							registerInterrupt: (interrupt) => {
-								if (interrupt) activeChildInterrupts.set(fi, interrupt);
-								else activeChildInterrupts.delete(fi);
-							},
-							onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking),
-							onChildEvent: (event) => updateStepFromChildEvent(fi, event),
+						const result = await runParallelChild({
+							task: taskForRun,
+							flatIndex: groupStartFlatIndex + taskIdx,
+							failFast,
+							aborted,
+							taskCwd,
+							sessionDir: config.sessionDir ? path.join(config.sessionDir, `parallel-${taskIdx}`) : undefined,
+							flatStepCount: flatSteps.length,
+							resetTiming: true,
+							emitSkippedEvent: true,
+							trackSession: true,
+							notifyCompletionGuard: true,
 						});
-						activeChildInterrupts.delete(fi);
-						if (task.sessionFile) {
-							latestSessionFile = task.sessionFile;
-						}
-
-						const taskEndTime = Date.now();
-						const taskDuration = taskEndTime - taskStartTime;
-
-						statusPayload.steps[fi].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
-						clearStepCurrentActivity(statusPayload.steps[fi]);
-						statusPayload.steps[fi].endedAt = taskEndTime;
-						statusPayload.steps[fi].durationMs = taskDuration;
-						statusPayload.steps[fi].exitCode = singleResult.exitCode;
-						statusPayload.steps[fi].model = singleResult.model;
-						statusPayload.steps[fi].thinking = resolveEffectiveThinking(singleResult.model, statusPayload.steps[fi].thinking);
-						statusPayload.steps[fi].attemptedModels = singleResult.attemptedModels;
-						statusPayload.steps[fi].modelAttempts = singleResult.modelAttempts;
-						statusPayload.steps[fi].error = singleResult.error;
-						statusPayload.steps[fi].structuredOutput = singleResult.structuredOutput;
-						statusPayload.steps[fi].structuredOutputPath = singleResult.structuredOutputPath;
-						statusPayload.steps[fi].structuredOutputSchemaPath = singleResult.structuredOutputSchemaPath;
-						statusPayload.steps[fi].acceptance = singleResult.acceptance;
-						statusPayload.steps[fi].resourceLimitExceeded = singleResult.resourceLimitExceeded;
-						statusPayload.lastUpdate = taskEndTime;
-						writeStatusPayload();
-
-						appendJsonl(eventsPath, JSON.stringify({
-							type: singleResult.interrupted ? "subagent.step.paused" : singleResult.exitCode === 0 ? "subagent.step.completed" : "subagent.step.failed",
-							ts: taskEndTime, runId: id, stepIndex: fi, agent: task.agent,
-							exitCode: singleResult.exitCode, durationMs: taskDuration,
-							interrupted: singleResult.interrupted,
-							resourceLimitExceeded: singleResult.resourceLimitExceeded,
-						}));
-						if (singleResult.completionGuardTriggered) {
-							const event = buildControlEvent({
-								from: statusPayload.steps[fi].activityState,
-								to: "needs_attention",
-								runId: id,
-								agent: task.agent,
-								index: fi,
-								ts: taskEndTime,
-								message: `${task.agent} completed without making edits for an implementation task`,
-								reason: "completion_guard",
-							});
-							appendControlEvent(event);
-						}
-
-						if (singleResult.exitCode !== 0 && failFast) aborted = true;
-						return { ...singleResult, skipped: false };
+						if (result.exitCode !== 0 && failFast) aborted = true;
+						return result;
 					},
 				);
 

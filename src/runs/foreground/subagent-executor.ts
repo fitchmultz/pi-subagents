@@ -369,7 +369,6 @@ interface ExecutionContextData {
 	controlConfig: ResolvedControlConfig;
 	intercomBridge: IntercomBridgeState;
 	shouldApplyIntercomBridgeForAgent: (agentName: string | undefined) => boolean;
-	shouldApplyIntercomBridgeForIndex: (index: number) => boolean;
 	nestedRoute?: NestedRouteInfo;
 }
 
@@ -2152,7 +2151,6 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			preferredModelProvider: input.ctx.model?.provider,
 			skills: effectiveSkills === false ? [] : effectiveSkills,
 			acceptance: task.acceptance,
-			acceptanceContext: { mode: "parallel" },
 			projectTrust: input.projectTrust,
 			projectTrusted: input.ctx.isProjectTrusted?.() ?? true,
 				onUpdate: input.onUpdate
@@ -2805,7 +2803,6 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		preferredModelProvider: currentProvider,
 		skills: effectiveSkills,
 		acceptance: params.acceptance,
-		acceptanceContext: { mode: "single" },
 		projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 		projectTrusted: ctx.isProjectTrusted?.() ?? true,
 	});
@@ -3159,8 +3156,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				? applyIntercomBridgeToAgent(agent, intercomBridge)
 				: agent,
 		);
-		const shouldApplyIntercomBridgeForIndex = (index: number): boolean =>
-			shouldApplyIntercomBridgeForAgent(agentNameAtIndex(index));
 		const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
 		const nestedParentAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
 		const nestedRoute = inheritedNestedRoute ?? createNestedRoute(runId);
@@ -3278,7 +3273,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			controlConfig,
 			intercomBridge,
 			shouldApplyIntercomBridgeForAgent,
-			shouldApplyIntercomBridgeForIndex,
 			nestedRoute,
 		};
 

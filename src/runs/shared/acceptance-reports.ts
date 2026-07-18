@@ -2,31 +2,6 @@ import type {
 	AcceptanceReport,
 } from "../../shared/types.ts";
 
-function extractBalancedJson(text: string, start: number): string | undefined {
-	let depth = 0;
-	let inString = false;
-	let escaped = false;
-	for (let i = start; i < text.length; i++) {
-		const char = text[i]!;
-		if (inString) {
-			if (escaped) escaped = false;
-			else if (char === "\\") escaped = true;
-			else if (char === "\"") inString = false;
-			continue;
-		}
-		if (char === "\"") {
-			inString = true;
-			continue;
-		}
-		if (char === "{") depth++;
-		if (char === "}") {
-			depth--;
-			if (depth === 0) return text.slice(start, i + 1);
-		}
-	}
-	return undefined;
-}
-
 export function parseAcceptanceReport(output: string): { report?: AcceptanceReport; error?: string } {
 	const fenced = [...output.matchAll(/```acceptance-report\s*\n([\s\S]*?)```/gi)]
 		.map((match) => match[1]?.trim())
@@ -46,30 +21,12 @@ export function parseAcceptanceReport(output: string): { report?: AcceptanceRepo
 		}
 	}
 	if (parseErrors.length > 0) return { error: `Failed to parse acceptance-report: ${parseErrors.join("; ")}` };
-	const markerIndex = output.search(/ACCEPTANCE_REPORT\s*:/i);
-	if (markerIndex !== -1) {
-		const jsonStart = output.indexOf("{", markerIndex);
-		if (jsonStart !== -1) {
-			const json = extractBalancedJson(output, jsonStart);
-			if (json) {
-				try {
-					const parsed = JSON.parse(json) as unknown;
-					const shapeError = validateAcceptanceReportShape(parsed);
-					if (!shapeError) return { report: parsed as AcceptanceReport };
-					return { error: `ACCEPTANCE_REPORT is invalid: ${shapeError}` };
-				} catch (error) {
-					return { error: error instanceof Error ? error.message : String(error) };
-				}
-			}
-		}
-	}
 	return { error: "Structured acceptance report not found." };
 }
 
 export function stripAcceptanceReport(output: string): string {
 	return output
 		.replace(/\n?```acceptance-report\s*\n[\s\S]*?```\s*$/i, "")
-		.replace(/\n?ACCEPTANCE_REPORT\s*:\s*\{[\s\S]*\}\s*$/i, "")
 		.trimEnd();
 }
 

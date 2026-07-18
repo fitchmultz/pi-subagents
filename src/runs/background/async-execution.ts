@@ -127,7 +127,6 @@ interface AsyncChainParams {
 	controlIntercomTarget?: string;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
-	acceptance?: AcceptanceInput;
 	projectTrust?: ChildProjectTrustPolicy;
 }
 
@@ -390,14 +389,7 @@ export function executeAsyncChain(
 			maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, a.maxSubagentDepth),
 			maxExecutionTimeMs: a.maxExecutionTimeMs,
 			maxTokens: a.maxTokens,
-			effectiveAcceptance: resolveEffectiveAcceptance({
-				explicit: s.acceptance,
-				agentName: s.agent,
-				task: s.task,
-				mode: resultMode,
-				async: true,
-				dynamic: false,
-			}),
+			effectiveAcceptance: resolveEffectiveAcceptance({ explicit: s.acceptance }),
 			...(s.outputSchema ? { structuredOutputSchema: s.outputSchema } : {}),
 			...(s.outputSchema ? { structuredOutput: createStructuredOutputRuntime(s.outputSchema, path.join(asyncDir, "structured-output")) } : {}),
 		};
@@ -737,13 +729,7 @@ export function executeAsyncSingle(
 						maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, agentConfig.maxSubagentDepth),
 						maxExecutionTimeMs: agentConfig.maxExecutionTimeMs,
 						maxTokens: agentConfig.maxTokens,
-						effectiveAcceptance: resolveEffectiveAcceptance({
-							explicit: params.acceptance,
-							agentName: agent,
-							task,
-							mode: "single",
-							async: true,
-						}),
+						effectiveAcceptance: resolveEffectiveAcceptance({ explicit: params.acceptance }),
 					},
 				],
 				resultPath: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : path.join(RESULTS_DIR, `${id}.json`),

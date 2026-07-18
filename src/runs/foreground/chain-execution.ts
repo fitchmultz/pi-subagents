@@ -294,7 +294,6 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				skills: behavior.skills === false ? [] : behavior.skills,
 				structuredOutput: structuredRuntime,
 				acceptance: task.acceptance,
-				acceptanceContext: { mode: "chain" },
 				projectTrust: input.projectTrust,
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {
@@ -1126,7 +1125,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				skills: behavior.skills === false ? [] : behavior.skills,
 				structuredOutput: structuredRuntime,
 				acceptance: seqStep.acceptance,
-				acceptanceContext: { mode: "chain" },
 				projectTrust: params.projectTrust,
 				onUpdate: onUpdate
 					? (p) => {

@@ -23,14 +23,7 @@ export interface ResolvedStepBehavior {
 	model?: string;
 }
 
-export interface StepOverrides {
-	output?: string | false;
-	outputMode?: OutputMode;
-	reads?: string[] | false;
-	progress?: boolean;
-	skills?: string[] | false;
-	model?: string;
-}
+export type StepOverrides = Partial<ResolvedStepBehavior>;
 
 function normalizeOutputOverride(output: string | false | undefined): string | false | undefined {
 	return output === "false" ? false : output;
@@ -61,24 +54,8 @@ export interface SequentialStep {
 }
 
 /** Parallel task item within a parallel step */
-export interface ParallelTaskItem {
-	agent: string;
-	task?: string;
-	phase?: string;
-	label?: string;
-	as?: string;
-	outputSchema?: JsonSchemaObject;
-	cwd?: string;
+export interface ParallelTaskItem extends SequentialStep {
 	count?: number;
-	output?: string | false;
-	outputMode?: OutputMode;
-	outputFromAgentDefault?: boolean;
-	defaultOutputSource?: string;
-	reads?: string[] | false;
-	progress?: boolean;
-	skill?: string | string[] | false;
-	model?: string;
-	acceptance?: AcceptanceInput;
 }
 
 export interface DynamicExpandSpec {

@@ -1,3 +1,5 @@
+import { Compile } from "typebox/compile";
+import { AcceptanceOverride } from "../../extension/schemas.ts";
 import type {
 	AcceptanceConfig,
 	AcceptanceEvidenceKind,
@@ -5,7 +7,6 @@ import type {
 	AcceptanceProvenanceLevel,
 	ResolvedAcceptanceConfig,
 	ResolvedAcceptanceGate,
-	SubagentRunMode,
 } from "../../shared/types.ts";
 
 const DEFAULT_FINALIZATION_MAX_TURNS = 3;
@@ -23,15 +24,10 @@ const VALID_EVIDENCE = new Set<AcceptanceEvidenceKind>([
 	"manual-notes",
 ]);
 
-const ACCEPTANCE_KEYS = new Set([
-	"criteria",
-	"evidence",
-	"verify",
-	"stopRules",
-	"maxFinalizationTurns",
-]);
+const ACCEPTANCE_KEYS = new Set(Object.keys((AcceptanceOverride as unknown as { properties: Record<string, unknown> }).properties));
 
 const REMOVED_ACCEPTANCE_KEYS = new Set(["level", "finalization", "reason", "review"]);
+const ACCEPTANCE_VALIDATOR = Compile(AcceptanceOverride);
 
 const EVIDENCE_REPORT_FIELDS: Record<AcceptanceEvidenceKind, string> = {
 	"changed-files": "changedFiles: array of changed file paths",
@@ -53,128 +49,93 @@ function hasArrayItems(value: unknown): boolean {
 	return Array.isArray(value) && value.length > 0;
 }
 
+function acceptanceErrorPath(pathLabel: string, instancePath: string): string {
+	return instancePath.split("/").slice(1).reduce((result, part) => {
+		const decoded = part.replaceAll("~1", "/").replaceAll("~0", "~");
+		return /^\d+$/.test(decoded) ? `${result}[${decoded}]` : `${result}.${decoded}`;
+	}, pathLabel);
+}
+
 export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"): string[] {
-	const errors: string[] = [];
-	if (input === undefined) return errors;
+	if (input === undefined) return [];
 	if (input === false || typeof input === "string") {
-		errors.push(`${pathLabel} must be an object. Public acceptance levels and false disables are no longer supported.`);
-		return errors;
+		return [`${pathLabel} must be an object. Public acceptance levels and false disables are no longer supported.`];
 	}
-	if (!input || typeof input !== "object" || Array.isArray(input)) {
-		errors.push(`${pathLabel} must be an object.`);
-		return errors;
-	}
+	if (!input || typeof input !== "object" || Array.isArray(input)) return [`${pathLabel} must be an object.`];
 
 	const value = input as Record<string, unknown>;
-	if (Object.hasOwn(value, "level")) {
-		errors.push(`${pathLabel}.level is no longer supported; configure criteria, evidence, and verify directly.`);
-	}
-	if (Object.hasOwn(value, "review")) {
-		errors.push(`${pathLabel}.review is not supported; launch a separate parent-controlled reviewer after the worker completes.`);
-	}
-	if (Object.hasOwn(value, "finalization")) {
-		errors.push(`${pathLabel}.finalization is not supported; acceptance contracts always run the self-review loop.`);
-	}
-	if (Object.hasOwn(value, "reason")) {
-		errors.push(`${pathLabel}.reason is not supported because acceptance is disabled by omitting the field.`);
-	}
+	const errors: string[] = [];
+	if (Object.hasOwn(value, "level")) errors.push(`${pathLabel}.level is no longer supported; configure criteria, evidence, and verify directly.`);
+	if (Object.hasOwn(value, "review")) errors.push(`${pathLabel}.review is not supported; launch a separate parent-controlled reviewer after the worker completes.`);
+	if (Object.hasOwn(value, "finalization")) errors.push(`${pathLabel}.finalization is not supported; acceptance contracts always run the self-review loop.`);
+	if (Object.hasOwn(value, "reason")) errors.push(`${pathLabel}.reason is not supported because acceptance is disabled by omitting the field.`);
 	for (const key of Object.keys(value)) {
 		if (!ACCEPTANCE_KEYS.has(key) && !REMOVED_ACCEPTANCE_KEYS.has(key)) errors.push(`${pathLabel}.${key} is not supported.`);
 	}
 
-	if (value.criteria !== undefined) {
-		if (!Array.isArray(value.criteria)) {
-			errors.push(`${pathLabel}.criteria must be an array.`);
-		} else {
-			for (const [index, criterion] of value.criteria.entries()) {
-				if (typeof criterion === "string") {
-					if (!criterion.trim()) errors.push(`${pathLabel}.criteria[${index}] must not be empty.`);
-					continue;
-				}
-				if (!criterion || typeof criterion !== "object" || Array.isArray(criterion)) {
-					errors.push(`${pathLabel}.criteria[${index}] must be a string or object.`);
-					continue;
-				}
-				const item = criterion as Record<string, unknown>;
-				if (typeof item.id !== "string" || !item.id.trim()) errors.push(`${pathLabel}.criteria[${index}].id is required.`);
-				if (typeof item.must !== "string" || !item.must.trim()) errors.push(`${pathLabel}.criteria[${index}].must is required.`);
-				if (item.evidence !== undefined && !Array.isArray(item.evidence)) errors.push(`${pathLabel}.criteria[${index}].evidence must be an array.`);
-				if (Array.isArray(item.evidence)) {
-					for (const [evidenceIndex, evidence] of item.evidence.entries()) {
-						if (typeof evidence !== "string" || !VALID_EVIDENCE.has(evidence as AcceptanceEvidenceKind)) {
-							errors.push(`${pathLabel}.criteria[${index}].evidence[${evidenceIndex}] is not a supported evidence kind.`);
-						}
-					}
-				}
-				if (item.severity !== undefined && item.severity !== "required" && item.severity !== "recommended") {
-					errors.push(`${pathLabel}.criteria[${index}].severity must be required or recommended.`);
-				}
-			}
-		}
-	}
-
-	if (Array.isArray(value.evidence)) {
-		for (const [index, item] of value.evidence.entries()) {
-			if (typeof item !== "string" || !VALID_EVIDENCE.has(item as AcceptanceEvidenceKind)) {
-				errors.push(`${pathLabel}.evidence[${index}] is not a supported evidence kind.`);
-			}
-		}
-	} else if (value.evidence !== undefined) {
-		errors.push(`${pathLabel}.evidence must be an array.`);
-	}
-
-	if (value.verify !== undefined && !Array.isArray(value.verify)) errors.push(`${pathLabel}.verify must be an array.`);
-	if (Array.isArray(value.verify)) {
-		for (const [index, command] of value.verify.entries()) {
-			if (!command || typeof command !== "object" || Array.isArray(command)) {
-				errors.push(`${pathLabel}.verify[${index}] must be an object.`);
+	const structuralValue = Object.fromEntries(Object.entries(value).filter(([key]) => ACCEPTANCE_KEYS.has(key)));
+	const schemaErrors = [...ACCEPTANCE_VALIDATOR.Errors(structuralValue)];
+	for (const error of schemaErrors) {
+		const criterionMatch = error.instancePath.match(/^\/criteria\/(\d+)$/);
+		if (criterionMatch) {
+			const criterion = Array.isArray(value.criteria) ? value.criteria[Number(criterionMatch[1])] : undefined;
+			if (criterion && typeof criterion === "object" && !Array.isArray(criterion)) {
+				if (error.keyword === "anyOf" || error.schemaPath.includes("/anyOf/0")) continue;
+			} else if (typeof criterion === "string") {
+				if (error.keyword === "anyOf" || error.schemaPath.includes("/anyOf/1")) continue;
+			} else if (error.keyword !== "anyOf") {
 				continue;
 			}
-			const cmd = command as Record<string, unknown>;
-			if (typeof cmd.id !== "string" || !cmd.id.trim()) errors.push(`${pathLabel}.verify[${index}].id is required.`);
-			if (typeof cmd.command !== "string" || !cmd.command.trim()) errors.push(`${pathLabel}.verify[${index}].command is required.`);
-			if (cmd.timeoutMs !== undefined && (!Number.isInteger(cmd.timeoutMs) || Number(cmd.timeoutMs) <= 0)) {
-				errors.push(`${pathLabel}.verify[${index}].timeoutMs must be a positive integer.`);
-			}
-			if (cmd.cwd !== undefined && typeof cmd.cwd !== "string") errors.push(`${pathLabel}.verify[${index}].cwd must be a string.`);
-			if (cmd.env !== undefined) {
-				if (!cmd.env || typeof cmd.env !== "object" || Array.isArray(cmd.env)) {
-					errors.push(`${pathLabel}.verify[${index}].env must be an object with string values.`);
-				} else {
-					for (const [key, envValue] of Object.entries(cmd.env as Record<string, unknown>)) {
-						if (typeof envValue !== "string") errors.push(`${pathLabel}.verify[${index}].env.${key} must be a string.`);
-					}
-				}
-			}
-			if (cmd.allowFailure !== undefined && typeof cmd.allowFailure !== "boolean") errors.push(`${pathLabel}.verify[${index}].allowFailure must be a boolean.`);
 		}
-	}
-
-	if (value.stopRules !== undefined) {
-		if (!Array.isArray(value.stopRules)) {
-			errors.push(`${pathLabel}.stopRules must be an array.`);
+		if (error.keyword === "minLength") continue;
+		const errorPath = acceptanceErrorPath(pathLabel, error.instancePath);
+		if (error.keyword === "anyOf" && criterionMatch) {
+			errors.push(`${errorPath} must be a string or object.`);
+		} else if (error.keyword === "required") {
+			for (const property of error.params.requiredProperties as string[]) errors.push(`${errorPath}.${property} is required.`);
+		} else if (error.keyword === "enum" && error.instancePath.includes("/evidence/")) {
+			errors.push(`${errorPath} is not a supported evidence kind.`);
+		} else if (error.keyword === "enum" && error.instancePath.endsWith("/severity")) {
+			errors.push(`${errorPath} must be required or recommended.`);
+		} else if (error.instancePath.endsWith("/timeoutMs")) {
+			errors.push(`${errorPath} must be a positive integer.`);
+		} else if (error.instancePath === "/maxFinalizationTurns") {
+			errors.push(`${errorPath} must be an integer from 1 to ${MAX_FINALIZATION_TURNS}.`);
+		} else if (error.keyword === "additionalProperties") {
+			for (const property of error.params.additionalProperties as string[]) {
+				errors.push(error.instancePath.endsWith("/env") ? `${errorPath}.${property} must be a string.` : `${errorPath}.${property} is not supported.`);
+			}
+		} else if (error.keyword === "type") {
+			const expected = String(error.params.type);
+			const suffix = error.instancePath.match(/^\/stopRules\/\d+$/) ? "a non-empty string" : expected === "array" || expected === "object" ? `an ${expected}` : `a ${expected}`;
+			errors.push(`${errorPath} must be ${suffix}.`);
 		} else {
-			for (const [index, rule] of value.stopRules.entries()) {
-				if (typeof rule !== "string" || !rule.trim()) errors.push(`${pathLabel}.stopRules[${index}] must be a non-empty string.`);
-			}
+			errors.push(`${errorPath} ${error.message}.`);
 		}
 	}
 
-	if (value.maxFinalizationTurns !== undefined) {
-		if (!Number.isInteger(value.maxFinalizationTurns) || Number(value.maxFinalizationTurns) < 1 || Number(value.maxFinalizationTurns) > MAX_FINALIZATION_TURNS) {
-			errors.push(`${pathLabel}.maxFinalizationTurns must be an integer from 1 to ${MAX_FINALIZATION_TURNS}.`);
+	for (const [index, criterion] of Array.isArray(value.criteria) ? value.criteria.entries() : []) {
+		if (typeof criterion === "string" && !criterion.trim()) errors.push(`${pathLabel}.criteria[${index}] must not be empty.`);
+		if (criterion && typeof criterion === "object" && !Array.isArray(criterion)) {
+			const item = criterion as Record<string, unknown>;
+			if (typeof item.id === "string" && !item.id.trim()) errors.push(`${pathLabel}.criteria[${index}].id is required.`);
+			if (typeof item.must === "string" && !item.must.trim()) errors.push(`${pathLabel}.criteria[${index}].must is required.`);
 		}
 	}
+	for (const [index, command] of Array.isArray(value.verify) ? value.verify.entries() : []) {
+		if (!command || typeof command !== "object" || Array.isArray(command)) continue;
+		const item = command as Record<string, unknown>;
+		if (typeof item.id === "string" && !item.id.trim()) errors.push(`${pathLabel}.verify[${index}].id is required.`);
+		if (typeof item.command === "string" && !item.command.trim()) errors.push(`${pathLabel}.verify[${index}].command is required.`);
+	}
+	for (const [index, rule] of Array.isArray(value.stopRules) ? value.stopRules.entries() : []) {
+		if (typeof rule === "string" && !rule.trim()) errors.push(`${pathLabel}.stopRules[${index}] must be a non-empty string.`);
+	}
 
-	const hasContract = hasArrayItems(value.criteria)
-		|| hasArrayItems(value.evidence)
-		|| hasArrayItems(value.verify)
-		|| hasArrayItems(value.stopRules);
-	if (!hasContract) {
+	if (!hasArrayItems(value.criteria) && !hasArrayItems(value.evidence) && !hasArrayItems(value.verify) && !hasArrayItems(value.stopRules)) {
 		errors.push(`${pathLabel} must include at least one of criteria, evidence, verify, or stopRules.`);
 	}
-
-	return errors;
+	return [...new Set(errors)];
 }
 
 function normalizeCriteria(criteria: AcceptanceConfig["criteria"], evidence: AcceptanceEvidenceKind[]): ResolvedAcceptanceGate[] {
@@ -196,15 +157,7 @@ function deriveAcceptanceLevel(config: AcceptanceConfig): AcceptanceProvenanceLe
 	return "checked";
 }
 
-export function resolveEffectiveAcceptance(input: {
-	explicit?: AcceptanceInput;
-	agentName: string;
-	task?: string;
-	mode?: SubagentRunMode;
-	async?: boolean;
-	dynamic?: boolean;
-	dynamicGroup?: boolean;
-}): ResolvedAcceptanceConfig {
+export function resolveEffectiveAcceptance(input: { explicit?: AcceptanceInput }): ResolvedAcceptanceConfig {
 	if (input.explicit === undefined) {
 		return {
 			level: "none",

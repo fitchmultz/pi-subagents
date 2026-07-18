@@ -15,6 +15,7 @@ import {
 	parseAcceptanceReport,
 	resolveEffectiveAcceptance,
 	shouldRunAcceptanceFinalization,
+	stripAcceptanceReport,
 	validateAcceptanceInput,
 } from "../../src/runs/shared/acceptance.ts";
 
@@ -49,7 +50,7 @@ async function withTempRepo<T>(fn: (cwd: string) => Promise<T>): Promise<T> {
 
 describe("acceptance gates", () => {
 	it("omitted acceptance resolves to no gates and no prompt", () => {
-		const resolved = resolveEffectiveAcceptance({ agentName: "worker", task: "Implement the fix", mode: "single" });
+		const resolved = resolveEffectiveAcceptance({});
 
 		assert.equal(resolved.level, "none");
 		assert.equal(resolved.explicit, false);
@@ -59,8 +60,6 @@ describe("acceptance gates", () => {
 
 	it("explicit criteria derive checked acceptance and a required finalization loop", () => {
 		const resolved = resolveEffectiveAcceptance({
-			agentName: "worker",
-			task: "Implement a fix",
 			explicit: {
 				criteria: ["Patch the bug"],
 				evidence: ["changed-files", "tests-added", "commands-run", "residual-risks"],
@@ -76,7 +75,6 @@ describe("acceptance gates", () => {
 
 	it("maps every resolved acceptance input field for resume inheritance", () => {
 		const resolved = resolveEffectiveAcceptance({
-			agentName: "worker",
 			explicit: {
 				criteria: [{ id: "criterion-custom", must: "Patch the bug", evidence: ["changed-files"], severity: "recommended" }],
 				evidence: ["commands-run"],
@@ -93,13 +91,11 @@ describe("acceptance gates", () => {
 			stopRules: resolved.stopRules,
 			maxFinalizationTurns: 4,
 		});
-		assert.equal(acceptanceInputFromResolved(resolveEffectiveAcceptance({ agentName: "worker" })), undefined);
+		assert.equal(acceptanceInputFromResolved(resolveEffectiveAcceptance({})), undefined);
 	});
 
 	it("formats child and finalization prompt sections without public levels", () => {
 		const resolved = resolveEffectiveAcceptance({
-			agentName: "worker",
-			task: "Implement a fix",
 			explicit: { criteria: ["Patch the bug"], evidence: ["diff-summary", "changed-files"], stopRules: ["Do not stop after analysis"] },
 		});
 		const prompt = formatAcceptancePrompt(resolved);
@@ -152,7 +148,7 @@ describe("acceptance gates", () => {
 			"acceptance.review is not supported; launch a separate parent-controlled reviewer after the worker completes.",
 		]);
 		assert.throws(
-			() => resolveEffectiveAcceptance({ agentName: "worker", task: "Implement a risky fix", explicit: review }),
+			() => resolveEffectiveAcceptance({ explicit: review }),
 			/acceptance\.review is not supported/,
 		);
 	});
@@ -177,6 +173,11 @@ describe("acceptance gates", () => {
 		const malformedCommands = parseAcceptanceReport("```acceptance-report\n{\"commandsRun\":[{}]}\n```");
 		assert.equal(malformedCommands.report, undefined);
 		assert.match(malformedCommands.error ?? "", /commandsRun must be an array/);
+
+		const legacyMarker = `done\nACCEPTANCE_REPORT: ${JSON.stringify({ changedFiles: ["src/file.ts"] })}`;
+		assert.equal(parseAcceptanceReport(legacyMarker).report, undefined);
+		assert.match(parseAcceptanceReport(legacyMarker).error ?? "", /Structured acceptance report not found/);
+		assert.equal(stripAcceptanceReport(legacyMarker), legacyMarker);
 	});
 
 	it("accepts evidence-only acceptance reports", async () => {
@@ -192,8 +193,6 @@ describe("acceptance gates", () => {
 		assert.deepEqual(parsed.report.reviewFindings, [{ severity: "major", summary: "raw path leaked", evidence: "src/file.ts:12" }]);
 
 		const acceptance = resolveEffectiveAcceptance({
-			agentName: "reviewer",
-			task: "Review the diff",
 			explicit: { criteria: ["Review findings are reported"], evidence: ["review-findings", "commands-run", "residual-risks"] },
 		});
 		const ledger = await evaluateAcceptance({ acceptance, output: report({ reviewFindings: [{ severity: "major", summary: "raw path leaked" }] }), cwd });
@@ -214,8 +213,6 @@ describe("acceptance gates", () => {
 
 	it("checked acceptance rejects missing required evidence", async () => withTempRepo(async (cwd) => {
 		const acceptance = resolveEffectiveAcceptance({
-			agentName: "worker",
-			task: "Implement a fix",
 			explicit: { criteria: ["Patch the bug"], evidence: ["changed-files", "tests-added", "commands-run", "residual-risks"] },
 		});
 		const ledger = await evaluateAcceptance({
@@ -230,8 +227,6 @@ describe("acceptance gates", () => {
 
 	it("requires diff-summary evidence in acceptance-report.diffSummary", async () => withTempRepo(async (cwd) => {
 		const acceptance = resolveEffectiveAcceptance({
-			agentName: "worker",
-			task: "Implement a fix",
 			explicit: { criteria: ["Patch the bug"], evidence: ["diff-summary"] },
 		});
 		const markdownOnly = await evaluateAcceptance({
@@ -252,8 +247,6 @@ describe("acceptance gates", () => {
 
 	it("checked acceptance rejects not-satisfied required criteria", async () => withTempRepo(async (cwd) => {
 		const acceptance = resolveEffectiveAcceptance({
-			agentName: "worker",
-			task: "Implement a fix",
 			explicit: { criteria: [{ id: "regression", must: "Regression is covered" }] },
 		});
 		const ledger = await evaluateAcceptance({
@@ -268,8 +261,6 @@ describe("acceptance gates", () => {
 
 	it("verify commands derive verified status and stay separate from child command claims", async () => withTempRepo(async (cwd) => {
 		const passing = resolveEffectiveAcceptance({
-			agentName: "worker",
-			task: "Implement a fix",
 			explicit: { criteria: ["Patch bug"], verify: [{ id: "pass", command: "node -e \"process.exit(0)\"", timeoutMs: 30_000 }] },
 		});
 		const passLedger = await evaluateAcceptance({ acceptance: passing, output: report(), cwd });
@@ -277,8 +268,6 @@ describe("acceptance gates", () => {
 		assert.equal(passLedger.verifyRuns[0]?.status, "passed");
 
 		const failing = resolveEffectiveAcceptance({
-			agentName: "worker",
-			task: "Implement a fix",
 			explicit: { criteria: ["Patch bug"], verify: [{ id: "fail", command: "node -e \"process.exit(7)\"", timeoutMs: 30_000 }] },
 		});
 		const failLedger = await evaluateAcceptance({ acceptance: failing, output: report(), cwd });
@@ -289,8 +278,6 @@ describe("acceptance gates", () => {
 
 	it("self-review finalization does not mark a run verified by itself", async () => withTempRepo(async (cwd) => {
 		const acceptance = resolveEffectiveAcceptance({
-			agentName: "worker",
-			task: "Implement a fix",
 			explicit: { criteria: ["Patch bug"] },
 		});
 		const initial = await evaluateAcceptance({ acceptance, output: report({ criteriaSatisfied: [{ id: "criterion-1", status: "not-satisfied", evidence: "missing" }] }), cwd });
@@ -307,8 +294,6 @@ describe("acceptance gates", () => {
 
 	it("exhausted self-review keeps the full governing contract on the attached ledger", async () => withTempRepo(async (cwd) => {
 		const full = resolveEffectiveAcceptance({
-			agentName: "worker",
-			task: "Implement a fix",
 			explicit: { criteria: ["Patch bug"], verify: [{ id: "unit-verify", command: "node -e \"process.exit(0)\"", timeoutMs: 30_000 }], maxFinalizationTurns: 1 },
 		});
 		const selfReview = acceptanceSelfReviewConfig(full);

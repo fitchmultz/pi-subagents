@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Changed
+- Acceptance reports now require fenced `acceptance-report` JSON; the undocumented unfenced `ACCEPTANCE_REPORT:` compatibility marker is no longer parsed or stripped.
+- Removed unused exported type fields from `ControlEvent`, `AcceptanceLedger`, and `SubagentLiveIntercomHealth`.
 - Added additive `managementControl` details to status and control responses with normalized lifecycle state, supported capabilities, exact next-action targets, and explicit revival mapping.
 - Updated the local Pi development baseline and compatibility audit for Pi 0.80.9; subagent runs use Pi extension contexts rather than the removed SDK `authStorage`/`modelRegistry` session options.
 - Added Pi's opt-in `max` thinking level to model filtering and the clarify selector while keeping `xhigh` and `max` distinct.

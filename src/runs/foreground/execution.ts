@@ -1219,15 +1219,7 @@ export async function runSync(
 	};
 
 	const shareEnabled = effectiveOptions.share === true;
-	const effectiveAcceptance = resolveEffectiveAcceptance({
-		explicit: options.acceptance,
-		agentName,
-		task,
-		mode: options.acceptanceContext?.mode ?? "single",
-		async: options.acceptanceContext?.async,
-		dynamic: options.acceptanceContext?.dynamic,
-		dynamicGroup: options.acceptanceContext?.dynamicGroup,
-	});
+	const effectiveAcceptance = resolveEffectiveAcceptance({ explicit: options.acceptance });
 	if (shouldRunAcceptanceFinalization(effectiveAcceptance) && !options.sessionFile) {
 		const sessionDir = options.sessionDir ?? mkdtempSync(path.join(os.tmpdir(), "pi-subagent-finalization-"));
 		options.sessionFile = path.join(sessionDir, "session.jsonl");

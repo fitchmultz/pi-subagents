@@ -123,8 +123,6 @@ export interface ControlEvent {
 	agent: string;
 	index?: number;
 	runId: string;
-	nestedRunId?: string;
-	nestingPath?: NestedRunAddress["path"];
 	message: string;
 	reason?: "idle" | "completion_guard" | "tool_failures";
 	turns?: number;
@@ -378,11 +376,6 @@ export interface AcceptanceLedger {
 	runtimeChecks: AcceptanceRuntimeCheck[];
 	verifyRuns: AcceptanceVerifyResult[];
 	finalization?: AcceptanceFinalizationLedger;
-	parentDecision?: {
-		status: "accepted" | "rejected";
-		at: string;
-		reason?: string;
-	};
 }
 
 export interface ResourceLimitExceeded {
@@ -867,14 +860,11 @@ export const SUBAGENT_INTERCOM_IDENTITY_RESPONSE_EVENT = "subagent:intercom-iden
 export interface SubagentLiveIntercomHealth {
 	target: string;
 	status: "registered" | "none" | "missing" | "ambiguous" | "prefix_too_short";
-	resolvedTarget?: string;
 	sessionId?: string;
 	sessionName?: string;
 	sessionStatus?: string;
 	acceptsAsks?: boolean;
 	pendingAsks?: number;
-	lastSeen?: number;
-	lastIntercomActivity?: number;
 }
 
 // ============================================================================
@@ -927,12 +917,6 @@ export interface RunSyncOptions {
 	projectTrust?: ChildProjectTrustPolicy;
 	projectTrusted?: boolean;
 	acceptance?: AcceptanceInput;
-	acceptanceContext?: {
-		mode?: SubagentRunMode;
-		async?: boolean;
-		dynamic?: boolean;
-		dynamicGroup?: boolean;
-	};
 }
 
 export type IntercomBridgeMode = "off" | "fork-only" | "always";

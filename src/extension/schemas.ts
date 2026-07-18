@@ -62,36 +62,36 @@ const AcceptanceEvidenceKind = StringEnum([
 ] as const);
 
 const AcceptanceGateSchema = Type.Object({
-	id: Type.String(),
-	must: Type.String(),
+	id: Type.String({ minLength: 1 }),
+	must: Type.String({ minLength: 1 }),
 	evidence: Type.Optional(Type.Array(AcceptanceEvidenceKind)),
 	severity: Type.Optional(StringEnum(["required", "recommended"] as const)),
 }, { additionalProperties: false });
 
 const AcceptanceVerifyCommandSchema = Type.Object({
-	id: Type.String(),
-	command: Type.String(),
+	id: Type.String({ minLength: 1 }),
+	command: Type.String({ minLength: 1 }),
 	timeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
 	cwd: Type.Optional(Type.String()),
 	env: Type.Optional(Type.Unsafe({ type: "object", additionalProperties: { type: "string" } })),
 	allowFailure: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 
-const AcceptanceOverride = Type.Unsafe({
+export const AcceptanceOverride = Type.Unsafe({
 	type: "object",
 	properties: {
 		criteria: {
 			type: "array",
 			items: {
 				anyOf: [
-					{ type: "string" },
+					{ type: "string", minLength: 1 },
 					AcceptanceGateSchema,
 				],
 			},
 		},
 		evidence: { type: "array", items: AcceptanceEvidenceKind },
 		verify: { type: "array", items: AcceptanceVerifyCommandSchema },
-		stopRules: { type: "array", items: { type: "string" } },
+		stopRules: { type: "array", items: { type: "string", minLength: 1 } },
 		maxFinalizationTurns: { type: "integer", minimum: 1, maximum: 10 },
 	},
 	additionalProperties: false,
