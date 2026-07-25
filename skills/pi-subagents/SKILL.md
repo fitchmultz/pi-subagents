@@ -5,15 +5,10 @@ description: "Pi subagent orchestration: delegate to builtin/custom agents; run 
 
 # Pi Subagents
 
-Parent-orchestrator skill for launching focused child Pi sessions. Do not inject or follow this skill inside ordinary spawned child subagents.
-
-## Trigger boundary
-
-Use this for runtime Pi subagent orchestration, not for maintaining Agent Skill files. If the user asks to create, harden, validate, or optimize `SKILL.md`, `skills/...`, evals, scripts, or trigger descriptions, use `agent-skill-engineering` instead.
+Parent-orchestrator skill for launching focused child Pi sessions. Parent owns orchestration, decisions, review synthesis, and final user-facing status. Do not inject or follow this skill inside ordinary spawned child subagents. For Agent Skill file maintenance (`SKILL.md`, evals, trigger descriptions), use `agent-skill-engineering` instead.
 
 ## Hard constraints
 
-- The parent session owns orchestration, decisions, review synthesis, and final user-facing status.
 - Before executing subagents in a session, call `subagent({ action: "list" })` unless the executable agent/chain is already known; treat its descriptions as the current role/model policy.
 - Treat child output as evidence to inspect, not automatic truth.
 - Keep writes single-threaded unless writers are isolated with `worktree: true`.
@@ -25,80 +20,6 @@ Use this for runtime Pi subagent orchestration, not for maintaining Agent Skill 
 - Use `acceptance` for goal-style requests and plan/spec/broad-fix worker handoffs; put criteria, evidence, verify commands, stop rules, and loop cap there instead of burying them only in task prose. Revived runs inherit that contract unless the resume call explicitly overrides `acceptance`.
 - Independent review stays parent-controlled: never put `review` inside `acceptance`; launch reviewer subagents separately after the worker completes.
 - Do not set `acceptance` on static parallel groups or dynamic fanout aggregate groups; set it on each child task/template that owns a session.
-
-## Quick tool patterns
-
-### List / diagnose
-
-```ts
-subagent({ action: "list" })
-subagent({ action: "doctor" })
-```
-
-### Single agent
-
-```ts
-subagent({
-  agent: "oracle",
-  task: "Review my current direction, challenge assumptions, and propose the safest next move."
-})
-```
-
-### Parallel review
-
-```ts
-subagent({
-  context: "fresh",
-  tasks: [
-    { agent: "reviewer", task: "Review the current diff for correctness. Do not modify project/source files." },
-    { agent: "reviewer", task: "Review the current diff for test and validation gaps. Do not modify project/source files." },
-    { agent: "reviewer", task: "Review the current diff for unnecessary complexity. Do not modify project/source files." }
-  ],
-  concurrency: 3
-})
-```
-
-### Chain
-
-```ts
-subagent({
-  chain: [
-    { agent: "scout", task: "Map the relevant code and risks." },
-    { agent: "planner", task: "Create an implementation plan from: {previous}" },
-    { agent: "worker", task: "Implement the approved plan from: {previous}" }
-  ]
-})
-```
-
-### Async/background
-
-```ts
-subagent({ agent: "scout", task: "Map the auth flow.", async: true })
-subagent({ action: "status", id: "run-id" })
-subagent({ action: "status", id: "latest" }) // latest remembered foreground run in this session
-subagent({ action: "extend", id: "foreground-run-id", extendMs: 300000 })
-subagent({ action: "resume", id: "run-id", message: "Continue with this clarification..." })
-subagent({ action: "nudge", id: "run-id", message: "What are you blocked on?" })
-```
-
-### Worker handoff with acceptance
-
-```ts
-subagent({
-  agent: "worker",
-  task: "Implement the approved plan at docs/plan.md. Stop for unapproved product decisions.",
-  acceptance: {
-    criteria: [
-      "Implementation follows the approved plan",
-      "Focused validation for changed behavior passes",
-      "Residual risks or skipped checks are reported"
-    ],
-    evidence: ["changed-files", "commands-run", "validation-output", "residual-risks"],
-    stopRules: ["Do not expand scope beyond the approved plan"],
-    maxFinalizationTurns: 3
-  }
-})
-```
 
 ## Agent selection
 
@@ -115,18 +36,6 @@ Use the effective agents from `subagent({ action: "list" })`; user/project profi
 
 Keep configured defaults for routine runs. Pass `model`/`thinking` only when the listed agent description, user request, or clear task risk justifies it; put the override in the subagent call, not only in prose. Pass explicit `context: "fresh"` or `"fork"` only when one policy should override every child in the call. Fork is rejected for effective `anthropic/` primary or fallback models, and explicit overrides cannot bypass that restriction.
 
-## Prompt-template workflows
-
-When a request matches a packaged workflow, apply the same pattern directly with `subagent(...)`:
-
-- `/parallel-review`: fresh reviewers with distinct angles, then parent synthesis.
-- `/review-loop`: worker → fresh reviewers → synthesized fix worker until clean or capped.
-- `/parallel-research`: combine local scout/context with external researcher evidence.
-- `/parallel-context-build`: parallel context-builder passes, then parent synthesis.
-- `/parallel-handoff-plan`: external research plus local context into an implementation-ready handoff.
-- `/gather-context-and-clarify`: scout/research first, then ask only unresolved material questions.
-- `/parallel-cleanup`: read-only cleanup reviewers for deslop/verbosity/simplicity.
-
 ## Intercom bridge
 
 `pi-subagents` works without `pi-intercom`. When the bridge is active, children may get `contact_supervisor`.
@@ -137,11 +46,9 @@ When a request matches a packaged workflow, apply the same pattern directly with
 - Do not use intercom/contact_supervisor for routine completion handoffs; return normal child results.
 - If bridge messages do not appear, run `subagent({ action: "doctor" })`.
 
-## Reference docs
+## Detailed recipes
 
-Load these only when needed:
-
-- `references/full-orchestration-guide.md` — full pre-split guide with all detailed recipes, settings, examples, and edge cases.
+Load `references/full-orchestration-guide.md` only when you need concrete `subagent(...)` call shapes, packaged prompt-template workflows (`/parallel-review`, `/review-loop`, `/parallel-research`, `/parallel-context-build`, `/parallel-handoff-plan`, `/gather-context-and-clarify`, `/parallel-cleanup`), staged fix orchestration, settings, or edge cases. Do not reload it for every routine launch.
 
 ## Stop rules
 
