@@ -164,6 +164,26 @@ function withPackagedIntercom<T>(fn: (paths: { agentDir: string; cwd: string; gl
 	}
 }
 
+function withGitIntercom<T>(source: string, fn: (paths: { agentDir: string; cwd: string; packageDir: string; legacyDir: string; configPath: string }) => T): T {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-git-package-test-"));
+	const agentDir = path.join(tempDir, "agent");
+	const cwd = path.join(tempDir, "workspace");
+	const packageDir = path.join(agentDir, "git", "github.com", "fitchmultz", "pi-intercom");
+	const legacyDir = path.join(agentDir, "extensions", "pi-intercom");
+	const configPath = path.join(agentDir, "intercom", "config.json");
+	fs.mkdirSync(packageDir, { recursive: true });
+	fs.mkdirSync(path.dirname(configPath), { recursive: true });
+	fs.mkdirSync(cwd, { recursive: true });
+	fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: [source] }, null, 2));
+	fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "pi-intercom", pi: { extensions: ["./index.ts"] } }, null, 2));
+	fs.writeFileSync(configPath, JSON.stringify({ enabled: true }));
+	try {
+		return fn({ agentDir, cwd, packageDir, legacyDir, configPath });
+	} finally {
+		fs.rmSync(tempDir, { recursive: true, force: true });
+	}
+}
+
 function withLocalPathIntercom<T>(fn: (paths: { agentDir: string; cwd: string; packageDir: string; legacyDir: string; configPath: string }) => T): T {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-local-package-test-"));
 	const agentDir = path.join(tempDir, "agent");
@@ -329,6 +349,56 @@ describe("resolveIntercomBridge", () => {
 			assert.equal(bridge.extensionDir, path.resolve(packageDir));
 		});
 	});
+
+	for (const source of [
+		"git:github.com/fitchmultz/pi-intercom",
+		"git:git@github.com:fitchmultz/pi-intercom@main",
+		"https://github.com/fitchmultz/pi-intercom@main",
+		"https://github.com/fitchmultz/pi-intercom/",
+		"https://github.com/fitchmultz/pi-intercom.git/",
+		"ssh://git@github.com/fitchmultz/pi-intercom@main",
+		"git://github.com/fitchmultz/pi-intercom",
+		"git:github:fitchmultz/pi-intercom@main",
+		"git:fitchmultz/pi-intercom",
+	]) {
+		it(`activates from git package source ${source}`, () => {
+			withGitIntercom(source, ({ agentDir, cwd, packageDir, legacyDir, configPath }) => {
+				const bridge = resolveIntercomBridge({
+					config: { mode: "always" },
+					context: "fresh",
+					orchestratorTarget: "main",
+					agentDir,
+					cwd,
+					extensionDir: legacyDir,
+					configPath,
+					globalNpmRoot: null,
+				});
+				assert.equal(bridge.active, true);
+				assert.equal(bridge.extensionDir, path.resolve(packageDir));
+			});
+		});
+	}
+
+	for (const source of [
+		"git:attacker.example/org/../../github.com/fitchmultz/pi-intercom",
+		"git:attacker.example/org/%2e%2e/%2e%2e/github.com/fitchmultz/pi-intercom",
+	]) {
+		it(`rejects unsafe git package source ${source}`, () => {
+			withGitIntercom(source, ({ agentDir, cwd, legacyDir, configPath }) => {
+				const bridge = resolveIntercomBridge({
+					config: { mode: "always" },
+					context: "fresh",
+					orchestratorTarget: "main",
+					agentDir,
+					cwd,
+					extensionDir: legacyDir,
+					configPath,
+					globalNpmRoot: null,
+				});
+				assert.equal(bridge.active, false);
+			});
+		});
+	}
 
 	it("activates from a local-path pi-intercom package", () => {
 		withLocalPathIntercom(({ agentDir, cwd, packageDir, legacyDir, configPath }) => {

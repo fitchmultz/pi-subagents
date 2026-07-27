@@ -210,6 +210,56 @@ function expandTilde(filePath: string): string {
 	return filePath.startsWith("~/") ? path.join(os.homedir(), filePath.slice(2)) : filePath;
 }
 
+function resolveGitPackageSource(source: string, settingsDir: string): string | undefined {
+	const trimmed = source.trim();
+	const spec = trimmed.startsWith("git:") && !trimmed.startsWith("git://") ? trimmed.slice(4).trim() : trimmed;
+	let host: string;
+	let repoPath: string;
+	const hosted = spec.match(/^(github(?:\.com)?|gitlab|bitbucket|gist):(.+)$/);
+	const scp = spec.match(/^git@([^:]+):(.+)$/);
+	if (hosted) {
+		host = { github: "github.com", "github.com": "github.com", gitlab: "gitlab.com", bitbucket: "bitbucket.org", gist: "gist.github.com" }[hosted[1]!]!;
+		repoPath = hosted[2]!;
+	} else if (scp) {
+		host = scp[1]!;
+		repoPath = scp[2]!;
+	} else if (/^(https?|ssh|git):\/\//i.test(spec)) {
+		try {
+			const parsed = new URL(spec);
+			host = parsed.hostname;
+			repoPath = parsed.pathname.replace(/^\/+/, "");
+		} catch {
+			return undefined;
+		}
+	} else {
+		const slash = spec.indexOf("/");
+		if (slash < 1) return undefined;
+		const first = spec.slice(0, slash);
+		if (first.includes(".") || first === "localhost") {
+			host = first;
+			repoPath = spec.slice(slash + 1);
+		} else {
+			host = "github.com";
+			repoPath = spec;
+		}
+	}
+	repoPath = repoPath.split(/[@#]/, 1)[0]!.replace(/\/+$/, "").replace(/\.git$/, "");
+	let decodedHost: string;
+	let decodedRepoPath: string;
+	try {
+		decodedHost = decodeURIComponent(host);
+		decodedRepoPath = decodeURIComponent(repoPath);
+	} catch {
+		return undefined;
+	}
+	if (host.includes("/") || decodedHost.includes("/") || host.includes("\\") || decodedHost.includes("\\")
+		|| repoPath.includes("\\") || decodedRepoPath.includes("\\")
+		|| !isSafePackagePath(host) || !isSafePackagePath(decodedHost)
+		|| !isSafePackagePath(repoPath) || !isSafePackagePath(decodedRepoPath)
+		|| repoPath.split("/").length < 2) return undefined;
+	return path.resolve(settingsDir, "git", host, repoPath);
+}
+
 function resolveLocalPackageSource(source: string, settingsDir: string): string | undefined {
 	if (source.startsWith("npm:") || source.startsWith("git:") || /^[a-z][a-z0-9+.-]*:\/\//i.test(source)) return undefined;
 	const expanded = expandTilde(source);
@@ -269,6 +319,11 @@ function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agent
 					];
 				const packageRoot = candidates.find(packageHasPiExtension);
 				if (packageRoot) return path.resolve(packageRoot);
+				continue;
+			}
+			if (source.startsWith("git:") || /^[a-z][a-z0-9+.-]*:\/\//i.test(source)) {
+				const gitPackageRoot = resolveGitPackageSource(source, configDir);
+				if (gitPackageRoot && packageRootLooksLikePiIntercom(gitPackageRoot) && packageHasPiExtension(gitPackageRoot)) return gitPackageRoot;
 				continue;
 			}
 			const localPackageRoot = resolveLocalPackageSource(source, configDir);
