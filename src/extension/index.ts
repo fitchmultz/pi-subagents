@@ -395,6 +395,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Delegate bounded work to configured subagents, chains, or parallel reviewers while the parent session stays in control.",
 		promptGuidelines: [
 			"Use subagent for materially parallelizable scouting, review, or implementation work where another focused agent adds value.",
+			"Launch a small bounded fanout of independent async agents as separate single-agent runs so each completion wakes the parent, with at most one writer. Use one async tasks call when all child results are required together, when shared concurrency/task limits are needed, or when multiple writers require worktree isolation; the parent receives one aggregate completion.",
 			"Before executing subagent runs, call subagent with { action: \"list\" } unless the requested executable agent or chain is already known from this conversation.",
 			"Keep the parent session responsible for final decisions, verification, and user-facing status; treat subagent output as evidence to review, not automatic truth.",
 			"Keep independent review as a separate parent-launched reviewer run after the worker; acceptance.review is unsupported.",
