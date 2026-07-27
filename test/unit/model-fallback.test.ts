@@ -65,6 +65,7 @@ describe("model fallback helpers", () => {
 
 	it("detects retryable provider/model failures", () => {
 		assert.equal(isRetryableModelFailure("rate limit exceeded for provider"), true);
+		assert.equal(isRetryableModelFailure("Codex error: The usage limit has been reached"), true);
 		assert.equal(isRetryableModelFailure("model unavailable"), true);
 		assert.equal(isRetryableModelFailure("authentication failed"), true);
 		assert.equal(isRetryableModelFailure("database is locked"), true);
@@ -77,6 +78,7 @@ describe("model fallback helpers", () => {
 		assert.equal(isRecoverableSameModelFailure("SQLITE_BUSY: database is locked", 1), true);
 		assert.equal(isRecoverableSameModelFailure(undefined, 143), true);
 		assert.equal(isRecoverableSameModelFailure("429 quota exceeded", 1), false);
+		assert.equal(isRecoverableSameModelFailure("Codex error: The usage limit has been reached", 1), false);
 		assert.equal(isRecoverableSameModelFailure("authentication failed", 1), false);
 	});
 

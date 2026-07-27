@@ -531,7 +531,7 @@ Important fields:
 | `allowSubagents` | Exposes the child-safe `subagent` tool without requiring a static `tools` allowlist. Still bounded by `maxSubagentDepth`. |
 | `extensions` | Omitted means normal extensions; empty means no extensions; comma-separated values allowlist specific extensions. |
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. |
-| `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. Foreground and async subagents first retry the same model once for recoverable transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, then fall back when appropriate. Ordinary task failures do not trigger retry or fallback. |
+| `fallbackModels` | Ordered backup models for provider/model failures such as quota, usage limit, auth, timeout, or unavailable model. Foreground and async subagents first retry the same model once for recoverable transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, then fall back when appropriate. Ordinary task failures do not trigger retry or fallback. |
 | `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present. |
 | `systemPromptMode` | `replace` by default; `append` keeps Pi’s base prompt. |
 | `inheritProjectContext` | Keeps or strips inherited project instruction blocks. |
