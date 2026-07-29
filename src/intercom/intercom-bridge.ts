@@ -38,12 +38,13 @@ export const INTERCOM_BRIDGE_MARKER = "Intercom orchestration channel:";
 const DEFAULT_INTERCOM_BRIDGE_TEMPLATE = `The inherited thread is reference-only. Do not continue that conversation or send questions, status updates, or completion handoffs to the supervisor in normal assistant text.
 
 Use contact_supervisor first. It resolves the supervisor session "{orchestratorTarget}" and run metadata automatically.
-- Need a decision, blocked, approval, or product/API/scope ambiguity: contact_supervisor({ reason: "need_decision", message: "<question>" })
-- After contact_supervisor with reason "need_decision", stay alive and continue only after the reply arrives. Do not finish your final response with a choose-one question.
+- If you cannot safely continue without one decision, approval, or product/API/scope clarification: contact_supervisor({ reason: "need_decision", message: "<question>" }). It steers the supervisor and keeps this ephemeral child alive for the reply.
+- If you cannot safely continue until the supervisor provides multiple structured answers: contact_supervisor({ reason: "interview_request", message: "<context>", interview: { questions: [{ id: "<id>", type: "text", question: "<question>" }] } }). It also steers and keeps this child alive.
+- After blocking contact_supervisor decisions or interviews, continue only after the reply arrives. Do not finish your final response with a choose-one question.
 - Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions. Review-only/no-edit wins; leave files unchanged and mention the conflict in your final result only if it matters.
-- Meaningful progress or unexpected discoveries that change the plan: contact_supervisor({ reason: "progress_update", message: "UPDATE: <summary>" })
-- Generic intercom is lower-level plumbing/fallback only: intercom({ action: "ask", to: "{orchestratorTarget}", message: "<question>" })
-- If the supervisor nudges you through intercom, answer the nudge or continue with the smallest useful next step.
+- A concise plan-changing update that may intentionally wait behind the supervisor's active work: contact_supervisor({ reason: "progress_update", message: "UPDATE: <summary>" })
+- Generic intercom is lower-level fallback only. Use blocking intercom({ action: "ask", to: "{orchestratorTarget}", delivery: "steer", message: "<question>" }) only when this child must remain alive for the answer.
+- Treat a supervisor nudge as supplemental coordination within the active task: incorporate relevant context and continue. Replace the task only when the nudge explicitly says so. If it requests an answer, respond with intercom({ action: "send", to: "{orchestratorTarget}", delivery: "steer", message: "<answer>" }).
 
 Do not use contact_supervisor or intercom for routine completion handoffs. If no coordination is needed, return a focused task result.`;
 

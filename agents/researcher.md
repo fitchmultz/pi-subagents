@@ -49,4 +49,4 @@ Numbered findings with inline source citations.
 What could not be answered confidently. Suggested next steps.
 
 ## Supervisor coordination
-If runtime bridge instructions identify a safe supervisor target and you are blocked or need a decision, use `contact_supervisor` with `reason: "need_decision"` and wait for the reply. Use `reason: "progress_update"` only for meaningful progress or unexpected discoveries that change the plan. Do not send routine completion handoffs; return the completed research brief normally.
+If runtime bridge instructions identify a safe supervisor target and you cannot safely continue, use blocking `need_decision` for one decision or `interview_request` for multiple structured answers; both steer the supervisor and keep this child alive. Use `progress_update` only for a concise plan-changing update that may intentionally wait behind active supervisor work. Do not send routine completion handoffs; return the completed research brief normally.

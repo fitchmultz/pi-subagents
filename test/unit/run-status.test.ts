@@ -543,8 +543,8 @@ describe("async run status inspection", () => {
 			const text = textContent(result);
 			assert.match(text, /Step 1: scout running/);
 			assert.match(text, /Intercom: unknown \(subagent-scout-run-live-1\)/);
-			assert.match(text, /Nudge: subagent\(\{ action: "nudge", id: "run-live", index: 0/);
-			assert.match(text, /Ask: intercom\(\{ action: "ask", to: "subagent-scout-run-live-1", delivery: "steer"/);
+			assert.match(text, /Nudge \(preferred live coordination\): subagent\(\{ action: "nudge", id: "run-live", index: 0/);
+			assert.match(text, /Ask \(blocking wait only; parent must remain alive\): intercom\(\{ action: "ask", to: "subagent-scout-run-live-1", delivery: "steer"/);
 		} finally {
 			rmrf(root);
 		}

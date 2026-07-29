@@ -403,7 +403,7 @@ subagent({
 })
 ```
 
-If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. Prefer `subagent({ action: "nudge", id: "...", message: "..." })` for a non-blocking live child nudge. Use the status-shown `intercom({ action: "ask", to: "...", delivery: "steer" })` when the parent must wait for a reply. Do not invent a target or ask the child to self-report when no bridge exists.
+If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. Prefer `subagent({ action: "nudge", id: "...", message: "..." })` for live guidance, answers, corrections, or blockers; it is a non-blocking steer that supplements the active child task unless it explicitly replaces it. Use the status-shown intercom ask only when the parent must remain alive waiting for a reply. Do not invent a target or ask the child to self-report when no bridge exists.
 
 ## Clarify TUI
 
@@ -477,21 +477,19 @@ Use `oracle` as a smart-friend escalation when the parent needs help with trajec
 
 Most agents should not call generic `intercom` directly unless bridge instructions provide a target and `contact_supervisor` is unavailable. Do not invent a target. Prefer the tool from the injected bridge instructions.
 
-Use `contact_supervisor` with `reason: "need_decision"` when:
-- a subagent is blocked on a decision
-- a child needs clarification instead of guessing
-- an approval, product, API, or scope choice is required before continuing safely
+Use blocking `contact_supervisor` only when an ephemeral child cannot safely continue and must remain alive for the reply:
+- `reason: "need_decision"` for one decision, approval, or product/API/scope clarification
+- `reason: "interview_request"` when multiple structured answers are all required before safe progress
+
+Both reasons steer the supervisor at its next tool boundary.
 
 Do not use `contact_supervisor` just to resolve review-only/no-project-edit versus progress-writing or output-artifact instructions. The child must not modify project/source files, but returning findings through its normal response or configured output artifact is allowed unless the parent explicitly set `output: false`.
 
-Use `contact_supervisor` with `reason: "progress_update"` when:
-- a child is explicitly asked for progress
-- a meaningful discovery changes the plan
-- a long-running child needs to report a blocked/progress checkpoint without waiting for normal tool return flow
+Use `contact_supervisor` with `reason: "progress_update"` only for a concise plan-changing update that may intentionally wait behind active supervisor work. It is non-blocking and uses deferred, replace-mode delivery so newer updates can coalesce older undelivered ones.
 
 Message conventions:
-- `reason: "need_decision"` waits for the parent reply and returns it to the child.
-- `reason: "progress_update"` is non-blocking and should stay concise.
+- `reason: "need_decision"` and `reason: "interview_request"` steer, wait for the parent reply, and return it to the child.
+- `reason: "progress_update"` is intentionally deferred and should stay concise.
 - Child-side routine completion handoffs are not expected. With the intercom bridge active, parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested summaries under the parent child that launched them.
 
 If bridge instructions provide the child-facing tool, a child can ask:
@@ -499,7 +497,7 @@ If bridge instructions provide the child-facing tool, a child can ask:
 ```typescript
 contact_supervisor({
   reason: "need_decision",
-  message: "Should I optimize for readability or performance here?"
+  message: "The approved API contract does not specify whether this new response field may be public. Should I preserve the current response shape?"
 })
 ```
 

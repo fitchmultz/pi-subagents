@@ -399,7 +399,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			"Before executing subagent runs, call subagent with { action: \"list\" } unless the requested executable agent or chain is already known from this conversation.",
 			"Keep the parent session responsible for final decisions, verification, and user-facing status; treat subagent output as evidence to review, not automatic truth.",
 			"Keep independent review as a separate parent-launched reviewer run after the worker; acceptance.review is unsupported.",
-			"For live children that stall or need clarification, inspect status, then use action='nudge' or the shown intercom ask before interrupting or relaunching.",
+			"For live child guidance, answers, corrections, or blockers, inspect status and prefer action='nudge'; it sends a non-blocking steer that supplements the active task unless the message explicitly replaces it. Use the shown blocking intercom ask only when the parent must stay alive waiting for a reply.",
 			"Do not use subagent when a direct local tool call or small edit is cheaper than delegation.",
 		],
 		parameters: SubagentParams,

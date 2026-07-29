@@ -84,8 +84,8 @@ export function formatLiveIntercomActionLines(input: {
 	const indent = input.indent ?? "";
 	return [
 		`${indent}Intercom: ${healthText} (${input.target})`,
-		`${indent}Nudge: subagent({ action: "nudge", id: "${input.runId}"${indexPart}, message: "What are you blocked on?" })`,
-		`${indent}Ask: intercom({ action: "ask", to: "${input.target}", delivery: "steer", message: "What are you blocked on?" })`,
+		`${indent}Nudge (preferred live coordination): subagent({ action: "nudge", id: "${input.runId}"${indexPart}, message: "What are you blocked on?" })`,
+		`${indent}Ask (blocking wait only; parent must remain alive): intercom({ action: "ask", to: "${input.target}", delivery: "steer", message: "What are you blocked on?" })`,
 	];
 }
 

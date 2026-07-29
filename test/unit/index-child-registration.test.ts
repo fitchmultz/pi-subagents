@@ -51,6 +51,7 @@ describe("subagent extension child mode", () => {
 			const parentGuidelines = registeredTool.promptGuidelines ?? [];
 			if (!parentGuidelines.some((line) => line.includes("action: \"list\""))) throw new Error("missing list-before-execute guideline");
 			if (!parentGuidelines.some((line) => line.includes("parent session responsible"))) throw new Error("missing parent-owns-final-decision guideline");
+			if (!parentGuidelines.some((line) => line.includes("non-blocking steer") && line.includes("supplements the active task"))) throw new Error("missing steer-first nudge guideline");
 			const calls = [];
 			const ctx = {
 				cwd: process.cwd(),

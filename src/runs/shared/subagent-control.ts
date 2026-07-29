@@ -159,8 +159,10 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 		`Signal: ${event.message}`,
 		event.recentFailureSummary ? `Recent failures: ${event.recentFailureSummary}` : undefined,
 		"Hint: Inspect status first unless the run is clearly blocked.",
-		`Nudge: ${nudgeCommand}`,
-		childIntercomTarget ? `Ask: ${askCommand}` : "Ask: no child message route registered",
+		`Nudge (preferred live coordination): ${nudgeCommand}`,
+		childIntercomTarget
+			? `Ask (blocking wait only; parent must remain alive): ${askCommand}`
+			: "Ask (blocking wait only): no child message route registered",
 		`Status: subagent({ action: "status", id: "${runTarget}" })`,
 		`Interrupt: subagent({ action: "interrupt", id: "${runTarget}" })`,
 	].filter((line): line is string => Boolean(line)).join("\n");

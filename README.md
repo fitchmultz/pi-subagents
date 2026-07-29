@@ -297,13 +297,13 @@ Ask oracle to review this plan. If it sees a decision I need to make, have it as
 
 The child can use one dedicated coordination tool:
 
-- `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` for blocking decisions or clarification, and `reason: "progress_update"` for short non-blocking updates when a discovery changes the plan. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
+- `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` only when the ephemeral child cannot safely continue and must remain alive for one steered supervisor reply. Use `reason: "interview_request"` only when it cannot safely continue until it receives multiple structured answers. Use `reason: "progress_update"` for concise plan-changing updates with intentionally deferred/coalesced delivery that may wait behind active supervisor work. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
 
 Child-side routine completion handoffs are still not expected. With the intercom bridge active, parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested child summaries under the parent child that launched them.
 
 When a foreground child raises a blocking supervisor question, `pi-subagents` detaches that foreground run so the parent can answer immediately. The tool result includes the exact `intercom({ action: "pending" })` and `intercom({ action: "reply", to: "..." })` calls to use. After replying, inspect `subagent({ action: "status", id: "..." })` or wait for the normal result delivery.
 
-After 10 minutes of no observed child activity by default, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child. When `pi-intercom` is active and the child is registered, use `subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })` for a non-blocking steered nudge. Use the status-shown `intercom({ action: "ask", to: "...", delivery: "steer", message: "..." })` when you need to wait for a reply.
+After 10 minutes of no observed child activity by default, needs-attention notices can show up in the parent session with useful next actions, such as checking status, interrupting the run, or nudging the child. When `pi-intercom` is active and the child is registered, prefer `subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })` for live guidance, answers, corrections, or blockers. It sends a non-blocking steer that supplements the child's active task unless the message explicitly replaces it. Use the status-shown blocking intercom ask only when the parent must remain alive waiting for a reply.
 
 If messages do not show up, run:
 
@@ -926,7 +926,7 @@ subagent({ action: "doctor" })
 
 `resume` sends the follow-up directly when an async child is still reachable over intercom. After completion, it revives the child by starting a new async child from the stored child session file. Multi-child async runs and remembered foreground single, parallel, or chain runs can be revived by passing `index` to choose the child. Nested runs can be resumed by nested id when their live route or persisted nested session metadata is available. Timed-out or transient-error foreground children also use this revive path when their `.jsonl` session file was persisted. Revived children inherit the original explicit acceptance contract; an `acceptance` object supplied on the resume call overrides it. Revive starts a new child process from the old session context; it does not restart the same OS process, and it requires the chosen child to have a persisted `.jsonl` session file.
 
-`nudge` sends a short non-blocking steered intercom message to a live foreground or async child. It requires `pi-intercom` to be installed/enabled and the child session target to be registered. It does not wait for a reply; use the `Ask:` intercom command shown by `status` when a blocking answer is needed.
+`nudge` sends a short non-blocking steered intercom message to a live foreground or async child. Use it for guidance, answers, corrections, or blockers that may affect active work. The child treats it as supplemental coordination and continues its current task unless the message explicitly replaces it. It requires `pi-intercom` and a registered child target. Use the `Ask:` command shown by `status` only when the parent must remain alive waiting for a reply.
 
 ## Worktree isolation
 
@@ -1048,7 +1048,7 @@ Fields:
 
 Bridge activation also requires `pi-intercom` to be installed and enabled through `pi install npm:pi-intercom` or a legacy local extension checkout, a targetable current session name or fallback alias, and `pi-intercom` in any explicit agent `extensions` allowlist.
 
-The default injected guidance tells children to use `contact_supervisor` with `reason: "need_decision"` when blocked or needing a decision, `reason: "progress_update"` only for meaningful blocked/progress updates, generic `intercom` as fallback plumbing, and avoid routine completion handoffs.
+The default injected guidance tells children to use steered blocking `contact_supervisor` decisions or structured interviews only when the ephemeral child cannot safely continue and must remain alive for the answer, intentionally deferred/coalesced `progress_update` for concise plan-changing updates, and generic intercom only as fallback plumbing. Supervisor nudges supplement the active task unless they explicitly replace it; routine completion still returns through normal child results.
 
 ### `worktreeSetupHook`
 

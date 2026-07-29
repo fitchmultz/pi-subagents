@@ -507,7 +507,11 @@ describe("resolveIntercomBridge", () => {
 			assert.match(bridge.instruction, /normal assistant text/i);
 			assert.match(bridge.instruction, /contact_supervisor/);
 			assert.match(bridge.instruction, /need_decision/);
+			assert.match(bridge.instruction, /interview_request/);
 			assert.match(bridge.instruction, /progress_update/);
+			assert.match(bridge.instruction, /delivery: "steer"/);
+			assert.match(bridge.instruction, /supplemental coordination within the active task/i);
+			assert.match(bridge.instruction, /Replace the task only when the nudge explicitly says so/i);
 			assert.match(bridge.instruction, /focused task result/i);
 		} finally {
 			fs.rmSync(tempDir, { recursive: true, force: true });
