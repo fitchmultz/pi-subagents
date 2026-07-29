@@ -2,9 +2,17 @@
  * TypeBox schemas for subagent tool parameters
  */
 
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { SUBAGENT_ACTIONS } from "../shared/types.ts";
+
+function StringEnum<const T extends readonly string[]>(values: T, options?: { description?: string; default?: T[number] }) {
+	return Type.Unsafe<T[number]>({
+		type: "string",
+		enum: values,
+		...(options?.description ? { description: options.description } : {}),
+		...(options?.default ? { default: options.default } : {}),
+	});
+}
 
 const SkillOverride = Type.Unsafe({
 	anyOf: [

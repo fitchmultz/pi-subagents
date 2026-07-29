@@ -27,6 +27,7 @@
 - Run local test scripts through a small wrapper that clears inherited `PI_SUBAGENT_*` runtime variables before starting the Node test runner.
 
 ### Fixed
+- Keep detached async runners loadable after Pi refreshes a git-installed package with development dependencies omitted: subagent schemas now use the existing TypeBox runtime directly, and the package smoke reproduces a packed production install.
 - Detect configured git-installed `pi-intercom` packages so live subagents register their deterministic target and `subagent({ action: "nudge" })` works without manually listing intercom sessions.
 - Treat Codex-style `usage limit` errors as retryable model failures so configured `fallbackModels` advance immediately, and keep them out of same-model transport recovery loops.
 - Preserve the full explicit acceptance contract across completed, timed-out, and failed run revival, including verification commands after self-review exhaustion; a resume-supplied acceptance contract explicitly overrides the inherited contract.
