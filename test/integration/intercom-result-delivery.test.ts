@@ -910,7 +910,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		mockPi.onCall({
 			steps: [
 				{ jsonl: [events.toolStart("edit", { path: "src/incident.ts" }), events.toolEnd("edit"), events.toolResult("edit", "applied prior work")] },
-				{ delay: 1_000, jsonl: [events.assistantMessage("late completion")] },
+				{ delay: 10_000, jsonl: [events.assistantMessage("late completion")] },
 			],
 		});
 		mockPi.onCall({ output: "Validated prior edits and committed the existing work without a new edit." });
@@ -924,7 +924,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 
 		const original = await executor.execute(
 			"foreground-timeout-resume-original",
-			{ agent: "worker", task: "Implement the incident fix", timeoutMs: 150, acceptance },
+			{ agent: "worker", task: "Implement the incident fix", timeoutMs: 1_000, acceptance },
 			new AbortController().signal,
 			undefined,
 			makeMinimalCtx(tempDir),

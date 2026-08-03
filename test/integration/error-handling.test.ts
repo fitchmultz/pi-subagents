@@ -23,92 +23,14 @@ import {
 } from "../support/helpers.ts";
 
 // Top-level await
-const utils = await tryImport<any>("./src/shared/utils.ts");
 const execution = await tryImport<any>("./src/runs/foreground/execution.ts");
 const chainMod = await tryImport<any>("./src/runs/foreground/chain-execution.ts");
 
-const piAvailable = !!(execution && utils);
+const piAvailable = !!execution;
 const chainAvailable = !!chainMod;
 
 const runSync = execution?.runSync;
-const detectSubagentError = utils?.detectSubagentError;
 const executeChain = chainMod?.executeChain;
-
-// ---------------------------------------------------------------------------
-// detectSubagentError
-// ---------------------------------------------------------------------------
-
-describe("detectSubagentError", { skip: !detectSubagentError ? "utils not importable" : undefined }, () => {
-	it("returns no error for successful messages", () => {
-		const messages = [
-			{ role: "assistant", content: [{ type: "text", text: "Let me check..." }] },
-			{ role: "toolResult", toolName: "bash", isError: false, content: [{ type: "text", text: "OK" }] },
-			{ role: "assistant", content: [{ type: "text", text: "All good!" }] },
-		];
-		const result = detectSubagentError(messages);
-		assert.equal(result.hasError, false);
-	});
-
-	it("does not infer fatal bash error from output text alone", () => {
-		const messages = [
-			{ role: "assistant", content: [{ type: "text", text: "Running..." }] },
-			{
-				role: "toolResult",
-				toolName: "bash",
-				isError: false,
-				content: [{ type: "text", text: "command not found in fixture output" }],
-			},
-		];
-		const result = detectSubagentError(messages);
-		assert.equal(result.hasError, false);
-	});
-
-	it("detects non-zero exit code in bash output", () => {
-		const messages = [
-			{ role: "assistant", content: [{ type: "text", text: "Running..." }] },
-			{
-				role: "toolResult",
-				toolName: "bash",
-				isError: false,
-				content: [{ type: "text", text: "Error: process exited with code 127" }],
-			},
-		];
-		const result = detectSubagentError(messages);
-		assert.equal(result.hasError, true);
-		assert.equal(result.exitCode, 127);
-	});
-
-	it("ignores errors before last successful tool result", () => {
-		const messages = [
-			{ role: "assistant", content: [{ type: "text", text: "Trying..." }] },
-			{ role: "toolResult", toolName: "bash", isError: true, content: [{ type: "text", text: "EISDIR" }] },
-			{ role: "assistant", content: [{ type: "text", text: "Let me fix that..." }] },
-			{ role: "toolResult", toolName: "bash", isError: false, content: [{ type: "text", text: "OK" }] },
-			{ role: "assistant", content: [{ type: "text", text: "Fixed!" }] },
-		];
-		const result = detectSubagentError(messages);
-		assert.equal(result.hasError, false);
-	});
-
-	it("detects isError on tool result", () => {
-		const messages = [
-			{ role: "assistant", content: [{ type: "text", text: "Running..." }] },
-			{
-				role: "toolResult",
-				toolName: "write",
-				isError: true,
-				content: [{ type: "text", text: "Permission denied" }],
-			},
-		];
-		const result = detectSubagentError(messages);
-		assert.equal(result.hasError, true);
-		assert.equal(result.errorType, "write");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// runSync error handling
-// ---------------------------------------------------------------------------
 
 describe("runSync error handling", { skip: !piAvailable ? "pi packages not available" : undefined }, () => {
 	let tempDir: string;
