@@ -4,8 +4,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { createResultWatcher } from "../../src/runs/background/result-watcher.ts";
+import { reconcileAsyncRun } from "../../src/runs/background/stale-run-reconciler.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import type { SubagentState } from "../../src/shared/types.ts";
+
+function errno(code: string): NodeJS.ErrnoException {
+	const error = new Error(code) as NodeJS.ErrnoException;
+	error.code = code;
+	return error;
+}
 
 function createState(): SubagentState {
 	return {
@@ -67,6 +74,64 @@ describe("result watcher", () => {
 			assert.equal(fs.existsSync(resultPath), false);
 		} finally {
 			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves cwd ownership when repairing and delivering a stale legacy run", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-stale-legacy-"));
+		const resultsDir = path.join(root, "results");
+		const asyncDir = path.join(root, "runs", "legacy-stale");
+		try {
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+				runId: "legacy-stale",
+				mode: "single",
+				state: "running",
+				pid: 12345,
+				cwd: "/repo-current",
+				startedAt: 100,
+				lastUpdate: 100,
+				steps: [{ agent: "reviewer", status: "running", startedAt: 100 }],
+			}), "utf-8");
+			const repair = reconcileAsyncRun(asyncDir, { resultsDir, kill: () => { throw errno("ESRCH"); }, now: () => 200 });
+			assert.equal(repair.repaired, true);
+			const resultPath = path.join(resultsDir, "legacy-stale.json");
+			assert.equal(JSON.parse(fs.readFileSync(resultPath, "utf-8")).cwd, "/repo-current");
+
+			const emitted: Array<{ event: string; data: unknown }> = [];
+			const pi = {
+				events: {
+					on: () => () => {},
+					emit(event: string, data: unknown) {
+						emitted.push({ event, data });
+					},
+				},
+			};
+			const foreignState = createState();
+			foreignState.baseCwd = "/repo-foreign";
+			const foreignWatcher = createResultWatcher(pi, foreignState, resultsDir, 60_000);
+			try {
+				foreignWatcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			} finally {
+				foreignWatcher.stopResultWatcher();
+			}
+			assert.equal(emitted.length, 0);
+			assert.equal(fs.existsSync(resultPath), true);
+
+			const currentState = createState();
+			currentState.baseCwd = "/repo-current";
+			const currentWatcher = createResultWatcher(pi, currentState, resultsDir, 60_000);
+			try {
+				currentWatcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			} finally {
+				currentWatcher.stopResultWatcher();
+			}
+			assert.equal(emitted.filter((entry) => entry.event === "subagent:async-complete").length, 1);
+			assert.equal(fs.existsSync(resultPath), false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
 

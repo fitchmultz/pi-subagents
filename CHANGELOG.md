@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- Surfaced the lightweight reviewer path in tool and skill guidance: omit `acceptance` for review-only tasks, launch independent reviewers as separate async runs so each completion wakes the parent, and end the parent turn instead of polling when no other work remains. Active status output now repeats the no-poll reminder only for runs whose completion will reach the current session.
 - Cut intercom bridge guidance over to steer-first live coordination: parent nudges are non-blocking supplemental guidance unless they explicitly replace the child task, generated status/attention hints label nudge as preferred and ask as a blocking-only exception, child decisions/interviews use steered blocking asks only when the ephemeral process must stay alive, and progress updates remain intentionally deferred/coalesced.
 - Acceptance reports now require fenced `acceptance-report` JSON; the undocumented unfenced `ACCEPTANCE_REPORT:` compatibility marker is no longer parsed or stripped.
 - Removed unused exported type fields from `ControlEvent`, `AcceptanceLedger`, and `SubagentLiveIntercomHealth`.

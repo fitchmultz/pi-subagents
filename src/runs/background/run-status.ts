@@ -12,6 +12,9 @@ import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-grou
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 import { readAsyncResultFile } from "./async-result-file.ts";
+import { readStatus } from "../../shared/utils.ts";
+
+const ASYNC_COMPLETION_REMINDER = "Completion will be delivered automatically. If you are only waiting, end your turn instead of polling status again.";
 
 interface RunStatusParams {
 	action?: "status";
@@ -32,6 +35,25 @@ interface RunStatusDeps {
 
 function hasExistingSessionFile(value: unknown): value is string {
 	return typeof value === "string" && fs.existsSync(value);
+}
+
+function completionTargetsCurrentSession(run: Pick<AsyncStatus, "sessionId" | "cwd">, state: SubagentState | undefined): boolean {
+	if (!state) return true;
+	if (run.sessionId) return run.sessionId === state.currentSessionId;
+	if (run.cwd) return Boolean(state.baseCwd) && run.cwd === state.baseCwd;
+	return true;
+}
+
+function nestedCompletionTargetsCurrentSession(rootRunId: string, asyncDirRoot: string, state: SubagentState | undefined): boolean {
+	if (!state || state.foregroundControls.has(rootRunId)) return true;
+	const tracked = state.asyncJobs.get(rootRunId);
+	if (tracked) return completionTargetsCurrentSession(tracked, state);
+	try {
+		const status = readStatus(path.join(asyncDirRoot, rootRunId));
+		return status ? completionTargetsCurrentSession(status, state) : false;
+	} catch {
+		return false;
+	}
 }
 
 function formatResumeGuidance(runId: string | undefined, children: Array<{ agent?: unknown; sessionFile?: unknown }>, fallbackSessionFile?: unknown): string {
@@ -145,9 +167,16 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			};
 		}
 		try {
-			const runs = listAsyncRuns(asyncDirRoot, { states: ["queued", "running"], resultsDir, kill: deps.kill, now: deps.now });
+			const runs = listAsyncRuns(asyncDirRoot, {
+				states: ["queued", "running"],
+				resultsDir,
+				kill: deps.kill,
+				now: deps.now,
+			}).filter((run) => completionTargetsCurrentSession(run, deps.state));
+			const text = formatAsyncRunList(runs);
+			const reminder = runs.some((run) => completionTargetsCurrentSession(run, deps.state));
 			return {
-				content: [{ type: "text", text: formatAsyncRunList(runs) }],
+				content: [{ type: "text", text: reminder ? `${text}\n${ASYNC_COMPLETION_REMINDER}` : text }],
 				details: {
 					mode: "single", results: [],
 					managementControls: runs.map((run) => {
@@ -179,8 +208,10 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				const run = nested.match.run;
 				const state = normalizedState(run.state);
 				const intercomTarget = run.intercomTarget ?? run.leafIntercomTarget;
+				const text = formatNestedExactStatus(nested.match.rootRunId, run);
+				const reminder = state === "live" && nestedCompletionTargetsCurrentSession(nested.match.rootRunId, asyncDirRoot, deps.state);
 				return {
-					content: [{ type: "text", text: formatNestedExactStatus(nested.match.rootRunId, run) }],
+					content: [{ type: "text", text: reminder ? `${text}\n${ASYNC_COMPLETION_REMINDER}` : text }],
 					details: {
 						mode: "single", results: [],
 						managementControl: buildManagementControl({ state, runId: run.id, intercomTarget, canNudge: false, canResume: state === "live" || Boolean(run.sessionFile), canInterrupt: state === "live" }),
@@ -295,6 +326,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			}
 			if (fs.existsSync(logPath)) lines.push(`Log: ${logPath}`);
 			if (fs.existsSync(eventsPath)) lines.push(`Events: ${eventsPath}`);
+			if ((status.state === "running" || status.state === "queued") && completionTargetsCurrentSession(status, deps.state)) lines.push(ASYNC_COMPLETION_REMINDER);
 
 			const state = normalizedState(status.state);
 			const runningStep = (status.steps ?? []).map((step, index) => ({ step, index })).find(({ step }) => step.status === "running");

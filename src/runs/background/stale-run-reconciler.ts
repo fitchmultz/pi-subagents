@@ -244,6 +244,7 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 			durationMs: Math.max(0, now - status.startedAt),
 			asyncDir,
 			sessionId: status.sessionId,
+			cwd: status.cwd,
 			sessionFile: status.sessionFile,
 		},
 	};

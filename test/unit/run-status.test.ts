@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import { inspectSubagentStatus } from "../../src/runs/background/run-status.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
-import { TEMP_ROOT_DIR } from "../../src/shared/types.ts";
+import { TEMP_ROOT_DIR, type SubagentState } from "../../src/shared/types.ts";
 
 function errno(code: string): NodeJS.ErrnoException {
 	const error = new Error(code) as NodeJS.ErrnoException;
@@ -22,7 +22,77 @@ function textContent(result: ReturnType<typeof inspectSubagentStatus>): string {
 	return first?.type === "text" ? first.text : "";
 }
 
+function statusState(baseCwd: string, currentSessionId: string): SubagentState {
+	return {
+		baseCwd,
+		currentSessionId,
+		asyncJobs: new Map(),
+		foregroundControls: new Map(),
+		lastForegroundControlId: null,
+		cleanupTimers: new Map(),
+		lastUiContext: null,
+		poller: null,
+		completionSeen: new Map(),
+		watcher: null,
+		watcherRestartTimer: null,
+		resultFileCoalescer: { schedule: () => false, clear() {} },
+	};
+}
+
 describe("async run status inspection", () => {
+	it("omits the completion reminder when no async runs are active", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-empty-"));
+		try {
+			const result = inspectSubagentStatus({}, { asyncDirRoot: path.join(root, "runs"), resultsDir: path.join(root, "results") });
+			assert.match(textContent(result), /No active async runs/);
+			assert.doesNotMatch(textContent(result), /polling status/);
+		} finally {
+			rmrf(root);
+		}
+	});
+
+	it("only tells the originating session to wait for completion", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-session-scope-"));
+		try {
+			const asyncRoot = path.join(root, "runs");
+			const resultsDir = path.join(root, "results");
+			for (const run of [
+				{ runId: "run-current", sessionId: "session-current", cwd: root },
+				{ runId: "run-foreign", sessionId: "session-foreign", cwd: root },
+				{ runId: "run-legacy-current", cwd: root },
+				{ runId: "run-legacy-foreign", cwd: path.join(root, "foreign") },
+			]) {
+				const asyncDir = path.join(asyncRoot, run.runId);
+				fs.mkdirSync(asyncDir, { recursive: true });
+				fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+					...run,
+					mode: "single",
+					state: "running",
+					pid: 12345,
+					startedAt: 100,
+					lastUpdate: 100,
+					steps: [{ agent: "reviewer", status: "running", startedAt: 100 }],
+				}, null, 2), "utf-8");
+			}
+			const state = statusState(root, "session-current");
+
+			const active = textContent(inspectSubagentStatus({}, { asyncDirRoot: asyncRoot, resultsDir, state, kill: () => true, now: () => 200 }));
+			assert.match(active, /run-current/);
+			assert.match(active, /run-legacy-current/);
+			assert.doesNotMatch(active, /run-foreign/);
+			assert.doesNotMatch(active, /run-legacy-foreign/);
+			assert.match(active, /polling status again/);
+
+			for (const runId of ["run-foreign", "run-legacy-foreign"]) {
+				const foreign = textContent(inspectSubagentStatus({ id: runId }, { asyncDirRoot: asyncRoot, resultsDir, state, kill: () => true, now: () => 200 }));
+				assert.match(foreign, /State: running/);
+				assert.doesNotMatch(foreign, /polling status/);
+			}
+		} finally {
+			rmrf(root);
+		}
+	});
+
 	it("repairs stale running status and reports diagnosis plus result path", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-stale-"));
 		try {
@@ -112,6 +182,7 @@ describe("async run status inspection", () => {
 			assert.doesNotMatch(text, /openai-codex\/gpt-5\.5/);
 			assert.match(text, new RegExp(`  Output: ${firstStepOutputPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 			assert.match(text, new RegExp(`  Output: ${secondStepOutputPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+			assert.match(text, /end your turn instead of polling status again/);
 			assert.doesNotMatch(text, /Step 1: reviewer/);
 		} finally {
 			rmrf(root);
@@ -148,6 +219,7 @@ describe("async run status inspection", () => {
 			assert.doesNotMatch(text, /prefix line 0/);
 			assert.match(text, /  final child result/);
 			assert.match(text, /  with detail/);
+			assert.doesNotMatch(text, /polling status/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -365,6 +437,7 @@ describe("async run status inspection", () => {
 
 			assert.equal(result.isError, undefined);
 			assert.match(textContent(result), /Warning: Nested status unavailable:/);
+			assert.match(textContent(result), /end your turn instead of polling status again/);
 		} finally {
 			rmrf(root);
 			rmrf(path.dirname(route.eventSink));
@@ -375,6 +448,21 @@ describe("async run status inspection", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-nested-exact-"));
 		const route = createNestedRoute("run-nested-exact-root");
 		try {
+			const asyncRoot = path.join(root, "runs");
+			const resultsDir = path.join(root, "results");
+			const rootAsyncDir = path.join(asyncRoot, "run-nested-exact-root");
+			fs.mkdirSync(rootAsyncDir, { recursive: true });
+			fs.writeFileSync(path.join(rootAsyncDir, "status.json"), JSON.stringify({
+				runId: "run-nested-exact-root",
+				sessionId: "session-current",
+				mode: "single",
+				state: "running",
+				pid: 12345,
+				cwd: root,
+				startedAt: 100,
+				lastUpdate: 100,
+				steps: [{ agent: "orchestrator", status: "running", startedAt: 100 }],
+			}, null, 2), "utf-8");
 			writeNestedEvent(route, {
 				type: "subagent.nested.updated",
 				ts: 150,
@@ -395,8 +483,10 @@ describe("async run status inspection", () => {
 			});
 
 			const result = inspectSubagentStatus({ id: "nested-exact-child" }, {
-				asyncDirRoot: path.join(root, "runs"),
-				resultsDir: path.join(root, "results"),
+				asyncDirRoot: asyncRoot,
+				resultsDir,
+				state: statusState(root, "session-current"),
+				nested: { routes: [route] },
 			});
 
 			const text = textContent(result);
@@ -406,8 +496,44 @@ describe("async run status inspection", () => {
 			assert.match(text, /Agent: validator/);
 			assert.match(text, /1\. leaf running/);
 			assert.match(text, /Root status: subagent\(\{ action: "status", id: "run-nested-exact-root" \}\)/);
+			assert.match(text, /end your turn instead of polling status again/);
 			assert.match(text, /Interrupt: subagent\(\{ action: "interrupt", id: "nested-exact-child" \}\)/);
 			assert.match(text, /Resume: subagent\(\{ action: "resume", id: "nested-exact-child", message: "\.\.\." \}\)/);
+
+			const foreign = inspectSubagentStatus({ id: "nested-exact-child" }, {
+				asyncDirRoot: asyncRoot,
+				resultsDir,
+				state: statusState(root, "session-foreign"),
+				nested: { routes: [route] },
+			});
+			assert.match(textContent(foreign), /Nested run: nested-exact-child/);
+			assert.doesNotMatch(textContent(foreign), /polling status/);
+
+			writeNestedEvent(route, {
+				type: "subagent.nested.completed",
+				ts: 200,
+				parentRunId: "run-nested-exact-root",
+				parentStepIndex: 0,
+				child: {
+					id: "nested-exact-child",
+					parentRunId: "run-nested-exact-root",
+					parentStepIndex: 0,
+					depth: 1,
+					path: [{ runId: "run-nested-exact-root", stepIndex: 0, agent: "orchestrator" }],
+					state: "complete",
+					mode: "single",
+					agent: "validator",
+					steps: [{ agent: "leaf", status: "complete" }],
+					lastUpdate: 200,
+				},
+			});
+			const completed = inspectSubagentStatus({ id: "nested-exact-child" }, {
+				asyncDirRoot: asyncRoot,
+				resultsDir,
+				state: statusState(root, "session-current"),
+				nested: { routes: [route] },
+			});
+			assert.doesNotMatch(textContent(completed), /polling status/);
 		} finally {
 			rmrf(root);
 			rmrf(path.dirname(route.eventSink));

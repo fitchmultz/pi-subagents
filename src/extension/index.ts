@@ -395,10 +395,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Delegate bounded work to configured subagents, chains, or parallel reviewers while the parent session stays in control.",
 		promptGuidelines: [
 			"Use subagent for materially parallelizable scouting, review, or implementation work where another focused agent adds value.",
-			"Launch a small bounded fanout of independent async agents as separate single-agent runs so each completion wakes the parent, with at most one writer. Use one async tasks call when all child results are required together, when shared concurrency/task limits are needed, or when multiple writers require worktree isolation; the parent receives one aggregate completion.",
+			"Launch a small bounded fanout of independent async agents as separate single-agent runs so each completion wakes the parent, with at most one writer. Use one async tasks call for non-review fanout when all child results are required together, when shared concurrency/task limits are needed, or when multiple writers require worktree isolation; the parent receives one aggregate completion. If no useful parent work remains, end the turn and wait instead of polling; completion wakes the parent. When an incomplete active Pi goal needs same-turn child evidence, use foreground instead and do not end the turn before that evidence arrives.",
 			"Before executing subagent runs, call subagent with { action: \"list\" } unless the requested executable agent or chain is already known from this conversation.",
 			"Keep the parent session responsible for final decisions, verification, and user-facing status; treat subagent output as evidence to review, not automatic truth.",
 			"Keep independent review as a separate parent-launched reviewer run after the worker; acceptance.review is unsupported.",
+			"For review-only tasks, omit acceptance unless the user explicitly requests a same-session acceptance contract; acceptance adds a finalization turn and is not independent review.",
 			"For live child guidance, answers, corrections, or blockers, inspect status and prefer action='nudge'; it sends a non-blocking steer that supplements the active task unless the message explicitly replaces it. Use the shown blocking intercom ask only when the parent must stay alive waiting for a reply.",
 			"Do not use subagent when a direct local tool call or small edit is cheaper than delegation.",
 		],
