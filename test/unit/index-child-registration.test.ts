@@ -26,7 +26,7 @@ function runProbe(script: string, options: { env?: NodeJS.ProcessEnv } = {}): vo
 }
 
 describe("subagent extension child mode", () => {
-	it("collapses tool detail before direct subagent tool execution", () => {
+	it("only collapses expanded tool detail before direct subagent tool execution", () => {
 		const script = String.raw`
 			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
 			const events = { on() { return () => {}; }, emit() {} };
@@ -53,11 +53,13 @@ describe("subagent extension child mode", () => {
 			if (!parentGuidelines.some((line) => line.includes("parent session responsible"))) throw new Error("missing parent-owns-final-decision guideline");
 			if (!parentGuidelines.some((line) => line.includes("non-blocking steer") && line.includes("supplements the active task"))) throw new Error("missing steer-first nudge guideline");
 			const calls = [];
+			let expanded = false;
 			const ctx = {
 				cwd: process.cwd(),
 				hasUI: true,
 				ui: {
-					setToolsExpanded(value) { calls.push(value); },
+					getToolsExpanded() { return expanded; },
+					setToolsExpanded(value) { expanded = value; calls.push(value); },
 					setWidget() {},
 					requestRender() {},
 					theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } },
@@ -65,8 +67,11 @@ describe("subagent extension child mode", () => {
 				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; } },
 				modelRegistry: { getAvailable() { return []; } },
 			};
-			await registeredTool.execute("collapse-check", { action: "list" }, new AbortController().signal, undefined, ctx);
-			if (calls[0] !== false) throw new Error("expected setToolsExpanded(false), got " + JSON.stringify(calls));
+			await registeredTool.execute("already-collapsed", { action: "list" }, new AbortController().signal, undefined, ctx);
+			if (calls.length !== 0) throw new Error("unexpected setToolsExpanded call: " + JSON.stringify(calls));
+			expanded = true;
+			await registeredTool.execute("expanded", { action: "list" }, new AbortController().signal, undefined, ctx);
+			if (calls.length !== 1 || calls[0] !== false) throw new Error("expected one setToolsExpanded(false), got " + JSON.stringify(calls));
 		`;
 
 		runProbe(script, { env: parentToolEnv() });

@@ -331,7 +331,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal | undefined, onUpdate: ((result: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext) => {
-		if (isTuiContext(ctx)) ctx.ui.setToolsExpanded(false);
+		if (isTuiContext(ctx) && ctx.ui.getToolsExpanded()) ctx.ui.setToolsExpanded(false);
 		return executor.execute(id, params, signal, onUpdate, ctx);
 	};
 
