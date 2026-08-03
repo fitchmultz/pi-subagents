@@ -80,6 +80,12 @@ describe("flattenSteps", () => {
 	});
 });
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+	let resolve!: () => void;
+	const promise = new Promise<void>((done) => { resolve = done; });
+	return { promise, resolve };
+}
+
 describe("mapConcurrent", () => {
 	it("processes all items and preserves order", async () => {
 		const items = [10, 20, 30, 40];
@@ -87,19 +93,35 @@ describe("mapConcurrent", () => {
 		assert.deepEqual(results, [20, 40, 60, 80]);
 	});
 
-	it("respects concurrency limit", async () => {
+	it("preserves input order when later work finishes first", async () => {
+		const first = deferred();
+		const second = deferred();
+		const result = mapConcurrent([first.promise, second.promise], 2, async (completion, index) => {
+			await completion;
+			return index;
+		});
+
+		second.resolve();
+		await new Promise<void>(setImmediate);
+		first.resolve();
+		assert.deepEqual(await result, [0, 1]);
+	});
+
+	it("starts workers immediately without exceeding the concurrency limit", async () => {
 		let running = 0;
 		let maxRunning = 0;
-		const items = [1, 2, 3, 4, 5, 6];
-
-		await mapConcurrent(items, 2, async () => {
+		const gate = deferred();
+		const result = mapConcurrent([1, 2, 3, 4, 5, 6], 2, async () => {
 			running++;
 			maxRunning = Math.max(maxRunning, running);
-			await new Promise((r) => setTimeout(r, 10));
+			await gate.promise;
 			running--;
 		});
 
-		assert.ok(maxRunning <= 2, `max concurrent was ${maxRunning}, expected <= 2`);
+		assert.equal(running, 2);
+		gate.resolve();
+		await result;
+		assert.equal(maxRunning, 2);
 	});
 
 	it("handles empty input", async () => {
@@ -107,48 +129,33 @@ describe("mapConcurrent", () => {
 		assert.deepEqual(results, []);
 	});
 
-	it("clamps limit=0 to 1 (sequential execution)", async () => {
-		let running = 0;
-		let maxRunning = 0;
-		const items = [1, 2, 3];
-		await mapConcurrent(items, 0, async (item) => {
-			running++;
-			maxRunning = Math.max(maxRunning, running);
-			await new Promise((r) => setTimeout(r, 10));
-			running--;
-			return item * 10;
-		});
-		assert.equal(maxRunning, 1, "should run sequentially with limit=0");
+	it("clamps non-positive limits to sequential execution", async () => {
+		for (const limit of [0, -1]) {
+			let running = 0;
+			let maxRunning = 0;
+			const gate = deferred();
+			const result = mapConcurrent([1, 2, 3], limit, async () => {
+				running++;
+				maxRunning = Math.max(maxRunning, running);
+				await gate.promise;
+				running--;
+			});
+
+			assert.equal(running, 1);
+			gate.resolve();
+			await result;
+			assert.equal(maxRunning, 1);
+		}
 	});
 
-	it("clamps limit=-1 to 1 (sequential execution)", async () => {
-		let running = 0;
-		let maxRunning = 0;
-		const items = [1, 2, 3];
-		await mapConcurrent(items, -1, async (item) => {
-			running++;
-			maxRunning = Math.max(maxRunning, running);
-			await new Promise((r) => setTimeout(r, 10));
-			running--;
-			return item * 10;
-		});
-		assert.equal(maxRunning, 1, "should run sequentially with limit=-1");
-	});
-
-	it("does not stagger by default", async () => {
-		const startTimes: number[] = [];
-		const items = [1, 2, 3];
-
-		await mapConcurrent(items, 3, async (_item, i) => {
-			startTimes[i] = Date.now();
-			await new Promise((r) => setTimeout(r, 10));
-		});
-
-		// All workers should start nearly simultaneously
-		const d1 = startTimes[1]! - startTimes[0]!;
-		const d2 = startTimes[2]! - startTimes[0]!;
-		assert.ok(d1 < 20, `worker 1 should start immediately, got ${d1}ms delay`);
-		assert.ok(d2 < 20, `worker 2 should start immediately, got ${d2}ms delay`);
+	it("propagates errors", async () => {
+		await assert.rejects(
+			() => mapConcurrent([1, 2, 3], 2, async (item) => {
+				if (item === 2) throw new Error("boom");
+				return item;
+			}),
+			/boom/,
+		);
 	});
 });
 

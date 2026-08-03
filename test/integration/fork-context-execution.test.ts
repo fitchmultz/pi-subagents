@@ -226,14 +226,6 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		).length;
 	}
 
-	async function waitForRecordedCalls(count: number, timeoutMs = 15_000): Promise<void> {
-		const deadline = Date.now() + timeoutMs;
-		while (readAllCallArgs().length < count) {
-			if (Date.now() > deadline) assert.fail(`Timed out waiting for ${count} mock pi call(s)`);
-			await new Promise((resolve) => setTimeout(resolve, 25));
-		}
-	}
-
 	async function waitForTaskCalls(tasks: string[], timeoutMs = 15_000): Promise<void> {
 		const deadline = Date.now() + timeoutMs;
 		while (!tasks.every((task) => readAllCallArgs().some((args) => (args.at(-1) ?? "").includes(task)))) {
@@ -336,7 +328,6 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		mockPi.reset();
 		mockPi.onCall({ delay: 250, output: "review complete" });
 
-		const startedAt = Date.now();
 		const result = await executor.execute(
 			"id",
 			{ agent: "reviewer", task: "Review this diff", timeoutMs: 180 },
@@ -348,7 +339,6 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.isError, undefined);
 		assert.match(result.content[0]?.text ?? "", /review complete/);
 		assert.equal(fs.readdirSync(mockPi.dir).some((name) => name.startsWith("call-")), true);
-		assert.ok(Date.now() - startedAt >= 200, "reviewer should not use the brittle 180ms budget");
 	});
 
 	it("allows short foreground timeouts for non-reviewer agents", async () => {
@@ -402,7 +392,6 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		mockPi.reset();
 		mockPi.onCall({ delay: 250, output: "slow worker" });
 
-		const startedAt = Date.now();
 		const result = await executor.execute(
 			"id",
 			{ agent: "reviewer", tasks: [{ agent: "echo", task: "parallel task" }], timeoutMs: 180 },
@@ -413,7 +402,6 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /Parallel run timed out/);
-		assert.ok(Date.now() - startedAt < 1500, "worker-only parallel run should keep the requested short budget");
 	});
 
 	it("does not raise chain timeouts because an ignored top-level agent is reviewer", async () => {
@@ -422,7 +410,6 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		mockPi.reset();
 		mockPi.onCall({ delay: 250, output: "slow chain worker" });
 
-		const startedAt = Date.now();
 		const result = await executor.execute(
 			"id",
 			{ agent: "reviewer", chain: [{ agent: "echo", task: "chain task" }], timeoutMs: 180 },
@@ -433,7 +420,6 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /Chain timed out/);
-		assert.ok(Date.now() - startedAt < 1500, "worker-only chain run should keep the requested short budget");
 	});
 
 	it("rejects async reviewer timeout budgets before reviewer foreground normalization", async () => {
@@ -462,7 +448,6 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		mockPi.reset();
 		mockPi.onCall({ delay: 250, output: "preview complete" });
 
-		const startedAt = Date.now();
 		const result = await executor.execute(
 			"id",
 			{ agent: "previewer", task: "Preview this", timeoutMs: 180 },
@@ -473,7 +458,6 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /Timed out after 180ms/);
-		assert.ok(Date.now() - startedAt < 900, "previewer should keep the requested short budget");
 	});
 
 	it("does not treat top-level agent as single mode when tasks are present", async () => {
@@ -1277,8 +1261,8 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			"id",
 			{
 				tasks: [
-					{ agent: "echo", task: "task one" },
-					{ agent: "second", task: "task two" },
+					{ agent: "echo", task: "async parallel task one" },
+					{ agent: "second", task: "async parallel task two" },
 				],
 				async: true,
 				clarify: false,
@@ -1292,6 +1276,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.details?.mode, "parallel");
 		assert.ok(result.details?.asyncId, "expected an asyncId for background top-level parallel runs");
 		assert.match(result.content[0]?.text ?? "", /Async parallel:/);
+		await waitForTaskCalls(["async parallel task one", "async parallel task two"]);
 	});
 
 	it("forks only fork-default agents in top-level parallel async when launch context is omitted", async () => {
@@ -1309,8 +1294,8 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			"id",
 			{
 				tasks: [
-					{ agent: "scout", task: "find files" },
-					{ agent: "worker", task: "implement fix" },
+					{ agent: "scout", task: "async mixed scout task" },
+					{ agent: "worker", task: "async mixed worker task" },
 				],
 				async: true,
 				clarify: false,
@@ -1325,11 +1310,15 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.details?.context, "fork");
 		assert.ok(result.details?.asyncId, "expected an asyncId for background top-level parallel runs");
 
-		await waitForRecordedCalls(2);
-		const sessionArgs = readSessionArgsFromCalls();
-		assert.equal(sessionArgs.length, 2);
-		assert.equal(countForkedSessionFiles(sessionArgs), 1);
-		assert.ok(sessionArgs.includes(forkedSessionFile(1)));
+		await waitForTaskCalls(["async mixed scout task", "async mixed worker task"]);
+		const freshArgs = callArgsForTaskContaining("async mixed scout task");
+		const forkArgs = callArgsForTaskContaining("async mixed worker task");
+		const freshSessionIndex = freshArgs.indexOf("--session");
+		const forkSessionIndex = forkArgs.indexOf("--session");
+		assert.notEqual(freshSessionIndex, -1);
+		assert.notEqual(forkSessionIndex, -1);
+		assert.equal(countForkedSessionFiles([freshArgs[freshSessionIndex + 1]!]), 0);
+		assert.equal(forkArgs[forkSessionIndex + 1], forkedSessionFile(1));
 	});
 
 	it("applies fork-only intercom bridge only to fork-default async children", async () => {
@@ -1380,8 +1369,8 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			"id",
 			{
 				chain: [
-					{ agent: "echo", task: "task one" },
-					{ agent: "second", task: "task two" },
+					{ agent: "echo", task: "async chain task one" },
+					{ agent: "second", task: "async chain task two" },
 				],
 				async: true,
 			},
@@ -1394,6 +1383,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.details?.mode, "chain");
 		assert.ok(result.details?.asyncId, "expected an asyncId for background chain runs");
 		assert.match(result.content[0]?.text ?? "", /Async chain:/);
+		await waitForTaskCalls(["async chain task one", "async chain task two"]);
 	});
 
 	it("keeps explicit clarify async chain requests in the foreground", async () => {
