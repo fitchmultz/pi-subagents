@@ -93,6 +93,20 @@ describe("mapConcurrent", () => {
 		assert.deepEqual(results, [20, 40, 60, 80]);
 	});
 
+	it("preserves input order when later work finishes first", async () => {
+		const first = deferred();
+		const second = deferred();
+		const result = mapConcurrent([first.promise, second.promise], 2, async (completion, index) => {
+			await completion;
+			return index;
+		});
+
+		second.resolve();
+		await new Promise<void>(setImmediate);
+		first.resolve();
+		assert.deepEqual(await result, [0, 1]);
+	});
+
 	it("starts workers immediately without exceeding the concurrency limit", async () => {
 		let running = 0;
 		let maxRunning = 0;

@@ -210,11 +210,10 @@ async function main() {
 	if (Array.isArray(response.echoEnv) && response.echoEnv.length > 0) {
 		callRecord.env = Object.fromEntries(response.echoEnv.map((key) => [key, process.env[key] ?? null]));
 	}
-	fs.writeFileSync(
-		path.join(queueDir, `call-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}.json`),
-		JSON.stringify(callRecord),
-		"utf-8",
-	);
+	const callPath = path.join(queueDir, `call-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}.json`);
+	const tempCallPath = `${callPath}.tmp`;
+	fs.writeFileSync(tempCallPath, JSON.stringify(callRecord), "utf-8");
+	fs.renameSync(tempCallPath, callPath);
 
 	if (typeof response.delay === "number" && response.delay > 0) {
 		await new Promise((resolve) => setTimeout(resolve, response.delay));

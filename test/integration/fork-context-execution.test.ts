@@ -1369,8 +1369,8 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			"id",
 			{
 				chain: [
-					{ agent: "echo", task: "task one" },
-					{ agent: "second", task: "task two" },
+					{ agent: "echo", task: "async chain task one" },
+					{ agent: "second", task: "async chain task two" },
 				],
 				async: true,
 			},
@@ -1383,6 +1383,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.details?.mode, "chain");
 		assert.ok(result.details?.asyncId, "expected an asyncId for background chain runs");
 		assert.match(result.content[0]?.text ?? "", /Async chain:/);
+		await waitForTaskCalls(["async chain task one", "async chain task two"]);
 	});
 
 	it("keeps explicit clarify async chain requests in the foreground", async () => {
