@@ -390,8 +390,8 @@ Add `--fork` to start each child from a real branched session created from the p
 
 ```text
 /run reviewer "review this diff" --fork
-/chain scout "analyze this branch" -> planner "plan next steps" --fork
-/parallel scout "audit frontend" -> researcher "research backend constraints" --fork
+/chain scout "analyze this branch" -> oracle "plan next steps" --fork
+/parallel scout "audit frontend" -> reviewer "review backend constraints" --fork
 ```
 
 You can combine them in either order:
