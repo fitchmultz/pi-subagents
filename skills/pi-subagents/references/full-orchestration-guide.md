@@ -52,7 +52,7 @@ Use this when the user wants adversarial review of a diff, plan, issue, file, or
 
 ### Review-loop technique
 
-Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one `worker` implements or fixes, fresh-context `reviewer` agents inspect the actual repo and diff, the parent synthesizes accepted fixes, and one forked `worker` applies them. Use async workers/reviewers when no active goal depends on same-turn child evidence or when the user explicitly wants background execution; under an incomplete active Pi goal, prefer foreground/blocking children for goal-critical implementation, review, and fix steps. The parent can express the sequence up front as an async/background chain when the workflow is known and safe to background, or continue with explicit follow-up subagent runs after each async completion. For an initial async chain, pass `async: true` so the main chat is unblocked; do not set `clarify: true` unless the user explicitly wants the foreground clarify UI. Treat an async implementation worker handoff as an intermediate state, not final completion, unless the user explicitly asked for worker-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish, and do not let children launch subagents or decide the loop outcome.
+Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one `worker` implements or fixes, fresh-context `reviewer` agents inspect the actual repo and diff, the parent synthesizes accepted fixes, and one forked `worker` applies them. Prefer separate async reviewer runs so each completion wakes the parent instead of waiting for the whole panel. Continue useful parent work while they run; if none remains, end the turn and wait instead of polling. Do not put reviewer panels inside one async chain because the aggregate result hides individual reviewer completions; continue with explicit follow-up runs after each completion. Under an incomplete active Pi goal, prefer foreground/blocking children for goal-critical implementation, review, and fix steps; a bounded foreground chain is acceptable only when the sequence is fixed and no parent decision is needed between steps. Treat an async implementation worker handoff as an intermediate state, not final completion, unless the user explicitly asked for worker-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish, and do not let children launch subagents or decide the loop outcome.
 
 ### Parallel research technique
 
@@ -107,13 +107,13 @@ Use this after implementation when the user wants cleanup review or when a final
 
 ### Staged fix orchestration technique
 
-Use this when a broad diff has known reviewer findings across several items and the user wants the parent to “orchestrate subagents like a boss.” Keep the active worktree safe with a three-stage chain:
+Use this when a broad diff has known reviewer findings across several items and the user wants the parent to “orchestrate subagents like a boss.” When an incomplete active Pi goal needs a fixed workflow to finish in the same turn, keep the active worktree safe with a foreground three-stage chain:
 
 1. A parallel read-only planning fanout, one planner/reviewer per issue cluster. Each child inspects the real diff and returns exact files, line refs, proposed fixes, and focused validation. They must not edit.
 2. One writer worker. It receives the planner summaries through `{previous}`, the parent’s accepted scope, stop rules, and verification contract. It is the only child allowed to edit the active worktree.
 3. A parallel read-only validation fanout. Validators inspect the worker diff from fresh context with distinct angles, report pass/fail, remaining blockers, and missing verification.
 
-Prefer `context: "fresh"` for planners/validators, `outputMode: "file-only"` for large summaries, and per-stage output names that will not collide. Use `async: true` for the staged chain only when no active goal depends on same-turn child evidence or when the user explicitly wants background execution. Add `phase` and `label` to make status readable, and use `as` plus `{outputs.name}` when a later step needs a specific earlier result instead of the whole `{previous}` blob. Use this pattern instead of launching several writer workers into a dirty worktree. Include non-blocking suggestions in the writer prompt only when they are small, safe, and do not expand product scope; otherwise record them as deferred.
+Prefer `context: "fresh"` for planners/validators, `outputMode: "file-only"` for large summaries, and per-stage output names that will not collide. Keep the chain foreground; it is the incomplete-active-goal exception to separate async reviewer runs. Set `async: false`, and disable `forceTopLevelAsync` before using this pattern because that setting overrides explicit foreground requests. Outside an active goal, run the same stages under parent control: launch each planning or validation reviewer as a separate async single-agent run, synthesize after their individual completions, then launch the sole writer. Add `phase` and `label` to make foreground chain status readable, and use `as` plus `{outputs.name}` when a later step needs a specific earlier result instead of the whole `{previous}` blob. Use this pattern instead of launching several writer workers into a dirty worktree. Include non-blocking suggestions in the writer prompt only when they are small, safe, and do not expand product scope; otherwise record them as deferred.
 
 When the first step can return a structured target list, prefer dynamic fanout instead of hand-authoring a static parallel group. Use `outputSchema` and `as` on the producer, then an `expand` step with `from: { output, path }`, an explicit `maxItems`, one `parallel` child template, and `collect.as`. Item templates may use `{item}` or a named item such as `{target.path}`. Do not use dynamic fanout for prose outputs, nested fanout, dynamic agent selection, reducers, `when` conditions, or arbitrary expressions; `.chain.md` does not support this syntax, so use direct JSON or a saved `.chain.json`.
 
@@ -121,7 +121,8 @@ Example shape:
 
 ```typescript
 subagent({
-  // Add async: true only when safe under the active-goal rule or explicitly requested.
+  // Foreground active-goal exception; requires forceTopLevelAsync to be disabled.
+  async: false,
   context: "fresh",
   chain: [
     { parallel: [
@@ -258,7 +259,7 @@ restriction.
 subagent({
   tasks: [
     { agent: "scout", task: "Explore the auth module" },
-    { agent: "reviewer", task: "Review the API client" }
+    { agent: "researcher", task: "Research API client retry behavior" }
   ]
 })
 ```
@@ -270,7 +271,7 @@ subagent({
   tasks: [
     { agent: "scout", task: "Map auth", output: "auth-context.md", progress: true },
     { agent: "researcher", task: "Research OAuth best practices", output: "oauth-research.md" },
-    { agent: "reviewer", task: "Review auth tests", model: "anthropic/claude-sonnet-4" }
+    { agent: "scout", task: "Map auth test coverage", model: "anthropic/claude-sonnet-4" }
   ],
   concurrency: 3
 })
@@ -300,15 +301,15 @@ call `structured_output` with schema-valid JSON, or the step fails.
 
 ### Async/background
 
-Prefer async mode for subagent launches when the parent can safely continue useful independent work or when the user wants the chat unblocked. Set `async: true` for scouts, researchers, workers, reviewers, validators, oracle checks, one-off delegates, chains, and parallel groups unless there is a specific reason to opt into a foreground/blocking run. Keep the write path single-threaded even when the run is async.
+Default independent subagent launches to async mode. Set `async: true` for scouts, researchers, workers, reviewers, validators, oracle checks, one-off delegates, chains, and non-review parallel groups unless an incomplete active Pi goal needs same-turn child evidence. Launch each member of a reviewer or validator panel as a separate async single-agent call; do not put the panel in one async parallel group or chain. Keep the write path single-threaded even when the run is async.
 
 Active goal exception: when a Codex-style Pi goal is active and incomplete, prefer foreground/blocking subagent runs for work the goal depends on. Goal prompting is supposed to continue after a parent turn ends; launching async children and then ending the turn can create repeated goal turns that race status/result delivery or cause the parent to continue without the child evidence it needs. Use async under an active goal only when the parent has concrete same-turn independent work to do and will inspect the async result before finalizing that goal step, or when the user explicitly asks to background the work.
 
 Async does not mean parallel writes. Do not edit the same active worktree while an async worker is changing it. Parent-side overlap should be reading, validation prep, synthesis, command planning, or review of unaffected context unless the writer is isolated in a separate worktree.
 
-Do not end your turn immediately after launching an async child if you promised to keep working or an active goal still needs the child result. Continue the local inspection, synthesis, or validation prep, then check the async run when its result is needed. If there is no independent work left and no active-goal dependency on the child result, end your turn instead of sleep-polling. Pi will deliver the async completion when it arrives.
+After launching an async child, continue promised or useful independent work. If none remains, end your turn and wait instead of sleep-polling; Pi will deliver the completion. Use foreground instead when an incomplete active goal needs the child evidence for its next step.
 
-Reviewer sign-off exception: a reviewer timeout is never sign-off. For final reviewer sign-off, prefer foreground without `timeoutMs` when an active goal is driving the work; otherwise use async or give the foreground reviewer a realistic long budget. Runtime automatically raises foreground reviewer timeouts below 15 minutes to prevent false non-signoff failures. Planner/researcher-style roles raise short foreground budgets only when local run history shows they need longer; async/background runs still reject foreground timeout fields. Do not use short foreground timeouts such as 3–4 minutes for broad reviewer/scout/research tasks. If a reviewer times out, resume, rerun with enough budget, or split the review into narrower reviewers before claiming reviewed completion.
+Reviewer sign-off exception: a reviewer timeout is never sign-off. Prefer separate async runs for final reviewers outside active goal loops so each completion wakes the parent. When an incomplete active goal needs same-turn reviewer evidence, use foreground without `timeoutMs`. Runtime automatically raises foreground reviewer timeouts below 15 minutes to prevent false non-signoff failures. Planner/researcher-style roles raise short foreground budgets only when local run history shows they need longer; async/background runs still reject foreground timeout fields. Do not use short foreground timeouts such as 3–4 minutes for broad reviewer/scout/research tasks. If a reviewer times out, resume, rerun with enough budget, or split the review into narrower reviewers before claiming reviewed completion.
 
 ```typescript
 subagent({
@@ -329,10 +330,10 @@ const run = subagent({
   async: true,
   context: "fresh"
 })
-// Continue local inspection, then later call status with the returned id.
+// Continue local inspection; completion will wake the parent.
 ```
 
-Inspect async runs with `subagent({ action: "status", id: "..." })` or `subagent({ action: "status" })` for active runs. After a foreground run completes or times out, `status` can still show the remembered foreground children and revive command by id, or with `subagent({ action: "status", id: "latest" })` / `id: "last"` for the latest remembered foreground run in the current session. If a delegated fanout child launches nested runs, the parent status view shows them as a tree and you can target a nested run directly with its nested id.
+Inspect async runs with `subagent({ action: "status", id: "..." })` or `subagent({ action: "status" })` for active runs. Use status for diagnostics, not as a wait loop; healthy runs deliver completion automatically. After a foreground run completes or times out, `status` can still show the remembered foreground children and revive command by id, or with `subagent({ action: "status", id: "latest" })` / `id: "last"` for the latest remembered foreground run in the current session. If a delegated fanout child launches nested runs, the parent status view shows them as a tree and you can target a nested run directly with its nested id.
 
 Use `extend` when an active foreground child has an explicit timeout and is still doing useful work:
 
@@ -634,11 +635,11 @@ particular agent or with forked context.
 
 ### Prefer async orchestration
 
-Launch subagents asynchronously by default when the parent can safely keep moving or the user wants the chat unblocked. Use `async: true` for scouts, researchers, workers, reviewers, validators, oracle checks, one-off delegates, chains, and parallel groups unless you intentionally need a foreground/blocking run. The parent should keep moving: inspect code while scouts run, prepare validation while a worker implements, do a local diff pass while reviewers review, and synthesize or verify while a fix worker applies accepted feedback.
+Launch independent subagents asynchronously by default. Use `async: true` for scouts, researchers, workers, reviewers, validators, oracle checks, one-off delegates, chains, and non-review parallel groups unless an incomplete active Pi goal needs same-turn child evidence. Launch reviewer and validator panels as separate async single-agent calls, not one async group or chain. Continue useful parent work while children run; if none remains, end the turn and wait for automatic completion instead of polling.
 
 When an active Pi goal is incomplete, invert the default for goal-critical child work: prefer foreground/blocking subagents so the goal loop does not advance without required child evidence. Use async during an active goal only for true overlap where the parent will do useful same-turn work and then check the result, or when the user explicitly wants background execution.
 
-For reviewer sign-off, avoid short foreground timeouts. A timeout means review incomplete, not review failed cleanly and not sign-off. Use async outside active-goal loops, or foreground with no short `timeoutMs`/`maxRuntimeMs` when the parent must wait.
+For reviewer sign-off, avoid short foreground timeouts. A timeout means review incomplete, not review failed cleanly and not sign-off. Prefer separate async runs outside active goal loops; use foreground with no short `timeoutMs`/`maxRuntimeMs` when an incomplete active goal needs same-turn evidence.
 
 ### Keep writes single-threaded by default
 
@@ -708,7 +709,7 @@ clarify → validation contract → planner → worker → fresh-context reviewe
 
 The validation contract defines acceptance before code is written: expected behavior, acceptance checks, commands or user flows to exercise, and evidence the worker should return. Keep it lightweight for small tasks, but make it explicit enough that reviewers and validators are checking the intended outcome rather than the worker’s own assumptions.
 
-Use the structured `acceptance` field when the run should carry an explicit acceptance contract. If omitted, the run stays lightweight. When present, acceptance is object-only: define concrete `criteria`, required `evidence`, optional runtime `verify` commands, and optionally `maxFinalizationTurns`. The runtime continues the same child session for a bounded self-review/repair loop before evaluating the final report, so set `acceptance` on single runs, sequential chain steps, parallel task items, and dynamic fanout child templates, not on static parallel or dynamic fanout groups. Independent review stays parent-controlled: `acceptance.review` is unsupported and fails preflight, so launch reviewer subagents separately after the worker completes. Child-reported command success is evidence, not runtime verification.
+Use the structured `acceptance` field when the run should carry an explicit acceptance contract. If omitted, the run stays lightweight. For review-only tasks, omit it unless the user explicitly requests a same-session acceptance contract; the extra finalization turn is not independent review. When present, acceptance is object-only: define concrete `criteria`, required `evidence`, optional runtime `verify` commands, and optionally `maxFinalizationTurns`. The runtime continues the same child session for a bounded self-review/repair loop before evaluating the final report, so set `acceptance` on single runs, sequential chain steps, parallel task items, and dynamic fanout child templates, not on static parallel or dynamic fanout groups. Independent review stays parent-controlled: `acceptance.review` is unsupported and fails preflight, so launch reviewer subagents separately after the worker completes. Child-reported command success is evidence, not runtime verification.
 
 Goal-style requests map to `acceptance`. If the user says `/goal`, “goal”, “active goal”, “continue until evidence says done”, or “verify against a goal” for a subagent run, create an explicit run-scoped acceptance contract: `criteria` for the target, `evidence` and `verify` for proof, `stopRules` for constraints, and `maxFinalizationTurns` for the bounded loop budget.
 
@@ -719,7 +720,7 @@ Example writer handoff:
 ```typescript
 subagent({
   agent: "worker",
-  // Add async: true only when safe under the active-goal rule or explicitly requested.
+  // Add async: true unless an incomplete active Pi goal requires same-turn evidence.
   task: "Implement the plan at /Users/me/docs/mcp-alignment-plan.md. Use scout artifacts in ./handoff/ as context. Do not commit the scout artifacts.",
   acceptance: {
     criteria: [
@@ -740,7 +741,7 @@ subagent({
 })
 ```
 
-The first `worker` implements the approved plan. The parent continues with independent inspection or validation prep while it runs only when the worker is async; do not make parallel edits to the same worktree. When an async worker completes, treat its handoff as the transition into review, not as final completion, unless the user explicitly asked for worker-only work, review-only output, or to stop after implementation. Parallel reviewers inspect the resulting diff from fresh context. Validators check behavior with the best available evidence: commands, tests, browser/CLI interaction, screenshots, logs, or manual reproduction notes. The final `worker` applies synthesized review fixes in forked context, then the parent looks over the final diff before completing. The parent may launch these steps as an initial async chain when the workflow is already clear and no active goal depends on same-turn child evidence, or as follow-up subagent runs after each async completion. Initial async chains should pass `async: true` so the main chat is unblocked; avoid `clarify: true` unless the user asked for foreground clarification. Do not stop after parallel review unless the user explicitly asked for review-only output or the review surfaced a decision that needs approval first.
+The first `worker` implements the approved plan. The parent continues with independent inspection or validation prep while it runs only when the worker is async; do not make parallel edits to the same worktree. When an async worker completes, treat its handoff as the transition into review, not as final completion, unless the user explicitly asked for worker-only work, review-only output, or to stop after implementation. Launch parallel reviewers as separate async runs so each completion wakes the parent. Validators check behavior with the best available evidence: commands, tests, browser/CLI interaction, screenshots, logs, or manual reproduction notes. The final `worker` applies synthesized review fixes in forked context, then the parent looks over the final diff before completing. Keep these as parent-launched follow-up runs after each completion; do not hide reviewer panels inside an initial async chain. Under an incomplete active Pi goal, a fixed sequence with no intervening parent decision may instead use a bounded foreground chain. Do not stop after parallel review unless the user explicitly asked for review-only output or the review surfaced a decision that needs approval first.
 
 For complex work, risky changes, broad refactors, or many changed lines, increase review and validation fanout rather than trusting one reviewer. Use distinct angles such as correctness/regressions, tests/validation, simplicity/maintainability, security/privacy, performance, docs/API contracts, and user-flow behavior. When reviewers find non-trivial issues or the fix worker touches many lines, run another focused review round before final validation.
 
@@ -753,10 +754,10 @@ Keep orchestration authority in the parent session. Child subagents should not l
 1. Clarify only material uncertainty. Gather code context with `scout` or `context-builder`, add `researcher` only when external evidence matters, then ask the user unresolved questions with the available clarification tool (`ask_question` in pi) when the answer changes scope, acceptance criteria, constraints, or non-goals.
 2. Define the validation contract. State acceptance before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the worker handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.
 3. Plan when useful. For complex work, call `planner` or write a plan doc yourself and get approval before implementation. For simple work, confirm shared understanding and explicitly note why planning is skipped.
-4. Implement with one writer. After approval, launch `worker` with a proper meta prompt that includes clarified requirements, relevant context, plan path or summary, the validation contract, and output expectations. Use async when no active goal depends on same-turn child evidence or when the user explicitly wants background execution; under an incomplete active Pi goal, prefer foreground for goal-critical writer work. Packaged `worker` defaults to forked context; pass `context: "fresh"` only when you intentionally want a fresh child. While an async worker runs, prepare validation or inspect adjacent code instead of editing the same worktree.
+4. Implement with one writer. After approval, launch `worker` asynchronously with a proper meta prompt that includes clarified requirements, relevant context, plan path or summary, the validation contract, and output expectations; under an incomplete active Pi goal, use foreground for goal-critical writer work. Packaged `worker` defaults to forked context; pass `context: "fresh"` only when you intentionally want a fresh child. While an async worker runs, prepare validation or inspect adjacent code instead of editing the same worktree.
 5. Require a useful worker handoff. Ask the worker to report changed files, what was implemented, what was left undone, commands run with exit codes, validation evidence, surprises or new risks, decisions made inside approved scope, and decisions needing parent approval.
-6. Review after implementation. After the worker completes, launch parallel fresh-context `reviewer` agents for correctness/regressions, tests/validation, and simplicity/maintainability. Use async reviewers outside active-goal loops; under an incomplete active Pi goal, prefer foreground reviewers when review gates the next goal step. Add security, performance, docs/API, domain-specific, or user-flow validators for complex work, risky changes, broad refactors, or many changed lines. Use `output: false` unless review artifacts are explicitly needed.
-7. Synthesize, then run the fix worker. Separate blockers, fixes worth doing now, optional improvements, and feedback to ignore/defer, then launch a forked `worker` to apply fixes worth doing now when the workflow is implementation-authorized. Use async only when safe under the active-goal rule. If reviewers found scope/product/architecture choices that were not approved, ask the user first instead of applying them.
+6. Review after implementation. After the worker completes, launch fresh-context `reviewer` agents for correctness/regressions, tests/validation, and simplicity/maintainability as separate async runs so each completion wakes the parent. Under an incomplete active Pi goal, prefer foreground reviewers when review gates the next goal step. Add security, performance, docs/API, domain-specific, or user-flow validators for complex work, risky changes, broad refactors, or many changed lines. Use `output: false` unless review artifacts are explicitly needed.
+7. Synthesize, then run the fix worker. Separate blockers, fixes worth doing now, optional improvements, and feedback to ignore/defer, then launch an async forked `worker` to apply fixes worth doing now when the workflow is implementation-authorized. Use foreground instead when an incomplete active Pi goal needs the fix result in the same turn. If reviewers found scope/product/architecture choices that were not approved, ask the user first instead of applying them.
 8. Review again when warranted. If the fix worker made substantial changes or addressed non-trivial findings, run another focused parallel review round before final validation.
 9. Validate and complete. After the fix worker and any follow-up review return, inspect the final diff yourself, run or confirm focused validation, update docs/changelog when relevant, and summarize what changed and why.
 
@@ -771,23 +772,17 @@ subagent({
     evidence: ["changed-files", "tests-added", "commands-run", "residual-risks", "no-staged-files"],
     maxFinalizationTurns: 3
   }
-  // Add async: true only when safe under the active-goal rule or explicitly requested.
+  // Add async: true unless an incomplete active Pi goal requires same-turn evidence.
 })
 ```
 
-Example review pass after implementation:
+Example review pass after implementation, outside an active goal loop:
 
 ```typescript
-subagent({
-  tasks: [
-    { agent: "reviewer", task: "Review the current diff for correctness and regressions. Inspect changed files directly; do not rely on the worker's reasoning.", output: false },
-    { agent: "reviewer", task: "Review the current diff for tests and validation quality against the validation contract. Inspect changed files directly.", output: false },
-    { agent: "reviewer", task: "Review the current diff for simplicity and maintainability. Inspect changed files directly.", output: false }
-  ],
-  concurrency: 3,
-  context: "fresh"
-  // Add async: true only when safe under the active-goal rule or explicitly requested.
-})
+subagent({ agent: "reviewer", task: "Review the current diff for correctness and regressions. Inspect changed files directly; do not rely on the worker's reasoning.", async: true, context: "fresh", output: false })
+subagent({ agent: "reviewer", task: "Review the current diff for tests and validation quality against the validation contract. Inspect changed files directly.", async: true, context: "fresh", output: false })
+subagent({ agent: "reviewer", task: "Review the current diff for simplicity and maintainability. Inspect changed files directly.", async: true, context: "fresh", output: false })
+// Each completion wakes the parent. Continue useful work or end the turn and wait; do not poll.
 ```
 
 Example fix worker after parallel reviews:
@@ -796,7 +791,7 @@ Example fix worker after parallel reviews:
 subagent({
   agent: "worker",
   task: "Apply the synthesized reviewer feedback below. Only apply fixes worth doing now; preserve user-approved scope; ask before unapproved product or architecture changes. Run focused validation and summarize what changed.\n\nReviewer synthesis:\n..."
-  // Add async: true only when safe under the active-goal rule or explicitly requested.
+  // Add async: true unless an incomplete active Pi goal requires same-turn evidence.
 })
 ```
 
@@ -804,7 +799,7 @@ subagent({
 
 Do not treat review as the final step for implementation work. Run reviewers and validators, synthesize their findings against user scope and the validation contract, then launch one `worker` for accepted fixes when implementation is authorized.
 
-When an async implementation worker completes, treat the worker handoff as an intermediate state. The next parent action is review fanout, then synthesis, then a fix worker if reviewers found fixes worth doing now. This can be planned as an initial async chain when the whole workflow is known and safe under the active-goal rule, or continued as follow-up subagent runs when the parent only launched the first worker initially. Initial async chains should pass `async: true` so the main chat is unblocked; `clarify: true` is the explicit foreground opt-in.
+When an async implementation worker completes, treat the worker handoff as an intermediate state. The next parent action is separate async review runs, then synthesis, then an async fix worker if reviewers found fixes worth doing now. Keep these as parent-launched follow-up runs so each reviewer completion wakes the parent; do not put the review panel inside one async chain. Under an incomplete active Pi goal, use foreground children for goal-critical steps instead.
 
 For explicit review-loop requests, repeat worker → fresh-reviewer → synthesized-fix-worker cycles until reviewers find no blockers or fixes worth doing now, remaining feedback is optional or intentionally deferred, an unapproved product/scope/architecture decision needs the user, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. For complex work, many changed lines, or any fix pass that materially changes the diff, run another focused review round before the parent’s final look; otherwise stop instead of chasing optional polish.
 

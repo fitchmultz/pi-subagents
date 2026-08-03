@@ -7,7 +7,7 @@ Run a fresh-context parallel cleanup review of the current work.
 
 Use the `subagent` tool. First inspect available agents/skills if needed, then launch two reviewer subagents in parallel with `context: "fresh"`. Do not use forked context unless I explicitly ask for it. Reviewers must inspect the repository, relevant instructions, and current diff directly from files and commands. They must not rely on the main conversation history.
 
-Prefer async cleanup reviewers when no active Pi goal is waiting on their result. If an active Pi goal is incomplete and cleanup review gates the next goal step, use foreground reviewers with no short `timeoutMs`/`maxRuntimeMs`. A timed-out reviewer is incomplete review, never sign-off.
+Launch cleanup reviewers as separate async runs so each completion wakes the parent. Continue useful parent work while they run; if none remains, end the turn and wait instead of polling. If an active Pi goal is incomplete and cleanup review gates its next step, use foreground reviewers with no short `timeoutMs`/`maxRuntimeMs`. Omit `acceptance` from these review-only tasks unless I explicitly request a same-session acceptance contract; it adds a finalization turn and does not provide independent review. A timed-out reviewer is incomplete review, never sign-off.
 
 Do not write reviewer output files into the repository unless I explicitly ask for artifacts. Prefer `output: false` for each reviewer task.
 

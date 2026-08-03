@@ -221,7 +221,7 @@ Use `~/.pi/agent/settings.json` for a user override or `.pi/settings.json` for a
 
 Foreground runs stream progress in the conversation while they run. Use `timeoutMs` or its alias `maxRuntimeMs` when a foreground run must return within a wall-clock budget. While a foreground child is still active, `subagent({ action: "extend", id: "...", extendMs: 300000 })` can extend that timeout. When the timeout expires, running children are soft-interrupted, completed children stay in the result, and timed-out children return `timedOut: true` with a stable timeout message plus resume guidance when a child session was persisted. Foreground reviewer runs automatically raise short timeout budgets to at least 15 minutes. Planner/researcher-style roles raise short foreground budgets only when local run history shows they need longer.
 
-Background runs keep working after control returns to you. Inspect active runs with `subagent({ action: "status" })`, or a specific run with `subagent({ action: "status", id: "..." })`.
+Background runs keep working after control returns to you. Prefer them for independent child work. Continue useful parent work while they run; if none remains, end the turn and wait for automatic completion delivery instead of polling. Use `subagent({ action: "status" })` only for diagnostics, or inspect a specific run with `subagent({ action: "status", id: "..." })`.
 
 When a Codex-style Pi goal is active, prefer foreground runs for subagent work that gates the next goal step. Ending the parent turn after launching async work can let goal prompting continue before the child evidence is available. Use async under an active goal only when you have useful same-turn parent work to do before checking the result, or when you explicitly want background execution.
 
@@ -335,7 +335,7 @@ Use `->` to separate steps and give each step its own task:
 
 ```text
 /chain scout "scan the codebase" -> planner "create an implementation plan"
-/parallel scanner "find security issues" -> reviewer "check code style"
+/parallel scout "map security-sensitive code" -> researcher "check current security guidance"
 ```
 
 Both double and single quotes work. You can also use `--` as a delimiter:
@@ -355,7 +355,7 @@ For a shared task, list agents and place one `--` before the task:
 
 ```text
 /chain scout planner -- analyze the auth system
-/parallel scout reviewer -- check for security issues
+/parallel scout researcher -- investigate security requirements
 ```
 
 ### Inline per-step config
@@ -365,7 +365,7 @@ Append `[key=value,...]` to an agent name to override defaults for that step:
 ```text
 /chain scout[output=context.md] "scan code" -> planner[reads=context.md] "analyze auth"
 /run scout[model=anthropic/claude-sonnet-4] summarize this codebase
-/parallel reviewer[skills=code-review+security] "review backend" -> reviewer[model=openai/gpt-5-mini] "review frontend"
+/parallel scout[skills=security] "map backend risk" -> researcher[model=openai/gpt-5-mini] "research frontend guidance"
 ```
 
 | Key | Example | Description |
@@ -386,6 +386,7 @@ Add `--bg` to run in the background:
 ```text
 /run scout "audit the codebase" --bg
 /chain scout "analyze auth" -> planner "design refactor" -> worker --bg
+# Use grouped background mode only when one aggregate result is intentional:
 /parallel scout "scan frontend" -> scout "scan backend" --bg
 ```
 
@@ -394,7 +395,7 @@ Add `--fork` to start each child from a real branched session created from the p
 ```text
 /run reviewer "review this diff" --fork
 /chain scout "analyze this branch" -> planner "plan next steps" --fork
-/parallel scout "audit frontend" -> reviewer "audit backend" --fork
+/parallel scout "audit frontend" -> researcher "research backend constraints" --fork
 ```
 
 You can combine them in either order:
@@ -404,7 +405,7 @@ You can combine them in either order:
 /run reviewer "review this diff" --bg --fork
 ```
 
-Background runs are detached. If the parent agent has other independent work, it should keep working. If it has nothing useful to do until the background result arrives and no active goal depends on same-turn child evidence, it should end the turn instead of running sleep or status-polling loops. Pi will deliver the completion when the run finishes. When an active goal is incomplete and the child result gates the next step, prefer foreground/blocking runs instead of ending the turn after a background launch.
+Background runs are detached. Prefer separate async single-agent runs for independent fanout so each completion wakes the parent instead of waiting for every child. The parent should continue useful work; if none remains, it should end the turn and wait instead of running sleep or status-polling loops. Pi will deliver each completion. When an active goal is incomplete and child evidence gates its next step, prefer foreground/blocking execution.
 
 The `oracle` and `worker` builtins are designed for an explicit decision loop. A typical pattern is to ask `oracle` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
 
@@ -622,8 +623,8 @@ Dynamic fanout is available only through direct `subagent({ chain: [...] })` JSO
 
 ```json
 {
-  "name": "dynamic-review",
-  "description": "Find review targets, fan out reviewers, then synthesize.",
+  "name": "dynamic-analysis",
+  "description": "Find migration targets, inspect them in parallel, then synthesize a plan.",
   "chain": [
     {
       "agent": "scout",
@@ -639,17 +640,17 @@ Dynamic fanout is available only through direct `subagent({ chain: [...] })` JSO
         "maxItems": 12
       },
       "parallel": {
-        "agent": "reviewer",
-        "label": "Review {target.path}",
-        "task": "Review {target.path}. Reason: {target.reason}",
+        "agent": "scout",
+        "label": "Inspect {target.path}",
+        "task": "Inspect {target.path}. Reason: {target.reason}",
         "outputSchema": { "type": "object" }
       },
-      "collect": { "as": "reviews" },
+      "collect": { "as": "analyses" },
       "concurrency": 4
     },
     {
-      "agent": "worker",
-      "task": "Synthesize fixes from {outputs.reviews}"
+      "agent": "planner",
+      "task": "Synthesize a migration plan from {outputs.analyses}"
     }
   ]
 }
@@ -747,16 +748,15 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
 { agent: "worker", task: "continue this thread", context: "fork" }
 
 // Parallel
-{ tasks: [{ agent: "scout", task: "a" }, { agent: "reviewer", task: "b" }] }
+{ tasks: [{ agent: "scout", task: "a" }, { agent: "researcher", task: "b" }] }
 { tasks: [{ agent: "scout", task: "audit auth", count: 3 }] }
-{ tasks: [{ agent: "scout", task: "audit frontend" }, { agent: "reviewer", task: "audit backend" }], context: "fork" }
+{ tasks: [{ agent: "scout", task: "audit frontend" }, { agent: "researcher", task: "research backend constraints" }], context: "fork" }
 
 // Chain
 { chain: [
   { agent: "scout", task: "Gather context for auth refactor" },
   { agent: "planner" },
-  { agent: "worker" },
-  { agent: "reviewer" }
+  { agent: "worker" }
 ]}
 
 // Chain in the background, suitable for unblocking the main chat when no active goal needs same-turn child evidence
@@ -766,27 +766,27 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
 { chain: [
   { agent: "scout", task: "Gather context", phase: "Context", label: "Map code", as: "context" },
   { parallel: [
-    { agent: "worker", task: "Implement feature A from {outputs.context}", label: "Feature A", as: "featureA" },
-    { agent: "worker", task: "Implement feature B from {outputs.context}", label: "Feature B", as: "featureB" }
+    { agent: "scout", task: "Audit frontend from {outputs.context}", label: "Frontend", as: "frontend" },
+    { agent: "researcher", task: "Research API constraints from {outputs.context}", label: "API", as: "api" }
   ], concurrency: 2, failFast: true },
-  { agent: "reviewer", task: "Review {outputs.featureA} and {outputs.featureB}" }
+  { agent: "planner", task: "Create a plan from {outputs.frontend} and {outputs.api}" }
 ]}
 
 // Dynamic fanout from structured output
 { chain: [
   {
     agent: "scout",
-    task: "Return review targets as structured_output: { items: [{ path, reason }] }",
+    task: "Return migration targets as structured_output: { items: [{ path, reason }] }",
     as: "targets",
     outputSchema: { type: "object" }
   },
   {
     expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 12 },
-    parallel: { agent: "reviewer", task: "Review {target.path}. Reason: {target.reason}", outputSchema: { type: "object" } },
-    collect: { as: "reviews" },
+    parallel: { agent: "scout", task: "Inspect {target.path}. Reason: {target.reason}", outputSchema: { type: "object" } },
+    collect: { as: "analyses" },
     concurrency: 4
   },
-  { agent: "worker", task: "Synthesize fixes from {outputs.reviews}" }
+  { agent: "planner", task: "Synthesize a migration plan from {outputs.analyses}" }
 ] }
 
 // Strict structured output for reliable handoff data
@@ -846,19 +846,19 @@ Agent definitions are not loaded into context by default. Management actions let
 }}
 
 { action: "create", config: {
-  name: "review-pipeline",
-  description: "Scout then review",
+  name: "analysis-pipeline",
+  description: "Scout then plan",
   scope: "project",
   steps: [
     { agent: "scout", task: "Scan {task}", output: "context.md" },
-    { agent: "reviewer", task: "Review {previous}", reads: ["context.md"] }
+    { agent: "planner", task: "Plan from {previous}", reads: ["context.md"] }
   ]
 }}
 
 { action: "update", agent: "code-analysis.scout", config: { model: "openai/gpt-4o" } }
-{ action: "update", chainName: "review-pipeline", config: { steps: [...] } }
+{ action: "update", chainName: "analysis-pipeline", config: { steps: [...] } }
 { action: "delete", agent: "scout" }
-{ action: "delete", chainName: "review-pipeline" }
+{ action: "delete", chainName: "analysis-pipeline" }
 ```
 
 `create` uses `config.scope`, not `agentScope`. `config.name` is the local frontmatter name; optional `config.package` registers the runtime name as `{package}.{name}` and is saved as separate `name` and `package` frontmatter. `get` uses effective runtime precedence by default and can be narrowed with `agentScope`. `update` and `delete` use the runtime name and `agentScope` only when the same runtime name exists in multiple mutable scopes. To clear optional string fields, including `package`, set them to `false` or `""`.
@@ -944,7 +944,7 @@ Parallel agents can clobber each other if they edit the same checkout. `worktree
     { agent: "worker", task: "Implement feature A from {previous}" },
     { agent: "worker", task: "Implement feature B from {previous}" }
   ], worktree: true },
-  { agent: "reviewer", task: "Review all changes from {previous}" }
+  { agent: "planner", task: "Create an integration plan for all changes from {previous}" }
 ]}
 ```
 
@@ -1106,7 +1106,7 @@ Async runs write:
 
 ## Acceptance Gates
 
-`acceptance` is an explicit contract. Omit it for lightweight runs. Set it on single runs, top-level parallel task items, sequential chain steps, static parallel task items, and dynamic fanout child templates when the child must prove the work meets concrete criteria. Do not set it on static parallel groups or dynamic fanout aggregate groups; those groups do not own a same-session child turn.
+`acceptance` is an explicit contract. Omit it for lightweight runs. For review-only tasks, omit it unless the user explicitly requests a same-session acceptance contract; the extra finalization turn is not independent review. Set it on single runs, top-level parallel task items, sequential chain steps, static parallel task items, and dynamic fanout child templates when the child must prove the work meets concrete criteria. Do not set it on static parallel groups or dynamic fanout aggregate groups; those groups do not own a same-session child turn.
 
 If you are coming from Codex Goals, `acceptance` is the subagent equivalent for one delegated run. When a user says `/goal`, “goal”, “active goal”, “continue until evidence says done”, or “verify against a goal”, translate that into an acceptance contract: `criteria` are the target, `evidence` and `verify` are proof, `stopRules` are constraints, and `maxFinalizationTurns` is the bounded loop budget.
 
@@ -1139,7 +1139,7 @@ When delegating implementation from a plan or spec, keep the task focused on wha
 ```ts
 subagent({
   agent: "worker",
-  // Add async: true only when safe under the active-goal rule or explicitly requested.
+  // Add async: true unless an incomplete active Pi goal requires same-turn evidence.
   task: "Implement the plan at /Users/me/docs/mcp-alignment-plan.md. Use scout artifacts in ./handoff/ as context. Do not commit the scout artifacts.",
   acceptance: {
     criteria: [

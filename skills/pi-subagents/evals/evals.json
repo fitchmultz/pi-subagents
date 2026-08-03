@@ -3,7 +3,7 @@
     {
       "id": "success-parallel-review",
       "prompt": "Use Pi subagents to review the current diff from several angles.",
-      "expected_output": "The agent lists available subagents unless already known, launches fresh-context reviewer tasks with distinct evidence-backed angles, marks them review-only/no project edits, treats any reviewer timeout as incomplete review, and synthesizes fixes worth doing now separately from optional or deferred feedback."
+      "expected_output": "The agent lists available subagents unless already known, launches fresh-context reviewer tasks with distinct evidence-backed angles, marks them review-only/no project edits, omits acceptance because same-session finalization is not independent review, launches independent reviewers as separate async runs so each completion wakes the parent, ends the turn to wait when no useful parent work remains, treats any reviewer timeout as incomplete review, and synthesizes fixes worth doing now separately from optional or deferred feedback."
     },
     {
       "id": "success-worker-acceptance-handoff",
