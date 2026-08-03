@@ -125,6 +125,7 @@ function createCommandContext(
 		custom: (...args: unknown[]) => Promise<unknown>;
 		notify: (message: string, type?: string) => void;
 		setStatus: (key: string, text: string | undefined) => void;
+		getToolsExpanded: () => boolean;
 		setToolsExpanded: (expanded: boolean) => void;
 		sessionManager: unknown;
 	}> = {},
@@ -135,6 +136,7 @@ function createCommandContext(
 		ui: {
 			notify: overrides.notify ?? ((_message: string) => {}),
 			setStatus: overrides.setStatus ?? ((_key: string, _text: string | undefined) => {}),
+			getToolsExpanded: overrides.getToolsExpanded ?? (() => false),
 			setToolsExpanded: overrides.setToolsExpanded ?? ((_expanded: boolean) => {}),
 			onTerminalInput: () => () => {},
 			custom: overrides.custom ?? (async () => undefined),
@@ -318,7 +320,7 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		assert.equal((visibleSnapshot.result.content[0] as { text?: string }).text, "Scout finished");
 	});
 
-	it("/run collapses tool detail before showing the initial live card", async () => {
+	it("/run only collapses expanded tool detail before showing the initial live card", async () => {
 		const log: string[] = [];
 		const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
 		const events = createEventBus();
@@ -344,11 +346,22 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		};
 
 		registerSlashCommands!(pi, createState(process.cwd()));
-		await commands.get("run")!.handler("scout inspect this", createCommandContext({
+		let expanded = false;
+		const run = commands.get("run")!;
+		const ctx = createCommandContext({
 			hasUI: true,
-			setToolsExpanded: (expanded) => log.push(`expanded:${String(expanded)}`),
-		}));
+			getToolsExpanded: () => expanded,
+			setToolsExpanded: (value) => {
+				expanded = value;
+				log.push(`expanded:${String(value)}`);
+			},
+		});
+		await run.handler("scout inspect this", ctx);
+		assert.equal(log.some((entry) => entry.startsWith("expanded:")), false);
 
+		log.length = 0;
+		expanded = true;
+		await run.handler("scout inspect this", ctx);
 		assert.deepEqual(log.slice(0, 2), ["expanded:false", "send"]);
 	});
 

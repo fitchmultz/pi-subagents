@@ -27,6 +27,7 @@
 - Run local test scripts through a small wrapper that clears inherited `PI_SUBAGENT_*` runtime variables before starting the Node test runner.
 
 ### Fixed
+- Avoid redundant `Tool output: collapsed` notices on Pi 0.83.0 by checking the current expansion state before subagent tools and slash commands collapse it.
 - Keep detached async runners loadable after Pi refreshes a git-installed package with development dependencies omitted: subagent schemas now use the existing TypeBox runtime directly, and the package smoke reproduces a packed production install.
 - Detect configured git-installed `pi-intercom` packages so live subagents register their deterministic target and `subagent({ action: "nudge" })` works without manually listing intercom sessions.
 - Treat Codex-style `usage limit` errors as retryable model failures so configured `fallbackModels` advance immediately, and keep them out of same-model transport recovery loops.
