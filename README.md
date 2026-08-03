@@ -10,19 +10,17 @@ https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1
 
 ## Installation
 
-This fork is validated for local path installs:
+Install this fork from GitHub:
 
 ```bash
-pi install /absolute/path/to/pi-subagents --approve
+pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-For example, from a checkout on this machine:
+That is the only required step. This personal fork is not published to npm and does not provide an `npx pi-subagents` installer. Use `pi update --extensions` to refresh it. Local checkout installs remain available for development:
 
 ```bash
-pi install /Users/mitchfultz/Projects/AI/pi-subagents --approve
+pi install /absolute/path/to/pi-subagents
 ```
-
-That is the only required step. This personal fork is not published to npm and does not provide an `npx pi-subagents` installer; refresh the installed extension by rerunning the same local `pi install /absolute/path/to/pi-subagents --approve` command after pulling or editing this checkout. You can add optional pieces later.
 
 Pi 0.80.9 or newer is recommended because the extension tracks current extension-mode, lifecycle, model-thinking, and project-trust APIs. The package does not hard-pin that exact Pi version; Pi core packages stay optional wildcard peers so newer Pi releases are not blocked.
 
@@ -34,25 +32,7 @@ Run the local completion gate before treating changes as complete:
 npm run ci
 ```
 
-That command runs TypeScript no-emit checking, package shape smoke checks, isolated local path install smoke checks, pi-fitch-kit agent override sync checks, and the full unit/integration suite. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
-
-## Agent override validation
-
-This fork expects the custom agents in `/Users/mitchfultz/Projects/AI/pi-fitch-kit/agents` to override the bundled agents by symlink in `~/.pi/agent/agents`, not `~/.agents/agents`. The local completion gate runs:
-
-```bash
-npm run smoke:overrides
-```
-
-Run it after changes that touch bundled agents, agent discovery, package install behavior, context policy, intercom bridge injection, or real Pi smoke coverage. If it fails, refresh the source-managed overrides without copying agent files into this repo:
-
-```bash
-pi install /Users/mitchfultz/Projects/AI/pi-fitch-kit --approve
-# or, when Pi is not running:
-bash /Users/mitchfultz/Projects/AI/pi-fitch-kit/scripts/sync-agents.sh
-```
-
-Then rerun `npm run smoke:overrides` or the full `npm run ci` gate.
+That command runs TypeScript no-emit checking, package shape smoke checks, an isolated local path install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
 ## Real Pi smoke
 
@@ -62,7 +42,7 @@ The default local gate stays mock-heavy and deterministic. When you need to veri
 npm run smoke:real-pi
 ```
 
-It installs this checkout and `/Users/mitchfultz/Projects/AI/pi-fitch-kit` into an isolated temporary Pi home, runs `pi list`, syncs pi-fitch-kit agent overrides, and verifies the overrides point to `~/.pi/agent/agents` inside that isolated home. It never publishes to npm and does not use GitHub Actions.
+It installs this checkout into an isolated temporary Pi home and runs `pi list`. It does not install pi-fitch-kit, publish to npm, or use GitHub Actions.
 
 Live model-backed subagent paths are intentionally opt-in because they can use provider credentials and tokens:
 
@@ -178,20 +158,36 @@ The extension ships with builtin agents you can use immediately.
 
 | Agent | Use it when you want... |
 |-------|--------------------------|
-| `scout` | Fast local codebase recon: relevant files, entry points, data flow, risks, and where another agent should start. |
-| `researcher` | Web/docs research with sources: official docs, specs, benchmarks, recent changes, and a concise research brief. |
-| `planner` | A concrete implementation plan from existing context. It should read and plan, not edit code. |
-| `worker` | Implementation work, including approved oracle handoffs. It edits files, validates, and escalates unapproved decisions instead of guessing. |
-| `reviewer` | Code review and small fixes. It checks the implementation against the task/plan, tests, edge cases, and simplicity. |
-| `context-builder` | A stronger setup pass before planning: gathers code context and writes handoff material such as `context.md` and `meta-prompt.md`. |
-| `oracle` | A second opinion before acting. It challenges assumptions, catches drift, and recommends the safest next move without editing. |
-| `delegate` | A lightweight general delegate when you want a child agent that behaves close to the parent session. |
+| `scout` | Fast codebase recon and a compressed handoff. |
+| `context-builder` | Requirements and codebase analysis that produces implementation-ready context. |
+| `researcher` | Evidence-driven research for consequential technical decisions. |
+| `planner` | A concrete implementation plan without edits. |
+| `worker` | End-to-end implementation of an approved, bounded task. |
+| `debugger` | Root-cause diagnosis with reproduction and repair evidence. |
+| `fixer` | A bounded set of already-decided fixes without replanning. |
+| `reviewer` | General implementation review against the task and evidence. |
+| `reviewer-gpt` | A strict final maintainability and correctness gate. |
+| `reviewer-claude` | An independent cross-model review of assumptions and product risk. |
+| `reviewer-security` | Security and data-safety review for trust-boundary changes. |
+| `ui-designer` | Rendered UI, layout, accessibility, and visual polish. |
+| `writer` | Human-facing documentation, announcements, and polished copy. |
+| `oracle` | A forked second opinion that protects the current decision contract. |
+| `delegate` | Lightweight generic delegation that stays close to the parent session. |
 
-A simple rule of thumb: use `scout` before you understand the code, `researcher` before you trust external facts, `planner` before a bigger change, `worker` to implement, `reviewer` to check, and `oracle` when the decision itself feels risky.
+Use the narrowest role that fits the task. Keep implementation to one writer and launch reviewers separately.
 
 ## Changing a builtin agent's model
 
-Builtin agents inherit your current Pi default model by default. This keeps new installs from depending on a provider you may not have configured. If you want a role to use a specific model, set an override instead of copying the bundled agent file.
+The bundled Fitch role profiles pin the same primary and fallback routes as pi-fitch-kit. `delegate` is the exception and inherits the current Pi model.
+
+| Primary route | Agents |
+|---------------|--------|
+| `xai/grok-4.5` | `scout`, `context-builder`, `fixer`, `worker` |
+| `openai-codex/gpt-5.6-sol` | `debugger`, `oracle`, `planner`, `researcher`, `reviewer`, `reviewer-gpt`, `reviewer-security` |
+| `anthropic/claude-fable-5` | `reviewer-claude`, `ui-designer`, `writer` |
+| Current Pi model | `delegate` |
+
+Fallback routes live in each `agents/*.md` file. Override a role if those routes are unavailable in your Pi setup; you do not need to copy the bundled agent file.
 
 For one run, put the override in the command:
 
@@ -199,7 +195,7 @@ For one run, put the override in the command:
 /run reviewer[model=anthropic/claude-sonnet-4:high] "Review this diff"
 ```
 
-For a persistent override, edit settings. This example pins the reviewer everywhere, adds a backup model for provider failures, and keeps the other builtins on your normal default model:
+For a persistent override, edit settings. This example pins the reviewer everywhere, adds a backup model for provider failures, and leaves the other builtins on their configured routes:
 
 ```json
 {
@@ -255,7 +251,7 @@ clarify → planner → worker → fresh reviewers → worker
 
 Use the optional prompt shortcuts below when you want the pattern to be repeatable.
 
-Packaged `planner`, `worker`, and `oracle` default to forked context when a launch omits `context`; pass `context: "fresh"` when you intentionally want a fresh child run. Forked context is rejected when an affected agent's effective primary or fallback model uses the `anthropic/` provider, and explicit context/model overrides cannot bypass that restriction.
+Packaged `oracle` defaults to forked context; the other Fitch role profiles default to fresh context. Forked context is rejected when an affected agent's effective primary or fallback model uses the `anthropic/` provider, and explicit context/model overrides cannot bypass that restriction.
 
 Child-safety boundaries are enforced at runtime. Spawned child sessions do not receive the bundled `pi-subagents` skill, and forked child context filtering removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results. By default, children do not register the `subagent` tool and receive boundary instructions that they are not the parent orchestrator and must not propose or run subagents. The explicit exception is an agent configured with `allowSubagents: true` or whose resolved builtin `tools` includes `subagent`; that child gets a child-safe `subagent` tool for the fanout work the parent assigned, still bounded by `maxSubagentDepth`.
 
@@ -280,10 +276,10 @@ Add `autofix` to `/parallel-review` or `/parallel-cleanup` to apply only the syn
 `pi-subagents` works without `pi-intercom`. Install `pi-intercom` only if you want child agents to talk back to the parent Pi session while they are running.
 
 ```bash
-pi install npm:pi-intercom
+pi install git:github.com/fitchmultz/pi-intercom
 ```
 
-Most users do not call `intercom` directly. After `pi-intercom` is installed, `pi-subagents` can automatically give child agents a private coordination channel back to the parent session. The bridge recognizes the normal `pi install npm:pi-intercom` package install as well as legacy local extension checkouts.
+Most users do not call `intercom` directly. After `pi-intercom` is installed, `pi-subagents` can automatically give child agents a private coordination channel back to the parent session. The bridge recognizes the GitHub package install as well as local extension checkouts.
 
 Use it for work where the child might need a decision instead of guessing:
 
@@ -394,8 +390,8 @@ Add `--fork` to start each child from a real branched session created from the p
 
 ```text
 /run reviewer "review this diff" --fork
-/chain scout "analyze this branch" -> planner "plan next steps" --fork
-/parallel scout "audit frontend" -> researcher "research backend constraints" --fork
+/chain scout "analyze this branch" -> oracle "plan next steps" --fork
+/parallel scout "audit frontend" -> reviewer "review backend constraints" --fork
 ```
 
 You can combine them in either order:
@@ -436,19 +432,13 @@ Agent locations, lowest to highest priority:
 
 | Scope | Path |
 |-------|------|
-| Builtin | `~/.pi/agent/extensions/subagent/agents/` |
+| Builtin | Installed package's `agents/` directory |
 | User | `~/.pi/agent/agents/**/*.md` |
 | Project | `.pi/agents/**/*.md` |
 
 Project discovery also reads legacy `.agents/**/*.md` files. Nested subdirectories are discovered recursively. `.chain.md` files do not define agents. If both `.agents/` and `.pi/agents/` define the same parsed runtime agent name, `.pi/agents/` wins. Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions.
 
-Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. They do not pin a provider model; they inherit your current Pi default model unless you set `subagents.agentOverrides.<name>.model`. `oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `worker` is the implementation agent for normal tasks and approved oracle handoffs.
-
-The `researcher` builtin uses `web_search`, `fetch_content`, and `get_search_content`; those require [pi-web-access](https://github.com/nicobailon/pi-web-access):
-
-```bash
-pi install npm:pi-web-access
-```
+Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. The Fitch role profiles pin provider models and fallback routes; `delegate` inherits the current Pi model. `oracle` is the only packaged fork-default role. The other Fitch profiles default to fresh context and use Pi's normal tool surface.
 
 ### Builtin overrides
 
@@ -745,12 +735,12 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
 { agent: "scout", task: "write a large report", output: "reports/scout.md", outputMode: "file-only" }
 
 // Forked context
-{ agent: "worker", task: "continue this thread", context: "fork" }
+{ agent: "oracle", task: "review this thread", context: "fork" }
 
 // Parallel
 { tasks: [{ agent: "scout", task: "a" }, { agent: "researcher", task: "b" }] }
 { tasks: [{ agent: "scout", task: "audit auth", count: 3 }] }
-{ tasks: [{ agent: "scout", task: "audit frontend" }, { agent: "researcher", task: "research backend constraints" }], context: "fork" }
+{ tasks: [{ agent: "scout", task: "audit frontend" }, { agent: "oracle", task: "review backend constraints" }], context: "fork" }
 
 // Chain
 { chain: [
@@ -882,7 +872,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `extendMs` | number | - | Additional milliseconds for `action: "extend"`. |
 | `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. |
 | `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Sequential steps and parallel child tasks support `phase`, `label`, `as`, `outputSchema`, and `acceptance` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`; group-level acceptance is not supported because there is no child session to finalize. |
-| `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `planner`, `worker`, and `oracle` default to `fork`. Fork is rejected for effective `anthropic/` primary or fallback models. |
+| `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `oracle` defaults to `fork`; the other Fitch role profiles default to `fresh`. Fork is rejected for effective `anthropic/` primary or fallback models. |
 | `chainDir` | string | temp chain dir | Persistent directory for chain artifacts. |
 | `clarify` | boolean | false | Show TUI preview/edit flow only when explicitly set to `true`. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
@@ -896,7 +886,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `sessionDir` | string | derived | Override session log directory. |
 | `acceptance` | object | omitted | Explicit criteria/evidence/verification contract. When present, the child gets a structured contract, then the runtime continues the same session for a bounded self-review/repair loop before evaluating acceptance. Launch independent reviewers separately from the parent. |
 
-`context: "fork"` fails fast when an affected agent's effective primary or fallback model uses the `anthropic/` provider, the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. The Anthropic restriction cannot be bypassed with explicit context or model overrides, and fork never silently downgrades to `fresh`. When a multi-agent run omits `context`, each child uses its own `defaultContext`: a fresh-default scout or reviewer stays fresh even when batched with a fork-default worker or oracle. Other providers continue to use these agent defaults and explicit context overrides normally.
+`context: "fork"` fails fast when an affected agent's effective primary or fallback model uses the `anthropic/` provider, the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. The Anthropic restriction cannot be bypassed with explicit context or model overrides, and fork never silently downgrades to `fresh`. When a multi-agent run omits `context`, each child uses its own `defaultContext`: a fresh-default scout or reviewer stays fresh even when batched with fork-default `oracle`. Other providers continue to use these agent defaults and explicit context overrides normally.
 
 By default, `output` paths are handoff files. Explicit `output` paths are resolved from the task cwd and left in place, so workspace paths like `.scratchpad/scout.md` remain readable after the run. Relative output paths that come only from an agent default are materialized under the run artifact directory as unique files, so parallel defaults like `context.md` or `review.md` do not collide and do not create project-root leftovers. In inline mode, the runtime reads the handoff content into the parent result and records `savedOutputPath`/`outputReference`; when a materialized agent-default file is consumed, the result records `outputCleanup`. Session artifacts still expose `artifactPaths.outputPath` when artifacts are enabled.
 
@@ -1046,7 +1036,7 @@ Fields:
 - `mode`: default `always`; use `fork-only` to inject only for forked children/steps in mixed fresh/fork runs, or `off` to disable the bridge.
 - `instructionFile`: optional Markdown template replacing the default bridge instructions. `{orchestratorTarget}` is interpolated. Relative paths resolve from `~/.pi/agent/extensions/subagent/`.
 
-Bridge activation also requires `pi-intercom` to be installed and enabled through `pi install npm:pi-intercom` or a legacy local extension checkout, a targetable current session name or fallback alias, and `pi-intercom` in any explicit agent `extensions` allowlist.
+Bridge activation also requires `pi-intercom` to be installed and enabled through `pi install git:github.com/fitchmultz/pi-intercom` or a local extension checkout, a targetable current session name or fallback alias, and `pi-intercom` in any explicit agent `extensions` allowlist.
 
 The default injected guidance tells children to use steered blocking `contact_supervisor` decisions or structured interviews only when the ephemeral child cannot safely continue and must remain alive for the answer, intentionally deferred/coalesced `progress_update` for concise plan-changing updates, and generic intercom only as fallback plumbing. Supervisor nudges supplement the active task unless they explicitly replace it; routine completion still returns through normal child results.
 

@@ -210,7 +210,6 @@ Validation:
 
 - Full `npm run ci`.
 - `npm run smoke:real-pi` when real Pi package loading is touched.
-- `npm run smoke:overrides` after agent/discovery changes.
 
 Risk: medium. Cleanup can accidentally remove edge-case validation.
 
@@ -274,4 +273,4 @@ These are task specs, not created queue entries yet.
 - Foreground and async dispatch consume the same planned child metadata for single/parallel paths.
 - Chain planning is introduced only after single/parallel are stable.
 - Public schema, README contract, result/status wording, and persisted async result compatibility are unchanged unless approved by a dedicated task.
-- `npm run ci`, `npm run smoke:overrides`, and relevant real Pi smoke commands pass for each implementation slice.
+- `npm run ci` and relevant real Pi smoke commands pass for each implementation slice.

@@ -25,7 +25,7 @@ Do not blindly apply every reviewer suggestion. If reviewers surface an unapprov
 
 When an async implementation worker completes, treat its handoff as the transition into review, not as final completion, unless I explicitly asked for worker-only work, review-only output, or to stop after implementation.
 
-When there are fixes worth doing now and the workflow is implementation-authorized, launch one async forked `worker` to apply only those synthesized fixes unless an incomplete active Pi goal needs its result in the same turn; use foreground for that exception. Ask it to preserve the approved scope, run focused validation, and report changed files, commands run with exit codes, validation evidence, surprises, and anything left undone.
+When there are fixes worth doing now and the workflow is implementation-authorized, launch one async `worker` to apply only those synthesized fixes unless an incomplete active Pi goal needs its result in the same turn; use foreground for that exception. Ask it to preserve the approved scope, run focused validation, and report changed files, commands run with exit codes, validation evidence, surprises, and anything left undone.
 
 After a fix worker returns, run another review round only when it made material changes or addressed non-trivial findings. Do not keep looping for optional polish, speculative improvements, or findings already deferred by the parent.
 

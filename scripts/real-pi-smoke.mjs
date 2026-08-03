@@ -6,12 +6,11 @@ import { join, resolve } from "node:path";
 import process from "node:process";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
-const fitchKitRoot = process.env.PI_FITCH_KIT_DIR ?? "/Users/mitchfultz/Projects/AI/pi-fitch-kit";
 const authAgentDir = process.env.PI_REAL_SMOKE_AUTH_AGENT_DIR
 	?? (process.env.HOME ? join(process.env.HOME, ".pi", "agent") : undefined);
 
 function usage() {
-	console.log(`Usage: node scripts/real-pi-smoke.mjs [--llm] [--llm-full] [--keep-temp] [--timeout-ms <ms>]\n\nRuns an opt-in real Pi package smoke for this local file-path fork. By default it\nuses an isolated temporary Pi home, installs this checkout plus pi-fitch-kit by\nlocal path, syncs pi-fitch-kit agent overrides into that temporary ~/.pi/agent,\nand verifies pi list plus override symlinks. It does not publish anything and it\ndoes not create GitHub Actions.\n\nOptions:\n  --llm             Also run live model-backed list, foreground, and async-completion smoke prompts\n  --llm-full        Also run broader live parallel, chain, output, and acceptance prompts\n  --keep-temp       Keep the isolated temporary home for debugging\n  --timeout-ms <ms> Per-command timeout in milliseconds (default: ${DEFAULT_TIMEOUT_MS})\n  -h, --help        Show this help\n\nEnvironment:\n  PI_FITCH_KIT_DIR                 Override pi-fitch-kit repo path (default: ${fitchKitRoot})\n  PI_REAL_SMOKE_AUTH_AGENT_DIR     Source Pi agent dir for auth.json/models.json during --llm (default: ~/.pi/agent)\n  PI_REAL_SMOKE_MODEL              Model passed to live --llm smoke prompts, e.g. openai/gpt-4o-mini\n  PI_REAL_SMOKE_PROVIDER           Provider passed to live --llm smoke prompts\n\nExit codes:\n  0  real Pi smoke passed\n  1  install/list/override/live smoke failed\n  2  invalid arguments`);
+	console.log(`Usage: node scripts/real-pi-smoke.mjs [--llm] [--llm-full] [--keep-temp] [--timeout-ms <ms>]\n\nRuns an opt-in real Pi package smoke for this checkout. It uses an isolated\ntemporary Pi home, installs this package by local path, and verifies pi list.\nIt does not install pi-fitch-kit, publish anything, or create GitHub Actions.\n\nOptions:\n  --llm             Also run live model-backed list, foreground, and async-completion smoke prompts\n  --llm-full        Also run broader live parallel, chain, output, and acceptance prompts\n  --keep-temp       Keep the isolated temporary home for debugging\n  --timeout-ms <ms> Per-command timeout in milliseconds (default: ${DEFAULT_TIMEOUT_MS})\n  -h, --help        Show this help\n\nEnvironment:\n  PI_REAL_SMOKE_AUTH_AGENT_DIR     Source Pi agent dir for auth.json/models.json during --llm (default: ~/.pi/agent)\n  PI_REAL_SMOKE_MODEL              Model passed to live --llm smoke prompts, e.g. openai/gpt-4o-mini\n  PI_REAL_SMOKE_PROVIDER           Provider passed to live --llm smoke prompts\n\nExit codes:\n  0  real Pi smoke passed\n  1  install/list/live smoke failed\n  2  invalid arguments`);
 }
 
 function parsePositiveInteger(value, source) {
@@ -173,8 +172,6 @@ async function main() {
 	}
 
 	const repoRoot = resolve(process.cwd());
-	if (!existsSync(fitchKitRoot)) throw new Error(`pi-fitch-kit repo not found: ${fitchKitRoot}`);
-
 	const root = mkdtempSync(join(tmpdir(), "pi-subagents-real-pi-smoke-"));
 	const agentDir = join(root, "pi-agent");
 	const env = isolatedEnv(root, agentDir);
@@ -182,14 +179,8 @@ async function main() {
 
 	try {
 		runPi("pi install pi-subagents", ["install", repoRoot, "--approve"], runOptions);
-		runPi("pi install pi-fitch-kit", ["install", fitchKitRoot, "--approve"], runOptions);
-		run("sync pi-fitch-kit agents", "bash", [join(fitchKitRoot, "scripts", "sync-agents.sh")], { ...runOptions, cwd: fitchKitRoot });
 		const list = runPi("pi list", ["list", "--approve"], runOptions);
 		if (!list.includes(repoRoot)) throw new Error(`pi list did not include ${repoRoot}:\n${list}`);
-		if (!list.includes(fitchKitRoot)) throw new Error(`pi list did not include ${fitchKitRoot}:\n${list}`);
-		const overrideJson = run("verify agent overrides", process.execPath, [join(repoRoot, "scripts", "verify-agent-overrides.mjs"), "--json"], runOptions);
-		const overrideResult = JSON.parse(overrideJson);
-		if (!overrideResult.valid) throw new Error(`override verification failed:\n${overrideJson}`);
 
 		if (options.llm) {
 			const copiedAuthFiles = copyLiveAuth(agentDir);
@@ -220,7 +211,7 @@ async function main() {
 			}
 		}
 
-		console.log(`[real-pi-smoke] installed local packages, verified pi list, and verified ${overrideResult.verifiedOverrides}/${overrideResult.bundledAgents} override symlink(s) in ${agentDir}`);
+		console.log(`[real-pi-smoke] installed the local package and verified pi list in ${agentDir}`);
 		if (!options.llm) console.log("[real-pi-smoke] live model subagent prompts skipped; pass --llm to exercise foreground/async paths.");
 	} finally {
 		if (options.keepTemp) console.log(`[real-pi-smoke] kept temp root ${root}`);

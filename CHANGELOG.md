@@ -14,10 +14,10 @@
 - Raised the default subagent no-activity needs-attention threshold from 1 minute to 10 minutes so long test/build commands do not trigger early nudge reminders.
 - Added `subagent({ action: "nudge" })` as a first-class live child nudge that routes through `pi-intercom` with `delivery:"steer"` when the child is registered, and updated status/control hints to show both the subagent nudge and direct blocking intercom ask paths.
 - Control nudge hints now use live intercom steering because they request a child reply and should reach active children promptly.
-- Marked this personal fork as private, removed the legacy `npx pi-subagents` installer/bin path, and documented local file-path `pi install` as the canonical install/refresh workflow.
-- Added a local pi-fitch-kit agent override smoke check to verify source-managed custom agents are symlinked into `~/.pi/agent/agents` and included it in `npm run ci`.
+- Kept this personal fork private with no legacy `npx` installer, made GitHub `pi install` the canonical install/refresh workflow, and retained local path installs for development.
+- Bundled the 14 pi-fitch-kit agent profiles as defaults, retained the extension's lightweight `delegate`, and removed pi-fitch-kit from the canonical local validation gate.
 - Added a per-suite local watchdog to `scripts/run-tests.mjs`, with timeout diagnostics and `PI_TEST_TIMEOUT_MS` / `--timeout-ms` overrides for slow debug runs.
-- Added an opt-in `npm run smoke:real-pi` command that installs this checkout and pi-fitch-kit into an isolated temporary Pi home, verifies `pi list`, and checks custom-agent override symlinks; live model subagent prompts remain gated behind `-- --llm`.
+- Added an opt-in `npm run smoke:real-pi` command that installs this checkout into an isolated temporary Pi home and verifies `pi list`; live model subagent prompts remain gated behind `-- --llm`.
 - Updated the local Pi development baseline to `@earendil-works/*` `0.79.0` while keeping Pi runtime packages as optional wildcard peers so 0.79.0 is a suggested floor, not a hard requirement.
 - Use Pi 0.78.1 `ctx.mode` when available to restrict terminal-only widget, raw input, and tool-expansion behavior to TUI mode while preserving a `ctx.hasUI` fallback for older compatible Pi installs.
 - Ignore the whole project-local `.pi/` tree so semantic caches and other agent state do not appear as publishable package artifacts.
