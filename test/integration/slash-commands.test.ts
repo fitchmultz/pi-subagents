@@ -320,7 +320,7 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		assert.equal((visibleSnapshot.result.content[0] as { text?: string }).text, "Scout finished");
 	});
 
-	it("/run only collapses expanded tool detail before showing the initial live card", async () => {
+	it("/run preserves tool output expansion before showing the initial live card", async () => {
 		const log: string[] = [];
 		const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
 		const events = createEventBus();
@@ -362,7 +362,9 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		log.length = 0;
 		expanded = true;
 		await run.handler("scout inspect this", ctx);
-		assert.deepEqual(log.slice(0, 2), ["expanded:false", "send"]);
+		assert.equal(log.some((entry) => entry.startsWith("expanded:")), false);
+		assert.equal(expanded, true);
+		assert.equal(log[0], "send");
 	});
 
 	it("/run finalizes the slash snapshot before the last UI redraw on error", async () => {

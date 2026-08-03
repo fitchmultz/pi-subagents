@@ -24,7 +24,7 @@ import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
 import { clearLegacyResultAnimationTimer, renderWidget, renderSubagentResult } from "../tui/render.ts";
 import { SubagentParams } from "./schemas.ts";
-import { createSubagentExecutor, normalizeSubagentParamsLike, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import { createSubagentExecutor, normalizeSubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
@@ -330,16 +330,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		return new SubagentControlNoticeComponent({ ...details, noticeText: formatSubagentControlNotice(details, content) }, theme);
 	});
 
-	const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal | undefined, onUpdate: ((result: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext) => {
-		if (isTuiContext(ctx) && ctx.ui.getToolsExpanded()) ctx.ui.setToolsExpanded(false);
-		return executor.execute(id, params, signal, onUpdate, ctx);
-	};
-
 	const slashBridge = registerSlashSubagentBridge({
 		events: pi.events,
 		getContext: () => state.lastUiContext,
 		execute: (id, params, signal, onUpdate, ctx) =>
-			executeSubagentCollapsed(id, params, signal, onUpdate, ctx),
+			executor.execute(id, params, signal, onUpdate, ctx),
 	});
 
 	const promptTemplateBridge = registerPromptTemplateDelegationBridge({
@@ -347,7 +342,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		getContext: () => state.lastUiContext,
 		execute: async (requestId, request, signal, ctx, onUpdate) => {
 			if (request.tasks && request.tasks.length > 0) {
-				return executeSubagentCollapsed(
+				return executor.execute(
 					requestId,
 					{
 						tasks: request.tasks,
@@ -362,7 +357,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 					ctx,
 				);
 			}
-			return executeSubagentCollapsed(
+			return executor.execute(
 				requestId,
 				{
 					agent: request.agent,
@@ -406,7 +401,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		parameters: SubagentParams,
 
 		async execute(id, params, signal, onUpdate, ctx) {
-			return toRegisteredToolResult(await executeSubagentCollapsed(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx));
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx));
 		},
 
 		renderCall(args, theme) {

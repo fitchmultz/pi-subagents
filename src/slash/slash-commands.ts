@@ -316,7 +316,6 @@ async function runSlashSubagent(
 	ctx: ExtensionContext,
 	params: SubagentParamsLike,
 ): Promise<void> {
-	if (isTuiContext(ctx) && ctx.ui.getToolsExpanded()) ctx.ui.setToolsExpanded(false);
 	const requestId = randomUUID();
 	const initialDetails = buildSlashInitialResult(requestId, params);
 	const initialText = extractSlashMessageText(initialDetails.result.content) || "Running subagent...";
