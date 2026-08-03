@@ -27,13 +27,20 @@ Parent-orchestrator skill for launching focused child Pi sessions. Parent owns o
 Use the effective agents from `subagent({ action: "list" })`; user/project profiles may replace builtin role behavior. Common roles:
 
 - `scout`: fast codebase recon and handoff context.
-- `researcher`: external/web/docs research with sources.
+- `context-builder`: stronger context/meta-prompt handoff builder.
+- `researcher`: evidence-driven technical research.
 - `planner`: concrete implementation plans; should read and plan, not edit.
 - `worker`: single-writer implementation for approved scope.
-- `reviewer`: review and small fixes when explicitly allowed.
-- `context-builder`: stronger context/meta-prompt handoff builder.
+- `debugger`: root-cause diagnosis and repair evidence.
+- `fixer`: bounded remediation after findings are already decided.
+- `reviewer`: general implementation review.
+- `reviewer-gpt`: strict maintainability and correctness gate.
+- `reviewer-claude`: independent cross-model assumptions and product-risk review.
+- `reviewer-security`: security and data-safety review for trust boundaries.
+- `ui-designer`: rendered UI, layout, accessibility, and visual polish.
+- `writer`: human-facing documentation and polished copy.
 - `oracle`: forked advisory second opinion for direction, drift, and assumptions.
-- `delegate` if present: lightweight generic child; prefer a specialist or `worker` when the task has a real role.
+- `delegate`: lightweight generic child; prefer a specialist or `worker` when the task has a real role.
 
 Keep configured defaults for routine runs. Pass `model`/`thinking` only when the listed agent description, user request, or clear task risk justifies it; put the override in the subagent call, not only in prose. Pass explicit `context: "fresh"` or `"fork"` only when one policy should override every child in the call. Fork is rejected for effective `anthropic/` primary or fallback models, and explicit overrides cannot bypass that restriction.
 

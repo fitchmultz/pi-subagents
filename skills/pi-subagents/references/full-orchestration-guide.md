@@ -52,7 +52,7 @@ Use this when the user wants adversarial review of a diff, plan, issue, file, or
 
 ### Review-loop technique
 
-Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one `worker` implements or fixes, fresh-context `reviewer` agents inspect the actual repo and diff, the parent synthesizes accepted fixes, and one forked `worker` applies them. Prefer separate async reviewer runs so each completion wakes the parent instead of waiting for the whole panel. Continue useful parent work while they run; if none remains, end the turn and wait instead of polling. Do not put reviewer panels inside one async chain because the aggregate result hides individual reviewer completions; continue with explicit follow-up runs after each completion. Under an incomplete active Pi goal, prefer foreground/blocking children for goal-critical implementation, review, and fix steps; a bounded foreground chain is acceptable only when the sequence is fixed and no parent decision is needed between steps. Treat an async implementation worker handoff as an intermediate state, not final completion, unless the user explicitly asked for worker-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish, and do not let children launch subagents or decide the loop outcome.
+Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one `worker` implements or fixes, fresh-context `reviewer` agents inspect the actual repo and diff, the parent synthesizes accepted fixes, and one `worker` applies them. Prefer separate async reviewer runs so each completion wakes the parent instead of waiting for the whole panel. Continue useful parent work while they run; if none remains, end the turn and wait instead of polling. Do not put reviewer panels inside one async chain because the aggregate result hides individual reviewer completions; continue with explicit follow-up runs after each completion. Under an incomplete active Pi goal, prefer foreground/blocking children for goal-critical implementation, review, and fix steps; a bounded foreground chain is acceptable only when the sequence is fixed and no parent decision is needed between steps. Treat an async implementation worker handoff as an intermediate state, not final completion, unless the user explicitly asked for worker-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish, and do not let children launch subagents or decide the loop outcome.
 
 ### Parallel research technique
 
@@ -144,18 +144,25 @@ subagent({
 Builtin agents load at the lowest priority. Project agents override user agents,
 and user/project agents override builtins with the same name.
 
-| Agent | Purpose | Model | Typical output / role |
-|-------|---------|-------|------------------------|
-| `scout` | Fast codebase recon | inherits default | Writes `context.md` handoff material |
-| `planner` | Creates implementation plans | inherits default | Writes `plan.md` |
-| `worker` | Implementation and approved oracle handoffs | inherits default | Single-writer implementation with decision escalation |
-| `reviewer` | Review-and-fix specialist | inherits default | Can edit/fix reviewed code |
-| `context-builder` | Requirements/codebase handoff builder | inherits default | Writes structured context files |
-| `researcher` | Web research brief generator | inherits default | Writes `research.md` |
+| Agent | Purpose | Primary model | Typical output / role |
+|-------|---------|---------------|------------------------|
+| `scout` | Fast codebase recon | `xai/grok-4.5` | Writes `context.md` handoff material |
+| `context-builder` | Requirements/codebase handoff builder | `xai/grok-4.5` | Writes structured context and meta-prompts |
+| `researcher` | Evidence-driven technical research | `openai-codex/gpt-5.6-sol` | Writes `research.md` |
+| `planner` | Creates implementation plans | `openai-codex/gpt-5.6-sol` | Writes `plan.md` |
+| `worker` | Bounded implementation | `xai/grok-4.5` | Single-writer implementation and validation |
+| `debugger` | Root-cause diagnosis | `openai-codex/gpt-5.6-sol` | Writes `diagnosis.md` |
+| `fixer` | Decided, bounded remediation | `xai/grok-4.5` | Applies an explicit fix list |
+| `reviewer` | General implementation review | `openai-codex/gpt-5.6-sol` | Review-only by default |
+| `reviewer-gpt` | Strict completion gate | `openai-codex/gpt-5.6-sol` | Maintainability/correctness review |
+| `reviewer-claude` | Cross-model product-risk review | `anthropic/claude-fable-5` | Independent review |
+| `reviewer-security` | Trust-boundary review | `openai-codex/gpt-5.6-sol` | Security/data-safety findings |
+| `ui-designer` | UI and accessibility review | `anthropic/claude-fable-5` | Rendered UX guidance |
+| `writer` | Human-facing writing | `anthropic/claude-fable-5` | Writes `draft.md` |
+| `oracle` | Decision-consistency advisory review | `openai-codex/gpt-5.6-sol` | Forked advisory review |
 | `delegate` | Lightweight generic delegate | inherits default | No fixed output; generic delegated work |
-| `oracle` | Decision-consistency advisory review | inherits default | Advisory review, intercom coordination |
 
-Builtin agents inherit the current Pi default model unless a run, user setting, or project setting overrides `model`. Override builtin defaults before copying full agent files when a small tweak is enough.
+The Fitch role profiles pin primary and fallback routes; `delegate` inherits the current Pi model. Keep those configured defaults unless a run, user setting, or project setting has a concrete reason to override them.
 
 For one run, use inline config:
 
@@ -167,7 +174,7 @@ For persistent tweaks, edit `subagents.agentOverrides` in user or project settin
 
 ## Prompting role subagents
 
-Builtin role agents inherit the current Pi default model unless you override them. When launching them, write the task prompt as a compact contract, not a long procedural script. Define the destination and let the role choose the efficient path.
+When launching role agents, keep their configured model routes and write the task prompt as a compact contract, not a long procedural script. Define the destination and let the role choose the efficient path.
 
 A strong subagent prompt usually includes:
 - **Goal**: the concrete outcome the child should produce.
@@ -459,7 +466,7 @@ subagent({
   task: "Review my current direction, challenge assumptions, and propose the best next move."
 })
 
-// Implementation only after explicit approval. Worker defaults to forked context.
+// Implementation only after explicit approval. Worker defaults to fresh context.
 subagent({
   agent: "worker",
   task: "Implement the approved approach: ..."
@@ -618,9 +625,8 @@ particular agent or with forked context.
 ## Important Constraints
 
 - **Forking requires a persisted parent session.** If the current session does not
-  have a persisted session file, forked runs fail. Packaged `planner`, `worker`,
-  and `oracle` default to forked context, so use `context: "fresh"` explicitly
-  when that is not available or not wanted.
+  have a persisted session file, forked runs fail. Packaged `oracle` defaults to
+  forked context; the other Fitch role profiles default to fresh context.
 - **Forked runs inherit parent history.** They are branched threads, not fresh
   filtered contexts. Use fresh context for adversarial reviewers unless the user explicitly asks for forked context.
 - **Default subagent nesting depth is 2.** Deeper recursive delegation is blocked
@@ -689,7 +695,7 @@ subagent({
 
 When you are the orchestrating agent for a new feature or non-trivial change, factor in the packaged prompt workflows without literally invoking slash commands. Use the same patterns through tools and subagents.
 
-Keep effective agent defaults for routine runs. User/project agent descriptions and frontmatter may encode when to override model, thinking level, skills, output behavior, or context mode; follow that policy when risk warrants it, but do not add overrides just because you are orchestrating. In particular, packaged `planner`, `worker`, and `oracle` default to forked context unless user/project profiles override them. Fork is never available to effective `anthropic/` primary or fallback models; other providers continue to use the configured context policy normally.
+Keep effective agent defaults for routine runs. User/project agent descriptions and frontmatter may encode when to override model, thinking level, skills, output behavior, or context mode; follow that policy when risk warrants it, but do not add overrides just because you are orchestrating. Packaged `oracle` defaults to forked context; the other Fitch role profiles default to fresh context. Fork is never available to effective `anthropic/` primary or fallback models; other providers continue to use the configured context policy normally.
 
 When the user approves launching a subagent to carry out a plan or workflow, treat that as approval to generate a proper role-specific meta prompt for that subagent. Include the approved plan path or summary, clarified requirements, non-goals, relevant context, role boundaries, files or areas to inspect, acceptance criteria, expected output, and validation expectations. Do not pass vague instructions like “implement the plan fully” or “review this” by themselves.
 
@@ -754,10 +760,10 @@ Keep orchestration authority in the parent session. Child subagents should not l
 1. Clarify only material uncertainty. Gather code context with `scout` or `context-builder`, add `researcher` only when external evidence matters, then ask the user unresolved questions with the available clarification tool (`ask_question` in pi) when the answer changes scope, acceptance criteria, constraints, or non-goals.
 2. Define the validation contract. State acceptance before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the worker handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.
 3. Plan when useful. For complex work, call `planner` or write a plan doc yourself and get approval before implementation. For simple work, confirm shared understanding and explicitly note why planning is skipped.
-4. Implement with one writer. After approval, launch `worker` asynchronously with a proper meta prompt that includes clarified requirements, relevant context, plan path or summary, the validation contract, and output expectations; under an incomplete active Pi goal, use foreground for goal-critical writer work. Packaged `worker` defaults to forked context; pass `context: "fresh"` only when you intentionally want a fresh child. While an async worker runs, prepare validation or inspect adjacent code instead of editing the same worktree.
+4. Implement with one writer. After approval, launch `worker` asynchronously with a proper meta prompt that includes clarified requirements, relevant context, plan path or summary, the validation contract, and output expectations; under an incomplete active Pi goal, use foreground for goal-critical writer work. Packaged `worker` defaults to fresh context. While an async worker runs, prepare validation or inspect adjacent code instead of editing the same worktree.
 5. Require a useful worker handoff. Ask the worker to report changed files, what was implemented, what was left undone, commands run with exit codes, validation evidence, surprises or new risks, decisions made inside approved scope, and decisions needing parent approval.
 6. Review after implementation. After the worker completes, launch fresh-context `reviewer` agents for correctness/regressions, tests/validation, and simplicity/maintainability as separate async runs so each completion wakes the parent. Under an incomplete active Pi goal, prefer foreground reviewers when review gates the next goal step. Add security, performance, docs/API, domain-specific, or user-flow validators for complex work, risky changes, broad refactors, or many changed lines. Use `output: false` unless review artifacts are explicitly needed.
-7. Synthesize, then run the fix worker. Separate blockers, fixes worth doing now, optional improvements, and feedback to ignore/defer, then launch an async forked `worker` to apply fixes worth doing now when the workflow is implementation-authorized. Use foreground instead when an incomplete active Pi goal needs the fix result in the same turn. If reviewers found scope/product/architecture choices that were not approved, ask the user first instead of applying them.
+7. Synthesize, then run the fix worker. Separate blockers, fixes worth doing now, optional improvements, and feedback to ignore/defer, then launch an async `worker` to apply fixes worth doing now when the workflow is implementation-authorized. Use foreground instead when an incomplete active Pi goal needs the fix result in the same turn. If reviewers found scope/product/architecture choices that were not approved, ask the user first instead of applying them.
 8. Review again when warranted. If the fix worker made substantial changes or addressed non-trivial findings, run another focused parallel review round before final validation.
 9. Validate and complete. After the fix worker and any follow-up review return, inspect the final diff yourself, run or confirm focused validation, update docs/changelog when relevant, and summarize what changed and why.
 

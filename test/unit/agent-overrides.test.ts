@@ -38,15 +38,22 @@ describe("builtin agent overrides", () => {
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("bundled builtin agents inherit the default model", () => {
+	it("bundles the Fitch role profiles while delegate inherits the default model", () => {
 		const builtins = discoverAgentsAll(tempProject).builtin;
-		assert.ok(builtins.length > 0);
 		assert.deepEqual(
-			builtins
-				.filter((agent) => agent.model !== undefined || agent.fallbackModels !== undefined)
-				.map((agent) => agent.name),
-			[],
+			builtins.map((agent) => agent.name).sort(),
+			[
+				"context-builder", "debugger", "delegate", "fixer", "oracle", "planner", "researcher",
+				"reviewer", "reviewer-claude", "reviewer-gpt", "reviewer-security", "scout", "ui-designer", "worker", "writer",
+			],
 		);
+		for (const agent of builtins.filter((candidate) => candidate.name !== "delegate")) {
+			assert.ok(agent.model, `${agent.name} should have a configured model`);
+			assert.ok(agent.fallbackModels?.length, `${agent.name} should have configured fallback models`);
+		}
+		const delegate = builtins.find((agent) => agent.name === "delegate");
+		assert.equal(delegate?.model, undefined);
+		assert.equal(delegate?.fallbackModels, undefined);
 	});
 
 	it("applies user settings overrides to builtin agents", () => {

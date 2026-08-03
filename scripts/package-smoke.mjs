@@ -72,9 +72,9 @@ for (const path of [
 	"src/extension/schemas.ts",
 	"src/shared/types.ts",
 	"agents/reviewer.md",
+	"agents/reviewer-gpt.md",
 	"skills/pi-subagents/SKILL.md",
 	"prompts/review-loop.md",
-	"scripts/verify-agent-overrides.mjs",
 	"scripts/real-pi-smoke.mjs",
 ]) {
 	assertPackedFile(pack.files, path);
@@ -82,8 +82,8 @@ for (const path of [
 
 assertNotPackedFile(pack.files, "install.mjs");
 
-if (packageJson.private !== true) fail("package.json must stay private for this file-path-only fork");
-if (packageJson.bin !== undefined) fail("package.json must not expose an npx/bin installer for this file-path-only fork");
+if (packageJson.private !== true) fail("package.json must stay private for this GitHub/local fork");
+if (packageJson.bin !== undefined) fail("package.json must not expose an npx/bin installer for this GitHub/local fork");
 if (!packageJson.pi?.extensions?.includes("./src/extension/index.ts")) fail("package.json pi.extensions must include ./src/extension/index.ts");
 if (!packageJson.pi?.skills?.includes("./skills")) fail("package.json pi.skills must include ./skills");
 if (!packageJson.pi?.prompts?.includes("./prompts")) fail("package.json pi.prompts must include ./prompts");

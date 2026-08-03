@@ -8,21 +8,21 @@ Fixed in this fork by `src/shared/agent-context-policy.ts`; still present in the
 
 Upstream `pi-subagents` promotes the **entire** invocation to `fork` when `context` is omitted and **any** requested agent has `defaultContext: "fork"`.
 
-That causes read-only agents configured with `defaultContext: fresh` (for example `scout`, `reviewer`) to inherit the full parent transcript when batched with `worker` or `oracle` in parallel or chain mode.
+That causes read-only agents configured with `defaultContext: fresh` (for example `scout`, `reviewer`) to inherit the full parent transcript when batched with a fork-default agent such as `oracle` in parallel or chain mode.
 
 This fork intentionally resolves context per child when top-level `context` is omitted.
 
 ## Reproduction against upstream
 
 1. Configure `scout` with `defaultContext: fresh`.
-2. Configure `worker` with `defaultContext: fork`.
+2. Configure `oracle` with `defaultContext: fork`.
 3. Run a parallel subagent call without explicit `context`:
 
 ```json
 {
   "tasks": [
     { "agent": "scout", "task": "Find relevant files" },
-    { "agent": "worker", "task": "Implement fix" }
+    { "agent": "oracle", "task": "Review the current direction" }
   ]
 }
 ```
@@ -37,7 +37,7 @@ When caller omits top-level `context`:
 
 - Each agent/task/step should use **its own** `defaultContext`.
 - Explicit `context: "fresh"` or `context: "fork"` should override all agents in that call.
-- Parallel scout + worker should fork only the worker task, not the scout.
+- Parallel scout + oracle should fork only the oracle task, not the scout.
 
 ## Fork behavior
 
