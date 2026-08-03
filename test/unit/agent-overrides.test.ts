@@ -56,6 +56,23 @@ describe("builtin agent overrides", () => {
 		assert.equal(delegate?.fallbackModels, undefined);
 	});
 
+	it("keeps Cursor out of the affected bundled fallback routes", () => {
+		const builtins = new Map(discoverAgentsAll(tempProject).builtin.map((agent) => [agent.name, agent]));
+		const expected = {
+			"context-builder": ["openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol"],
+			fixer: ["openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol", "anthropic/claude-opus-5"],
+			oracle: ["openai/gpt-5.6-sol"],
+			reviewer: ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-terra"],
+			"reviewer-gpt": ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-terra"],
+			scout: ["openai-codex/gpt-5.6-luna", "openai/gpt-5.6-luna"],
+			worker: ["openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol", "anthropic/claude-opus-5"],
+		};
+
+		for (const [name, fallbackModels] of Object.entries(expected)) {
+			assert.deepEqual(builtins.get(name)?.fallbackModels, fallbackModels, `${name} fallback route drift`);
+		}
+	});
+
 	it("applies user settings overrides to builtin agents", () => {
 		writeJson(path.join(tempHome, ".pi", "agent", "settings.json"), {
 			subagents: {
