@@ -1261,8 +1261,8 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			"id",
 			{
 				tasks: [
-					{ agent: "echo", task: "task one" },
-					{ agent: "second", task: "task two" },
+					{ agent: "echo", task: "async parallel task one" },
+					{ agent: "second", task: "async parallel task two" },
 				],
 				async: true,
 				clarify: false,
@@ -1276,7 +1276,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.details?.mode, "parallel");
 		assert.ok(result.details?.asyncId, "expected an asyncId for background top-level parallel runs");
 		assert.match(result.content[0]?.text ?? "", /Async parallel:/);
-		await waitForTaskCalls(["task one", "task two"]);
+		await waitForTaskCalls(["async parallel task one", "async parallel task two"]);
 	});
 
 	it("forks only fork-default agents in top-level parallel async when launch context is omitted", async () => {

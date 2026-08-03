@@ -211,7 +211,7 @@ async function main() {
 		callRecord.env = Object.fromEntries(response.echoEnv.map((key) => [key, process.env[key] ?? null]));
 	}
 	const callPath = path.join(queueDir, `call-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}.json`);
-	const tempCallPath = `${callPath}.tmp`;
+	const tempCallPath = path.join(queueDir, `.tmp-${path.basename(callPath)}`);
 	fs.writeFileSync(tempCallPath, JSON.stringify(callRecord), "utf-8");
 	fs.renameSync(tempCallPath, callPath);
 
