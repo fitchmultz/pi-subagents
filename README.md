@@ -432,7 +432,7 @@ Agent locations, lowest to highest priority:
 
 | Scope | Path |
 |-------|------|
-| Builtin | `~/.pi/agent/extensions/subagent/agents/` |
+| Builtin | Installed package's `agents/` directory |
 | User | `~/.pi/agent/agents/**/*.md` |
 | Project | `.pi/agents/**/*.md` |
 
@@ -735,12 +735,12 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
 { agent: "scout", task: "write a large report", output: "reports/scout.md", outputMode: "file-only" }
 
 // Forked context
-{ agent: "worker", task: "continue this thread", context: "fork" }
+{ agent: "oracle", task: "review this thread", context: "fork" }
 
 // Parallel
 { tasks: [{ agent: "scout", task: "a" }, { agent: "researcher", task: "b" }] }
 { tasks: [{ agent: "scout", task: "audit auth", count: 3 }] }
-{ tasks: [{ agent: "scout", task: "audit frontend" }, { agent: "researcher", task: "research backend constraints" }], context: "fork" }
+{ tasks: [{ agent: "scout", task: "audit frontend" }, { agent: "oracle", task: "review backend constraints" }], context: "fork" }
 
 // Chain
 { chain: [
@@ -886,7 +886,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `sessionDir` | string | derived | Override session log directory. |
 | `acceptance` | object | omitted | Explicit criteria/evidence/verification contract. When present, the child gets a structured contract, then the runtime continues the same session for a bounded self-review/repair loop before evaluating acceptance. Launch independent reviewers separately from the parent. |
 
-`context: "fork"` fails fast when an affected agent's effective primary or fallback model uses the `anthropic/` provider, the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. The Anthropic restriction cannot be bypassed with explicit context or model overrides, and fork never silently downgrades to `fresh`. When a multi-agent run omits `context`, each child uses its own `defaultContext`: a fresh-default scout or reviewer stays fresh even when batched with a fork-default worker or oracle. Other providers continue to use these agent defaults and explicit context overrides normally.
+`context: "fork"` fails fast when an affected agent's effective primary or fallback model uses the `anthropic/` provider, the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. The Anthropic restriction cannot be bypassed with explicit context or model overrides, and fork never silently downgrades to `fresh`. When a multi-agent run omits `context`, each child uses its own `defaultContext`: a fresh-default scout or reviewer stays fresh even when batched with fork-default `oracle`. Other providers continue to use these agent defaults and explicit context overrides normally.
 
 By default, `output` paths are handoff files. Explicit `output` paths are resolved from the task cwd and left in place, so workspace paths like `.scratchpad/scout.md` remain readable after the run. Relative output paths that come only from an agent default are materialized under the run artifact directory as unique files, so parallel defaults like `context.md` or `review.md` do not collide and do not create project-root leftovers. In inline mode, the runtime reads the handoff content into the parent result and records `savedOutputPath`/`outputReference`; when a materialized agent-default file is consumed, the result records `outputCleanup`. Session artifacts still expose `artifactPaths.outputPath` when artifacts are enabled.
 
