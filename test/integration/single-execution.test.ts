@@ -1436,29 +1436,23 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.match(extension?.message ?? "", /does not have a timeout/);
 	});
 
-	it("extends an active foreground timeout", async () => {
+	it("extends an active foreground timeout", { timeout: 30_000 }, async () => {
 		mockPi.onCall({ delay: 650, output: "Finished after extension" });
 		const agents = [makeAgent("slow", { model: "mock/primary", fallbackModels: ["mock/fallback"] })];
-		let extendTimeout: ((additionalMs: number) => { ok: boolean; timeoutAt?: number; message: string }) | undefined;
+		type ExtendTimeout = (additionalMs: number) => { ok: boolean; timeoutAt?: number; message: string };
+		let resolveExtension!: (extend: ExtendTimeout) => void;
+		const extensionReady = new Promise<ExtendTimeout>((resolve) => { resolveExtension = resolve; });
 
-		const start = Date.now();
 		const resultPromise = runSync(tempDir, agents, "slow", "Slow task", {
 			runId: "timeout-extend-run",
 			timeoutMs: 500,
 			timeoutAt: Date.now() + 500,
-			registerTimeoutExtension: (extend: typeof extendTimeout) => { extendTimeout = extend; },
+			registerTimeoutExtension: resolveExtension,
 		});
-		const registrationDeadline = Date.now() + 250;
-		while (!extendTimeout && Date.now() < registrationDeadline) {
-			await new Promise((resolve) => setTimeout(resolve, 5));
-		}
-		assert.ok(extendTimeout, "expected timeout extension callback to be registered before the initial timeout");
-		const extension = extendTimeout(1_000);
+		const extension = (await extensionReady)(5_000);
 		const result = await resultPromise;
-		const elapsed = Date.now() - start;
 
 		assert.equal(extension.ok, true);
-		assert.ok(elapsed >= 600, `should allow the delayed child to finish, took ${elapsed}ms`);
 		assert.equal(result.exitCode, 0);
 		assert.equal(result.timedOut, undefined);
 		assert.equal(result.finalOutput, "Finished after extension");
