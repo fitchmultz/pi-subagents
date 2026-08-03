@@ -26,7 +26,7 @@ function runProbe(script: string, options: { env?: NodeJS.ProcessEnv } = {}): vo
 }
 
 describe("subagent extension child mode", () => {
-	it("only collapses expanded tool detail before direct subagent tool execution", () => {
+	it("preserves tool output expansion before direct subagent tool execution", () => {
 		const script = String.raw`
 			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
 			const events = { on() { return () => {}; }, emit() {} };
@@ -74,7 +74,8 @@ describe("subagent extension child mode", () => {
 			if (calls.length !== 0) throw new Error("unexpected setToolsExpanded call: " + JSON.stringify(calls));
 			expanded = true;
 			await registeredTool.execute("expanded", { action: "list" }, new AbortController().signal, undefined, ctx);
-			if (calls.length !== 1 || calls[0] !== false) throw new Error("expected one setToolsExpanded(false), got " + JSON.stringify(calls));
+			if (calls.length !== 0) throw new Error("unexpected setToolsExpanded call: " + JSON.stringify(calls));
+			if (!expanded) throw new Error("tool output expansion was not preserved");
 		`;
 
 		runProbe(script, { env: parentToolEnv() });
