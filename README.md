@@ -147,6 +147,7 @@ Those are ordinary Pi requests. Pi decides whether to call `subagent`, which age
 | Execute a plan carefully | “Have worker implement this approved plan, then run reviewers and apply the feedback.” |
 | Scout before planning | “Use scout to inspect the auth flow before planning.” |
 | Run in the background | “Run this in the background.” |
+| Watch a changing process | “Run watcher in the background to monitor PR checks; notify me on material changes and stop when they finish.” |
 | Browse agents | “Show me the available subagents.” |
 | Use a saved workflow | “Run the review chain on this branch.” |
 | See running work | “Show active async runs.” |
@@ -161,6 +162,7 @@ The extension ships with builtin agents you can use immediately.
 | `scout` | Fast codebase recon and a compressed handoff. |
 | `context-builder` | Requirements and codebase analysis that produces implementation-ready context. |
 | `researcher` | Evidence-driven research for consequential technical decisions. |
+| `watcher` | Read-only background monitoring with deferred, coalesced material-change updates to the parent. |
 | `planner` | A concrete implementation plan without edits. |
 | `worker` | End-to-end implementation of an approved, bounded task. |
 | `debugger` | Root-cause diagnosis with reproduction and repair evidence. |
@@ -183,6 +185,7 @@ The bundled Fitch role profiles pin explicit primary and fallback routes. `deleg
 | Primary route | Agents |
 |---------------|--------|
 | `xai/grok-4.5` | `scout`, `context-builder`, `fixer`, `worker` |
+| `openai/gpt-5.6-luna` | `watcher` |
 | `openai-codex/gpt-5.6-sol` | `debugger`, `oracle`, `planner`, `researcher`, `reviewer`, `reviewer-gpt`, `reviewer-security` |
 | `anthropic/claude-opus-5` | `reviewer-claude` |
 | `anthropic/claude-fable-5` | `ui-designer`, `writer` |
@@ -297,7 +300,7 @@ Ask oracle to review this plan. If it sees a decision I need to make, have it as
 
 The child can use one dedicated coordination tool:
 
-- `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` only when the ephemeral child cannot safely continue and must remain alive for one steered supervisor reply. Use `reason: "interview_request"` only when it cannot safely continue until it receives multiple structured answers. Use `reason: "progress_update"` for concise plan-changing updates with intentionally deferred/coalesced delivery that may wait behind active supervisor work. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
+- `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` only when the ephemeral child cannot safely continue and must remain alive for one steered supervisor reply. Use `reason: "interview_request"` only when it cannot safely continue until it receives multiple structured answers. Use `reason: "progress_update"` for concise material updates with intentionally deferred/coalesced delivery that may wait behind active supervisor work. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
 
 Child-side routine completion handoffs are still not expected. Parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested child summaries under the parent child that launched them.
 
@@ -1026,7 +1029,7 @@ Spawn-count and per-agent child-concurrency quotas are not part of this release;
 
 Intercom wiring is always on and bundled with `pi-subagents`. Children receive fixed default bridge instructions and parent-side result/control delivery uses the resolved orchestrator target automatically. If an agent sets an explicit `extensions` allowlist, include `pi-intercom` so child-side `intercom` and `contact_supervisor` tools stay available.
 
-The injected guidance tells children to use steered blocking `contact_supervisor` decisions or structured interviews only when the ephemeral child cannot safely continue and must remain alive for the answer, intentionally deferred/coalesced `progress_update` for concise plan-changing updates, and generic intercom only as fallback plumbing. Supervisor nudges supplement the active task unless they explicitly replace it; routine completion still returns through normal child results.
+The injected guidance tells children to use steered blocking `contact_supervisor` decisions or structured interviews only when the ephemeral child cannot safely continue and must remain alive for the answer, intentionally deferred/coalesced `progress_update` for concise material updates, and generic intercom only as fallback plumbing. Supervisor nudges supplement the active task unless they explicitly replace it; routine completion still returns through normal child results.
 
 ### `worktreeSetupHook`
 

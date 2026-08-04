@@ -16,7 +16,7 @@ Sometimes you're running multiple pi sessions — one researching, one executing
 
 Unlike pi-messenger (a shared chat room for multi-agent swarms), pi-intercom is for targeted 1:1 communication where you pick the recipient.
 
-Intercom is bundled with `pi-subagents`: delegated child agents get a child-only `contact_supervisor` tool when the subagent extension supplies bridge metadata. Use blocking `need_decision` or `interview_request` only when the ephemeral child cannot safely continue and must remain alive for the reply. Use `progress_update` only for a concise plan-changing update that may intentionally wait behind active supervisor work. Normal sessions only see the regular `intercom` tool.
+Intercom is bundled with `pi-subagents`: delegated child agents get a child-only `contact_supervisor` tool when the subagent extension supplies bridge metadata. Use blocking `need_decision` or `interview_request` only when the ephemeral child cannot safely continue and must remain alive for the reply. Use `progress_update` only for a concise material update that may intentionally wait behind active supervisor work. Normal sessions only see the regular `intercom` tool.
 
 ## In One Minute
 
@@ -231,7 +231,7 @@ When both bundled extension entries are enabled, parent sessions can use `subage
 |--------|----------|----------|
 | `need_decision` | Sends a steered ask and keeps the child alive until the supervisor replies (`askTimeoutMs`, default 2 minutes) | The ephemeral child cannot safely continue without one decision, approval, or product/API/scope clarification |
 | `interview_request` | Sends a steered structured ask and keeps the child alive until the supervisor replies | The ephemeral child cannot safely continue until it receives multiple structured answers |
-| `progress_update` | Non-blocking, deferred/coalesced update to the supervisor | A concise plan-changing update may intentionally wait behind active supervisor work |
+| `progress_update` | Non-blocking, deferred/coalesced update to the supervisor | A concise material update may intentionally wait behind active supervisor work |
 
 Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally through `pi-subagents`.
 
@@ -334,7 +334,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`interview_request`** — Use only when the ephemeral child cannot safely continue until it receives multiple structured answers. It sends a formatted, steered agent-readable interview to the supervisor and keeps the child alive until the reply arrives. Questions use a local pi-interview-like shape: `{ id, type, question, options?, context? }` where `type` is `single`, `multi`, `text`, `image`, or `info`. `info` questions are context-only and do not need responses. The supervisor reply should be JSON with `{ "responses": [{ "id": "...", "value": ... }] }`. Parsed JSON replies are returned in `details.structuredReply`.
 
-**`progress_update`** — Sends a non-blocking update through intentionally deferred, replace-mode delivery. Returns immediately after broker acceptance. Use only for a concise plan-changing update that may wait behind active supervisor work.
+**`progress_update`** — Sends a non-blocking update through intentionally deferred, replace-mode delivery. Returns immediately after broker acceptance. Use only for a concise material update that may wait behind active supervisor work.
 
 ### intercom actions
 

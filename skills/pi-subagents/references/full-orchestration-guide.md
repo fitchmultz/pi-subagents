@@ -16,6 +16,7 @@ Use this skill when the parent orchestrator needs to launch a specialized subage
 - **Recon and planning**: use `scout` or `context-builder`, then `planner`
 - **Parallel exploration**: run multiple non-conflicting tasks concurrently
 - **Long-running work**: launch async/background runs and inspect them later
+- **Long-running observation**: launch `watcher` asynchronously with explicit material-change and terminal conditions
 - **Subagent control**: watch needs-attention signals and soft-interrupt only when a delegated run is genuinely blocked
 - **Subagent definition management**: create, update, or override Pi agents and chains for a project
 
@@ -149,6 +150,7 @@ and user/project agents override builtins with the same name.
 | `scout` | Fast codebase recon | `xai/grok-4.5` | Writes `context.md` handoff material |
 | `context-builder` | Requirements/codebase handoff builder | `xai/grok-4.5` | Writes structured context and meta-prompts |
 | `researcher` | Evidence-driven technical research | `openai-codex/gpt-5.6-sol` | Writes `research.md` |
+| `watcher` | Read-only background monitoring | `openai/gpt-5.6-luna` | Queues the latest material transition; returns at the terminal condition |
 | `planner` | Creates implementation plans | `openai-codex/gpt-5.6-sol` | Writes `plan.md` |
 | `worker` | Bounded implementation | `xai/grok-4.5` | Single-writer implementation and validation |
 | `debugger` | Root-cause diagnosis | `openai-codex/gpt-5.6-sol` | Writes `diagnosis.md` |
@@ -326,6 +328,16 @@ subagent({
 })
 ```
 
+For changing external state, give `watcher` the target, material transitions, and terminal condition. It suppresses unchanged observations and queues the latest non-terminal material change through the deferred, coalesced supervisor bridge. Pending updates may replace one another; the terminal async completion is what wakes the parent.
+
+```typescript
+subagent({
+  agent: "watcher",
+  task: "Watch GitHub Actions for PR #123. Treat status changes, failures, and recoveries as material. Stop when every check is terminal.",
+  async: true
+})
+```
+
 File-only output mode also works for async single runs, top-level parallel task items, sequential chain steps, and chain parallel task items. In chains, `{previous}` receives the compact saved-file reference when the prior step used file-only mode.
 
 For review fanout where the parent continues a local audit:
@@ -493,7 +505,7 @@ Both reasons steer the supervisor at its next tool boundary.
 
 Do not use `contact_supervisor` just to resolve review-only/no-project-edit versus progress-writing or output-artifact instructions. The child must not modify project/source files, but returning findings through its normal response or configured output artifact is allowed unless the parent explicitly set `output: false`.
 
-Use `contact_supervisor` with `reason: "progress_update"` only for a concise plan-changing update that may intentionally wait behind active supervisor work. It is non-blocking and uses deferred, replace-mode delivery so newer updates can coalesce older undelivered ones.
+Use `contact_supervisor` with `reason: "progress_update"` only for a concise material update that may intentionally wait behind active supervisor work. It is non-blocking and uses deferred, replace-mode delivery so newer updates can coalesce older undelivered ones.
 
 Message conventions:
 - `reason: "need_decision"` and `reason: "interview_request"` steer, wait for the parent reply, and return it to the child.
