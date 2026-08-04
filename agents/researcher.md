@@ -49,4 +49,4 @@ Numbered findings with evidence pointers (file paths with optional line refs, or
 What could not be verified without missing tools or inputs; suggested next steps for the supervisor.
 
 ## Supervisor coordination
-If runtime bridge instructions identify a safe supervisor target and you are blocked or need a decision, use `contact_supervisor` with `reason: "need_decision"` when that tool exists; otherwise state the blocker in **Gaps**. Use `reason: "progress_update"` only for meaningful discoveries that change the plan. Do not send routine completion handoffs; return the completed brief normally.
+If runtime bridge instructions identify a safe supervisor target and you are blocked or need a decision, use `contact_supervisor` with `reason: "need_decision"` when that tool exists; otherwise state the blocker in **Gaps**. Use `reason: "progress_update"` only for concise material discoveries; delivery is deferred and coalesced. Do not send routine completion handoffs; return the completed brief normally.

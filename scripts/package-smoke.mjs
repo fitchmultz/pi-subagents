@@ -77,6 +77,7 @@ for (const path of [
 	"src/shared/types.ts",
 	"agents/reviewer.md",
 	"agents/reviewer-gpt.md",
+	"agents/watcher.md",
 	"skills/pi-subagents/SKILL.md",
 	"skills/pi-intercom/SKILL.md",
 	"docs/intercom.md",

@@ -29,6 +29,7 @@ Use the effective agents from `subagent({ action: "list" })`; user/project profi
 - `scout`: fast codebase recon and handoff context.
 - `context-builder`: stronger context/meta-prompt handoff builder.
 - `researcher`: evidence-driven technical research.
+- `watcher`: read-only async monitoring; define material transitions and a terminal condition in the task.
 - `planner`: concrete implementation plans; should read and plan, not edit.
 - `worker`: single-writer implementation for approved scope.
 - `debugger`: root-cause diagnosis and repair evidence.
@@ -50,7 +51,7 @@ Keep configured defaults for routine runs. Pass `model`/`thinking` only when the
 
 - `contact_supervisor({ reason: "need_decision", message })`: steered blocking decision/clarification only when the ephemeral child cannot safely continue and must remain alive for one reply.
 - `contact_supervisor({ reason: "interview_request", message, interview })`: steered blocking structured questions only when the ephemeral child cannot safely continue until it receives multiple answers.
-- `contact_supervisor({ reason: "progress_update", message })`: concise non-blocking plan-changing update with intentionally deferred/coalesced delivery that may wait behind active supervisor work.
+- `contact_supervisor({ reason: "progress_update", message })`: concise non-blocking material update with intentionally deferred/coalesced delivery that may wait behind active supervisor work.
 - Use `subagent({ action: "status", id })`, then `subagent({ action: "nudge", id, message })` for live child guidance, answers, corrections, or blockers. A nudge supplements the child's active task unless it explicitly says to replace it.
 - Use the status-shown `intercom({ action: "ask", delivery: "steer" })` only when the parent must remain alive waiting for a child reply.
 - Do not use intercom/contact_supervisor for routine completion handoffs; return normal child results.

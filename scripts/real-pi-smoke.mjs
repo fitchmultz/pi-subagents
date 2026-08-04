@@ -213,7 +213,7 @@ async function main() {
 			if (copiedAuthFiles.length > 0) console.log(`[real-pi-smoke] copied ${copiedAuthFiles.join(" and ")} into isolated Pi agent dir for live provider auth`);
 			const childModelInstruction = process.env.PI_REAL_SMOKE_MODEL ? ` Pass model override '${process.env.PI_REAL_SMOKE_MODEL}' to every subagent run.` : "";
 			const intercomPrompt = "Call the intercom tool with action status. Reply exactly with 'real-pi-smoke intercom ok' if the tool output includes 'Connected: Yes'.";
-			const listPrompt = "Use the subagent tool with action list. Reply exactly with 'real-pi-smoke list ok' if reviewer, scout, and oracle are available.";
+			const listPrompt = "Use the subagent tool with action list. Reply exactly with 'real-pi-smoke list ok' if reviewer, scout, oracle, and watcher are available.";
 			const foregroundPrompt = `Use the subagent tool to run scout with task 'Reply exactly: real-pi-smoke foreground ok', output false, and progress false.${childModelInstruction} Then report the child result.`;
 			const asyncPrompt = `Use the subagent tool with async true to run reviewer with task 'Reply exactly: real-pi-smoke async ok', output false, and progress false.${childModelInstruction} Do not call status and do not wait for completion. Reply with 'real-pi-smoke async launched ok' and quote the exact tool result line beginning 'Async:' including the run id.`;
 			requireOutput("real Pi intercom prompt", runLivePrompt("real Pi intercom prompt", intercomPrompt, runOptions), /real-pi-smoke intercom ok/);

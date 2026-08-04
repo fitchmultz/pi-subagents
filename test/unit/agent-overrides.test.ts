@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
+import { applyIntercomBridgeToAgent, resolveIntercomBridge } from "../../src/intercom/intercom-bridge.ts";
 
 let tempHome = "";
 let tempProject = "";
@@ -44,12 +45,30 @@ describe("builtin agent overrides", () => {
 			builtins.map((agent) => agent.name).sort(),
 			[
 				"context-builder", "debugger", "delegate", "fixer", "oracle", "planner", "researcher",
-				"reviewer", "reviewer-claude", "reviewer-gpt", "reviewer-security", "scout", "ui-designer", "worker", "writer",
+				"reviewer", "reviewer-claude", "reviewer-gpt", "reviewer-security", "scout", "ui-designer", "watcher", "worker", "writer",
 			],
 		);
 		for (const agent of builtins.filter((candidate) => candidate.name !== "delegate")) {
 			assert.ok(agent.model, `${agent.name} should have a configured model`);
 			assert.ok(agent.fallbackModels?.length, `${agent.name} should have configured fallback models`);
+		}
+		const watcher = builtins.find((agent) => agent.name === "watcher");
+		assert.equal(watcher?.model, "openai/gpt-5.6-luna");
+		assert.equal(watcher?.thinking, "high");
+		assert.deepEqual(watcher?.fallbackModels, ["xai/grok-4.5:medium"]);
+		assert.equal(watcher?.maxSubagentDepth, 0);
+		assert.equal(watcher?.completionGuard, false);
+		assert.match(watcher?.systemPrompt ?? "", /Do not modify the watched target/);
+		assert.match(watcher?.systemPrompt ?? "", /never use a tight loop/);
+		assert.match(watcher?.systemPrompt ?? "", /suppress unchanged heartbeats/);
+		assert.match(watcher?.systemPrompt ?? "", /reason: "progress_update"/);
+		assert.match(watcher?.systemPrompt ?? "", /deferred and coalesced/);
+		assert.match(watcher?.systemPrompt ?? "", /do not send a duplicate completion update/);
+		const effectiveWatcher = applyIntercomBridgeToAgent(watcher!, resolveIntercomBridge("main"));
+		assert.match(effectiveWatcher.systemPrompt, /concise material update/);
+		for (const agent of builtins) {
+			const effectivePrompt = applyIntercomBridgeToAgent(agent, resolveIntercomBridge("main")).systemPrompt;
+			assert.doesNotMatch(effectivePrompt, /plan[- ]changing|changes? the plan/i, `${agent.name} progress guidance drift`);
 		}
 		const reviewerClaude = builtins.find((agent) => agent.name === "reviewer-claude");
 		assert.equal(reviewerClaude?.model, "anthropic/claude-opus-5");

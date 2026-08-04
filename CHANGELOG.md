@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-04
+
+### Added
+- Added a read-only `watcher` agent for async monitoring. It uses `openai/gpt-5.6-luna:high` with `xai/grok-4.5:medium` fallback, queues the latest non-terminal material change through the deferred supervisor bridge, suppresses unchanged heartbeats, and relies on terminal async completion to wake the parent.
+
+### Changed
+- Aligned `contact_supervisor` progress guidance around concise material updates while preserving deferred/coalesced delivery and normal completion handoffs.
+
 ## [0.29.2] - 2026-08-04
 
 ### Changed

@@ -1522,12 +1522,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     pi.registerTool({
       name: "contact_supervisor",
       label: "Contact Supervisor",
-      description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision only when this child cannot safely continue without a decision, approval, or product/API/scope clarification; this steers the supervisor at its next tool boundary and keeps the child alive for the reply. Use interview_request only when multiple structured answers are all required before safe progress; this also steers and waits. Use progress_update only for a concise plan-changing update that may intentionally wait behind active supervisor work; this uses deferred delivery and does not wait. Do not use for routine completion handoffs.",
-      promptSnippet: "Subagent-only: steer the supervisor for blocking decisions or structured interviews; intentionally defer meaningful plan-changing progress updates. Do not use for routine completion handoffs.",
+      description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision only when this child cannot safely continue without a decision, approval, or product/API/scope clarification; this steers the supervisor at its next tool boundary and keeps the child alive for the reply. Use interview_request only when multiple structured answers are all required before safe progress; this also steers and waits. Use progress_update only for a concise material update that may intentionally wait behind active supervisor work; this uses deferred delivery and does not wait. Do not use for routine completion handoffs.",
+      promptSnippet: "Subagent-only: steer the supervisor for blocking decisions or structured interviews; intentionally defer concise material updates. Do not use for routine completion handoffs.",
       promptGuidelines: [
         "Use contact_supervisor with reason='need_decision' when a subagent cannot safely continue without a decision, approval, or product/API/scope clarification; it steers the supervisor and waits for the reply.",
         "Use contact_supervisor with reason='interview_request' only when the child cannot safely continue until it receives multiple structured answers in one blocking steered exchange.",
-        "Use contact_supervisor with reason='progress_update' only for a concise plan-changing update that may intentionally wait behind active supervisor work; delivery is deferred and coalesced.",
+        "Use contact_supervisor with reason='progress_update' only for a concise material update that may intentionally wait behind active supervisor work; delivery is deferred and coalesced.",
         "Do not use contact_supervisor for routine completion handoffs; return the final subagent result normally.",
       ],
       parameters: Type.Object({

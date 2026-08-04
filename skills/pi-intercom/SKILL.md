@@ -57,7 +57,7 @@ Coordinate named Pi sessions on the same machine with the least context loss and
 
 When present, child sessions get a child-only `contact_supervisor` tool; normal sessions use `intercom`. Do not assume `contact_supervisor` exists unless the tool is listed.
 
-Child-side reasons only: blocking `need_decision` or `interview_request` when the ephemeral child cannot safely continue and must remain alive for the reply, or an intentionally deferred `progress_update` for a concise plan-changing update.
+Child-side reasons only: blocking `need_decision` or `interview_request` when the ephemeral child cannot safely continue and must remain alive for the reply, or an intentionally deferred `progress_update` for a concise material update.
 
 Supervisor-side: answer formatted child escalations with `intercom` `reply`.
 
@@ -65,7 +65,7 @@ Supervisor-side: answer formatted child escalations with `intercom` `reply`.
 | --- | --- | --- |
 | `need_decision` | Child cannot safely continue without one decision or approval | Reply promptly with a clear decision |
 | `interview_request` | Child cannot safely continue without multiple structured answers | Reply with JSON using the requested ids |
-| `progress_update` | Child intentionally deferred a concise plan-changing update | Read it; reply only if redirecting |
+| `progress_update` | Child intentionally deferred a concise material update | Read it; reply only if redirecting |
 
 Interview replies use plain JSON or a fenced JSON block. `info` questions are context only and need no response entries:
 
