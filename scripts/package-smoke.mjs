@@ -94,7 +94,7 @@ if (packageJson.bin !== undefined) fail("package.json must not expose an npx/bin
 if (!packageJson.pi?.extensions?.includes("./src/extension/index.ts")) fail("package.json pi.extensions must include ./src/extension/index.ts");
 if (!packageJson.pi?.extensions?.includes("./src/pi-intercom/index.ts")) fail("package.json pi.extensions must include ./src/pi-intercom/index.ts");
 if (!packageJson.pi?.skills?.includes("./skills")) fail("package.json pi.skills must include ./skills");
-if (!packageJson.pi?.prompts?.includes("./prompts")) fail("package.json pi.prompts must include ./prompts");
+if (packageJson.pi?.prompts !== undefined) fail("package.json pi.prompts must stay unset so example prompts are not registered as slash commands");
 
 for (const entrypoint of ["../src/extension/index.ts", "../src/pi-intercom/index.ts"]) {
 	const extensionModule = await import(new URL(entrypoint, import.meta.url));

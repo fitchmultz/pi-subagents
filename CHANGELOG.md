@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Keep bundled workflow prompts as unregistered package examples instead of installing them as slash commands.
+
 ## [0.31.0] - 2026-08-04
 
 ### Changed

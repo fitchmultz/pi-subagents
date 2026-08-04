@@ -59,7 +59,7 @@ Keep configured defaults for routine runs. Pass `model`/`thinking` only when the
 
 ## Detailed recipes
 
-Load `references/full-orchestration-guide.md` only when you need concrete `subagent(...)` call shapes, packaged prompt-template workflows (`/parallel-review`, `/review-loop`, `/parallel-research`, `/parallel-context-build`, `/parallel-handoff-plan`, `/gather-context-and-clarify`, `/parallel-cleanup`), staged fix orchestration, settings, or edge cases. Do not reload it for every routine launch.
+Load `references/full-orchestration-guide.md` only when you need concrete `subagent(...)` call shapes, example workflow recipes, staged fix orchestration, settings, or edge cases. Do not reload it for every routine launch.
 
 ## Stop rules
 
