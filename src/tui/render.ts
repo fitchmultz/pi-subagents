@@ -965,7 +965,7 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 	const items: string[][] = [];
 	let hiddenRunning = 0;
 	let hiddenFinished = 0;
-	let queuedSummaryShown = false;
+	let queuedShown = false;
 	let slots = MAX_WIDGET_JOBS;
 
 	for (const job of running) {
@@ -975,8 +975,9 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 	}
 
 	if (queued.length > 0 && slots > 0) {
-		items.push([`${theme.fg("muted", "◦")} ${theme.fg("dim", `${queued.length} queued`)}`]);
-		queuedSummaryShown = true;
+		// One queued run has room for its own name; a backlog collapses to a count.
+		items.push(queued.length === 1 ? jobItem(queued[0]!) : [`${theme.fg("muted", "◦")} ${theme.fg("dim", `${queued.length} queued`)}`]);
+		queuedShown = true;
 		slots--;
 	}
 
@@ -986,7 +987,7 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 		slots--;
 	}
 
-	const hiddenQueued = queued.length > 0 && !queuedSummaryShown ? queued.length : 0;
+	const hiddenQueued = queued.length > 0 && !queuedShown ? queued.length : 0;
 	const hiddenTotal = hiddenRunning + hiddenFinished + hiddenQueued;
 	if (hiddenTotal > 0) {
 		const parts: string[] = [];

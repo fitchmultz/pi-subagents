@@ -63,8 +63,8 @@ describe("subagent async widget rendering", () => {
 
 		const text = lines.join("\n");
 		assert.match(text, new RegExp(`^${runningGlyphPattern} Async agents · background`));
-		assert.ok(text.indexOf("scout") < text.indexOf("queued"), "running row should precede queued summary");
-		assert.ok(text.indexOf("queued") < text.indexOf("reviewer"), "queued summary should precede completions");
+		assert.ok(text.indexOf("scout") < text.indexOf("planner"), "running row should precede queued work");
+		assert.ok(text.indexOf("planner") < text.indexOf("reviewer"), "queued work should precede completions");
 		assert.match(text, /· read/);
 	});
 
@@ -146,6 +146,16 @@ describe("subagent async widget rendering", () => {
 		assert.doesNotMatch(text, /Agent \d\/3/);
 		assert.doesNotMatch(text, /widget truncated/);
 		assert.equal(lines.length, 1, "a single collapsed run should cost one terminal line");
+	});
+
+	it("names a lone queued run instead of summarizing it as a count", () => {
+		const text = buildWidgetLines([
+			{ asyncId: "run-1", asyncDir: "/tmp/1", status: "running", agents: ["scout"] },
+			{ asyncId: "queued-1", asyncDir: "/tmp/queued", status: "queued", agents: ["planner"] },
+		], theme, 120).join("\n");
+
+		assert.match(text, /planner/);
+		assert.doesNotMatch(text, /1 queued/);
 	});
 
 	it("keeps collapsed widget rows on one physical line in a narrow terminal", () => {
