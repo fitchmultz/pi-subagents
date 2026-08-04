@@ -82,7 +82,6 @@ import {
 import {
 	type AgentProgress,
 	type AcceptanceInput,
-	type ArtifactConfig,
 	type ArtifactPaths,
 	type ChildProjectTrustPolicy,
 	type ControlConfig,
@@ -104,7 +103,6 @@ import {
 	type SubagentRunMode,
 	type SubagentState,
 	type TimeoutExtensionCallback,
-	DEFAULT_ARTIFACT_CONFIG,
 	SUBAGENT_ACTIONS,
 	SUBAGENT_CONTROL_EVENT,
 	SUBAGENT_CONTROL_INTERCOM_EVENT,
@@ -361,7 +359,7 @@ interface ExecutionContextData {
 	sessionDirForIndex: (idx?: number) => string;
 	sessionFileForIndex: (idx?: number) => string | undefined;
 	sessionFileForAgentIndex: (agentName: string | undefined, idx?: number) => string | undefined;
-	artifactConfig: ArtifactConfig;
+	artifactsEnabled: boolean;
 	artifactsDir: string;
 	backgroundRequestedWhileClarifying: boolean;
 	effectiveAsync: boolean;
@@ -1065,7 +1063,6 @@ async function resumeAsyncRun(input: {
 	}
 
 	const runId = randomUUID().slice(0, 8);
-	const artifactConfig: ArtifactConfig = { ...DEFAULT_ARTIFACT_CONFIG, enabled: input.params.artifacts !== false };
 	const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const result = executeAsyncSingle(runId, {
 		agent: target.agent,
@@ -1079,8 +1076,7 @@ async function resumeAsyncRun(input: {
 		},
 		cwd: effectiveCwd,
 		maxOutput: input.params.maxOutput,
-		artifactsDir: input.deps.tempArtifactsDir,
-		artifactConfig,
+		artifactsDir: input.params.artifacts === false ? undefined : input.deps.tempArtifactsDir,
 		shareEnabled: input.params.share === true,
 		sessionRoot: input.deps.getSubagentSessionRoot(parentSessionFile),
 		sessionFile: target.sessionFile,
@@ -1567,7 +1563,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 		sessionRoot,
 		sessionFileForIndex,
 		sessionFileForAgentIndex,
-		artifactConfig,
+		artifactsEnabled,
 		artifactsDir,
 		effectiveAsync,
 		controlConfig,
@@ -1671,8 +1667,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 			availableModels,
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
-			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-			artifactConfig,
+			artifactsDir: artifactsEnabled ? artifactsDir : undefined,
 			shareEnabled,
 			sessionRoot,
 			chainSkills: [],
@@ -1700,8 +1695,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 			availableModels,
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
-			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-			artifactConfig,
+			artifactsDir: artifactsEnabled ? artifactsDir : undefined,
 			shareEnabled,
 			sessionRoot,
 			chainSkills,
@@ -1748,8 +1742,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 			availableModels,
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
-			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-			artifactConfig,
+			artifactsDir: artifactsEnabled ? artifactsDir : undefined,
 			shareEnabled,
 			sessionRoot,
 			sessionFile: sessionFileForIndex(0),
@@ -1785,8 +1778,8 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		sessionDirForIndex,
 		sessionFileForIndex,
 		sessionFileForAgentIndex,
+		artifactsEnabled,
 		artifactsDir,
-		artifactConfig,
 		onUpdate,
 		sessionRoot,
 		controlConfig,
@@ -1811,8 +1804,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		sessionDirForIndex,
 		sessionFileForIndex,
 		sessionFileForAgentIndex,
-		artifactsDir,
-		artifactConfig,
+		artifactsDir: artifactsEnabled ? artifactsDir : undefined,
 		includeProgress: params.includeProgress,
 		clarify: params.clarify,
 		context: params.context,
@@ -1850,8 +1842,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
-			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-			artifactConfig,
+			artifactsDir: artifactsEnabled ? artifactsDir : undefined,
 			shareEnabled,
 			sessionRoot,
 			chainSkills: chainResult.requestedAsync.chainSkills,
@@ -1906,8 +1897,8 @@ interface ForegroundParallelRunInput {
 	sessionDirForIndex: (idx?: number) => string | undefined;
 	sessionFileForIndex: (idx?: number) => string | undefined;
 	shareEnabled: boolean;
-	artifactConfig: ArtifactConfig;
 	artifactsDir: string;
+	debugArtifactsDir?: string;
 	maxOutput?: MaxOutputConfig;
 	timeoutMs?: number;
 	timeoutAt?: number;
@@ -2110,8 +2101,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			sessionDir: input.sessionDirForIndex(index),
 			sessionFile: input.sessionFileForIndex(index),
 			share: input.shareEnabled,
-			artifactsDir: input.artifactConfig.enabled ? input.artifactsDir : undefined,
-			artifactConfig: input.artifactConfig,
+			artifactsDir: input.debugArtifactsDir,
 			maxOutput: input.maxOutput,
 			outputPath,
 			outputMode: behavior?.outputMode,
@@ -2187,7 +2177,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		sessionDirForIndex,
 		sessionFileForIndex,
 		shareEnabled,
-		artifactConfig,
+		artifactsEnabled,
 		artifactsDir,
 		backgroundRequestedWhileClarifying,
 		onUpdate,
@@ -2347,8 +2337,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 				availableModels,
 				cwd: effectiveCwd,
 				maxOutput: params.maxOutput,
-				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-				artifactConfig,
+				artifactsDir: artifactsEnabled ? artifactsDir : undefined,
 				shareEnabled,
 				sessionRoot,
 				chainSkills: [],
@@ -2431,8 +2420,8 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			sessionDirForIndex,
 			sessionFileForIndex,
 			shareEnabled,
-			artifactConfig,
 			artifactsDir,
+			debugArtifactsDir: artifactsEnabled ? artifactsDir : undefined,
 			maxOutput: params.maxOutput,
 			...(data.foregroundTimeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: data.foregroundTimeoutMs, timeoutAt } : {}),
 			paramsCwd: effectiveCwd,
@@ -2570,7 +2559,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		sessionDirForIndex,
 		sessionFileForIndex,
 		shareEnabled,
-		artifactConfig,
+		artifactsEnabled,
 		artifactsDir,
 		onUpdate,
 		sessionRoot,
@@ -2665,8 +2654,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				availableModels,
 				cwd: effectiveCwd,
 				maxOutput: params.maxOutput,
-				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-				artifactConfig,
+				artifactsDir: artifactsEnabled ? artifactsDir : undefined,
 				shareEnabled,
 				sessionRoot,
 				sessionFile: sessionFileForIndex(0),
@@ -2753,8 +2741,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		sessionDir: sessionDirForIndex(0),
 		sessionFile: sessionFileForIndex(0),
 		share: shareEnabled,
-		artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-		artifactConfig,
+		artifactsDir: artifactsEnabled ? artifactsDir : undefined,
 		maxOutput: params.maxOutput,
 		outputPath,
 		outputMode: effectiveOutputMode,
@@ -3177,10 +3164,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		if (!effectiveAsync) foregroundTimeout.timeoutMs = normalizeRoleForegroundTimeout(effectiveParams, foregroundTimeout.timeoutMs);
 		const controlConfig = resolveControlConfig(deps.config.control, effectiveParams.control);
 
-		const artifactConfig: ArtifactConfig = {
-			...DEFAULT_ARTIFACT_CONFIG,
-			enabled: effectiveParams.artifacts !== false,
-		};
+		const artifactsEnabled = effectiveParams.artifacts !== false;
 		const artifactsDir = effectiveAsync ? deps.tempArtifactsDir : getArtifactsDir(parentSessionFile);
 
 		let sessionRoot: string;
@@ -3226,7 +3210,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			sessionDirForIndex,
 			sessionFileForIndex: childSessionFileForIndex,
 			sessionFileForAgentIndex: childSessionFileForAgentIndex,
-			artifactConfig,
+			artifactsEnabled,
 			artifactsDir,
 			backgroundRequestedWhileClarifying,
 			effectiveAsync,

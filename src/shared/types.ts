@@ -488,17 +488,7 @@ export type SubagentExecutionResult = AgentToolResult<Details> & {
 export interface ArtifactPaths {
 	inputPath: string;
 	outputPath: string;
-	jsonlPath: string;
 	metadataPath: string;
-}
-
-export interface ArtifactConfig {
-	enabled: boolean;
-	includeInput: boolean;
-	includeOutput: boolean;
-	includeJsonl: boolean;
-	includeMetadata: boolean;
-	cleanupDays: number;
 }
 
 // ============================================================================
@@ -887,7 +877,6 @@ export interface RunSyncOptions {
 	orchestratorIntercomTarget?: string;
 	maxOutput?: MaxOutputConfig;
 	artifactsDir?: string;
-	artifactConfig?: ArtifactConfig;
 	runId: string;
 	index?: number;
 	sessionDir?: string;
@@ -956,15 +945,6 @@ export interface ExtensionConfig {
 export const DEFAULT_MAX_OUTPUT: Required<MaxOutputConfig> = {
 	bytes: 200 * 1024,
 	lines: 5000,
-};
-
-export const DEFAULT_ARTIFACT_CONFIG: ArtifactConfig = {
-	enabled: true,
-	includeInput: true,
-	includeOutput: true,
-	includeJsonl: false,
-	includeMetadata: true,
-	cleanupDays: 7,
 };
 
 function sanitizeTempScopeSegment(value: string): string {

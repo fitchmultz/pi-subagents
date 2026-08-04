@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai/compat";
+import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
 
 const PREFIX = "claude-code/";
 const DEFAULT_CONTEXT = "300k";
@@ -9,7 +10,6 @@ const CONTEXT_TOKENS: Record<"300k" | "1m", string> = {
 	"300k": "300000",
 	"1m": "1000000",
 };
-const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const FAMILY_ALIASES = new Set(["fable", "opus", "sonnet", "haiku"]);
 const SESSION_EVENT_TYPE = "claude_code_session";
 
@@ -63,11 +63,8 @@ export function isClaudeCodeModel(model: string | undefined): boolean {
 }
 
 function splitThinking(input: string): { model: string; thinking?: string } {
-	const idx = input.lastIndexOf(":");
-	if (idx === -1) return { model: input };
-	const suffix = input.slice(idx + 1);
-	if (!THINKING_LEVELS.has(suffix)) return { model: input };
-	return { model: input.slice(0, idx), thinking: suffix };
+	const { baseModel, thinkingSuffix } = splitKnownThinkingSuffix(input);
+	return thinkingSuffix ? { model: baseModel, thinking: thinkingSuffix.slice(1) } : { model: input };
 }
 
 export function parseClaudeCodeModel(model: string): ClaudeCodeModelSpec {

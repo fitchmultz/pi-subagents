@@ -49,7 +49,6 @@ import {
 } from "../shared/worktree.ts";
 import {
 	type AgentProgress,
-	type ArtifactConfig,
 	type ArtifactPaths,
 	type ChildProjectTrustPolicy,
 	type ControlEvent,
@@ -77,7 +76,7 @@ interface ChainExecutionDetailsInput {
 	includeProgress?: boolean;
 	allProgress: AgentProgress[];
 	allArtifactPaths: ArtifactPaths[];
-	artifactsDir: string;
+	artifactsDir?: string;
 	chainAgents: string[];
 	chainSteps: ChainStep[];
 	totalSteps: number;
@@ -108,10 +107,9 @@ interface ParallelChainRunInput {
 	sessionFileForIndex?: (idx?: number) => string | undefined;
 	sessionFileForAgentIndex?: (agentName: string | undefined, idx?: number) => string | undefined;
 	shareEnabled: boolean;
-	artifactConfig: ArtifactConfig;
 	timeoutMs?: number;
 	timeoutAt?: number;
-	artifactsDir: string;
+	artifactsDir?: string;
 	signal?: AbortSignal;
 	onUpdate?: (r: SubagentExecutionResult) => void;
 	onControlEvent?: (event: ControlEvent) => void;
@@ -139,7 +137,7 @@ function buildChainExecutionDetails(input: ChainExecutionDetailsInput): Details 
 		mode: "chain",
 		results: input.results,
 		progress: input.includeProgress ? input.allProgress : undefined,
-		artifacts: input.allArtifactPaths.length ? { dir: input.artifactsDir, files: input.allArtifactPaths } : undefined,
+		artifacts: input.allArtifactPaths.length && input.artifactsDir ? { dir: input.artifactsDir, files: input.allArtifactPaths } : undefined,
 		chainAgents: input.chainAgents,
 		totalSteps: input.totalSteps,
 		currentStepIndex: input.currentStepIndex,
@@ -275,8 +273,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				sessionDir: input.sessionDirForIndex(input.globalTaskIndex + taskIndex),
 				sessionFile: input.sessionFileForAgentIndex?.(task.agent, input.globalTaskIndex + taskIndex) ?? input.sessionFileForIndex?.(input.globalTaskIndex + taskIndex),
 				share: input.shareEnabled,
-				artifactsDir: input.artifactConfig.enabled ? input.artifactsDir : undefined,
-				artifactConfig: input.artifactConfig,
+				artifactsDir: input.artifactsDir,
 				outputPath,
 				outputMode: behavior.outputMode,
 				persistOutputFile: task.output !== undefined,
@@ -370,8 +367,7 @@ interface ChainExecutionParams {
 	sessionDirForIndex: (idx?: number) => string | undefined;
 	sessionFileForIndex?: (idx?: number) => string | undefined;
 	sessionFileForAgentIndex?: (agentName: string | undefined, idx?: number) => string | undefined;
-	artifactsDir: string;
-	artifactConfig: ArtifactConfig;
+	artifactsDir?: string;
 	includeProgress?: boolean;
 	clarify?: boolean;
 	context?: SubagentExecutionContext;
@@ -419,7 +415,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		sessionFileForIndex,
 		sessionFileForAgentIndex,
 		artifactsDir,
-		artifactConfig,
 		includeProgress,
 		clarify,
 		context,
@@ -670,7 +665,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					sessionFileForIndex,
 					sessionFileForAgentIndex,
 					shareEnabled,
-					artifactConfig,
 					artifactsDir,
 					...(params.timeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: params.timeoutMs, timeoutAt } : {}),
 					signal,
@@ -888,7 +882,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				sessionFileForIndex,
 				sessionFileForAgentIndex,
 				shareEnabled,
-				artifactConfig,
 				artifactsDir,
 				...(params.timeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: params.timeoutMs, timeoutAt } : {}),
 				signal,
@@ -1106,8 +1099,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				sessionDir: sessionDirForIndex(globalTaskIndex),
 				sessionFile: sessionFileForAgentIndex?.(seqStep.agent, globalTaskIndex) ?? sessionFileForIndex?.(globalTaskIndex),
 				share: shareEnabled,
-				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-				artifactConfig,
+				artifactsDir,
 				outputPath,
 				outputMode: behavior.outputMode,
 				persistOutputFile: seqStep.output !== undefined,

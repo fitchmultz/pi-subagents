@@ -9,7 +9,6 @@
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import * as path from "node:path";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createMockPi,
@@ -132,8 +131,6 @@ describe("chain error propagation", { skip: !chainAvailable ? "chain module not 
 			runId: "test-err",
 			shareEnabled: false,
 			sessionDirForIndex: () => undefined,
-			artifactsDir: path.join(tempDir, "artifacts"),
-			artifactConfig: { enabled: false },
 			clarify: false,
 		};
 	}

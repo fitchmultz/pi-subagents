@@ -49,7 +49,6 @@ import {
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { evaluateCompletionMutationGuard, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
-import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
@@ -257,7 +256,6 @@ async function runSingleAttempt(
 		systemPrompt: string;
 		resolvedSkillNames?: string[];
 		skillsWarning?: string;
-		jsonlPath?: string;
 		artifactPaths?: ArtifactPaths;
 		attemptNotes: string[];
 		outputSnapshot?: SingleOutputSnapshot;
@@ -396,7 +394,6 @@ async function runSingleAttempt(
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
 		});
-		const jsonlWriter = createJsonlWriter(shared.jsonlPath, proc.stdout);
 		let buf = "";
 		let processClosed = false;
 		let settled = false;
@@ -618,7 +615,6 @@ async function runSingleAttempt(
 
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
-			jsonlWriter.writeLine(line);
 			let evt: { type?: string; message?: Message; toolName?: string; args?: unknown };
 			try {
 				evt = JSON.parse(line) as { type?: string; message?: Message; toolName?: string; args?: unknown };
@@ -784,9 +780,6 @@ async function runSingleAttempt(
 		proc.on("close", (code, signal) => {
 			clearFinalDrainTimers();
 			clearStdioGuard();
-			void jsonlWriter.close().catch(() => {
-				// JSONL artifact flush is best effort.
-			});
 			cleanupTempDir(tempDir);
 			if (detached) {
 				finish(-2);
@@ -805,9 +798,6 @@ async function runSingleAttempt(
 		proc.on("error", (error) => {
 			clearFinalDrainTimers();
 			clearStdioGuard();
-			void jsonlWriter.close().catch(() => {
-				// JSONL artifact flush is best effort.
-			});
 			cleanupTempDir(tempDir);
 			if (!result.error) {
 				result.error = error instanceof Error ? error.message : String(error);
@@ -1260,16 +1250,10 @@ export async function runSync(
 	let totalDurationMs = 0;
 
 	let artifactPathsResult: ArtifactPaths | undefined;
-	let jsonlPath: string | undefined;
-	if (effectiveOptions.artifactsDir && effectiveOptions.artifactConfig?.enabled !== false) {
+	if (effectiveOptions.artifactsDir) {
 		artifactPathsResult = getArtifactPaths(effectiveOptions.artifactsDir, effectiveOptions.runId, agentName, effectiveOptions.index);
 		ensureArtifactsDir(effectiveOptions.artifactsDir);
-		if (effectiveOptions.artifactConfig?.includeInput !== false) {
-				writeArtifact(artifactPathsResult.inputPath, `# Task for ${agentName}\n\n${taskWithAcceptance}`);
-		}
-		if (effectiveOptions.artifactConfig?.includeJsonl !== false) {
-			jsonlPath = artifactPathsResult.jsonlPath;
-		}
+		writeArtifact(artifactPathsResult.inputPath, `# Task for ${agentName}\n\n${taskWithAcceptance}`);
 	}
 
 	let lastResult: SingleResult | undefined;
@@ -1286,7 +1270,6 @@ export async function runSync(
 				systemPrompt,
 				resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
 				skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
-				jsonlPath,
 				artifactPaths: artifactPathsResult,
 				attemptNotes,
 				outputSnapshot,
@@ -1357,29 +1340,25 @@ export async function runSync(
 		}
 	}
 
-	if (artifactPathsResult && options.artifactConfig?.enabled !== false) {
+	if (artifactPathsResult) {
 		result.artifactPaths = artifactPathsResult;
-		if (options.artifactConfig?.includeOutput !== false) {
-			writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(result) ?? result.finalOutput ?? "");
-		}
-		if (options.artifactConfig?.includeMetadata !== false) {
-			writeMetadata(artifactPathsResult.metadataPath, {
-				runId: options.runId,
-				agent: agentName,
-				task,
-				exitCode: result.exitCode,
-				usage: result.usage,
-				model: result.model,
-				attemptedModels: result.attemptedModels,
-				modelAttempts: result.modelAttempts,
-				durationMs: result.progressSummary?.durationMs,
-				toolCount: result.progressSummary?.toolCount,
-				error: result.error,
-				skills: result.skills,
-				skillsWarning: result.skillsWarning,
-				timestamp: Date.now(),
-			});
-		}
+		writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(result) ?? result.finalOutput ?? "");
+		writeMetadata(artifactPathsResult.metadataPath, {
+			runId: options.runId,
+			agent: agentName,
+			task,
+			exitCode: result.exitCode,
+			usage: result.usage,
+			model: result.model,
+			attemptedModels: result.attemptedModels,
+			modelAttempts: result.modelAttempts,
+			durationMs: result.progressSummary?.durationMs,
+			toolCount: result.progressSummary?.toolCount,
+			error: result.error,
+			skills: result.skills,
+			skillsWarning: result.skillsWarning,
+			timestamp: Date.now(),
+		});
 
 		if (options.maxOutput) {
 			const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };

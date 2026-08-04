@@ -5,15 +5,6 @@
 import { Type } from "typebox";
 import { SUBAGENT_ACTIONS } from "../shared/types.ts";
 
-function StringEnum<const T extends readonly string[]>(values: T, options?: { description?: string; default?: T[number] }) {
-	return Type.Unsafe<T[number]>({
-		type: "string",
-		enum: values,
-		...(options?.description ? { description: options.description } : {}),
-		...(options?.default ? { default: options.default } : {}),
-	});
-}
-
 const SkillOverride = Type.Unsafe({
 	anyOf: [
 		{ type: "array", items: { type: "string" } },
@@ -31,7 +22,8 @@ const OutputOverride = Type.Unsafe({
 	description: "Output file path, or false to disable file output.",
 });
 
-const OutputModeOverride = StringEnum(["inline", "file-only"] as const, {
+const OutputModeOverride = Type.Enum(["inline", "file-only"] as const, {
+	type: "string",
 	description: "inline (default) or file-only; file-only requires output to be a path.",
 });
 
@@ -57,7 +49,7 @@ const JsonSchemaObject = Type.Unsafe({
 	description: "JSON Schema (object root) for strict structured output.",
 });
 
-const AcceptanceEvidenceKind = StringEnum([
+const AcceptanceEvidenceKind = Type.Enum([
 	"changed-files",
 	"tests-added",
 	"commands-run",
@@ -67,13 +59,13 @@ const AcceptanceEvidenceKind = StringEnum([
 	"diff-summary",
 	"review-findings",
 	"manual-notes",
-] as const);
+] as const, { type: "string" });
 
 const AcceptanceGateSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
 	must: Type.String({ minLength: 1 }),
 	evidence: Type.Optional(Type.Array(AcceptanceEvidenceKind)),
-	severity: Type.Optional(StringEnum(["required", "recommended"] as const)),
+	severity: Type.Optional(Type.Enum(["required", "recommended"] as const, { type: "string" })),
 }, { additionalProperties: false });
 
 const AcceptanceVerifyCommandSchema = Type.Object({
@@ -148,7 +140,7 @@ const DynamicExpandSchema = Type.Object({
 	item: Type.Optional(Type.String({ description: "Template variable name for each item. Defaults to item." })),
 	key: Type.Optional(Type.String({ description: "JSON Pointer relative to each item for stable child ids." })),
 	maxItems: Type.Optional(Type.Integer({ minimum: 0, description: "Required fanout bound unless configured globally." })),
-	onEmpty: Type.Optional(StringEnum(["skip", "fail"] as const, { description: "Empty input behavior. Defaults to skip." })),
+	onEmpty: Type.Optional(Type.Enum(["skip", "fail"] as const, { type: "string", description: "Empty input behavior. Defaults to skip." })),
 }, { additionalProperties: false });
 
 const DynamicParallelTemplateSchema = Type.Object({
@@ -218,10 +210,10 @@ const ControlOverrides = Type.Object({
 	enabled: Type.Optional(Type.Boolean({ description: "Enable/disable subagent control attention tracking for this run" })),
 	needsAttentionAfterMs: Type.Optional(Type.Integer({ minimum: 1, description: "No-activity window (ms) before a run needs attention. Default 600000 (10 min)." })),
 	failedToolAttemptsBeforeAttention: Type.Optional(Type.Integer({ minimum: 1, description: "Consecutive mutating-tool failures before needs_attention (default: 3)" })),
-	notifyOn: Type.Optional(Type.Array(StringEnum(["needs_attention"] as const), {
+	notifyOn: Type.Optional(Type.Array(Type.Enum(["needs_attention"] as const, { type: "string" }), {
 		description: "Control event types that should notify the parent/orchestrator. Defaults to needs_attention.",
 	})),
-	notifyChannels: Type.Optional(Type.Array(StringEnum(["event", "async", "intercom"] as const), {
+	notifyChannels: Type.Optional(Type.Array(Type.Enum(["event", "async", "intercom"] as const, { type: "string" }), {
 		description: "Notification channels to use when available. Defaults to event, async, and intercom.",
 	})),
 });
@@ -230,7 +222,8 @@ export const SubagentParams = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Agent name (SINGLE mode) or target for management get/update/delete" })),
 	task: Type.Optional(Type.String({ description: "Task (SINGLE mode, optional for self-contained agents)" })),
 	// Management action (when present, tool operates in management mode)
-	action: Type.Optional(StringEnum([...SUBAGENT_ACTIONS] as const, {
+	action: Type.Optional(Type.Enum([...SUBAGENT_ACTIONS] as const, {
+		type: "string",
 		description: "Management/control action. Omit for execution mode. nudge sends a live intercom nudge to a running child."
 	})),
 	id: Type.Optional(Type.String({
@@ -266,7 +259,8 @@ export const SubagentParams = Type.Object({
 		description: "Isolated git worktrees per parallel task; requires clean git state; per-worktree diffs included."
 	})),
 	chain: Type.Optional(Type.Array(ChainItem, { description: "CHAIN mode: sequential pipeline; each step's response becomes {previous} for the next." })),
-	context: Type.Optional(StringEnum(["fresh", "fork"] as const, {
+	context: Type.Optional(Type.Enum(["fresh", "fork"] as const, {
+		type: "string",
 		description: "'fresh' or 'fork' (branch from parent session); overrides each agent's defaultContext. Fork is rejected for agents whose effective model uses the anthropic/ provider.",
 	})),
 	chainDir: Type.Optional(Type.String({ description: "Directory for chain artifacts (default: temp, auto-cleaned after 24h)" })),

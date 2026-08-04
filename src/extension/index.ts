@@ -19,7 +19,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.ts";
-import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
+import { ARTIFACT_CLEANUP_DAYS, cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
 import { renderWidget, renderSubagentResult } from "../tui/render.ts";
@@ -41,7 +41,6 @@ import {
 	type SubagentExecutionResult,
 	type SubagentState,
 	ASYNC_DIR,
-	DEFAULT_ARTIFACT_CONFIG,
 	RESULTS_DIR,
 	SLASH_RESULT_TYPE,
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
@@ -492,7 +491,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		try {
 			const sessionFile = ctx.sessionManager.getSessionFile();
 			if (sessionFile) {
-				cleanupOldArtifacts(getArtifactsDir(sessionFile), DEFAULT_ARTIFACT_CONFIG.cleanupDays);
+				cleanupOldArtifacts(getArtifactsDir(sessionFile), ARTIFACT_CLEANUP_DAYS);
 			}
 		} catch {
 			// Cleanup failures should not block session lifecycle events.
@@ -503,7 +502,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		ensureAccessibleDir(RESULTS_DIR);
 		ensureAccessibleDir(ASYNC_DIR);
 		cleanupOldChainDirs();
-		cleanupAllArtifactDirs(DEFAULT_ARTIFACT_CONFIG.cleanupDays);
+		cleanupAllArtifactDirs(ARTIFACT_CLEANUP_DAYS);
 		state.baseCwd = ctx.cwd;
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		state.lastUiContext = ctx;
