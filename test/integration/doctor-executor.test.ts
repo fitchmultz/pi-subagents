@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { createEventBus, createTempDir, makeMinimalCtx, removeTempDir, tryImport } from "../support/helpers.ts";
+import { createEventBus, createTempDir, makeMinimalCtx, removeTempDir } from "../support/helpers.ts";
 
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
 const importHome = createTempDir("pi-doctor-executor-import-home-");
 process.env.HOME = importHome;
 process.env.USERPROFILE = importHome;
-let executorMod: any;
+let createSubagentExecutor: typeof import("../../src/runs/foreground/subagent-executor.ts").createSubagentExecutor;
 try {
-	executorMod = await tryImport<any>("./src/runs/foreground/subagent-executor.ts");
+	({ createSubagentExecutor } = await import("../../src/runs/foreground/subagent-executor.ts"));
 } finally {
 	if (originalHome === undefined) delete process.env.HOME;
 	else process.env.HOME = originalHome;
@@ -20,7 +19,6 @@ try {
 	else process.env.USERPROFILE = originalUserProfile;
 	removeTempDir(importHome);
 }
-const createSubagentExecutor = executorMod?.createSubagentExecutor;
 
 function makeState(cwd: string) {
 	return {
@@ -39,7 +37,7 @@ function makeState(cwd: string) {
 	};
 }
 
-describe("doctor action executor routing", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, () => {
+describe("doctor action executor routing", () => {
 	let tempDir = "";
 	let tempHome = "";
 

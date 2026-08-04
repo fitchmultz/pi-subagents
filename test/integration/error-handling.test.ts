@@ -3,12 +3,12 @@
  *
  * Tests: agent crashes, stderr capture, detectSubagentError override,
  * signal/abort handling, and error propagation in chains.
- *
- * Requires pi packages for execution tests. Skips gracefully if unavailable.
  */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { executeChain } from "../../src/runs/foreground/chain-execution.ts";
+import { runSync } from "../../src/runs/foreground/execution.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createMockPi,
@@ -18,20 +18,9 @@ import {
 	makeAgent,
 	makeMinimalCtx,
 	events,
-	tryImport,
 } from "../support/helpers.ts";
 
-// Top-level await
-const execution = await tryImport<any>("./src/runs/foreground/execution.ts");
-const chainMod = await tryImport<any>("./src/runs/foreground/chain-execution.ts");
-
-const piAvailable = !!execution;
-const chainAvailable = !!chainMod;
-
-const runSync = execution?.runSync;
-const executeChain = chainMod?.executeChain;
-
-describe("runSync error handling", { skip: !piAvailable ? "pi packages not available" : undefined }, () => {
+describe("runSync error handling", () => {
 	let tempDir: string;
 	let mockPi: MockPi;
 
@@ -101,7 +90,7 @@ describe("runSync error handling", { skip: !piAvailable ? "pi packages not avail
 // Chain error propagation
 // ---------------------------------------------------------------------------
 
-describe("chain error propagation", { skip: !chainAvailable ? "chain module not available" : undefined }, () => {
+describe("chain error propagation", () => {
 	let tempDir: string;
 	let mockPi: MockPi;
 

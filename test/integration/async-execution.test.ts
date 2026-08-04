@@ -3,8 +3,6 @@
  *
  * Tests async execution utilities,
  * status file reading/caching.
- *
- * Requires pi packages to be importable. Skips gracefully if unavailable.
  */
 
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
@@ -13,14 +11,12 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, removeTempDir, tryImport } from "../support/helpers.ts";
+import { executeAsyncChain, executeAsyncSingle } from "../../src/runs/background/async-execution.ts";
+import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import { ASYNC_DIR, RESULTS_DIR, RUNNER_ERROR_LOG_FILE, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
+import { readStatus } from "../../src/shared/utils.ts";
+import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, removeTempDir } from "../support/helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
-
-interface AsyncExecutionResult {
-	content: Array<{ text?: string }>;
-	isError?: boolean;
-	details: { asyncId?: string };
-}
 
 interface AsyncResultPayload {
 	success: boolean;
@@ -62,43 +58,6 @@ interface AsyncStatusPayload {
 	}>;
 	workflowGraph?: { nodes?: Array<{ status?: string }> };
 }
-
-interface AsyncExecutionModule {
-	executeAsyncSingle(id: string, params: Record<string, unknown>): AsyncExecutionResult;
-	executeAsyncChain(id: string, params: Record<string, unknown>): AsyncExecutionResult;
-}
-
-interface UtilsModule {
-	readStatus(dir: string): { runId: string; state: string; mode: string } | null;
-}
-
-interface TypesModule {
-	ASYNC_DIR: string;
-	RESULTS_DIR: string;
-	RUNNER_ERROR_LOG_FILE: string;
-	TEMP_ROOT_DIR: string;
-}
-
-interface ExecutorModule {
-	createSubagentExecutor?: (...args: unknown[]) => {
-		execute: (...args: unknown[]) => Promise<{ content: Array<{ text?: string }>; isError?: boolean; details?: { asyncId?: string } }>;
-	};
-}
-
-const asyncMod = await tryImport<AsyncExecutionModule>("./src/runs/background/async-execution.ts");
-const utils = await tryImport<UtilsModule>("./src/shared/utils.ts");
-const typesMod = await tryImport<TypesModule>("./src/shared/types.ts");
-const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subagent-executor.ts");
-const available = !!(asyncMod && utils && typesMod);
-
-const executeAsyncSingle = asyncMod?.executeAsyncSingle;
-const executeAsyncChain = asyncMod?.executeAsyncChain;
-const readStatus = utils?.readStatus;
-const ASYNC_DIR = typesMod?.ASYNC_DIR;
-const RESULTS_DIR = typesMod?.RESULTS_DIR;
-const RUNNER_ERROR_LOG_FILE = typesMod?.RUNNER_ERROR_LOG_FILE;
-const TEMP_ROOT_DIR = typesMod?.TEMP_ROOT_DIR;
-const createSubagentExecutor = executorMod?.createSubagentExecutor;
 
 function git(cwd: string, args: string[]): string {
 	const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf-8" });
@@ -198,7 +157,7 @@ function readMockPiArgs(mockPi: MockPi, index: number): string[] {
 	return readMockPiRecord(mockPi, index).args;
 }
 
-describe("async execution utilities", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("async execution utilities", () => {
 	let tempDir: string;
 	let mockPi: MockPi;
 
@@ -491,9 +450,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 1);
 	});
 
-	it("default async parallel conversion preserves output, reads, and progress", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
+	it("default async parallel conversion preserves output, reads, and progress", async () => {
 		mockPi.onCall({ output: "Async top-level report" });
-		const executor = createSubagentExecutor!({
+		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 			config: {},
@@ -545,10 +504,10 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), true);
 	});
 
-	it("top-level async parallel materializes duplicate agent-default outputs to unique artifact paths", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
+	it("top-level async parallel materializes duplicate agent-default outputs to unique artifact paths", async () => {
 		mockPi.onCall({ output: "Async default report A" });
 		mockPi.onCall({ output: "Async default report B" });
-		const executor = createSubagentExecutor!({
+		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 			config: {},
@@ -586,8 +545,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.ok(outputTexts.some((text) => /[a-f0-9-]+_scout_1_context\.md/.test(text)));
 	});
 
-	it("rejects duplicate explicit output paths before starting top-level async parallel children", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
-		const executor = createSubagentExecutor!({
+	it("rejects duplicate explicit output paths before starting top-level async parallel children", async () => {
+		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 			config: {},
@@ -637,9 +596,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("rejects duplicate explicit absolute output paths before starting async worktree parallel children", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
+	it("rejects duplicate explicit absolute output paths before starting async worktree parallel children", async () => {
 		const outputPath = path.join(tempDir, "same-absolute.md");
-		const executor = createSubagentExecutor!({
+		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 			config: {},
@@ -671,9 +630,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("top-level async single uses an agent-default output for file-only mode without project leftovers", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
+	it("top-level async single uses an agent-default output for file-only mode without project leftovers", async () => {
 		mockPi.onCall({ output: "Async single default report" });
-		const executor = createSubagentExecutor!({
+		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 			config: {},
@@ -823,9 +782,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(finalStatus.steps?.[0]?.status, "paused");
 	});
 
-	it("top-level async chain suppresses progress for {task} review-only tasks", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
+	it("top-level async chain suppresses progress for {task} review-only tasks", async () => {
 		mockPi.onCall({ output: "Async review" });
-		const executor = createSubagentExecutor!({
+		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 			config: {},
@@ -1326,11 +1285,11 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(payload.workflowGraph?.nodes?.[1]?.error ?? "", /Collected output validation failed/);
 	});
 
-	it("top-level async worktree parallel resolves reads and output against the worktree cwd", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
+	it("top-level async worktree parallel resolves reads and output against the worktree cwd", async () => {
 		const repoDir = createRepo("pi-subagent-async-worktree-");
 		try {
 			mockPi.onCall({ output: "Worktree report" });
-			const executor = createSubagentExecutor!({
+			const executor = createSubagentExecutor({
 				pi: { events: createEventBus(), getSessionName: () => undefined },
 				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 				config: {},
@@ -1382,12 +1341,12 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		}
 	});
 
-	it("top-level async worktree parallel reports preserved worktrees when diff capture fails", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
+	it("top-level async worktree parallel reports preserved worktrees when diff capture fails", async () => {
 		const repoDir = createRepo("pi-subagent-async-worktree-diff-fail-");
 		const preserved: Array<{ path: string; branch: string }> = [];
 		try {
 			mockPi.onCall({ delay: 300, output: "Worktree report" });
-			const executor = createSubagentExecutor!({
+			const executor = createSubagentExecutor({
 				pi: { events: createEventBus(), getSessionName: () => undefined },
 				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 				config: {},

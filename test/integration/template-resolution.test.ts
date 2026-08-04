@@ -2,32 +2,27 @@
  * Tests for chain template resolution and variable substitution.
  *
  * These test the pure logic of how {task}, {previous}, and {chain_dir}
- * variables get resolved in chain steps. Uses dynamic import since
- * settings.ts transitively depends on pi packages.
+ * variables get resolved in chain steps.
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createTempDir, removeTempDir, tryImport } from "../support/helpers.ts";
+import { normalizeSkillInput } from "../../src/agents/skills.ts";
+import {
+	buildChainInstructions,
+	createChainDir,
+	isParallelStep,
+	resolveChainTemplates,
+	resolveParallelBehaviors,
+	resolveStepBehavior,
+	suppressProgressForReadOnlyTask,
+	taskDisallowsFileUpdates,
+} from "../../src/shared/settings.ts";
+import { createTempDir, removeTempDir } from "../support/helpers.ts";
 
-// Top-level await
-const settings = await tryImport<any>("./src/shared/settings.ts");
-const skills = await tryImport<any>("./src/agents/skills.ts");
-const available = !!(settings && skills);
-
-const resolveChainTemplates = settings?.resolveChainTemplates;
-const buildChainInstructions = settings?.buildChainInstructions;
-const resolveStepBehavior = settings?.resolveStepBehavior;
-const resolveParallelBehaviors = settings?.resolveParallelBehaviors;
-const suppressProgressForReadOnlyTask = settings?.suppressProgressForReadOnlyTask;
-const taskDisallowsFileUpdates = settings?.taskDisallowsFileUpdates;
-const isParallelStep = settings?.isParallelStep;
-const createChainDir = settings?.createChainDir;
-const normalizeSkillInput = skills?.normalizeSkillInput;
-
-describe("resolveChainTemplates", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("resolveChainTemplates", () => {
 	it("uses step task for first step", () => {
 		const chain = [
 			{ agent: "a", task: "Analyze {task}" },
@@ -91,7 +86,7 @@ describe("resolveChainTemplates", { skip: !available ? "pi packages not availabl
 	});
 });
 
-describe("isParallelStep", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("isParallelStep", () => {
 	it("returns true for parallel steps", () => {
 		assert.ok(isParallelStep({ parallel: [{ agent: "a", task: "t" }] }));
 	});
@@ -101,7 +96,7 @@ describe("isParallelStep", { skip: !available ? "pi packages not available" : un
 	});
 });
 
-describe("normalizeSkillInput", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("normalizeSkillInput", () => {
 	it("returns undefined for undefined input", () => {
 		assert.equal(normalizeSkillInput(undefined), undefined);
 	});
@@ -135,7 +130,7 @@ describe("normalizeSkillInput", { skip: !available ? "pi packages not available"
 	});
 });
 
-describe("resolveStepBehavior", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("resolveStepBehavior", () => {
 	it("returns agent defaults when no overrides", () => {
 		// Uses agentConfig.output, .defaultReads, .defaultProgress
 		const config = { name: "test", output: "report.md", defaultProgress: true, defaultReads: ["input.md"] };
@@ -180,7 +175,7 @@ describe("resolveStepBehavior", { skip: !available ? "pi packages not available"
 	});
 });
 
-describe("resolveParallelBehaviors", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("resolveParallelBehaviors", () => {
 	it("string false agent default disables output in chain parallel tasks", () => {
 		const behaviors = resolveParallelBehaviors(
 			[{ agent: "reviewer", task: "Review" }],
@@ -192,7 +187,7 @@ describe("resolveParallelBehaviors", { skip: !available ? "pi packages not avail
 	});
 });
 
-describe("read-only progress suppression", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("read-only progress suppression", () => {
 	it("suppresses progress for review-only or no-edit tasks", () => {
 		const behavior = { reads: undefined, output: false, outputMode: "inline", progress: true, skills: undefined };
 
@@ -205,7 +200,7 @@ describe("read-only progress suppression", { skip: !available ? "pi packages not
 	});
 });
 
-describe("buildChainInstructions", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("buildChainInstructions", () => {
 	it("adds [Read from:] prefix for reads", () => {
 		const behavior = { reads: ["context.md"], output: false, outputMode: "inline", progress: false, skills: undefined };
 		const dir = createTempDir("chain-test-");
@@ -275,7 +270,7 @@ describe("buildChainInstructions", { skip: !available ? "pi packages not availab
 	});
 });
 
-describe("createChainDir", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("createChainDir", () => {
 	it("creates directory with runId", () => {
 		const dir = createChainDir("test-run-123");
 		try {

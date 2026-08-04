@@ -3,23 +3,9 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { makeAgent, createTempDir, removeTempDir, tryImport } from "../support/helpers.ts";
+import { runSync } from "../../src/runs/foreground/execution.ts";
 import { readClaudeCodeSessionMetadata } from "../../src/runs/shared/claude-code.ts";
-
-interface RunSyncResult {
-	exitCode: number;
-	finalOutput?: string;
-	model?: string;
-	sessionFile?: string;
-	usage: { turns: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
-}
-
-interface ExecutionModule {
-	runSync(runtimeCwd: string, agents: ReturnType<typeof makeAgent>[], agentName: string, task: string, options: Record<string, unknown>): Promise<RunSyncResult>;
-}
-
-const execution = await tryImport<ExecutionModule>("./src/runs/foreground/execution.ts");
-const available = !!execution;
+import { makeAgent, createTempDir, removeTempDir } from "../support/helpers.ts";
 
 function installMockClaude(root: string): { callsDir: string; restore: () => void } {
 	const binDir = path.join(root, "bin");
@@ -75,7 +61,7 @@ function readCalls(callsDir: string): Array<{ args: string[]; env: Record<string
 		.map((name) => JSON.parse(fs.readFileSync(path.join(callsDir, name), "utf-8")) as { args: string[]; env: Record<string, string | null> });
 }
 
-describe("Claude Code child backend", { skip: !available ? "execution module unavailable" : undefined }, () => {
+describe("Claude Code child backend", () => {
 	let tempDir: string;
 	let mock: { callsDir: string; restore: () => void };
 
@@ -92,7 +78,7 @@ describe("Claude Code child backend", { skip: !available ? "execution module una
 	it("runs and resumes claude-code/* models through claude -p", async () => {
 		const sessionFile = path.join(tempDir, "session.jsonl");
 		const agent = makeAgent("echo", { model: "claude-code/sonnet", thinking: "high", tools: ["bash", "read"] });
-		const first = await execution!.runSync(tempDir, [agent], "echo", "start", { cwd: tempDir, sessionFile });
+		const first = await runSync(tempDir, [agent], "echo", "start", { cwd: tempDir, sessionFile });
 		assert.equal(first.exitCode, 0);
 		assert.equal(first.finalOutput, "MOCK_STARTED");
 		assert.equal(first.model, "claude-code/sonnet:high");
@@ -108,7 +94,7 @@ describe("Claude Code child backend", { skip: !available ? "execution module una
 		assert.ok(firstCall.args.includes("--session-id"));
 		assert.equal(firstCall.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "300000");
 
-		const second = await execution!.runSync(tempDir, [agent], "echo", "continue", { cwd: tempDir, sessionFile });
+		const second = await runSync(tempDir, [agent], "echo", "continue", { cwd: tempDir, sessionFile });
 		assert.equal(second.exitCode, 0);
 		assert.equal(second.finalOutput, "MOCK_RESUMED");
 		const secondCall = readCalls(mock.callsDir)[1]!;
@@ -119,7 +105,7 @@ describe("Claude Code child backend", { skip: !available ? "execution module una
 
 	it("fails closed for Claude Code agents with MCP direct tool allowlists", async () => {
 		const agent = makeAgent("echo", { model: "claude-code/sonnet", tools: ["read"], mcpDirectTools: ["github.create_issue"] });
-		const result = await execution!.runSync(tempDir, [agent], "echo", "start", { cwd: tempDir });
+		const result = await runSync(tempDir, [agent], "echo", "start", { cwd: tempDir });
 		assert.equal(result.exitCode, 1);
 		assert.match(result.error ?? result.finalOutput ?? "", /MCP direct tool allowlist entries: github\.create_issue/);
 		assert.deepEqual(readCalls(mock.callsDir), []);
@@ -127,7 +113,7 @@ describe("Claude Code child backend", { skip: !available ? "execution module una
 
 	it("fails closed for Claude Code agents with nested subagent fanout enabled", async () => {
 		const agent = makeAgent("echo", { model: "claude-code/sonnet", allowSubagents: true });
-		const result = await execution!.runSync(tempDir, [agent], "echo", "start", { cwd: tempDir });
+		const result = await runSync(tempDir, [agent], "echo", "start", { cwd: tempDir });
 		assert.equal(result.exitCode, 1);
 		assert.match(result.error ?? result.finalOutput ?? "", /does not support nested subagent fanout/);
 		assert.deepEqual(readCalls(mock.callsDir), []);

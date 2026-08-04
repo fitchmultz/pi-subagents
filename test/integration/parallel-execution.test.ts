@@ -10,6 +10,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { runSync } from "../../src/runs/foreground/execution.ts";
+import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import { mapConcurrent } from "../../src/shared/utils.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createEventBus,
@@ -19,20 +22,9 @@ import {
 	makeAgentConfigs,
 	makeMinimalCtx,
 	removeTempDir,
-	tryImport,
 } from "../support/helpers.ts";
 
-// Top-level await: try importing pi-dependent modules
-const utils = await tryImport<any>("./src/shared/utils.ts");
-const execution = await tryImport<any>("./src/runs/foreground/execution.ts");
-const executorMod = await tryImport<any>("./src/runs/foreground/subagent-executor.ts");
-const piAvailable = !!(execution && utils);
-
-const runSync = execution?.runSync;
-const mapConcurrent = utils?.mapConcurrent;
-const createSubagentExecutor = executorMod?.createSubagentExecutor;
-
-describe("parallel agent execution", { skip: !piAvailable ? "pi packages not available" : undefined }, () => {
+describe("parallel agent execution", () => {
 	let tempDir: string;
 	let mockPi: MockPi;
 
@@ -137,7 +129,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(ok, 2);
 	});
 
-	it("top-level foreground parallel timeout returns completed and timed-out children", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("top-level foreground parallel timeout returns completed and timed-out children", async () => {
 		mockPi.onCall({ output: "Fast result" });
 		mockPi.onCall({ delay: 10000 });
 		const executor = makeExecutor([makeAgent("fast"), makeAgent("slow")]);
@@ -169,7 +161,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(result.details.results[1].timedOut, true);
 	});
 
-	it("extends a top-level foreground parallel timeout", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("extends a top-level foreground parallel timeout", async () => {
 		mockPi.onCall({ delay: 450, output: "Slow result" });
 		mockPi.onCall({ output: "Second result" });
 		const executor = makeExecutor([makeAgent("slow"), makeAgent("second")]);
@@ -206,7 +198,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(result.details.results[1].exitCode, 0);
 	});
 
-	it("top-level foreground parallel timeout preserves worktrees when diff capture setup fails", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("top-level foreground parallel timeout preserves worktrees when diff capture setup fails", async () => {
 		initGitRepo(tempDir);
 		const sessionRoot = createTempDir();
 		const sessionFile = path.join(sessionRoot, "session.jsonl");
@@ -254,7 +246,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		}
 	});
 
-	it("top-level parallel explicit output paths persist in the workspace", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("top-level parallel explicit output paths persist in the workspace", async () => {
 		mockPi.onCall({ output: "Saved report" });
 		const executor = makeExecutor();
 
@@ -274,7 +266,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.match(result.details?.results?.[0]?.finalOutput ?? "", /Saved report/);
 	});
 
-	it("top-level parallel tasks support outputSchema", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("top-level parallel tasks support outputSchema", async () => {
 		mockPi.onCall({ output: "structured report", structuredOutput: { summary: "ok", counts: { files: 1 }, files_to_edit: [] } });
 		const executor = makeExecutor();
 
@@ -290,7 +282,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.deepEqual(result.details?.results?.[0]?.structuredOutput, { summary: "ok", counts: { files: 1 }, files_to_edit: [] });
 	});
 
-	it("top-level parallel file-only output aggregates concise file references", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("top-level parallel file-only output aggregates concise file references", async () => {
 		mockPi.onCall({ output: "Parallel full report\nwith details" });
 		const executor = makeExecutor();
 
@@ -313,7 +305,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(fs.readFileSync(outputPath, "utf-8"), "Parallel full report\nwith details");
 	});
 
-	it("rejects top-level parallel file-only output without an output path", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("rejects top-level parallel file-only output without an output path", async () => {
 		const executor = makeExecutor();
 
 		const result = await executor.execute(
@@ -329,7 +321,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("rejects duplicate top-level parallel output paths", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("rejects duplicate top-level parallel output paths", async () => {
 		const executor = makeExecutor();
 
 		const result = await executor.execute(
@@ -350,7 +342,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("materializes duplicate agent-default parallel outputs to unique artifact paths", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("materializes duplicate agent-default parallel outputs to unique artifact paths", async () => {
 		mockPi.onCall({ output: "Report A" });
 		mockPi.onCall({ output: "Report B" });
 		const artifactsDir = path.join(tempDir, "artifacts");
@@ -383,7 +375,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.ok(details?.results?.every((r: any) => r.outputCleanup?.action === "deleted"));
 	});
 
-	it("treats string false as disabled output in top-level parallel runs", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("treats string false as disabled output in top-level parallel runs", async () => {
 		mockPi.onCall({ output: "Review done" });
 		const executor = makeExecutor();
 
@@ -405,7 +397,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(fs.existsSync(path.join(tempDir, "false")), false);
 	});
 
-	it("top-level parallel reads are injected once with chain-style prefix", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("top-level parallel reads are injected once with chain-style prefix", async () => {
 		mockPi.onCall({ output: "Read done" });
 		const executor = makeExecutor();
 
@@ -425,7 +417,7 @@ Inspect`));
 		assert.doesNotMatch(taskArg, /## Acceptance Contract/);
 	});
 
-	it("top-level parallel progress emits the existing progress instruction style", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("top-level parallel progress emits the existing progress instruction style", async () => {
 		mockPi.onCall({ output: "Progress done" });
 		const executor = makeExecutor();
 
@@ -442,7 +434,7 @@ Inspect`));
 		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), true);
 	});
 
-	it("top-level parallel suppresses progress when the task is review-only", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("top-level parallel suppresses progress when the task is review-only", async () => {
 		mockPi.onCall({ output: "Review done" });
 		const executor = makeExecutor([makeAgent("reviewer", { defaultProgress: true })]);
 
