@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-08-04
+
 ### Changed
 - Absorbed the pi-intercom extension, broker, skill, and tests into this package, replacing required two-package pairing with one manifest, install, and update while preserving the existing intercom protocol, config directory, and child wiring.
 - Run the bundled broker directly with the package's existing native Node TypeScript baseline, removing the separate `tsx` runtime dependency while mapping the old default broker command to the native path for compatibility.
