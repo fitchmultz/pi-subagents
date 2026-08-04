@@ -121,17 +121,6 @@ function progressRunningSeed(progress: ProgressSeedSource | undefined): number |
 	);
 }
 
-interface LegacyResultAnimationContext {
-	state: { subagentResultAnimationTimer?: ReturnType<typeof setInterval> };
-}
-
-export function clearLegacyResultAnimationTimer(context: LegacyResultAnimationContext): void {
-	const timer = context.state.subagentResultAnimationTimer;
-	if (!timer) return;
-	clearInterval(timer);
-	context.state.subagentResultAnimationTimer = undefined;
-}
-
 function extractOutputTarget(task: string): string | undefined {
 	const writeToMatch = task.match(/\[Write to:\s*([^\]\n]+)\]/i);
 	if (writeToMatch?.[1]?.trim()) return writeToMatch[1].trim();

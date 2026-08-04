@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-08-04
+
+### Changed
+- Collapse successful `intercom list` results to a session count in the TUI by default while keeping the full list available through the standard tool-expansion keybinding.
+
+### Removed
+- Deleted two non-shipped, planning-only refactor documents.
+- Removed the legacy result-animation timer cleanup path and its synthetic test; the current renderer never creates that timer.
+
 ## [0.29.0] - 2026-08-04
 
 ### Changed
