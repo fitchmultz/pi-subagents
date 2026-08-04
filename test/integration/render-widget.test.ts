@@ -29,13 +29,14 @@ function firstRunningGlyph(text: string): string {
 	return text.match(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏●]/)?.[0] ?? "";
 }
 
-function createUiContext() {
+function createUiContext(expanded = false) {
 	const widgets: unknown[] = [];
 	let renderRequests = 0;
 	const ctx = {
 		hasUI: true,
 		ui: {
 			theme,
+			getToolsExpanded: () => expanded,
 			setWidget: (_key: string, value: unknown) => {
 				widgets.push(value);
 			},
@@ -146,6 +147,42 @@ describe("subagent async widget rendering", () => {
 		assert.doesNotMatch(text, /Agent \d\/3/);
 		assert.doesNotMatch(text, /widget truncated/);
 		assert.equal(lines.length, 1, "a single collapsed run should cost one terminal line");
+	});
+
+	it("keeps expanded widget rows unwrapped in a narrow terminal", () => {
+		const columns = Object.getOwnPropertyDescriptor(process.stdout, "columns");
+		Object.defineProperty(process.stdout, "columns", { value: 80, configurable: true });
+		try {
+			const job = {
+				asyncId: "run-1",
+				asyncDir: "/tmp/1",
+				status: "running",
+				mode: "parallel",
+				agents: ["reviewer-security", "reviewer-claude"],
+				activeParallelGroup: true,
+				runningSteps: 1,
+				completedSteps: 1,
+				stepsTotal: 2,
+				toolCount: 60,
+				updatedAt: Date.now(),
+				startedAt: Date.now() - 392_000,
+				steps: [
+					{ index: 0, agent: "reviewer-security", status: "running", model: "openai/gpt-5.6-sol", thinking: "xhigh", turnCount: 22, toolCount: 47 },
+					{ index: 1, agent: "reviewer-claude", status: "complete", turnCount: 9, toolCount: 13 },
+				],
+			};
+			const ui = createUiContext(true);
+			renderWidget(ui.ctx as never, [job]);
+			const widget = ui.widgets.at(-1) as (_tui: unknown, widgetTheme: typeof theme) => { render(width: number): string[] };
+			assert.equal(
+				widget(undefined, theme).render(80).length,
+				buildWidgetLines([job], theme, 78, true).length,
+				"padded expanded rows must not wrap into continuation lines",
+			);
+		} finally {
+			if (columns) Object.defineProperty(process.stdout, "columns", columns);
+			else delete (process.stdout as { columns?: number }).columns;
+		}
 	});
 
 	it("names a lone queued run instead of summarizing it as a count", () => {
