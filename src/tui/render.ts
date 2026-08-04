@@ -906,67 +906,18 @@ function buildSingleWidgetLines(job: AsyncJobState, theme: Theme, width: number,
 	].map((line) => truncLine(line, width));
 }
 
-/** One line per run: glyph, name, stats, live tool. Everything else waits for Ctrl+O. */
-function collapsedWidgetLines(jobs: AsyncJobState[], theme: Theme, width: number): string[] {
-	const running = jobs.filter((job) => job.status === "running");
-	const queued = jobs.filter((job) => job.status === "queued");
-	const finished = jobs.filter((job) => job.status !== "running" && job.status !== "queued");
-	const hint = running.length > 0 ? ` ${theme.fg("dim", "·")} ${theme.fg("accent", "Ctrl+O")}` : "";
-
-	const rows: string[] = [];
-	let hiddenRunning = 0;
-	let hiddenFinished = 0;
-	let queuedSummaryShown = false;
-	let slots = MAX_WIDGET_JOBS;
-
-	const jobRow = (job: AsyncJobState): string => {
-		const stats = widgetStats(job, theme);
-		// A single running agent keeps its live tool on the step, not on the job root.
-		const runningSteps = job.steps?.filter((step) => step.status === "running") ?? [];
-		const soloStep = !job.currentTool && runningSteps.length === 1 ? runningSteps[0] : undefined;
-		const activity = job.status !== "running"
-			? ""
-			: soloStep
-				? widgetStepActivityLine(soloStep, width, false, job.updatedAt)
-				: widgetActivity(job, false);
-		return `${widgetStatusGlyph(job, theme)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}${activity ? ` ${theme.fg("dim", "·")} ${theme.fg("dim", activity)}` : ""}`;
-	};
-
-	for (const job of running) {
-		if (slots <= 0) { hiddenRunning++; continue; }
-		rows.push(jobRow(job));
-		slots--;
-	}
-	if (queued.length > 0 && slots > 0) {
-		rows.push(`${theme.fg("muted", "◦")} ${theme.fg("dim", `${queued.length} queued`)}`);
-		queuedSummaryShown = true;
-		slots--;
-	}
-	for (const job of finished) {
-		if (slots <= 0) { hiddenFinished++; continue; }
-		rows.push(jobRow(job));
-		slots--;
-	}
-
-	const hiddenQueued = queued.length > 0 && !queuedSummaryShown ? queued.length : 0;
-	const hiddenTotal = hiddenRunning + hiddenFinished + hiddenQueued;
-	if (hiddenTotal > 0) {
-		const parts: string[] = [];
-		if (hiddenRunning > 0) parts.push(`${hiddenRunning} running`);
-		if (hiddenQueued > 0) parts.push(`${hiddenQueued} queued`);
-		if (hiddenFinished > 0) parts.push(`${hiddenFinished} finished`);
-		rows.push(theme.fg("dim", `+${hiddenTotal} more (${parts.join(", ")})`));
-	}
-
-	if (rows.length === 1) return [truncLine(`${rows[0]}${hint}`, width)];
-
-	const hasActive = running.length > 0 || queued.length > 0;
-	const headerGlyph = running.length > 0 ? runningGlyph(widgetJobsRunningSeed(running)) : hasActive ? "●" : "○";
-	const lines = [truncLine(`${theme.fg(hasActive ? "accent" : "dim", headerGlyph)} ${theme.fg(hasActive ? "accent" : "dim", "Async agents")} ${theme.fg("dim", "· background")}${hint}`, width)];
-	for (const [index, row] of rows.entries()) {
-		lines.push(truncLine(`${theme.fg("dim", index === rows.length - 1 ? "└─" : "├─")} ${row}`, width));
-	}
-	return lines;
+/** Collapsed rows carry the live tool inline, since detail lines wait for Ctrl+O. */
+function collapsedJobRow(job: AsyncJobState, theme: Theme, width: number): string {
+	const stats = widgetStats(job, theme);
+	// A single running agent keeps its live tool on the step, not on the job root.
+	const runningSteps = job.steps?.filter((step) => step.status === "running") ?? [];
+	const soloStep = !job.currentTool && runningSteps.length === 1 ? runningSteps[0] : undefined;
+	const activity = job.status !== "running"
+		? ""
+		: soloStep
+			? widgetStepActivityLine(soloStep, width, false, job.updatedAt)
+			: widgetActivity(job, false);
+	return `${widgetStatusGlyph(job, theme)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}${activity ? ` ${theme.fg("dim", "·")} ${theme.fg("dim", activity)}` : ""}`;
 }
 
 function fitWidgetLineBudget(lines: string[], theme: Theme, width: number, expanded: boolean): string[] {
@@ -986,7 +937,7 @@ function fitWidgetLineBudget(lines: string[], theme: Theme, width: number, expan
 function buildWidgetComponent(jobs: AsyncJobState[], expanded: boolean): (_tui: unknown, theme: Theme) => Component {
 	return (_tui, theme) => {
 		// Text pads one column on each side, so building at full width wraps every long row.
-		const width = Math.max(20, getTermWidth() - 2);
+		const width = getTermWidth() - 2;
 		const lines = buildWidgetLines(jobs, theme, width, expanded);
 		const container = new Container();
 		for (const line of fitWidgetLineBudget(lines, theme, width, expanded)) container.addChild(new Text(line, 1, 0));
@@ -996,16 +947,20 @@ function buildWidgetComponent(jobs: AsyncJobState[], expanded: boolean): (_tui: 
 
 export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = getTermWidth(), expanded = false): string[] {
 	if (jobs.length === 0) return [];
-	if (!expanded) return collapsedWidgetLines(jobs, theme, width);
-	if (jobs.length === 1) return buildSingleWidgetLines(jobs[0]!, theme, width, expanded);
+	if (jobs.length === 1 && expanded) return buildSingleWidgetLines(jobs[0]!, theme, width, expanded);
 	const running = jobs.filter((job) => job.status === "running");
 	const queued = jobs.filter((job) => job.status === "queued");
 	const finished = jobs.filter((job) => job.status !== "running" && job.status !== "queued");
 
-	const lines: string[] = [];
-	const hasActive = running.length > 0 || queued.length > 0;
-	const headerGlyph = running.length > 0 ? runningGlyph(widgetJobsRunningSeed(running)) : hasActive ? "●" : "○";
-	lines.push(truncLine(`${theme.fg(hasActive ? "accent" : "dim", headerGlyph)} ${theme.fg(hasActive ? "accent" : "dim", "Async agents")} ${theme.fg("dim", "· background")}`, width));
+	const jobItem = (job: AsyncJobState): string[] => {
+		if (!expanded) return [collapsedJobRow(job, theme, width)];
+		const stats = widgetStats(job, theme);
+		return [
+			`${widgetStatusGlyph(job, theme)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
+			`  ${theme.fg("dim", `⎿  ${widgetActivity(job)}`)}`,
+			...widgetParallelAgentDetails(job, theme, expanded, width),
+		];
+	};
 
 	const items: string[][] = [];
 	let hiddenRunning = 0;
@@ -1015,12 +970,7 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 
 	for (const job of running) {
 		if (slots <= 0) { hiddenRunning++; continue; }
-		const stats = widgetStats(job, theme);
-		items.push([
-			`${widgetStatusGlyph(job, theme)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
-			`  ${theme.fg("dim", `⎿  ${widgetActivity(job)}`)}`,
-			...widgetParallelAgentDetails(job, theme, expanded, width),
-		]);
+		items.push(jobItem(job));
 		slots--;
 	}
 
@@ -1032,12 +982,7 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 
 	for (const job of finished) {
 		if (slots <= 0) { hiddenFinished++; continue; }
-		const stats = widgetStats(job, theme);
-		items.push([
-			`${widgetStatusGlyph(job, theme)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
-			`  ${theme.fg("dim", `⎿  ${widgetActivity(job)}`)}`,
-			...widgetParallelAgentDetails(job, theme, expanded, width),
-		]);
+		items.push(jobItem(job));
 		slots--;
 	}
 
@@ -1050,6 +995,14 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 		if (hiddenFinished > 0) parts.push(`${hiddenFinished} finished`);
 		items.push([theme.fg("dim", `+${hiddenTotal} more (${parts.join(", ")})`)]);
 	}
+
+	const hint = running.length > 0 && !expanded ? ` ${theme.fg("dim", "·")} ${theme.fg("accent", "Ctrl+O")}` : "";
+	if (items.length === 1 && !expanded) return [truncLine(`${items[0]![0]}${hint}`, width)];
+
+	const lines: string[] = [];
+	const hasActive = running.length > 0 || queued.length > 0;
+	const headerGlyph = running.length > 0 ? runningGlyph(widgetJobsRunningSeed(running)) : hasActive ? "●" : "○";
+	lines.push(truncLine(`${theme.fg(hasActive ? "accent" : "dim", headerGlyph)} ${theme.fg(hasActive ? "accent" : "dim", "Async agents")} ${theme.fg("dim", "· background")}${hint}`, width));
 
 	for (let i = 0; i < items.length; i++) {
 		const item = items[i]!;
