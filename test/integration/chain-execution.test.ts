@@ -4,8 +4,6 @@
  * Uses the local createMockPi() harness to simulate subagent processes.
  * Tests the full chain pipeline: template resolution → spawn → output capture
  * → {previous} passing.
- *
- * Requires pi packages to be importable. Skips gracefully if unavailable.
  */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
@@ -13,6 +11,8 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { executeChain } from "../../src/runs/foreground/chain-execution.ts";
+import { INTERCOM_DETACH_REQUEST_EVENT } from "../../src/shared/types.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createMockPi,
@@ -21,10 +21,8 @@ import {
 	removeTempDir,
 	makeAgent,
 	makeMinimalCtx,
-	tryImport,
 	events,
 } from "../support/helpers.ts";
-import { INTERCOM_DETACH_REQUEST_EVENT } from "../../src/shared/types.ts";
 
 interface TestSequentialStep {
 	agent: string;
@@ -110,15 +108,7 @@ interface ChainExecutionResult {
 	};
 }
 
-interface ChainExecutionModule {
-	executeChain(params: Record<string, unknown>): Promise<ChainExecutionResult>;
-}
-
-const chainMod = await tryImport<ChainExecutionModule>("./src/runs/foreground/chain-execution.ts");
-const available = !!chainMod;
-const executeChain = chainMod?.executeChain;
-
-describe("chain execution — sequential", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("chain execution — sequential", () => {
 	let tempDir: string;
 	let mockPi: MockPi;
 
@@ -1095,7 +1085,7 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 	});
 });
 
-describe("chain execution — parallel steps", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("chain execution — parallel steps", () => {
 	let tempDir: string;
 	let mockPi: MockPi;
 

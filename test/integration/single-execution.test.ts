@@ -3,16 +3,24 @@
  *
  * Uses the local createMockPi() helper to simulate the pi CLI.
  * Tests the full spawn→parse→result pipeline in runSync without a real LLM.
- *
- * These tests require pi packages to be importable (they run inside a pi
- * environment or with pi packages installed). If unavailable, tests skip
- * gracefully.
  */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { runSync } from "../../src/runs/foreground/execution.ts";
+import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import {
+	SUBAGENT_FANOUT_CHILD_ENV,
+	SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV,
+	SUBAGENT_PARENT_CHILD_INDEX_ENV,
+	SUBAGENT_PARENT_CONTROL_INBOX_ENV,
+	SUBAGENT_PARENT_EVENT_SINK_ENV,
+	SUBAGENT_PARENT_RUN_ID_ENV,
+} from "../../src/runs/shared/pi-args.ts";
+import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT } from "../../src/shared/types.ts";
+import { getFinalOutput } from "../../src/shared/utils.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createMockPi,
@@ -23,17 +31,7 @@ import {
 	makeAgent,
 	makeMinimalCtx,
 	events,
-	tryImport,
 } from "../support/helpers.ts";
-import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT } from "../../src/shared/types.ts";
-import {
-	SUBAGENT_FANOUT_CHILD_ENV,
-	SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV,
-	SUBAGENT_PARENT_CHILD_INDEX_ENV,
-	SUBAGENT_PARENT_CONTROL_INBOX_ENV,
-	SUBAGENT_PARENT_EVENT_SINK_ENV,
-	SUBAGENT_PARENT_RUN_ID_ENV,
-} from "../../src/runs/shared/pi-args.ts";
 
 interface ModelAttempt {
 	success?: boolean;
@@ -96,35 +94,6 @@ interface RunSyncResult {
 	};
 }
 
-interface ExecutionModule {
-	runSync(
-		runtimeCwd: string,
-		agents: ReturnType<typeof makeAgentConfigs>,
-		agentName: string,
-		task: string,
-		options: Record<string, unknown>,
-	): Promise<RunSyncResult>;
-}
-
-interface UtilsModule {
-	getFinalOutput(messages: unknown[]): string;
-}
-
-interface ExecutorModule {
-	createSubagentExecutor?: (...args: unknown[]) => {
-		execute: (...args: unknown[]) => Promise<{ content: Array<{ text?: string }>; isError?: boolean }>;
-	};
-}
-
-const execution = await tryImport<ExecutionModule>("./src/runs/foreground/execution.ts");
-const utils = await tryImport<UtilsModule>("./src/shared/utils.ts");
-const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subagent-executor.ts");
-const available = !!(execution && utils);
-
-const runSync = execution?.runSync;
-const getFinalOutput = utils?.getFinalOutput;
-const createSubagentExecutor = executorMod?.createSubagentExecutor;
-
 function acceptanceReport(): string {
 	return formatAcceptanceReport([
 		{ id: "criterion-1", status: "satisfied", evidence: "file exists with exact content" },
@@ -160,7 +129,7 @@ function writePackageSkill(packageRoot: string, skillName: string): void {
 	);
 }
 
-describe("single sync execution", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("single sync execution", () => {
 	let tempDir: string;
 	let mockPi: MockPi;
 
@@ -198,7 +167,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 	}
 
 	function makeExecutor(agents = [makeAgent("echo")]) {
-		return createSubagentExecutor!({
+		return createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 			config: {},
@@ -986,7 +955,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(fs.existsSync(outputPath), false);
 	});
 
-	it("keeps explicit single output paths in the workspace", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("keeps explicit single output paths in the workspace", async () => {
 		mockPi.onCall({ output: "workspace report" });
 		const executor = makeExecutor([makeAgent("echo")]);
 		const outputPath = path.join(tempDir, "explicit-report.md");
@@ -1006,7 +975,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.match(result.content[0]?.text ?? "", /Output saved to:/);
 	});
 
-	it("supports outputSchema for top-level single runs", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("supports outputSchema for top-level single runs", async () => {
 		mockPi.onCall({ output: "structured prose", structuredOutput: { ok: true } });
 		const executor = makeExecutor([makeAgent("echo")]);
 
@@ -1022,7 +991,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.deepEqual(result.details?.results?.[0]?.structuredOutput, { ok: true });
 	});
 
-	it("materializes agent-default output while debug artifacts are disabled", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("materializes agent-default output while debug artifacts are disabled", async () => {
 		mockPi.onCall({ output: "default report" });
 		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);
 
@@ -1047,7 +1016,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.match(readCallArgs().join("\n"), /requested-outputs/);
 	});
 
-	it("uses a run-artifact path for agent-default single file-only output", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("uses a run-artifact path for agent-default single file-only output", async () => {
 		mockPi.onCall({ output: "full default file-only report" });
 		const executor = makeExecutor([makeAgent("echo", { output: "default-file-only.md" })]);
 
@@ -1070,7 +1039,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(fs.readFileSync(outputPath, "utf-8"), "full default file-only report");
 	});
 
-	it("treats string false as disabled output in foreground single runs", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("treats string false as disabled output in foreground single runs", async () => {
 		mockPi.onCall({ output: "inline report" });
 		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);
 

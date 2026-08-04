@@ -2,31 +2,11 @@ import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { MockPi } from "../support/helpers.ts";
-import { createEventBus, createMockPi, createTempDir, events, removeTempDir, tryImport } from "../support/helpers.ts";
 import { discoverAgents } from "../../src/agents/agents.ts";
+import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { INTERCOM_DETACH_REQUEST_EVENT } from "../../src/shared/types.ts";
-
-interface ExecutorModule {
-	createSubagentExecutor?: (...args: unknown[]) => {
-		execute: (
-			id: string,
-			params: Record<string, unknown>,
-			signal: AbortSignal,
-			onUpdate: ((result: unknown) => void) | undefined,
-			ctx: unknown,
-		) => Promise<{
-			isError?: boolean;
-			content: Array<{ text?: string }>;
-			details?: {
-				context?: "fresh" | "fork";
-				mode?: "single" | "parallel" | "chain";
-				asyncId?: string;
-				results?: Array<{ detached?: boolean; exitCode?: number; error?: string; skills?: string[] }>;
-			};
-		}>;
-	};
-}
+import type { MockPi } from "../support/helpers.ts";
+import { createEventBus, createMockPi, createTempDir, events, removeTempDir } from "../support/helpers.ts";
 
 interface ProgressUpdate {
 	details?: {
@@ -34,9 +14,6 @@ interface ProgressUpdate {
 	};
 }
 
-const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subagent-executor.ts");
-const available = !!executorMod;
-const createSubagentExecutor = executorMod?.createSubagentExecutor;
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
 const originalPiCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -83,7 +60,7 @@ function makeState(cwd: string) {
 	};
 }
 
-describe("fork context execution wiring", { skip: !available ? "subagent executor not importable" : undefined }, () => {
+describe("fork context execution wiring", () => {
 	let tempDir: string;
 	let mockPi: MockPi;
 

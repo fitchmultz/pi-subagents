@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
-import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, RESULTS_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, RESULTS_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createMockPi,
@@ -12,43 +13,7 @@ import {
 	makeAgent,
 	makeMinimalCtx,
 	removeTempDir,
-	tryImport,
 } from "../support/helpers.ts";
-
-interface ExecutorResult {
-	content: Array<{ text?: string }>;
-	isError?: boolean;
-	details?: {
-		mode?: string;
-		runId?: string;
-		results?: Array<{
-			agent?: string;
-			finalOutput?: string;
-			exitCode?: number;
-			sessionFile?: string;
-			timedOut?: boolean;
-			acceptance?: { status?: string; verifyRuns?: Array<{ id?: string; status?: string }>; finalization?: { status?: string }; effectiveAcceptance?: { explicit?: boolean; criteria?: Array<{ id?: string; must?: string }>; verify?: Array<{ id?: string }>; finalization?: { maxTurns?: number } } };
-		}>;
-		asyncId?: string;
-		intercomDelivery?: { delivered?: boolean; to?: string; status?: string; summary?: string };
-	};
-}
-
-interface ExecutorModule {
-	createSubagentExecutor?: (...args: unknown[]) => {
-		execute: (
-			id: string,
-			params: Record<string, unknown>,
-			signal: AbortSignal,
-			onUpdate: ((result: unknown) => void) | undefined,
-			ctx: unknown,
-		) => Promise<ExecutorResult>;
-	};
-}
-
-const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subagent-executor.ts");
-const available = !!executorMod?.createSubagentExecutor;
-const createSubagentExecutor = executorMod?.createSubagentExecutor;
 
 function createRecordingEventBus(options: { acknowledgeResults?: boolean; acknowledgeLive?: boolean; health?: Array<Record<string, unknown>>; identity?: string } = {}) {
 	const listeners = new Map<string, Set<(payload: unknown) => void>>();
@@ -96,7 +61,7 @@ function createRecordingEventBus(options: { acknowledgeResults?: boolean; acknow
 	return bus;
 }
 
-describe("intercom result delivery cutover", { skip: !available ? "executor not importable" : undefined }, () => {
+describe("intercom result delivery cutover", () => {
 	let tempDir: string;
 	let mockPi: MockPi;
 
@@ -152,7 +117,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 				clear: () => {},
 			},
 		};
-		const executor = createSubagentExecutor!({
+		const executor = createSubagentExecutor({
 			pi: {
 				events,
 				getSessionName: () => "orchestrator",

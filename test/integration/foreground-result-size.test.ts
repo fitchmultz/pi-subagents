@@ -1,45 +1,8 @@
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import type { MockPi } from "../support/helpers.ts";
-import { createMockPi, createTempDir, removeTempDir, events, tryImport } from "../support/helpers.ts";
-
-interface ResultContent {
-	text?: string;
-}
-
-interface SingleResultLike {
-	agent?: string;
-	exitCode?: number;
-	finalOutput?: string;
-	messages?: unknown[];
-	toolCalls?: Array<{ text?: string; expandedText?: string }>;
-	progress?: unknown;
-}
-
-interface ExecutorResult {
-	isError?: boolean;
-	content: ResultContent[];
-	details?: {
-		mode?: string;
-		results?: SingleResultLike[];
-	};
-}
-
-interface ExecutorModule {
-	createSubagentExecutor?: (...args: unknown[]) => {
-		execute: (
-			id: string,
-			params: Record<string, unknown>,
-			signal: AbortSignal,
-			onUpdate: ((result: unknown) => void) | undefined,
-			ctx: unknown,
-		) => Promise<ExecutorResult>;
-	};
-}
-
-const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subagent-executor.ts");
-const available = !!executorMod?.createSubagentExecutor;
-const createSubagentExecutor = executorMod?.createSubagentExecutor;
+import { createMockPi, createTempDir, removeTempDir, events } from "../support/helpers.ts";
 
 function makeState(cwd: string) {
 	return {
@@ -60,7 +23,7 @@ function makeState(cwd: string) {
 }
 
 function makeExecutor(cwd: string) {
-	return createSubagentExecutor!({
+	return createSubagentExecutor({
 		pi: {
 			events: { emit: () => {} },
 			getSessionName: () => undefined,
@@ -105,7 +68,7 @@ function buildDockerNoiseChunk(step: number): string {
 	return lines.join("\n");
 }
 
-describe("foreground result payload compaction", { skip: !available ? "subagent executor not importable" : undefined }, () => {
+describe("foreground result payload compaction", () => {
 	let tempDir: string;
 	let mockPi: MockPi;
 

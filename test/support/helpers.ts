@@ -1,13 +1,10 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import { createMockPi as _createMockPi } from "./mock-pi.ts";
 import type { MockPi } from "./mock-pi.ts";
 
 export type { MockPi };
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createMockPi(): MockPi {
 	return _createMockPi();
@@ -115,43 +112,6 @@ export function makeMinimalCtx(cwd: string): MinimalCtx {
 			getAvailable: () => [],
 		},
 	};
-}
-
-/**
- * Try to dynamically import a module.
- * - Bare specifiers are imported as-is.
- * - Relative paths (e.g., "./src/shared/utils.ts") are resolved from the project root.
- *
- * Only swallows MODULE_NOT_FOUND / ERR_MODULE_NOT_FOUND when the missing module
- * is exactly the requested bare specifier (expected optional dependency).
- * All other errors are rethrown to avoid hiding real breakage.
- */
-export async function tryImport<T>(specifier: string): Promise<T | null> {
-	const isBare = !(specifier.startsWith(".") || specifier.startsWith("/"));
-	try {
-		if (!isBare) {
-			const projectRoot = path.resolve(__dirname, "..", "..");
-			const abs = path.resolve(projectRoot, specifier);
-			const url = pathToFileURL(abs).href;
-			return await import(url) as T;
-		}
-		return await import(specifier) as T;
-	} catch (error: unknown) {
-		const code = typeof error === "object" && error !== null && "code" in error
-			? (error as { code?: unknown }).code
-			: undefined;
-		const isModuleNotFound = code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND";
-		if (isBare && isModuleNotFound) {
-			const msg = typeof error === "object" && error !== null && "message" in error
-				? String((error as { message?: unknown }).message ?? "")
-				: "";
-			const missing = msg.match(/Cannot find (?:package|module) ['\"]([^'\"]+)['\"]/i)?.[1];
-			if (missing === specifier || msg.includes(`'${specifier}'`) || msg.includes(`\"${specifier}\"`)) {
-				return null;
-			}
-		}
-		throw error;
-	}
 }
 
 export const events = {

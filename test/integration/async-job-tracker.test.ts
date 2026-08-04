@@ -2,29 +2,8 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { createTempDir, removeTempDir, tryImport } from "../support/helpers.ts";
-
-interface AsyncJobTrackerModule {
-	createAsyncJobTracker(
-		pi: { events: { emit(channel: string, data: unknown): void } },
-		state: Record<string, unknown>,
-		asyncDirRoot: string,
-		options?: {
-			completionRetentionMs?: number;
-			pollIntervalMs?: number;
-			resultsDir?: string;
-			kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
-			now?: () => number;
-		},
-	): {
-		resetJobs(ctx?: unknown): void;
-		handleStarted(data: unknown): void;
-		handleComplete(data: unknown): void;
-	};
-}
-
-const trackerMod = await tryImport<AsyncJobTrackerModule>("./src/runs/background/async-job-tracker.ts");
-const available = !!trackerMod;
+import { createAsyncJobTracker } from "../../src/runs/background/async-job-tracker.ts";
+import { createTempDir, removeTempDir } from "../support/helpers.ts";
 
 function createState() {
 	return {
@@ -92,14 +71,14 @@ function createUiContext() {
 	};
 }
 
-describe("async job tracker", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("async job tracker", () => {
 	it("removes completed jobs after retention and requests a rerender", async () => {
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				completionRetentionMs: 5,
 			});
 			tracker.resetJobs(ui.ctx as never);
@@ -123,7 +102,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				completionRetentionMs: 1_000,
 			});
 			tracker.resetJobs(ui.ctx as never);
@@ -142,7 +121,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 		try {
 			const state = createState();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 
 			tracker.handleStarted({
 				id: "run-parallel-start",
@@ -197,7 +176,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				pollIntervalMs: 10,
 			});
 			tracker.resetJobs(ui.ctx as never);
@@ -236,7 +215,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				pollIntervalMs: 10,
 			});
 			tracker.resetJobs(ui.ctx as never);
@@ -288,7 +267,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				completionRetentionMs: 5,
 				pollIntervalMs: 10,
 			});
@@ -324,7 +303,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				completionRetentionMs: 5,
 				pollIntervalMs: 10,
 				resultsDir,
@@ -353,7 +332,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				completionRetentionMs: 5,
 				pollIntervalMs: 10,
 				resultsDir,
@@ -405,7 +384,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				completionRetentionMs: 5,
 				pollIntervalMs: 10,
 			});
@@ -423,7 +402,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 
 	it("does not clean up a status-read failure while nested descendants are live", async () => {
 		const asyncRoot = createTempDir("pi-async-job-bad-status-nested-");
-		let tracker: ReturnType<AsyncJobTrackerModule["createAsyncJobTracker"]> | undefined;
+		let tracker: ReturnType<typeof createAsyncJobTracker> | undefined;
 		const originalError = console.error;
 		console.error = () => {};
 		try {
@@ -432,7 +411,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			fs.writeFileSync(path.join(runDir, "status.json"), "{", "utf-8");
 			const state = createState();
 			const recorder = createEventRecorder();
-			tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				completionRetentionMs: 5,
 				pollIntervalMs: 10,
 			});
@@ -462,7 +441,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 
 	it("keeps root jobs running when nested refresh fails during polling", async () => {
 		const asyncRoot = createTempDir("pi-async-job-nested-refresh-um");
-		let tracker: ReturnType<AsyncJobTrackerModule["createAsyncJobTracker"]> | undefined;
+		let tracker: ReturnType<typeof createAsyncJobTracker> | undefined;
 		const originalError = console.error;
 		console.error = () => {};
 		try {
@@ -479,7 +458,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 
 			const state = createState();
 			const recorder = createEventRecorder();
-			tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				completionRetentionMs: 5,
 				pollIntervalMs: 10,
 			});
@@ -508,13 +487,13 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 
 	it("cancels cleanup timers when polling observes a non-terminal status", async () => {
 		const asyncRoot = createTempDir("pi-async-job-cleanup-cancel-");
-		let tracker: ReturnType<AsyncJobTrackerModule["createAsyncJobTracker"]> | undefined;
+		let tracker: ReturnType<typeof createAsyncJobTracker> | undefined;
 		try {
 			const runDir = path.join(asyncRoot, "run-recovered");
 			fs.mkdirSync(runDir, { recursive: true });
 			const state = createState();
 			const recorder = createEventRecorder();
-			tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				completionRetentionMs: 1_000,
 				pollIntervalMs: 10,
 			});
@@ -574,7 +553,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 
 			const state = createState();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				pollIntervalMs: 10,
 			});
 			tracker.handleStarted({ id: "run-partial", asyncDir: runDir, agent: "worker" });
@@ -609,7 +588,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 
 			const state = createState();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				pollIntervalMs: 10,
 			});
 			tracker.handleStarted({ id: "run-clear-tool", asyncDir: runDir, agent: "worker" });
@@ -667,7 +646,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 
 			const state = createState();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				pollIntervalMs: 10,
 			});
 			tracker.handleStarted({ id: "run-channels", asyncDir: runDir, agent: "worker" });
@@ -709,7 +688,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 
 			const state = createState();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				pollIntervalMs: 10,
 			});
 			tracker.handleStarted({ id: "run-stale-active", asyncDir: runDir, agent: "worker" });
@@ -754,7 +733,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 
 			const state = createState();
 			const recorder = createEventRecorder();
-			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
 				pollIntervalMs: 10,
 			});
 			tracker.handleStarted({ id: "run-3", asyncDir: runDir, agent: "worker" });

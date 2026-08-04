@@ -1,44 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { tryImport } from "../support/helpers.ts";
-
-interface ClarifyTestModel {
-	provider: string;
-	id: string;
-	fullId: string;
-	reasoning?: boolean;
-	thinkingLevelMap?: Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>>;
-}
-
-interface ClarifyTestComponent {
-	editingStep: number | null;
-	selectedStep: number;
-	modelSelectedIndex: number;
-	filteredModels: ClarifyTestModel[];
-	getEffectiveModel(stepIndex: number): string;
-	applyThinkingLevel(level: "high"): void;
-	enterModelSelector(): void;
-	enterThinkingSelector(): void;
-	renderThinkingSelector(): string[];
-	handleModelSelectorInput(data: string): void;
-	handleInput(data: string): void;
-	render(width: number): string[];
-}
+import { ChainClarifyComponent } from "../../src/runs/foreground/chain-clarify.ts";
 
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-interface ClarifyTestModule {
-	ChainClarifyComponent: new (...args: unknown[]) => ClarifyTestComponent;
-}
-
-const clarifyMod = await tryImport<ClarifyTestModule>("./src/runs/foreground/chain-clarify.ts");
-const available = !!clarifyMod;
-const ChainClarifyComponent = clarifyMod?.ChainClarifyComponent;
-
-describe("chain clarify model display", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("chain clarify model display", () => {
 	it("keeps the preferred provider visible after applying thinking to a bare model", () => {
 		const component = new ChainClarifyComponent(
 			{ requestRender() {} },
