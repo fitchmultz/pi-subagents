@@ -148,6 +148,29 @@ describe("subagent async widget rendering", () => {
 		assert.equal(lines.length, 1, "a single collapsed run should cost one terminal line");
 	});
 
+	it("keeps collapsed widget rows on one physical line in a narrow terminal", () => {
+		const columns = Object.getOwnPropertyDescriptor(process.stdout, "columns");
+		Object.defineProperty(process.stdout, "columns", { value: 40, configurable: true });
+		try {
+			const ui = createUiContext();
+			renderWidget(ui.ctx as never, [{
+				asyncId: "run-1",
+				asyncDir: "/tmp/1",
+				status: "running",
+				mode: "single",
+				agents: ["reviewer-with-a-very-long-agent-name"],
+				stepsTotal: 1,
+				toolCount: 42,
+				updatedAt: Date.now(),
+				startedAt: Date.now() - 90_000,
+			}]);
+			const widget = ui.widgets.at(-1) as (_tui: unknown, widgetTheme: typeof theme) => { render(width: number): string[] };
+			assert.equal(widget(undefined, theme).render(40).length, 1, "the component pads a column per side, so rows must be built narrower");
+		} finally {
+			if (columns) Object.defineProperty(process.stdout, "columns", columns);
+		}
+	});
+
 	it("shows per-agent detail for expanded async parallel widget rows", () => {
 		const now = Date.now();
 		const lines = buildWidgetLines([
