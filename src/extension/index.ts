@@ -22,7 +22,7 @@ import { discoverAgents } from "../agents/agents.ts";
 import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
-import { clearLegacyResultAnimationTimer, renderWidget, renderSubagentResult } from "../tui/render.ts";
+import { renderWidget, renderSubagentResult } from "../tui/render.ts";
 import { SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
@@ -434,8 +434,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			);
 		},
 
-		renderResult(result, options, theme, context) {
-			clearLegacyResultAnimationTimer(context);
+		renderResult(result, options, theme) {
 			return renderSubagentResult(result, options, theme);
 		},
 

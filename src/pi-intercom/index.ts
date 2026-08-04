@@ -549,7 +549,7 @@ interface IntercomToolParams {
 }
 
 type ToolRenderTheme = ExtensionContext["ui"]["theme"];
-type ToolRenderContext = { isError?: boolean; expanded?: boolean };
+type ToolRenderContext = { args?: unknown; isError?: boolean; expanded?: boolean };
 
 class ToolExecutionFailure extends Error {
   readonly details?: Record<string, unknown>;
@@ -1896,6 +1896,7 @@ Usage:
             return {
               content: [{ type: "text", text: formatSessionListSections(sessions, mySessionId) }],
               isError: false,
+              details: { sessionCount: sessions.length },
             };
           } catch (error) {
             return {
@@ -2235,18 +2236,27 @@ Usage:
       }
       return new Text(text, 0, 0);
     },
-    renderResult(result: ToolResultLike, { isPartial }: { isPartial: boolean }, theme: ToolRenderTheme, context: ToolRenderContext) {
+    renderResult(result: ToolResultLike, { expanded, isPartial }: { expanded?: boolean; isPartial: boolean }, theme: ToolRenderTheme, context: ToolRenderContext) {
       if (isPartial) {
         return new Text(theme.fg("warning", "Intercom working..."), 0, 0);
       }
-      const details = result.details as { accepted?: boolean; delivered?: boolean; queued?: boolean; error?: boolean; messageId?: string; reason?: string } | undefined;
+      const details = result.details as { accepted?: boolean; delivered?: boolean; queued?: boolean; error?: boolean; messageId?: string; reason?: string; sessionCount?: number } | undefined;
       const failed = Boolean(context.isError || details?.error === true || details?.accepted === false);
+      const action = context.args && typeof context.args === "object" && "action" in context.args
+        ? (context.args as { action?: unknown }).action
+        : undefined;
+      if (!failed && action === "list" && !expanded) {
+        const summary = details?.sessionCount === undefined
+          ? "Sessions listed"
+          : `${details.sessionCount} session${details.sessionCount === 1 ? "" : "s"}`;
+        return new Text(`${theme.fg("success", "✓ ")}${theme.fg("text", summary)} ${theme.fg("dim", "(Ctrl+O to expand)")}`, 0, 0);
+      }
       let text = failed ? theme.fg("error", "✗ ") : theme.fg("success", "✓ ");
       text += theme.fg(failed ? "error" : "text", firstTextContent(result));
-      if (details?.messageId && !context.expanded) {
+      if (details?.messageId && !expanded) {
         text += theme.fg("dim", ` (${details.messageId.slice(0, 8)})`);
       }
-      if (details?.reason && context.expanded) {
+      if (details?.reason && expanded) {
         text += "\n" + theme.fg("dim", `Reason: ${details.reason}`);
       }
       return new Text(text, 0, 0);

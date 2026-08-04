@@ -468,6 +468,27 @@ test("intercom tool renders compact call and result rows", async () => {
   }, { isPartial: false, expanded: false }, renderTheme, { isError: false, expanded: false }));
   assert.match(resultText, /✓ Message sent to planner \(abcdef12\)/);
 
+  const listResult = {
+    content: [{ type: "text", text: "Current session: controller\nOther sessions:\n- busy-worker" }],
+    details: { sessionCount: 12 },
+  };
+  const collapsedListText = renderToText(intercomTool.renderResult(
+    listResult,
+    { isPartial: false, expanded: false },
+    renderTheme,
+    { isError: false, expanded: false, args: { action: "list" } },
+  ));
+  assert.match(collapsedListText, /✓ 12 sessions .*Ctrl\+O.*to expand/);
+  assert.doesNotMatch(collapsedListText, /busy-worker/);
+
+  const expandedListText = renderToText(intercomTool.renderResult(
+    listResult,
+    { isPartial: false, expanded: true },
+    renderTheme,
+    { isError: false, expanded: true, args: { action: "list" } },
+  ));
+  assert.match(expandedListText, /busy-worker/);
+
   const errorText = renderToText(intercomTool.renderResult({
     content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
     details: { error: true, reason: "Missing target" },
@@ -527,6 +548,7 @@ test("intercom tool empty list output gives local fork next steps", { concurrenc
     }, new AbortController().signal, undefined, harness.ctx);
 
     assert.equal(result.isError, false);
+    assert.deepEqual(result.details, { sessionCount: 1 });
     const text = result.content[0]?.text ?? "";
     assert.match(text, /No other sessions connected/);
     assert.match(text, /pi --name worker/);
