@@ -24,7 +24,6 @@ import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { resolveEffectiveAcceptance } from "../shared/acceptance.ts";
 import {
 	type AcceptanceInput,
-	type ArtifactConfig,
 	type ChildProjectTrustPolicy,
 	type Details,
 	type JsonSchemaObject,
@@ -114,7 +113,6 @@ interface AsyncChainParams {
 	cwd?: string;
 	maxOutput?: MaxOutputConfig;
 	artifactsDir?: string;
-	artifactConfig: ArtifactConfig;
 	shareEnabled: boolean;
 	sessionRoot?: string;
 	chainSkills?: string[];
@@ -138,7 +136,6 @@ interface AsyncSingleParams {
 	cwd?: string;
 	maxOutput?: MaxOutputConfig;
 	artifactsDir?: string;
-	artifactConfig: ArtifactConfig;
 	shareEnabled: boolean;
 	sessionRoot?: string;
 	sessionFile?: string;
@@ -241,7 +238,6 @@ export function executeAsyncChain(
 		cwd,
 		maxOutput,
 		artifactsDir,
-		artifactConfig,
 		shareEnabled,
 		sessionRoot,
 		sessionFilesByFlatIndex,
@@ -488,8 +484,7 @@ export function executeAsyncChain(
 				cwd: runnerCwd,
 				placeholder: "{previous}",
 				maxOutput,
-				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-				artifactConfig,
+				artifactsDir,
 				share: shareEnabled,
 				sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
 				asyncDir,
@@ -635,7 +630,6 @@ export function executeAsyncSingle(
 		cwd,
 		maxOutput,
 		artifactsDir,
-		artifactConfig,
 		shareEnabled,
 		sessionRoot,
 		sessionFile,
@@ -736,8 +730,7 @@ export function executeAsyncSingle(
 				cwd: runnerCwd,
 				placeholder: "{previous}",
 				maxOutput,
-				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-				artifactConfig,
+				artifactsDir,
 				share: shareEnabled,
 				sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
 				asyncDir,

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.29.2] - 2026-08-04
+
+### Changed
+- Route the bundled `reviewer-claude` profile through `anthropic/claude-opus-5`, with Fable and Grok as fallbacks.
+- Remove fixed artifact-policy plumbing while preserving the supported behavior: `artifacts: false` disables artifacts; otherwise input, output, and metadata are written, artifact JSONL remains off, and cleanup remains seven days.
+
+### Removed
+- Replaced the local `StringEnum` implementation and duplicate thinking-level declarations with TypeBox's native enum and the shared model helper.
+- Deleted the unreachable artifact JSONL writer and its isolated tests.
+
 ## [0.29.1] - 2026-08-04
 
 ### Changed

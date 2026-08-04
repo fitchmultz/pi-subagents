@@ -155,7 +155,7 @@ and user/project agents override builtins with the same name.
 | `fixer` | Decided, bounded remediation | `xai/grok-4.5` | Applies an explicit fix list |
 | `reviewer` | General implementation review | `openai-codex/gpt-5.6-sol` | Review-only by default |
 | `reviewer-gpt` | Strict completion gate | `openai-codex/gpt-5.6-sol` | Maintainability/correctness review |
-| `reviewer-claude` | Cross-model product-risk review | `anthropic/claude-fable-5` | Independent review |
+| `reviewer-claude` | Cross-model product-risk review | `anthropic/claude-opus-5` | Independent review |
 | `reviewer-security` | Trust-boundary review | `openai-codex/gpt-5.6-sol` | Security/data-safety findings |
 | `ui-designer` | UI and accessibility review | `anthropic/claude-fable-5` | Rendered UX guidance |
 | `writer` | Human-facing writing | `anthropic/claude-fable-5` | Writes `draft.md` |

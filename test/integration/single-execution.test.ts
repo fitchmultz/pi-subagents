@@ -789,7 +789,6 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		const result = await runSync(tempDir, agents, "echo", "Task", {
 			runId: "live-progress",
 			artifactsDir,
-			artifactConfig: { enabled: true, includeInput: true, includeOutput: true, includeMetadata: true },
 			onUpdate: (update: { details?: { results?: Array<{ artifactPaths?: ArtifactPaths }>; progress?: ProgressSummary[] } }) => {
 				updates.push(update);
 			},
@@ -928,7 +927,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("writes artifacts when configured", async () => {
+	it("writes only the fixed input, output, and metadata artifacts", async () => {
 		mockPi.onCall({ output: "Result text" });
 		const agents = makeAgentConfigs(["echo"]);
 		const artifactsDir = path.join(tempDir, "artifacts");
@@ -936,12 +935,15 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		const result = await runSync(tempDir, agents, "echo", "Task", {
 			runId: "test-run",
 			artifactsDir,
-			artifactConfig: { enabled: true, includeInput: true, includeOutput: true, includeMetadata: true },
 		});
 
 		assert.equal(result.exitCode, 0);
 		assert.ok(result.artifactPaths, "should have artifact paths");
-		assert.ok(fs.existsSync(artifactsDir), "artifacts dir should exist");
+		assert.deepEqual(fs.readdirSync(artifactsDir).sort(), [
+			"test-run_echo_input.md",
+			"test-run_echo_meta.json",
+			"test-run_echo_output.md",
+		]);
 	});
 
 	it("consumes and removes agent-written output files after capturing them", async () => {
@@ -954,7 +956,6 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 			runId: "output-file-preserved",
 			outputPath,
 			artifactsDir,
-			artifactConfig: { enabled: true, includeInput: true, includeOutput: true, includeMetadata: true },
 		});
 
 		setTimeout(() => {
@@ -1021,13 +1022,13 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.deepEqual(result.details?.results?.[0]?.structuredOutput, { ok: true });
 	});
 
-	it("materializes agent-default single output under run artifacts instead of the working tree", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+	it("materializes agent-default output while debug artifacts are disabled", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ output: "default report" });
 		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);
 
 		const result = await executor.execute(
 			"single-default-output-artifact",
-			{ agent: "echo", task: "Write report" },
+			{ agent: "echo", task: "Write report", artifacts: false },
 			new AbortController().signal,
 			undefined,
 			makeMinimalCtx(tempDir),
@@ -1041,6 +1042,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
 		assert.match(outputReference, /requested-outputs/);
 		assert.match(outputReference, /[a-f0-9]{8}_echo_0_default-report\.md$/);
+		assert.equal(details?.results?.[0]?.artifactPaths, undefined);
 		assert.equal(details?.results?.[0]?.outputCleanup?.action, "deleted");
 		assert.match(readCallArgs().join("\n"), /requested-outputs/);
 	});

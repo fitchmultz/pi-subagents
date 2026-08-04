@@ -12,7 +12,6 @@ import {
 	type AcceptanceLedger,
 	type AsyncResultFile,
 	type ActivityState,
-	type ArtifactConfig,
 	type ArtifactPaths,
 	type AsyncParallelGroupStatus,
 	type AsyncStatus,
@@ -118,7 +117,6 @@ interface SubagentRunConfig {
 	totalTasks?: number;
 	maxOutput?: MaxOutputConfig;
 	artifactsDir?: string;
-	artifactConfig?: Partial<ArtifactConfig>;
 	share?: boolean;
 	sessionDir?: string;
 	asyncDir: string;
@@ -717,7 +715,6 @@ interface SingleStepContext {
 	sessionEnabled: boolean;
 	sessionDir?: string;
 	artifactsDir?: string;
-	artifactConfig?: Partial<ArtifactConfig>;
 	id: string;
 	flatIndex: number;
 	flatStepCount: number;
@@ -753,13 +750,11 @@ async function runSingleStep(
 	const sessionDir = step.sessionFile ? undefined : ctx.sessionDir;
 
 	let artifactPaths: ArtifactPaths | undefined;
-	if (ctx.artifactsDir && ctx.artifactConfig?.enabled !== false) {
+	if (ctx.artifactsDir) {
 		const index = ctx.flatStepCount > 1 ? ctx.flatIndex : undefined;
 		artifactPaths = getArtifactPaths(ctx.artifactsDir, ctx.id, step.agent, index);
 		fs.mkdirSync(ctx.artifactsDir, { recursive: true });
-		if (ctx.artifactConfig?.includeInput !== false) {
-			fs.writeFileSync(artifactPaths.inputPath, `# Task for ${step.agent}\n\n${task}`, "utf-8");
-		}
+		fs.writeFileSync(artifactPaths.inputPath, `# Task for ${step.agent}\n\n${task}`, "utf-8");
 	}
 
 	const candidates = step.modelCandidates && step.modelCandidates.length > 0
@@ -1129,28 +1124,24 @@ async function runSingleStep(
 			? (finalResult?.error ? `${finalResult.error}\n${acceptanceFailure}` : acceptanceFailure)
 			: finalResult?.error);
 
-	if (artifactPaths && ctx.artifactConfig?.enabled !== false) {
-		if (ctx.artifactConfig?.includeOutput !== false) {
-			fs.writeFileSync(artifactPaths.outputPath, output, "utf-8");
-		}
-		if (ctx.artifactConfig?.includeMetadata !== false) {
-			fs.writeFileSync(
-				artifactPaths.metadataPath,
-				JSON.stringify({
-					runId: ctx.id,
-					agent: step.agent,
-					task,
-					exitCode: effectiveFinalExitCode,
-					model: finalResult?.model,
-					attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
-					modelAttempts,
-					resourceLimitExceeded: stepResourceLimitExceeded,
-					skills: step.skills,
-					timestamp: Date.now(),
-				}, null, 2),
-				"utf-8",
-			);
-		}
+	if (artifactPaths) {
+		fs.writeFileSync(artifactPaths.outputPath, output, "utf-8");
+		fs.writeFileSync(
+			artifactPaths.metadataPath,
+			JSON.stringify({
+				runId: ctx.id,
+				agent: step.agent,
+				task,
+				exitCode: effectiveFinalExitCode,
+				model: finalResult?.model,
+				attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
+				modelAttempts,
+				resourceLimitExceeded: stepResourceLimitExceeded,
+				skills: step.skills,
+				timestamp: Date.now(),
+			}, null, 2),
+			"utf-8",
+		);
 	}
 
 	return {
@@ -1337,7 +1328,7 @@ function materializeDynamicDefaultOutputPath(input: {
 }
 
 async function runSubagent(config: SubagentRunConfig): Promise<void> {
-	const { id, steps, resultPath, cwd, placeholder, taskIndex, totalTasks, maxOutput, artifactsDir, artifactConfig } =
+	const { id, steps, resultPath, cwd, placeholder, taskIndex, totalTasks, maxOutput, artifactsDir } =
 		config;
 	let previousOutput = "";
 	const outputs: ChainOutputMap = {};
@@ -1798,7 +1789,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			previousOutput, placeholder, cwd: input.taskCwd, sessionEnabled,
 			outputs,
 			sessionDir: input.sessionDir,
-			artifactsDir, artifactConfig, id,
+			artifactsDir, id,
 			flatIndex: fi, flatStepCount: input.flatStepCount,
 			outputFile: path.join(asyncDir, `output-${fi}.log`),
 			piPackageRoot: config.piPackageRoot,
@@ -2310,7 +2301,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				previousOutput, placeholder, cwd, sessionEnabled,
 				outputs,
 				sessionDir: config.sessionDir,
-				artifactsDir, artifactConfig, id,
+				artifactsDir, id,
 				flatIndex, flatStepCount: flatSteps.length,
 				outputFile: path.join(asyncDir, `output-${flatIndex}.log`),
 				piPackageRoot: config.piPackageRoot,

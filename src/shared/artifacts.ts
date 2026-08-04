@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { TEMP_ARTIFACTS_DIR, type ArtifactPaths } from "./types.ts";
 import { getAgentDir } from "./utils.ts";
 const CLEANUP_MARKER_FILE = ".last-cleanup";
+export const ARTIFACT_CLEANUP_DAYS = 7;
 
 export function getArtifactsDir(sessionFile: string | null): string {
 	if (sessionFile) {
@@ -19,7 +20,6 @@ export function getArtifactPaths(artifactsDir: string, runId: string, agent: str
 	return {
 		inputPath: path.join(artifactsDir, `${base}_input.md`),
 		outputPath: path.join(artifactsDir, `${base}_output.md`),
-		jsonlPath: path.join(artifactsDir, `${base}.jsonl`),
 		metadataPath: path.join(artifactsDir, `${base}_meta.json`),
 	};
 }

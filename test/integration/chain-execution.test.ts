@@ -120,7 +120,6 @@ const executeChain = chainMod?.executeChain;
 
 describe("chain execution — sequential", { skip: !available ? "pi packages not available" : undefined }, () => {
 	let tempDir: string;
-	let artifactsDir: string;
 	let mockPi: MockPi;
 
 	before(() => {
@@ -134,7 +133,6 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 
 	beforeEach(() => {
 		tempDir = createTempDir();
-		artifactsDir = path.join(tempDir, "artifacts");
 		mockPi.reset();
 	});
 
@@ -154,8 +152,6 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 			runId: `test-${Date.now().toString(36)}`,
 			shareEnabled: false,
 			sessionDirForIndex: () => undefined,
-			artifactsDir,
-			artifactConfig: { enabled: false },
 			clarify: false,
 			...overrides,
 		};
@@ -1133,8 +1129,6 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 			runId: `test-${Date.now().toString(36)}`,
 			shareEnabled: false,
 			sessionDirForIndex: () => undefined,
-			artifactsDir: path.join(tempDir, "artifacts"),
-			artifactConfig: { enabled: false },
 			clarify: false,
 			...overrides,
 		};

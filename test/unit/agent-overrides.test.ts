@@ -51,6 +51,9 @@ describe("builtin agent overrides", () => {
 			assert.ok(agent.model, `${agent.name} should have a configured model`);
 			assert.ok(agent.fallbackModels?.length, `${agent.name} should have configured fallback models`);
 		}
+		const reviewerClaude = builtins.find((agent) => agent.name === "reviewer-claude");
+		assert.equal(reviewerClaude?.model, "anthropic/claude-opus-5");
+		assert.deepEqual(reviewerClaude?.fallbackModels, ["anthropic/claude-fable-5", "xai/grok-4.5"]);
 		const delegate = builtins.find((agent) => agent.name === "delegate");
 		assert.equal(delegate?.model, undefined);
 		assert.equal(delegate?.fallbackModels, undefined);

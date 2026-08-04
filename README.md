@@ -178,13 +178,14 @@ Use the narrowest role that fits the task. Keep implementation to one writer and
 
 ## Changing a builtin agent's model
 
-The bundled Fitch role profiles pin the same primary and fallback routes as pi-fitch-kit. `delegate` is the exception and inherits the current Pi model.
+The bundled Fitch role profiles pin explicit primary and fallback routes. `delegate` is the exception and inherits the current Pi model.
 
 | Primary route | Agents |
 |---------------|--------|
 | `xai/grok-4.5` | `scout`, `context-builder`, `fixer`, `worker` |
 | `openai-codex/gpt-5.6-sol` | `debugger`, `oracle`, `planner`, `researcher`, `reviewer`, `reviewer-gpt`, `reviewer-security` |
-| `anthropic/claude-fable-5` | `reviewer-claude`, `ui-designer`, `writer` |
+| `anthropic/claude-opus-5` | `reviewer-claude` |
+| `anthropic/claude-fable-5` | `ui-designer`, `writer` |
 | Current Pi model | `delegate` |
 
 Fallback routes live in each `agents/*.md` file. Override a role if those routes are unavailable in your Pi setup; you do not need to copy the bundled agent file.
@@ -882,7 +883,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `async` | boolean | false | Background execution. For chains, `clarify: true` explicitly keeps the run foreground for the clarify UI. |
 | `cwd` | string | runtime cwd | Override working directory. |
 | `maxOutput` | object | 200KB, 5000 lines | Final output truncation limits. |
-| `artifacts` | boolean | true | Write debug artifacts. |
+| `artifacts` | boolean | true | Write input, output, and metadata debug artifacts. JSONL is not written. |
 | `includeProgress` | boolean | false | Include full progress in result. |
 | `control` | object | enabled, 10-minute idle threshold | Override needs-attention tracking (`enabled`, `needsAttentionAfterMs`, `failedToolAttemptsBeforeAttention`, `notifyOn`, `notifyChannels`). |
 | `share` | boolean | false | Upload session export to GitHub Gist. |
@@ -1060,7 +1061,6 @@ Debug artifacts live under `{sessionDir}/subagent-artifacts/` or a user-scoped t
 
 - `{runId}_{agent}_input.md`
 - `{runId}_{agent}_output.md`
-- `{runId}_{agent}.jsonl`
 - `{runId}_{agent}_meta.json`
 
 Metadata records timing, usage, exit code, final model, attempted models, fallback attempt outcomes, and any resource-limit termination reason.
