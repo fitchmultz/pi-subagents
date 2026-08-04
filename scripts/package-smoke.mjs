@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
 const packageJson = require("../package.json");
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-	console.log(`Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing.\n\nChecks:\n  - npm pack --dry-run includes runtime Pi resources\n  - package.json pi manifest points at extension, skills, and prompts\n  - src/extension/index.ts loads through native Node TypeScript stripping and exports a registration function\n  - a packed production install with dev dependencies omitted can load the detached runner's acceptance/schema path\n\nExit codes:\n  0  smoke passed\n  1  package shape or runtime load check failed`);
+	console.log(`Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing.\n\nChecks:\n  - npm pack --dry-run includes subagent and intercom runtime resources\n  - package.json pi manifest points at both extensions, skills, and prompts\n  - both extension entrypoints load through native Node TypeScript stripping\n  - a packed production install with dev dependencies omitted can load the detached runner and native broker\n\nExit codes:\n  0  smoke passed\n  1  package shape or runtime load check failed`);
 	process.exit(0);
 }
 
@@ -67,16 +67,21 @@ if (!pack || !Array.isArray(pack.files)) fail("npm pack --json did not report a 
 
 for (const path of [
 	"package.json",
+	"LICENSE",
 	"README.md",
 	"src/extension/index.ts",
 	"src/extension/schemas.ts",
+	"src/pi-intercom/index.ts",
+	"src/pi-intercom/broker/broker.ts",
+	"src/pi-intercom/ui/session-list.ts",
 	"src/shared/types.ts",
 	"agents/reviewer.md",
 	"agents/reviewer-gpt.md",
 	"skills/pi-subagents/SKILL.md",
+	"skills/pi-intercom/SKILL.md",
+	"docs/intercom.md",
 	"prompts/review-loop.md",
 	"scripts/real-pi-smoke.mjs",
-	"scripts/intercom-smoke-package.mjs",
 ]) {
 	assertPackedFile(pack.files, path);
 }
@@ -86,12 +91,14 @@ assertNotPackedFile(pack.files, "install.mjs");
 if (packageJson.private !== true) fail("package.json must stay private for this GitHub/local fork");
 if (packageJson.bin !== undefined) fail("package.json must not expose an npx/bin installer for this GitHub/local fork");
 if (!packageJson.pi?.extensions?.includes("./src/extension/index.ts")) fail("package.json pi.extensions must include ./src/extension/index.ts");
+if (!packageJson.pi?.extensions?.includes("./src/pi-intercom/index.ts")) fail("package.json pi.extensions must include ./src/pi-intercom/index.ts");
 if (!packageJson.pi?.skills?.includes("./skills")) fail("package.json pi.skills must include ./skills");
 if (!packageJson.pi?.prompts?.includes("./prompts")) fail("package.json pi.prompts must include ./prompts");
 
-const extensionModule = await import(new URL("../src/extension/index.ts", import.meta.url));
-const register = extensionModule.default;
-if (typeof register !== "function") fail("extension entrypoint did not load a default registration function");
+for (const entrypoint of ["../src/extension/index.ts", "../src/pi-intercom/index.ts"]) {
+	const extensionModule = await import(new URL(entrypoint, import.meta.url));
+	if (typeof extensionModule.default !== "function") fail(`${entrypoint} did not load a default registration function`);
+}
 
 const productionRoot = mkdtempSync(join(tmpdir(), "pi-subagents-package-smoke-"));
 let productionImportError;
@@ -111,13 +118,17 @@ try {
 	cpSync(installedRoot, gitPackageRoot, { recursive: true });
 	run("npm", ["install", "--ignore-scripts", "--omit=dev"], gitPackageRoot);
 	await import(pathToFileURL(join(gitPackageRoot, "src", "runs", "shared", "acceptance-contract.ts")).href);
+	const brokerSpawn = await import(pathToFileURL(join(gitPackageRoot, "src", "pi-intercom", "broker", "spawn.ts")).href);
+	const brokerCwd = brokerSpawn.getBrokerSpawnOptions().cwd;
+	if (realpathSync(brokerCwd) !== realpathSync(gitPackageRoot)) throw new Error(`packed broker resolved ${brokerCwd} instead of ${gitPackageRoot}`);
+	run(process.execPath, ["--check", join(gitPackageRoot, "src", "pi-intercom", "broker", "broker.ts")], gitPackageRoot);
 } catch (error) {
 	productionImportError = error;
 } finally {
 	rmSync(productionRoot, { recursive: true, force: true });
 }
 if (productionImportError) {
-	fail(`packed production install could not load the detached runner schema path: ${productionImportError instanceof Error ? productionImportError.message : String(productionImportError)}`);
+	fail(`packed production install could not load runtime paths: ${productionImportError instanceof Error ? productionImportError.message : String(productionImportError)}`);
 }
 
-console.log(`[package-smoke] ${pack.name}@${pack.version}: ${pack.files.length} files packed; extension and production runner schema paths loaded`);
+console.log(`[package-smoke] ${pack.name}@${pack.version}: ${pack.files.length} files packed; subagent, intercom, runner, and broker paths loaded`);

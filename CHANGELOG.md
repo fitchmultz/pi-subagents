@@ -3,7 +3,8 @@
 ## [Unreleased]
 
 ### Changed
-- Made pi-intercom pairing required and removed optional bridge modes, discovery, and configuration while preserving the default child wiring.
+- Absorbed the pi-intercom extension, broker, skill, and tests into this package, replacing required two-package pairing with one manifest, install, and update while preserving the existing intercom protocol, config directory, and child wiring.
+- Run the bundled broker directly with the package's existing native Node TypeScript baseline, removing the separate `tsx` runtime dependency while mapping the old default broker command to the native path for compatibility.
 - Removed Cursor-hosted fallback routes from the seven affected bundled agent profiles while preserving their remaining direct-provider routes.
 - Replaced scheduler-sensitive test assertions with contract-based synchronization and removed duplicate helper coverage already exercised by stronger unit tests.
 - Surfaced the lightweight reviewer path in tool and skill guidance: omit `acceptance` for review-only tasks, launch independent reviewers as separate async runs so each completion wakes the parent, and end the parent turn instead of polling when no other work remains. Active status output now repeats the no-poll reminder only for runs whose completion will reach the current session.
@@ -20,7 +21,7 @@
 - Kept this personal fork private with no legacy `npx` installer, made GitHub `pi install` the canonical install/refresh workflow, and retained local path installs for development.
 - Bundled the 14 pi-fitch-kit agent profiles as defaults, retained the extension's lightweight `delegate`, and removed pi-fitch-kit from the canonical local validation gate.
 - Added a per-suite local watchdog to `scripts/run-tests.mjs`, with timeout diagnostics and `PI_TEST_TIMEOUT_MS` / `--timeout-ms` overrides for slow debug runs.
-- Added an opt-in `npm run smoke:real-pi` command that installs this checkout with pi-intercom in an isolated temporary Pi home and verifies `pi list`; live model subagent prompts remain gated behind `-- --llm`.
+- Added an opt-in `npm run smoke:real-pi` command that installs this checkout in an isolated temporary Pi home, loads both bundled extension entries, and verifies `pi list`; live model subagent prompts remain gated behind `-- --llm`.
 - Updated the local Pi development baseline to `@earendil-works/*` `0.79.0` while keeping Pi runtime packages as optional wildcard peers so 0.79.0 is a suggested floor, not a hard requirement.
 - Use Pi 0.78.1 `ctx.mode` when available to restrict terminal-only widget, raw input, and tool-expansion behavior to TUI mode while preserving a `ctx.hasUI` fallback for older compatible Pi installs.
 - Ignore the whole project-local `.pi/` tree so semantic caches and other agent state do not appear as publishable package artifacts.
@@ -31,6 +32,8 @@
 - Run local test scripts through a small wrapper that clears inherited `PI_SUBAGENT_*` runtime variables before starting the Node test runner.
 
 ### Fixed
+- Accept either response order in the live async smoke while still requiring the launch confirmation, exact async run ID, and an exact child completion line.
+- Clear inherited `PI_SUBAGENT_*` child metadata from isolated install and real-Pi smokes so running validation from a subagent still loads the top-level subagent extension and doctor command.
 - Preserve the user's Ctrl+O tool-output expansion setting when subagent tools and slash commands run instead of forcing it collapsed.
 - Keep detached async runners loadable after Pi refreshes a git-installed package with development dependencies omitted: subagent schemas now use the existing TypeBox runtime directly, and the package smoke reproduces a packed production install.
 - Treat Codex-style `usage limit` errors as retryable model failures so configured `fallbackModels` advance immediately, and keep them out of same-model transport recovery loops.

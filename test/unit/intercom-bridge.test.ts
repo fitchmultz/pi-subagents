@@ -133,11 +133,30 @@ describe("applyIntercomBridgeToAgent", () => {
 		assert.match(updated.systemPrompt, /Intercom orchestration channel:/);
 	});
 
-	it("allows canonical pi-intercom name and path segments", () => {
+	it("replaces standalone intercom allowlist entries with the bundled extension", () => {
 		for (const extensions of [["pi-intercom"], ["/tmp/extensions/pi-intercom/index.ts"], ["C:\\\\Users\\\\x\\\\pi-intercom"]]) {
 			const updated = applyIntercomBridgeToAgent(makeAgent({ tools: ["read"], extensions }), bridge);
 			assert.deepEqual(updated.tools, ["read", "intercom", "contact_supervisor"], extensions.join(","));
+			assert.equal(updated.extensions?.length, 1);
+			assert.match(updated.extensions?.[0]?.replaceAll("\\\\", "/") ?? "", /\/src\/pi-intercom\/index\.ts$/);
+			assert.notEqual(updated.extensions?.[0], extensions[0]);
 		}
+	});
+
+	it("is idempotent after resolving the bundled extension", () => {
+		const first = applyIntercomBridgeToAgent(makeAgent({ tools: ["read"], extensions: ["pi-intercom"] }), bridge);
+		assert.equal(applyIntercomBridgeToAgent(first, bridge), first);
+	});
+
+	it("deduplicates bundled intercom while preserving unrelated allowlist entries", () => {
+		const updated = applyIntercomBridgeToAgent(makeAgent({
+			tools: ["read"],
+			extensions: ["/tmp/other-extension/index.ts", "pi-intercom", "/old/pi-intercom/index.ts"],
+		}), bridge);
+
+		assert.equal(updated.extensions?.length, 2);
+		assert.equal(updated.extensions?.[0], "/tmp/other-extension/index.ts");
+		assert.match(updated.extensions?.[1]?.replaceAll("\\\\", "/") ?? "", /\/src\/pi-intercom\/index\.ts$/);
 	});
 
 	it("does not inject when extension sandbox excludes intercom", () => {

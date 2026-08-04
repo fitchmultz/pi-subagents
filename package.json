@@ -1,7 +1,7 @@
 {
   "name": "pi-subagents",
   "version": "0.28.0",
-  "description": "Pi extension for delegating tasks to subagents with chains, parallel execution, and TUI clarification",
+  "description": "Pi extension for subagent orchestration and local session coordination",
   "author": "Nico Bailon",
   "license": "MIT",
   "type": "module",
@@ -20,7 +20,9 @@
     "subagents",
     "ai",
     "agents",
-    "cli"
+    "cli",
+    "intercom",
+    "coordination"
   ],
   "files": [
     "src/**/*.ts",
@@ -28,6 +30,7 @@
     "agents/",
     "skills/**/*",
     "prompts/**/*",
+    "docs/intercom.md",
     "README.md",
     "CHANGELOG.md"
   ],
@@ -44,7 +47,8 @@
   },
   "pi": {
     "extensions": [
-      "./src/extension/index.ts"
+      "./src/extension/index.ts",
+      "./src/pi-intercom/index.ts"
     ],
     "skills": [
       "./skills"
@@ -77,10 +81,10 @@
     "typebox": "^1.1.39"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.80.9",
-    "@earendil-works/pi-ai": "^0.80.9",
-    "@earendil-works/pi-coding-agent": "^0.80.9",
-    "@earendil-works/pi-tui": "^0.80.9",
+    "@earendil-works/pi-agent-core": "^0.80.10",
+    "@earendil-works/pi-ai": "^0.80.10",
+    "@earendil-works/pi-coding-agent": "^0.80.10",
+    "@earendil-works/pi-tui": "^0.80.10",
     "@types/node": "^24.13.2",
     "typescript": "^6.0.3"
   },

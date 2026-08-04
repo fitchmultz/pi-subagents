@@ -1,0 +1,47 @@
+[
+  {
+    "query": "Use intercom to ask the worker session whether the retry bug is in src/api/client.ts.",
+    "should_trigger": true,
+    "reason": "Direct request to coordinate with another pi session using intercom."
+  },
+  {
+    "query": "I received an intercom ask from planner; how should I reply?",
+    "should_trigger": true,
+    "reason": "Inbound ask/reply flow is a core pi-intercom workflow."
+  },
+  {
+    "query": "Coordinate a planner-worker handoff between two local pi sessions.",
+    "should_trigger": true,
+    "reason": "Planner-worker multi-session coordination should trigger the skill."
+  },
+  {
+    "query": "A pi-subagents child sent a supervisor decision request over intercom; answer it.",
+    "should_trigger": true,
+    "reason": "Supervisor escalation handling is in scope."
+  },
+  {
+    "query": "Use contact_supervisor to ask the orchestrator which API the child should target.",
+    "should_trigger": true,
+    "reason": "Child-side contact_supervisor usage is part of pi-intercom supervisor escalation workflow."
+  },
+  {
+    "query": "What communication skills should I put on my resume?",
+    "should_trigger": false,
+    "reason": "Human career skills are unrelated to the pi-intercom tool workflow."
+  },
+  {
+    "query": "Open a remote chat with an agent running on another machine.",
+    "should_trigger": false,
+    "reason": "pi-intercom is same-machine local IPC only."
+  },
+  {
+    "query": "Run three subagents to review this PR.",
+    "should_trigger": false,
+    "reason": "Plain subagent delegation belongs to the pi-subagents workflow unless intercom coordination is explicitly needed."
+  },
+  {
+    "query": "Send this email to the reviewer.",
+    "should_trigger": false,
+    "reason": "Email/external messaging is not pi-intercom local session coordination."
+  }
+]
