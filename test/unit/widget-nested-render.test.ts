@@ -38,11 +38,11 @@ function job(child: NestedRunSummary): AsyncJobState {
 }
 
 describe("nested widget rendering", () => {
-	it("uses aggregate lines when collapsed and full child rows when expanded", () => {
+	it("hides nested runs when collapsed and shows full child rows when expanded", () => {
 		const child = nested("nested-reviewer", "root-run", "running", { currentTool: "read" });
-		const collapsed = buildWidgetLines([job(child)], theme as any, 120, false).join("\n");
-		assert.match(collapsed, /↳ \+1 nested run \(1 running\)/);
-		assert.doesNotMatch(collapsed, /nested-reviewer · running/);
+		const collapsedLines = buildWidgetLines([job(child)], theme as any, 120, false);
+		assert.equal(collapsedLines.length, 1, "a single collapsed run should cost one terminal line");
+		assert.doesNotMatch(collapsedLines[0]!, /nested-reviewer/);
 
 		const expanded = buildWidgetLines([job(child)], theme as any, 120, true).join("\n");
 		assert.match(expanded, /↳ . nested-reviewer · running · read/);
