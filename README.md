@@ -1145,7 +1145,7 @@ subagent({
 
 Foreground runs show compact live progress for single, chain, and parallel modes: current tool, recent output, token counts, duration, activity freshness, current-tool duration, and chain graph metadata when available.
 
-Press `Ctrl+O` to expand the full streaming view with complete output per step.
+Press `Ctrl+O` to expand the full streaming view with complete output per step. The background async widget stays at one line per run until then.
 
 Sequential chains show a flow line like `done scout → running planner`. Chains with parallel steps show per-step cards instead. Chain status uses `label` and `phase` metadata when present, while falling back to agent names for older chains.
 

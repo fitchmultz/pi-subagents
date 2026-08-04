@@ -289,13 +289,13 @@ function widgetJobName(job: AsyncJobState): string {
 	return job.mode ?? "subagent";
 }
 
-function widgetActivity(job: AsyncJobState): string {
+function widgetActivity(job: AsyncJobState, includeCounts = true): string {
 	const facts: string[] = [];
 	if (job.currentTool && job.currentToolStartedAt !== undefined && job.updatedAt !== undefined) facts.push(`${job.currentTool} ${formatDuration(Math.max(0, job.updatedAt - job.currentToolStartedAt))}`);
 	else if (job.currentTool) facts.push(job.currentTool);
 	if (job.currentPath) facts.push(shortenPath(job.currentPath));
-	if (job.turnCount !== undefined) facts.push(`${job.turnCount} turns`);
-	if (job.toolCount !== undefined) facts.push(`${job.toolCount} tools`);
+	if (includeCounts && job.turnCount !== undefined) facts.push(`${job.turnCount} turns`);
+	if (includeCounts && job.toolCount !== undefined) facts.push(`${job.toolCount} tools`);
 	const activity = buildLiveStatusLine(job, job.updatedAt);
 	if (activity && facts.length) return `${activity} · ${facts.join(" · ")}`;
 	if (activity) return activity;
@@ -906,31 +906,25 @@ function buildSingleWidgetLines(job: AsyncJobState, theme: Theme, width: number,
 	].map((line) => truncLine(line, width));
 }
 
-function compactSingleWidgetLines(job: AsyncJobState, theme: Theme, width: number): string[] {
-	const fullLines = buildSingleWidgetLines(job, theme, width, false);
-	if (fullLines.length <= 10 || !job.steps?.length || (job.mode !== "parallel" && !job.activeParallelGroup)) return fullLines;
-
-	const total = job.stepsTotal ?? job.steps.length;
-	const itemTitle = job.mode === "parallel" || job.activeParallelGroup ? "Agent" : "Step";
-	const lines = fullLines.slice(0, 2);
-	for (const [index, step] of job.steps.entries()) {
-		const status = widgetStepStatus(step.status, theme);
-		const activity = widgetStepActivityLine(step, width, false, job.updatedAt);
-		const stepStats = widgetStepStats(theme, step);
-		const activitySuffix = activity ? ` ${theme.fg("dim", "·")} ${theme.fg("dim", activity)}` : "";
-		const modelDisplay = modelThinkingBadge(theme, step.model, step.thinking);
-		lines.push(`  ${widgetStepGlyph(step.status, theme, widgetStepRunningSeed(step, index))} ${itemTitle} ${index + 1}/${total}: ${themeBold(theme, step.agent)} ${theme.fg("dim", "·")} ${status}${modelDisplay}${activitySuffix}${stepStats ? ` ${theme.fg("dim", "·")} ${stepStats}` : ""}`);
-		for (const nestedLine of formatNestedWidgetLines(step.children, theme, width, false, job.updatedAt)) lines.push(`    ${nestedLine}`);
-	}
-	if (job.steps.some((step) => step.status === "running")) lines.push(theme.fg("accent", "  Press Ctrl+O for live detail"));
-	return lines.map((line) => truncLine(line, width));
+/** Collapsed rows carry the live tool inline, since detail lines wait for Ctrl+O. */
+function collapsedJobRow(job: AsyncJobState, theme: Theme, width: number): string {
+	const stats = widgetStats(job, theme);
+	// The job root mirrors an active step's tool but drops its args, so prefer the step itself.
+	const runningSteps = job.steps?.filter((step) => step.status === "running") ?? [];
+	const soloStep = runningSteps.length === 1 ? runningSteps[0] : undefined;
+	const activity = job.status !== "running"
+		? ""
+		: soloStep
+			? widgetStepActivityLine(soloStep, width, false, job.updatedAt)
+			: widgetActivity(job, false);
+	return `${widgetStatusGlyph(job, theme)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}${activity ? ` ${theme.fg("dim", "·")} ${theme.fg("dim", activity)}` : ""}`;
 }
 
 function fitWidgetLineBudget(lines: string[], theme: Theme, width: number, expanded: boolean): string[] {
 	const rows = process.stdout.rows || 30;
 	const budget = expanded
 		? Math.max(12, Math.min(24, Math.floor(rows * 0.55)))
-		: Math.max(10, Math.min(14, Math.floor(rows * 0.35)));
+		: MAX_WIDGET_JOBS + 2;
 	if (lines.length <= budget) return lines;
 	const visibleLines = Math.max(1, budget - 1);
 	const hiddenCount = lines.length - visibleLines;
@@ -942,12 +936,9 @@ function fitWidgetLineBudget(lines: string[], theme: Theme, width: number, expan
 
 function buildWidgetComponent(jobs: AsyncJobState[], expanded: boolean): (_tui: unknown, theme: Theme) => Component {
 	return (_tui, theme) => {
-		const width = getTermWidth();
-		const lines = expanded
-			? buildWidgetLines(jobs, theme, width, true)
-			: jobs.length === 1
-				? compactSingleWidgetLines(jobs[0]!, theme, width)
-				: buildWidgetLines(jobs, theme, width, false);
+		// Text pads one column on each side, so building at full width wraps every long row.
+		const width = getTermWidth() - 2;
+		const lines = buildWidgetLines(jobs, theme, width, expanded);
 		const container = new Container();
 		for (const line of fitWidgetLineBudget(lines, theme, width, expanded)) container.addChild(new Text(line, 1, 0));
 		return container;
@@ -956,51 +947,47 @@ function buildWidgetComponent(jobs: AsyncJobState[], expanded: boolean): (_tui: 
 
 export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = getTermWidth(), expanded = false): string[] {
 	if (jobs.length === 0) return [];
-	if (jobs.length === 1) return buildSingleWidgetLines(jobs[0]!, theme, width, expanded);
+	if (jobs.length === 1 && expanded) return buildSingleWidgetLines(jobs[0]!, theme, width, expanded);
 	const running = jobs.filter((job) => job.status === "running");
 	const queued = jobs.filter((job) => job.status === "queued");
 	const finished = jobs.filter((job) => job.status !== "running" && job.status !== "queued");
 
-	const lines: string[] = [];
-	const hasActive = running.length > 0 || queued.length > 0;
-	const headerGlyph = running.length > 0 ? runningGlyph(widgetJobsRunningSeed(running)) : hasActive ? "●" : "○";
-	lines.push(truncLine(`${theme.fg(hasActive ? "accent" : "dim", headerGlyph)} ${theme.fg(hasActive ? "accent" : "dim", "Async agents")} ${theme.fg("dim", "· background")}`, width));
+	const jobItem = (job: AsyncJobState): string[] => {
+		if (!expanded) return [collapsedJobRow(job, theme, width)];
+		const stats = widgetStats(job, theme);
+		return [
+			`${widgetStatusGlyph(job, theme)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
+			`  ${theme.fg("dim", `⎿  ${widgetActivity(job)}`)}`,
+			...widgetParallelAgentDetails(job, theme, expanded, width),
+		];
+	};
 
 	const items: string[][] = [];
 	let hiddenRunning = 0;
 	let hiddenFinished = 0;
-	let queuedSummaryShown = false;
+	let queuedShown = false;
 	let slots = MAX_WIDGET_JOBS;
 
 	for (const job of running) {
 		if (slots <= 0) { hiddenRunning++; continue; }
-		const stats = widgetStats(job, theme);
-		items.push([
-			`${widgetStatusGlyph(job, theme)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
-			`  ${theme.fg("dim", `⎿  ${widgetActivity(job)}`)}`,
-			...widgetParallelAgentDetails(job, theme, expanded, width),
-		]);
+		items.push(jobItem(job));
 		slots--;
 	}
 
 	if (queued.length > 0 && slots > 0) {
-		items.push([`${theme.fg("muted", "◦")} ${theme.fg("dim", `${queued.length} queued`)}`]);
-		queuedSummaryShown = true;
+		// One collapsed queued run has room for its own name; a backlog collapses to a count.
+		items.push(queued.length === 1 && !expanded ? jobItem(queued[0]!) : [`${theme.fg("muted", "◦")} ${theme.fg("dim", `${queued.length} queued`)}`]);
+		queuedShown = true;
 		slots--;
 	}
 
 	for (const job of finished) {
 		if (slots <= 0) { hiddenFinished++; continue; }
-		const stats = widgetStats(job, theme);
-		items.push([
-			`${widgetStatusGlyph(job, theme)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
-			`  ${theme.fg("dim", `⎿  ${widgetActivity(job)}`)}`,
-			...widgetParallelAgentDetails(job, theme, expanded, width),
-		]);
+		items.push(jobItem(job));
 		slots--;
 	}
 
-	const hiddenQueued = queued.length > 0 && !queuedSummaryShown ? queued.length : 0;
+	const hiddenQueued = queued.length > 0 && !queuedShown ? queued.length : 0;
 	const hiddenTotal = hiddenRunning + hiddenFinished + hiddenQueued;
 	if (hiddenTotal > 0) {
 		const parts: string[] = [];
@@ -1009,6 +996,14 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 		if (hiddenFinished > 0) parts.push(`${hiddenFinished} finished`);
 		items.push([theme.fg("dim", `+${hiddenTotal} more (${parts.join(", ")})`)]);
 	}
+
+	const hint = running.length > 0 && !expanded ? ` ${theme.fg("dim", "·")} ${theme.fg("accent", "Ctrl+O")}` : "";
+	if (items.length === 1 && !expanded) return [truncLine(`${items[0]![0]}${hint}`, width)];
+
+	const lines: string[] = [];
+	const hasActive = running.length > 0 || queued.length > 0;
+	const headerGlyph = running.length > 0 ? runningGlyph(widgetJobsRunningSeed(running)) : hasActive ? "●" : "○";
+	lines.push(truncLine(`${theme.fg(hasActive ? "accent" : "dim", headerGlyph)} ${theme.fg(hasActive ? "accent" : "dim", "Async agents")} ${theme.fg("dim", "· background")}${hint}`, width));
 
 	for (let i = 0; i < items.length; i++) {
 		const item = items[i]!;
