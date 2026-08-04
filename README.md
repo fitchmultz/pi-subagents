@@ -10,15 +10,17 @@ https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1
 
 ## Installation
 
-Install this fork from GitHub:
+Install this fork with `pi-intercom` from GitHub:
 
 ```bash
+pi install git:github.com/fitchmultz/pi-intercom
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-That is the only required step. This personal fork is not published to npm and does not provide an `npx pi-subagents` installer. Use `pi update --extensions` to refresh it. Local checkout installs remain available for development:
+Those are the only required steps. These personal forks are not published to npm and do not provide `npx` installers. Use `pi update --extensions` to refresh them. Local checkout installs remain available for development:
 
 ```bash
+pi install /absolute/path/to/pi-intercom
 pi install /absolute/path/to/pi-subagents
 ```
 
@@ -32,7 +34,7 @@ Run the local completion gate before treating changes as complete:
 npm run ci
 ```
 
-That command runs TypeScript no-emit checking, package shape smoke checks, an isolated local path install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
+That command runs TypeScript no-emit checking, package shape smoke checks, an isolated paired-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
 ## Real Pi smoke
 
@@ -42,7 +44,7 @@ The default local gate stays mock-heavy and deterministic. When you need to veri
 npm run smoke:real-pi
 ```
 
-It installs this checkout into an isolated temporary Pi home and runs `pi list`. It does not install pi-fitch-kit, publish to npm, or use GitHub Actions.
+It installs this checkout and a pi-intercom companion into an isolated temporary Pi home, then runs `pi list`. Set `PI_INTERCOM_PATH=/absolute/path/to/pi-intercom` to exercise a specific companion checkout. Live `--llm` smokes require a real companion checkout. It does not install pi-fitch-kit, publish to npm, or use GitHub Actions.
 
 Live model-backed subagent paths are intentionally opt-in because they can use provider credentials and tokens:
 
@@ -271,15 +273,16 @@ The package includes reusable prompt templates for common workflows. You do not 
 
 Add `autofix` to `/parallel-review` or `/parallel-cleanup` to apply only the synthesized fixes worth doing now after reviewers return.
 
-## Optional pi-intercom companion
+## Required pi-intercom companion
 
-`pi-subagents` works without `pi-intercom`. Install `pi-intercom` only if you want child agents to talk back to the parent Pi session while they are running.
+Install `pi-subagents` and `pi-intercom` together. Managed children get a private coordination channel back to the parent Pi session unless an explicit agent extension allowlist excludes it.
 
 ```bash
 pi install git:github.com/fitchmultz/pi-intercom
+pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-Most users do not call `intercom` directly. After `pi-intercom` is installed, `pi-subagents` can automatically give child agents a private coordination channel back to the parent session. The bridge recognizes the GitHub package install as well as local extension checkouts.
+Most users do not call `intercom` directly. `pi-subagents` injects fixed default bridge instructions and auto-adds `intercom` and `contact_supervisor` when a child has an explicit tool list. If an agent sets an explicit `extensions` allowlist, include `pi-intercom` there or those child tools stay sandboxed out.
 
 Use it for work where the child might need a decision instead of guessing:
 
@@ -295,11 +298,11 @@ The child can use one dedicated coordination tool:
 
 - `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` only when the ephemeral child cannot safely continue and must remain alive for one steered supervisor reply. Use `reason: "interview_request"` only when it cannot safely continue until it receives multiple structured answers. Use `reason: "progress_update"` for concise plan-changing updates with intentionally deferred/coalesced delivery that may wait behind active supervisor work. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
 
-Child-side routine completion handoffs are still not expected. With the intercom bridge active, parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested child summaries under the parent child that launched them.
+Child-side routine completion handoffs are still not expected. Parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested child summaries under the parent child that launched them.
 
 When a foreground child raises a blocking supervisor question, `pi-subagents` detaches that foreground run so the parent can answer immediately. The tool result includes the exact `intercom({ action: "pending" })` and `intercom({ action: "reply", to: "..." })` calls to use. After replying, inspect `subagent({ action: "status", id: "..." })` or wait for the normal result delivery.
 
-After 10 minutes of no observed child activity by default, needs-attention notices can show up in the parent session with useful next actions, such as checking status, interrupting the run, or nudging the child. When `pi-intercom` is active and the child is registered, prefer `subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })` for live guidance, answers, corrections, or blockers. It sends a non-blocking steer that supplements the child's active task unless the message explicitly replaces it. Use the status-shown blocking intercom ask only when the parent must remain alive waiting for a reply.
+After 10 minutes of no observed child activity by default, needs-attention notices can show up in the parent session with useful next actions, such as checking status, interrupting the run, or nudging the child. When the child is registered, prefer `subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })` for live guidance, answers, corrections, or blockers. It sends a non-blocking steer that supplements the child's active task unless the message explicitly replaces it. Use the status-shown blocking intercom ask only when the parent must remain alive waiting for a reply.
 
 If messages do not show up, run:
 
@@ -307,7 +310,7 @@ If messages do not show up, run:
 /subagents-doctor
 ```
 
-For normal use, you do not need to configure anything. Advanced users can tune the bridge with `intercomBridge` in the configuration section below.
+There is no bridge mode or instruction-file config. Pairing is fixed.
 
 At this point, you know enough to use the plugin. The rest of this README is reference material for exact command syntax, custom agents, saved chains, worktrees, and configuration.
 
@@ -1018,27 +1021,11 @@ When a limit is reached, the child receives a soft interrupt, the run fails with
 
 Spawn-count and per-agent child-concurrency quotas are not part of this release; use `maxSubagentDepth` and parallel `concurrency` for those boundaries today.
 
-### `intercomBridge`
+### Intercom pairing
 
-```json
-{
-  "intercomBridge": {
-    "mode": "always",
-    "instructionFile": "./intercom-bridge.md"
-  }
-}
-```
+Intercom wiring is always on. Install `pi-intercom` with `pi-subagents`. Children receive fixed default bridge instructions and parent-side result/control delivery uses the resolved orchestrator target automatically. If an agent sets an explicit `extensions` allowlist, include `pi-intercom` so child-side `intercom` and `contact_supervisor` tools stay available.
 
-Controls whether subagents receive runtime intercom coordination instructions and whether `intercom` and `contact_supervisor` are auto-added to their tool allowlist when needed.
-
-Fields:
-
-- `mode`: default `always`; use `fork-only` to inject only for forked children/steps in mixed fresh/fork runs, or `off` to disable the bridge.
-- `instructionFile`: optional Markdown template replacing the default bridge instructions. `{orchestratorTarget}` is interpolated. Relative paths resolve from `~/.pi/agent/extensions/subagent/`.
-
-Bridge activation also requires `pi-intercom` to be installed and enabled through `pi install git:github.com/fitchmultz/pi-intercom` or a local extension checkout, a targetable current session name or fallback alias, and `pi-intercom` in any explicit agent `extensions` allowlist.
-
-The default injected guidance tells children to use steered blocking `contact_supervisor` decisions or structured interviews only when the ephemeral child cannot safely continue and must remain alive for the answer, intentionally deferred/coalesced `progress_update` for concise plan-changing updates, and generic intercom only as fallback plumbing. Supervisor nudges supplement the active task unless they explicitly replace it; routine completion still returns through normal child results.
+The injected guidance tells children to use steered blocking `contact_supervisor` decisions or structured interviews only when the ephemeral child cannot safely continue and must remain alive for the answer, intentionally deferred/coalesced `progress_update` for concise plan-changing updates, and generic intercom only as fallback plumbing. Supervisor nudges supplement the active task unless they explicitly replace it; routine completion still returns through normal child results.
 
 ### `worktreeSetupHook`
 
@@ -1240,6 +1227,6 @@ The main runtime files are:
 | `src/runs/foreground/chain-execution.ts` / `src/agents/chain-serializer.ts` | Chain orchestration and `.chain.md` parsing. |
 | `src/shared/settings.ts` | Chain behavior, instructions, and config helpers. |
 | `src/runs/shared/worktree.ts` | Git worktree isolation. |
-| `src/intercom/intercom-bridge.ts` | Runtime intercom bridge instructions and diagnostics. |
+| `src/intercom/intercom-bridge.ts` | Fixed intercom instructions, target names, and agent wiring. |
 | `src/extension/schemas.ts` / `src/shared/types.ts` | Tool schemas, shared types, and event constants. |
 | `test/unit/` / `test/integration/` | Unit and loader-based integration tests. |

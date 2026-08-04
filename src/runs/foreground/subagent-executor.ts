@@ -46,7 +46,7 @@ import {
 	wrapTaskForAgentContext,
 } from "../../shared/agent-context-policy.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
-import { applyIntercomBridgeToAgent, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget, resolveSubagentIntercomTarget, shouldApplyIntercomBridge, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
+import { applyIntercomBridgeToAgent, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget, resolveSubagentIntercomTarget, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import { formatControlIntercomMessage, formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
 import { finalizeSingleOutput, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
@@ -368,7 +368,6 @@ interface ExecutionContextData {
 	foregroundTimeoutMs?: number;
 	controlConfig: ResolvedControlConfig;
 	intercomBridge: IntercomBridgeState;
-	shouldApplyIntercomBridgeForAgent: (agentName: string | undefined) => boolean;
 	nestedRoute?: NestedRouteInfo;
 }
 
@@ -711,12 +710,9 @@ function emitControlNotification(input: {
 	controlConfig: ResolvedControlConfig;
 	intercomBridge: IntercomBridgeState;
 	event: ControlEvent;
-	shouldApplyIntercomBridgeForAgent?: (agentName: string | undefined) => boolean;
 }): void {
 	if (!shouldNotifyControlEvent(input.controlConfig, input.event)) return;
-	const childIntercomTarget = input.intercomBridge.active && (input.shouldApplyIntercomBridgeForAgent?.(input.event.agent) ?? true)
-		? resolveSubagentIntercomTarget(input.event.runId, input.event.agent, input.event.index)
-		: undefined;
+	const childIntercomTarget = resolveSubagentIntercomTarget(input.event.runId, input.event.agent, input.event.index);
 	const payload = {
 		event: input.event,
 		source: "foreground" as const,
@@ -726,7 +722,7 @@ function emitControlNotification(input: {
 	if (input.controlConfig.notifyChannels.includes("event")) {
 		input.pi.events.emit(SUBAGENT_CONTROL_EVENT, payload);
 	}
-	if (input.controlConfig.notifyChannels.includes("intercom") && input.intercomBridge.active && input.intercomBridge.orchestratorTarget) {
+	if (input.controlConfig.notifyChannels.includes("intercom")) {
 		input.pi.events.emit(SUBAGENT_CONTROL_INTERCOM_EVENT, {
 			...payload,
 			to: input.intercomBridge.orchestratorTarget,
@@ -1057,15 +1053,8 @@ async function resumeAsyncRun(input: {
 	const discoveredAgents = input.deps.discoverAgents(effectiveCwd, scope, { projectTrusted: input.ctx.isProjectTrusted?.() ?? true }).agents;
 	const fallbackTarget = resolveIntercomSessionTarget(input.deps.pi.getSessionName(), input.ctx.sessionManager.getSessionId());
 	const orchestratorTarget = resolveOrchestratorIntercomTarget(input.deps.pi.events, fallbackTarget);
-	const intercomBridge = resolveIntercomBridge({
-		config: input.deps.config.intercomBridge,
-		context: input.params.context,
-		orchestratorTarget,
-		cwd: effectiveCwd,
-	});
-	const agents = intercomBridge.active
-		? discoveredAgents.map((agent) => applyIntercomBridgeToAgent(agent, intercomBridge))
-		: discoveredAgents;
+	const intercomBridge = resolveIntercomBridge(orchestratorTarget);
+	const agents = discoveredAgents.map((agent) => applyIntercomBridgeToAgent(agent, intercomBridge));
 	const agentConfig = agents.find((agent) => agent.name === target.agent);
 	if (!agentConfig) {
 		return {
@@ -1099,8 +1088,8 @@ async function resumeAsyncRun(input: {
 		worktreeSetupHook: input.deps.config.worktreeSetupHook,
 		worktreeSetupHookTimeoutMs: input.deps.config.worktreeSetupHookTimeoutMs,
 		controlConfig: resolveControlConfig(input.deps.config.control, input.params.control),
-		controlIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
-		childIntercomTarget: intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(runId, agent, index) : undefined,
+		controlIntercomTarget: intercomBridge.orchestratorTarget,
+		childIntercomTarget: (agent, index) => resolveSubagentIntercomTarget(runId, agent, index),
 		availableModels,
 		acceptance: input.params.acceptance ?? acceptanceInputFromResolved(target.effectiveAcceptance),
 		projectTrust: resolveConfiguredChildProjectTrustPolicy(input.deps.config.projectTrust),
@@ -1108,7 +1097,7 @@ async function resumeAsyncRun(input: {
 	if (result.isError) return result;
 
 	const revivedId = result.details.asyncId ?? runId;
-	const revivedTarget = intercomBridge.active ? resolveSubagentIntercomTarget(revivedId, target.agent, 0) : undefined;
+	const revivedTarget = resolveSubagentIntercomTarget(revivedId, target.agent, 0);
 	const sourceLabel = target.source;
 	const lines = [
 		`Revived ${sourceLabel} subagent from ${target.runId}.`,
@@ -1138,13 +1127,12 @@ function resultSummaryForIntercom(result: SingleResult): string {
 	return output || result.error || "(no output)";
 }
 
-function createForegroundControlNotifier(data: Pick<ExecutionContextData, "controlConfig" | "intercomBridge" | "shouldApplyIntercomBridgeForAgent">, deps: Pick<ExecutorDeps, "pi">): (event: ControlEvent) => void {
+function createForegroundControlNotifier(data: Pick<ExecutionContextData, "controlConfig" | "intercomBridge">, deps: Pick<ExecutorDeps, "pi">): (event: ControlEvent) => void {
 	return (event) => emitControlNotification({
 		pi: deps.pi,
 		controlConfig: data.controlConfig,
 		intercomBridge: data.intercomBridge,
 		event,
-		shouldApplyIntercomBridgeForAgent: data.shouldApplyIntercomBridgeForAgent,
 	});
 }
 
@@ -1156,9 +1144,7 @@ async function emitForegroundResultIntercom(input: {
 	results: SingleResult[];
 	chainSteps?: number;
 	nestedChildren?: NestedRunSummary[];
-	shouldApplyIntercomBridgeForChild?: (agentName: string | undefined, index: number) => boolean;
 }): Promise<ReturnType<typeof buildSubagentResultIntercomPayload> | null> {
-	if (!input.intercomBridge.active || !input.intercomBridge.orchestratorTarget) return null;
 	const children = input.results.flatMap((result, index) => result.detached ? [] : [{
 		agent: result.agent,
 		status: resolveSubagentResultStatus({
@@ -1171,7 +1157,7 @@ async function emitForegroundResultIntercom(input: {
 		index,
 		artifactPath: result.artifactPaths?.outputPath,
 		sessionPath: result.sessionFile,
-		...(input.shouldApplyIntercomBridgeForChild?.(result.agent, index) !== false ? { intercomTarget: resolveSubagentIntercomTarget(input.runId, result.agent, index) } : {}),
+		intercomTarget: resolveSubagentIntercomTarget(input.runId, result.agent, index),
 	}]);
 	if (children.length === 0) return null;
 	const payload = buildSubagentResultIntercomPayload({
@@ -1194,7 +1180,6 @@ async function maybeBuildForegroundIntercomReceipt(input: {
 	mode: SubagentRunMode;
 	details: Details;
 	nestedChildren?: NestedRunSummary[];
-	shouldApplyIntercomBridgeForChild?: (agentName: string | undefined, index: number) => boolean;
 }): Promise<{ text: string; details: Details; status: ReturnType<typeof buildSubagentResultIntercomPayload>["status"] } | null> {
 	const payload = await emitForegroundResultIntercom({
 		pi: input.pi,
@@ -1204,7 +1189,6 @@ async function maybeBuildForegroundIntercomReceipt(input: {
 		results: input.details.results,
 		...(typeof input.details.totalSteps === "number" ? { chainSteps: input.details.totalSteps } : {}),
 		...(input.nestedChildren?.length ? { nestedChildren: input.nestedChildren } : {}),
-		shouldApplyIntercomBridgeForChild: input.shouldApplyIntercomBridgeForChild,
 	});
 	if (!payload) return null;
 	return {
@@ -1626,10 +1610,8 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth);
 	const currentProvider = ctx.model?.provider;
-	const controlIntercomTarget = intercomBridge.active ? intercomBridge.orchestratorTarget : undefined;
-	const childIntercomTarget = intercomBridge.active
-		? (agent: string, index: number) => data.shouldApplyIntercomBridgeForAgent(agent) ? resolveSubagentIntercomTarget(id, agent, index) : undefined
-		: undefined;
+	const controlIntercomTarget = intercomBridge.orchestratorTarget;
+	const childIntercomTarget = (agent: string, index: number) => resolveSubagentIntercomTarget(id, agent, index);
 	const projectTrust = resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust);
 
 	if (hasTasks && params.tasks) {
@@ -1781,7 +1763,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
 			controlConfig,
 			controlIntercomTarget,
-			childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(agent, index) : undefined,
+			childIntercomTarget,
 			nestedRoute,
 			acceptance: params.acceptance,
 			projectTrust,
@@ -1810,9 +1792,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		controlConfig,
 	} = data;
 	const onControlEvent = createForegroundControlNotifier(data, deps);
-	const childIntercomTarget = data.intercomBridge.active
-		? (id: string, agent: string, index: number) => data.shouldApplyIntercomBridgeForAgent(agent) ? resolveSubagentIntercomTarget(id, agent, index) : undefined
-		: undefined;
+	const childIntercomTarget = (id: string, agent: string, index: number) => resolveSubagentIntercomTarget(id, agent, index);
 	const foregroundControl = deps.state.foregroundControls.get(runId);
 	const normalized = normalizeSkillInput(params.skill);
 	const chainSkills = normalized === false ? [] : (normalized ?? []);
@@ -1840,8 +1820,8 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		onControlEvent,
 		controlConfig,
 		...(data.foregroundTimeoutMs !== undefined ? { timeoutMs: data.foregroundTimeoutMs } : {}),
-		childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(runId, agent, index) : undefined,
-		orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
+		childIntercomTarget: (agent, index) => childIntercomTarget(runId, agent, index),
+		orchestratorIntercomTarget: data.intercomBridge.orchestratorTarget,
 		foregroundControl,
 		nestedRoute: foregroundControl?.nestedRoute,
 		chainSkills,
@@ -1881,8 +1861,8 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			worktreeSetupHook: deps.config.worktreeSetupHook,
 			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
 			controlConfig,
-			controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
-			childIntercomTarget: data.intercomBridge.active ? (agent, index) => data.shouldApplyIntercomBridgeForAgent(agent) ? resolveSubagentIntercomTarget(id, agent, index) : undefined : undefined,
+			controlIntercomTarget: data.intercomBridge.orchestratorTarget,
+			childIntercomTarget: (agent, index) => resolveSubagentIntercomTarget(id, agent, index),
 			nestedRoute: data.nestedRoute,
 			projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 		});
@@ -1899,7 +1879,6 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			mode: "chain",
 			details: chainDetails,
 			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
-			shouldApplyIntercomBridgeForChild: (agentName) => data.shouldApplyIntercomBridgeForAgent(agentName),
 		})
 		: null;
 	if (intercomReceipt) {
@@ -2216,9 +2195,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		controlConfig,
 	} = data;
 	const onControlEvent = createForegroundControlNotifier(data, deps);
-	const childIntercomTarget = data.intercomBridge.active
-		? (id: string, agent: string, index: number) => data.shouldApplyIntercomBridgeForAgent(agent) ? resolveSubagentIntercomTarget(id, agent, index) : undefined
-		: undefined;
+	const childIntercomTarget = (id: string, agent: string, index: number) => resolveSubagentIntercomTarget(id, agent, index);
 	const allProgress: AgentProgress[] = [];
 	const allArtifactPaths: ArtifactPaths[] = [];
 	const tasks = params.tasks!;
@@ -2380,8 +2357,8 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 				worktreeSetupHook: deps.config.worktreeSetupHook,
 				worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
 				controlConfig,
-				controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
-				childIntercomTarget: data.intercomBridge.active ? (agent, index) => data.shouldApplyIntercomBridgeForAgent(agent) ? resolveSubagentIntercomTarget(id, agent, index) : undefined : undefined,
+				controlIntercomTarget: data.intercomBridge.orchestratorTarget,
+				childIntercomTarget: (agent, index) => resolveSubagentIntercomTarget(id, agent, index),
 				projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 			});
 		}
@@ -2466,8 +2443,8 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			firstProgressIndex: parallelProgressPrecreated ? -1 : firstProgressIndex,
 			controlConfig,
 			onControlEvent,
-			childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(runId, agent, index) : undefined,
-			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
+			childIntercomTarget: (agent, index) => childIntercomTarget(runId, agent, index),
+			orchestratorIntercomTarget: data.intercomBridge.orchestratorTarget,
 			foregroundControl,
 			timeoutExtensionRegistry,
 			concurrencyLimit: parallelConcurrency,
@@ -2547,7 +2524,6 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			mode: "parallel",
 			details,
 			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
-			shouldApplyIntercomBridgeForChild: (agentName) => data.shouldApplyIntercomBridgeForAgent(agentName),
 		});
 		if (intercomReceipt) {
 			return {
@@ -2601,9 +2577,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		controlConfig,
 	} = data;
 	const onControlEvent = createForegroundControlNotifier(data, deps);
-	const childIntercomTarget = data.intercomBridge.active && data.shouldApplyIntercomBridgeForAgent(params.agent)
-		? resolveSubagentIntercomTarget(runId, params.agent!, 0)
-		: undefined;
+	const childIntercomTarget = resolveSubagentIntercomTarget(runId, params.agent!, 0);
 	const allProgress: AgentProgress[] = [];
 	const allArtifactPaths: ArtifactPaths[] = [];
 	const agentConfig = agents.find((a) => a.name === params.agent);
@@ -2705,8 +2679,8 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				worktreeSetupHook: deps.config.worktreeSetupHook,
 				worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
 				controlConfig,
-				controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
-				childIntercomTarget: data.intercomBridge.active ? (agent, index) => data.shouldApplyIntercomBridgeForAgent(agent) ? resolveSubagentIntercomTarget(id, agent, index) : undefined : undefined,
+				controlIntercomTarget: data.intercomBridge.orchestratorTarget,
+				childIntercomTarget: (agent, index) => resolveSubagentIntercomTarget(id, agent, index),
 				projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 			});
 		}
@@ -2795,7 +2769,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		controlConfig,
 		onControlEvent,
 		intercomSessionName: childIntercomTarget,
-		orchestratorIntercomTarget: childIntercomTarget ? data.intercomBridge.orchestratorTarget : undefined,
+		orchestratorIntercomTarget: data.intercomBridge.orchestratorTarget,
 		nestedRoute: foregroundControl?.nestedRoute,
 		index: 0,
 		modelOverride,
@@ -2854,7 +2828,6 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			mode: "single",
 			details,
 			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
-			shouldApplyIntercomBridgeForChild: (agentName) => data.shouldApplyIntercomBridgeForAgent(agentName),
 		});
 		if (intercomReceipt) {
 			return {
@@ -2958,7 +2931,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							cwd: requestCwd,
 							config: deps.config,
 							state: deps.state,
-							context: paramsWithResolvedCwd.context,
 							requestedSessionDir: paramsWithResolvedCwd.sessionDir,
 							currentSessionFile,
 							currentSessionId,
@@ -3137,25 +3109,14 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			: undefined;
 		const fallbackTarget = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
 		const orchestratorTarget = resolveOrchestratorIntercomTarget(deps.pi.events, fallbackTarget);
-		const intercomBridge = resolveIntercomBridge({
-			config: deps.config.intercomBridge,
-			context: invocationContext,
-			orchestratorTarget,
-			cwd: effectiveCwd,
-		});
+		const intercomBridge = resolveIntercomBridge(orchestratorTarget);
 		const runId = randomUUID().slice(0, 8);
 		const agentNameAtIndex = buildFlatAgentNameResolver(effectiveParams);
 		const resolveContextForAgent = (agentName: string | undefined) =>
 			resolveAgentContext(effectiveParams.context, agentName, discoveredAgents);
 		const resolveContextForIndex = (index?: number) =>
 			resolveContextForAgent(agentNameAtIndex(index ?? 0));
-		const shouldApplyIntercomBridgeForAgent = (agentName: string | undefined): boolean =>
-			shouldApplyIntercomBridge(intercomBridge, resolveContextForAgent(agentName));
-		const agents = discoveredAgents.map((agent) =>
-			shouldApplyIntercomBridgeForAgent(agent.name)
-				? applyIntercomBridgeToAgent(agent, intercomBridge)
-				: agent,
-		);
+		const agents = discoveredAgents.map((agent) => applyIntercomBridgeToAgent(agent, intercomBridge));
 		const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
 		const nestedParentAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
 		const nestedRoute = inheritedNestedRoute ?? createNestedRoute(runId);
@@ -3272,7 +3233,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			...(foregroundTimeout.timeoutMs !== undefined ? { foregroundTimeoutMs: foregroundTimeout.timeoutMs } : {}),
 			controlConfig,
 			intercomBridge,
-			shouldApplyIntercomBridgeForAgent,
 			nestedRoute,
 		};
 
@@ -3316,7 +3276,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				: hasChain && effectiveParams.chain
 					? effectiveParams.chain.flatMap((step) => isParallelStep(step) ? step.parallel.map((task) => task.agent) : [(step as SequentialStep).agent])
 					: effectiveParams.agent ? [effectiveParams.agent] : [];
-			const leafIntercomTarget = intercomBridge.active && agentsForSummary[0] && shouldApplyIntercomBridgeForAgent(agentsForSummary[0])
+			const leafIntercomTarget = agentsForSummary[0]
 				? resolveSubagentIntercomTarget(runId, agentsForSummary[0], 0)
 				: undefined;
 			try {

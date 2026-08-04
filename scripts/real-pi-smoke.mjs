@@ -4,13 +4,14 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
+import { prepareIntercomSmokePackage } from "./intercom-smoke-package.mjs";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const authAgentDir = process.env.PI_REAL_SMOKE_AUTH_AGENT_DIR
 	?? (process.env.HOME ? join(process.env.HOME, ".pi", "agent") : undefined);
 
 function usage() {
-	console.log(`Usage: node scripts/real-pi-smoke.mjs [--llm] [--llm-full] [--keep-temp] [--timeout-ms <ms>]\n\nRuns an opt-in real Pi package smoke for this checkout. It uses an isolated\ntemporary Pi home, installs this package by local path, and verifies pi list.\nIt does not install pi-fitch-kit, publish anything, or create GitHub Actions.\n\nOptions:\n  --llm             Also run live model-backed list, foreground, and async-completion smoke prompts\n  --llm-full        Also run broader live parallel, chain, output, and acceptance prompts\n  --keep-temp       Keep the isolated temporary home for debugging\n  --timeout-ms <ms> Per-command timeout in milliseconds (default: ${DEFAULT_TIMEOUT_MS})\n  -h, --help        Show this help\n\nEnvironment:\n  PI_REAL_SMOKE_AUTH_AGENT_DIR     Source Pi agent dir for auth.json/models.json during --llm (default: ~/.pi/agent)\n  PI_REAL_SMOKE_MODEL              Model passed to live --llm smoke prompts, e.g. openai/gpt-4o-mini\n  PI_REAL_SMOKE_PROVIDER           Provider passed to live --llm smoke prompts\n\nExit codes:\n  0  real Pi smoke passed\n  1  install/list/live smoke failed\n  2  invalid arguments`);
+	console.log(`Usage: node scripts/real-pi-smoke.mjs [--llm] [--llm-full] [--keep-temp] [--timeout-ms <ms>]\n\nRuns an opt-in real Pi package smoke for this checkout. It uses an isolated\ntemporary Pi home, installs this package with a pi-intercom companion, and verifies\npi list. Set PI_INTERCOM_PATH to test a specific pi-intercom checkout. It does not\ninstall pi-fitch-kit, publish anything, or create GitHub Actions.\n\nOptions:\n  --llm             Also run live model-backed list, foreground, and async-completion smoke prompts\n  --llm-full        Also run broader live parallel, chain, output, and acceptance prompts\n  --keep-temp       Keep the isolated temporary home for debugging\n  --timeout-ms <ms> Per-command timeout in milliseconds (default: ${DEFAULT_TIMEOUT_MS})\n  -h, --help        Show this help\n\nEnvironment:\n  PI_REAL_SMOKE_AUTH_AGENT_DIR     Source Pi agent dir for auth.json/models.json during --llm (default: ~/.pi/agent)\n  PI_REAL_SMOKE_MODEL              Model passed to live --llm smoke prompts, e.g. openai/gpt-4o-mini\n  PI_REAL_SMOKE_PROVIDER           Provider passed to live --llm smoke prompts\n  PI_INTERCOM_PATH                 Optional pi-intercom checkout to install; required for --llm without an adjacent checkout\n\nExit codes:\n  0  real Pi smoke passed\n  1  install/list/live smoke failed\n  2  invalid arguments`);
 }
 
 function parsePositiveInteger(value, source) {
@@ -178,9 +179,16 @@ async function main() {
 	const runOptions = { cwd: repoRoot, env, timeoutMs: options.timeoutMs, root };
 
 	try {
+		const intercom = prepareIntercomSmokePackage(root, repoRoot);
+		if (options.llm && intercom.fixture) {
+			throw new Error("--llm requires PI_INTERCOM_PATH or an adjacent real pi-intercom checkout");
+		}
+		runPi("pi install pi-intercom", ["install", intercom.packageRoot, "--approve"], runOptions);
 		runPi("pi install pi-subagents", ["install", repoRoot, "--approve"], runOptions);
 		const list = runPi("pi list", ["list", "--approve"], runOptions);
-		if (!list.includes(repoRoot)) throw new Error(`pi list did not include ${repoRoot}:\n${list}`);
+		for (const packageRoot of [intercom.packageRoot, repoRoot]) {
+			if (!list.includes(packageRoot)) throw new Error(`pi list did not include ${packageRoot}:\n${list}`);
+		}
 
 		if (options.llm) {
 			const copiedAuthFiles = copyLiveAuth(agentDir);
@@ -211,7 +219,7 @@ async function main() {
 			}
 		}
 
-		console.log(`[real-pi-smoke] installed the local package and verified pi list in ${agentDir}`);
+		console.log(`[real-pi-smoke] installed pi-subagents with pi-intercom from ${intercom.source} and verified pi list in ${agentDir}`);
 		if (!options.llm) console.log("[real-pi-smoke] live model subagent prompts skipped; pass --llm to exercise foreground/async paths.");
 	} finally {
 		if (options.keepTemp) console.log(`[real-pi-smoke] kept temp root ${root}`);

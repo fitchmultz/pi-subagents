@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, RESULTS_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
@@ -99,31 +98,15 @@ function createRecordingEventBus(options: { acknowledgeResults?: boolean; acknow
 
 describe("intercom result delivery cutover", { skip: !available ? "executor not importable" : undefined }, () => {
 	let tempDir: string;
-	let homeDir: string;
 	let mockPi: MockPi;
-	let originalHome: string | undefined;
-	let originalUserProfile: string | undefined;
 
 	before(() => {
-		originalHome = process.env.HOME;
-		originalUserProfile = process.env.USERPROFILE;
-		homeDir = createTempDir("pi-subagent-intercom-home-");
-		process.env.HOME = homeDir;
-		process.env.USERPROFILE = homeDir;
 		mockPi = createMockPi();
 		mockPi.install();
-		fs.mkdirSync(path.join(os.homedir(), ".pi", "agent", "extensions", "pi-intercom"), { recursive: true });
-		fs.mkdirSync(path.join(os.homedir(), ".pi", "agent", "intercom"), { recursive: true });
-		fs.writeFileSync(path.join(os.homedir(), ".pi", "agent", "intercom", "config.json"), JSON.stringify({ enabled: true }), "utf-8");
 	});
 
 	after(() => {
 		mockPi.uninstall();
-		if (originalHome === undefined) delete process.env.HOME;
-		else process.env.HOME = originalHome;
-		if (originalUserProfile === undefined) delete process.env.USERPROFILE;
-		else process.env.USERPROFILE = originalUserProfile;
-		removeTempDir(homeDir);
 	});
 
 	beforeEach(() => {
@@ -149,7 +132,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
 	}
 
-	function makeExecutor(options: { bridgeMode?: "always" | "off"; agents?: ReturnType<typeof makeAgent>[]; acknowledgeResults?: boolean; acknowledgeLive?: boolean; health?: Array<Record<string, unknown>>; identity?: string } = {}) {
+	function makeExecutor(options: { agents?: ReturnType<typeof makeAgent>[]; acknowledgeResults?: boolean; acknowledgeLive?: boolean; health?: Array<Record<string, unknown>>; identity?: string } = {}) {
 		const events = createRecordingEventBus({ acknowledgeResults: options.acknowledgeResults ?? true, acknowledgeLive: options.acknowledgeLive, health: options.health, identity: options.identity });
 		const state = {
 			baseCwd: tempDir,
@@ -176,9 +159,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 				setSessionName: () => {},
 			},
 			state,
-			config: {
-				intercomBridge: { mode: options.bridgeMode ?? "always" },
-			},
+			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
@@ -257,21 +238,6 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		assert.match(payload?.children?.[0]?.summary ?? "", /Child failed loudly/);
 	});
 
-	it("falls back to legacy foreground output when the bridge is inactive", async () => {
-		mockPi.onCall({ output: "Legacy foreground output" });
-		const { executor, events } = makeExecutor({ bridgeMode: "off" });
-
-		const result = await executor.execute(
-			"single-no-intercom",
-			{ agent: "worker", task: "Summarize feature" },
-			new AbortController().signal,
-			undefined,
-			makeMinimalCtx(tempDir),
-		);
-
-		assert.equal(events.emitted.some((entry) => entry.channel === "subagent:result-intercom"), false);
-		assert.match(result.content[0]?.text ?? "", /Legacy foreground output/);
-	});
 
 	it("falls back to legacy foreground output when grouped delivery is not acknowledged", async () => {
 		mockPi.onCall({ output: "Unacknowledged foreground output" });
@@ -352,7 +318,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 				{ delay: 1000, jsonl: [events.assistantMessage("after reply")] },
 			],
 		});
-		const { executor, events: bus } = makeExecutor({ agents: [makeAgent("a", { systemPrompt: "Intercom orchestration channel:" }), makeAgent("b")] });
+		const { executor, events: bus } = makeExecutor({ agents: [makeAgent("a"), makeAgent("b")] });
 		let detachEmitted = false;
 
 		const result = await executor.execute(
@@ -665,7 +631,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 				parentStepIndex: 0,
 				child: { id: nestedRunId, parentRunId: rootRunId, parentStepIndex: 0, depth: 1, path: [{ runId: rootRunId, stepIndex: 0 }], state: "complete", agent: "worker", ownerState: "gone", asyncDir, sessionFile },
 			});
-			const { executor, state } = makeExecutor({ bridgeMode: "off" });
+			const { executor, state } = makeExecutor({ acknowledgeResults: false });
 			state.foregroundControls.set(rootRunId, { runId: rootRunId, mode: "single", startedAt: 1, updatedAt: 1, nestedRoute: route });
 			state.lastForegroundControlId = rootRunId;
 			const testCtx = {
@@ -761,7 +727,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 	it("status action reports remembered foreground runs after child completion", async () => {
 		const session = path.join(tempDir, "remembered-foreground.jsonl");
 		fs.writeFileSync(session, "", "utf-8");
-		const { executor, state } = makeExecutor({ bridgeMode: "off", agents: [makeAgent("a"), makeAgent("b")] });
+		const { executor, state } = makeExecutor({ acknowledgeResults: false, agents: [makeAgent("a"), makeAgent("b")] });
 		state.foregroundRuns.set("remembered-status-run", {
 			runId: "remembered-status-run",
 			mode: "parallel",
@@ -811,7 +777,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 			JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "contact_supervisor", arguments: { reason: "need_decision", message: "Pick one" } }] } }),
 			JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "UPDATED_DETACH_SMOKE_DONE reply=alpha" }] } }),
 		].join("\n"), "utf-8");
-		const { executor, state } = makeExecutor({ bridgeMode: "off", agents: [makeAgent("a")] });
+		const { executor, state } = makeExecutor({ acknowledgeResults: false, agents: [makeAgent("a")] });
 		state.foregroundRuns.set("detached-complete-run", {
 			runId: "detached-complete-run",
 			mode: "single",
@@ -837,7 +803,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 	it("status action accepts latest alias for remembered foreground runs", async () => {
 		const session = path.join(tempDir, "remembered-latest.jsonl");
 		fs.writeFileSync(session, "", "utf-8");
-		const { executor, state } = makeExecutor({ bridgeMode: "off", agents: [makeAgent("a")] });
+		const { executor, state } = makeExecutor({ acknowledgeResults: false, agents: [makeAgent("a")] });
 		state.foregroundRuns.set("older-foreground", {
 			runId: "older-foreground",
 			mode: "single",
@@ -869,7 +835,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		mockPi.onCall({ output: "first child done" });
 		mockPi.onCall({ output: "second child done" });
 		mockPi.onCall({ output: "revived foreground answer" });
-		const { executor } = makeExecutor({ bridgeMode: "off", agents: [makeAgent("a"), makeAgent("b")] });
+		const { executor } = makeExecutor({ acknowledgeResults: false, agents: [makeAgent("a"), makeAgent("b")] });
 
 		const original = await executor.execute(
 			"foreground-resume-original",
@@ -914,7 +880,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 			],
 		});
 		mockPi.onCall({ output: "Validated prior edits and committed the existing work without a new edit." });
-		const { executor } = makeExecutor({ bridgeMode: "off" });
+		const { executor } = makeExecutor({ acknowledgeResults: false });
 		const acceptance = {
 			criteria: [{ id: "criterion-1", must: "Validate and finish the implementation" }],
 			evidence: ["changed-files"],
@@ -980,7 +946,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		mockPi.onCall({ output: failingReport });
 		mockPi.onCall({ output: "Revived work done" });
 		mockPi.onCall({ output: "Revived self-review done" });
-		const { executor } = makeExecutor({ bridgeMode: "off" });
+		const { executor } = makeExecutor({ acknowledgeResults: false });
 		const acceptance = {
 			criteria: [{ id: "criterion-1", must: "Finish the incident fix" }],
 			evidence: ["changed-files"],
@@ -1222,7 +1188,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 				cwd: tempDir,
 				steps: [{ agent: "a", status: "complete", sessionFile: asyncSession }],
 			}, null, 2), "utf-8");
-			const { executor, state } = makeExecutor({ bridgeMode: "off", agents: [makeAgent("a")] });
+			const { executor, state } = makeExecutor({ acknowledgeResults: false, agents: [makeAgent("a")] });
 			state.foregroundRuns.set(base, {
 				runId: base,
 				mode: "single",
@@ -1263,7 +1229,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 				cwd: tempDir,
 				steps: [{ agent: "a", status: "complete" }],
 			}, null, 2), "utf-8");
-			const { executor, state } = makeExecutor({ bridgeMode: "off", agents: [makeAgent("a")] });
+			const { executor, state } = makeExecutor({ acknowledgeResults: false, agents: [makeAgent("a")] });
 			state.foregroundRuns.set(`${base}-foreground`, {
 				runId: `${base}-foreground`,
 				mode: "single",
@@ -1311,7 +1277,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 					steps: [{ agent: "a", status: "complete", sessionFile }],
 				}, null, 2), "utf-8");
 			}
-			const { executor, state } = makeExecutor({ bridgeMode: "off", agents: [makeAgent("a")] });
+			const { executor, state } = makeExecutor({ acknowledgeResults: false, agents: [makeAgent("a")] });
 			state.foregroundRuns.set(`${base}-foreground`, {
 				runId: `${base}-foreground`,
 				mode: "single",
@@ -1356,7 +1322,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 				cwd: tempDir,
 				steps: [{ agent: "a", status: "complete", sessionFile: asyncSession }],
 			}, null, 2), "utf-8");
-			const { executor, state } = makeExecutor({ bridgeMode: "off", agents: [makeAgent("a")] });
+			const { executor, state } = makeExecutor({ acknowledgeResults: false, agents: [makeAgent("a")] });
 			state.foregroundRuns.set(foregroundId, {
 				runId: foregroundId,
 				mode: "single",

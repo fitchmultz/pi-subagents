@@ -1,18 +1,13 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { describe, it } from "node:test";
 import type { AgentConfig } from "../../src/agents/agents.ts";
 import {
 	applyIntercomBridgeToAgent,
-	diagnoseIntercomBridge,
+	INTERCOM_BRIDGE_MARKER,
 	resolveIntercomBridge,
 	resolveIntercomSessionTarget,
 	resolveOrchestratorIntercomTarget,
 	resolveSubagentIntercomTarget,
-	resolveIntercomBridgeMode,
-	shouldApplyIntercomBridge,
 	type IntercomBridgeState,
 } from "../../src/intercom/intercom-bridge.ts";
 
@@ -30,45 +25,10 @@ function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
 	};
 }
 
-describe("resolveIntercomBridgeMode", () => {
-	it("defaults unknown values to always", () => {
-		assert.equal(resolveIntercomBridgeMode(undefined), "always");
-		assert.equal(resolveIntercomBridgeMode("nope"), "always");
-	});
-
-	it("accepts explicit modes", () => {
-		assert.equal(resolveIntercomBridgeMode("off"), "off");
-		assert.equal(resolveIntercomBridgeMode("fork-only"), "fork-only");
-		assert.equal(resolveIntercomBridgeMode("always"), "always");
-	});
-});
-
-describe("shouldApplyIntercomBridge", () => {
-	it("applies fork-only bridges only to fork context", () => {
-		const bridge: IntercomBridgeState = {
-			active: true,
-			mode: "fork-only",
-			orchestratorTarget: "supervisor",
-			extensionDir: "/tmp/pi-intercom",
-			instruction: "Intercom orchestration channel:",
-		};
-		assert.equal(shouldApplyIntercomBridge(bridge, "fork"), true);
-		assert.equal(shouldApplyIntercomBridge(bridge, "fresh"), false);
-		assert.equal(shouldApplyIntercomBridge(bridge, undefined), false);
-	});
-
-	it("applies always bridges to fresh and fork contexts", () => {
-		const bridge: IntercomBridgeState = {
-			active: true,
-			mode: "always",
-			orchestratorTarget: "supervisor",
-			extensionDir: "/tmp/pi-intercom",
-			instruction: "Intercom orchestration channel:",
-		};
-		assert.equal(shouldApplyIntercomBridge(bridge, "fork"), true);
-		assert.equal(shouldApplyIntercomBridge(bridge, "fresh"), true);
-	});
-});
+const bridge: IntercomBridgeState = {
+	orchestratorTarget: "main",
+	instruction: `${INTERCOM_BRIDGE_MARKER}\n- Need a decision or blocked: contact_supervisor({ reason: "need_decision", message: "<question>" })\n- Blocked/update: contact_supervisor({ reason: "progress_update", message: "UPDATE: <summary>" })`,
+};
 
 describe("resolveIntercomSessionTarget", () => {
 	it("prefers an explicit session name", () => {
@@ -124,434 +84,76 @@ describe("resolveOrchestratorIntercomTarget", () => {
 });
 
 describe("resolveSubagentIntercomTarget", () => {
-	it("builds stable child session targets from run metadata", () => {
-		assert.equal(resolveSubagentIntercomTarget("78f659a3", "worker"), "subagent-worker-78f659a3");
-		assert.equal(resolveSubagentIntercomTarget("78f659a3", "senior executor", 1), "subagent-senior-executor-78f659a3-2");
-	});
-});
-
-function withMalformedIntercomConfig<T>(fn: (paths: { extensionDir: string; configPath: string }) => T): T {
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-diagnostic-test-"));
-	const extensionDir = path.join(tempDir, "pi-intercom");
-	const configPath = path.join(tempDir, "config.json");
-	fs.mkdirSync(extensionDir, { recursive: true });
-	fs.writeFileSync(configPath, "{ enabled: nope }");
-	try {
-		return fn({ extensionDir, configPath });
-	} finally {
-		fs.rmSync(tempDir, { recursive: true, force: true });
-	}
-}
-
-function withPackagedIntercom<T>(fn: (paths: { agentDir: string; cwd: string; globalNpmRoot: string; packageDir: string; legacyDir: string; configPath: string }) => T): T {
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-package-test-"));
-	const agentDir = path.join(tempDir, "agent");
-	const cwd = path.join(tempDir, "workspace");
-	const globalNpmRoot = path.join(tempDir, "global-node_modules");
-	const packageDir = path.join(globalNpmRoot, "pi-intercom");
-	const legacyDir = path.join(agentDir, "extensions", "pi-intercom");
-	const configPath = path.join(agentDir, "intercom", "config.json");
-	fs.mkdirSync(packageDir, { recursive: true });
-	fs.mkdirSync(path.dirname(configPath), { recursive: true });
-	fs.mkdirSync(cwd, { recursive: true });
-	fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: ["npm:pi-intercom"] }, null, 2));
-	fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "pi-intercom", pi: { extensions: ["./index.ts"] } }, null, 2));
-	fs.writeFileSync(configPath, JSON.stringify({ enabled: true }));
-	try {
-		return fn({ agentDir, cwd, globalNpmRoot, packageDir, legacyDir, configPath });
-	} finally {
-		fs.rmSync(tempDir, { recursive: true, force: true });
-	}
-}
-
-function withGitIntercom<T>(source: string, fn: (paths: { agentDir: string; cwd: string; packageDir: string; legacyDir: string; configPath: string }) => T): T {
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-git-package-test-"));
-	const agentDir = path.join(tempDir, "agent");
-	const cwd = path.join(tempDir, "workspace");
-	const packageDir = path.join(agentDir, "git", "github.com", "fitchmultz", "pi-intercom");
-	const legacyDir = path.join(agentDir, "extensions", "pi-intercom");
-	const configPath = path.join(agentDir, "intercom", "config.json");
-	fs.mkdirSync(packageDir, { recursive: true });
-	fs.mkdirSync(path.dirname(configPath), { recursive: true });
-	fs.mkdirSync(cwd, { recursive: true });
-	fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: [source] }, null, 2));
-	fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "pi-intercom", pi: { extensions: ["./index.ts"] } }, null, 2));
-	fs.writeFileSync(configPath, JSON.stringify({ enabled: true }));
-	try {
-		return fn({ agentDir, cwd, packageDir, legacyDir, configPath });
-	} finally {
-		fs.rmSync(tempDir, { recursive: true, force: true });
-	}
-}
-
-function withLocalPathIntercom<T>(fn: (paths: { agentDir: string; cwd: string; packageDir: string; legacyDir: string; configPath: string }) => T): T {
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-local-package-test-"));
-	const agentDir = path.join(tempDir, "agent");
-	const cwd = path.join(tempDir, "workspace");
-	const packageDir = path.join(tempDir, "packages", "pi-intercom");
-	const legacyDir = path.join(agentDir, "extensions", "pi-intercom");
-	const configPath = path.join(agentDir, "intercom", "config.json");
-	fs.mkdirSync(packageDir, { recursive: true });
-	fs.mkdirSync(path.dirname(configPath), { recursive: true });
-	fs.mkdirSync(cwd, { recursive: true });
-	fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: [{ source: "../packages/pi-intercom" }] }, null, 2));
-	fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "pi-intercom", pi: { extensions: ["./index.ts"] } }, null, 2));
-	fs.writeFileSync(configPath, JSON.stringify({ enabled: true }));
-	try {
-		return fn({ agentDir, cwd, packageDir, legacyDir, configPath });
-	} finally {
-		fs.rmSync(tempDir, { recursive: true, force: true });
-	}
-}
-
-describe("diagnoseIntercomBridge", () => {
-	it("reports inactive and unavailable when pi-intercom is missing", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-diagnostic-test-"));
-		try {
-			const diagnostic = diagnoseIntercomBridge({
-				config: { mode: "always" },
-				context: "fresh",
-				orchestratorTarget: "main",
-				agentDir: path.join(tempDir, "agent"),
-				extensionDir: path.join(tempDir, "missing-pi-intercom"),
-				configPath: path.join(tempDir, "config.json"),
-				globalNpmRoot: null,
-			});
-			assert.equal(diagnostic.active, false);
-			assert.equal(diagnostic.wantsIntercom, true);
-			assert.equal(diagnostic.piIntercomAvailable, false);
-			assert.equal(diagnostic.reason, "pi-intercom extension was not found");
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
-	});
-
-	it("finds npm-installed pi-intercom packages without the legacy extension directory", () => {
-		withPackagedIntercom(({ agentDir, cwd, globalNpmRoot, packageDir, legacyDir, configPath }) => {
-			const diagnostic = diagnoseIntercomBridge({
-				config: { mode: "always" },
-				context: "fresh",
-				orchestratorTarget: "main",
-				agentDir,
-				cwd,
-				globalNpmRoot,
-				extensionDir: legacyDir,
-				configPath,
-			});
-			assert.equal(diagnostic.active, true);
-			assert.equal(diagnostic.piIntercomAvailable, true);
-			assert.equal(diagnostic.extensionDir, path.resolve(packageDir));
-		});
-	});
-
-	it("finds local-path pi-intercom packages from settings", () => {
-		withLocalPathIntercom(({ agentDir, cwd, packageDir, legacyDir, configPath }) => {
-			const diagnostic = diagnoseIntercomBridge({
-				config: { mode: "always" },
-				context: "fresh",
-				orchestratorTarget: "main",
-				agentDir,
-				cwd,
-				extensionDir: legacyDir,
-				configPath,
-				globalNpmRoot: null,
-			});
-			assert.equal(diagnostic.active, true);
-			assert.equal(diagnostic.piIntercomAvailable, true);
-			assert.equal(diagnostic.extensionDir, path.resolve(packageDir));
-		});
-	});
-
-	it("preserves malformed intercom config errors while matching runtime enabled behavior", () => {
-		withMalformedIntercomConfig(({ extensionDir, configPath }) => {
-			const diagnostic = diagnoseIntercomBridge({
-				config: { mode: "always" },
-				context: "fresh",
-				orchestratorTarget: "main",
-				extensionDir,
-				configPath,
-			});
-			assert.equal(diagnostic.active, true);
-			assert.equal(diagnostic.intercomConfigEnabled, true);
-			assert.match(diagnostic.intercomConfigError ?? "", /SyntaxError:/);
-		});
-	});
-
-	it("does not report config parse errors when runtime would not read intercom config", () => {
-		withMalformedIntercomConfig(({ extensionDir, configPath }) => {
-			const diagnostic = diagnoseIntercomBridge({
-				config: { mode: "off" },
-				context: "fresh",
-				orchestratorTarget: "main",
-				extensionDir,
-				configPath,
-			});
-			assert.equal(diagnostic.active, false);
-			assert.equal(diagnostic.reason, "bridge mode is off");
-			assert.equal(diagnostic.intercomConfigEnabled, undefined);
-			assert.equal(diagnostic.intercomConfigError, undefined);
-		});
+	it("builds deterministic child targets", () => {
+		assert.equal(resolveSubagentIntercomTarget("abcd1234", "Worker Agent", 0), "subagent-worker-agent-abcd1234-1");
+		assert.equal(resolveSubagentIntercomTarget("abcd1234", "Worker Agent"), "subagent-worker-agent-abcd1234");
 	});
 });
 
 describe("resolveIntercomBridge", () => {
-	it("activates when extension exists, config is enabled, and context matches", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-bridge-test-"));
-		const extensionDir = path.join(tempDir, "pi-intercom");
-		const configPath = path.join(tempDir, "config.json");
-		fs.mkdirSync(extensionDir, { recursive: true });
-		fs.writeFileSync(configPath, JSON.stringify({ enabled: true }));
-		try {
-			const bridge = resolveIntercomBridge({
-				config: { mode: "fork-only" },
-				context: "fork",
-				orchestratorTarget: "main",
-				extensionDir,
-				configPath,
-			});
-			assert.equal(bridge.active, true);
-			assert.equal(bridge.orchestratorTarget, "main");
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
-	});
+	it("preserves the exact default paired-path instructions", () => {
+		const bridge = resolveIntercomBridge("main");
+		assert.equal(bridge.orchestratorTarget, "main");
+		assert.equal(bridge.instruction, `Intercom orchestration channel:
+The inherited thread is reference-only. Do not continue that conversation or send questions, status updates, or completion handoffs to the supervisor in normal assistant text.
 
-	it("activates from an npm-installed pi-intercom package", () => {
-		withPackagedIntercom(({ agentDir, cwd, globalNpmRoot, packageDir, legacyDir, configPath }) => {
-			const bridge = resolveIntercomBridge({
-				config: { mode: "always" },
-				context: "fresh",
-				orchestratorTarget: "main",
-				agentDir,
-				cwd,
-				globalNpmRoot,
-				extensionDir: legacyDir,
-				configPath,
-			});
-			assert.equal(bridge.active, true);
-			assert.equal(bridge.extensionDir, path.resolve(packageDir));
-			assert.equal(bridge.orchestratorTarget, "main");
-		});
-	});
+Use contact_supervisor first. It resolves the supervisor session "main" and run metadata automatically.
+- If you cannot safely continue without one decision, approval, or product/API/scope clarification: contact_supervisor({ reason: "need_decision", message: "<question>" }). It steers the supervisor and keeps this ephemeral child alive for the reply.
+- If you cannot safely continue until the supervisor provides multiple structured answers: contact_supervisor({ reason: "interview_request", message: "<context>", interview: { questions: [{ id: "<id>", type: "text", question: "<question>" }] } }). It also steers and keeps this child alive.
+- After blocking contact_supervisor decisions or interviews, continue only after the reply arrives. Do not finish your final response with a choose-one question.
+- Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions. Review-only/no-edit wins; leave files unchanged and mention the conflict in your final result only if it matters.
+- A concise plan-changing update that may intentionally wait behind the supervisor's active work: contact_supervisor({ reason: "progress_update", message: "UPDATE: <summary>" })
+- Generic intercom is lower-level fallback only. Use blocking intercom({ action: "ask", to: "main", delivery: "steer", message: "<question>" }) only when this child must remain alive for the answer.
+- Treat a supervisor nudge as supplemental coordination within the active task: incorporate relevant context and continue. Replace the task only when the nudge explicitly says so. If it requests an answer, respond with intercom({ action: "send", to: "main", delivery: "steer", message: "<answer>" }).
 
-	it("finds user npm-installed pi-intercom packages without cwd", () => {
-		withPackagedIntercom(({ agentDir, globalNpmRoot, packageDir, legacyDir, configPath }) => {
-			const bridge = resolveIntercomBridge({
-				config: { mode: "always" },
-				context: "fresh",
-				orchestratorTarget: "main",
-				agentDir,
-				globalNpmRoot,
-				extensionDir: legacyDir,
-				configPath,
-			});
-			assert.equal(bridge.active, true);
-			assert.equal(bridge.extensionDir, path.resolve(packageDir));
-		});
-	});
-
-	for (const source of [
-		"git:github.com/fitchmultz/pi-intercom",
-		"git:git@github.com:fitchmultz/pi-intercom@main",
-		"https://github.com/fitchmultz/pi-intercom@main",
-		"https://github.com/fitchmultz/pi-intercom/",
-		"https://github.com/fitchmultz/pi-intercom.git/",
-		"ssh://git@github.com/fitchmultz/pi-intercom@main",
-		"git://github.com/fitchmultz/pi-intercom",
-		"git:github:fitchmultz/pi-intercom@main",
-		"git:fitchmultz/pi-intercom",
-	]) {
-		it(`activates from git package source ${source}`, () => {
-			withGitIntercom(source, ({ agentDir, cwd, packageDir, legacyDir, configPath }) => {
-				const bridge = resolveIntercomBridge({
-					config: { mode: "always" },
-					context: "fresh",
-					orchestratorTarget: "main",
-					agentDir,
-					cwd,
-					extensionDir: legacyDir,
-					configPath,
-					globalNpmRoot: null,
-				});
-				assert.equal(bridge.active, true);
-				assert.equal(bridge.extensionDir, path.resolve(packageDir));
-			});
-		});
-	}
-
-	for (const source of [
-		"git:attacker.example/org/../../github.com/fitchmultz/pi-intercom",
-		"git:attacker.example/org/%2e%2e/%2e%2e/github.com/fitchmultz/pi-intercom",
-	]) {
-		it(`rejects unsafe git package source ${source}`, () => {
-			withGitIntercom(source, ({ agentDir, cwd, legacyDir, configPath }) => {
-				const bridge = resolveIntercomBridge({
-					config: { mode: "always" },
-					context: "fresh",
-					orchestratorTarget: "main",
-					agentDir,
-					cwd,
-					extensionDir: legacyDir,
-					configPath,
-					globalNpmRoot: null,
-				});
-				assert.equal(bridge.active, false);
-			});
-		});
-	}
-
-	it("activates from a local-path pi-intercom package", () => {
-		withLocalPathIntercom(({ agentDir, cwd, packageDir, legacyDir, configPath }) => {
-			const bridge = resolveIntercomBridge({
-				config: { mode: "always" },
-				context: "fresh",
-				orchestratorTarget: "main",
-				agentDir,
-				cwd,
-				extensionDir: legacyDir,
-				configPath,
-				globalNpmRoot: null,
-			});
-			assert.equal(bridge.active, true);
-			assert.equal(bridge.extensionDir, path.resolve(packageDir));
-			assert.equal(bridge.orchestratorTarget, "main");
-		});
-	});
-
-	it("stays inactive when intercom config is disabled", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-bridge-test-"));
-		const extensionDir = path.join(tempDir, "pi-intercom");
-		const configPath = path.join(tempDir, "config.json");
-		fs.mkdirSync(extensionDir, { recursive: true });
-		fs.writeFileSync(configPath, JSON.stringify({ enabled: false }));
-		try {
-			const bridge = resolveIntercomBridge({
-				config: { mode: "always" },
-				context: "fresh",
-				orchestratorTarget: "main",
-				extensionDir,
-				configPath,
-			});
-			assert.equal(bridge.active, false);
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
-	});
-
-	it("stays active when intercom config is malformed", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-bridge-test-"));
-		const extensionDir = path.join(tempDir, "pi-intercom");
-		const configPath = path.join(tempDir, "config.json");
-		fs.mkdirSync(extensionDir, { recursive: true });
-		fs.writeFileSync(configPath, "{ enabled: nope }");
-		const originalWarn = console.warn;
-		console.warn = () => {};
-		try {
-			const bridge = resolveIntercomBridge({
-				config: { mode: "always" },
-				context: "fresh",
-				orchestratorTarget: "main",
-				extensionDir,
-				configPath,
-			});
-			assert.equal(bridge.active, true);
-		} finally {
-			console.warn = originalWarn;
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
-	});
-
-	it("stays inactive for fresh context when mode is fork-only", () => {
-		const bridge = resolveIntercomBridge({
-			config: { mode: "fork-only" },
-			context: "fresh",
-			orchestratorTarget: "main",
-			extensionDir: "/path/that/does/not/matter",
-		});
-		assert.equal(bridge.active, false);
-	});
-
-	it("loads custom instructions from instructionFile", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-bridge-test-"));
-		const extensionDir = path.join(tempDir, "pi-intercom");
-		const instructionFile = path.join(tempDir, "bridge.md");
-		fs.mkdirSync(extensionDir, { recursive: true });
-		fs.writeFileSync(instructionFile, "Custom bridge for {orchestratorTarget}\nUse ask then send.");
-		try {
-			const bridge = resolveIntercomBridge({
-				config: { mode: "always", instructionFile },
-				context: "fresh",
-				orchestratorTarget: "main",
-				extensionDir,
-			});
-			assert.equal(bridge.active, true);
-			assert.match(bridge.instruction, /Custom bridge for main/);
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
-	});
-
-	it("uses stronger default instructions for fork-aware coordination", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-intercom-bridge-test-"));
-		const extensionDir = path.join(tempDir, "pi-intercom");
-		fs.mkdirSync(extensionDir, { recursive: true });
-		try {
-			const bridge = resolveIntercomBridge({
-				config: { mode: "always" },
-				context: "fork",
-				orchestratorTarget: "main",
-				extensionDir,
-			});
-			assert.equal(bridge.active, true);
-			assert.match(bridge.instruction, /reference-only/i);
-			assert.match(bridge.instruction, /normal assistant text/i);
-			assert.match(bridge.instruction, /contact_supervisor/);
-			assert.match(bridge.instruction, /need_decision/);
-			assert.match(bridge.instruction, /interview_request/);
-			assert.match(bridge.instruction, /progress_update/);
-			assert.match(bridge.instruction, /delivery: "steer"/);
-			assert.match(bridge.instruction, /supplemental coordination within the active task/i);
-			assert.match(bridge.instruction, /Replace the task only when the nudge explicitly says so/i);
-			assert.match(bridge.instruction, /focused task result/i);
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
+Do not use contact_supervisor or intercom for routine completion handoffs. If no coordination is needed, return a focused task result.`);
 	});
 });
 
 describe("applyIntercomBridgeToAgent", () => {
-	const activeBridge: IntercomBridgeState = {
-		active: true,
-		mode: "always",
-		orchestratorTarget: "main",
-		extensionDir: "/Users/test/.pi/agent/extensions/pi-intercom",
-		instruction: "Intercom orchestration channel:\n- Need a decision or blocked: contact_supervisor({ reason: \"need_decision\", message: \"<question>\" })\n- Blocked/update: contact_supervisor({ reason: \"progress_update\", message: \"UPDATE: <summary>\" })",
-	};
-
 	it("injects intercom tool and prompt instructions", () => {
-		const updated = applyIntercomBridgeToAgent(makeAgent({ tools: ["read", "bash"] }), activeBridge);
+		const updated = applyIntercomBridgeToAgent(makeAgent({ tools: ["read", "bash"] }), bridge);
 		assert.deepEqual(updated.tools, ["read", "bash", "intercom", "contact_supervisor"]);
 		assert.match(updated.systemPrompt, /Intercom orchestration channel:/);
 		assert.match(updated.systemPrompt, /contact_supervisor/);
 	});
 
 	it("is idempotent", () => {
-		const first = applyIntercomBridgeToAgent(makeAgent({ tools: ["read"] }), activeBridge);
-		const second = applyIntercomBridgeToAgent(first, activeBridge);
+		const first = applyIntercomBridgeToAgent(makeAgent({ tools: ["read"] }), bridge);
+		const second = applyIntercomBridgeToAgent(first, bridge);
 		assert.equal(second.tools?.filter((tool) => tool === "intercom").length, 1);
 		assert.equal(second.tools?.filter((tool) => tool === "contact_supervisor").length, 1);
 		assert.equal(second.systemPrompt, first.systemPrompt);
 	});
 
+	it("leaves tools undefined when the agent had no explicit tool list", () => {
+		const agent = makeAgent({ tools: undefined });
+		const updated = applyIntercomBridgeToAgent(agent, bridge);
+		assert.equal(updated.tools, undefined);
+		assert.match(updated.systemPrompt, /Intercom orchestration channel:/);
+	});
+
+	it("allows canonical pi-intercom name and path segments", () => {
+		for (const extensions of [["pi-intercom"], ["/tmp/extensions/pi-intercom/index.ts"], ["C:\\\\Users\\\\x\\\\pi-intercom"]]) {
+			const updated = applyIntercomBridgeToAgent(makeAgent({ tools: ["read"], extensions }), bridge);
+			assert.deepEqual(updated.tools, ["read", "intercom", "contact_supervisor"], extensions.join(","));
+		}
+	});
+
 	it("does not inject when extension sandbox excludes intercom", () => {
 		const agent = makeAgent({ tools: ["read"], extensions: ["/tmp/other-extension/index.ts"] });
-		const updated = applyIntercomBridgeToAgent(agent, activeBridge);
+		const updated = applyIntercomBridgeToAgent(agent, bridge);
 		assert.equal(updated, agent);
+	});
+
+	it("does not inject for empty allowlists", () => {
+		const agent = makeAgent({ tools: ["read"], extensions: [] });
+		assert.equal(applyIntercomBridgeToAgent(agent, bridge), agent);
 	});
 
 	it("does not treat not-pi-intercom paths as allowed", () => {
 		const agent = makeAgent({ tools: ["read"], extensions: ["/tmp/not-pi-intercom/index.ts"] });
-		const updated = applyIntercomBridgeToAgent(agent, activeBridge);
+		const updated = applyIntercomBridgeToAgent(agent, bridge);
 		assert.equal(updated, agent);
 	});
 });

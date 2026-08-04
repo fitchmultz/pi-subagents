@@ -59,7 +59,7 @@ export interface ExecutionPlan {
   maxOutput?: MaxOutputConfig;
   projectTrust?: ChildProjectTrustPolicy;
   controlConfig: ResolvedControlConfig;
-  intercomBridge: PlannedIntercomBridge;
+  intercom: PlannedIntercomMetadata;
   children: PlannedChild[];
   chain?: PlannedChain;
   worktree?: PlannedWorktree;
@@ -183,12 +183,12 @@ Validation:
 
 Risk: high. Chain behavior includes templates, named outputs, dynamic fanout, clarify edits, and output schema validation.
 
-### Slice 6: Move intercom bridge planning behind an adapter boundary
+### Slice 6: Move fixed intercom metadata planning behind an adapter boundary
 
 Files:
 
 - Add `src/runs/shared/plan-intercom.ts`.
-- Compute per-child bridge enablement from effective context and bridge mode.
+- Always attach orchestrator/child targets and fixed bridge instruction metadata. Context still controls session forking only.
 - Keep actual intercom send/receipt delivery outside the plan.
 
 Validation:
@@ -197,7 +197,7 @@ Validation:
 - Fork-context execution tests.
 - Result-intercom formatter tests.
 
-Risk: medium-high. CL-0005 fixed per-child fork-only behavior; regression tests must stay pinned.
+Risk: medium. Paired wiring is unconditional; regression tests must keep the default instruction and sandbox behavior pinned.
 
 ### Slice 7: Delete duplicate preflight only after both foreground and async use the plan
 
@@ -221,7 +221,7 @@ Required coverage:
 
 - agent scope precedence: packaged, user, project, and disabled builtins;
 - per-agent context and explicit context override;
-- fork-only intercom per child;
+- fixed paired intercom metadata for every child;
 - maxSubagentDepth inheritance/tightening;
 - output path/mode resolution;
 - resource limits per agent;
@@ -255,9 +255,9 @@ These are task specs, not created queue entries yet.
    - Scope: chain behavior resolution, saved-chain behavior, static chain steps.
    - Done: chain tests pass; dynamic fanout remains adapter-owned unless separately planned.
 
-6. **Plan intercom bridge enablement per child**
-   - Scope: bridge mode, context resolution, child target names.
-   - Done: fork-only bridge tests prevent whole-invocation bridge regressions.
+6. **Plan required intercom metadata per child**
+   - Scope: orchestrator target, child target names, fixed bridge instruction metadata.
+   - Done: paired-path tests keep tools, targets, and sandbox behavior identical across fresh/fork.
 
 ## Residual risks
 

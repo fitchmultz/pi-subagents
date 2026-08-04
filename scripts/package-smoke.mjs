@@ -76,6 +76,7 @@ for (const path of [
 	"skills/pi-subagents/SKILL.md",
 	"prompts/review-loop.md",
 	"scripts/real-pi-smoke.mjs",
+	"scripts/intercom-smoke-package.mjs",
 ]) {
 	assertPackedFile(pack.files, path);
 }

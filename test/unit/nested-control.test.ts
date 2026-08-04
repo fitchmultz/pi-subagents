@@ -61,7 +61,7 @@ function createExecutor(state = createState(), agents: Array<Record<string, unkn
 	return createSubagentExecutor({
 		pi: { events, getSessionName() { return "parent"; } } as any,
 		state,
-		config: { maxSubagentDepth: 2, control: {}, intercomBridge: {} } as any,
+		config: { maxSubagentDepth: 2, control: {} } as any,
 		asyncByDefault: false,
 		tempArtifactsDir: os.tmpdir(),
 		getSubagentSessionRoot: (parentSessionFile) => parentSessionFile ? path.join(path.dirname(parentSessionFile), path.basename(parentSessionFile, ".jsonl")) : os.tmpdir(),

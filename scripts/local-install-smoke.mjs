@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import process from "node:process";
+import { prepareIntercomSmokePackage } from "./intercom-smoke-package.mjs";
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-	console.log(`Usage: node scripts/local-install-smoke.mjs\n\nInstalls this repository as a local path Pi package into an isolated temporary home,\nthen verifies pi list can resolve that installed package. User-level Pi settings in\nthe real home/profile are not modified.\n\nExit codes:\n  0  local path install/list smoke passed\n  1  pi install or pi list failed, or the installed package was not listed`);
+	console.log(`Usage: node scripts/local-install-smoke.mjs\n\nInstalls this repository and a pi-intercom companion into an isolated temporary\nhome, then verifies pi list can resolve both packages. Set PI_INTERCOM_PATH to test\na specific pi-intercom checkout. User-level Pi settings are not modified.\n\nExit codes:\n  0  paired local path install/list smoke passed\n  1  pi install or pi list failed, or an installed package was not listed`);
 	process.exit(0);
 }
 
@@ -23,6 +24,7 @@ function isolatedEnv(home) {
 		LOCALAPPDATA: join(home, "AppData", "Local"),
 		XDG_CONFIG_HOME: join(home, ".config"),
 		XDG_CACHE_HOME: join(home, ".cache"),
+		PI_CODING_AGENT_DIR: join(home, ".pi", "agent"),
 		PI_OFFLINE: "1",
 		PATH: process.env.PATH ?? "",
 		Path: process.env.Path ?? process.env.PATH ?? "",
@@ -53,16 +55,19 @@ const home = mkdtempSync(join(tmpdir(), "pi-subagents-install-smoke-"));
 
 try {
 	const env = isolatedEnv(home);
-	const install = runPi(["install", repoRoot, "--approve"], env);
-	requireSuccess("pi install", install);
+	const intercom = prepareIntercomSmokePackage(home, repoRoot);
+	requireSuccess("pi install pi-intercom", runPi(["install", intercom.packageRoot, "--approve"], env));
+	requireSuccess("pi install pi-subagents", runPi(["install", repoRoot, "--approve"], env));
 
 	const list = runPi(["list", "--approve"], env);
 	requireSuccess("pi list", list);
-	if (!list.output.includes(repoRoot)) {
-		throw new Error(`pi list did not include installed local path ${repoRoot}:\n${list.output}`);
+	for (const packageRoot of [intercom.packageRoot, repoRoot]) {
+		if (!list.output.includes(packageRoot)) {
+			throw new Error(`pi list did not include installed local path ${packageRoot}:\n${list.output}`);
+		}
 	}
 
-	console.log(`[local-install-smoke] installed and listed ${repoRoot}`);
+	console.log(`[local-install-smoke] installed and listed pi-subagents with pi-intercom from ${intercom.source}`);
 } catch (error) {
 	console.error(`[local-install-smoke] ${error instanceof Error ? error.message : String(error)}`);
 	process.exitCode = 1;
