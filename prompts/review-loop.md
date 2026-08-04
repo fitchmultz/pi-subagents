@@ -37,6 +37,6 @@ Stop and summarize when one of these is true:
 
 On completion, inspect the final diff yourself, run or confirm focused validation where appropriate, and summarize the loop: rounds run, fixes applied, validation, remaining deferred items, and why the loop stopped.
 
-Additional target, implementation request, max-iteration cap, or review focus from the slash command invocation:
+Additional target, implementation request, max-iteration cap, or review focus from the template invocation:
 
 $@

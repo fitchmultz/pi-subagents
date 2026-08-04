@@ -15,9 +15,9 @@
     "reason": "Subagent status/control workflow"
   },
   {
-    "query": "Run /review-loop on the current branch until reviewers find no fixes worth doing now.",
+    "query": "Run a review loop on the current branch until reviewers find no fixes worth doing now.",
     "should_trigger": true,
-    "reason": "Packaged Pi subagent prompt-template workflow"
+    "reason": "Pi subagent review-loop workflow"
   },
   {
     "query": "Harden the skills/pi-subagents SKILL.md file.",

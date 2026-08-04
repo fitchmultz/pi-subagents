@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
 const packageJson = require("../package.json");
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-	console.log(`Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing.\n\nChecks:\n  - npm pack --dry-run includes subagent and intercom runtime resources\n  - package.json pi manifest points at both extensions, skills, and prompts\n  - both extension entrypoints load through native Node TypeScript stripping\n  - a packed production install with dev dependencies omitted can load the detached runner and native broker\n\nExit codes:\n  0  smoke passed\n  1  package shape or runtime load check failed`);
+	console.log(`Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing.\n\nChecks:\n  - npm pack --dry-run includes subagent and intercom runtime resources\n  - package.json pi manifest points at both extensions and skills without registering example prompts\n  - both extension entrypoints load through native Node TypeScript stripping\n  - a packed production install with dev dependencies omitted can load the detached runner and native broker\n\nExit codes:\n  0  smoke passed\n  1  package shape or runtime load check failed`);
 	process.exit(0);
 }
 
@@ -94,7 +94,7 @@ if (packageJson.bin !== undefined) fail("package.json must not expose an npx/bin
 if (!packageJson.pi?.extensions?.includes("./src/extension/index.ts")) fail("package.json pi.extensions must include ./src/extension/index.ts");
 if (!packageJson.pi?.extensions?.includes("./src/pi-intercom/index.ts")) fail("package.json pi.extensions must include ./src/pi-intercom/index.ts");
 if (!packageJson.pi?.skills?.includes("./skills")) fail("package.json pi.skills must include ./skills");
-if (!packageJson.pi?.prompts?.includes("./prompts")) fail("package.json pi.prompts must include ./prompts");
+if (packageJson.pi?.prompts !== undefined) fail("package.json pi.prompts must stay unset so example prompts are not registered as slash commands");
 
 for (const entrypoint of ["../src/extension/index.ts", "../src/pi-intercom/index.ts"]) {
 	const extensionModule = await import(new URL(entrypoint, import.meta.url));

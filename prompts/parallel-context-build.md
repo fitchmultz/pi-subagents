@@ -15,7 +15,7 @@ Use one phase such as `phase: "Context build"` for the parallel tasks so async s
 
 Do not write these context artifacts into the repository unless I explicitly ask for persistent files.
 
-Treat the slash command arguments as the primary request, target, or focus:
+Treat the template arguments as the primary request, target, or focus:
 
 ${ARGUMENTS:-infer the planning handoff scope from the current conversation and repository context}
 

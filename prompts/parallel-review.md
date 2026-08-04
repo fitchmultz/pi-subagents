@@ -52,7 +52,7 @@ Reply with [1], [2], or further instructions:
 [2] Apply the fixes worth doing now plus optional improvements.
 ```
 
-Additional review target or focus from the slash command invocation:
+Additional review target or focus from the template invocation:
 
 $@
 

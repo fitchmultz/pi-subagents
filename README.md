@@ -253,27 +253,25 @@ Use orchestration as parent-agent guidance, not as a runtime workflow mode. For 
 clarify → planner → worker → fresh reviewers → worker
 ```
 
-Use the optional prompt shortcuts below when you want the pattern to be repeatable.
+Example prompt files for these patterns remain in `prompts/` for reference.
 
 Packaged `oracle` defaults to forked context; the other Fitch role profiles default to fresh context. Forked context is rejected when an affected agent's effective primary or fallback model uses the `anthropic/` provider, and explicit context/model overrides cannot bypass that restriction.
 
 Child-safety boundaries are enforced at runtime. Spawned child sessions do not receive the bundled `pi-subagents` skill, and forked child context filtering removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results. By default, children do not register the `subagent` tool and receive boundary instructions that they are not the parent orchestrator and must not propose or run subagents. The explicit exception is an agent configured with `allowSubagents: true` or whose resolved builtin `tools` includes `subagent`; that child gets a child-safe `subagent` tool for the fanout work the parent assigned, still bounded by `maxSubagentDepth`.
 
-## Optional shortcuts
+## Example prompts
 
-The package includes reusable prompt templates for common workflows. You do not need them, but they are handy when you want the same shape every time:
+The files in `prompts/` document common workflows without registering additional slash commands:
 
-| Prompt | Use it for |
-|--------|------------|
-| `/parallel-review` | Launch fresh-context reviewers with distinct angles, then synthesize what to fix. |
-| `/review-loop` | Run parent-controlled worker, reviewer, and fix-worker cycles until clean or capped. |
-| `/parallel-research` | Combine `researcher` and `scout` for external evidence, local code context, and practical tradeoffs. |
-| `/parallel-context-build` | Run `context-builder` agents in parallel to produce planning handoff context and meta-prompts. |
-| `/parallel-handoff-plan` | Combine external research and `context-builder` passes into an implementation handoff plan and meta-prompt. |
-| `/gather-context-and-clarify` | Scout/research first, then ask the user the clarification questions that matter. |
-| `/parallel-cleanup` | Run review-only cleanup passes after implementation. |
-
-Add `autofix` to `/parallel-review` or `/parallel-cleanup` to apply only the synthesized fixes worth doing now after reviewers return.
+| File | Use it for |
+|------|------------|
+| `parallel-review.md` | Launch fresh-context reviewers with distinct angles, then synthesize what to fix. |
+| `review-loop.md` | Run parent-controlled worker, reviewer, and fix-worker cycles until clean or capped. |
+| `parallel-research.md` | Combine `researcher` and `scout` for external evidence, local code context, and practical tradeoffs. |
+| `parallel-context-build.md` | Run `context-builder` agents in parallel to produce planning handoff context and meta-prompts. |
+| `parallel-handoff-plan.md` | Combine external research and `context-builder` passes into an implementation handoff plan and meta-prompt. |
+| `gather-context-and-clarify.md` | Scout/research first, then ask the user the clarification questions that matter. |
+| `parallel-cleanup.md` | Run review-only cleanup passes after implementation. |
 
 ## Bundled intercom
 
@@ -721,13 +719,13 @@ The package bundles a `pi-subagents` skill that is automatically available to th
 
 What the bundled skill covers:
 - **Delegation patterns**: when to launch which agent, whether to use single, parallel, chain, or async mode, and whether to use fresh or forked context
-- **Prompt workflow recipes**: how to apply the packaged techniques directly with `subagent(...)` when the user describes the workflow in natural language instead of invoking a slash command. This includes parallel review, review-loop, parallel research, parallel context-build, parallel handoff-plan, gather-context-and-clarify, and parallel cleanup
+- **Workflow recipes**: how to apply the example techniques directly with `subagent(...)` when the user describes the workflow in natural language. This includes parallel review, review-loop, parallel research, parallel context-build, parallel handoff-plan, gather-context-and-clarify, and parallel cleanup
 - **Role-agent prompting guidance**: compact contract prompts instead of long scripts, what to include in role-specific meta prompts, and retrieval budgets for researchers
 - **Safety boundaries**: child agents must not run subagents unless configured with `allowSubagents: true` or resolved builtin tools explicitly including `subagent`, must not invent intercom targets, and must escalate unapproved decisions
 - **Intercom conventions**: when to ask vs send, and how parent-side result delivery works with `pi-intercom`
 - **Control and diagnostics**: attention signals, soft interrupts, status, and the `doctor` action
 
-If you are writing an agent that orchestrates subagents, the bundled skill helps it behave correctly without guessing the patterns. If you are a human user, you do not need to read it directly; the README and prompt shortcuts encode the same workflows in user-facing form.
+If you are writing an agent that orchestrates subagents, the bundled skill helps it behave correctly without guessing the patterns. If you are a human user, you do not need to read it directly; the README and example prompts encode the same workflows in user-facing form.
 
 ## Programmatic tool usage
 
@@ -1199,7 +1197,7 @@ The result watcher emits `subagent:async-complete`; `src/extension/index.ts` reg
 
 ## Prompt-template integration
 
-`pi-subagents` works standalone through natural language, the `subagent` tool, slash commands, and the packaged prompt shortcuts listed near the top of this README. If you use [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model), you can also wrap subagent delegation in your own reusable prompt templates.
+`pi-subagents` works standalone through natural language, the `subagent` tool, and its built-in slash commands. The example prompts near the top of this README are not registered as commands. If you use [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model), you can wrap subagent delegation in your own reusable prompt templates.
 
 Example:
 

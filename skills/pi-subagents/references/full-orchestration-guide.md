@@ -34,18 +34,18 @@ Humans often use the slash-command layer instead:
 Prefer the tool when you are writing agent logic. Prefer the slash commands when
 you are guiding a human through an interactive flow.
 
-Packaged prompt shortcuts are also available for repeatable workflows. Treat them as reusable orchestration recipes, not just human slash commands. When the user asks for one of these shapes, or when the workflow clearly fits, apply the same pattern directly with `subagent(...)` and other tools:
-- `/parallel-review` — fresh-context reviewers with distinct review angles, then synthesis
-- `/review-loop` — parent-orchestrated worker, fresh-reviewer, and fix-worker cycles until clean or capped
-- `/parallel-research` — combine `researcher` and `scout` for external evidence plus local code context
-- `/parallel-context-build` — parallel `context-builder` passes that produce planning handoff context and meta-prompts
-- `/parallel-handoff-plan` — external-reference research plus local `context-builder` passes, followed by a synthesis handoff plan and implementation-ready meta-prompt
-- `/gather-context-and-clarify` — scout/research first, then ask the user clarifying questions with the available clarification tool (`ask_question` in pi)
-- `/parallel-cleanup` — two fresh-context reviewers (deslop + verbosity passes) for an adversarial cleanup review of the current diff
+The repository keeps example prompts for repeatable workflows. Treat them as reusable orchestration recipes. When the user asks for one of these shapes, or when the workflow clearly fits, apply the same pattern directly with `subagent(...)` and other tools:
+- `prompts/parallel-review.md` — fresh-context reviewers with distinct review angles, then synthesis
+- `prompts/review-loop.md` — parent-orchestrated worker, fresh-reviewer, and fix-worker cycles until clean or capped
+- `prompts/parallel-research.md` — combine `researcher` and `scout` for external evidence plus local code context
+- `prompts/parallel-context-build.md` — parallel `context-builder` passes that produce planning handoff context and meta-prompts
+- `prompts/parallel-handoff-plan.md` — external-reference research plus local `context-builder` passes, followed by a synthesis handoff plan and implementation-ready meta-prompt
+- `prompts/gather-context-and-clarify.md` — scout/research first, then ask the user clarifying questions with the available clarification tool (`ask_question` in pi)
+- `prompts/parallel-cleanup.md` — two fresh-context reviewers (deslop + verbosity passes) for an adversarial cleanup review of the current diff
 
-## Applying Prompt Techniques Without Slash Commands
+## Applying Example Prompt Techniques
 
-The prompt templates in `prompts/` encode workflows the parent agent can run on demand. If the user provides a URL, issue, PR, plan, local file, screenshot, or freeform target, treat that target as the primary scope: read or fetch it before launching children, then include it explicitly in every child task. Do not depend on the parent conversation history when the recipe calls for fresh context.
+The examples in `prompts/` encode workflows the parent agent can run on demand. If the user provides a URL, issue, PR, plan, local file, screenshot, or freeform target, treat that target as the primary scope: read or fetch it before launching children, then include it explicitly in every child task. Do not depend on the parent conversation history when the recipe calls for fresh context.
 
 ### Parallel review technique
 
@@ -616,16 +616,7 @@ copying a full builtin file.
 
 ## Prompt Template Integration
 
-The package includes prompt shortcuts for common workflows: `/parallel-review`,
-`/review-loop`, `/parallel-research`, `/parallel-context-build`,
-`/parallel-handoff-plan`, `/gather-context-and-clarify`, and
-`/parallel-cleanup`. Use them when the user wants repeatable review,
-review/fix loops, research, context handoff, implementation handoff,
-clarification, or cleanup-review patterns. `/parallel-review autofix` and
-`/parallel-cleanup autofix` synthesize reviewer feedback and then apply only the
-fixes worth doing now. Parent agents can also apply the same recipes directly
-with `subagent(...)` when the user describes the workflow in natural language
-instead of invoking a slash command.
+The files under `prompts/` are unregistered examples of common workflows. Parent agents can apply the same recipes directly with `subagent(...)` when the user describes the workflow in natural language.
 
 If `pi-prompt-template-model` is installed, additional user prompt templates can delegate into
 `pi-subagents`. This is useful when a slash command should always run through a
@@ -702,19 +693,19 @@ subagent({
 
 ### Clarify → Plan → Implement → Review (self-orchestrated workflow)
 
-When you are the orchestrating agent for a new feature or non-trivial change, factor in the packaged prompt workflows without literally invoking slash commands. Use the same patterns through tools and subagents.
+When you are the orchestrating agent for a new feature or non-trivial change, use the same orchestration patterns through tools and subagents.
 
 Keep effective agent defaults for routine runs. User/project agent descriptions and frontmatter may encode when to override model, thinking level, skills, output behavior, or context mode; follow that policy when risk warrants it, but do not add overrides just because you are orchestrating. Packaged `oracle` defaults to forked context; the other Fitch role profiles default to fresh context. Fork is never available to effective `anthropic/` primary or fallback models; other providers continue to use the configured context policy normally.
 
 When the user approves launching a subagent to carry out a plan or workflow, treat that as approval to generate a proper role-specific meta prompt for that subagent. Include the approved plan path or summary, clarified requirements, non-goals, relevant context, role boundaries, files or areas to inspect, acceptance criteria, expected output, and validation expectations. Do not pass vague instructions like “implement the plan fully” or “review this” by themselves.
 
-- `/gather-context-and-clarify` maps to: launch `scout` and, when needed, `researcher`; synthesize findings; then use the available clarification tool (`ask_question` in pi) for unresolved material questions.
-- `/parallel-review` maps to: launch fresh-context `reviewer` agents with distinct review angles; synthesize the feedback before applying anything.
-- `/review-loop` maps to: keep the parent in charge of worker → fresh reviewers → synthesized fix worker cycles until no fixes worth doing now remain, an unapproved decision appears, or the review-round cap is reached.
-- `/parallel-research` maps to: combine local `scout` context with external `researcher` evidence when current docs, ecosystem behavior, or API details matter.
-- `/parallel-context-build` maps to: run a chain-mode parallel group of `context-builder` agents with distinct temp output paths, then synthesize their context and meta-prompt sections.
-- `/parallel-handoff-plan` maps to: run external `researcher` plus local/strategy `context-builder` passes, then a synthesis `context-builder` that writes an implementation handoff plan and implementation-ready meta-prompt.
-- `/parallel-cleanup` maps to: use review-only cleanup passes after implementation, especially for simplicity, verbosity, and redundant tests.
+- Gather context and clarify: launch `scout` and, when needed, `researcher`; synthesize findings; then use the available clarification tool (`ask_question` in pi) for unresolved material questions.
+- Parallel review: launch fresh-context `reviewer` agents with distinct review angles; synthesize the feedback before applying anything.
+- Review loop: keep the parent in charge of worker → fresh reviewers → synthesized fix worker cycles until no fixes worth doing now remain, an unapproved decision appears, or the review-round cap is reached.
+- Parallel research: combine local `scout` context with external `researcher` evidence when current docs, ecosystem behavior, or API details matter.
+- Parallel context build: run a chain-mode parallel group of `context-builder` agents with distinct temp output paths, then synthesize their context and meta-prompt sections.
+- Parallel handoff plan: run external `researcher` plus local/strategy `context-builder` passes, then a synthesis `context-builder` that writes an implementation handoff plan and implementation-ready meta-prompt.
+- Parallel cleanup: use review-only cleanup passes after implementation, especially for simplicity, verbosity, and redundant tests.
 
 For feature work, use this sequence as scaffolding for parent-agent behavior:
 
