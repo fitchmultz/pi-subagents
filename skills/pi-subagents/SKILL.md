@@ -46,7 +46,7 @@ Keep configured defaults for routine runs. Pass `model`/`thinking` only when the
 
 ## Intercom bridge
 
-`pi-subagents` works without `pi-intercom`. When the bridge is active, children may get `contact_supervisor`.
+Install `pi-subagents` with `pi-intercom`. Children always get `contact_supervisor` unless an explicit agent `extensions` allowlist omits `pi-intercom`.
 
 - `contact_supervisor({ reason: "need_decision", message })`: steered blocking decision/clarification only when the ephemeral child cannot safely continue and must remain alive for one reply.
 - `contact_supervisor({ reason: "interview_request", message, interview })`: steered blocking structured questions only when the ephemeral child cannot safely continue until it receives multiple answers.

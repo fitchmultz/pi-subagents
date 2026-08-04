@@ -210,11 +210,6 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		return record;
 	}
 
-	function enablePiIntercomBridge(): void {
-		const agentDir = path.join(tempDir, "agent-dir");
-		process.env.PI_CODING_AGENT_DIR = agentDir;
-		fs.mkdirSync(path.join(agentDir, "extensions", "pi-intercom"), { recursive: true });
-	}
 
 	function forkedSessionFile(index: number): string {
 		return path.join(tempDir, `fork-${index}.jsonl`);
@@ -699,8 +694,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.ok(sessionArgs.includes(forkedSessionFile(1)));
 	});
 
-	it("applies fork-only intercom bridge only to fork-default parallel children", async () => {
-		enablePiIntercomBridge();
+	it("applies paired intercom wiring to fresh and fork parallel children", async () => {
 		mockPi.reset();
 		mockPi.onCall({ output: "fresh child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
 		mockPi.onCall({ output: "fork child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
@@ -712,7 +706,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 				{ name: "worker", description: "Custom override worker", defaultContext: "fork", tools: ["read"] },
 			],
 			projectAgentsDir: null,
-		}), { intercomBridge: { mode: "fork-only" } });
+		}));
 
 		const result = await executor.execute(
 			"id",
@@ -725,9 +719,9 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.isError, undefined);
 		const freshCall = callRecordForTaskContaining("find files");
 		const forkCall = callRecordForTaskContaining("implement fix");
-		assert.equal(toolsArg(freshCall.args), "read");
+		assert.equal(toolsArg(freshCall.args), "read,intercom,contact_supervisor");
 		assert.equal(toolsArg(forkCall.args), "read,intercom,contact_supervisor");
-		assert.equal(freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, null);
+		assert.equal(freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
 		assert.equal(forkCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
 	});
 
@@ -782,8 +776,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.ok(sessionArgs.includes(forkedSessionFile(1)));
 	});
 
-	it("applies fork-only intercom bridge only to fork-default chain steps", async () => {
-		enablePiIntercomBridge();
+	it("applies paired intercom wiring to fresh and fork chain steps", async () => {
 		const parentSessionFile = path.join(tempDir, "parent.jsonl");
 		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
@@ -792,7 +785,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 				{ name: "worker", description: "Custom override worker", defaultContext: "fork", tools: ["read"] },
 			],
 			projectAgentsDir: null,
-		}), { intercomBridge: { mode: "fork-only" } });
+		}));
 
 		const result = await executor.execute(
 			"id",
@@ -803,12 +796,11 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		);
 
 		assert.equal(result.isError, undefined);
-		assert.equal(toolsArg(callArgsForTaskContaining("scan")), "read");
+		assert.equal(toolsArg(callArgsForTaskContaining("scan")), "read,intercom,contact_supervisor");
 		assert.equal(toolsArg(callArgsForTaskContaining("write")), "read,intercom,contact_supervisor");
 	});
 
-	it("applies fork-only intercom bridge to fork-default dynamic fanout children by agent", async () => {
-		enablePiIntercomBridge();
+	it("applies paired intercom wiring to fresh and fork dynamic fanout children", async () => {
 		mockPi.reset();
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" }, echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
@@ -823,7 +815,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 				{ name: "consumer", description: "Custom override consumer", defaultContext: "fresh", tools: ["read"] },
 			],
 			projectAgentsDir: null,
-		}), { intercomBridge: { mode: "fork-only" } });
+		}));
 
 		const result = await executor.execute(
 			"id",
@@ -850,13 +842,13 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const reviewACall = callRecordForTaskContaining("Review src/a.ts");
 		const reviewBCall = callRecordForTaskContaining("Review src/b.ts");
 		const consumerCall = callRecordForTaskContaining("Use reviews");
-		assert.equal(toolsArg(producerCall.args), "read");
+		assert.equal(toolsArg(producerCall.args), "read,intercom,contact_supervisor");
 		assert.equal(toolsArg(reviewACall.args), "read,intercom,contact_supervisor");
 		assert.equal(toolsArg(reviewBCall.args), "read,intercom,contact_supervisor");
-		assert.equal(toolsArg(consumerCall.args), "read");
+		assert.equal(toolsArg(consumerCall.args), "read,intercom,contact_supervisor");
 		assert.equal(reviewACall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
 		assert.equal(reviewBCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
-		assert.equal(consumerCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, null);
+		assert.equal(consumerCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
 		assert.equal(countForkedSessionFiles(readSessionArgsFromCalls()), 2);
 	});
 
@@ -1321,8 +1313,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(forkArgs[forkSessionIndex + 1], forkedSessionFile(1));
 	});
 
-	it("applies fork-only intercom bridge only to fork-default async children", async () => {
-		enablePiIntercomBridge();
+	it("applies paired intercom wiring to fresh and fork async children", async () => {
 		mockPi.reset();
 		mockPi.onCall({ output: "async fresh child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
 		mockPi.onCall({ output: "async fork child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
@@ -1334,7 +1325,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 				{ name: "worker", description: "Worker", defaultContext: "fork", tools: ["read"] },
 			],
 			projectAgentsDir: null,
-		}), { intercomBridge: { mode: "fork-only" } });
+		}));
 
 		const result = await executor.execute(
 			"id",
@@ -1356,9 +1347,9 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		await waitForTaskCalls(["async find files", "async implement fix"]);
 		const freshCall = callRecordForTaskContaining("async find files");
 		const forkCall = callRecordForTaskContaining("async implement fix");
-		assert.equal(toolsArg(freshCall.args), "read");
+		assert.equal(toolsArg(freshCall.args), "read,intercom,contact_supervisor");
 		assert.equal(toolsArg(forkCall.args), "read,intercom,contact_supervisor");
-		assert.equal(freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, null);
+		assert.equal(freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
 		assert.equal(forkCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
 	});
 

@@ -919,13 +919,6 @@ export interface RunSyncOptions {
 	acceptance?: AcceptanceInput;
 }
 
-export type IntercomBridgeMode = "off" | "fork-only" | "always";
-
-export interface IntercomBridgeConfig {
-	mode?: IntercomBridgeMode;
-	instructionFile?: string;
-}
-
 export type ChildProjectTrustPolicy = "inherit" | "approve" | "no-approve";
 
 export interface ProjectTrustConfig {
@@ -953,7 +946,6 @@ export interface ExtensionConfig {
 	chain?: ExtensionChainConfig;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
-	intercomBridge?: IntercomBridgeConfig;
 	projectTrust?: ChildProjectTrustPolicy | ProjectTrustConfig;
 }
 

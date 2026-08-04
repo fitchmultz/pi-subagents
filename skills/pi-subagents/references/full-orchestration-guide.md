@@ -28,7 +28,7 @@ Humans often use the slash-command layer instead:
 - `/chain` — launch a chain of steps
 - `/parallel` — launch top-level parallel tasks
 - `/run-chain` — launch a saved `.chain.md` or `.chain.json` workflow
-- `/subagents-doctor` — diagnose setup, discovery, async paths, and intercom bridge state
+- `/subagents-doctor` — diagnose setup, discovery, async paths, and the paired intercom target
 
 Prefer the tool when you are writing agent logic. Prefer the slash commands when
 you are guiding a human through an interactive flow.
@@ -411,7 +411,7 @@ subagent({
 })
 ```
 
-If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. Prefer `subagent({ action: "nudge", id: "...", message: "..." })` for live guidance, answers, corrections, or blockers; it is a non-blocking steer that supplements the active child task unless it explicitly replaces it. Use the status-shown intercom ask only when the parent must remain alive waiting for a reply. Do not invent a target or ask the child to self-report when no bridge exists.
+Needs-attention notifications can also prepare a compact intercom ping for the paired orchestrator target. Prefer `subagent({ action: "nudge", id: "...", message: "..." })` for live guidance, answers, corrections, or blockers; it is a non-blocking steer that supplements the active child task unless it explicitly replaces it. Use the status-shown intercom ask only when the parent must remain alive waiting for a reply. Do not invent a target; use the resolved target shown in status or injected instructions. An explicit agent `extensions` allowlist that omits `pi-intercom` still sandboxes child-side coordination tools.
 
 ## Clarify TUI
 
@@ -481,7 +481,7 @@ Use `oracle` as a smart-friend escalation when the parent needs help with trajec
 
 ## Subagent + Intercom Coordination
 
-`pi-subagents` works without `pi-intercom`. When `pi-intercom` is installed and enabled, the intercom bridge can automatically give child agents a private coordination channel back to the parent session.
+Install `pi-subagents` with `pi-intercom`. Children get fixed default bridge instructions and a private coordination channel back to the parent session unless an explicit `extensions` allowlist omits `pi-intercom`.
 
 Most agents should not call generic `intercom` directly unless bridge instructions provide a target and `contact_supervisor` is unavailable. Do not invent a target. Prefer the tool from the injected bridge instructions.
 
@@ -498,7 +498,7 @@ Use `contact_supervisor` with `reason: "progress_update"` only for a concise pla
 Message conventions:
 - `reason: "need_decision"` and `reason: "interview_request"` steer, wait for the parent reply, and return it to the child.
 - `reason: "progress_update"` is intentionally deferred and should stay concise.
-- Child-side routine completion handoffs are not expected. With the intercom bridge active, parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested summaries under the parent child that launched them.
+- Child-side routine completion handoffs are not expected. Parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested summaries under the parent child that launched them.
 
 If bridge instructions provide the child-facing tool, a child can ask:
 
