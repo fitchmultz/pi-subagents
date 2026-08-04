@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
@@ -10,6 +11,7 @@ function parentToolEnv(): NodeJS.ProcessEnv {
 	const env = { ...process.env };
 	delete env[SUBAGENT_CHILD_ENV];
 	delete env[SUBAGENT_FANOUT_CHILD_ENV];
+	env.PI_CODING_AGENT_DIR = path.join(os.tmpdir(), `pi-subagent-index-probe-${process.pid}`);
 	return env;
 }
 
@@ -53,7 +55,7 @@ describe("subagent extension child mode", () => {
 			if (!parentGuidelines.some((line) => line.includes("parent session responsible"))) throw new Error("missing parent-owns-final-decision guideline");
 			if (!parentGuidelines.some((line) => line.includes("review-only tasks") && line.includes("omit acceptance"))) throw new Error("missing lightweight-review guideline");
 			if (!parentGuidelines.some((line) => line.includes("end the turn") && line.includes("completion wakes the parent"))) throw new Error("missing async no-poll guideline");
-			if (!parentGuidelines.some((line) => line.includes("incomplete active Pi goal") && line.includes("use foreground") && line.includes("do not end the turn"))) throw new Error("missing active-goal foreground exception guideline");
+			if (!parentGuidelines.some((line) => line.includes("incomplete active Pi goal") && line.includes("async:false") && line.includes("do not end the turn"))) throw new Error("missing active-goal foreground exception guideline");
 			if (!parentGuidelines.some((line) => line.includes("non-blocking steer") && line.includes("supplements the active task"))) throw new Error("missing steer-first nudge guideline");
 			const calls = [];
 			let expanded = false;
@@ -81,7 +83,7 @@ describe("subagent extension child mode", () => {
 		runProbe(script, { env: parentToolEnv() });
 	});
 
-	it("does not show async badge for explicit foreground clarify chain calls", () => {
+	it("renders the effective async default and foreground escapes", () => {
 		const script = String.raw`
 			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
 			const events = { on() { return () => {}; }, emit() {} };
@@ -103,9 +105,15 @@ describe("subagent extension child mode", () => {
 			registerSubagentExtension(fakePi);
 			if (!registeredTool) throw new Error("tool not registered");
 			const theme = { fg(_name, text) { return text; }, bold(text) { return text; } };
-			const asyncChain = registeredTool.renderCall({ chain: [{ agent: "worker" }, { agent: "reviewer" }], async: true }, theme).text;
-			const clarifyChain = registeredTool.renderCall({ chain: [{ agent: "worker" }, { agent: "reviewer" }], async: true, clarify: true }, theme).text;
-			if (!asyncChain.includes("[async]")) throw new Error("expected async chain badge, got " + asyncChain);
+			const defaultSingle = registeredTool.renderCall({ agent: "worker" }, theme).text;
+			const defaultParallel = registeredTool.renderCall({ tasks: [{ agent: "worker", task: "a" }, { agent: "reviewer", task: "b" }] }, theme).text;
+			const explicitForeground = registeredTool.renderCall({ agent: "worker", async: false }, theme).text;
+			const timeoutForeground = registeredTool.renderCall({ agent: "worker", timeoutMs: 1000 }, theme).text;
+			const clarifyChain = registeredTool.renderCall({ chain: [{ agent: "worker" }, { agent: "reviewer" }], clarify: true }, theme).text;
+			if (!defaultSingle.includes("[async]")) throw new Error("expected default async single badge, got " + defaultSingle);
+			if (!defaultParallel.includes("[async]")) throw new Error("expected default async parallel badge, got " + defaultParallel);
+			if (explicitForeground.includes("[async]")) throw new Error("unexpected explicit foreground async badge: " + explicitForeground);
+			if (timeoutForeground.includes("[async]")) throw new Error("unexpected timeout foreground async badge: " + timeoutForeground);
 			if (clarifyChain.includes("[async]")) throw new Error("unexpected clarify async badge: " + clarifyChain);
 		`;
 
@@ -175,6 +183,7 @@ describe("subagent extension child mode", () => {
 			};
 			registerFanoutChildSubagentExtension(fakePi);
 			if (!registeredTool) throw new Error("tool not registered");
+			if (!(registeredTool.promptGuidelines ?? []).some((line) => line.includes("Nested execution defaults to foreground") && line.includes("async:false") && line.includes("async:true"))) throw new Error("missing nested foreground-default guideline");
 			const ctx = {
 				cwd: process.cwd(),
 				hasUI: false,
@@ -193,6 +202,6 @@ describe("subagent extension child mode", () => {
 			if (!text.includes("not available from child-safe subagent fanout mode")) throw new Error("unexpected create error: " + text);
 		`;
 
-		runProbe(script);
+		runProbe(script, { env: parentToolEnv() });
 	});
 });

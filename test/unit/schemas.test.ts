@@ -165,6 +165,8 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.equal(timeoutSchema.minimum, 1);
 		assert.match(String(timeoutSchema.description ?? ""), /foreground/i);
 		assert.match(String(timeoutSchema.description ?? ""), /soft-interrupted/i);
+		assert.match(String(timeoutSchema.description ?? ""), /async is omitted.*foreground/i);
+		assert.match(String(timeoutSchema.description ?? ""), /explicit async.*reject/i);
 		assert.match(String(timeoutSchema.description ?? ""), /reviewer/i);
 		assert.match(String(timeoutSchema.description ?? ""), /planner\/researcher/i);
 		assert.match(String(timeoutSchema.description ?? ""), /run-history/i);

@@ -491,13 +491,13 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 1);
 	});
 
-	it("top-level async parallel conversion preserves output, reads, and progress", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
+	it("default async parallel conversion preserves output, reads, and progress", { skip: !createSubagentExecutor ? "executor not available" : undefined }, async () => {
 		mockPi.onCall({ output: "Async top-level report" });
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 			config: {},
-			asyncByDefault: false,
+			asyncByDefault: true,
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (p: string) => p,
@@ -508,7 +508,6 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			"async-parallel-fields",
 			{
 				tasks: [{ agent: "worker", task: "Do async work", output: "async-top-output.md", reads: ["input.md"], progress: true }],
-				async: true,
 				clarify: false,
 			},
 			new AbortController().signal,

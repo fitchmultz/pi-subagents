@@ -13,7 +13,7 @@
     {
       "id": "edge-active-goal-async",
       "prompt": "A Pi goal is active and incomplete; use subagents for goal-critical review evidence.",
-      "expected_output": "The agent prefers foreground/blocking subagent runs for goal-critical evidence, uses async only when there is same-turn independent parent work or the user explicitly wants background execution, and does not end the turn before needed child evidence is inspected."
+      "expected_output": "The agent sets async: false for goal-critical evidence that must arrive before the next goal step, keeps the default async mode for independent work or when it can safely end the turn and wait, and does not end the turn before required foreground evidence is inspected."
     },
     {
       "id": "failure-ordinary-child-nesting",

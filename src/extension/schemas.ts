@@ -252,7 +252,7 @@ export const SubagentParams = Type.Object({
 	})),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "PARALLEL mode: concurrent [{agent, task, ...}] tasks." })),
 	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "PARALLEL mode: max concurrent parallel tasks (default 4)." })),
-	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Foreground wall-clock timeout (ms); on expiry children are soft-interrupted. Rejected for async runs. Short reviewer budgets are raised to a floor; planner/researcher budgets only from run-history data." })),
+	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Foreground wall-clock timeout (ms); on expiry children are soft-interrupted. When async is omitted, a timeout implies foreground execution; explicit async runs reject it. Short reviewer budgets are raised to a floor; planner/researcher budgets only from run-history data." })),
 	maxRuntimeMs: Type.Optional(Type.Integer({ minimum: 1, description: "Alias for timeoutMs; same foreground-only policy." })),
 	maxOutput: Type.Optional(MaxOutputOverride),
 	worktree: Type.Optional(Type.Boolean({
@@ -264,7 +264,7 @@ export const SubagentParams = Type.Object({
 		description: "'fresh' or 'fork' (branch from parent session); overrides each agent's defaultContext. Fork is rejected for agents whose effective model uses the anthropic/ provider.",
 	})),
 	chainDir: Type.Optional(Type.String({ description: "Directory for chain artifacts (default: temp, auto-cleaned after 24h)" })),
-	async: Type.Optional(Type.Boolean({ description: "Run in background (default: false, or per config)" })),
+	async: Type.Optional(Type.Boolean({ description: "Run in background. Stock top-level default: true; set false for foreground execution." })),
 	agentScope: Type.Optional(Type.String({ description: "Agent discovery scope: 'user', 'project', or 'both' (default; project wins collisions)" })),
 	cwd: Type.Optional(Type.String()),
 	artifacts: Type.Optional(Type.Boolean({ description: "Write debug artifacts (default: true)" })),

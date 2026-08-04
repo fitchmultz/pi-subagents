@@ -725,6 +725,32 @@ Scan
 		});
 	});
 
+	it("/run-chain maps --fg to foreground execution", async () => {
+		await withTempProject("pi-run-chain-fg-", async (root) => {
+			writeProjectChain(root, "review-flow.chain.md", `---
+name: review-flow
+description: Review flow
+---
+
+## scout
+
+Scan
+`);
+
+			const { params } = await captureSlashCommandParams("run-chain", "review-flow -- Audit --fg", root);
+
+			assert.equal((params as { async?: unknown }).async, false);
+		});
+	});
+
+	it("/run-chain rejects conflicting execution flags", async () => {
+		await withTempProject("pi-run-chain-mode-conflict-", async (root) => {
+			const { params, notifications } = await captureSlashCommandParams("run-chain", "review-flow -- Audit --bg --fg", root);
+			assert.equal(params, undefined);
+			assert.deepEqual(notifications, ["Choose only one of --bg or --fg"]);
+		});
+	});
+
 	it("/run-chain maps --fork to forked context", async () => {
 		await withTempProject("pi-run-chain-fork-", async (root) => {
 			writeProjectChain(root, "review-flow.chain.md", `---

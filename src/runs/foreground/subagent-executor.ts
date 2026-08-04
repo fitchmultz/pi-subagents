@@ -203,6 +203,18 @@ export interface SubagentParamsLike {
 	acceptance?: AcceptanceInput;
 }
 
+export function resolveAsyncExecutionMode(
+	params: Pick<SubagentParamsLike, "async" | "clarify" | "timeoutMs" | "maxRuntimeMs">,
+	asyncByDefault: boolean,
+): { effectiveAsync: boolean; backgroundRequestedWhileClarifying: boolean } {
+	const hasForegroundTimeout = params.timeoutMs !== undefined || params.maxRuntimeMs !== undefined;
+	const requestedAsync = params.async ?? (hasForegroundTimeout ? false : asyncByDefault);
+	return {
+		effectiveAsync: requestedAsync && params.clarify !== true,
+		backgroundRequestedWhileClarifying: params.async === true && params.clarify === true,
+	};
+}
+
 type RawSubagentParamsLike = Record<string, unknown>;
 
 function stringValue(params: RawSubagentParamsLike, key: string): string | undefined {
@@ -3153,13 +3165,13 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		} catch (error) {
 			return toExecutionErrorResult(effectiveParams, error, invocationContext);
 		}
-		const requestedAsync = effectiveParams.async ?? deps.asyncByDefault;
-		const backgroundRequestedWhileClarifying = (hasChain || hasTasks) && requestedAsync && effectiveParams.clarify === true;
-		const effectiveAsync = requestedAsync && effectiveParams.clarify !== true;
+		const asyncMode = resolveAsyncExecutionMode(effectiveParams, deps.asyncByDefault);
+		const backgroundRequestedWhileClarifying = (hasChain || hasTasks) && asyncMode.backgroundRequestedWhileClarifying;
+		const effectiveAsync = asyncMode.effectiveAsync;
 		const foregroundTimeout = resolveForegroundTimeoutMs(effectiveParams);
 		if (foregroundTimeout.error) return buildRequestedModeError(effectiveParams, foregroundTimeout.error);
 		if (effectiveAsync && foregroundTimeout.timeoutMs !== undefined) {
-			return buildRequestedModeError(effectiveParams, "timeoutMs/maxRuntimeMs only applies to foreground subagent runs. Omit async:true or use action:'interrupt' for background runs.");
+			return buildRequestedModeError(effectiveParams, "timeoutMs/maxRuntimeMs only applies to foreground subagent runs. Set async:false or use action:'interrupt' for background runs.");
 		}
 		if (!effectiveAsync) foregroundTimeout.timeoutMs = normalizeRoleForegroundTimeout(effectiveParams, foregroundTimeout.timeoutMs);
 		const controlConfig = resolveControlConfig(deps.config.control, effectiveParams.control);

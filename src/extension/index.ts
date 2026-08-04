@@ -2,14 +2,14 @@
  * Subagent Tool
  *
  * Full-featured subagent with sync and async modes.
- * - Sync (default): Streams output, renders markdown, tracks usage
- * - Async: Background execution, emits events when done
+ * - Async (default): Background execution, emits events when done
+ * - Sync: Streams output, renders markdown, tracks usage
  *
  * Modes: single (agent + task), parallel (tasks[]), chain (chain[] with {previous})
- * Toggle: async parameter (default: false, configurable via config.json)
+ * Toggle: async parameter (default: true, configurable via config.json)
  *
  * Config file: ~/.pi/agent/extensions/subagent/config.json
- *   { "asyncByDefault": true, "forceTopLevelAsync": true, "maxSubagentDepth": 1, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
+ *   { "asyncByDefault": false, "maxSubagentDepth": 1, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
  */
 
 import * as fs from "node:fs";
@@ -24,9 +24,10 @@ import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
 import { renderWidget, renderSubagentResult } from "../tui/render.ts";
 import { SubagentParams } from "./schemas.ts";
-import { createSubagentExecutor, normalizeSubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
+import { applyForceTopLevelAsyncOverride } from "../runs/background/top-level-async.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
 import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
@@ -234,7 +235,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	}
 
 	const config = loadConfig();
-	const asyncByDefault = config.asyncByDefault === true;
+	// Root calls default async; child-safe nested calls intentionally keep their stock foreground default.
+	const asyncByDefault = config.asyncByDefault !== false;
 	const tempArtifactsDir = getArtifactsDir(null);
 
 	const state: SubagentState = {
@@ -389,7 +391,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Delegate bounded work to configured subagents, chains, or parallel reviewers while the parent session stays in control.",
 		promptGuidelines: [
 			"Use subagent for materially parallelizable scouting, review, or implementation work where another focused agent adds value.",
-			"Launch a small bounded fanout of independent async agents as separate single-agent runs so each completion wakes the parent, with at most one writer. Use one async tasks call for non-review fanout when all child results are required together, when shared concurrency/task limits are needed, or when multiple writers require worktree isolation; the parent receives one aggregate completion. If no useful parent work remains, end the turn and wait instead of polling; completion wakes the parent. When an incomplete active Pi goal needs same-turn child evidence, use foreground instead and do not end the turn before that evidence arrives.",
+			"Top-level subagent execution uses the stock async default unless configuration opts out. Launch a small bounded fanout of independent agents as separate single-agent runs so each completion wakes the parent, with at most one writer. Use one tasks call for non-review fanout when all child results are required together, when shared concurrency/task limits are needed, or when multiple writers require worktree isolation; the parent receives one aggregate completion. If no useful parent work remains, end the turn and wait instead of polling; completion wakes the parent. When an incomplete active Pi goal needs same-turn child evidence, set async:false and do not end the turn before that evidence arrives.",
 			"Before executing subagent runs, call subagent with { action: \"list\" } unless the requested executable agent or chain is already known from this conversation.",
 			"Keep the parent session responsible for final decisions, verification, and user-facing status; treat subagent output as evidence to review, not automatic truth.",
 			"Keep independent review as a separate parent-launched reviewer run after the worker; acceptance.review is unsupported.",
@@ -413,7 +415,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			}
 			const isParallel = (args.tasks?.length ?? 0) > 0;
 			const parallelCount = effectiveParallelTaskCount(args.tasks as Array<{ count?: unknown }> | undefined);
-			const asyncLabel = args.async === true && args.clarify !== true && !isParallel ? theme.fg("warning", " [async]") : "";
+			const renderedArgs = applyForceTopLevelAsyncOverride(args, 0, config.forceTopLevelAsync === true);
+			const asyncLabel = resolveAsyncExecutionMode(renderedArgs, asyncByDefault).effectiveAsync ? theme.fg("warning", " [async]") : "";
 			if (args.chain?.length)
 				return new Text(
 					`${theme.fg("toolTitle", theme.bold("subagent "))}chain (${args.chain.length})${asyncLabel}`,
@@ -422,7 +425,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				);
 			if (isParallel)
 				return new Text(
-					`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})`,
+					`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})${asyncLabel}`,
 					0,
 					0,
 				);
