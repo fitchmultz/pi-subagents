@@ -5,6 +5,7 @@
 ### Changed
 - Keep bundled workflow prompts as unregistered package examples instead of installing them as slash commands.
 - Collapse the background async widget to one line per run. The per-run stats echo, per-agent rows, nested-run aggregates, and the standalone `Ctrl+O` hint line are gone from the collapsed view; the row keeps the live tool of a solo running agent and `Ctrl+O` still expands the full tree. Widget lines are also built two columns narrower in both modes so padded rows stop wrapping into orphan fragments.
+- Drop the dead `expanded` parameters and unreachable collapsed branches left in the async widget detail helpers after the one-line collapsed view landed. Rendering is unchanged.
 
 ## [0.31.0] - 2026-08-04
 
