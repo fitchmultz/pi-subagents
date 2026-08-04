@@ -153,6 +153,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		pi,
 		state,
 		config,
+		// Keep the stock nested default foreground so evidence returns before this caller exits.
 		asyncByDefault: config.asyncByDefault === true,
 		tempArtifactsDir: getArtifactsDir(null),
 		getSubagentSessionRoot,
@@ -174,6 +175,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		promptSnippet: "Delegate nested child-safe subagent work from an explicitly allowed fanout child.",
 		promptGuidelines: [
 			"Use subagent in child-safe fanout mode only for explicitly assigned nested delegation or control inspection.",
+			"Nested execution defaults to foreground unless configuration explicitly opts into async. Set async:false whenever the nested result must appear in this child's report; use async:true only for intentionally detached work.",
 			"Use subagent action:list before nested execution unless the executable nested agent is already known from the task context.",
 			"Do not use subagent child-safe mode for agent config mutation actions; create, update, and delete are blocked here.",
 		],

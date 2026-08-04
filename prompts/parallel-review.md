@@ -7,7 +7,7 @@ Launch parallel reviewers for an adversarial review of the current work.
 
 Use fresh context, not forked context, unless I explicitly ask for forked context. Reviewers should inspect the repository, relevant instructions, and current diff directly from files and commands. Do not rely on the main conversation history.
 
-Prefer separate async reviewer runs so each completion wakes the parent instead of waiting for the whole panel. Continue useful parent work while they run; if none remains, end the turn and wait instead of polling. If an active Pi goal is incomplete and reviewer output gates its next step, use foreground reviewers with no short `timeoutMs`/`maxRuntimeMs`. A timed-out reviewer is incomplete review, never sign-off; rerun, resume, or split the review.
+Prefer separate async reviewer runs so each completion wakes the parent instead of waiting for the whole panel. Continue useful parent work while they run; if none remains, end the turn and wait instead of polling. If an active Pi goal is incomplete and reviewer output gates its next step, set `async: false` with no short `timeoutMs`/`maxRuntimeMs`. A timed-out reviewer is incomplete review, never sign-off; rerun, resume, or split the review.
 
 Omit `acceptance` from review-only tasks unless I explicitly request a same-session acceptance contract. Acceptance adds a finalization turn and does not provide independent review.
 

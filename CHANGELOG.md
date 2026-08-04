@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-04
+
+### Changed
+- Default top-level single, parallel, chain, and slash subagent launches to async execution when `async` is omitted. Child-safe nested calls retain their foreground default so nested evidence returns in the calling child's report. Existing `asyncByDefault: false`, explicit `async: false`, clarify UI, and foreground timeout escapes remain supported.
+- Add `--fg` to slash execution commands, show the effective async mode in tool calls, and align parent guidance around ending the turn for automatic completion delivery instead of blocking or polling.
+
 ## [0.30.0] - 2026-08-04
 
 ### Added

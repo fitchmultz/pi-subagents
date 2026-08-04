@@ -67,15 +67,22 @@ const parseAgentToken = (token: string): { name: string; config: InlineConfig } 
 	return { name: token.slice(0, bracket), config: parseInlineConfig(token.slice(bracket + 1, end !== -1 ? end : undefined)) };
 };
 
-const extractExecutionFlags = (rawArgs: string): { args: string; bg: boolean; fork: boolean } => {
+const extractExecutionFlags = (rawArgs: string): { args: string; async?: boolean; fork: boolean; error?: string } => {
 	let args = rawArgs.trim();
-	let bg = false;
+	let asyncMode: boolean | undefined;
 	let fork = false;
 
 	while (true) {
 		if (args.endsWith(" --bg") || args === "--bg") {
-			bg = true;
+			if (asyncMode === false) return { args, fork, error: "Choose only one of --bg or --fg" };
+			asyncMode = true;
 			args = args === "--bg" ? "" : args.slice(0, -5).trim();
+			continue;
+		}
+		if (args.endsWith(" --fg") || args === "--fg") {
+			if (asyncMode === true) return { args, fork, error: "Choose only one of --bg or --fg" };
+			asyncMode = false;
+			args = args === "--fg" ? "" : args.slice(0, -5).trim();
 			continue;
 		}
 		if (args.endsWith(" --fork") || args === "--fork") {
@@ -86,7 +93,7 @@ const extractExecutionFlags = (rawArgs: string): { args: string; bg: boolean; fo
 		break;
 	}
 
-	return { args, bg, fork };
+	return { args, async: asyncMode, fork };
 };
 
 const projectTrusted = (state: SubagentState): boolean => state.lastUiContext?.isProjectTrusted?.() ?? true;
@@ -451,13 +458,15 @@ export function registerSlashCommands(
 	state: SubagentState,
 ): void {
 	pi.registerCommand("run", {
-		description: "Run a subagent directly: /run agent[output=file] [task] [--bg] [--fork]",
+		description: "Run a subagent directly: /run agent[output=file] [task] [--bg|--fg] [--fork]",
 		getArgumentCompletions: makeAgentCompletions(state, false),
 		handler: async (args, ctx) => {
-			const { args: cleanedArgs, bg, fork } = extractExecutionFlags(args);
+			const flags = extractExecutionFlags(args);
+			if (flags.error) { ctx.ui.notify(flags.error, "error"); return; }
+			const { args: cleanedArgs, async: asyncMode, fork } = flags;
 			const input = cleanedArgs.trim();
 			const firstSpace = input.indexOf(" ");
-			if (!input) { ctx.ui.notify("Usage: /run <agent> [task] [--bg] [--fork]", "error"); return; }
+			if (!input) { ctx.ui.notify("Usage: /run <agent> [task] [--bg|--fg] [--fork]", "error"); return; }
 			const { name: agentName, config: inline } = parseAgentToken(firstSpace === -1 ? input : input.slice(0, firstSpace));
 			const task = firstSpace === -1 ? "" : input.slice(firstSpace + 1).trim();
 
@@ -474,17 +483,19 @@ export function registerSlashCommands(
 			if (inline.outputMode !== undefined) params.outputMode = inline.outputMode;
 			if (inline.skill !== undefined) params.skill = inline.skill;
 			if (inline.model) params.model = inline.model;
-			if (bg) params.async = true;
+			if (asyncMode !== undefined) params.async = asyncMode;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);
 		},
 	});
 
 	pi.registerCommand("chain", {
-		description: "Run agents in sequence: /chain scout \"task\" -> oracle [--bg] [--fork]",
+		description: "Run agents in sequence: /chain scout \"task\" -> oracle [--bg|--fg] [--fork]",
 		getArgumentCompletions: makeAgentCompletions(state, true),
 		handler: async (args, ctx) => {
-			const { args: cleanedArgs, bg, fork } = extractExecutionFlags(args);
+			const flags = extractExecutionFlags(args);
+			if (flags.error) { ctx.ui.notify(flags.error, "error"); return; }
+			const { args: cleanedArgs, async: asyncMode, fork } = flags;
 			const parsed = parseAgentArgs(state, cleanedArgs, "chain", ctx);
 			if (!parsed) return;
 			const chain = parsed.steps.map(({ name, config, task: stepTask }, i) => ({
@@ -498,19 +509,21 @@ export function registerSlashCommands(
 				...(config.progress !== undefined ? { progress: config.progress } : {}),
 			}));
 			const params: SubagentParamsLike = { chain, task: parsed.task, clarify: false, agentScope: "both" };
-			if (bg) params.async = true;
+			if (asyncMode !== undefined) params.async = asyncMode;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);
 		},
 	});
 
 	pi.registerCommand("run-chain", {
-		description: "Run a saved chain: /run-chain chainName -- task [--bg] [--fork]",
+		description: "Run a saved chain: /run-chain chainName -- task [--bg|--fg] [--fork]",
 		getArgumentCompletions: makeChainCompletions(state),
 		handler: async (args, ctx) => {
-			const { args: cleanedArgs, bg, fork } = extractExecutionFlags(args);
+			const flags = extractExecutionFlags(args);
+			if (flags.error) { ctx.ui.notify(flags.error, "error"); return; }
+			const { args: cleanedArgs, async: asyncMode, fork } = flags;
 			const delimiterIndex = cleanedArgs.indexOf(" -- ");
-			const usage = "Usage: /run-chain <chainName> -- <task> [--bg] [--fork]";
+			const usage = "Usage: /run-chain <chainName> -- <task> [--bg|--fg] [--fork]";
 			if (delimiterIndex === -1) {
 				ctx.ui.notify(usage, "error");
 				return;
@@ -528,17 +541,19 @@ export function registerSlashCommands(
 				return;
 			}
 			const params: SubagentParamsLike = { chain: mapSavedChainSteps(chain), task, clarify: false, agentScope: "both" };
-			if (bg) params.async = true;
+			if (asyncMode !== undefined) params.async = asyncMode;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);
 		},
 	});
 
 	pi.registerCommand("parallel", {
-		description: "Run agents in parallel: /parallel scout \"task1\" -> reviewer \"task2\" [--bg] [--fork]",
+		description: "Run agents in parallel: /parallel scout \"task1\" -> reviewer \"task2\" [--bg|--fg] [--fork]",
 		getArgumentCompletions: makeAgentCompletions(state, true),
 		handler: async (args, ctx) => {
-			const { args: cleanedArgs, bg, fork } = extractExecutionFlags(args);
+			const flags = extractExecutionFlags(args);
+			if (flags.error) { ctx.ui.notify(flags.error, "error"); return; }
+			const { args: cleanedArgs, async: asyncMode, fork } = flags;
 			const parsed = parseAgentArgs(state, cleanedArgs, "parallel", ctx);
 			if (!parsed) return;
 			const tasks = parsed.steps.map(({ name, config, task: stepTask }) => ({
@@ -552,7 +567,7 @@ export function registerSlashCommands(
 				...(config.progress !== undefined ? { progress: config.progress } : {}),
 			}));
 			const params: SubagentParamsLike = { tasks, clarify: false, agentScope: "both" };
-			if (bg) params.async = true;
+			if (asyncMode !== undefined) params.async = asyncMode;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);
 		},

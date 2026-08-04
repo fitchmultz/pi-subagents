@@ -96,7 +96,7 @@ That is enough to start.
 
 Pi is the parent session. A subagent is a focused child Pi session with its own job.
 
-When you ask for a subagent, Pi starts the child, gives it the task, and brings the result back. Foreground runs stream in the conversation. Background runs keep working and can be checked later.
+When you ask for a subagent, Pi starts the child and gives it the task. Runs launch in the background by default, then notify the originating session on completion. Set `async: false` or use `--fg` when you explicitly need foreground streaming.
 
 Installing the extension does not start an automatic reviewer in the background. It gives Pi a delegation tool. `acceptance.review` is not a supported shortcut: review remains parent-controlled so a worker cannot spend a full run and then fail for a reviewer result the runtime never produced. If you want every implementation reviewed, say that in your prompt or put it in your project instructions:
 
@@ -219,11 +219,11 @@ Use `~/.pi/agent/settings.json` for a user override or `.pi/settings.json` for a
 
 ## Where running subagents show up
 
-Foreground runs stream progress in the conversation while they run. Use `timeoutMs` or its alias `maxRuntimeMs` when a foreground run must return within a wall-clock budget. While a foreground child is still active, `subagent({ action: "extend", id: "...", extendMs: 300000 })` can extend that timeout. When the timeout expires, running children are soft-interrupted, completed children stay in the result, and timed-out children return `timedOut: true` with a stable timeout message plus resume guidance when a child session was persisted. Foreground reviewer runs automatically raise short timeout budgets to at least 15 minutes. Planner/researcher-style roles raise short foreground budgets only when local run history shows they need longer.
+Foreground runs stream progress in the conversation while they run. Set `async: false`, use `--fg`, enable `clarify: true`, or provide `timeoutMs`/`maxRuntimeMs` when a run must stay foreground. Use `timeoutMs` or its alias `maxRuntimeMs` when a foreground run must return within a wall-clock budget. While a foreground child is still active, `subagent({ action: "extend", id: "...", extendMs: 300000 })` can extend that timeout. When the timeout expires, running children are soft-interrupted, completed children stay in the result, and timed-out children return `timedOut: true` with a stable timeout message plus resume guidance when a child session was persisted. Foreground reviewer runs automatically raise short timeout budgets to at least 15 minutes. Planner/researcher-style roles raise short foreground budgets only when local run history shows they need longer.
 
-Background runs keep working after control returns to you. Prefer them for independent child work. Continue useful parent work while they run; if none remains, end the turn and wait for automatic completion delivery instead of polling. Use `subagent({ action: "status" })` only for diagnostics, or inspect a specific run with `subagent({ action: "status", id: "..." })`.
+Background runs are the default and keep working after control returns to you. Continue useful parent work while they run; if none remains, end the turn and wait for automatic completion delivery instead of polling. Use `subagent({ action: "status" })` only for diagnostics, or inspect a specific run with `subagent({ action: "status", id: "..." })`.
 
-When a Codex-style Pi goal is active, prefer foreground runs for subagent work that gates the next goal step. Ending the parent turn after launching async work can let goal prompting continue before the child evidence is available. Use async under an active goal only when you have useful same-turn parent work to do before checking the result, or when you explicitly want background execution.
+When a Codex-style Pi goal is active, set `async: false` for child evidence that must arrive before the next goal step. Ending the parent turn after launching async work can let goal prompting continue before the child evidence is available.
 
 They also show a compact async widget and send completion notifications. Parallel background runs show per-agent progress instead of fake chain steps. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. When a child is explicitly allowed to fan out with `allowSubagents: true` or `tools: subagent`, its nested runs appear under that parent child in the main status tree instead of being hidden inside the child process.
 
@@ -382,15 +382,16 @@ Append `[key=value,...]` to an agent name to override defaults for that step:
 
 Set `output=false`, `reads=false`, or `skills=false` to disable that behavior explicitly. Do not use `output=false` for file-only returns; use `outputMode=file-only` with an `output` path.
 
-### Background and forked runs
+### Execution mode and forked runs
 
-Add `--bg` to run in the background:
+Slash commands run in the background by default. Add `--fg` only when the command must block. `--bg` explicitly requests background mode, which is useful when configuration sets `asyncByDefault` to `false`. `forceTopLevelAsync` overrides `--fg`, so disable it before requesting foreground execution:
 
 ```text
-/run scout "audit the codebase" --bg
-/chain scout "analyze auth" -> planner "design refactor" -> worker --bg
-# Use grouped background mode only when one aggregate result is intentional:
-/parallel scout "scan frontend" -> scout "scan backend" --bg
+/run scout "audit the codebase"
+/chain scout "analyze auth" -> planner "design refactor" -> worker
+# One /parallel call returns one aggregate completion; use separate calls for per-child wakeups.
+/parallel scout "scan frontend" -> scout "scan backend"
+/run reviewer "review this diff" --fg
 ```
 
 Add `--fork` to start each child from a real branched session created from the parent’s current leaf:
@@ -401,14 +402,14 @@ Add `--fork` to start each child from a real branched session created from the p
 /parallel scout "audit frontend" -> reviewer "review backend constraints" --fork
 ```
 
-You can combine them in either order:
+You can combine either execution override with `--fork`:
 
 ```text
+/run reviewer "review this diff" --fork --fg
 /run reviewer "review this diff" --fork --bg
-/run reviewer "review this diff" --bg --fork
 ```
 
-Background runs are detached. Prefer separate async single-agent runs for independent fanout so each completion wakes the parent instead of waiting for every child. The parent should continue useful work; if none remains, it should end the turn and wait instead of running sleep or status-polling loops. Pi will deliver each completion. When an active goal is incomplete and child evidence gates its next step, prefer foreground/blocking execution.
+Background runs are detached. Prefer separate single-agent runs for independent fanout so each completion wakes the parent instead of waiting for every child. The parent should continue useful work; if none remains, it should end the turn and wait instead of running sleep or status-polling loops. Pi will deliver each completion. When an active goal is incomplete and child evidence gates its next step, set `async: false`. Non-interactive one-shot Pi callers should also set `async: false` when stdout must contain the child result; omitted `async` returns only the launch receipt.
 
 The `oracle` and `worker` builtins are designed for an explicit decision loop. A typical pattern is to ask `oracle` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
 
@@ -756,8 +757,8 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
   { agent: "worker" }
 ]}
 
-// Chain in the background, suitable for unblocking the main chat when no active goal needs same-turn child evidence
-{ chain: [...], async: true }
+// Foreground escape for same-turn evidence
+{ chain: [...], async: false }
 
 // Chain with fan-out/fan-in
 { chain: [
@@ -875,7 +876,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `model` | string | agent default | Override model. |
 | `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `outputSchema`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `acceptance`. |
 | `concurrency` | number | config or `4` | Top-level parallel concurrency. |
-| `timeoutMs` / `maxRuntimeMs` | number | - | Foreground wall-clock timeout for single, parallel, and chain runs. Timed-out children return `timedOut: true`; async/background runs reject it. Short reviewer budgets are raised to a safe floor; planner/researcher-style budgets are raised only from local run-history duration data. For `action: "extend"`, `timeoutMs`/`maxRuntimeMs` can also supply the extension amount when `extendMs` is omitted. |
+| `timeoutMs` / `maxRuntimeMs` | number | - | Foreground wall-clock timeout for single, parallel, and chain runs. When `async` is omitted, either field implies foreground execution. Explicit async/background runs reject it. Short reviewer budgets are raised to a safe floor; planner/researcher-style budgets are raised only from local run-history duration data. For `action: "extend"`, `timeoutMs`/`maxRuntimeMs` can also supply the extension amount when `extendMs` is omitted. |
 | `extendMs` | number | - | Additional milliseconds for `action: "extend"`. |
 | `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. |
 | `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Sequential steps and parallel child tasks support `phase`, `label`, `as`, `outputSchema`, and `acceptance` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`; group-level acceptance is not supported because there is no child session to finalize. |
@@ -883,7 +884,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `chainDir` | string | temp chain dir | Persistent directory for chain artifacts. |
 | `clarify` | boolean | false | Show TUI preview/edit flow only when explicitly set to `true`. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
-| `async` | boolean | false | Background execution. For chains, `clarify: true` explicitly keeps the run foreground for the clarify UI. |
+| `async` | boolean | top-level: true | Background execution. Child-safe nested calls retain their foreground default so the result returns in the calling child's report. Set `false` for foreground execution; `clarify: true` and foreground timeout fields also keep the run foreground. |
 | `cwd` | string | runtime cwd | Override working directory. |
 | `maxOutput` | object | 200KB, 5000 lines | Final output truncation limits. |
 | `artifacts` | boolean | true | Write input, output, and metadata debug artifacts. JSONL is not written. |
@@ -961,11 +962,13 @@ After a worktree parallel step completes, per-agent diff stats are appended to t
 
 ### `asyncByDefault`
 
+Background execution is the stock top-level default. Restore the legacy foreground default if needed:
+
 ```json
-{ "asyncByDefault": true }
+{ "asyncByDefault": false }
 ```
 
-Makes top-level calls use background execution when the request does not explicitly set `async`. Callers can still force foreground with `async: false` unless `forceTopLevelAsync` is enabled.
+The setting applies when a top-level tool or slash call does not explicitly set `async`. Child-safe nested calls retain their foreground default unless `asyncByDefault: true` is explicitly configured; set `async: false` when their result must appear in the calling child's report. Top-level callers can request foreground with `async: false` unless `forceTopLevelAsync` is enabled.
 
 ### `forceTopLevelAsync`
 
@@ -1119,7 +1122,7 @@ When delegating implementation from a plan or spec, keep the task focused on wha
 ```ts
 subagent({
   agent: "worker",
-  // Add async: true unless an incomplete active Pi goal requires same-turn evidence.
+  // Async is the default; set async: false only when this result must arrive in the same turn.
   task: "Implement the plan at /Users/me/docs/mcp-alignment-plan.md. Use scout artifacts in ./handoff/ as context. Do not commit the scout artifacts.",
   acceptance: {
     criteria: [
