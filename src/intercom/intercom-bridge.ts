@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import type { AgentConfig } from "../agents/agents.ts";
 import {
 	SUBAGENT_INTERCOM_IDENTITY_REQUEST_EVENT,
@@ -7,6 +8,7 @@ import {
 } from "../shared/types.ts";
 
 const DEFAULT_INTERCOM_TARGET_PREFIX = "subagent-chat";
+const BUNDLED_INTERCOM_EXTENSION_PATH = fileURLToPath(new URL("../pi-intercom/index.ts", import.meta.url));
 export const INTERCOM_BRIDGE_MARKER = "Intercom orchestration channel:";
 const DEFAULT_INTERCOM_BRIDGE_TEMPLATE = `The inherited thread is reference-only. Do not continue that conversation or send questions, status updates, or completion handoffs to the supervisor in normal assistant text.
 
@@ -63,11 +65,18 @@ export function resolveSubagentIntercomTarget(runId: string, agent: string, inde
 	return `subagent-${sanitizeIntercomTargetPart(agent)}-${sanitizeIntercomTargetPart(runId)}${stepSuffix}`;
 }
 
+function isIntercomExtensionEntry(entry: string): boolean {
+	return entry.trim().replaceAll("\\", "/").toLowerCase().split("/").includes("pi-intercom");
+}
+
 function extensionSandboxAllowsIntercom(extensions: string[] | undefined): boolean {
-	if (extensions === undefined) return true;
-	return extensions.some((entry) =>
-		entry.trim().replaceAll("\\", "/").toLowerCase().split("/").includes("pi-intercom"),
-	);
+	return extensions === undefined || extensions.some(isIntercomExtensionEntry);
+}
+
+function resolveBundledIntercomExtensions(extensions: string[] | undefined): string[] | undefined {
+	if (extensions === undefined) return undefined;
+	const resolved = [...new Set(extensions.map((entry) => isIntercomExtensionEntry(entry) ? BUNDLED_INTERCOM_EXTENSION_PATH : entry))];
+	return resolved.length === extensions.length && resolved.every((entry, index) => entry === extensions[index]) ? extensions : resolved;
 }
 
 function buildIntercomBridgeInstruction(orchestratorTarget: string): string {
@@ -87,9 +96,9 @@ export function applyIntercomBridgeToAgent(agent: AgentConfig, bridge: IntercomB
 	if (!extensionSandboxAllowsIntercom(agent.extensions)) return agent;
 
 	const bridgeTools = ["intercom", "contact_supervisor"];
-	const tools = agent.tools
-		? [...agent.tools, ...bridgeTools.filter((tool) => !agent.tools?.includes(tool))]
-		: agent.tools;
+	const missingTools = agent.tools ? bridgeTools.filter((tool) => !agent.tools?.includes(tool)) : [];
+	const tools = agent.tools && missingTools.length ? [...agent.tools, ...missingTools] : agent.tools;
+	const extensions = resolveBundledIntercomExtensions(agent.extensions);
 	const instruction = bridge.instruction;
 	const trimmedPrompt = agent.systemPrompt?.trim() || "";
 	const systemPrompt = trimmedPrompt.includes(INTERCOM_BRIDGE_MARKER)
@@ -98,10 +107,11 @@ export function applyIntercomBridgeToAgent(agent: AgentConfig, bridge: IntercomB
 			? `${trimmedPrompt}\n\n${instruction}`
 			: instruction;
 
-	if (tools === agent.tools && systemPrompt === agent.systemPrompt) return agent;
+	if (tools === agent.tools && systemPrompt === agent.systemPrompt && extensions === agent.extensions) return agent;
 	return {
 		...agent,
 		tools,
 		systemPrompt,
+		extensions,
 	};
 }

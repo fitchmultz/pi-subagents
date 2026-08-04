@@ -53,9 +53,17 @@ test("direct @earendil-works runtime imports are declared for local installs", (
 	assert.deepEqual(missing, []);
 });
 
-test("detached runner installs TypeBox as a production dependency", () => {
+test("detached runtimes install only their production dependency", () => {
 	const dependencies = readPackageJson().dependencies as Record<string, unknown>;
 	assert.equal(dependencies.typebox, "^1.1.39");
+	assert.equal(dependencies.tsx, undefined);
+});
+
+test("one manifest bundles subagents and intercom", () => {
+	const pi = readPackageJson().pi as { extensions?: unknown; skills?: unknown };
+	assert.deepEqual(pi.extensions, ["./src/extension/index.ts", "./src/pi-intercom/index.ts"]);
+	assert.deepEqual(pi.skills, ["./skills"]);
+	assert.equal(fs.existsSync(path.join(projectRoot, "scripts", "intercom-smoke-package.mjs")), false);
 });
 
 test("package is private and exposes no legacy npx installer", () => {

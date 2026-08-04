@@ -10,21 +10,19 @@ https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1
 
 ## Installation
 
-Install this fork with `pi-intercom` from GitHub:
+Install this fork from GitHub:
 
 ```bash
-pi install git:github.com/fitchmultz/pi-intercom
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-Those are the only required steps. These personal forks are not published to npm and do not provide `npx` installers. Use `pi update --extensions` to refresh them. Local checkout installs remain available for development:
+That is the only required step. This personal fork is not published to npm and does not provide an `npx` installer. Use `pi update --extensions` to refresh it. Local checkout installs remain available for development:
 
 ```bash
-pi install /absolute/path/to/pi-intercom
 pi install /absolute/path/to/pi-subagents
 ```
 
-Pi 0.80.9 or newer is recommended because the extension tracks current extension-mode, lifecycle, model-thinking, and project-trust APIs. The package does not hard-pin that exact Pi version; Pi core packages stay optional wildcard peers so newer Pi releases are not blocked.
+Pi 0.80.10 or newer is recommended because the extension tracks current extension-mode, lifecycle, model-thinking, and project-trust APIs. The package does not hard-pin that exact Pi version; Pi core packages stay optional wildcard peers so newer Pi releases are not blocked.
 
 ## Local validation
 
@@ -34,7 +32,7 @@ Run the local completion gate before treating changes as complete:
 npm run ci
 ```
 
-That command runs TypeScript no-emit checking, package shape smoke checks, an isolated paired-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
+That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
 ## Real Pi smoke
 
@@ -44,7 +42,7 @@ The default local gate stays mock-heavy and deterministic. When you need to veri
 npm run smoke:real-pi
 ```
 
-It installs this checkout and a pi-intercom companion into an isolated temporary Pi home, then runs `pi list`. Set `PI_INTERCOM_PATH=/absolute/path/to/pi-intercom` to exercise a specific companion checkout. Live `--llm` smokes require a real companion checkout. It does not install pi-fitch-kit, publish to npm, or use GitHub Actions.
+It installs this checkout into an isolated temporary Pi home, runs `pi list`, and loads the bundled subagent and intercom extensions. It does not install pi-fitch-kit, publish to npm, or use GitHub Actions.
 
 Live model-backed subagent paths are intentionally opt-in because they can use provider credentials and tokens:
 
@@ -52,7 +50,7 @@ Live model-backed subagent paths are intentionally opt-in because they can use p
 PI_REAL_SMOKE_MODEL=openai/gpt-4o-mini npm run smoke:real-pi -- --llm
 ```
 
-That mode copies local `auth.json` and `models.json` into the isolated Pi agent dir, then asks a real Pi session to exercise extension-loaded subagent list, foreground, async launch, and async completion. Set `PI_REAL_SMOKE_AUTH_AGENT_DIR` if your auth files are not in `~/.pi/agent`.
+That mode copies local `auth.json` and `models.json` into the isolated Pi agent dir, then asks a real Pi session to exercise intercom status plus subagent list, foreground, async launch, and async completion. Set `PI_REAL_SMOKE_AUTH_AGENT_DIR` if your auth files are not in `~/.pi/agent`.
 
 For a broader live gate, add `--llm-full`:
 
@@ -273,16 +271,18 @@ The package includes reusable prompt templates for common workflows. You do not 
 
 Add `autofix` to `/parallel-review` or `/parallel-cleanup` to apply only the synthesized fixes worth doing now after reviewers return.
 
-## Required pi-intercom companion
+## Bundled intercom
 
-Install `pi-subagents` and `pi-intercom` together. Managed children get a private coordination channel back to the parent Pi session unless an explicit agent extension allowlist excludes it.
+The same `pi-subagents` install registers the intercom extension and skill. Managed children get a private coordination channel back to the parent Pi session unless an explicit agent extension allowlist excludes it. See [the intercom guide](docs/intercom.md) for direct peer messaging, keyboard UI, tool actions, configuration, and broker details.
+
+If you previously installed the standalone package, remove that old settings entry once to avoid loading two intercom extensions:
 
 ```bash
-pi install git:github.com/fitchmultz/pi-intercom
+pi remove git:github.com/fitchmultz/pi-intercom
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-Most users do not call `intercom` directly. `pi-subagents` injects fixed default bridge instructions and auto-adds `intercom` and `contact_supervisor` when a child has an explicit tool list. If an agent sets an explicit `extensions` allowlist, include `pi-intercom` there or those child tools stay sandboxed out.
+Most users do not call `intercom` directly. `pi-subagents` injects fixed default bridge instructions and auto-adds `intercom` and `contact_supervisor` when a child has an explicit tool list. If an agent sets an explicit `extensions` allowlist, include `pi-intercom` there or those child tools stay sandboxed out. The bridge resolves that entry, including old standalone paths, to the bundled extension.
 
 Use it for work where the child might need a decision instead of guessing:
 
@@ -310,7 +310,7 @@ If messages do not show up, run:
 /subagents-doctor
 ```
 
-There is no bridge mode or instruction-file config. Pairing is fixed.
+There is no bridge mode, instruction-file config, or second package to install.
 
 At this point, you know enough to use the plugin. The rest of this README is reference material for exact command syntax, custom agents, saved chains, worktrees, and configuration.
 
@@ -919,7 +919,7 @@ subagent({ action: "doctor" })
 
 `resume` sends the follow-up directly when an async child is still reachable over intercom. After completion, it revives the child by starting a new async child from the stored child session file. Multi-child async runs and remembered foreground single, parallel, or chain runs can be revived by passing `index` to choose the child. Nested runs can be resumed by nested id when their live route or persisted nested session metadata is available. Timed-out or transient-error foreground children also use this revive path when their `.jsonl` session file was persisted. Revived children inherit the original explicit acceptance contract; an `acceptance` object supplied on the resume call overrides it. Revive starts a new child process from the old session context; it does not restart the same OS process, and it requires the chosen child to have a persisted `.jsonl` session file.
 
-`nudge` sends a short non-blocking steered intercom message to a live foreground or async child. Use it for guidance, answers, corrections, or blockers that may affect active work. The child treats it as supplemental coordination and continues its current task unless the message explicitly replaces it. It requires `pi-intercom` and a registered child target. Use the `Ask:` command shown by `status` only when the parent must remain alive waiting for a reply.
+`nudge` sends a short non-blocking steered intercom message to a live foreground or async child. Use it for guidance, answers, corrections, or blockers that may affect active work. The child treats it as supplemental coordination and continues its current task unless the message explicitly replaces it. It requires the bundled intercom extension and a registered child target. Use the `Ask:` command shown by `status` only when the parent must remain alive waiting for a reply.
 
 ## Worktree isolation
 
@@ -1023,7 +1023,7 @@ Spawn-count and per-agent child-concurrency quotas are not part of this release;
 
 ### Intercom pairing
 
-Intercom wiring is always on. Install `pi-intercom` with `pi-subagents`. Children receive fixed default bridge instructions and parent-side result/control delivery uses the resolved orchestrator target automatically. If an agent sets an explicit `extensions` allowlist, include `pi-intercom` so child-side `intercom` and `contact_supervisor` tools stay available.
+Intercom wiring is always on and bundled with `pi-subagents`. Children receive fixed default bridge instructions and parent-side result/control delivery uses the resolved orchestrator target automatically. If an agent sets an explicit `extensions` allowlist, include `pi-intercom` so child-side `intercom` and `contact_supervisor` tools stay available.
 
 The injected guidance tells children to use steered blocking `contact_supervisor` decisions or structured interviews only when the ephemeral child cannot safely continue and must remain alive for the answer, intentionally deferred/coalesced `progress_update` for concise plan-changing updates, and generic intercom only as fallback plumbing. Supervisor nudges supplement the active task unless they explicitly replace it; routine completion still returns through normal child results.
 

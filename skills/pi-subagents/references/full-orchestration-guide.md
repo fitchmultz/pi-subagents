@@ -481,7 +481,7 @@ Use `oracle` as a smart-friend escalation when the parent needs help with trajec
 
 ## Subagent + Intercom Coordination
 
-Install `pi-subagents` with `pi-intercom`. Children get fixed default bridge instructions and a private coordination channel back to the parent session unless an explicit `extensions` allowlist omits `pi-intercom`.
+`pi-subagents` bundles its intercom extension. Children get fixed default bridge instructions and a private coordination channel back to the parent session unless an explicit `extensions` allowlist omits `pi-intercom`.
 
 Most agents should not call generic `intercom` directly unless bridge instructions provide a target and `contact_supervisor` is unavailable. Do not invent a target. Prefer the tool from the injected bridge instructions.
 
