@@ -411,7 +411,7 @@ subagent({
 })
 ```
 
-If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. Prefer `subagent({ action: "nudge", id: "...", message: "..." })` for live guidance, answers, corrections, or blockers; it is a non-blocking steer that supplements the active child task unless it explicitly replaces it. Use the status-shown intercom ask only when the parent must remain alive waiting for a reply. Do not invent a target or ask the child to self-report when no bridge exists.
+Needs-attention notifications can also prepare a compact intercom ping for the paired orchestrator target. Prefer `subagent({ action: "nudge", id: "...", message: "..." })` for live guidance, answers, corrections, or blockers; it is a non-blocking steer that supplements the active child task unless it explicitly replaces it. Use the status-shown intercom ask only when the parent must remain alive waiting for a reply. Do not invent a target; use the resolved target shown in status or injected instructions. An explicit agent `extensions` allowlist that omits `pi-intercom` still sandboxes child-side coordination tools.
 
 ## Clarify TUI
 

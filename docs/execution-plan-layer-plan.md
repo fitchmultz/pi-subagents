@@ -40,7 +40,7 @@ An `ExecutionPlan` layer should not run children. It should be a pure, serializa
 | Output behavior | `normalizeSingleOutputOverride()`, `resolveSingleOutputPath()`, chain behavior resolution | runner resolves output files again for steps | Plan should store output path/mode and output behavior per child. |
 | Acceptance | effective acceptance contract per run/step | runner receives acceptance config and finalizes | Plan should store effective acceptance input and explicitness. |
 | Resource limits | agent config merged into run options | runner receives maxExecutionTimeMs/maxTokens | Plan should store per-child limits. |
-| Intercom bridge | resolve/apply bridge and child targets per context | async result/status use targets | Plan should store whether each child gets bridge tools/instructions and target names. |
+| Intercom pairing | resolve/apply fixed pairing and child targets | async result/status use targets | Plan should store fixed instructions and target names; explicit extension allowlists may sandbox child tools. |
 | Nested routing | inherited route, per-child event/control metadata | runner writes nested events/status | Plan should store route metadata per child, not perform IO. |
 | Worktrees | foreground parallel setup and cwd conflict checks | async runner has separate worktree setup/cleanup | Plan should store requested isolation and planned child cwd; setup stays adapter-owned. |
 | Project trust | `resolveConfiguredChildProjectTrustPolicy()` | runner receives project trust | Plan should store effective project trust policy. |
