@@ -909,9 +909,9 @@ function buildSingleWidgetLines(job: AsyncJobState, theme: Theme, width: number,
 /** Collapsed rows carry the live tool inline, since detail lines wait for Ctrl+O. */
 function collapsedJobRow(job: AsyncJobState, theme: Theme, width: number): string {
 	const stats = widgetStats(job, theme);
-	// A single running agent keeps its live tool on the step, not on the job root.
+	// The job root mirrors an active step's tool but drops its args, so prefer the step itself.
 	const runningSteps = job.steps?.filter((step) => step.status === "running") ?? [];
-	const soloStep = !job.currentTool && runningSteps.length === 1 ? runningSteps[0] : undefined;
+	const soloStep = runningSteps.length === 1 ? runningSteps[0] : undefined;
 	const activity = job.status !== "running"
 		? ""
 		: soloStep
@@ -975,8 +975,8 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 	}
 
 	if (queued.length > 0 && slots > 0) {
-		// One queued run has room for its own name; a backlog collapses to a count.
-		items.push(queued.length === 1 ? jobItem(queued[0]!) : [`${theme.fg("muted", "◦")} ${theme.fg("dim", `${queued.length} queued`)}`]);
+		// One collapsed queued run has room for its own name; a backlog collapses to a count.
+		items.push(queued.length === 1 && !expanded ? jobItem(queued[0]!) : [`${theme.fg("muted", "◦")} ${theme.fg("dim", `${queued.length} queued`)}`]);
 		queuedShown = true;
 		slots--;
 	}

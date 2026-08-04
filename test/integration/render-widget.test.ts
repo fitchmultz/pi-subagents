@@ -149,13 +149,24 @@ describe("subagent async widget rendering", () => {
 	});
 
 	it("names a lone queued run instead of summarizing it as a count", () => {
-		const text = buildWidgetLines([
-			{ asyncId: "run-1", asyncDir: "/tmp/1", status: "running", agents: ["scout"] },
-			{ asyncId: "queued-1", asyncDir: "/tmp/queued", status: "queued", agents: ["planner"] },
-		], theme, 120).join("\n");
+		const queuedJob = { asyncId: "queued-1", asyncDir: "/tmp/queued", status: "queued", agents: ["planner"] };
+		const alone = buildWidgetLines([queuedJob], theme, 120);
+		assert.equal(alone.length, 1);
+		assert.match(alone[0]!, /planner/);
 
-		assert.match(text, /planner/);
-		assert.doesNotMatch(text, /1 queued/);
+		const alongsideRunning = buildWidgetLines([
+			{ asyncId: "run-1", asyncDir: "/tmp/1", status: "running", agents: ["scout"] },
+			queuedJob,
+		], theme, 120).join("\n");
+		assert.match(alongsideRunning, /planner/);
+		assert.doesNotMatch(alongsideRunning, /1 queued/);
+
+		const expanded = buildWidgetLines([
+			{ asyncId: "run-1", asyncDir: "/tmp/1", status: "running", agents: ["scout"] },
+			queuedJob,
+		], theme, 120, true).join("\n");
+		assert.match(expanded, /1 queued/);
+		assert.doesNotMatch(expanded, /planner/);
 	});
 
 	it("keeps collapsed widget rows on one physical line in a narrow terminal", () => {
@@ -178,6 +189,7 @@ describe("subagent async widget rendering", () => {
 			assert.equal(widget(undefined, theme).render(40).length, 1, "the component pads a column per side, so rows must be built narrower");
 		} finally {
 			if (columns) Object.defineProperty(process.stdout, "columns", columns);
+			else delete (process.stdout as { columns?: number }).columns;
 		}
 	});
 
@@ -311,6 +323,9 @@ describe("subagent async widget rendering", () => {
 			agents: ["worker"],
 			stepsTotal: 1,
 			updatedAt: now,
+			// The runner mirrors the active step's tool onto the job root, without its args.
+			currentTool: "read",
+			currentToolStartedAt: now - 2000,
 			steps: [
 				{
 					index: 0,
