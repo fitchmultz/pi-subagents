@@ -276,7 +276,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	};
 	globalStore[runtimeCleanupStoreKey] = runtimeCleanup;
 
-	const { ensurePoller, handleStarted, handleComplete, resetJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
+	const { ensurePoller, handleStarted, handleComplete, restoreJobs, resetJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
 	const executor = createSubagentExecutor({
 		pi,
 		state,
@@ -511,7 +511,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		state.lastUiContext = ctx;
 		cleanupSessionArtifacts(ctx);
 		clearPendingForegroundControlNotices(state);
-		resetJobs(ctx);
+		resetJobs();
+		try {
+			restoreJobs(state.currentSessionId, ctx);
+		} catch (error) {
+			console.error("Failed to restore active async jobs:", error);
+			resetJobs(ctx);
+		}
 		restoreSlashFinalSnapshots(ctx.sessionManager.getEntries());
 		startResultWatcher();
 		primeExistingResults();

@@ -16,7 +16,8 @@ import {
 import { readStatus } from "../../shared/utils.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
-import { hasLiveNestedDescendants, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
+import { findNestedRouteForRootId, hasLiveNestedDescendants, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
+import { listAsyncRuns } from "./async-status.ts";
 import { isTuiContext } from "../../shared/ui-mode.ts";
 
 interface AsyncJobTrackerOptions {
@@ -31,6 +32,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	ensurePoller: () => void;
 	handleStarted: (data: unknown) => void;
 	handleComplete: (data: unknown) => void;
+	restoreJobs: (sessionId: string, ctx: ExtensionContext) => void;
 	resetJobs: (ctx?: ExtensionContext) => void;
 } {
 	const completionRetentionMs = options.completionRetentionMs ?? 10000;
@@ -187,7 +189,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 						if (status.steps?.length) {
 							const groups = normalizeParallelGroups(status.parallelGroups, status.steps.length, status.chainStepCount ?? status.steps.length);
 							job.parallelGroups = groups.length ? groups : job.parallelGroups;
-							job.hasParallelGroups = groups.length > 0 || job.hasParallelGroups;
 							const activeGroup = status.currentStep !== undefined
 								? groups.find((group) => status.currentStep! >= group.start && status.currentStep! < group.start + group.count)
 								: undefined;
@@ -203,8 +204,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 							job.completedSteps = visibleSteps.filter((step) => step.status === "complete" || step.status === "completed").length;
 							if (status.state === "complete") job.completedSteps = visibleSteps.length;
 						}
-						job.sessionDir = status.sessionDir ?? job.sessionDir;
-						job.outputFile = status.outputFile ?? job.outputFile;
 						job.totalTokens = status.totalTokens ?? job.totalTokens;
 						job.sessionFile = status.sessionFile ?? job.sessionFile;
 						if ((job.status === "complete" || job.status === "failed" || job.status === "paused") && !nestedRefreshFailed && !hasLiveNestedDescendants(job.nestedChildren) && (previousStatus !== job.status || !state.cleanupTimers.has(job.asyncId))) {
@@ -259,7 +258,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			parallelGroups: validParallelGroups,
 			nestedRoute: info.nestedRoute,
 			stepsTotal: firstGroupCount ?? agents?.length,
-			hasParallelGroups: validParallelGroups.length > 0,
 			activeParallelGroup: Boolean(firstGroupCount && firstGroupCount > 0),
 			startedAt: now,
 			updatedAt: now,
@@ -293,6 +291,71 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		if (!nestedRefreshFailed && !hasLiveNestedDescendants(job?.nestedChildren)) scheduleCleanup(asyncId);
 	};
 
+	const restoreJobs = (sessionId: string, ctx: ExtensionContext) => {
+		for (const run of listAsyncRuns(asyncDirRoot, {
+			states: ["queued", "running"],
+			sessionId,
+			resultsDir,
+			kill: options.kill,
+			now: options.now,
+		})) {
+			const groups = run.parallelGroups ?? [];
+			const activeGroup = run.currentStep !== undefined
+				? groups.find((group) => run.currentStep! >= group.start && run.currentStep! < group.start + group.count)
+				: undefined;
+			const steps = activeGroup
+				? run.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count)
+				: run.steps;
+			let controlEventCursor: number | undefined;
+			try {
+				controlEventCursor = fs.statSync(path.join(run.asyncDir, "events.jsonl")).size;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error(`Failed to inspect async control events for '${run.asyncDir}':`, error);
+			}
+			let nestedRoute: ReturnType<typeof findNestedRouteForRootId>;
+			try {
+				nestedRoute = findNestedRouteForRootId(run.id);
+			} catch (error) {
+				console.error(`Failed to restore nested async descendants for '${run.asyncDir}':`, error);
+			}
+			state.asyncJobs.set(run.id, {
+				asyncId: run.id,
+				asyncDir: run.asyncDir,
+				status: run.state,
+				sessionId: run.sessionId,
+				activityState: run.activityState,
+				lastActivityAt: run.lastActivityAt,
+				currentTool: run.currentTool,
+				currentToolStartedAt: run.currentToolStartedAt,
+				currentPath: run.currentPath,
+				turnCount: run.turnCount,
+				toolCount: run.toolCount,
+				mode: run.mode,
+				agents: steps.map((step) => step.agent),
+				currentStep: run.currentStep,
+				chainStepCount: run.chainStepCount,
+				parallelGroups: groups,
+				steps,
+				stepsTotal: steps.length,
+				runningSteps: steps.filter((step) => step.status === "running").length,
+				completedSteps: steps.filter((step) => step.status === "complete" || step.status === "completed").length,
+				activeParallelGroup: Boolean(activeGroup),
+				startedAt: run.startedAt,
+				updatedAt: run.lastUpdate ?? run.startedAt,
+				totalTokens: run.totalTokens,
+				sessionFile: run.sessionFile,
+				controlEventCursor,
+				nestedRoute,
+				nestedChildren: run.nestedChildren,
+			});
+		}
+		if (isTuiContext(ctx)) {
+			state.lastUiContext = ctx;
+			rerenderWidget(ctx);
+		}
+		if (state.asyncJobs.size > 0) ensurePoller();
+	};
+
 	const resetJobs = (ctx?: ExtensionContext) => {
 		for (const timer of state.cleanupTimers.values()) {
 			clearTimeout(timer);
@@ -308,5 +371,5 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		}
 	};
 
-	return { ensurePoller, handleStarted, handleComplete, resetJobs };
+	return { ensurePoller, handleStarted, handleComplete, restoreJobs, resetJobs };
 }

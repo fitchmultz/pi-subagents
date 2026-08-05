@@ -116,6 +116,57 @@ describe("async job tracker", () => {
 		}
 	});
 
+	it("restores active jobs for the current session after reload or resume", async () => {
+		const asyncRoot = createTempDir("pi-async-job-restore-");
+		const currentSession = "/sessions/current.jsonl";
+		const writeRun = (id: string, sessionId: string, state: "running" | "complete") => {
+			const runDir = path.join(asyncRoot, id);
+			fs.mkdirSync(runDir, { recursive: true });
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: id,
+				sessionId,
+				mode: "parallel",
+				state,
+				startedAt: Date.now() - 1000,
+				lastUpdate: Date.now(),
+				currentTool: "read",
+				steps: [
+					{ agent: "scout", status: state === "running" ? "running" : "complete", currentTool: "read", currentToolArgs: "src/index.ts" },
+					{ agent: "reviewer", status: "complete" },
+				],
+			}), "utf-8");
+			return runDir;
+		};
+		const currentDir = writeRun("run-current", currentSession, "running");
+		writeRun("run-other-session", "/sessions/other.jsonl", "running");
+		writeRun("run-finished", currentSession, "complete");
+		fs.writeFileSync(path.join(currentDir, "events.jsonl"), `${JSON.stringify({
+			type: "subagent.control",
+			channels: ["event"],
+			event: { type: "needs_attention", runId: "run-current", agent: "scout" },
+		})}\n`, "utf-8");
+
+		const state = createState();
+		const ui = createUiContext();
+		const recorder = createEventRecorder();
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 10 });
+		try {
+			tracker.restoreJobs(currentSession, ui.ctx as never);
+
+			assert.deepEqual([...state.asyncJobs.keys()], ["run-current"]);
+			assert.equal(state.asyncJobs.get("run-current")?.currentTool, "read");
+			assert.deepEqual(state.asyncJobs.get("run-current")?.agents, ["scout", "reviewer"]);
+			assert.notEqual(ui.widgets.at(-1), undefined);
+			assert.notEqual(state.poller, null);
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			assert.equal(recorder.events.length, 0, "restoring a run should not replay old control events");
+		} finally {
+			tracker.resetJobs();
+			if (state.poller) clearInterval(state.poller);
+			removeTempDir(asyncRoot);
+		}
+	});
+
 	it("uses flattened async-start agents for initial parallel group widget state", () => {
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
