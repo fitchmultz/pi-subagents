@@ -23,7 +23,6 @@ import { isTuiContext } from "../../shared/ui-mode.ts";
 interface AsyncJobTrackerOptions {
 	completionRetentionMs?: number;
 	pollIntervalMs?: number;
-	restoreDiscoveryGraceMs?: number;
 	resultsDir?: string;
 	statSync?: typeof fs.statSync;
 	kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
@@ -39,7 +38,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 } {
 	const completionRetentionMs = options.completionRetentionMs ?? 10000;
 	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
-	const restoreDiscoveryGraceMs = options.restoreDiscoveryGraceMs ?? 2000;
 	const resultsDir = options.resultsDir ?? RESULTS_DIR;
 	let restoreDiscoverySessionId: string | undefined;
 	let restoreDiscoveryDeadline = 0;
@@ -384,7 +382,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 
 	const restoreJobs = (sessionId: string, ctx: ExtensionContext) => {
 		restoreDiscoverySessionId = sessionId;
-		restoreDiscoveryDeadline = Date.now() + restoreDiscoveryGraceMs;
+		restoreDiscoveryDeadline = Date.now() + 2_000;
 		try {
 			discoverRestoredJobs(sessionId);
 		} catch (error) {

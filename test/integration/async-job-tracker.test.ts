@@ -200,10 +200,7 @@ describe("async job tracker", () => {
 		const state = createState();
 		const ui = createUiContext();
 		const recorder = createEventRecorder();
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-			pollIntervalMs: 10,
-			restoreDiscoveryGraceMs: 100,
-		});
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 10 });
 		try {
 			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
 			assert.equal(state.asyncJobs.size, 0);
@@ -232,18 +229,16 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("stops restore discovery after its grace period", async () => {
+	it("stops restore discovery after its grace period", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "Date"] });
 		const asyncRoot = createTempDir("pi-async-job-restore-grace-");
 		const state = createState();
 		const ui = createUiContext();
 		const recorder = createEventRecorder();
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-			pollIntervalMs: 5,
-			restoreDiscoveryGraceMs: 15,
-		});
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 5 });
 		try {
 			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
-			await new Promise((resolve) => setTimeout(resolve, 40));
+			t.mock.timers.tick(2_005);
 			assert.equal(state.poller, null);
 		} finally {
 			tracker.resetJobs();
