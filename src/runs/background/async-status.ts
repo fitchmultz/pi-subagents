@@ -136,7 +136,10 @@ function validateTokenUsage(value: unknown, field: string, source: string): void
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		throw new Error(`Invalid async status '${source}': ${field} must be an object.`);
 	}
-	assertOptionalFields(value as Record<string, unknown>, ["input", "output", "total"], (part) => typeof part === "number" && Number.isFinite(part), "a finite number", `${source} (${field})`);
+	const tokens = value as Record<string, unknown>;
+	if (![tokens.input, tokens.output, tokens.total].every((part) => typeof part === "number" && Number.isFinite(part))) {
+		throw new Error(`Invalid async status '${source}': ${field} must contain finite input, output, and total numbers.`);
+	}
 }
 
 function validateStatusForSummary(status: AsyncStatus, source: string): void {
@@ -183,7 +186,7 @@ function validateStatusForSummary(status: AsyncStatus, source: string): void {
 	}
 }
 
-function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string }, nestedWarnings: string[] = []): AsyncRunSummary {
+export function asyncStatusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string }, nestedWarnings: string[] = []): AsyncRunSummary {
 	validateStatusForSummary(status, path.join(asyncDir, "status.json"));
 	const { activityState, lastActivityAt } = deriveAsyncActivityState(asyncDir, status);
 	const steps = status.steps ?? [];
@@ -316,7 +319,7 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 			} catch (error) {
 				nestedWarnings.push(`Nested status unavailable: ${getErrorMessage(error)}`);
 			}
-			const summary = statusToSummary(asyncDir, status, nestedWarnings);
+			const summary = asyncStatusToSummary(asyncDir, status, nestedWarnings);
 			if (allowedStates && !allowedStates.has(summary.state)) continue;
 			if (options.sessionId && summary.sessionId !== options.sessionId) continue;
 			runs.push(summary);

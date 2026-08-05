@@ -209,6 +209,46 @@ describe("async job tracker", () => {
 		}
 	});
 
+	it("rejects malformed status updates before they reach restored widget state", async () => {
+		const asyncRoot = createTempDir("pi-async-job-restore-invalid-update-");
+		const runDir = path.join(asyncRoot, "run-current");
+		const statusPath = path.join(runDir, "status.json");
+		fs.mkdirSync(runDir);
+		const status = {
+			runId: "run-current",
+			sessionId: "/sessions/current.jsonl",
+			mode: "single",
+			state: "running",
+			startedAt: Date.now(),
+			lastUpdate: Date.now(),
+			steps: [{ agent: "worker", status: "running" }],
+		};
+		fs.writeFileSync(statusPath, JSON.stringify(status), "utf-8");
+		const state = createState();
+		const ui = createUiContext();
+		const recorder = createEventRecorder();
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 10 });
+		const originalError = console.error;
+		console.error = () => {};
+		try {
+			tracker.restoreJobs(status.sessionId, ui.ctx as never);
+			fs.writeFileSync(statusPath, JSON.stringify({
+				...status,
+				lastUpdate: Date.now() + 1,
+				steps: [{ agent: "worker", status: "failed", error: { message: "not a string" } }],
+			}), "utf-8");
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			const job = state.asyncJobs.get("run-current");
+			assert.equal(job?.status, "failed");
+			assert.equal(job?.steps?.[0]?.error, undefined);
+		} finally {
+			console.error = originalError;
+			tracker.resetJobs();
+			if (state.poller) clearInterval(state.poller);
+			removeTempDir(asyncRoot);
+		}
+	});
+
 	it("discovers a runner whose initial status appears after restoration", async () => {
 		const asyncRoot = createTempDir("pi-async-job-restore-delayed-");
 		const runDir = path.join(asyncRoot, "run-delayed");
@@ -251,10 +291,10 @@ describe("async job tracker", () => {
 		const state = createState();
 		const ui = createUiContext();
 		const recorder = createEventRecorder();
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 5 });
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 250 });
 		try {
 			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
-			t.mock.timers.tick(2_005);
+			t.mock.timers.tick(2_000);
 			assert.equal(state.poller, null);
 		} finally {
 			tracker.resetJobs();

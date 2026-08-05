@@ -222,6 +222,26 @@ describe("async status helpers", () => {
 		}
 	});
 
+	it("rejects incomplete persisted token usage", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-bad-tokens-"));
+		try {
+			createAsyncDir(root, "bad-tokens", {
+				runId: "bad-tokens",
+				mode: "single",
+				state: "running",
+				startedAt: 100,
+				steps: [{ agent: "worker", status: "running", tokens: {} }],
+			});
+
+			assert.throws(
+				() => listAsyncRuns(root),
+				/steps\[0\]\.tokens must contain finite input, output, and total numbers/,
+			);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("repairs stale running runs before listing active async runs", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-stale-list-"));
 		const resultsDir = path.join(root, "results");

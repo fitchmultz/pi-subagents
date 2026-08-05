@@ -17,7 +17,7 @@ import { readStatus } from "../../shared/utils.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 import { findNestedRouteForRootId, hasLiveNestedDescendants, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
-import { listAsyncRuns } from "./async-status.ts";
+import { asyncStatusToSummary, listAsyncRuns } from "./async-status.ts";
 import { isTuiContext } from "../../shared/ui-mode.ts";
 
 interface AsyncJobTrackerOptions {
@@ -130,7 +130,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				} catch (error) {
 					console.error("Failed to discover active async jobs:", error);
 				}
-				if (Date.now() > restoreDiscoveryDeadline) {
+				if (Date.now() >= restoreDiscoveryDeadline) {
 					restoreDiscoverySessionId = undefined;
 					restoreDiscoveryDeadline = 0;
 				}
@@ -185,31 +185,32 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 					});
 					const status = reconciliation.status ?? readStatus(job.asyncDir);
 					if (status) {
+						const summary = asyncStatusToSummary(job.asyncDir, status);
 						const previousStatus = job.status;
-						job.status = status.state;
+						job.status = summary.state;
 						if (job.status !== "complete" && job.status !== "failed" && job.status !== "paused") cancelCleanup(job.asyncId);
-						job.sessionId = status.sessionId ?? job.sessionId;
-						job.activityState = status.activityState;
-						job.lastActivityAt = status.lastActivityAt ?? job.lastActivityAt;
-						job.currentTool = status.currentTool;
-						job.currentToolStartedAt = status.currentToolStartedAt;
-						job.currentPath = status.currentPath;
-						job.turnCount = status.turnCount ?? job.turnCount;
-						job.toolCount = status.toolCount ?? job.toolCount;
-						job.mode = status.mode;
-						job.currentStep = status.currentStep ?? job.currentStep;
-						job.chainStepCount = status.chainStepCount ?? job.chainStepCount;
-						job.startedAt = status.startedAt ?? job.startedAt;
-						if (status.lastUpdate !== undefined) job.updatedAt = status.lastUpdate;
-						if (status.steps?.length) {
-							const groups = normalizeParallelGroups(status.parallelGroups, status.steps.length, status.chainStepCount ?? status.steps.length);
+						job.sessionId = summary.sessionId ?? job.sessionId;
+						job.activityState = summary.activityState;
+						job.lastActivityAt = summary.lastActivityAt ?? job.lastActivityAt;
+						job.currentTool = summary.currentTool;
+						job.currentToolStartedAt = summary.currentToolStartedAt;
+						job.currentPath = summary.currentPath;
+						job.turnCount = summary.turnCount ?? job.turnCount;
+						job.toolCount = summary.toolCount ?? job.toolCount;
+						job.mode = summary.mode;
+						job.currentStep = summary.currentStep ?? job.currentStep;
+						job.chainStepCount = summary.chainStepCount ?? job.chainStepCount;
+						job.startedAt = summary.startedAt;
+						if (summary.lastUpdate !== undefined) job.updatedAt = summary.lastUpdate;
+						if (summary.steps.length) {
+							const groups = summary.parallelGroups ?? [];
 							job.parallelGroups = groups.length ? groups : job.parallelGroups;
-							const activeGroup = status.currentStep !== undefined
-								? groups.find((group) => status.currentStep! >= group.start && status.currentStep! < group.start + group.count)
+							const activeGroup = summary.currentStep !== undefined
+								? groups.find((group) => summary.currentStep! >= group.start && summary.currentStep! < group.start + group.count)
 								: undefined;
 							const visibleSteps = activeGroup
-								? status.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count).map((step, index) => ({ ...step, index: activeGroup.start + index }))
-								: status.steps.map((step, index) => ({ ...step, index }));
+								? summary.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count)
+								: summary.steps;
 							job.activeParallelGroup = Boolean(activeGroup);
 							job.agents = visibleSteps.map((step) => step.agent);
 							job.steps = visibleSteps;
@@ -217,10 +218,10 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 							job.stepsTotal = visibleSteps.length;
 							job.runningSteps = visibleSteps.filter((step) => step.status === "running").length;
 							job.completedSteps = visibleSteps.filter((step) => step.status === "complete" || step.status === "completed").length;
-							if (status.state === "complete") job.completedSteps = visibleSteps.length;
+							if (summary.state === "complete") job.completedSteps = visibleSteps.length;
 						}
-						job.totalTokens = status.totalTokens ?? job.totalTokens;
-						job.sessionFile = status.sessionFile ?? job.sessionFile;
+						job.totalTokens = summary.totalTokens ?? job.totalTokens;
+						job.sessionFile = summary.sessionFile ?? job.sessionFile;
 						if ((job.status === "complete" || job.status === "failed" || job.status === "paused") && !nestedRefreshFailed && !hasLiveNestedDescendants(job.nestedChildren) && (previousStatus !== job.status || !state.cleanupTimers.has(job.asyncId))) {
 							scheduleCleanup(job.asyncId);
 						}
