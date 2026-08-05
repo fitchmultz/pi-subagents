@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- New builtin `reviewer-ponytail` agent: reviews a diff for over-engineering and slop, governed by the user-installed `ponytail` skill when present. Every finding must name a behavior-preserving replacement; intended functionality always wins over compliance.
+- New builtin `reviewer-ponytail` agent: reviews a diff for over-engineering and slop, governed by the user-installed `ponytail` skill when present. Findings proposing a cut must name a behavior-preserving replacement; intended functionality always wins over compliance.
 
 ### Changed
 - Keep bundled workflow prompts as unregistered package examples instead of installing them as slash commands.
