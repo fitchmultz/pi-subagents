@@ -148,10 +148,20 @@ describe("async job tracker", () => {
 		const malformedDir = path.join(asyncRoot, "run-malformed");
 		fs.mkdirSync(malformedDir);
 		fs.writeFileSync(path.join(malformedDir, "status.json"), "{", "utf-8");
+		const invalidDir = path.join(asyncRoot, "run-invalid");
+		fs.mkdirSync(invalidDir);
+		fs.writeFileSync(path.join(invalidDir, "status.json"), JSON.stringify({
+			runId: "run-invalid",
+			sessionId: currentSession,
+			mode: "single",
+			state: "running",
+			startedAt: Date.now(),
+			steps: [{ agent: "broken", status: "failed", error: { message: "not a string" } }],
+		}), "utf-8");
 		const historicalControlEvent = `${JSON.stringify({
 			type: "subagent.control",
 			channels: ["event"],
-			event: { type: "needs_attention", runId: "run-current", agent: "scout" },
+			event: { type: "needs_attention", to: "needs_attention", ts: Date.now() - 1000, runId: "run-current", agent: "scout", message: "historical" },
 		})}\n`;
 		fs.writeFileSync(path.join(currentDir, "events.jsonl"), historicalControlEvent, "utf-8");
 
@@ -183,8 +193,14 @@ describe("async job tracker", () => {
 			assert.deepEqual(state.asyncJobs.get("run-current")?.steps?.map((step) => step.index), [1, 2]);
 			assert.notEqual(ui.widgets.at(-1), undefined);
 			assert.notEqual(state.poller, null);
+			fs.appendFileSync(path.join(currentDir, "events.jsonl"), `${JSON.stringify({
+				type: "subagent.control",
+				channels: ["event"],
+				event: { type: "needs_attention", to: "needs_attention", ts: Date.now() + 1, runId: "run-current", agent: "scout", message: "new" },
+			})}\n`, "utf-8");
 			await new Promise((resolve) => setTimeout(resolve, 30));
-			assert.equal(recorder.events.length, 0, "restoring a run should not replay old control events");
+			assert.equal(recorder.events.length, 1, "restoration should emit only post-boundary control events");
+			assert.equal((recorder.events[0]?.data as { event?: { message?: string } }).event?.message, "new");
 		} finally {
 			console.error = originalError;
 			tracker.resetJobs();
@@ -240,6 +256,35 @@ describe("async job tracker", () => {
 			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
 			t.mock.timers.tick(2_005);
 			assert.equal(state.poller, null);
+		} finally {
+			tracker.resetJobs();
+			if (state.poller) clearInterval(state.poller);
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("performs a final discovery when the first post-deadline poll runs late", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+		const asyncRoot = createTempDir("pi-async-job-restore-final-scan-");
+		const runDir = path.join(asyncRoot, "run-late-tick");
+		fs.mkdirSync(runDir);
+		const state = createState();
+		const ui = createUiContext();
+		const recorder = createEventRecorder();
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 700 });
+		try {
+			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
+			t.mock.timers.tick(1_999);
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: "run-late-tick",
+				sessionId: "/sessions/current.jsonl",
+				mode: "single",
+				state: "running",
+				startedAt: Date.now(),
+				steps: [{ agent: "worker", status: "running" }],
+			}), "utf-8");
+			t.mock.timers.tick(101);
+			assert.equal(state.asyncJobs.has("run-late-tick"), true);
 		} finally {
 			tracker.resetJobs();
 			if (state.poller) clearInterval(state.poller);

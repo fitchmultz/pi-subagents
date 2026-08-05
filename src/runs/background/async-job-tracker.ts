@@ -75,11 +75,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		}
 		try {
 			const stat = fs.fstatSync(fd);
-			if (job.controlEventCursor === undefined) {
-				job.controlEventCursor = stat.size;
-				return;
-			}
-			const cursor = stat.size < job.controlEventCursor ? 0 : job.controlEventCursor;
+			const cursor = stat.size < (job.controlEventCursor ?? 0) ? 0 : (job.controlEventCursor ?? 0);
 			if (stat.size <= cursor) return;
 			const buffer = Buffer.alloc(stat.size - cursor);
 			fs.readSync(fd, buffer, 0, buffer.length, cursor);
@@ -98,6 +94,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				if (!parsed || typeof parsed !== "object" || (parsed as { type?: unknown }).type !== "subagent.control") continue;
 				const record = parsed as { event?: ControlEvent; channels?: string[]; childIntercomTarget?: string; noticeText?: string; intercom?: { to?: string; message?: string } };
 				if (!record.event || record.event.type !== "needs_attention" || !Array.isArray(record.channels)) continue;
+				if (job.controlEventSince !== undefined && (typeof record.event.ts !== "number" || record.event.ts < job.controlEventSince)) continue;
 				const payload = {
 					event: record.event,
 					source: "async" as const,
@@ -128,13 +125,12 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		state.poller = setInterval(() => {
 			let widgetChanged = false;
 			if (restoreDiscoverySessionId) {
-				if (Date.now() <= restoreDiscoveryDeadline) {
-					try {
-						widgetChanged = discoverRestoredJobs(restoreDiscoverySessionId);
-					} catch (error) {
-						console.error("Failed to discover active async jobs:", error);
-					}
-				} else {
+				try {
+					widgetChanged = discoverRestoredJobs(restoreDiscoverySessionId);
+				} catch (error) {
+					console.error("Failed to discover active async jobs:", error);
+				}
+				if (Date.now() > restoreDiscoveryDeadline) {
 					restoreDiscoverySessionId = undefined;
 					restoreDiscoveryDeadline = 0;
 				}
@@ -329,12 +325,14 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			const steps = activeGroup
 				? run.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count)
 				: run.steps;
-			let controlEventCursor: number | undefined = 0;
+			const restoreBoundary = Date.now();
+			let controlEventCursor = 0;
+			let controlEventSince: number | undefined;
 			try {
 				controlEventCursor = (options.statSync ?? fs.statSync)(path.join(run.asyncDir, "events.jsonl")).size;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-					controlEventCursor = undefined;
+					controlEventSince = restoreBoundary;
 					console.error(`Failed to inspect async control events for '${run.asyncDir}':`, error);
 				}
 			}
@@ -372,6 +370,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				totalTokens: run.totalTokens,
 				sessionFile: run.sessionFile,
 				controlEventCursor,
+				controlEventSince,
 				nestedRoute,
 				nestedChildren: run.nestedChildren,
 			});

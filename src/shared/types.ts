@@ -735,6 +735,7 @@ export interface AsyncJobState {
 	totalTokens?: TokenUsage;
 	sessionFile?: string;
 	controlEventCursor?: number;
+	controlEventSince?: number;
 	nestedRoute?: NestedRouteInfo;
 	nestedChildren?: NestedRunSummary[];
 }
