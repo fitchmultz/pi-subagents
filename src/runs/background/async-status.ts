@@ -40,6 +40,7 @@ interface AsyncRunStepSummary {
 export interface AsyncRunSummary {
 	id: string;
 	asyncDir: string;
+	pid?: number;
 	sessionId?: string;
 	state: "queued" | "running" | "complete" | "failed" | "paused";
 	activityState?: ActivityState;
@@ -74,6 +75,7 @@ interface AsyncRunListOptions {
 	kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
 	now?: () => number;
 	reconcile?: boolean;
+	skipInvalid?: boolean;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -172,6 +174,7 @@ function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string 
 	return {
 		id: status.runId || path.basename(asyncDir),
 		asyncDir,
+		...(typeof status.pid === "number" ? { pid: status.pid } : {}),
 		...(status.sessionId ? { sessionId: status.sessionId } : {}),
 		state: status.state,
 		activityState,
@@ -221,7 +224,15 @@ function sortRuns(runs: AsyncRunSummary[]): AsyncRunSummary[] {
 export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions = {}): AsyncRunSummary[] {
 	let entries: string[];
 	try {
-		entries = fs.readdirSync(asyncDirRoot).filter((entry) => isAsyncRunDir(asyncDirRoot, entry));
+		entries = fs.readdirSync(asyncDirRoot).filter((entry) => {
+			try {
+				return isAsyncRunDir(asyncDirRoot, entry);
+			} catch (error) {
+				if (!options.skipInvalid) throw error;
+				console.error(`Skipping invalid async run '${path.join(asyncDirRoot, entry)}':`, error);
+				return false;
+			}
+		});
 	} catch (error) {
 		if (isNotFoundError(error)) return [];
 		throw new Error(`Failed to list async runs in '${asyncDirRoot}': ${getErrorMessage(error)}`, {
@@ -233,22 +244,27 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 	const runs: AsyncRunSummary[] = [];
 	for (const entry of entries) {
 		const asyncDir = path.join(asyncDirRoot, entry);
-		const reconciliation = options.reconcile === false
-			? undefined
-			: reconcileAsyncRun(asyncDir, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
-		const status = (reconciliation?.status ?? readStatus(asyncDir)) as (AsyncStatus & { cwd?: string }) | null;
-		if (!status) continue;
-		const nestedWarnings: string[] = [];
 		try {
-			const nestedRoute = findNestedRouteForRootId(status.runId || path.basename(asyncDir));
-			if (nestedRoute) reconcileNestedAsyncDescendants(nestedRoute, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
+			const reconciliation = options.reconcile === false
+				? undefined
+				: reconcileAsyncRun(asyncDir, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
+			const status = (reconciliation?.status ?? readStatus(asyncDir)) as (AsyncStatus & { cwd?: string }) | null;
+			if (!status) continue;
+			const nestedWarnings: string[] = [];
+			try {
+				const nestedRoute = findNestedRouteForRootId(status.runId || path.basename(asyncDir));
+				if (nestedRoute) reconcileNestedAsyncDescendants(nestedRoute, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
+			} catch (error) {
+				nestedWarnings.push(`Nested status unavailable: ${getErrorMessage(error)}`);
+			}
+			const summary = statusToSummary(asyncDir, status, nestedWarnings);
+			if (allowedStates && !allowedStates.has(summary.state)) continue;
+			if (options.sessionId && summary.sessionId !== options.sessionId) continue;
+			runs.push(summary);
 		} catch (error) {
-			nestedWarnings.push(`Nested status unavailable: ${getErrorMessage(error)}`);
+			if (!options.skipInvalid) throw error;
+			console.error(`Skipping invalid async run '${asyncDir}':`, error);
 		}
-		const summary = statusToSummary(asyncDir, status, nestedWarnings);
-		if (allowedStates && !allowedStates.has(summary.state)) continue;
-		if (options.sessionId && summary.sessionId !== options.sessionId) continue;
-		runs.push(summary);
 	}
 
 	const sorted = sortRuns(runs);

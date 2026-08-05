@@ -298,6 +298,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			resultsDir,
 			kill: options.kill,
 			now: options.now,
+			skipInvalid: true,
 		})) {
 			const groups = run.parallelGroups ?? [];
 			const activeGroup = run.currentStep !== undefined
@@ -322,6 +323,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				asyncId: run.id,
 				asyncDir: run.asyncDir,
 				status: run.state,
+				pid: run.pid,
 				sessionId: run.sessionId,
 				activityState: run.activityState,
 				lastActivityAt: run.lastActivityAt,
