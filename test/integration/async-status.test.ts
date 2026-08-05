@@ -242,6 +242,18 @@ describe("async status helpers", () => {
 		}
 	});
 
+	it("rejects non-finite persisted recent tool timestamps", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-bad-tool-time-"));
+		const dir = path.join(root, "bad-tool-time");
+		fs.mkdirSync(dir);
+		fs.writeFileSync(path.join(dir, "status.json"), `{"runId":"bad-tool-time","mode":"single","state":"running","startedAt":100,"steps":[{"agent":"worker","status":"running","recentTools":[{"tool":"read","args":"file.ts","endMs":1e400}]}]}`, "utf-8");
+		try {
+			assert.throws(() => listAsyncRuns(root), /recentTools is invalid/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("repairs stale running runs before listing active async runs", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-stale-list-"));
 		const resultsDir = path.join(root, "results");

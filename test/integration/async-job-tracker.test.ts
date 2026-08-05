@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { createAsyncJobTracker } from "../../src/runs/background/async-job-tracker.ts";
+import { buildWidgetLines } from "../../src/tui/render.ts";
 import { createTempDir, removeTempDir } from "../support/helpers.ts";
 
 function createState() {
@@ -158,6 +159,18 @@ describe("async job tracker", () => {
 			startedAt: Date.now(),
 			steps: [{ agent: "broken", status: "failed", error: { message: "not a string" } }],
 		}), "utf-8");
+		const unsafeIndexDir = path.join(asyncRoot, "run-unsafe-index");
+		fs.mkdirSync(unsafeIndexDir);
+		fs.writeFileSync(path.join(unsafeIndexDir, "status.json"), JSON.stringify({
+			runId: "run-unsafe-index",
+			sessionId: currentSession,
+			mode: "chain",
+			state: "running",
+			startedAt: Date.now(),
+			currentStep: 1e12,
+			chainStepCount: 1e12,
+			steps: [{ agent: "broken", status: "running" }],
+		}), "utf-8");
 		const historicalControlEvent = `${JSON.stringify({
 			type: "subagent.control",
 			channels: ["event"],
@@ -191,6 +204,7 @@ describe("async job tracker", () => {
 			assert.equal(state.asyncJobs.get("run-current")?.currentTool, "read");
 			assert.deepEqual(state.asyncJobs.get("run-current")?.agents, ["reviewer", "auditor"]);
 			assert.deepEqual(state.asyncJobs.get("run-current")?.steps?.map((step) => step.index), [1, 2]);
+			assert.match(buildWidgetLines([...state.asyncJobs.values()], ui.ctx.ui.theme, 80, true).join("\n"), /reviewer/);
 			assert.notEqual(ui.widgets.at(-1), undefined);
 			assert.notEqual(state.poller, null);
 			fs.appendFileSync(path.join(currentDir, "events.jsonl"), `${JSON.stringify({
@@ -220,7 +234,6 @@ describe("async job tracker", () => {
 			mode: "single",
 			state: "running",
 			startedAt: Date.now(),
-			lastUpdate: Date.now(),
 			steps: [{ agent: "worker", status: "running" }],
 		};
 		fs.writeFileSync(statusPath, JSON.stringify(status), "utf-8");
@@ -234,7 +247,6 @@ describe("async job tracker", () => {
 			tracker.restoreJobs(status.sessionId, ui.ctx as never);
 			fs.writeFileSync(statusPath, JSON.stringify({
 				...status,
-				lastUpdate: Date.now() + 1,
 				steps: [{ agent: "worker", status: "failed", error: { message: "not a string" } }],
 			}), "utf-8");
 			await new Promise((resolve) => setTimeout(resolve, 30));

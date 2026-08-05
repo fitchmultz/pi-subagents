@@ -155,9 +155,15 @@ function validateStatusForSummary(status: AsyncStatus, source: string): void {
 	if (!(["queued", "running", "complete", "failed", "paused"] as unknown[]).includes(record.state)) throw new Error(`Invalid async status '${source}': state is invalid.`);
 	if (record.activityState !== undefined && record.activityState !== "needs_attention") throw new Error(`Invalid async status '${source}': activityState is invalid.`);
 	validateTokenUsage(record.totalTokens, "totalTokens", source);
-	if (record.steps === undefined) return;
-	if (!Array.isArray(record.steps)) throw new Error(`Invalid async status '${source}': steps must be an array.`);
-	for (const [index, value] of record.steps.entries()) {
+	if (record.steps !== undefined && !Array.isArray(record.steps)) throw new Error(`Invalid async status '${source}': steps must be an array.`);
+	const steps = Array.isArray(record.steps) ? record.steps : [];
+	if (record.currentStep !== undefined && (typeof record.currentStep !== "number" || !Number.isSafeInteger(record.currentStep) || record.currentStep < 0 || record.currentStep >= steps.length)) {
+		throw new Error(`Invalid async status '${source}': currentStep must index a persisted step.`);
+	}
+	if (record.chainStepCount !== undefined && (typeof record.chainStepCount !== "number" || !Number.isSafeInteger(record.chainStepCount) || record.chainStepCount < 1 || record.chainStepCount > steps.length)) {
+		throw new Error(`Invalid async status '${source}': chainStepCount must be a positive count no greater than steps.length.`);
+	}
+	for (const [index, value] of steps.entries()) {
 		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid async status '${source}': steps[${index}] must be an object.`);
 		const step = value as Record<string, unknown>;
 		const stepSource = `${source} (steps[${index}])`;
@@ -178,7 +184,8 @@ function validateStatusForSummary(status: AsyncStatus, source: string): void {
 				&& !Array.isArray(tool)
 				&& typeof (tool as Record<string, unknown>).tool === "string"
 				&& typeof (tool as Record<string, unknown>).args === "string"
-				&& typeof (tool as Record<string, unknown>).endMs === "number");
+				&& typeof (tool as Record<string, unknown>).endMs === "number"
+				&& Number.isFinite((tool as Record<string, unknown>).endMs));
 			if (!validRecentTools) throw new Error(`Invalid async status '${source}': steps[${index}].recentTools is invalid.`);
 		}
 		if (step.children !== undefined && !Array.isArray(step.children)) throw new Error(`Invalid async status '${source}': steps[${index}].children must be an array.`);
