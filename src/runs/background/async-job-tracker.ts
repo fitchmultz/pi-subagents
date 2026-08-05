@@ -16,13 +16,15 @@ import {
 import { readStatus } from "../../shared/utils.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
-import { hasLiveNestedDescendants, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
+import { findNestedRouteForRootId, hasLiveNestedDescendants, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
+import { asyncStatusToSummary, listAsyncRuns } from "./async-status.ts";
 import { isTuiContext } from "../../shared/ui-mode.ts";
 
 interface AsyncJobTrackerOptions {
 	completionRetentionMs?: number;
 	pollIntervalMs?: number;
 	resultsDir?: string;
+	statSync?: typeof fs.statSync;
 	kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
 	now?: () => number;
 }
@@ -31,11 +33,14 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	ensurePoller: () => void;
 	handleStarted: (data: unknown) => void;
 	handleComplete: (data: unknown) => void;
+	restoreJobs: (sessionId: string, ctx: ExtensionContext) => void;
 	resetJobs: (ctx?: ExtensionContext) => void;
 } {
 	const completionRetentionMs = options.completionRetentionMs ?? 10000;
 	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
 	const resultsDir = options.resultsDir ?? RESULTS_DIR;
+	let restoreDiscoverySessionId: string | undefined;
+	let restoreDiscoveryDeadline = 0;
 	const rerenderWidget = (ctx: ExtensionContext, jobs = Array.from(state.asyncJobs.values())) => {
 		renderWidget(ctx, jobs);
 		const uiWithRender: ExtensionContext["ui"] & { requestRender?: () => void } = ctx.ui;
@@ -89,6 +94,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				if (!parsed || typeof parsed !== "object" || (parsed as { type?: unknown }).type !== "subagent.control") continue;
 				const record = parsed as { event?: ControlEvent; channels?: string[]; childIntercomTarget?: string; noticeText?: string; intercom?: { to?: string; message?: string } };
 				if (!record.event || record.event.type !== "needs_attention" || !Array.isArray(record.channels)) continue;
+				if (job.controlEventSince !== undefined && (typeof record.event.ts !== "number" || record.event.ts < job.controlEventSince)) continue;
 				const payload = {
 					event: record.event,
 					source: "async" as const,
@@ -117,7 +123,20 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	const ensurePoller = () => {
 		if (state.poller) return;
 		state.poller = setInterval(() => {
+			let widgetChanged = false;
+			if (restoreDiscoverySessionId) {
+				try {
+					widgetChanged = discoverRestoredJobs(restoreDiscoverySessionId);
+				} catch (error) {
+					console.error("Failed to discover active async jobs:", error);
+				}
+				if (Date.now() >= restoreDiscoveryDeadline) {
+					restoreDiscoverySessionId = undefined;
+					restoreDiscoveryDeadline = 0;
+				}
+			}
 			if (state.asyncJobs.size === 0) {
+				if (restoreDiscoverySessionId) return;
 				if (state.lastUiContext && isTuiContext(state.lastUiContext)) rerenderWidget(state.lastUiContext, []);
 				if (state.poller) {
 					clearInterval(state.poller);
@@ -125,8 +144,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				}
 				return;
 			}
-
-			let widgetChanged = false;
 			for (const job of state.asyncJobs.values()) {
 				const widgetStateBefore = widgetRenderKey(job);
 				let nestedRefreshFailed = false;
@@ -168,32 +185,32 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 					});
 					const status = reconciliation.status ?? readStatus(job.asyncDir);
 					if (status) {
+						const summary = asyncStatusToSummary(job.asyncDir, status);
 						const previousStatus = job.status;
-						job.status = status.state;
+						job.status = summary.state;
 						if (job.status !== "complete" && job.status !== "failed" && job.status !== "paused") cancelCleanup(job.asyncId);
-						job.sessionId = status.sessionId ?? job.sessionId;
-						job.activityState = status.activityState;
-						job.lastActivityAt = status.lastActivityAt ?? job.lastActivityAt;
-						job.currentTool = status.currentTool;
-						job.currentToolStartedAt = status.currentToolStartedAt;
-						job.currentPath = status.currentPath;
-						job.turnCount = status.turnCount ?? job.turnCount;
-						job.toolCount = status.toolCount ?? job.toolCount;
-						job.mode = status.mode;
-						job.currentStep = status.currentStep ?? job.currentStep;
-						job.chainStepCount = status.chainStepCount ?? job.chainStepCount;
-						job.startedAt = status.startedAt ?? job.startedAt;
-						if (status.lastUpdate !== undefined) job.updatedAt = status.lastUpdate;
-						if (status.steps?.length) {
-							const groups = normalizeParallelGroups(status.parallelGroups, status.steps.length, status.chainStepCount ?? status.steps.length);
+						job.sessionId = summary.sessionId ?? job.sessionId;
+						job.activityState = summary.activityState;
+						job.lastActivityAt = summary.lastActivityAt ?? job.lastActivityAt;
+						job.currentTool = summary.currentTool;
+						job.currentToolStartedAt = summary.currentToolStartedAt;
+						job.currentPath = summary.currentPath;
+						job.turnCount = summary.turnCount ?? job.turnCount;
+						job.toolCount = summary.toolCount ?? job.toolCount;
+						job.mode = summary.mode;
+						job.currentStep = summary.currentStep ?? job.currentStep;
+						job.chainStepCount = summary.chainStepCount ?? job.chainStepCount;
+						job.startedAt = summary.startedAt;
+						if (summary.lastUpdate !== undefined) job.updatedAt = summary.lastUpdate;
+						if (summary.steps.length) {
+							const groups = summary.parallelGroups ?? [];
 							job.parallelGroups = groups.length ? groups : job.parallelGroups;
-							job.hasParallelGroups = groups.length > 0 || job.hasParallelGroups;
-							const activeGroup = status.currentStep !== undefined
-								? groups.find((group) => status.currentStep! >= group.start && status.currentStep! < group.start + group.count)
+							const activeGroup = summary.currentStep !== undefined
+								? groups.find((group) => summary.currentStep! >= group.start && summary.currentStep! < group.start + group.count)
 								: undefined;
 							const visibleSteps = activeGroup
-								? status.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count).map((step, index) => ({ ...step, index: activeGroup.start + index }))
-								: status.steps.map((step, index) => ({ ...step, index }));
+								? summary.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count)
+								: summary.steps;
 							job.activeParallelGroup = Boolean(activeGroup);
 							job.agents = visibleSteps.map((step) => step.agent);
 							job.steps = visibleSteps;
@@ -201,12 +218,10 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 							job.stepsTotal = visibleSteps.length;
 							job.runningSteps = visibleSteps.filter((step) => step.status === "running").length;
 							job.completedSteps = visibleSteps.filter((step) => step.status === "complete" || step.status === "completed").length;
-							if (status.state === "complete") job.completedSteps = visibleSteps.length;
+							if (summary.state === "complete") job.completedSteps = visibleSteps.length;
 						}
-						job.sessionDir = status.sessionDir ?? job.sessionDir;
-						job.outputFile = status.outputFile ?? job.outputFile;
-						job.totalTokens = status.totalTokens ?? job.totalTokens;
-						job.sessionFile = status.sessionFile ?? job.sessionFile;
+						job.totalTokens = summary.totalTokens ?? job.totalTokens;
+						job.sessionFile = summary.sessionFile ?? job.sessionFile;
 						if ((job.status === "complete" || job.status === "failed" || job.status === "paused") && !nestedRefreshFailed && !hasLiveNestedDescendants(job.nestedChildren) && (previousStatus !== job.status || !state.cleanupTimers.has(job.asyncId))) {
 							scheduleCleanup(job.asyncId);
 						}
@@ -259,7 +274,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			parallelGroups: validParallelGroups,
 			nestedRoute: info.nestedRoute,
 			stepsTotal: firstGroupCount ?? agents?.length,
-			hasParallelGroups: validParallelGroups.length > 0,
 			activeParallelGroup: Boolean(firstGroupCount && firstGroupCount > 0),
 			startedAt: now,
 			updatedAt: now,
@@ -293,7 +307,96 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		if (!nestedRefreshFailed && !hasLiveNestedDescendants(job?.nestedChildren)) scheduleCleanup(asyncId);
 	};
 
+	const discoverRestoredJobs = (sessionId: string): boolean => {
+		let changed = false;
+		for (const run of listAsyncRuns(asyncDirRoot, {
+			states: ["queued", "running"],
+			sessionId,
+			resultsDir,
+			kill: options.kill,
+			now: options.now,
+			skipInvalid: true,
+		})) {
+			if (state.asyncJobs.has(run.id)) continue;
+			const groups = run.parallelGroups ?? [];
+			const activeGroup = run.currentStep !== undefined
+				? groups.find((group) => run.currentStep! >= group.start && run.currentStep! < group.start + group.count)
+				: undefined;
+			const steps = activeGroup
+				? run.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count)
+				: run.steps;
+			const restoreBoundary = Date.now();
+			let controlEventCursor = 0;
+			let controlEventSince: number | undefined;
+			try {
+				controlEventCursor = (options.statSync ?? fs.statSync)(path.join(run.asyncDir, "events.jsonl")).size;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+					controlEventSince = restoreBoundary;
+					console.error(`Failed to inspect async control events for '${run.asyncDir}':`, error);
+				}
+			}
+			let nestedRoute: ReturnType<typeof findNestedRouteForRootId>;
+			try {
+				nestedRoute = findNestedRouteForRootId(run.id);
+			} catch (error) {
+				console.error(`Failed to restore nested async descendants for '${run.asyncDir}':`, error);
+			}
+			state.asyncJobs.set(run.id, {
+				asyncId: run.id,
+				asyncDir: run.asyncDir,
+				status: run.state,
+				pid: run.pid,
+				sessionId: run.sessionId,
+				activityState: run.activityState,
+				lastActivityAt: run.lastActivityAt,
+				currentTool: run.currentTool,
+				currentToolStartedAt: run.currentToolStartedAt,
+				currentPath: run.currentPath,
+				turnCount: run.turnCount,
+				toolCount: run.toolCount,
+				mode: run.mode,
+				agents: steps.map((step) => step.agent),
+				currentStep: run.currentStep,
+				chainStepCount: run.chainStepCount,
+				parallelGroups: groups,
+				steps,
+				stepsTotal: steps.length,
+				runningSteps: steps.filter((step) => step.status === "running").length,
+				completedSteps: steps.filter((step) => step.status === "complete" || step.status === "completed").length,
+				activeParallelGroup: Boolean(activeGroup),
+				startedAt: run.startedAt,
+				updatedAt: run.lastUpdate ?? run.startedAt,
+				totalTokens: run.totalTokens,
+				sessionFile: run.sessionFile,
+				controlEventCursor,
+				controlEventSince,
+				nestedRoute,
+				nestedChildren: run.nestedChildren,
+			});
+			changed = true;
+		}
+		return changed;
+	};
+
+	const restoreJobs = (sessionId: string, ctx: ExtensionContext) => {
+		restoreDiscoverySessionId = sessionId;
+		restoreDiscoveryDeadline = Date.now() + 2_000;
+		try {
+			discoverRestoredJobs(sessionId);
+		} catch (error) {
+			console.error("Failed to discover active async jobs:", error);
+		}
+		if (isTuiContext(ctx)) {
+			state.lastUiContext = ctx;
+			rerenderWidget(ctx);
+		}
+		ensurePoller();
+	};
+
 	const resetJobs = (ctx?: ExtensionContext) => {
+		restoreDiscoverySessionId = undefined;
+		restoreDiscoveryDeadline = 0;
 		for (const timer of state.cleanupTimers.values()) {
 			clearTimeout(timer);
 		}
@@ -308,5 +411,5 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		}
 	};
 
-	return { ensurePoller, handleStarted, handleComplete, resetJobs };
+	return { ensurePoller, handleStarted, handleComplete, restoreJobs, resetJobs };
 }

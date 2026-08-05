@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { createAsyncJobTracker } from "../../src/runs/background/async-job-tracker.ts";
+import { buildWidgetLines } from "../../src/tui/render.ts";
 import { createTempDir, removeTempDir } from "../support/helpers.ts";
 
 function createState() {
@@ -112,6 +113,233 @@ describe("async job tracker", () => {
 			assert.equal(state.asyncJobs.get("run-paused")?.status, "paused");
 			assert.ok(ui.renderRequests > 0, "expected paused completion to request a rerender");
 		} finally {
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("restores active jobs for the current session after reload or resume", async () => {
+		const asyncRoot = createTempDir("pi-async-job-restore-");
+		const currentSession = "/sessions/current.jsonl";
+		const writeRun = (id: string, sessionId: string, state: "running" | "complete") => {
+			const runDir = path.join(asyncRoot, id);
+			fs.mkdirSync(runDir, { recursive: true });
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: id,
+				sessionId,
+				mode: "chain",
+				state,
+				pid: 12345,
+				startedAt: Date.now() - 1000,
+				lastUpdate: Date.now(),
+				currentStep: 1,
+				currentTool: "read",
+				chainStepCount: 2,
+				parallelGroups: [{ start: 1, count: 2, stepIndex: 1 }],
+				steps: [
+					{ agent: "scout", status: "complete" },
+					{ agent: "reviewer", status: state === "running" ? "running" : "complete", currentTool: "read", currentToolArgs: "src/index.ts" },
+					{ agent: "auditor", status: state === "running" ? "running" : "complete" },
+				],
+			}), "utf-8");
+			return runDir;
+		};
+		const currentDir = writeRun("run-current", currentSession, "running");
+		writeRun("run-other-session", "/sessions/other.jsonl", "running");
+		writeRun("run-finished", currentSession, "complete");
+		const malformedDir = path.join(asyncRoot, "run-malformed");
+		fs.mkdirSync(malformedDir);
+		fs.writeFileSync(path.join(malformedDir, "status.json"), "{", "utf-8");
+		const invalidDir = path.join(asyncRoot, "run-invalid");
+		fs.mkdirSync(invalidDir);
+		fs.writeFileSync(path.join(invalidDir, "status.json"), JSON.stringify({
+			runId: "run-invalid",
+			sessionId: currentSession,
+			mode: "single",
+			state: "running",
+			startedAt: Date.now(),
+			steps: [{ agent: "broken", status: "failed", error: { message: "not a string" } }],
+		}), "utf-8");
+		const unsafeIndexDir = path.join(asyncRoot, "run-unsafe-index");
+		fs.mkdirSync(unsafeIndexDir);
+		fs.writeFileSync(path.join(unsafeIndexDir, "status.json"), JSON.stringify({
+			runId: "run-unsafe-index",
+			sessionId: currentSession,
+			mode: "chain",
+			state: "running",
+			startedAt: Date.now(),
+			currentStep: 1e12,
+			chainStepCount: 1e12,
+			steps: [{ agent: "broken", status: "running" }],
+		}), "utf-8");
+		const historicalControlEvent = `${JSON.stringify({
+			type: "subagent.control",
+			channels: ["event"],
+			event: { type: "needs_attention", to: "needs_attention", ts: Date.now() - 1000, runId: "run-current", agent: "scout", message: "historical" },
+		})}\n`;
+		fs.writeFileSync(path.join(currentDir, "events.jsonl"), historicalControlEvent, "utf-8");
+
+		const state = createState();
+		const ui = createUiContext();
+		const recorder = createEventRecorder();
+		let eventsStatAttempts = 0;
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			pollIntervalMs: 10,
+			kill: () => true,
+			statSync: (file) => {
+				if (String(file).endsWith("events.jsonl") && eventsStatAttempts++ === 0) {
+					const error = new Error("temporarily unavailable") as NodeJS.ErrnoException;
+					error.code = "EACCES";
+					throw error;
+				}
+				return fs.statSync(file);
+			},
+		});
+		const originalError = console.error;
+		console.error = () => {};
+		try {
+			tracker.restoreJobs(currentSession, ui.ctx as never);
+
+			assert.deepEqual([...state.asyncJobs.keys()], ["run-current"]);
+			assert.equal(state.asyncJobs.get("run-current")?.pid, 12345);
+			assert.equal(state.asyncJobs.get("run-current")?.currentTool, "read");
+			assert.deepEqual(state.asyncJobs.get("run-current")?.agents, ["reviewer", "auditor"]);
+			assert.deepEqual(state.asyncJobs.get("run-current")?.steps?.map((step) => step.index), [1, 2]);
+			assert.match(buildWidgetLines([...state.asyncJobs.values()], ui.ctx.ui.theme, 80, true).join("\n"), /reviewer/);
+			assert.notEqual(ui.widgets.at(-1), undefined);
+			assert.notEqual(state.poller, null);
+			fs.appendFileSync(path.join(currentDir, "events.jsonl"), `${JSON.stringify({
+				type: "subagent.control",
+				channels: ["event"],
+				event: { type: "needs_attention", to: "needs_attention", ts: Date.now() + 1, runId: "run-current", agent: "scout", message: "new" },
+			})}\n`, "utf-8");
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			assert.equal(recorder.events.length, 1, "restoration should emit only post-boundary control events");
+			assert.equal((recorder.events[0]?.data as { event?: { message?: string } }).event?.message, "new");
+		} finally {
+			console.error = originalError;
+			tracker.resetJobs();
+			if (state.poller) clearInterval(state.poller);
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("rejects malformed status updates before they reach restored widget state", async () => {
+		const asyncRoot = createTempDir("pi-async-job-restore-invalid-update-");
+		const runDir = path.join(asyncRoot, "run-current");
+		const statusPath = path.join(runDir, "status.json");
+		fs.mkdirSync(runDir);
+		const status = {
+			runId: "run-current",
+			sessionId: "/sessions/current.jsonl",
+			mode: "single",
+			state: "running",
+			startedAt: Date.now(),
+			steps: [{ agent: "worker", status: "running" }],
+		};
+		fs.writeFileSync(statusPath, JSON.stringify(status), "utf-8");
+		const state = createState();
+		const ui = createUiContext();
+		const recorder = createEventRecorder();
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 10 });
+		const originalError = console.error;
+		console.error = () => {};
+		try {
+			tracker.restoreJobs(status.sessionId, ui.ctx as never);
+			fs.writeFileSync(statusPath, JSON.stringify({
+				...status,
+				steps: [{ agent: "worker", status: "failed", error: { message: "not a string" } }],
+			}), "utf-8");
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			const job = state.asyncJobs.get("run-current");
+			assert.equal(job?.status, "failed");
+			assert.equal(job?.steps?.[0]?.error, undefined);
+		} finally {
+			console.error = originalError;
+			tracker.resetJobs();
+			if (state.poller) clearInterval(state.poller);
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("discovers a runner whose initial status appears after restoration", async () => {
+		const asyncRoot = createTempDir("pi-async-job-restore-delayed-");
+		const runDir = path.join(asyncRoot, "run-delayed");
+		fs.mkdirSync(runDir);
+		const state = createState();
+		const ui = createUiContext();
+		const recorder = createEventRecorder();
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 10 });
+		try {
+			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
+			assert.equal(state.asyncJobs.size, 0);
+			assert.notEqual(state.poller, null);
+
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: "run-delayed",
+				sessionId: "/sessions/current.jsonl",
+				mode: "single",
+				state: "running",
+				startedAt: Date.now(),
+				lastUpdate: Date.now(),
+				steps: [{ agent: "worker", status: "running" }],
+			}), "utf-8");
+
+			const deadline = Date.now() + 200;
+			while (!state.asyncJobs.has("run-delayed") && Date.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			assert.equal(state.asyncJobs.has("run-delayed"), true);
+			assert.notEqual(ui.widgets.at(-1), undefined);
+		} finally {
+			tracker.resetJobs();
+			if (state.poller) clearInterval(state.poller);
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("stops restore discovery after its grace period", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+		const asyncRoot = createTempDir("pi-async-job-restore-grace-");
+		const state = createState();
+		const ui = createUiContext();
+		const recorder = createEventRecorder();
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 250 });
+		try {
+			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
+			t.mock.timers.tick(2_000);
+			assert.equal(state.poller, null);
+		} finally {
+			tracker.resetJobs();
+			if (state.poller) clearInterval(state.poller);
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("performs a final discovery when the first post-deadline poll runs late", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+		const asyncRoot = createTempDir("pi-async-job-restore-final-scan-");
+		const runDir = path.join(asyncRoot, "run-late-tick");
+		fs.mkdirSync(runDir);
+		const state = createState();
+		const ui = createUiContext();
+		const recorder = createEventRecorder();
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 700 });
+		try {
+			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
+			t.mock.timers.tick(1_999);
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: "run-late-tick",
+				sessionId: "/sessions/current.jsonl",
+				mode: "single",
+				state: "running",
+				startedAt: Date.now(),
+				steps: [{ agent: "worker", status: "running" }],
+			}), "utf-8");
+			t.mock.timers.tick(101);
+			assert.equal(state.asyncJobs.has("run-late-tick"), true);
+		} finally {
+			tracker.resetJobs();
+			if (state.poller) clearInterval(state.poller);
 			removeTempDir(asyncRoot);
 		}
 	});

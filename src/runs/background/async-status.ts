@@ -4,7 +4,7 @@ import { formatDuration, formatModelThinking, formatTokens, shortenPath } from "
 import { formatActivityLabel, formatParallelOutcome } from "../../shared/status-format.ts";
 import { type ActivityState, type AsyncJobStep, type AsyncParallelGroupStatus, type AsyncStatus, type NestedRunSummary, type SubagentRunMode, type TokenUsage } from "../../shared/types.ts";
 import { readStatus } from "../../shared/utils.ts";
-import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot } from "../shared/nested-events.ts";
+import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-events.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
@@ -40,6 +40,7 @@ interface AsyncRunStepSummary {
 export interface AsyncRunSummary {
 	id: string;
 	asyncDir: string;
+	pid?: number;
 	sessionId?: string;
 	state: "queued" | "running" | "complete" | "failed" | "paused";
 	activityState?: ActivityState;
@@ -74,6 +75,7 @@ interface AsyncRunListOptions {
 	kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
 	now?: () => number;
 	reconcile?: boolean;
+	skipInvalid?: boolean;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -121,10 +123,78 @@ function deriveAsyncActivityState(asyncDir: string, status: AsyncStatus): { acti
 	};
 }
 
-function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string }, nestedWarnings: string[] = []): AsyncRunSummary {
-	if (status.sessionId !== undefined && typeof status.sessionId !== "string") {
-		throw new Error(`Invalid async status '${path.join(asyncDir, "status.json")}': sessionId must be a string.`);
+function assertOptionalFields(record: Record<string, unknown>, fields: string[], valid: (value: unknown) => boolean, expected: string, source: string): void {
+	for (const field of fields) {
+		if (record[field] !== undefined && !valid(record[field])) {
+			throw new Error(`Invalid async status '${source}': ${field} must be ${expected}.`);
+		}
 	}
+}
+
+function validateTokenUsage(value: unknown, field: string, source: string): void {
+	if (value === undefined) return;
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error(`Invalid async status '${source}': ${field} must be an object.`);
+	}
+	const tokens = value as Record<string, unknown>;
+	if (![tokens.input, tokens.output, tokens.total].every((part) => typeof part === "number" && Number.isFinite(part))) {
+		throw new Error(`Invalid async status '${source}': ${field} must contain finite input, output, and total numbers.`);
+	}
+}
+
+function validateStatusForSummary(status: AsyncStatus, source: string): void {
+	if (!status || typeof status !== "object" || Array.isArray(status)) {
+		throw new Error(`Invalid async status '${source}': status must be an object.`);
+	}
+	const record = status as unknown as Record<string, unknown>;
+	assertOptionalFields(record, ["runId", "sessionId", "currentTool", "currentPath", "cwd", "sessionDir", "outputFile", "sessionFile"], (value) => typeof value === "string", "a string", source);
+	assertOptionalFields(record, ["lastActivityAt", "currentToolStartedAt", "turnCount", "toolCount", "startedAt", "endedAt", "lastUpdate", "pid", "currentStep", "chainStepCount"], (value) => typeof value === "number" && Number.isFinite(value), "a finite number", source);
+	if (typeof record.runId !== "string") throw new Error(`Invalid async status '${source}': runId must be a string.`);
+	if (typeof record.startedAt !== "number") throw new Error(`Invalid async status '${source}': startedAt must be a number.`);
+	if (!(["single", "parallel", "chain"] as unknown[]).includes(record.mode)) throw new Error(`Invalid async status '${source}': mode is invalid.`);
+	if (!(["queued", "running", "complete", "failed", "paused"] as unknown[]).includes(record.state)) throw new Error(`Invalid async status '${source}': state is invalid.`);
+	if (record.activityState !== undefined && record.activityState !== "needs_attention") throw new Error(`Invalid async status '${source}': activityState is invalid.`);
+	validateTokenUsage(record.totalTokens, "totalTokens", source);
+	if (record.steps !== undefined && !Array.isArray(record.steps)) throw new Error(`Invalid async status '${source}': steps must be an array.`);
+	const steps = Array.isArray(record.steps) ? record.steps : [];
+	if (record.currentStep !== undefined && (typeof record.currentStep !== "number" || !Number.isSafeInteger(record.currentStep) || record.currentStep < 0 || record.currentStep >= steps.length)) {
+		throw new Error(`Invalid async status '${source}': currentStep must index a persisted step.`);
+	}
+	if (record.chainStepCount !== undefined && (typeof record.chainStepCount !== "number" || !Number.isSafeInteger(record.chainStepCount) || record.chainStepCount < 1 || record.chainStepCount > steps.length)) {
+		throw new Error(`Invalid async status '${source}': chainStepCount must be a positive count no greater than steps.length.`);
+	}
+	for (const [index, value] of steps.entries()) {
+		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid async status '${source}': steps[${index}] must be an object.`);
+		const step = value as Record<string, unknown>;
+		const stepSource = `${source} (steps[${index}])`;
+		assertOptionalFields(step, ["agent", "phase", "label", "outputName", "sessionFile", "currentTool", "currentToolArgs", "currentPath", "model", "thinking", "error"], (field) => typeof field === "string", "a string", stepSource);
+		assertOptionalFields(step, ["lastActivityAt", "currentToolStartedAt", "turnCount", "toolCount", "startedAt", "endedAt", "durationMs"], (field) => typeof field === "number" && Number.isFinite(field), "a finite number", stepSource);
+		if (typeof step.agent !== "string") throw new Error(`Invalid async status '${source}': steps[${index}].agent must be a string.`);
+		if (!(["pending", "running", "complete", "completed", "failed", "paused", "timed-out"] as unknown[]).includes(step.status)) throw new Error(`Invalid async status '${source}': steps[${index}].status is invalid.`);
+		if (step.activityState !== undefined && step.activityState !== "needs_attention") throw new Error(`Invalid async status '${source}': steps[${index}].activityState is invalid.`);
+		if (step.structured !== undefined && typeof step.structured !== "boolean") throw new Error(`Invalid async status '${source}': steps[${index}].structured must be a boolean.`);
+		for (const field of ["recentOutput", "skills", "attemptedModels"]) {
+			if (step[field] !== undefined && (!Array.isArray(step[field]) || !(step[field] as unknown[]).every((item) => typeof item === "string"))) {
+				throw new Error(`Invalid async status '${source}': steps[${index}].${field} must be an array of strings.`);
+			}
+		}
+		if (step.recentTools !== undefined) {
+			const validRecentTools = Array.isArray(step.recentTools) && step.recentTools.every((tool) => tool
+				&& typeof tool === "object"
+				&& !Array.isArray(tool)
+				&& typeof (tool as Record<string, unknown>).tool === "string"
+				&& typeof (tool as Record<string, unknown>).args === "string"
+				&& typeof (tool as Record<string, unknown>).endMs === "number"
+				&& Number.isFinite((tool as Record<string, unknown>).endMs));
+			if (!validRecentTools) throw new Error(`Invalid async status '${source}': steps[${index}].recentTools is invalid.`);
+		}
+		if (step.children !== undefined && !Array.isArray(step.children)) throw new Error(`Invalid async status '${source}': steps[${index}].children must be an array.`);
+		validateTokenUsage(step.tokens, `steps[${index}].tokens`, source);
+	}
+}
+
+export function asyncStatusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string }, nestedWarnings: string[] = []): AsyncRunSummary {
+	validateStatusForSummary(status, path.join(asyncDir, "status.json"));
 	const { activityState, lastActivityAt } = deriveAsyncActivityState(asyncDir, status);
 	const steps = status.steps ?? [];
 	const chainStepCount = status.chainStepCount ?? steps.length;
@@ -140,6 +210,7 @@ function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string 
 	const summarizedSteps = steps.map((step, index) => {
 		const stepActivityState = step.activityState;
 		const stepLastActivityAt = step.lastActivityAt;
+		const stepChildren = (step.children ?? []).map((child) => sanitizeSummary(child)).filter((child): child is NestedRunSummary => Boolean(child));
 		return {
 			index,
 			agent: step.agent,
@@ -165,13 +236,14 @@ function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string 
 			...(step.thinking ? { thinking: step.thinking } : {}),
 			...(step.attemptedModels ? { attemptedModels: step.attemptedModels } : {}),
 			...(step.error ? { error: step.error } : {}),
-			...(step.children?.length ? { children: step.children } : {}),
+			...(stepChildren.length ? { children: stepChildren } : {}),
 		};
 	});
 	attachRootChildrenToSteps(status.runId || path.basename(asyncDir), summarizedSteps, nestedChildren);
 	return {
 		id: status.runId || path.basename(asyncDir),
 		asyncDir,
+		...(typeof status.pid === "number" ? { pid: status.pid } : {}),
 		...(status.sessionId ? { sessionId: status.sessionId } : {}),
 		state: status.state,
 		activityState,
@@ -221,7 +293,15 @@ function sortRuns(runs: AsyncRunSummary[]): AsyncRunSummary[] {
 export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions = {}): AsyncRunSummary[] {
 	let entries: string[];
 	try {
-		entries = fs.readdirSync(asyncDirRoot).filter((entry) => isAsyncRunDir(asyncDirRoot, entry));
+		entries = fs.readdirSync(asyncDirRoot).filter((entry) => {
+			try {
+				return isAsyncRunDir(asyncDirRoot, entry);
+			} catch (error) {
+				if (!options.skipInvalid) throw error;
+				console.error(`Skipping invalid async run '${path.join(asyncDirRoot, entry)}':`, error);
+				return false;
+			}
+		});
 	} catch (error) {
 		if (isNotFoundError(error)) return [];
 		throw new Error(`Failed to list async runs in '${asyncDirRoot}': ${getErrorMessage(error)}`, {
@@ -233,22 +313,27 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 	const runs: AsyncRunSummary[] = [];
 	for (const entry of entries) {
 		const asyncDir = path.join(asyncDirRoot, entry);
-		const reconciliation = options.reconcile === false
-			? undefined
-			: reconcileAsyncRun(asyncDir, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
-		const status = (reconciliation?.status ?? readStatus(asyncDir)) as (AsyncStatus & { cwd?: string }) | null;
-		if (!status) continue;
-		const nestedWarnings: string[] = [];
 		try {
-			const nestedRoute = findNestedRouteForRootId(status.runId || path.basename(asyncDir));
-			if (nestedRoute) reconcileNestedAsyncDescendants(nestedRoute, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
+			const reconciliation = options.reconcile === false
+				? undefined
+				: reconcileAsyncRun(asyncDir, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
+			const status = (reconciliation?.status ?? readStatus(asyncDir)) as (AsyncStatus & { cwd?: string }) | null;
+			if (!status) continue;
+			const nestedWarnings: string[] = [];
+			try {
+				const nestedRoute = findNestedRouteForRootId(status.runId || path.basename(asyncDir));
+				if (nestedRoute) reconcileNestedAsyncDescendants(nestedRoute, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
+			} catch (error) {
+				nestedWarnings.push(`Nested status unavailable: ${getErrorMessage(error)}`);
+			}
+			const summary = asyncStatusToSummary(asyncDir, status, nestedWarnings);
+			if (allowedStates && !allowedStates.has(summary.state)) continue;
+			if (options.sessionId && summary.sessionId !== options.sessionId) continue;
+			runs.push(summary);
 		} catch (error) {
-			nestedWarnings.push(`Nested status unavailable: ${getErrorMessage(error)}`);
+			if (!options.skipInvalid) throw error;
+			console.error(`Skipping invalid async run '${asyncDir}':`, error);
 		}
-		const summary = statusToSummary(asyncDir, status, nestedWarnings);
-		if (allowedStates && !allowedStates.has(summary.state)) continue;
-		if (options.sessionId && summary.sessionId !== options.sessionId) continue;
-		runs.push(summary);
 	}
 
 	const sorted = sortRuns(runs);
