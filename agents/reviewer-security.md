@@ -3,7 +3,7 @@ name: reviewer-security
 description: Security and data-safety reviewer for changed code, dependencies, and exposed surfaces
 model: openai-codex/gpt-5.6-sol
 fallbackModels: xai/grok-4.5, openai/gpt-5.6-sol
-thinking: xhigh
+thinking: high
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true

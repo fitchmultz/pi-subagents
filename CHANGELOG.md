@@ -9,6 +9,7 @@
 - Restore active async runs to the TUI widget after `/reload` and after reopening the originating Pi session, using the existing on-disk status files instead of losing them with the extension's in-memory tracker.
 
 ### Changed
+- Lower the four specialized `reviewer-*` profiles from `xhigh` to `high` thinking.
 - Keep bundled workflow prompts as unregistered package examples instead of installing them as slash commands.
 - Collapse the background async widget to one line per run. The per-run stats echo, per-agent rows, nested-run aggregates, and the standalone `Ctrl+O` hint line are gone from the collapsed view; the row keeps the live tool of a solo running agent and `Ctrl+O` still expands the full tree. Widget lines are also built two columns narrower in both modes so padded rows stop wrapping into orphan fragments.
 - Drop the dead `expanded` parameters and unreachable collapsed branches left in the async widget detail helpers after the one-line collapsed view landed. Rendering is unchanged.

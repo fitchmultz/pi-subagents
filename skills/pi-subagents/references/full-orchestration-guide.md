@@ -165,7 +165,7 @@ and user/project agents override builtins with the same name.
 | `oracle` | Decision-consistency advisory review | `openai-codex/gpt-5.6-sol` | Forked advisory review |
 | `delegate` | Lightweight generic delegate | inherits default | No fixed output; generic delegated work |
 
-The Fitch role profiles pin primary and fallback routes; `delegate` inherits the current Pi model. Keep those configured defaults unless a run, user setting, or project setting has a concrete reason to override them.
+The Fitch role profiles pin primary and fallback routes; `delegate` inherits the current Pi model. The four specialized `reviewer-*` profiles use `high` thinking. Keep those configured defaults unless a run, user setting, or project setting has a concrete reason to override them.
 
 For one run, use inline config:
 
