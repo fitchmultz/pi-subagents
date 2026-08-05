@@ -38,6 +38,7 @@ Use the effective agents from `subagent({ action: "list" })`; user/project profi
 - `reviewer-gpt`: strict maintainability and correctness gate.
 - `reviewer-claude`: independent cross-model assumptions and product-risk review.
 - `reviewer-security`: security and data-safety review for trust boundaries.
+- `reviewer-ponytail`: over-engineering and slop review; uses the `ponytail` skill when installed and never trades away intended behavior.
 - `ui-designer`: rendered UI, layout, accessibility, and visual polish.
 - `writer`: human-facing documentation and polished copy.
 - `oracle`: forked advisory second opinion for direction, drift, and assumptions.

@@ -171,6 +171,7 @@ The extension ships with builtin agents you can use immediately.
 | `reviewer-gpt` | A strict final maintainability and correctness gate. |
 | `reviewer-claude` | An independent cross-model review of assumptions and product risk. |
 | `reviewer-security` | Security and data-safety review for trust-boundary changes. |
+| `reviewer-ponytail` | An over-engineering and slop review that never trades away intended behavior. |
 | `ui-designer` | Rendered UI, layout, accessibility, and visual polish. |
 | `writer` | Human-facing documentation, announcements, and polished copy. |
 | `oracle` | A forked second opinion that protects the current decision contract. |
@@ -186,7 +187,7 @@ The bundled Fitch role profiles pin explicit primary and fallback routes. `deleg
 |---------------|--------|
 | `xai/grok-4.5` | `scout`, `context-builder`, `fixer`, `worker` |
 | `openai/gpt-5.6-luna` | `watcher` |
-| `openai-codex/gpt-5.6-sol` | `debugger`, `oracle`, `planner`, `researcher`, `reviewer`, `reviewer-gpt`, `reviewer-security` |
+| `openai-codex/gpt-5.6-sol` | `debugger`, `oracle`, `planner`, `researcher`, `reviewer`, `reviewer-gpt`, `reviewer-ponytail`, `reviewer-security` |
 | `anthropic/claude-opus-5` | `reviewer-claude` |
 | `anthropic/claude-fable-5` | `ui-designer`, `writer` |
 | Current Pi model | `delegate` |
