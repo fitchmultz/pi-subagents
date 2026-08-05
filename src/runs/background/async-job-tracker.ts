@@ -275,7 +275,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			nestedRoute: info.nestedRoute,
 			stepsTotal: firstGroupCount ?? agents?.length,
 			activeParallelGroup: Boolean(firstGroupCount && firstGroupCount > 0),
-			controlEventCursor: 0,
 			startedAt: now,
 			updatedAt: now,
 		});
