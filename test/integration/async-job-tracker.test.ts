@@ -148,16 +148,29 @@ describe("async job tracker", () => {
 		const malformedDir = path.join(asyncRoot, "run-malformed");
 		fs.mkdirSync(malformedDir);
 		fs.writeFileSync(path.join(malformedDir, "status.json"), "{", "utf-8");
-		fs.writeFileSync(path.join(currentDir, "events.jsonl"), `${JSON.stringify({
+		const historicalControlEvent = `${JSON.stringify({
 			type: "subagent.control",
 			channels: ["event"],
 			event: { type: "needs_attention", runId: "run-current", agent: "scout" },
-		})}\n`, "utf-8");
+		})}\n`;
+		fs.writeFileSync(path.join(currentDir, "events.jsonl"), historicalControlEvent, "utf-8");
 
 		const state = createState();
 		const ui = createUiContext();
 		const recorder = createEventRecorder();
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 10, kill: () => true });
+		let eventsStatAttempts = 0;
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			pollIntervalMs: 10,
+			kill: () => true,
+			statSync: (file) => {
+				if (String(file).endsWith("events.jsonl") && eventsStatAttempts++ === 0) {
+					const error = new Error("temporarily unavailable") as NodeJS.ErrnoException;
+					error.code = "EACCES";
+					throw error;
+				}
+				return fs.statSync(file);
+			},
+		});
 		const originalError = console.error;
 		console.error = () => {};
 		try {
@@ -174,6 +187,65 @@ describe("async job tracker", () => {
 			assert.equal(recorder.events.length, 0, "restoring a run should not replay old control events");
 		} finally {
 			console.error = originalError;
+			tracker.resetJobs();
+			if (state.poller) clearInterval(state.poller);
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("discovers a runner whose initial status appears after restoration", async () => {
+		const asyncRoot = createTempDir("pi-async-job-restore-delayed-");
+		const runDir = path.join(asyncRoot, "run-delayed");
+		fs.mkdirSync(runDir);
+		const state = createState();
+		const ui = createUiContext();
+		const recorder = createEventRecorder();
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			pollIntervalMs: 10,
+			restoreDiscoveryGraceMs: 100,
+		});
+		try {
+			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
+			assert.equal(state.asyncJobs.size, 0);
+			assert.notEqual(state.poller, null);
+
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: "run-delayed",
+				sessionId: "/sessions/current.jsonl",
+				mode: "single",
+				state: "running",
+				startedAt: Date.now(),
+				lastUpdate: Date.now(),
+				steps: [{ agent: "worker", status: "running" }],
+			}), "utf-8");
+
+			const deadline = Date.now() + 200;
+			while (!state.asyncJobs.has("run-delayed") && Date.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			assert.equal(state.asyncJobs.has("run-delayed"), true);
+			assert.notEqual(ui.widgets.at(-1), undefined);
+		} finally {
+			tracker.resetJobs();
+			if (state.poller) clearInterval(state.poller);
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("stops restore discovery after its grace period", async () => {
+		const asyncRoot = createTempDir("pi-async-job-restore-grace-");
+		const state = createState();
+		const ui = createUiContext();
+		const recorder = createEventRecorder();
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			pollIntervalMs: 5,
+			restoreDiscoveryGraceMs: 15,
+		});
+		try {
+			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
+			await new Promise((resolve) => setTimeout(resolve, 40));
+			assert.equal(state.poller, null);
+		} finally {
 			tracker.resetJobs();
 			if (state.poller) clearInterval(state.poller);
 			removeTempDir(asyncRoot);
