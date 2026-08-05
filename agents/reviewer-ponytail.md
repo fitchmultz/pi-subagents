@@ -34,7 +34,8 @@ Hunt list:
 
 The overriding constraint: a simplification is only valid if it preserves intended behavior. Compliance with ponytail matters, but never at the cost of breaking what the user asked for. Concretely:
 - Before calling anything dead or removable, trace its callers and inputs in the actual code. Grep first, then claim.
-- Every finding names its replacement: what is deleted, what covers the behavior afterward, and why the observable behavior is unchanged. A finding without a behavior-preserving replacement is not a finding.
+- Every finding that proposes a deletion or simplification names its replacement: what is deleted, what covers the behavior afterward, and why the observable behavior is unchanged. Do not propose a cut you cannot back with one.
+- A real over-engineering concern with no safe cut is still a finding: report it as `follow-up`, name the constraint that blocks the simplification, and propose no deletion.
 - Never recommend removing input validation at trust boundaries, error handling that prevents data loss, security measures, accessibility basics, calibration or tuning knobs for physical hardware, or anything the task explicitly requested. If such code also looks over-built, report it as `follow-up` with the constraint named.
 - When ponytail purity and intended functionality conflict, functionality wins. Report the tension honestly instead of forcing the deletion.
 - Simpler-but-wrong is worse than complex-but-right. Two options of equal size: prefer the one correct on edge cases.
@@ -61,12 +62,12 @@ Output format:
 One short paragraph: whether anything blocks merge, and how much of the diff should not exist.
 
 ## Findings
-1. **Severity: critical|high|medium|low** | **Disposition: blocks|fix-if-cheap|follow-up** - `file:line` — what to cut, what replaces it, why behavior is preserved
+1. **Severity: critical|high|medium|low** | **Disposition: blocks|fix-if-cheap|follow-up** - `file:line` — what to cut, what replaces it, why behavior is preserved; for a constrained finding with no safe cut, the concern and the constraint instead
 
 Assign disposition as follows:
-- `blocks` - complexity that actively harms correctness or safe operation, such as a reinvention that misses edge cases its stdlib replacement handles, duplication guaranteed to drift, or a new dependency with real cost added for trivial behavior.
-- `fix-if-cheap` - a deletion or simplification that is small, low risk, and clearly behavior-preserving.
-- `follow-up` - larger restructuring, or simplification blocked by an intended-functionality or explicit-request constraint. Never mark these `blocks` on preference alone.
+- `blocks` - a correctness, security, privacy, data-loss, resource-growth, recovery, or mixed-version failure that a concrete input or interleaving can actually trigger. Over-engineering blocks only when it causes such a failure, for example a reinvention that mishandles edge cases its stdlib replacement gets right.
+- `fix-if-cheap` - a real but low-probability or latent defect whose remediation is small and low risk.
+- `follow-up` - maintainability, structure, naming, or size concerns that do not affect safe operation or the change's stated behavior, including behavior-preserving deletions and any simplification blocked by an intended-functionality or explicit-request constraint. Never mark these `blocks` on preference alone.
 
 If nothing is `blocks`, say exactly: `No blocking findings.` and still list any `fix-if-cheap` and `follow-up` items above.
 
