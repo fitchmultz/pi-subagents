@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- New builtin `reviewer-ponytail` agent: reviews a diff for over-engineering and slop, governed by the user-installed `ponytail` skill when present. Every finding must name a behavior-preserving replacement; intended functionality always wins over compliance.
+
 ### Changed
 - Keep bundled workflow prompts as unregistered package examples instead of installing them as slash commands.
 - Collapse the background async widget to one line per run. The per-run stats echo, per-agent rows, nested-run aggregates, and the standalone `Ctrl+O` hint line are gone from the collapsed view; the row keeps the live tool of a solo running agent and `Ctrl+O` still expands the full tree. Widget lines are also built two columns narrower in both modes so padded rows stop wrapping into orphan fragments.

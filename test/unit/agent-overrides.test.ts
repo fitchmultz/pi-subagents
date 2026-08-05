@@ -45,7 +45,7 @@ describe("builtin agent overrides", () => {
 			builtins.map((agent) => agent.name).sort(),
 			[
 				"context-builder", "debugger", "delegate", "fixer", "oracle", "planner", "researcher",
-				"reviewer", "reviewer-claude", "reviewer-gpt", "reviewer-security", "scout", "ui-designer", "watcher", "worker", "writer",
+				"reviewer", "reviewer-claude", "reviewer-gpt", "reviewer-ponytail", "reviewer-security", "scout", "ui-designer", "watcher", "worker", "writer",
 			],
 		);
 		for (const agent of builtins.filter((candidate) => candidate.name !== "delegate")) {
