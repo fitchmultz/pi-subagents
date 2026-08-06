@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Align the bundled agent model, fallback, and thinking defaults with the current user profiles: lower `reviewer-gpt` and `reviewer-claude` to high thinking, route `reviewer-security` through Grok first, and move `watcher` to GPT-5.6 Sol at medium thinking.
+
 ## [0.32.0] - 2026-08-06
 
 ### Added

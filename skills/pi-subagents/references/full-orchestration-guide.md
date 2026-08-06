@@ -150,7 +150,7 @@ and user/project agents override builtins with the same name.
 | `scout` | Fast codebase recon | `xai/grok-4.5` | Writes `context.md` handoff material |
 | `context-builder` | Requirements/codebase handoff builder | `xai/grok-4.5` | Writes structured context and meta-prompts |
 | `researcher` | Evidence-driven technical research | `openai-codex/gpt-5.6-sol` | Writes `research.md` |
-| `watcher` | Read-only background monitoring | `openai/gpt-5.6-luna` | Queues the latest material transition; returns at the terminal condition |
+| `watcher` | Read-only background monitoring | `openai/gpt-5.6-sol` | Queues the latest material transition; returns at the terminal condition |
 | `planner` | Creates implementation plans | `openai-codex/gpt-5.6-sol` | Writes `plan.md` |
 | `worker` | Bounded implementation | `xai/grok-4.5` | Single-writer implementation and validation |
 | `debugger` | Root-cause diagnosis | `openai-codex/gpt-5.6-sol` | Writes `diagnosis.md` |
@@ -158,7 +158,7 @@ and user/project agents override builtins with the same name.
 | `reviewer` | General implementation review | `openai-codex/gpt-5.6-sol` | Review-only by default |
 | `reviewer-gpt` | Strict completion gate | `openai-codex/gpt-5.6-sol` | Maintainability/correctness review |
 | `reviewer-claude` | Cross-model product-risk review | `anthropic/claude-opus-5` | Independent review |
-| `reviewer-security` | Trust-boundary review | `openai-codex/gpt-5.6-sol` | Security/data-safety findings |
+| `reviewer-security` | Trust-boundary review | `xai/grok-4.5` | Security/data-safety findings |
 | `reviewer-ponytail` | Over-engineering and slop review | `openai-codex/gpt-5.6-sol` | Deletion-focused findings; behavior-preserving only |
 | `ui-designer` | UI and accessibility review | `anthropic/claude-fable-5` | Rendered UX guidance |
 | `writer` | Human-facing writing | `anthropic/claude-fable-5` | Writes `draft.md` |

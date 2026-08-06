@@ -1,9 +1,9 @@
 ---
 name: watcher
 description: Background watcher for changing external state with coalesced supervisor updates
-model: openai/gpt-5.6-luna
-fallbackModels: xai/grok-4.5:medium
-thinking: high
+model: openai/gpt-5.6-sol
+fallbackModels: xai/grok-4.5
+thinking: medium
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true
