@@ -47,7 +47,7 @@ It installs this checkout into an isolated temporary Pi home, runs `pi list`, an
 Live model-backed subagent paths are intentionally opt-in because they can use provider credentials and tokens:
 
 ```bash
-PI_REAL_SMOKE_MODEL=openai/gpt-4o-mini npm run smoke:real-pi -- --llm
+PI_REAL_SMOKE_MODEL=openai-codex/gpt-5.6-sol npm run smoke:real-pi -- --llm
 ```
 
 That mode copies local `auth.json` and `models.json` into the isolated Pi agent dir, then asks a real Pi session to exercise intercom status plus subagent list, foreground, async launch, and async completion. Set `PI_REAL_SMOKE_AUTH_AGENT_DIR` if your auth files are not in `~/.pi/agent`.
@@ -55,7 +55,7 @@ That mode copies local `auth.json` and `models.json` into the isolated Pi agent 
 For a broader live gate, add `--llm-full`:
 
 ```bash
-PI_REAL_SMOKE_MODEL=openai/gpt-4o-mini npm run smoke:real-pi -- --llm-full
+PI_REAL_SMOKE_MODEL=openai-codex/gpt-5.6-sol npm run smoke:real-pi -- --llm-full
 ```
 
 That also verifies real parallel, chain, file output, and acceptance flows. Use `--keep-temp` to preserve the isolated Pi home for debugging.

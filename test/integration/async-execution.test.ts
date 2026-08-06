@@ -703,6 +703,10 @@ describe("async execution utilities", () => {
 		assert.equal(result.results[0]?.acceptance?.status, "checked");
 		assert.equal(result.results[0]?.acceptance?.finalization?.status, "completed");
 		assert.equal(mockPi.callCount(), 2);
+		const finalizationArgs = readLastMockPiArgs(mockPi);
+		const modelArg = finalizationArgs.lastIndexOf("--model");
+		assert.ok(modelArg >= 0);
+		assert.equal(finalizationArgs[modelArg + 1], "mock/test-model");
 	});
 
 	it("async self-review exhaustion persists the full governing contract including verify", async () => {

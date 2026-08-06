@@ -50,6 +50,7 @@ import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/ski
 import { evaluateCompletionMutationGuard, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
+import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
 	appendClaudeCodeMessage,
@@ -701,7 +702,7 @@ async function runSingleAttempt(
 							triggerResourceLimit("maxTokens", options.maxTokens, progress.tokens);
 						}
 					}
-					if (!result.model && evt.message.model) result.model = evt.message.model;
+					if (!result.model) result.model = providerQualifiedModelId(evt.message.provider, evt.message.model);
 					if (evt.message.errorMessage) assistantError = evt.message.errorMessage;
 					const assistantText = extractTextFromContent(evt.message.content);
 					appendRecentOutput(progress, assistantText.split("\n").slice(-10));

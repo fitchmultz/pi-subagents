@@ -76,6 +76,11 @@ test("Pi 0.84.0 is the exact development baseline with optional wildcard peers",
 	}
 });
 
+test("package lock uses the public npm registry", () => {
+	const lockfile = fs.readFileSync(path.join(projectRoot, "package-lock.json"), "utf-8");
+	assert.equal(lockfile.includes("socket-firewall.workos.dev"), false);
+});
+
 test("one manifest bundles subagents and intercom", () => {
 	const pi = readPackageJson().pi as { extensions?: unknown; skills?: unknown };
 	assert.deepEqual(pi.extensions, ["./src/extension/index.ts", "./src/pi-intercom/index.ts"]);

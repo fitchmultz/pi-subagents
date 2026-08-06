@@ -27,6 +27,11 @@ export function toModelInfo(model: RegistryModelLike): ModelInfo {
 	};
 }
 
+export function providerQualifiedModelId(provider: string | undefined, model: string | undefined): string | undefined {
+	if (!model) return undefined;
+	return provider && !model.startsWith(`${provider}/`) ? `${provider}/${model}` : model;
+}
+
 /** Resolve the effective thinking level from a model string (which may contain a known suffix like `:high`)
  * and an explicit thinking config value. Returns `undefined` when no thinking is applicable
  * (e.g. no model was specified, or the model has no suffix and no config was provided). */

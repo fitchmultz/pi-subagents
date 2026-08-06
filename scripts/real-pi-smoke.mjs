@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
@@ -199,8 +199,23 @@ async function main() {
 	const repoRoot = resolve(process.cwd());
 	const root = mkdtempSync(join(tmpdir(), "pi-subagents-real-pi-smoke-"));
 	const agentDir = join(root, "pi-agent");
+	const projectRoot = join(root, "project");
+	const projectAgentsDir = join(projectRoot, ".pi", "agents");
+	mkdirSync(projectAgentsDir, { recursive: true });
+	writeFileSync(join(projectAgentsDir, "real-smoke.md"), `---
+name: real-smoke
+description: Isolated live smoke agent
+systemPromptMode: replace
+inheritProjectContext: false
+inheritSkills: false
+tools: read
+extensions:
+---
+
+Follow the task exactly and return its requested text without using tools.
+`, "utf-8");
 	const env = isolatedEnv(root, agentDir);
-	const runOptions = { cwd: repoRoot, env, timeoutMs: options.timeoutMs, root };
+	const runOptions = { cwd: projectRoot, env, timeoutMs: options.timeoutMs, root };
 
 	try {
 		runPi("pi install pi-subagents", ["install", repoRoot, "--approve"], runOptions);
@@ -214,14 +229,16 @@ async function main() {
 			const childModelInstruction = process.env.PI_REAL_SMOKE_MODEL ? ` Pass model override '${process.env.PI_REAL_SMOKE_MODEL}' to every subagent run.` : "";
 			const intercomPrompt = "Call the intercom tool with action status. Reply exactly with 'real-pi-smoke intercom ok' if the tool output includes 'Connected: Yes'.";
 			const listPrompt = "Use the subagent tool with action list. Reply exactly with 'real-pi-smoke list ok' if reviewer, scout, oracle, and watcher are available.";
-			const foregroundPrompt = `Use the subagent tool to run scout with task 'Reply exactly: real-pi-smoke foreground ok', async false, output false, and progress false.${childModelInstruction} Then report the child result.`;
-			const asyncPrompt = `Use the subagent tool to run reviewer with task 'Reply exactly: real-pi-smoke async ok', output false, and progress false.${childModelInstruction} Omit async so the package default launches it in the background. Do not call status and do not wait for completion. Reply with 'real-pi-smoke async launched ok' and quote the exact tool result line beginning 'Async:' including the run id.`;
+			const foregroundPrompt = `Use the subagent tool to run real-smoke with task 'Reply exactly: real-pi-smoke foreground ok', async false, output false, and progress false.${childModelInstruction} If the tool returns an output artifact path instead of inline output, read that file. Then reply exactly 'real-pi-smoke foreground ok' only if the child result contains it.`;
+			const asyncPrompt = `Use the subagent tool to run real-smoke with task 'Reply exactly: real-pi-smoke async ok', output false, and progress false.${childModelInstruction} Set async true so it launches in the background. Do not call status and do not wait for completion. Reply with 'real-pi-smoke async launched ok' and quote the exact tool result line beginning 'Async:' including the run id.`;
 			requireOutput("real Pi intercom prompt", runLivePrompt("real Pi intercom prompt", intercomPrompt, runOptions), /real-pi-smoke intercom ok/);
 			requireOutput("real Pi subagent list prompt", runLivePrompt("real Pi subagent list prompt", listPrompt, runOptions), /real-pi-smoke list ok/);
 			requireOutput("real Pi foreground subagent prompt", runLivePrompt("real Pi foreground subagent prompt", foregroundPrompt, runOptions), /real-pi-smoke foreground ok/);
 			const asyncOutput = runLivePrompt("real Pi async subagent prompt", asyncPrompt, runOptions);
-			requireOutput("real Pi async subagent prompt", asyncOutput, /real-pi-smoke async launched ok/i);
-			const asyncRunId = asyncOutput.match(/Async(?: parallel)?:\s+(?:\S+|\[[^\]]+\])\s+\[([0-9a-f-]{36})\]/i)?.[1];
+			requireOutput("real Pi async subagent prompt", asyncOutput, /real-pi-smoke async (?:launched )?ok/i);
+			const asyncRunId = asyncOutput.match(/Async(?: parallel)?:\s+(?:\S+|\[[^\]]+\])\s+\[([0-9a-f-]{36})\]/i)?.[1]
+				?? asyncOutput.match(/\[([0-9a-f-]{36})\]/i)?.[1]
+				?? asyncOutput.match(/\b([0-9a-f]{8}-[0-9a-f-]{27})\b/i)?.[1];
 			if (!asyncRunId) throw new Error(`Could not parse async run id from output:\n${asyncOutput}`);
 			await waitForAsyncCompletion(asyncRunId, /^real-pi-smoke async ok$/m, options.timeoutMs, options.keepTemp);
 

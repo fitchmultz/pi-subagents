@@ -122,12 +122,14 @@ export function makeMinimalCtx(cwd: string): MinimalCtx {
 
 export const events = {
 	assistantMessage(text: string, model = "mock/test-model"): object {
+		const separator = model.indexOf("/");
 		return {
 			type: "message_end",
 			message: {
 				role: "assistant",
 				content: [{ type: "text", text }],
-				model,
+				provider: separator >= 0 ? model.slice(0, separator) : "mock",
+				model: separator >= 0 ? model.slice(separator + 1) : model,
 				stopReason: "stop",
 				usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
 			},

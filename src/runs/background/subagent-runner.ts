@@ -90,7 +90,7 @@ import {
 	formatWorktreeTaskCwdConflict,
 	type WorktreeSetup,
 } from "../shared/worktree.ts";
-import { resolveEffectiveThinking } from "../../shared/model-info.ts";
+import { providerQualifiedModelId, resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { writeInitialProgressFile } from "../../shared/settings.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
@@ -445,7 +445,7 @@ function runPiStreaming(
 				}
 
 				if (event.message.role !== "assistant") return;
-				if (event.message.model) model = event.message.model;
+				model = providerQualifiedModelId(event.message.provider, event.message.model) ?? model;
 				if (event.message.errorMessage) assistantError = event.message.errorMessage;
 				const eventUsage = event.message.usage;
 				if (eventUsage) {
