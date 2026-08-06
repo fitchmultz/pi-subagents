@@ -179,7 +179,7 @@ describe("builtin agent disabling", () => {
 
 		const text = readText(handleList(
 			{},
-			{ cwd: tempProject, modelRegistry: { getAvailable: () => [] } },
+			{ cwd: tempProject, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
 		));
 
 		assert.match(text, /Executable agents \(grouped by role\):/);
@@ -200,7 +200,7 @@ describe("builtin agent disabling", () => {
 
 		const text = readText(handleList(
 			{},
-			{ cwd: tempProject, modelRegistry: { getAvailable: () => [] } },
+			{ cwd: tempProject, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
 		));
 
 		assert.match(text, /^- reviewer \(user\): User reviewer override$/m);
@@ -225,7 +225,7 @@ describe("builtin agent disabling", () => {
 		const text = readText(handleManagementAction(
 			"get",
 			{ action: "get", agent: "reviewer" },
-			{ cwd: tempProject, modelRegistry: { getAvailable: () => [] } },
+			{ cwd: tempProject, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
 		));
 
 		assert.match(text, /^Agent: reviewer \(project\)$/m);
@@ -251,7 +251,7 @@ describe("builtin agent disabling", () => {
 		const text = readText(handleManagementAction(
 			"get",
 			{ action: "get", agent: "reviewer", agentScope: "user" },
-			{ cwd: tempProject, modelRegistry: { getAvailable: () => [] } },
+			{ cwd: tempProject, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
 		));
 
 		assert.match(text, /^Agent: reviewer \(user\)$/m);

@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, unlinkSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Message } from "@earendil-works/pi-ai/compat";
+import type { Message } from "@earendil-works/pi-ai";
 import type { AgentConfig } from "../../agents/agents.ts";
 import {
 	ensureArtifactsDir,
@@ -714,37 +714,33 @@ async function runSingleAttempt(
 						cleanTerminalAssistantStopReceived ||= !evt.message.errorMessage;
 						startFinalDrain();
 					}
+				} else if (evt.message.role === "toolResult") {
+					const resultText = extractTextFromContent(evt.message.content);
+					appendRecentOutput(progress, resultText.split("\n").slice(-10));
+					const toolSnapshot = mutationTracker.recordToolResult(evt.message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown });
+					if (toolSnapshot?.completedMutation) observedCompletedMutation = true;
+					if (toolSnapshot?.mutates && (toolSnapshot.errored || didMutatingToolFail(resultText))) {
+						recordMutatingFailure(mutatingFailures, {
+							tool: toolSnapshot.tool,
+							path: toolSnapshot.path,
+							error: resultText.split("\n").find((line) => line.trim())?.trim().slice(0, 180) ?? "mutating tool failed",
+							ts: now,
+						}, mutatingFailureWindowMs);
+						if (shouldEscalateMutatingFailures(mutatingFailures, controlConfig.failedToolAttemptsBeforeAttention)) {
+							emitNeedsAttention(now, {
+								message: `${agent.name} needs attention after repeated mutating tool failures`,
+								reason: "tool_failures",
+								currentTool: toolSnapshot.tool,
+								currentPath: toolSnapshot.path,
+								currentToolDurationMs: toolSnapshot.startedAt ? Math.max(0, now - toolSnapshot.startedAt) : undefined,
+								recentFailureSummary: summarizeRecentMutatingFailures(mutatingFailures),
+							});
+						}
+					} else if (toolSnapshot?.mutates) {
+						resetMutatingFailureState(mutatingFailures);
+					}
 				}
 				updateActivityState(now);
-				fireUpdate();
-			}
-
-			if (evt.type === "tool_result_end" && evt.message) {
-				(result.messages ??= []).push(evt.message);
-				const resultText = extractTextFromContent(evt.message.content);
-				appendRecentOutput(progress, resultText.split("\n").slice(-10));
-				const toolSnapshot = mutationTracker.recordToolResult(evt.message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown });
-				if (toolSnapshot?.completedMutation) observedCompletedMutation = true;
-				if (toolSnapshot?.mutates && (toolSnapshot.errored || didMutatingToolFail(resultText))) {
-					recordMutatingFailure(mutatingFailures, {
-						tool: toolSnapshot.tool,
-						path: toolSnapshot.path,
-						error: resultText.split("\n").find((line) => line.trim())?.trim().slice(0, 180) ?? "mutating tool failed",
-						ts: now,
-					}, mutatingFailureWindowMs);
-					if (shouldEscalateMutatingFailures(mutatingFailures, controlConfig.failedToolAttemptsBeforeAttention)) {
-						emitNeedsAttention(now, {
-							message: `${agent.name} needs attention after repeated mutating tool failures`,
-							reason: "tool_failures",
-							currentTool: toolSnapshot.tool,
-							currentPath: toolSnapshot.path,
-							currentToolDurationMs: toolSnapshot.startedAt ? Math.max(0, now - toolSnapshot.startedAt) : undefined,
-							recentFailureSummary: summarizeRecentMutatingFailures(mutatingFailures),
-						});
-					}
-				} else if (toolSnapshot?.mutates) {
-					resetMutatingFailureState(mutatingFailures);
-				}
 				fireUpdate();
 			}
 		};

@@ -100,7 +100,7 @@ interface AsyncExecutionContext {
 	cwd: string;
 	currentSessionId: string;
 	currentModelProvider?: string;
-	isProjectTrusted?: () => boolean;
+	projectTrusted?: boolean;
 }
 
 interface AsyncChainParams {
@@ -326,7 +326,7 @@ export function executeAsyncChain(
 			? materializeAsyncDefaultOutput({ output: behavior.output, artifactsDir, asyncDir, runId: id, agent: s.agent, index: outputIndex })
 			: behavior.output;
 		const skillNames = behavior.skills === false ? [] : behavior.skills;
-		const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, stepCwd, ctx.cwd, { projectTrusted: ctx.isProjectTrusted?.() ?? true });
+		const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, stepCwd, ctx.cwd, { projectTrusted: ctx.projectTrusted ?? true });
 		if (missingSkills.includes("pi-subagents")) throw new UnavailableSubagentSkillError(UNAVAILABLE_SUBAGENT_SKILL_ERROR);
 
 		let systemPrompt = a.systemPrompt?.trim() ?? "";
@@ -645,7 +645,7 @@ export function executeAsyncSingle(
 	const runnerCwd = resolveChildCwd(ctx.cwd, cwd);
 	const skillNames = params.skills ?? agentConfig.skills ?? [];
 	const availableModels = params.availableModels;
-	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, runnerCwd, ctx.cwd, { projectTrusted: ctx.isProjectTrusted?.() ?? true });
+	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, runnerCwd, ctx.cwd, { projectTrusted: ctx.projectTrusted ?? true });
 	if (missingSkills.includes("pi-subagents")) return formatAsyncStartError("single", UNAVAILABLE_SUBAGENT_SKILL_ERROR);
 	let systemPrompt = agentConfig.systemPrompt?.trim() ?? "";
 	if (resolvedSkills.length > 0) {

@@ -152,10 +152,6 @@ function extractPlainText(entry) {
 		const text = entry.message?.content?.find?.((part) => part?.type === "text")?.text;
 		return typeof text === "string" ? text : "";
 	}
-	if (entry.type === "tool_result_end") {
-		const text = entry.message?.content?.find?.((part) => part?.type === "text")?.text;
-		return typeof text === "string" ? text : "";
-	}
 	return "";
 }
 
@@ -188,7 +184,7 @@ async function maybeWriteStructuredOutput(response, jsonMode) {
 	if (!jsonMode) return;
 	await writeJsonlLine({ type: "tool_execution_start", toolName: "structured_output", args: { value: response.structuredOutput } });
 	await writeJsonlLine({
-		type: "tool_result_end",
+		type: "message_end",
 		message: {
 			role: "toolResult",
 			toolName: "structured_output",

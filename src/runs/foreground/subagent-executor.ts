@@ -1060,7 +1060,7 @@ async function resumeAsyncRun(input: {
 	input.deps.state.currentSessionId = resolveCurrentSessionId(input.ctx.sessionManager);
 	const effectiveCwd = target.cwd ?? input.requestCwd;
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
-	const discoveredAgents = input.deps.discoverAgents(effectiveCwd, scope, { projectTrusted: input.ctx.isProjectTrusted?.() ?? true }).agents;
+	const discoveredAgents = input.deps.discoverAgents(effectiveCwd, scope, { projectTrusted: input.ctx.isProjectTrusted() }).agents;
 	const fallbackTarget = resolveIntercomSessionTarget(input.deps.pi.getSessionName(), input.ctx.sessionManager.getSessionId());
 	const orchestratorTarget = resolveOrchestratorIntercomTarget(input.deps.pi.events, fallbackTarget);
 	const intercomBridge = resolveIntercomBridge(orchestratorTarget);
@@ -1085,6 +1085,7 @@ async function resumeAsyncRun(input: {
 			cwd: input.requestCwd,
 			currentSessionId: input.deps.state.currentSessionId,
 			currentModelProvider: input.ctx.model?.provider,
+			projectTrusted: input.ctx.isProjectTrusted(),
 		},
 		cwd: effectiveCwd,
 		maxOutput: input.params.maxOutput,
@@ -1614,6 +1615,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 		cwd: ctx.cwd,
 		currentSessionId: deps.state.currentSessionId!,
 		currentModelProvider: ctx.model?.provider,
+		projectTrusted: ctx.isProjectTrusted(),
 	};
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth);
@@ -1844,6 +1846,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			cwd: ctx.cwd,
 			currentSessionId: deps.state.currentSessionId!,
 			currentModelProvider: ctx.model?.provider,
+			projectTrusted: ctx.isProjectTrusted(),
 		};
 		const asyncChain = wrapChainTasksForAgentContext(chainResult.requestedAsync.chain, params.context, agents);
 		return executeAsyncChain(id, {
@@ -2133,7 +2136,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			skills: effectiveSkills === false ? [] : effectiveSkills,
 			acceptance: task.acceptance,
 			projectTrust: input.projectTrust,
-			projectTrusted: input.ctx.isProjectTrusted?.() ?? true,
+			projectTrusted: input.ctx.isProjectTrusted(),
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {
 						const stepResults = progressUpdate.details?.results || [];
@@ -2257,7 +2260,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		const behaviors = agentConfigs.map((c, i) =>
 			resolveStepBehavior(c, behaviorOverrides[i]!),
 		);
-		const availableSkills = discoverAvailableSkills(effectiveCwd, { projectTrusted: ctx.isProjectTrusted?.() ?? true });
+		const availableSkills = discoverAvailableSkills(effectiveCwd, { projectTrusted: ctx.isProjectTrusted() });
 
 		const result = await ctx.ui.custom<ChainClarifyResult>(
 			(tui, theme, _kb, done) =>
@@ -2312,6 +2315,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 				cwd: ctx.cwd,
 				currentSessionId: deps.state.currentSessionId!,
 				currentModelProvider: ctx.model?.provider,
+				projectTrusted: ctx.isProjectTrusted(),
 			};
 			const parallelTasks = tasks.map((t, i) => {
 				const taskText = wrapTaskForAgentContext(taskTexts[i]!, params.context, t.agent, agents);
@@ -2608,7 +2612,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 
 	if (params.clarify === true && ctx.hasUI) {
 		const behavior = resolveStepBehavior(agentConfig, { output: effectiveOutput, skills: skillOverride });
-		const availableSkills = discoverAvailableSkills(effectiveCwd, { projectTrusted: ctx.isProjectTrusted?.() ?? true });
+		const availableSkills = discoverAvailableSkills(effectiveCwd, { projectTrusted: ctx.isProjectTrusted() });
 
 		const result = await ctx.ui.custom<ChainClarifyResult>(
 			(tui, theme, _kb, done) =>
@@ -2657,6 +2661,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				cwd: ctx.cwd,
 				currentSessionId: deps.state.currentSessionId!,
 				currentModelProvider: ctx.model?.provider,
+				projectTrusted: ctx.isProjectTrusted(),
 			};
 			return executeAsyncSingle(id, {
 				agent: params.agent!,
@@ -2777,7 +2782,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		skills: effectiveSkills,
 		acceptance: params.acceptance,
 		projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
-		projectTrusted: ctx.isProjectTrusted?.() ?? true,
+		projectTrusted: ctx.isProjectTrusted(),
 	});
 	if (foregroundControl?.currentIndex === 0) {
 		foregroundControl.interrupt = undefined;
@@ -2935,7 +2940,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							currentSessionId,
 							orchestratorTarget,
 							sessionError,
-							projectTrusted: ctx.isProjectTrusted?.() ?? true,
+							projectTrusted: ctx.isProjectTrusted(),
 							expandTilde: deps.expandTilde,
 						}),
 					}],
@@ -3097,7 +3102,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const effectiveCwd = effectiveParams.cwd ?? ctx.cwd;
 		const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
 		deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
-		const discoveredAgents = deps.discoverAgents(effectiveCwd, scope, { projectTrusted: ctx.isProjectTrusted?.() ?? true }).agents;
+		const discoveredAgents = deps.discoverAgents(effectiveCwd, scope, { projectTrusted: ctx.isProjectTrusted() }).agents;
 		const invocationAgentNames = collectInvocationAgentNames(effectiveParams);
 		const invocationContext: SubagentParamsLike["context"] = invocationUsesForkContext(
 			effectiveParams.context,

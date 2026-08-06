@@ -28,6 +28,7 @@ describe("createForkContextResolver", () => {
 		const resolver = createForkContextResolver({
 			getSessionFile: () => "/tmp/parent.jsonl",
 			getLeafId: () => "leaf-123",
+			getSessionDir: () => "/tmp",
 		}, "fresh", {
 			openSession: () => ({
 				createBranchedSession: () => {
@@ -46,6 +47,7 @@ describe("createForkContextResolver", () => {
 			() => createForkContextResolver({
 				getSessionFile: () => undefined,
 				getLeafId: () => "leaf-123",
+				getSessionDir: () => "/tmp",
 			}, "fork", { openSession: () => ({ createBranchedSession: () => "/tmp/child.jsonl" }) }),
 			/Forked subagent context requires a persisted parent session\./,
 		);
@@ -56,6 +58,7 @@ describe("createForkContextResolver", () => {
 			() => createForkContextResolver({
 				getSessionFile: () => "/tmp/parent.jsonl",
 				getLeafId: () => null,
+				getSessionDir: () => "/tmp",
 			}, "fork", { openSession: () => ({ createBranchedSession: () => "/tmp/child.jsonl" }) }),
 			/Forked subagent context requires a current leaf to fork from\./,
 		);
@@ -71,6 +74,7 @@ describe("createForkContextResolver", () => {
 			const resolver = createForkContextResolver({
 				getSessionFile: () => parentSessionFile,
 				getLeafId: () => "leaf-xyz",
+				getSessionDir: () => "/tmp",
 			}, "fork", {
 				openSession: (sessionFile: string) => {
 					openedPaths.push(sessionFile);
@@ -159,6 +163,7 @@ describe("createForkContextResolver", () => {
 			const resolver = createForkContextResolver({
 				getSessionFile: () => parentSessionFile,
 				getLeafId: () => "leaf-abc",
+				getSessionDir: () => "/tmp",
 			}, "fork", {
 				openSession: () => ({
 					createBranchedSession: () => {
@@ -192,6 +197,7 @@ describe("createForkContextResolver", () => {
 			const resolver = createForkContextResolver({
 				getSessionFile: () => parentSessionFile,
 				getLeafId: () => "leaf-abc",
+				getSessionDir: () => "/tmp",
 			}, "fork", {
 				openSession: () => ({
 					createBranchedSession: () => {
@@ -221,6 +227,7 @@ describe("createForkContextResolver", () => {
 			const resolver = createForkContextResolver({
 				getSessionFile: () => parentSessionFile,
 				getLeafId: () => "leaf-abc",
+				getSessionDir: () => "/tmp",
 			}, "fork", {
 				openSession: () => ({
 					createBranchedSession: () => missingChildSessionFile,
@@ -244,6 +251,7 @@ describe("createForkContextResolver", () => {
 			const resolver = createForkContextResolver({
 				getSessionFile: () => parentSessionFile,
 				getLeafId: () => "leaf-abc",
+				getSessionDir: () => "/tmp",
 			}, "fork", {
 				openSession: () => ({
 					createBranchedSession: () => undefined,

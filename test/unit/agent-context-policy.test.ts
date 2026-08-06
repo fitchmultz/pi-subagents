@@ -205,6 +205,7 @@ describe("createPerAgentForkContextResolver", () => {
 				{
 					getSessionFile: () => parentSessionFile,
 					getLeafId: () => "leaf-1",
+					getSessionDir: () => "/tmp",
 				},
 				(index = 0) => (index === 1 ? "fork" : "fresh"),
 				{

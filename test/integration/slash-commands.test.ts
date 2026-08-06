@@ -132,7 +132,9 @@ function createCommandContext(
 ) {
 	return {
 		cwd: overrides.cwd ?? process.cwd(),
+		mode: overrides.hasUI ? "tui" : "json",
 		hasUI: overrides.hasUI ?? false,
+		isProjectTrusted: () => true,
 		ui: {
 			notify: overrides.notify ?? ((_message: string) => {}),
 			setStatus: overrides.setStatus ?? ((_key: string, _text: string | undefined) => {}),
@@ -220,14 +222,6 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
 		const events = createEventBus();
 		let requestedParams: unknown;
-		const sessionManager = {
-			flushed: false,
-			rewrites: 0,
-			getSessionFile: () => "session.jsonl",
-			_rewriteFile() {
-				this.rewrites++;
-			},
-		};
 		events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
 			const payload = data as { requestId: string; params?: unknown };
 			requestedParams = payload.params;
@@ -254,7 +248,7 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		};
 
 		registerSlashCommands!(pi, createState(process.cwd()));
-		await commands.get("run")!.handler("scout", createCommandContext({ sessionManager }));
+		await commands.get("run")!.handler("scout", createCommandContext());
 
 		assert.deepEqual(requestedParams, { agent: "scout", task: "", clarify: false, agentScope: "both" });
 		assert.equal(sent.length, 2);
@@ -262,8 +256,6 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		assert.equal((sent[0] as { content?: string }).content, "Running subagent...");
 		assert.equal((sent[1] as { display?: boolean }).display, true);
 		assert.match((sent[1] as { content?: string }).content ?? "", /Commit finished/);
-		assert.equal(sessionManager.rewrites, 2);
-		assert.equal(sessionManager.flushed, true);
 	});
 
 	it("/run finalizes the slash snapshot before the last UI redraw on success", async () => {

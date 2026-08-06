@@ -59,6 +59,23 @@ test("detached runtimes install only their production dependency", () => {
 	assert.equal(dependencies.tsx, undefined);
 });
 
+test("Pi 0.84.0 is the exact development baseline with optional wildcard peers", () => {
+	const packageJson = readPackageJson();
+	const devDependencies = packageJson.devDependencies as Record<string, unknown>;
+	const peerDependencies = packageJson.peerDependencies as Record<string, unknown>;
+	const peerDependenciesMeta = packageJson.peerDependenciesMeta as Record<string, { optional?: boolean }>;
+	for (const name of [
+		"@earendil-works/pi-agent-core",
+		"@earendil-works/pi-ai",
+		"@earendil-works/pi-coding-agent",
+		"@earendil-works/pi-tui",
+	]) {
+		assert.equal(devDependencies[name], "0.84.0", name);
+		assert.equal(peerDependencies[name], "*", name);
+		assert.equal(peerDependenciesMeta[name]?.optional, true, name);
+	}
+});
+
 test("one manifest bundles subagents and intercom", () => {
 	const pi = readPackageJson().pi as { extensions?: unknown; skills?: unknown };
 	assert.deepEqual(pi.extensions, ["./src/extension/index.ts", "./src/pi-intercom/index.ts"]);
@@ -79,6 +96,16 @@ test("old pi package scope is not used by source or tests", () => {
 	for (const file of [...collectTsFiles(path.join(projectRoot, "src")), ...collectTsFiles(path.join(projectRoot, "test"))]) {
 		const source = fs.readFileSync(file, "utf-8");
 		assert.equal(oldPiScopePattern.test(source), false, file);
+	}
+});
+
+test("source uses only current Pi 0.84 entrypoints and event contracts", () => {
+	for (const file of collectTsFiles(path.join(projectRoot, "src"))) {
+		const source = fs.readFileSync(file, "utf-8");
+		assert.equal(source.includes("@earendil-works/pi-ai/compat"), false, file);
+		assert.equal(source.includes("tool_result_end"), false, file);
+		assert.equal(source.includes("_rewriteFile"), false, file);
+		assert.equal(source.includes("isProjectTrusted?."), false, file);
 	}
 });
 

@@ -33,6 +33,7 @@ function createUiContext(expanded = false) {
 	const widgets: unknown[] = [];
 	let renderRequests = 0;
 	const ctx = {
+		mode: "tui",
 		hasUI: true,
 		ui: {
 			theme,

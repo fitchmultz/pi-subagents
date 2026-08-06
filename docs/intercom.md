@@ -28,7 +28,7 @@ Each Pi session with the bundled intercom extension loaded connects to a tiny lo
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-That one package includes both extension entries and both skills. For local development, install the checkout with `pi install /absolute/path/to/pi-subagents`. Use Pi 0.80.10 or newer, then reload existing sessions.
+That one package includes both extension entries and both skills. For local development, install the checkout with `pi install /absolute/path/to/pi-subagents`. Use Pi 0.84.0 or later, then reload existing sessions.
 
 ## Development
 

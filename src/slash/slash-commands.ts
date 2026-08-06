@@ -96,7 +96,7 @@ const extractExecutionFlags = (rawArgs: string): { args: string; async?: boolean
 	return { args, async: asyncMode, fork };
 };
 
-const projectTrusted = (state: SubagentState): boolean => state.lastUiContext?.isProjectTrusted?.() ?? true;
+const projectTrusted = (state: SubagentState): boolean => state.lastUiContext ? state.lastUiContext.isProjectTrusted() : true;
 
 const makeAgentCompletions = (state: SubagentState, multiAgent: boolean) => (prefix: string) => {
 	if (!state.baseCwd) return null;
@@ -301,23 +301,6 @@ function buildSlashExportText(response: SlashSubagentResponse): string {
 	return sections.join("\n\n");
 }
 
-function persistSlashSessionSnapshot(ctx: ExtensionContext): void {
-	try {
-		if (!ctx.sessionManager) return;
-		const sessionManager = ctx.sessionManager as typeof ctx.sessionManager & {
-			_rewriteFile?: () => void;
-			flushed?: boolean;
-		};
-		const sessionFile = sessionManager.getSessionFile();
-		if (!sessionFile || typeof sessionManager._rewriteFile !== "function") return;
-		fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
-		sessionManager._rewriteFile();
-		sessionManager.flushed = true;
-	} catch (error) {
-		console.error("Failed to persist slash session snapshot for export:", error);
-	}
-}
-
 async function runSlashSubagent(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -332,7 +315,6 @@ async function runSlashSubagent(
 		display: true,
 		details: initialDetails,
 	});
-	persistSlashSessionSnapshot(ctx);
 
 	try {
 		const response = await requestSlashRun(pi, ctx, requestId, params);
@@ -343,7 +325,6 @@ async function runSlashSubagent(
 			display: true,
 			details: finalDetails,
 		});
-		persistSlashSessionSnapshot(ctx);
 		if (ctx.hasUI) {
 			ctx.ui.setStatus("subagent-slash", undefined);
 		}
@@ -359,7 +340,6 @@ async function runSlashSubagent(
 			display: true,
 			details: failedDetails,
 		});
-		persistSlashSessionSnapshot(ctx);
 		if (ctx.hasUI) {
 			ctx.ui.setStatus("subagent-slash", undefined);
 		}
@@ -435,7 +415,7 @@ const parseAgentArgs = (
 		ctx.ui.notify("Subagent session cwd is not initialized yet", "error");
 		return null;
 	}
-	const agents = discoverAgents(state.baseCwd, "both", { projectTrusted: ctx.isProjectTrusted?.() ?? true }).agents;
+	const agents = discoverAgents(state.baseCwd, "both", { projectTrusted: ctx.isProjectTrusted() }).agents;
 	for (const step of steps) {
 		if (!agents.find((a) => a.name === step.name)) {
 			ctx.ui.notify(`Unknown agent: ${step.name}`, "error");
@@ -471,7 +451,7 @@ export function registerSlashCommands(
 			const task = firstSpace === -1 ? "" : input.slice(firstSpace + 1).trim();
 
 			if (!state.baseCwd) { ctx.ui.notify("Subagent session cwd is not initialized yet", "error"); return; }
-			const agents = discoverAgents(state.baseCwd, "both", { projectTrusted: ctx.isProjectTrusted?.() ?? true }).agents;
+			const agents = discoverAgents(state.baseCwd, "both", { projectTrusted: ctx.isProjectTrusted() }).agents;
 			if (!agents.find((a) => a.name === agentName)) { ctx.ui.notify(`Unknown agent: ${agentName}`, "error"); return; }
 
 			let finalTask = task;

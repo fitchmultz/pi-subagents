@@ -27,6 +27,7 @@ interface SessionManagerStub {
 	getSessionId(): string;
 	getSessionFile(): string | undefined;
 	getLeafId(): string | null;
+	getSessionDir(): string;
 	openSession(sessionFile: string): { createBranchedSession(leafId: string): string | undefined };
 }
 
@@ -35,6 +36,7 @@ function makeSessionManagerRecorder(options: SessionStubOptions = {}) {
 		getSessionId: () => "session-123",
 		getSessionFile: () => options.sessionFile,
 		getLeafId: () => (options.leafId === undefined ? "leaf-current" : options.leafId),
+		getSessionDir: () => options.sessionFile ? path.dirname(options.sessionFile) : process.cwd(),
 		openSession: () => ({
 			createBranchedSession: () => "/tmp/child.jsonl",
 		}),
@@ -216,6 +218,7 @@ describe("fork context execution wiring", () => {
 			getSessionId: () => "session-123",
 			getSessionFile: () => options.sessionFile,
 			getLeafId: () => options.leafId,
+			getSessionDir: () => path.dirname(options.sessionFile),
 			openSession: (sessionFile: string) => {
 				openedPaths.push(sessionFile);
 				return {
@@ -270,9 +273,11 @@ describe("fork context execution wiring", () => {
 	function makeCtx(sessionManager: SessionManagerStub) {
 		return {
 			cwd: tempDir,
+			mode: "json",
 			hasUI: false,
 			ui: {},
 			modelRegistry: { getAvailable: () => [] },
+			isProjectTrusted: () => true,
 			sessionManager,
 		};
 	}
@@ -934,6 +939,7 @@ describe("fork context execution wiring", () => {
 			getSessionId: () => "session-123",
 			getSessionFile: () => parentSessionFile,
 			getLeafId: () => "leaf-fail",
+			getSessionDir: () => tempDir,
 			openSession: () => ({
 				createBranchedSession: () => {
 					throw new Error("branch write failed");

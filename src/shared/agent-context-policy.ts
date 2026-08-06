@@ -9,7 +9,7 @@ export type SubagentExecutionContext = "fresh" | "fork";
 interface ForkableSessionManager {
 	getSessionFile(): string | undefined;
 	getLeafId(): string | null;
-	getSessionDir?(): string;
+	getSessionDir(): string;
 	openSession?: (path: string, sessionDir?: string) => { createBranchedSession(leafId: string): string | undefined };
 }
 

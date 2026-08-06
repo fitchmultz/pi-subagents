@@ -491,7 +491,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 	const shouldClarify = clarify === true && ctx.hasUI && !hasParallelSteps;
 	let tuiBehaviorOverrides: (BehaviorOverride | undefined)[] | undefined;
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
-	const availableSkills = discoverAvailableSkills(cwd ?? ctx.cwd, { projectTrusted: ctx.isProjectTrusted?.() ?? true });
+	const availableSkills = discoverAvailableSkills(cwd ?? ctx.cwd, { projectTrusted: ctx.isProjectTrusted() });
 
 	if (shouldClarify) {
 		const seqSteps = chainSteps as SequentialStep[];

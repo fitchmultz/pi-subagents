@@ -50,7 +50,7 @@ function makeCtx(cwd: string) {
 			getSessionId: () => "session-123",
 			getSessionFile: () => null,
 		},
-		modelRegistry: { getAvailable: () => [] },
+		modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true,
 	};
 }
 

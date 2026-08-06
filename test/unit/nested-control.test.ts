@@ -74,8 +74,10 @@ function createExecutor(state = createState(), agents: Array<Record<string, unkn
 function ctx(root: string, sessionFile: string | null = null) {
 	return {
 		cwd: root,
+		mode: "json",
 		hasUI: false,
-		sessionManager: { getSessionId() { return "session"; }, getSessionFile() { return sessionFile; } },
+		isProjectTrusted: () => true,
+		sessionManager: { getSessionId() { return "session"; }, getSessionFile() { return sessionFile; }, getSessionDir() { return root; } },
 		modelRegistry: { getAvailable() { return []; } },
 	} as any;
 }
