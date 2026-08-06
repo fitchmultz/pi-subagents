@@ -3,7 +3,7 @@ name: reviewer-ponytail
 description: Over-engineering and slop review for diffs, gated on preserving intended behavior
 model: openai-codex/gpt-5.6-sol
 fallbackModels: openai/gpt-5.6-sol, openai-codex/gpt-5.6-terra
-thinking: high
+thinking: xhigh
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true

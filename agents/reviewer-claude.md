@@ -3,7 +3,7 @@ name: reviewer-claude
 description: Independent cross-model reviewer for assumptions, edge cases, and product risk
 model: anthropic/claude-opus-5
 fallbackModels: anthropic/claude-fable-5, xai/grok-4.5
-thinking: high
+thinking: xhigh
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true

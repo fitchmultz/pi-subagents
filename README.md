@@ -181,7 +181,7 @@ Use the narrowest role that fits the task. Keep implementation to one writer and
 
 ## Changing a builtin agent's model
 
-The bundled Fitch role profiles pin explicit primary and fallback routes. `delegate` is the exception and inherits the current Pi model. The four specialized `reviewer-*` profiles use `high` thinking.
+The bundled Fitch role profiles pin explicit primary and fallback routes. `delegate` is the exception and inherits the current Pi model.
 
 | Primary route | Agents |
 |---------------|--------|
