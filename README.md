@@ -185,9 +185,9 @@ The bundled Fitch role profiles pin explicit primary and fallback routes. `deleg
 
 | Primary route | Agents |
 |---------------|--------|
-| `xai/grok-4.5` | `scout`, `context-builder`, `fixer`, `worker` |
-| `openai/gpt-5.6-luna` | `watcher` |
-| `openai-codex/gpt-5.6-sol` | `debugger`, `oracle`, `planner`, `researcher`, `reviewer`, `reviewer-gpt`, `reviewer-ponytail`, `reviewer-security` |
+| `xai/grok-4.5` | `scout`, `context-builder`, `fixer`, `worker`, `reviewer-security` |
+| `openai/gpt-5.6-sol` | `watcher` |
+| `openai-codex/gpt-5.6-sol` | `debugger`, `oracle`, `planner`, `researcher`, `reviewer`, `reviewer-gpt`, `reviewer-ponytail` |
 | `anthropic/claude-opus-5` | `reviewer-claude` |
 | `anthropic/claude-fable-5` | `ui-designer`, `writer` |
 | Current Pi model | `delegate` |

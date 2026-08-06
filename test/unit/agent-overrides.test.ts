@@ -53,9 +53,9 @@ describe("builtin agent overrides", () => {
 			assert.ok(agent.fallbackModels?.length, `${agent.name} should have configured fallback models`);
 		}
 		const watcher = builtins.find((agent) => agent.name === "watcher");
-		assert.equal(watcher?.model, "openai/gpt-5.6-luna");
-		assert.equal(watcher?.thinking, "high");
-		assert.deepEqual(watcher?.fallbackModels, ["xai/grok-4.5:medium"]);
+		assert.equal(watcher?.model, "openai/gpt-5.6-sol");
+		assert.equal(watcher?.thinking, "medium");
+		assert.deepEqual(watcher?.fallbackModels, ["xai/grok-4.5"]);
 		assert.equal(watcher?.maxSubagentDepth, 0);
 		assert.equal(watcher?.completionGuard, false);
 		assert.match(watcher?.systemPrompt ?? "", /Do not modify the watched target/);
@@ -72,7 +72,14 @@ describe("builtin agent overrides", () => {
 		}
 		const reviewerClaude = builtins.find((agent) => agent.name === "reviewer-claude");
 		assert.equal(reviewerClaude?.model, "anthropic/claude-opus-5");
+		assert.equal(reviewerClaude?.thinking, "high");
 		assert.deepEqual(reviewerClaude?.fallbackModels, ["anthropic/claude-fable-5", "xai/grok-4.5"]);
+		const reviewerGpt = builtins.find((agent) => agent.name === "reviewer-gpt");
+		assert.equal(reviewerGpt?.thinking, "high");
+		const reviewerSecurity = builtins.find((agent) => agent.name === "reviewer-security");
+		assert.equal(reviewerSecurity?.model, "xai/grok-4.5");
+		assert.equal(reviewerSecurity?.thinking, "xhigh");
+		assert.deepEqual(reviewerSecurity?.fallbackModels, ["openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol"]);
 		const delegate = builtins.find((agent) => agent.name === "delegate");
 		assert.equal(delegate?.model, undefined);
 		assert.equal(delegate?.fallbackModels, undefined);
@@ -86,6 +93,7 @@ describe("builtin agent overrides", () => {
 			oracle: ["openai/gpt-5.6-sol"],
 			reviewer: ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-terra"],
 			"reviewer-gpt": ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-terra"],
+			"reviewer-security": ["openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol"],
 			scout: ["openai-codex/gpt-5.6-luna", "openai/gpt-5.6-luna"],
 			worker: ["openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol", "anthropic/claude-opus-5"],
 		};
