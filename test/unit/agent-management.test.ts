@@ -27,7 +27,7 @@ describe("agent management config parsing", () => {
 	it("surfaces JSON parse errors for create config strings", () => {
 		const result = handleCreate(
 			{ config: '{"name":' },
-			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
+			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
 		);
 
 		assert.equal(result.isError, true);
@@ -37,7 +37,7 @@ describe("agent management config parsing", () => {
 	it("surfaces JSON parse errors for update config strings", () => {
 		const result = handleUpdate(
 			{ agent: "reviewer", config: '{"description":' },
-			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
+			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
 		);
 
 		assert.equal(result.isError, true);
@@ -45,7 +45,7 @@ describe("agent management config parsing", () => {
 	});
 
 	it("creates, gets, updates, and deletes a packaged agent by runtime name", () => {
-		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const created = handleCreate(
 			{ config: { name: "Scout", package: "Code Analysis", description: "Fast recon", scope: "project", systemPrompt: "Inspect" } },
 			ctx,
@@ -83,7 +83,7 @@ describe("agent management config parsing", () => {
 	});
 
 	it("rejects package values that cannot be normalized", () => {
-		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const created = handleCreate(
 			{ config: { name: "Scout", package: "!!!", description: "Fast recon", scope: "project" } },
 			ctx,
@@ -94,7 +94,7 @@ describe("agent management config parsing", () => {
 	});
 
 	it("creates and updates packaged chains while preserving packaged step names", () => {
-		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		fs.mkdirSync(path.join(tempDir, ".pi", "agents"), { recursive: true });
 		fs.writeFileSync(path.join(tempDir, ".pi", "agents", "code-analysis.scout.md"), `---
 name: scout
@@ -130,7 +130,7 @@ Inspect
 	});
 
 	it("creates saved chains with plural step skills", () => {
-		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const result = handleCreate(
 			{
 				config: {
@@ -164,7 +164,7 @@ Inspect
 					steps: [{ agent: "reviewer", task: "Review", skill: "code-review" }],
 				},
 			},
-			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
+			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
 		);
 
 		assert.equal(result.isError, true);
@@ -173,7 +173,7 @@ Inspect
 	});
 
 	it("creates agents with completion guard disabled", () => {
-		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const result = handleCreate(
 			{ config: { name: "test-runner", description: "Run tests", scope: "project", tools: "read, grep, bash, ls", completionGuard: false } },
 			ctx,
@@ -190,7 +190,7 @@ Inspect
 	});
 
 	it("creates agents with resource limits", () => {
-		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const result = handleCreate(
 			{ config: { name: "budget-worker", description: "Bounded worker", scope: "project", maxExecutionTimeMs: 600000, maxTokens: 50000 } },
 			ctx,
@@ -211,7 +211,7 @@ Inspect
 	it("rejects invalid resource limit config", () => {
 		const result = handleCreate(
 			{ config: { name: "budget-worker", description: "Bounded worker", scope: "project", maxTokens: 0 } },
-			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
+			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
 		);
 
 		assert.equal(result.isError, true);
@@ -221,7 +221,7 @@ Inspect
 	it("rejects non-boolean completion guard config", () => {
 		const result = handleCreate(
 			{ config: { name: "test-runner", description: "Run tests", scope: "project", completionGuard: "false" } },
-			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
+			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
 		);
 
 		assert.equal(result.isError, true);
@@ -229,7 +229,7 @@ Inspect
 	});
 
 	it("updates JSON chain descriptions without rewriting them as markdown", () => {
-		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const chainPath = path.join(tempDir, ".pi", "chains", "dynamic-review.chain.json");
 		fs.mkdirSync(path.dirname(chainPath), { recursive: true });
 		fs.writeFileSync(chainPath, JSON.stringify({
@@ -256,7 +256,7 @@ Inspect
 	});
 
 	it("renames and repackages JSON chains while preserving JSON format and extension", () => {
-		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const chainPath = path.join(tempDir, ".pi", "chains", "dynamic-review.chain.json");
 		fs.mkdirSync(path.dirname(chainPath), { recursive: true });
 		fs.writeFileSync(chainPath, JSON.stringify({
@@ -279,7 +279,7 @@ Inspect
 	});
 
 	it("gets dynamic JSON chain details and lists invalid chain diagnostics", () => {
-		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		fs.mkdirSync(path.join(tempDir, ".pi", "chains"), { recursive: true });
 		fs.writeFileSync(path.join(tempDir, ".pi", "chains", "dynamic-review.chain.json"), JSON.stringify({
 			name: "dynamic-review",
@@ -311,7 +311,7 @@ Inspect
 	it("creates delegate with its builtin prompt defaults", () => {
 		const result = handleCreate(
 			{ config: { name: "delegate", description: "Delegate helper", scope: "project" } },
-			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
+			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
 		);
 
 		assert.equal(result.isError, false);

@@ -61,7 +61,9 @@ describe("subagent extension child mode", () => {
 			let expanded = false;
 			const ctx = {
 				cwd: process.cwd(),
+				mode: "tui",
 				hasUI: true,
+				isProjectTrusted() { return true; },
 				ui: {
 					getToolsExpanded() { return expanded; },
 					setToolsExpanded(value) { expanded = value; calls.push(value); },
@@ -69,7 +71,7 @@ describe("subagent extension child mode", () => {
 					requestRender() {},
 					theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } },
 				},
-				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; } },
+				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; }, getSessionDir() { return process.cwd(); } },
 				modelRegistry: { getAvailable() { return []; } },
 			};
 			await registeredTool.execute("already-collapsed", { action: "list" }, new AbortController().signal, undefined, ctx);
@@ -186,8 +188,10 @@ describe("subagent extension child mode", () => {
 			if (!(registeredTool.promptGuidelines ?? []).some((line) => line.includes("Nested execution defaults to foreground") && line.includes("async:false") && line.includes("async:true"))) throw new Error("missing nested foreground-default guideline");
 			const ctx = {
 				cwd: process.cwd(),
+				mode: "json",
 				hasUI: false,
-				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; } },
+				isProjectTrusted() { return true; },
+				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; }, getSessionDir() { return process.cwd(); } },
 				modelRegistry: { getAvailable() { return []; } },
 			};
 			const list = await registeredTool.execute("list-check", { action: "list" }, new AbortController().signal, undefined, ctx);

@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Message } from "@earendil-works/pi-ai/compat";
+import type { Message } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
 import { PI_CODING_AGENT_PACKAGE, getPiSpawnCommand, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
@@ -90,7 +90,7 @@ import {
 	formatWorktreeTaskCwdConflict,
 	type WorktreeSetup,
 } from "../shared/worktree.ts";
-import { resolveEffectiveThinking } from "../../shared/model-info.ts";
+import { providerQualifiedModelId, resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { writeInitialProgressFile } from "../../shared/settings.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
@@ -434,17 +434,18 @@ function runPiStreaming(
 				return;
 			}
 
-			if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
+			if (event.type === "message_end" && event.message) {
 				messages.push(event.message);
 				const text = extractTextFromContent(event.message.content);
 				if (text) writeOutputText(text);
-				if (event.type === "tool_result_end") {
+				if (event.message.role === "toolResult") {
 					const toolSnapshot = mutationTracker.recordToolResult(event.message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown });
 					if (toolSnapshot?.completedMutation) observedCompletedMutation = true;
+					return;
 				}
 
-				if (event.type !== "message_end" || event.message.role !== "assistant") return;
-				if (event.message.model) model = event.message.model;
+				if (event.message.role !== "assistant") return;
+				model = providerQualifiedModelId(event.message.provider, event.message.model) ?? model;
 				if (event.message.errorMessage) assistantError = event.message.errorMessage;
 				const eventUsage = event.message.usage;
 				if (eventUsage) {
@@ -1573,7 +1574,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			step.currentToolStartedAt = undefined;
 			step.currentPath = undefined;
 			syncTopLevelCurrentTool();
-		} else if (event.type === "tool_result_end" && event.message) {
+		} else if (event.type === "message_end" && event.message?.role === "toolResult") {
 			const toolSnapshot = mutationTrackers[flatIndex]?.recordToolResult(event.message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown });
 			const resultText = extractTextFromContent(event.message.content);
 			appendRecentStepOutput(step, resultText.split("\n").slice(-10));

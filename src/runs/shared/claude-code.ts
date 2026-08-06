@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Message } from "@earendil-works/pi-ai/compat";
+import type { Message } from "@earendil-works/pi-ai";
 import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
 
 const PREFIX = "claude-code/";

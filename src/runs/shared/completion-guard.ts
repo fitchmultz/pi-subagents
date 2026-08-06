@@ -1,4 +1,4 @@
-import type { Message } from "@earendil-works/pi-ai/compat";
+import type { Message } from "@earendil-works/pi-ai";
 import { createMutationCompletionTracker } from "./mutating-tool-guard.ts";
 
 const REVIEW_ONLY_PATTERNS = [

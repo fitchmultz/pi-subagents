@@ -1022,7 +1022,7 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 		return;
 	}
 	if (!isTuiContext(ctx)) return;
-	ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(jobs, ctx.ui.getToolsExpanded?.() ?? false));
+	ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(jobs, ctx.ui.getToolsExpanded()));
 }
 
 function renderSingleCompact(d: Details, r: Details["results"][number], theme: Theme): Component {

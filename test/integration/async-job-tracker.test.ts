@@ -48,11 +48,13 @@ function createUiContext() {
 	const widgets: unknown[] = [];
 	let renderRequests = 0;
 	const ctx = {
+		mode: "tui",
 		hasUI: true,
 		ui: {
 			theme: {
 				fg: (_theme: string, text: string) => text,
 			},
+			getToolsExpanded: () => false,
 			setWidget: (_key: string, value: unknown) => {
 				widgets.push(value);
 			},

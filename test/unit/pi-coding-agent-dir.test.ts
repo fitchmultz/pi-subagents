@@ -107,7 +107,7 @@ Inspect env.
 		const createdName = "created-env-agent";
 		const created = handleCreate(
 			{ config: { name: createdName, description: "Created in env dir", scope: "user" } },
-			{ cwd, modelRegistry: { getAvailable: () => [] } },
+			{ cwd, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
 		);
 		assert.equal(created.isError, false, readText(created));
 		assert.equal(fs.existsSync(path.join(agentDir, "agents", `${createdName}.md`)), true);

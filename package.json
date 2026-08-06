@@ -1,6 +1,6 @@
 {
   "name": "pi-subagents",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "description": "Pi extension for subagent orchestration and local session coordination",
   "author": "Nico Bailon",
   "license": "MIT",
@@ -78,10 +78,10 @@
     "typebox": "^1.1.39"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.80.10",
-    "@earendil-works/pi-ai": "^0.80.10",
-    "@earendil-works/pi-coding-agent": "^0.80.10",
-    "@earendil-works/pi-tui": "^0.80.10",
+    "@earendil-works/pi-agent-core": "0.84.0",
+    "@earendil-works/pi-ai": "0.84.0",
+    "@earendil-works/pi-coding-agent": "0.84.0",
+    "@earendil-works/pi-tui": "0.84.0",
     "@types/node": "^24.13.2",
     "typescript": "^6.0.3"
   },

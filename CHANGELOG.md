@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-08-06
+
 ### Added
 - New builtin `reviewer-ponytail` agent: reviews a diff for over-engineering and slop, governed by the user-installed `ponytail` skill when present. Findings proposing a cut must name a behavior-preserving replacement; intended functionality always wins over compliance.
 
@@ -9,6 +11,10 @@
 - Restore active async runs to the TUI widget after `/reload` and after reopening the originating Pi session, using the existing on-disk status files instead of losing them with the extension's in-memory tracker.
 
 ### Changed
+- Require Pi 0.84.0 or later, pin development validation to the released 0.84.0 packages, and verify the extension/package APIs against the 0.84.0 docs, implementation, and emitted types while retaining optional wildcard Pi peers for package loading.
+- Consume Pi 0.84 child JSON streams through authoritative `message_end` events, including `toolResult` messages, instead of the removed `tool_result_end` compatibility event so mutation tracking and completion guards see finalized tool results.
+- Use Pi 0.84's default `pi-ai` type exports, required context methods, and readonly session manager contract instead of compatibility entrypoints, pre-0.84 context fallbacks, and private session persistence internals.
+- Preserve provider-qualified Pi 0.84 model identities for acceptance continuation turns, keep the live async smoke agent task-focused across models, and use only public npm registry URLs in the release lockfile.
 - Keep bundled workflow prompts as unregistered package examples instead of installing them as slash commands.
 - Collapse the background async widget to one line per run. The per-run stats echo, per-agent rows, nested-run aggregates, and the standalone `Ctrl+O` hint line are gone from the collapsed view; the row keeps the live tool of a solo running agent and `Ctrl+O` still expands the full tree. Widget lines are also built two columns narrower in both modes so padded rows stop wrapping into orphan fragments.
 - Drop the dead `expanded` parameters and unreachable collapsed branches left in the async widget detail helpers after the one-line collapsed view landed. Rendering is unchanged.

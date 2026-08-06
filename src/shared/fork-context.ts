@@ -6,7 +6,7 @@ type SubagentExecutionContext = "fresh" | "fork";
 interface ForkableSessionManager {
 	getSessionFile(): string | undefined;
 	getLeafId(): string | null;
-	getSessionDir?(): string;
+	getSessionDir(): string;
 	openSession?: (path: string, sessionDir?: string) => { createBranchedSession(leafId: string): string | undefined };
 }
 
@@ -46,7 +46,7 @@ export function createForkContextResolver(
 	const openSession = options.openSession
 		?? sessionManager.openSession
 		?? ((file: string, dir?: string) => SessionManager.open(file, dir));
-	const sessionDir = sessionManager.getSessionDir?.();
+	const sessionDir = sessionManager.getSessionDir();
 	const cachedSessionFiles = new Map<number, string>();
 
 	return {

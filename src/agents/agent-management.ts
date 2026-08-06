@@ -24,7 +24,7 @@ import type { SubagentExecutionResult } from "../shared/types.ts";
 
 type ManagementAction = "list" | "get" | "create" | "update" | "delete";
 type ManagementScope = "user" | "project";
-type ManagementContext = Pick<ExtensionContext, "cwd" | "modelRegistry"> & { isProjectTrusted?: () => boolean };
+type ManagementContext = Pick<ExtensionContext, "cwd" | "modelRegistry" | "isProjectTrusted">;
 
 interface ManagementParams {
 	action?: string;
@@ -84,7 +84,7 @@ function allAgents(d: { builtin: AgentConfig[]; user: AgentConfig[]; project: Ag
 }
 
 function discoveryOptions(ctx: ManagementContext): { projectTrusted: boolean } {
-	return { projectTrusted: ctx.isProjectTrusted?.() ?? true };
+	return { projectTrusted: ctx.isProjectTrusted() };
 }
 
 function availableNames(ctx: ManagementContext, kind: "agent" | "chain"): string[] {

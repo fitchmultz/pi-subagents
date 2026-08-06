@@ -87,11 +87,14 @@ export function makeAgent(name: string, overrides: Partial<AgentConfig> = {}): A
 
 interface MinimalCtx {
 	cwd: string;
+	mode: "json";
 	hasUI: boolean;
+	isProjectTrusted: () => boolean;
 	ui: Record<string, never>;
 	sessionManager: {
 		getSessionId: () => string;
 		getSessionFile: () => string | null;
+		getSessionDir: () => string;
 	};
 	modelRegistry: {
 		getAvailable: () => Array<{ provider: string; id: string }>;
@@ -102,11 +105,14 @@ interface MinimalCtx {
 export function makeMinimalCtx(cwd: string): MinimalCtx {
 	return {
 		cwd,
+		mode: "json",
 		hasUI: false,
+		isProjectTrusted: () => true,
 		ui: {},
 		sessionManager: {
 			getSessionId: () => "session-123",
 			getSessionFile: () => null,
+			getSessionDir: () => cwd,
 		},
 		modelRegistry: {
 			getAvailable: () => [],
@@ -116,12 +122,14 @@ export function makeMinimalCtx(cwd: string): MinimalCtx {
 
 export const events = {
 	assistantMessage(text: string, model = "mock/test-model"): object {
+		const separator = model.indexOf("/");
 		return {
 			type: "message_end",
 			message: {
 				role: "assistant",
 				content: [{ type: "text", text }],
-				model,
+				provider: separator >= 0 ? model.slice(0, separator) : "mock",
+				model: separator >= 0 ? model.slice(separator + 1) : model,
 				stopReason: "stop",
 				usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
 			},
@@ -138,7 +146,7 @@ export const events = {
 
 	toolResult(toolName: string, text: string, isError = false): object {
 		return {
-			type: "tool_result_end",
+			type: "message_end",
 			message: {
 				role: "toolResult",
 				toolName,

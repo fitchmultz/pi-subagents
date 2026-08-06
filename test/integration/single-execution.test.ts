@@ -282,6 +282,10 @@ describe("single sync execution", () => {
 		assert.equal(result.acceptance?.status, "checked");
 		assert.equal(result.acceptance?.finalization?.status, "completed");
 		assert.equal(mockPi.callCount(), 2);
+		const finalizationArgs = readCallArgs();
+		const modelArg = finalizationArgs.lastIndexOf("--model");
+		assert.ok(modelArg >= 0);
+		assert.equal(finalizationArgs[modelArg + 1], "mock/test-model");
 	});
 
 	it("stops acceptance finalization at max turns when self-review never satisfies criteria", async () => {
