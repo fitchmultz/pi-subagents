@@ -824,9 +824,9 @@ describe("fork context execution wiring", () => {
 		const reviewACall = callRecordForTaskContaining("Review src/a.ts");
 		const reviewBCall = callRecordForTaskContaining("Review src/b.ts");
 		const consumerCall = callRecordForTaskContaining("Use reviews");
-		assert.equal(toolsArg(producerCall.args), "read,intercom,contact_supervisor");
-		assert.equal(toolsArg(reviewACall.args), "read,intercom,contact_supervisor");
-		assert.equal(toolsArg(reviewBCall.args), "read,intercom,contact_supervisor");
+		assert.equal(toolsArg(producerCall.args), "read,intercom,contact_supervisor,structured_output");
+		assert.equal(toolsArg(reviewACall.args), "read,intercom,contact_supervisor,structured_output");
+		assert.equal(toolsArg(reviewBCall.args), "read,intercom,contact_supervisor,structured_output");
 		assert.equal(toolsArg(consumerCall.args), "read,intercom,contact_supervisor");
 		assert.equal(reviewACall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
 		assert.equal(reviewBCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");

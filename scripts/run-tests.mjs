@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -80,9 +80,10 @@ function sanitizedEnv() {
   return env;
 }
 
-function runNodeTest(label, imports, files, timeoutMs) {
+function runNodeTest(label, imports, files, timeoutMs, concurrency) {
   const args = [
     ...imports.flatMap((specifier) => ["--import", specifier]),
+    ...(concurrency ? [`--test-concurrency=${concurrency}`] : []),
     "--test",
     ...files,
   ];
@@ -122,7 +123,7 @@ function runNodeTest(label, imports, files, timeoutMs) {
 
 const { mode, timeoutMs } = parseArgs(process.argv.slice(2));
 const unit = () => runNodeTest("unit tests", [], testFiles("test/unit"), timeoutMs);
-const integration = () => runNodeTest("integration tests", [], testFiles("test/integration"), timeoutMs);
+const integration = () => runNodeTest("integration tests", [], testFiles("test/integration"), timeoutMs, Math.min(4, Math.max(1, availableParallelism() - 1)));
 
 let status;
 switch (mode) {

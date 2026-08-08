@@ -30,6 +30,39 @@ function result(agent: string, output: string) {
 	};
 }
 
+test("empty-result management output preserves every line", () => {
+	const output = `Runtime\n- cwd: /${"long/".repeat(40)}\n\nFilesystem\n- temp root: /tmp/pi-subagents-test`;
+	const component = renderSubagentResult({
+		content: [{ type: "text", text: output }],
+		details: { mode: "single", results: [] },
+	}, { expanded: false }, theme as any);
+
+	assert.equal(componentText(component), output);
+});
+
+test("empty-result management output collapses long reports", () => {
+	const output = Array.from({ length: 14 }, (_, index) => `line ${index + 1}`).join("\n");
+	const result = {
+		content: [{ type: "text", text: output }],
+		details: { mode: "single", results: [] },
+	};
+
+	const compact = componentText(renderSubagentResult(result, { expanded: false }, theme as any));
+	assert.match(compact, /line 12\n\+2 more · Ctrl\+O expands$/);
+	assert.doesNotMatch(compact, /line 13/);
+	assert.equal(componentText(renderSubagentResult(result, { expanded: true }, theme as any)), output);
+});
+
+test("single-line management output with a trailing newline stays compact", () => {
+	const output = `${"long".repeat(100)}\n`;
+	const component = renderSubagentResult({
+		content: [{ type: "text", text: output }],
+		details: { mode: "single", results: [] },
+	}, { expanded: false }, theme as any);
+
+	assert.ok(componentText(component).length < output.length);
+});
+
 test("compact parallel rendering shows each child model", () => {
 	const component = renderSubagentResult({
 		content: [{ type: "text", text: "done" }],
