@@ -1095,10 +1095,11 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				return buildChainExecutionErrorResult(validationError, makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex }));
 			}
 			const maxSubagentDepth = resolveChildMaxSubagentDepth(params.maxSubagentDepth, agentConfig.maxSubagentDepth);
+			const childIndex = globalTaskIndex;
 			const interruptController = new AbortController();
 			if (foregroundControl) {
 				foregroundControl.currentAgent = seqStep.agent;
-				foregroundControl.currentIndex = globalTaskIndex;
+				foregroundControl.currentIndex = childIndex;
 				foregroundControl.currentActivityState = undefined;
 				foregroundControl.updatedAt = Date.now();
 				foregroundControl.interrupt = () => {
@@ -1115,20 +1116,20 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				: undefined;
 			const stepTimeoutAt = foregroundControl?.timeoutAt ?? timeoutAt;
 			let unregisterTimeoutExtension: (() => void) | undefined;
-			const runIntercomTarget = childIntercomTarget?.(seqStep.agent, globalTaskIndex);
+			const runIntercomTarget = childIntercomTarget?.(seqStep.agent, childIndex);
 			const r = await runSync(ctx.cwd, agents, seqStep.agent, stepTask, {
 				cwd: resolveChildCwd(cwd ?? ctx.cwd, seqStep.cwd),
 				signal,
 				interruptSignal: interruptController.signal,
 				...(params.timeoutMs !== undefined && stepTimeoutAt !== undefined ? { timeoutMs: params.timeoutMs, timeoutAt: stepTimeoutAt } : {}),
-				...(params.timeoutMs !== undefined && stepTimeoutAt !== undefined && timeoutExtensionRegistry ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { unregisterTimeoutExtension = timeoutExtensionRegistry.register(String(globalTaskIndex), extend); } } : {}),
+				...(params.timeoutMs !== undefined && stepTimeoutAt !== undefined && timeoutExtensionRegistry ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { unregisterTimeoutExtension = timeoutExtensionRegistry.register(String(childIndex), extend); } } : {}),
 				allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
-				onDetachedComplete: (result) => onDetachedComplete?.(result, globalTaskIndex),
+				onDetachedComplete: (result) => onDetachedComplete?.(result, childIndex),
 				intercomEvents,
 				runId,
-				index: globalTaskIndex,
-				sessionDir: sessionDirForIndex(globalTaskIndex),
-				sessionFile: sessionFileForAgentIndex?.(seqStep.agent, globalTaskIndex) ?? sessionFileForIndex?.(globalTaskIndex),
+				index: childIndex,
+				sessionDir: sessionDirForIndex(childIndex),
+				sessionFile: sessionFileForAgentIndex?.(seqStep.agent, childIndex) ?? sessionFileForIndex?.(childIndex),
 				share: shareEnabled,
 				artifactsDir,
 				outputPath,
@@ -1156,7 +1157,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 						if (foregroundControl && stepProgress.length > 0) {
 							const current = stepProgress[0];
 							foregroundControl.currentAgent = seqStep.agent;
-							foregroundControl.currentIndex = globalTaskIndex;
+							foregroundControl.currentIndex = childIndex;
 							foregroundControl.currentActivityState = current?.activityState;
 							foregroundControl.lastActivityAt = current?.lastActivityAt;
 							foregroundControl.currentTool = current?.currentTool;
@@ -1184,7 +1185,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 									steps: chainSteps,
 									results: results.concat(stepResults),
 									currentStepIndex: stepIndex,
-									currentFlatIndex: globalTaskIndex,
+									currentFlatIndex: childIndex,
 									dynamicChildren,
 									dynamicGroupStatuses,
 								}),
@@ -1194,7 +1195,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					: undefined,
 			}).finally(() => {
 				unregisterTimeoutExtension?.();
-				if (foregroundControl?.currentIndex === globalTaskIndex) {
+				if (foregroundControl?.currentIndex === childIndex) {
 					foregroundControl.interrupt = undefined;
 					foregroundControl.updatedAt = Date.now();
 				}

@@ -436,6 +436,11 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		];
 		const invalidValues = [
 			{ skill: 123 },
+			{ agent: "", task: "work" },
+			{ agent: "worker", task: "work", extra: true },
+			{ tasks: [] },
+			{ concurrency: 1.5 },
+			{ agent: "worker", tasks: [{ agent: "reviewer", task: "review" }] },
 			{ skill: [123] },
 			{ output: 123 },
 			{ tasks: [{ agent: "reviewer", task: "check this", reads: "input.md" }] },

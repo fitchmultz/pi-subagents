@@ -259,6 +259,22 @@ describe("async execution utilities", () => {
 		await waitForAsyncResultFile(chainId, 10_000);
 	});
 
+	it("honors top-level progress for async single runs", async () => {
+		mockPi.onCall({ output: "progress done" });
+		const id = `itest-ae-${process.pid}-progress-single-${Date.now().toString(36)}`;
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Track progress",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-progress" },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+			progress: true,
+		});
+		await waitForAsyncResultFile(id, 10_000);
+		assert.match(fs.readFileSync(path.join(tempDir, "progress.md"), "utf-8"), /Progress/);
+	});
+
 	it("writes only the fixed async input, output, and metadata artifacts", async () => {
 		mockPi.onCall({ output: "async artifact result" });
 		const id = `itest-ae-${process.pid}-artifacts-${Date.now().toString(36)}`;
@@ -1173,7 +1189,7 @@ describe("async execution utilities", () => {
 		assert.equal(payload.state, "complete");
 		assert.deepEqual(payload.outputs?.reviews?.structured, []);
 		assert.equal(status.state, "complete");
-		assert.deepEqual(status.steps?.map((step) => step.status), ["complete"]);
+		assert.deepEqual(status.steps?.map((step) => step.status), ["complete", "complete"]);
 		assert.equal((status as AsyncStatusPayload & { chainStepCount?: number }).chainStepCount, 2);
 		assert.equal(mockPi.callCount(), 1);
 	});
@@ -1311,6 +1327,33 @@ describe("async execution utilities", () => {
 		assert.ok(Array.isArray(payload.results.at(-1)?.structuredOutput), "failed collect result should preserve ordered collection details");
 		assert.equal(payload.workflowGraph?.nodes?.[1]?.status, "failed");
 		assert.match(payload.workflowGraph?.nodes?.[1]?.error ?? "", /Collected output validation failed/);
+	});
+
+	it("top-level async parallel resolves reads and output against each task cwd", async () => {
+		const pkgDir = path.join(tempDir, "pkg");
+		fs.mkdirSync(pkgDir);
+		fs.writeFileSync(path.join(pkgDir, "input.md"), "input", "utf-8");
+		mockPi.onCall({ output: "Package report" });
+		const id = `itest-ae-${process.pid}-parallel-cwd-${Date.now().toString(36)}`;
+		executeAsyncChain(id, {
+			chain: [{ parallel: [{ agent: "worker", task: "Package work", cwd: "pkg", output: "report.md", reads: ["input.md"], progress: true }] }],
+			resultMode: "parallel",
+			agents: [makeAgent("worker")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-parallel-cwd" },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		await waitForAsyncResultFile(id, 10_000);
+		const callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"));
+		assert.ok(callFile);
+		const call = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")) as { args: string[]; cwd: string };
+		assert.equal(fs.realpathSync(call.cwd), fs.realpathSync(pkgDir));
+		const taskArg = call.args.at(-1) ?? "";
+		assert.match(taskArg, new RegExp(path.join(pkgDir, "input.md").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+		assert.match(taskArg, new RegExp(path.join(pkgDir, "report.md").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+		assert.equal(fs.readFileSync(path.join(pkgDir, "report.md"), "utf-8"), "Package report");
+		assert.equal(fs.existsSync(path.join(pkgDir, "progress.md")), true);
+		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), false);
 	});
 
 	it("top-level async worktree parallel resolves reads and output against the worktree cwd", async () => {
@@ -2210,6 +2253,30 @@ describe("async execution utilities", () => {
 		assert.equal(payload.exitCode, 0);
 		assert.equal(payload.results[0].success, true);
 		assert.equal(payload.results[0].output, "async-done-before-drain");
+	});
+
+	it("background cleanup kills descendants after the runner leader exits", { timeout: 10_000 }, async () => {
+		const pidFile = path.join(tempDir, "async-descendant.pid");
+		mockPi.onCall({ output: "async descendant done", spawnSignalResistantDescendantPidFile: pidFile });
+		const id = `async-descendant-${Date.now().toString(36)}`;
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Finish and clean descendants",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-descendant" },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		await waitForAsyncResultFile(id, 10_000);
+		const descendantPid = Number(fs.readFileSync(pidFile, "utf-8"));
+		const deadline = Date.now() + 5_000;
+		while (Date.now() < deadline) {
+			try { process.kill(descendantPid, 0); } catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		assert.fail(`descendant process ${descendantPid} survived cleanup`);
 	});
 
 	it("background forced drain after empty terminal assistant output is cleanup success", async () => {

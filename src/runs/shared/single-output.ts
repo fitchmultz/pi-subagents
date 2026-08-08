@@ -4,8 +4,6 @@ import type { OutputMode, SavedOutputReference } from "../../shared/types.ts";
 
 export interface SingleOutputSnapshot {
 	exists: boolean;
-	mtimeMs?: number;
-	size?: number;
 	content?: string;
 }
 
@@ -121,8 +119,7 @@ export function validateFileOnlyOutputMode(outputMode: OutputMode | undefined, o
 export function captureSingleOutputSnapshot(outputPath: string | undefined): SingleOutputSnapshot | undefined {
 	if (!outputPath) return undefined;
 	try {
-		const stat = fs.statSync(outputPath);
-		return { exists: true, mtimeMs: stat.mtimeMs, size: stat.size, content: fs.readFileSync(outputPath, "utf-8") };
+		return { exists: true, content: fs.readFileSync(outputPath, "utf-8") };
 	} catch {
 		// The snapshot is advisory; resolveSingleOutput reports concrete read/write failures.
 		return { exists: false };

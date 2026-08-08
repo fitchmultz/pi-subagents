@@ -73,14 +73,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			console.error(`Failed to inspect async control events for '${job.asyncDir}':`, error);
 			return;
 		}
-		try {
-			const stat = fs.statSync(eventsPath);
-			if (stat.size <= (job.controlEventCursor ?? 0)) return;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-			console.error(`Failed to inspect async control events for '${job.asyncDir}':`, error);
-			return;
-		}
 		let fd: number;
 		try {
 			fd = fs.openSync(eventsPath, "r");

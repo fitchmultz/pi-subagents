@@ -1253,6 +1253,35 @@ test("compose overlay preserves complete bracketed pastes as literal content", a
   );
   cancelOverlay.handleInput("\x1b");
   assert.deepEqual(doneResult, { sent: false });
+
+  doneResult = undefined;
+  const partialPasteOverlay = new ComposeOverlay(
+    { requestRender: () => undefined } as never,
+    { fg: (_name: string, text: string) => text, bold: (text: string) => text } as never,
+    keybindings as never,
+    { id: "target-session", name: "worker", cwd: repoDir, model: "test-model" },
+    "worker",
+    { send: async () => ({ id: "unused", accepted: true, delivered: true }) } as never,
+    (result) => { doneResult = result; },
+  );
+  partialPasteOverlay.handleInput("\x1b[200~unterminated");
+  partialPasteOverlay.handleInput("\x1b");
+  assert.deepEqual(doneResult, { sent: false });
+
+  const tailSent: string[] = [];
+  const tailOverlay = new ComposeOverlay(
+    { requestRender: () => undefined } as never,
+    { fg: (_name: string, text: string) => text, bold: (text: string) => text } as never,
+    keybindings as never,
+    { id: "target-session", name: "worker", cwd: repoDir, model: "test-model" },
+    "worker",
+    { send: async (_to: string, options: { text: string }) => { tailSent.push(options.text); return { id: "tail", accepted: true, delivered: true }; } } as never,
+    () => {},
+  );
+  tailOverlay.handleInput("\x1b[200~body\x1b[201~tail");
+  tailOverlay.handleInput("\r");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(tailSent, ["bodytail"]);
 });
 
 test("sessions publish automatic lifecycle status", { concurrency: false }, async () => {

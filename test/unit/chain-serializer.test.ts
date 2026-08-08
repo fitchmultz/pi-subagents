@@ -86,6 +86,28 @@ Review the diff
 		);
 	});
 
+	it("rejects invalid JSON chain field types", () => {
+		assert.throws(
+			() => parseJsonChain(JSON.stringify({ name: "bad-types", description: "Bad types", chain: [{ agent: "worker", failFast: "false" }] }), "project", "/tmp/bad-types.chain.json"),
+			/failFast|must be boolean/,
+		);
+	});
+
+	it("keeps colon-prefixed prose in hand-written markdown step tasks", () => {
+		const parsed = parseChain(`---
+name: prose-chain
+description: Prose chain
+---
+
+## worker
+Goal: ship it
+http://example.test/context
+
+Continue here
+`, "project", "/tmp/prose.chain.md");
+		assert.equal(parsed.steps[0]?.task, "Goal: ship it\nhttp://example.test/context\nContinue here");
+	});
+
 	it("serializes JSON chains back to JSON", () => {
 		const parsed = parseJsonChain(JSON.stringify({
 			name: "dynamic-review",

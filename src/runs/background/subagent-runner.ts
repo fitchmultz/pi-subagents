@@ -63,7 +63,7 @@ import { createStructuredOutputRuntime, readStructuredOutput, type StructuredOut
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { formatModelAttemptNote, formatModelRecoveryAttemptNote, isRecoverableSameModelFailure, isRetryableModelFailure } from "../shared/model-fallback.ts";
-import { attachPostExitStdioGuard, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
+import { attachPostExitStdioGuard, isChildTreeAlive, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
 import { evaluateCompletionMutationGuard, resolveCompletionPolicy } from "../shared/completion-guard.ts";
 import {
@@ -334,8 +334,7 @@ function runPiStreaming(
 		let observedCompletedMutation = false;
 		const mutationTracker = createMutationCompletionTracker();
 		let resourceLimitTimer: NodeJS.Timeout | undefined;
-		let resourceLimitEscalationTimer: NodeJS.Timeout | undefined;
-		const subagentListLoopGuard = createRepeatedSubagentListGuardState();
+			const subagentListLoopGuard = createRepeatedSubagentListGuardState();
 		const rawStdoutLines: string[] = [];
 
 		const writeOutputLine = (line: string) => {
@@ -354,10 +353,9 @@ function runPiStreaming(
 			error = message;
 			writeOutputLine(message);
 			trySignalChildTree(child, "SIGINT");
-			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!settled) forceTerminate("SIGTERM");
+			setTimeout(() => {
+				if (isChildTreeAlive(child)) forceTerminate("SIGTERM");
 			}, 1000);
-			resourceLimitEscalationTimer.unref?.();
 		};
 
 		const triggerResourceLimit = (kind: ResourceLimitExceeded["kind"], limit: number, observed?: number) => {
@@ -367,10 +365,9 @@ function runPiStreaming(
 			error = message;
 			writeOutputLine(message);
 			trySignalChildTree(child, "SIGINT");
-			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!settled) forceTerminate("SIGTERM");
+			setTimeout(() => {
+				if (isChildTreeAlive(child)) forceTerminate("SIGTERM");
 			}, 1000);
-			resourceLimitEscalationTimer.unref?.();
 		};
 
 		const appendChildEvent = (event: object) => {
@@ -500,16 +497,12 @@ function runPiStreaming(
 		let cleanTerminalAssistantStopReceived = false;
 		let finalDrainTimer: NodeJS.Timeout | undefined;
 		let finalHardKillTimer: NodeJS.Timeout | undefined;
-		const terminationTimers = new Set<NodeJS.Timeout>();
 		let settled = false;
 		const forceTerminate = (signal: NodeJS.Signals, graceMs = HARD_KILL_MS) => {
 			trySignalChildTree(child, signal);
-			const timer = setTimeout(() => {
-				terminationTimers.delete(timer);
-				if (!settled && !childExited) trySignalChildTree(child, "SIGKILL");
+			setTimeout(() => {
+				if (isChildTreeAlive(child)) trySignalChildTree(child, "SIGKILL");
 			}, graceMs);
-			terminationTimers.add(timer);
-			timer.unref?.();
 		};
 		if (maxExecutionTimeMs !== undefined) {
 			resourceLimitTimer = setTimeout(() => {
@@ -535,15 +528,15 @@ function runPiStreaming(
 			if (!error) error = "Interrupted. Waiting for explicit next action.";
 			trySignalChildTree(child, "SIGINT");
 			setTimeout(() => {
-				if (!settled) forceTerminate("SIGTERM");
-			}, 1000).unref?.();
+				if (isChildTreeAlive(child)) forceTerminate("SIGTERM");
+			}, 1000);
 		});
 		const clearDrainTimers = () => {
 			if (finalDrainTimer) {
 				clearTimeout(finalDrainTimer);
 				finalDrainTimer = undefined;
 			}
-			if (finalHardKillTimer) {
+			if (finalHardKillTimer && !forcedTerminationSignal) {
 				clearTimeout(finalHardKillTimer);
 				finalHardKillTimer = undefined;
 			}
@@ -551,12 +544,6 @@ function runPiStreaming(
 				clearTimeout(resourceLimitTimer);
 				resourceLimitTimer = undefined;
 			}
-			if (resourceLimitEscalationTimer) {
-				clearTimeout(resourceLimitEscalationTimer);
-				resourceLimitEscalationTimer = undefined;
-			}
-			for (const timer of terminationTimers) clearTimeout(timer);
-			terminationTimers.clear();
 		};
 		function startFinalDrain(): void {
 			if (childExited || finalDrainTimer || settled) return;
@@ -569,16 +556,14 @@ function runPiStreaming(
 					error = `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
 				}
 				finalHardKillTimer = setTimeout(() => {
-					if (settled) return;
-					forcedTerminationSignal = trySignalChildTree(child, "SIGKILL") || forcedTerminationSignal;
+					finalHardKillTimer = undefined;
+					if (isChildTreeAlive(child)) forcedTerminationSignal = trySignalChildTree(child, "SIGKILL") || forcedTerminationSignal;
 				}, HARD_KILL_MS);
-				finalHardKillTimer.unref?.();
 			}, FINAL_STOP_GRACE_MS);
 			finalDrainTimer.unref?.();
 		}
 		child.on("exit", () => {
 			childExited = true;
-			clearDrainTimers();
 		});
 		child.on("close", (exitCode, signal) => {
 			settled = true;
@@ -1954,13 +1939,15 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					stepIndex,
 				};
 				statusPayload.outputs = outputs;
-				statusPayload.steps.splice(groupStartFlatIndex, 1);
-				mutatingFailureStates.splice(groupStartFlatIndex, 1);
-				mutationTrackers.splice(groupStartFlatIndex, 1);
-				config.childIntercomTargets?.splice(groupStartFlatIndex, 1);
-				statusPayload.parallelGroups = statusPayload.parallelGroups
-					.filter((group) => group.stepIndex !== stepIndex)
-					.map((group) => group.start > groupStartFlatIndex ? { ...group, start: group.start - 1 } : group);
+				const placeholder = statusPayload.steps[groupStartFlatIndex];
+				if (placeholder) {
+					placeholder.status = "complete";
+					placeholder.startedAt = now;
+					placeholder.endedAt = now;
+					placeholder.durationMs = 0;
+					placeholder.exitCode = 0;
+				}
+				flatIndex++;
 				previousOutput = "Dynamic fanout produced 0 results.";
 				statusPayload.lastUpdate = now;
 				markDynamicGraphGroup(stepIndex, "completed");

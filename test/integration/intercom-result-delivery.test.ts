@@ -318,6 +318,67 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(mockPi.callCount(), 1);
 	});
 
+	it("detached chain completion keeps prior siblings and the captured child index", async () => {
+		mockPi.onCall({ output: "first done" });
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
+				{ delay: 500, jsonl: [events.assistantMessage("second done")] },
+			],
+		});
+		const { executor, events: bus } = makeExecutor({ agents: [makeAgent("a"), makeAgent("b")] });
+		let detached = false;
+		const result = await executor.execute(
+			"chain-detached-index",
+			{ chain: [{ agent: "a", task: "first" }, { agent: "b", task: "second" }] },
+			new AbortController().signal,
+			(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+				if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
+				detached = true;
+				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "chain-detached-index" });
+			},
+			makeMinimalCtx(tempDir),
+		);
+		assert.match(result.content[0]?.text ?? "", /Chain detached/);
+		const deadline = Date.now() + 3_000;
+		while (!bus.emitted.some((entry) => entry.channel === "subagent:result-intercom") && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		const payloads = bus.emitted.filter((entry) => entry.channel === "subagent:result-intercom");
+		assert.equal(payloads.length, 1);
+		const payload = payloads[0]?.payload as { children?: Array<{ agent?: string; summary?: string; index?: number }> };
+		assert.deepEqual(payload.children?.map((child) => child.agent), ["a", "b"]);
+		assert.deepEqual(payload.children?.map((child) => child.index), [0, 1]);
+		assert.match(payload.children?.[1]?.summary ?? "", /second done/);
+	});
+
+	it("detached completions validate structured output before delivery", async () => {
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
+				{ delay: 500, jsonl: [events.assistantMessage("looks done")] },
+			],
+			structuredOutput: { wrong: true },
+		});
+		const { executor, events: bus } = makeExecutor({ agents: [makeAgent("worker")] });
+		let detached = false;
+		await executor.execute(
+			"single-detached-structured",
+			{ agent: "worker", task: "return structured data", outputSchema: { type: "object", required: ["ok"], properties: { ok: { type: "string" } } } },
+			new AbortController().signal,
+			(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+				if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
+				detached = true;
+				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "single-detached-structured" });
+			},
+			makeMinimalCtx(tempDir),
+		);
+		const deadline = Date.now() + 3_000;
+		while (!bus.emitted.some((entry) => entry.channel === "subagent:result-intercom") && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		const payload = bus.emitted.find((entry) => entry.channel === "subagent:result-intercom")?.payload as { status?: string; children?: Array<{ status?: string; summary?: string }> } | undefined;
+		assert.equal(payload?.status, "failed");
+		assert.equal(payload?.children?.[0]?.status, "failed");
+		assert.match(payload?.children?.[0]?.summary ?? "", /Structured output validation failed/);
+	});
+
 	it("resume action sends a follow-up to a live async child when the target is registered", async () => {
 		const runId = `resume-live-${Date.now()}`;
 		const asyncDir = path.join(ASYNC_DIR, runId);

@@ -103,7 +103,6 @@ import {
 	type SubagentRunMode,
 	type SubagentState,
 	type TimeoutExtensionCallback,
-	ASYNC_DIR,
 	SUBAGENT_ACTIONS,
 	SUBAGENT_CONTROL_EVENT,
 	SUBAGENT_CONTROL_INTERCOM_EVENT,
@@ -709,9 +708,7 @@ function resolveResumeTarget(params: SubagentParamsLike, state: SubagentState): 
 function getAsyncInterruptTarget(state: SubagentState, runId: string | undefined): { asyncId: string; asyncDir: string } | undefined {
 	if (runId) {
 		const direct = state.asyncJobs.get(runId);
-		if (direct) return { asyncId: direct.asyncId, asyncDir: direct.asyncDir };
-		const asyncDir = path.join(ASYNC_DIR, runId);
-		return fs.existsSync(asyncDir) ? { asyncId: runId, asyncDir } : undefined;
+		return direct ? { asyncId: direct.asyncId, asyncDir: direct.asyncDir } : undefined;
 	}
 	let newest: { asyncId: string; asyncDir: string; updatedAt: number } | undefined;
 	for (const job of state.asyncJobs.values()) {
@@ -753,7 +750,7 @@ function interruptAsyncRun(state: SubagentState, runId: string | undefined): Sub
 	const target = getAsyncInterruptTarget(state, runId);
 	if (!target) return null;
 	const status = readStatus(target.asyncDir);
-	if (!status || status.state !== "running" || typeof status.pid !== "number") {
+	if (!status || status.state !== "running" || typeof status.pid !== "number" || !Number.isSafeInteger(status.pid) || status.pid <= 1 || status.pid === process.pid) {
 		return {
 			content: [{ type: "text", text: `No running async run with an interrupt-capable pid was found for '${runId ?? "current"}'.` }],
 			isError: true,
@@ -761,6 +758,7 @@ function interruptAsyncRun(state: SubagentState, runId: string | undefined): Sub
 		};
 	}
 	try {
+		process.kill(status.pid, 0);
 		process.kill(status.pid, ASYNC_INTERRUPT_SIGNAL);
 		const tracked = state.asyncJobs.get(target.asyncId);
 		if (tracked) {
@@ -1193,31 +1191,61 @@ async function emitForegroundResultIntercom(input: {
 	return payload;
 }
 
-function createDetachedCompletionHandler(input: {
+interface DetachedCompletionGroup {
+	onComplete: (result: SingleResult, index: number) => void;
+	setResults: (results: SingleResult[], nestedChildren?: NestedRunSummary[]) => void;
+}
+
+function createDetachedCompletionGroup(input: {
 	pi: ExtensionAPI;
 	state: SubagentState;
 	intercomBridge: IntercomBridgeState;
 	runId: string;
 	mode: SubagentRunMode;
 	chainSteps?: number;
-}): (result: SingleResult, index: number) => void {
-	return (result, index) => {
-		const remembered = input.state.foregroundRuns?.get(input.runId);
-		const child = remembered?.children[index];
-		if (child) {
-			child.status = resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted, timedOut: result.timedOut });
-			remembered!.updatedAt = Date.now();
-		}
-		const indexedResults: SingleResult[] = [];
-		indexedResults[index] = result;
+}): DetachedCompletionGroup {
+	let results: SingleResult[] | undefined;
+	let nestedChildren: NestedRunSummary[] | undefined;
+	let wasDetached = false;
+	let deliveryStarted = false;
+	const completions = new Map<number, SingleResult>();
+
+	const maybeEmit = () => {
+		if (!wasDetached || deliveryStarted || !results || results.some((result) => result.detached)) return;
+		deliveryStarted = true;
 		void emitForegroundResultIntercom({
 			pi: input.pi,
 			intercomBridge: input.intercomBridge,
 			runId: input.runId,
 			mode: input.mode,
-			results: indexedResults,
+			results,
 			...(input.chainSteps !== undefined ? { chainSteps: input.chainSteps } : {}),
+			...(nestedChildren?.length ? { nestedChildren } : {}),
+		}).then((payload) => {
+			if (!payload) console.error(`Failed to emit detached foreground result for '${input.runId}'.`);
 		}).catch((error) => console.error("Failed to emit detached foreground result:", error));
+	};
+
+	return {
+		onComplete(result, index) {
+			wasDetached = true;
+			completions.set(index, result);
+			if (results) results[index] = result;
+			const remembered = input.state.foregroundRuns?.get(input.runId);
+			const child = remembered?.children[index];
+			if (child) {
+				child.status = resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted, timedOut: result.timedOut });
+				remembered!.updatedAt = Date.now();
+			}
+			maybeEmit();
+		},
+		setResults(initialResults, initialNestedChildren) {
+			results = [...initialResults];
+			nestedChildren = initialNestedChildren;
+			wasDetached ||= results.some((result) => result.detached) || completions.size > 0;
+			for (const [index, result] of completions) results[index] = result;
+			maybeEmit();
+		},
 	};
 }
 
@@ -1813,6 +1841,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): SubagentE
 			childIntercomTarget,
 			nestedRoute,
 			acceptance: params.acceptance,
+			progress: params.progress,
 			projectTrust,
 		});
 	}
@@ -1845,6 +1874,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 	const chainSkills = normalized === false ? [] : (normalized ?? []);
 	const chain = wrapChainTasksForAgentContext(params.chain as ChainStep[], params.context, agents);
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth);
+	const detachedCompletions = createDetachedCompletionGroup({ pi: deps.pi, state: deps.state, intercomBridge: data.intercomBridge, runId, mode: "chain", chainSteps: chain.length });
 	const chainResult = await executeChain({
 		chain,
 		task: params.task,
@@ -1877,7 +1907,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		worktreeSetupHook: deps.config.worktreeSetupHook,
 		worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
 		projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
-		onDetachedComplete: createDetachedCompletionHandler({ pi: deps.pi, state: deps.state, intercomBridge: data.intercomBridge, runId, mode: "chain", chainSteps: chain.length }),
+		onDetachedComplete: detachedCompletions.onComplete,
 	});
 
 	if (chainResult.requestedAsync) {
@@ -1918,7 +1948,10 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 
 	const chainDetails = chainResult.details ? compactForegroundDetails({ ...chainResult.details, runId }) : undefined;
 	if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
-	if (chainDetails) rememberForegroundRun(deps.state, { runId, mode: "chain", cwd: effectiveCwd, results: chainDetails.results });
+	if (chainDetails) {
+		rememberForegroundRun(deps.state, { runId, mode: "chain", cwd: effectiveCwd, results: chainDetails.results });
+		detachedCompletions.setResults(chainDetails.results, foregroundControl?.nestedChildren);
+	}
 	const intercomReceipt = chainDetails && !chainDetails.results.some((result) => result.interrupted || result.detached || result.timedOut)
 		? await maybeBuildForegroundIntercomReceipt({
 			pi: deps.pi,
@@ -2485,6 +2518,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		const timeoutExtensionRegistry = data.foregroundTimeoutMs !== undefined && timeoutAt !== undefined
 			? createForegroundTimeoutExtensionRegistry(foregroundControl)
 			: undefined;
+		const detachedCompletions = createDetachedCompletionGroup({ pi: deps.pi, state: deps.state, intercomBridge: data.intercomBridge, runId, mode: "parallel" });
 		const results = await runForegroundParallelTasks({
 			tasks,
 			taskTexts,
@@ -2519,7 +2553,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			onUpdate,
 			worktreeSetup,
 			projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
-			onDetachedComplete: createDetachedCompletionHandler({ pi: deps.pi, state: deps.state, intercomBridge: data.intercomBridge, runId, mode: "parallel" }),
+			onDetachedComplete: detachedCompletions.onComplete,
 		});
 		for (let i = 0; i < results.length; i++) {
 			const run = results[i]!;
@@ -2541,6 +2575,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		});
 		rememberForegroundRun(deps.state, { runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
+		detachedCompletions.setResults(details.results, foregroundControl?.nestedChildren);
 		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks);
 		if (timedOut) {
 			return {
@@ -2748,6 +2783,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				controlConfig,
 				controlIntercomTarget: data.intercomBridge.orchestratorTarget,
 				childIntercomTarget: (agent, index) => resolveSubagentIntercomTarget(id, agent, index),
+				progress: params.progress,
 				projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 			});
 		}
@@ -2815,6 +2851,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		: undefined;
 
 	const timeoutAt = foregroundControl?.timeoutAt ?? (data.foregroundTimeoutMs !== undefined ? Date.now() + data.foregroundTimeoutMs : undefined);
+	const detachedCompletions = createDetachedCompletionGroup({ pi: deps.pi, state: deps.state, intercomBridge: data.intercomBridge, runId, mode: "single" });
 	const r = await runSync(ctx.cwd, agents, params.agent!, task, {
 		cwd: effectiveCwd,
 		signal,
@@ -2822,7 +2859,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		...(data.foregroundTimeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: data.foregroundTimeoutMs, timeoutAt } : {}),
 		...(data.foregroundTimeoutMs !== undefined && timeoutAt !== undefined && foregroundControl ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { foregroundControl.extendTimeout = extend; } } : {}),
 		allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
-		onDetachedComplete: (result) => createDetachedCompletionHandler({ pi: deps.pi, state: deps.state, intercomBridge: data.intercomBridge, runId, mode: "single" })(result, 0),
+		onDetachedComplete: (result) => detachedCompletions.onComplete(result, 0),
 		intercomEvents: deps.pi.events,
 		runId,
 		sessionDir: sessionDirForIndex(0),
@@ -2893,6 +2930,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		truncation: r.truncation,
 	});
 	rememberForegroundRun(deps.state, { runId, mode: "single", cwd: effectiveCwd, results: details.results });
+	detachedCompletions.setResults(details.results, foregroundControl?.nestedChildren);
 
 	if (!r.detached && !r.interrupted && !r.timedOut) {
 		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);

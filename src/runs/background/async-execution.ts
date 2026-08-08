@@ -155,6 +155,7 @@ interface AsyncSingleParams {
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
 	acceptance?: AcceptanceInput;
+	progress?: boolean;
 	projectTrust?: ChildProjectTrustPolicy;
 }
 
@@ -322,7 +323,7 @@ export function executeAsyncChain(
 		const a = agents.find((x) => x.name === s.agent)!;
 		const outputIndex = outputMaterializationIndex++;
 		const stepCwd = resolveChildCwd(runnerCwd, s.cwd);
-		const instructionCwd = behaviorCwd ?? chainDir;
+		const instructionCwd = behaviorCwd ?? (resultMode === "chain" ? chainDir : stepCwd);
 		const behavior = suppressProgressForReadOnlyTask(resolvedBehavior ?? resolveStepBehavior(a, buildStepOverrides(s), chainSkills), s.task, originalTask);
 		const outputUsesAgentDefault = usesAgentDefaultOutput(s.output) || s.outputFromAgentDefault === true;
 		const output = outputUsesAgentDefault
@@ -339,9 +340,9 @@ export function executeAsyncChain(
 		}
 
 		const readInstructions = buildChainInstructions({ ...behavior, output: false, progress: false }, instructionCwd, false);
-		const isFirstProgressAgent = behavior.progress && !progressPrecreated && !progressInstructionCreated;
-		if (behavior.progress) progressInstructionCreated = true;
-		const progressInstructions = buildChainInstructions({ ...behavior, output: false, reads: false }, chainDir, isFirstProgressAgent);
+		const isFirstProgressAgent = behavior.progress && !progressPrecreated && (resultMode !== "chain" || !progressInstructionCreated);
+		if (behavior.progress && resultMode === "chain") progressInstructionCreated = true;
+		const progressInstructions = buildChainInstructions({ ...behavior, output: false, reads: false }, instructionCwd, isFirstProgressAgent);
 		const outputPath = resolveSingleOutputPath(output, ctx.cwd, instructionCwd);
 		const validationError = validateFileOnlyOutputMode(behavior.outputMode, outputPath, `Async step (${s.agent})`);
 		if (validationError) throw new AsyncStartValidationError(validationError);
@@ -415,7 +416,7 @@ export function executeAsyncChain(
 					const agent = agents.find((candidate) => candidate.name === task.agent)!;
 					return suppressProgressForReadOnlyTask(resolveStepBehavior(agent, buildStepOverrides(task), chainSkills), task.task, originalTask);
 				});
-				const progressPrecreated = parallelBehaviors.some((behavior) => behavior.progress);
+				const progressPrecreated = resultMode === "chain" && parallelBehaviors.some((behavior) => behavior.progress);
 				if (progressPrecreated) {
 					if (!s.worktree) writeInitialProgressFile(chainDir);
 					progressInstructionCreated = true;
@@ -429,7 +430,16 @@ export function executeAsyncChain(
 							behaviorCwd = undefined;
 						}
 					}
-					return buildSeqStep(t, nextSessionFile(), behaviorCwd, progressPrecreated, parallelBehaviors[taskIndex]);
+					const taskProgressPrecreated = progressPrecreated || (resultMode !== "chain" && parallelBehaviors[taskIndex]?.progress === true && !s.worktree);
+					if (taskProgressPrecreated && !progressPrecreated) {
+						const progressCwd = resolveChildCwd(runnerCwd, t.cwd);
+						try {
+							writeInitialProgressFile(progressCwd);
+						} catch (error) {
+							throw new AsyncStartValidationError(`Failed to initialize progress in '${progressCwd}': ${error instanceof Error ? error.message : String(error)}`);
+						}
+					}
+					return buildSeqStep(t, nextSessionFile(), behaviorCwd, taskProgressPrecreated, parallelBehaviors[taskIndex]);
 				});
 				const duplicateOutputError = findDuplicateRunnerOutputPath(parallelSteps);
 				if (duplicateOutputError) throw new AsyncStartValidationError(duplicateOutputError);
@@ -686,7 +696,12 @@ export function executeAsyncSingle(
 	const outputMode = params.outputMode ?? "inline";
 	const validationError = validateFileOnlyOutputMode(outputMode, outputPath, `Async single run (${agent})`);
 	if (validationError) return formatAsyncStartError("single", validationError);
-	const taskWithOutputInstruction = injectSingleOutputInstruction(task, outputPath);
+	let taskWithOutputInstruction = task;
+	if (params.progress) {
+		writeInitialProgressFile(runnerCwd);
+		taskWithOutputInstruction += buildChainInstructions({ output: false, outputMode: "inline", reads: false, progress: true, skills: false }, runnerCwd, true).suffix;
+	}
+	taskWithOutputInstruction = injectSingleOutputInstruction(taskWithOutputInstruction, outputPath);
 	const model = applyThinkingSuffix(
 		resolveModelCandidate(params.modelOverride ?? agentConfig.model, availableModels, ctx.currentModelProvider),
 		agentConfig.thinking,

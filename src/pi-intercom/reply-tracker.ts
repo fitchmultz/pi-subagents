@@ -34,6 +34,8 @@ function pendingSenderOptions(contexts: IntercomContext[], allContexts: Intercom
     .join(", ");
 }
 
+const MAX_PENDING_ASKS = 100;
+
 export class ReplyTracker {
   private readonly pendingAsks = new Map<string, IntercomContext>();
   private readonly pendingTurnContexts: IntercomContext[] = [];
@@ -50,7 +52,7 @@ export class ReplyTracker {
     if (message.expectsReply) {
       this.pruneExpired(receivedAt);
       this.pendingAsks.set(message.id, context);
-      while (this.pendingAsks.size > 100) this.pendingAsks.delete(this.pendingAsks.keys().next().value!);
+      while (this.pendingAsks.size > MAX_PENDING_ASKS) this.removeContext(this.pendingAsks.keys().next().value!);
     }
     return context;
   }
@@ -58,6 +60,10 @@ export class ReplyTracker {
   queueTurnContext(context: IntercomContext): void {
     if (!context.message.expectsReply) return;
     this.pendingTurnContexts.push(context);
+    while (this.pendingTurnContexts.length > MAX_PENDING_ASKS) {
+      const dropped = this.pendingTurnContexts.shift();
+      if (dropped) this.removeContext(dropped.message.id);
+    }
   }
 
   beginTurn(now = Date.now()): void {
@@ -171,13 +177,7 @@ export class ReplyTracker {
   }
 
   markReplied(replyTo: string): void {
-    this.pendingAsks.delete(replyTo);
-    if (this.currentTurnContext?.message.id === replyTo) {
-      this.currentTurnContext = null;
-    }
-    if (this.activeAgentContext?.message.id === replyTo) {
-      this.activeAgentContext = null;
-    }
+    this.removeContext(replyTo);
   }
 
   listPending(now = Date.now()): IntercomContext[] {
@@ -185,11 +185,18 @@ export class ReplyTracker {
     return Array.from(this.pendingAsks.values()).sort((a, b) => a.receivedAt - b.receivedAt);
   }
 
+  private removeContext(messageId: string): void {
+    this.pendingAsks.delete(messageId);
+    for (let index = this.pendingTurnContexts.length - 1; index >= 0; index -= 1) {
+      if (this.pendingTurnContexts[index]?.message.id === messageId) this.pendingTurnContexts.splice(index, 1);
+    }
+    if (this.currentTurnContext?.message.id === messageId) this.currentTurnContext = null;
+    if (this.activeAgentContext?.message.id === messageId) this.activeAgentContext = null;
+  }
+
   private pruneExpired(now: number): void {
     for (const [messageId, context] of this.pendingAsks) {
-      if (now - context.receivedAt > this.askTimeoutMs) {
-        this.pendingAsks.delete(messageId);
-      }
+      if (now - context.receivedAt > this.askTimeoutMs) this.removeContext(messageId);
     }
   }
 }

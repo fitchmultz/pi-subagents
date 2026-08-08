@@ -48,6 +48,11 @@ function createChildSafeState(): SubagentState {
 	};
 }
 
+function addBounded(set: Set<string>, value: string, max = 1000): void {
+	set.add(value);
+	while (set.size > max) set.delete(set.values().next().value!);
+}
+
 function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState): NodeJS.Timeout | undefined {
 	let route;
 	try {
@@ -107,12 +112,13 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 							writeNestedControlResult(route, result);
 						} catch (error) {
 							pendingResults.set(request.requestId, result);
+							while (pendingResults.size > 100) pendingResults.delete(pendingResults.keys().next().value!);
 							console.error(`Failed to write nested control result for request '${request.requestId}' targeting '${request.targetRunId}' via inbox '${route.controlInbox}'; keeping request for retry:`, error);
 							return;
 						}
 						pendingResults.delete(request.requestId);
-						seen.add(request.requestId);
-						seenFiles.add(path.basename(request.filePath));
+						addBounded(seen, request.requestId);
+						addBounded(seenFiles, path.basename(request.filePath));
 						try { fs.unlinkSync(request.filePath); } catch {}
 					} finally {
 						inFlight.delete(request.requestId);

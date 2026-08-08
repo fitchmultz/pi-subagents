@@ -3,18 +3,24 @@ import { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./
 import { parseFrontmatter } from "./frontmatter.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../runs/shared/chain-outputs.ts";
 import { validateAcceptanceInput } from "../runs/shared/acceptance.ts";
+import { Errors, Check } from "typebox/value";
+import { ChainItemSchema } from "../extension/schemas.ts";
 import type { ChainStep } from "../shared/settings.ts";
 
 function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
 	const lines = sectionBody.split("\n");
 	const blankIndex = lines.findIndex((line) => line.trim() === "");
 	const configLines = blankIndex === -1 ? lines : lines.slice(0, blankIndex);
-	const task = (blankIndex === -1 ? "" : lines.slice(blankIndex + 1).join("\n")).trim();
+	const leadingTaskLines: string[] = [];
+	const taskLines = blankIndex === -1 ? [] : lines.slice(blankIndex + 1);
 
-	const step: ChainStepConfig = { agent, task };
+	const step: ChainStepConfig = { agent, task: "" };
 	for (const line of configLines) {
 		const match = line.match(/^([\w-]+):\s*(.*)$/);
-		if (!match) continue;
+		if (!match) {
+			leadingTaskLines.push(line);
+			continue;
+		}
 		const key = match[1].trim().toLowerCase();
 		const rawValue = match[2].trim();
 
@@ -80,9 +86,10 @@ function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
 			step.progress = rawValue === "true";
 			continue;
 		}
-		throw new Error(`Unknown chain step option '${match[1]}' for step '${agent}'.`);
+		leadingTaskLines.push(line);
 	}
 
+	step.task = [...leadingTaskLines, ...taskLines].join("\n").trim();
 	return step;
 }
 
@@ -212,6 +219,13 @@ export function parseJsonChain(content: string, source: "user" | "project", file
 	} catch (error) {
 		if (error instanceof ChainOutputValidationError) throw new Error(`Invalid JSON chain '${filePath}': ${error.message}`);
 		throw error;
+	}
+	for (let i = 0; i < input.chain.length; i++) {
+		const step = input.chain[i];
+		if (!Check(ChainItemSchema, step)) {
+			const issue = [...Errors(ChainItemSchema, step)][0];
+			throw new Error(`JSON chain '${filePath}' step ${i + 1} is invalid${issue ? `: ${issue.message}` : ""}.`);
+		}
 	}
 	const parsedPackage = parsePackageName(typeof input.package === "string" ? input.package : undefined, `Chain '${input.name}' package`);
 	if (parsedPackage.error) throw new Error(parsedPackage.error);

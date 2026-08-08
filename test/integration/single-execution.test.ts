@@ -1399,6 +1399,22 @@ describe("single sync execution", () => {
 		assert.ok(Date.now() - startedAt < 5_000, `termination took ${Date.now() - startedAt}ms`);
 	});
 
+	it("kills a signal-resistant descendant after the process-group leader exits", { timeout: 10_000 }, async () => {
+		const pidFile = path.join(tempDir, "descendant.pid");
+		mockPi.onCall({ output: "done", spawnSignalResistantDescendantPidFile: pidFile });
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Finish and clean up", {});
+		assert.equal(result.exitCode, 0);
+		const descendantPid = Number(fs.readFileSync(pidFile, "utf-8"));
+		const deadline = Date.now() + 5_000;
+		while (Date.now() < deadline) {
+			try { process.kill(descendantPid, 0); } catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		assert.fail(`descendant process ${descendantPid} survived cleanup`);
+	});
+
 	it("times out the current foreground run without retrying fallback models", async () => {
 		mockPi.onCall({ delay: 10000 });
 		const agents = [makeAgent("slow", { model: "mock/primary", fallbackModels: ["mock/fallback"] })];

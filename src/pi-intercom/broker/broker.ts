@@ -4,12 +4,11 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import { getPiAgentDir } from "../agent-dir.ts";
 import { writeMessage, createMessageReader, validateIntercomMessageSize } from "./framing.ts";
-import { getBrokerSocketPath } from "./paths.ts";
+import { prepareBrokerSocketPath } from "./paths.ts";
 import { isMessage, isSessionRegistration } from "../types.ts";
 import type { SessionInfo, Message, BrokerMessage } from "../types.ts";
 
 const INTERCOM_DIR = join(getPiAgentDir(), "intercom");
-const SOCKET_PATH = getBrokerSocketPath();
 const PID_PATH = join(INTERCOM_DIR, "broker.pid");
 
 const REPLACE_DELIVERY_DELAY_MS = 1500;
@@ -32,12 +31,14 @@ class IntercomBroker {
   private pendingReplaceDeliveries = new Map<string, PendingReplaceDelivery>();
   private server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
+  private readonly socketPath: string;
 
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true });
+    this.socketPath = prepareBrokerSocketPath();
     if (process.platform !== "win32") {
       try {
-        unlinkSync(SOCKET_PATH);
+        unlinkSync(this.socketPath);
       } catch {
         // A clean startup has no stale socket to remove.
       }
@@ -50,8 +51,8 @@ class IntercomBroker {
   }
 
   start(): void {
-    this.server.listen(SOCKET_PATH, () => {
-      if (process.platform !== "win32") chmodSync(SOCKET_PATH, 0o600);
+    this.server.listen(this.socketPath, () => {
+      if (process.platform !== "win32") chmodSync(this.socketPath, 0o600);
       writeFileSync(PID_PATH, String(process.pid), { mode: 0o600 });
       console.log(`Intercom broker started (pid: ${process.pid})`);
     });
@@ -402,7 +403,7 @@ class IntercomBroker {
     this.sessions.clear();
     if (process.platform !== "win32") {
       try {
-        unlinkSync(SOCKET_PATH);
+        unlinkSync(this.socketPath);
       } catch {
         // The socket may already be gone if shutdown started after a disconnect.
       }

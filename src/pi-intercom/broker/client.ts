@@ -2,11 +2,9 @@ import { EventEmitter } from "events";
 import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.ts";
-import { getBrokerSocketPath } from "./paths.ts";
+import { prepareBrokerSocketPath } from "./paths.ts";
 import { isMessage, normalizeSessionInfo } from "../types.ts";
 import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode } from "../types.ts";
-
-const BROKER_SOCKET = getBrokerSocketPath();
 
 /** Default delivery-ack timeout for `send` (broker acknowledges quickly). */
 const DEFAULT_SEND_TIMEOUT_MS = 8000;
@@ -103,7 +101,14 @@ export class IntercomClient extends EventEmitter {
     }
 
     return new Promise((resolve, reject) => {
-      const socket = net.connect(BROKER_SOCKET);
+      let brokerSocket: string;
+      try {
+        brokerSocket = prepareBrokerSocketPath();
+      } catch (error) {
+        reject(toError(error));
+        return;
+      }
+      const socket = net.connect(brokerSocket);
       this.socket = socket;
       this.disconnectError = null;
       let settled = false;

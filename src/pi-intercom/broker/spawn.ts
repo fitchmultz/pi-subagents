@@ -5,11 +5,10 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import net from "net";
 import { getPiAgentDir } from "../agent-dir.ts";
-import { getBrokerSocketPath } from "./paths.ts";
+import { prepareBrokerSocketPath } from "./paths.ts";
 
 const INTERCOM_DIR = join(getPiAgentDir(), "intercom");
 const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const BROKER_SOCKET = getBrokerSocketPath();
 const BROKER_PID = join(INTERCOM_DIR, "broker.pid");
 const BROKER_SPAWN_LOCK = join(INTERCOM_DIR, "broker.spawn.lock");
 
@@ -229,7 +228,14 @@ export async function stopUnhealthyBrokerBeforeSpawn(
 
 function checkSocketConnectable(): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = net.connect(BROKER_SOCKET);
+    let brokerSocket: string;
+    try {
+      brokerSocket = prepareBrokerSocketPath();
+    } catch {
+      resolve(false);
+      return;
+    }
+    const socket = net.connect(brokerSocket);
     const finish = (isConnected: boolean) => {
       clearTimeout(timeout);
       socket.off("connect", onConnect);

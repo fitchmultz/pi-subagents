@@ -14,7 +14,7 @@
 
 ### Fixed
 - Terminate complete child process groups with SIGKILL escalation, interrupt every active parallel child, and cancel running static and dynamic parallel siblings when fail-fast trips.
-- Honor custom `chainDir` in detached chains, handle empty dynamic fanout without leaking phantom status rows, create `progress.md` without clobbering concurrent work, and fail runs when requested outputs cannot be saved.
+- Honor custom `chainDir` in detached chains, resolve top-level parallel reads, outputs, and progress in each task cwd, handle empty dynamic fanout without leaking phantom status rows, create `progress.md` without clobbering concurrent work, and fail runs when requested outputs cannot be saved.
 - Preserve Claude Code structured output through native JSON Schema mode, enforce per-criterion acceptance evidence, and detect content changes to pre-existing output files.
 - Deliver async result events before completion cleanup, limit fallback polling to active jobs, debounce status writes, clear recovered attention notifications, and harden stale status, nested control, and parallel-group normalization.
 - Preserve builtin override precedence and last-definition-wins discovery while surfacing invalid agent, chain, frontmatter, slash-command, and config diagnostics.

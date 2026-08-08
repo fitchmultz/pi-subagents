@@ -17,7 +17,6 @@ import {
 	parsePackageName,
 } from "./agents.ts";
 import { serializeAgent } from "./agent-serializer.ts";
-import { mergeAgentsForScope } from "./agent-selection.ts";
 import { serializeChain, serializeJsonChain } from "./chain-serializer.ts";
 import { discoverAvailableSkills } from "./skills.ts";
 import { isClaudeCodeModel } from "../runs/shared/claude-code.ts";
@@ -531,8 +530,7 @@ export function handleList(params: ManagementParams, ctx: ManagementContext): Su
 	const scope = normalizeListScope(params.agentScope);
 	if (!scope) return result("agentScope must be 'user', 'project', or 'both'.", true);
 	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
-	const agents = mergeAgentsForScope(scope, d.user, d.project, d.builtin)
-		.filter((agent) => agent.disabled !== true)
+	const agents = discoverAgents(ctx.cwd, scope, discoveryOptions(ctx)).agents
 		.sort((a, b) => a.name.localeCompare(b.name));
 	const chains = d.chains.filter((c) => scope === "both" || c.source === scope).sort((a, b) => a.name.localeCompare(b.name));
 	const diagnostics = d.chainDiagnostics.filter((entry) => scope === "both" || entry.source === scope);

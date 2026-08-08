@@ -208,7 +208,7 @@ function formatProgressStats(theme: Theme, progress: Pick<AgentProgress, "toolCo
 }
 
 function firstOutputLine(text: string): string {
-	return text.split("\n").find((line) => line.trim())?.trim() ?? "";
+	return text.split("\n").find((line) => line.trim())?.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim() ?? "";
 }
 
 function formatAcceptanceStatus(result: Details["results"][number]): string | undefined {

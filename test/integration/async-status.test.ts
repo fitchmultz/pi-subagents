@@ -53,7 +53,7 @@ describe("async status helpers", () => {
 		}
 	});
 
-	it("accepts logical chain steps with no flat child after empty fanout", () => {
+	it("rejects logical chain counts that exceed persisted step rows", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-status-empty-fanout-"));
 		try {
 			createAsyncDir(root, "run-empty", {
@@ -66,7 +66,7 @@ describe("async status helpers", () => {
 				currentStep: 0,
 				steps: [{ agent: "producer", status: "complete" }],
 			});
-			assert.equal(listAsyncRuns(root)[0]?.chainStepCount, 2);
+			assert.throws(() => listAsyncRuns(root), /chainStepCount must be a positive count no greater than steps\.length/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

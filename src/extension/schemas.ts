@@ -165,7 +165,7 @@ const DynamicCollectSchema = Type.Object({
 }, { additionalProperties: false });
 
 // Flattened so chain steps do not need an object-shape anyOf/oneOf union.
-const ChainItem = Type.Object({
+export const ChainItemSchema = Type.Object({
 	agent: Type.Optional(Type.String({ minLength: 1, description: "Sequential step agent name" })),
 	task: Type.Optional(Type.String({
 		description: "Task template: {task}=original request, {previous}=prior step response, {chain_dir}=shared folder, {outputs.name}=prior named output. Required for first step; defaults to '{previous}'."
@@ -260,7 +260,7 @@ export const SubagentParams = Type.Object({
 	worktree: Type.Optional(Type.Boolean({
 		description: "Isolated git worktrees per parallel task; requires clean git state; per-worktree diffs included."
 	})),
-	chain: Type.Optional(Type.Array(ChainItem, { minItems: 1, description: "CHAIN mode: sequential pipeline; each step's response becomes {previous} for the next." })),
+	chain: Type.Optional(Type.Array(ChainItemSchema, { minItems: 1, description: "CHAIN mode: sequential pipeline; each step's response becomes {previous} for the next." })),
 	context: Type.Optional(Type.Enum(["fresh", "fork"] as const, {
 		type: "string",
 		description: "'fresh' or 'fork' (branch from parent session); overrides each agent's defaultContext. Fork is rejected for agents whose effective model uses the anthropic/ provider.",
@@ -292,4 +292,11 @@ export const SubagentParams = Type.Object({
 	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
 	outputSchema: Type.Optional(JsonSchemaObject),
 	acceptance: Type.Optional(AcceptanceOverride),
-}, { additionalProperties: false });
+}, {
+	additionalProperties: false,
+	allOf: [
+		{ not: { required: ["agent", "tasks"] } },
+		{ not: { required: ["agent", "chain"] } },
+		{ not: { required: ["tasks", "chain"] } },
+	],
+});

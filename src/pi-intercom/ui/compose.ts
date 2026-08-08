@@ -6,6 +6,7 @@ import type { SessionInfo } from "../types.ts";
 
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
+const MAX_PASTE_CHARS = 1_000_000;
 
 export interface ComposeResult {
   sent: boolean;
@@ -58,26 +59,32 @@ export class ComposeOverlay implements Component {
   handleInput(data: string): void {
     if (this.sending || this.completed) return;
 
+    if (this.keybindings.matches(data, "tui.select.cancel")) {
+      this.finish({ sent: false });
+      return;
+    }
+
     let pasted = false;
     if (this.pasteBuffer !== null) {
       this.pasteBuffer += data;
       const end = this.pasteBuffer.indexOf(BRACKETED_PASTE_END);
-      if (end === -1) return;
-      data = this.pasteBuffer.slice(0, end).replace(/\r\n?/g, "\n");
+      if (end === -1 && this.pasteBuffer.length <= MAX_PASTE_CHARS) return;
+      data = end === -1
+        ? this.pasteBuffer
+        : this.pasteBuffer.slice(0, end) + this.pasteBuffer.slice(end + BRACKETED_PASTE_END.length);
       this.pasteBuffer = null;
+      data = data.replace(/\r\n?/g, "\n");
       pasted = true;
     } else if (data.startsWith(BRACKETED_PASTE_START)) {
       const body = data.slice(BRACKETED_PASTE_START.length);
       const end = body.indexOf(BRACKETED_PASTE_END);
-      if (end === -1) {
+      if (end === -1 && body.length <= MAX_PASTE_CHARS) {
         this.pasteBuffer = body;
         return;
       }
-      data = body.slice(0, end).replace(/\r\n?/g, "\n");
+      data = end === -1 ? body : body.slice(0, end) + body.slice(end + BRACKETED_PASTE_END.length);
+      data = data.replace(/\r\n?/g, "\n");
       pasted = true;
-    } else if (this.keybindings.matches(data, "tui.select.cancel")) {
-      this.finish({ sent: false });
-      return;
     }
     if (!data) return;
 
@@ -155,8 +162,16 @@ export class ComposeOverlay implements Component {
       const prefix = index === 0 ? " > " : "   ";
       if (isLast) {
         const graphemes = [...line];
-        while (visibleWidth(graphemes.join("")) > Math.max(1, contentWidth - prefix.length - 1)) graphemes.shift();
-        line = graphemes.join("");
+        const budget = Math.max(1, contentWidth - prefix.length - 1);
+        let used = 0;
+        let start = graphemes.length;
+        while (start > 0) {
+          const width = visibleWidth(graphemes[start - 1]!);
+          if (used + width > budget) break;
+          used += width;
+          start--;
+        }
+        line = graphemes.slice(start).join("");
       }
       lines.push(row(`${prefix}${line}${isLast ? "█" : ""}`));
     });

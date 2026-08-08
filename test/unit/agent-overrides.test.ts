@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
+import { handleManagementAction } from "../../src/agents/agent-management.ts";
 import { applyIntercomBridgeToAgent, resolveIntercomBridge } from "../../src/intercom/intercom-bridge.ts";
 
 let tempHome = "";
@@ -157,6 +158,20 @@ describe("builtin agent overrides", () => {
 		const reviewer = discoverAgents(tempProject, "user").agents.find((agent) => agent.name === "reviewer");
 		assert.ok(reviewer);
 		assert.equal(reviewer.model, "openai/gpt-5.4");
+	});
+
+	it("management list applies only settings from the requested scope", () => {
+		fs.mkdirSync(path.join(tempProject, ".pi"), { recursive: true });
+		writeJson(path.join(tempProject, ".pi", "settings.json"), {
+			subagents: { agentOverrides: { reviewer: { disabled: true } } },
+		});
+		const result = handleManagementAction("list", { agentScope: "user" }, {
+			cwd: tempProject,
+			modelRegistry: { getAvailable: () => [] },
+			isProjectTrusted: () => true,
+		});
+		assert.equal(result.isError, false);
+		assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /^- reviewer \(/m);
 	});
 
 	it("does not apply user settings overrides when scope is project", () => {

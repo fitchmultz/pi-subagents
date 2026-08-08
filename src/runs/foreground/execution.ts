@@ -49,7 +49,7 @@ import {
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { evaluateCompletionMutationGuard, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
-import { attachPostExitStdioGuard, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
+import { attachPostExitStdioGuard, isChildTreeAlive, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
 import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
@@ -438,14 +438,11 @@ async function runSingleAttempt(
 		let cleanTerminalAssistantStopReceived = false;
 		let finalDrainTimer: NodeJS.Timeout | undefined;
 		let finalHardKillTimer: NodeJS.Timeout | undefined;
-		const terminationTimers = new Set<NodeJS.Timeout>();
 		const forceTerminate = (signal: NodeJS.Signals, graceMs = HARD_KILL_MS) => {
 			trySignalChildTree(proc, signal);
 			const timer = setTimeout(() => {
-				terminationTimers.delete(timer);
-				if (!childExited && !processClosed && !detached) trySignalChildTree(proc, "SIGKILL");
+				if (!detached && isChildTreeAlive(proc)) trySignalChildTree(proc, "SIGKILL");
 			}, graceMs);
-			terminationTimers.add(timer);
 			timer.unref?.();
 		};
 		const clearFinalDrainTimers = () => {
@@ -453,12 +450,10 @@ async function runSingleAttempt(
 				clearTimeout(finalDrainTimer);
 				finalDrainTimer = undefined;
 			}
-			if (finalHardKillTimer) {
+			if (finalHardKillTimer && !forcedTerminationSignal) {
 				clearTimeout(finalHardKillTimer);
 				finalHardKillTimer = undefined;
 			}
-			for (const timer of terminationTimers) clearTimeout(timer);
-			terminationTimers.clear();
 		};
 		const startFinalDrain = () => {
 			if (childExited || finalDrainTimer || settled || processClosed || detached) return;
@@ -471,8 +466,8 @@ async function runSingleAttempt(
 					result.error = result.error ?? `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
 				}
 				finalHardKillTimer = setTimeout(() => {
-					if (settled || processClosed || detached) return;
-					forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
+					finalHardKillTimer = undefined;
+					if (!detached && isChildTreeAlive(proc)) forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
 				}, HARD_KILL_MS);
 				finalHardKillTimer.unref?.();
 			}, FINAL_STOP_GRACE_MS);
@@ -497,17 +492,9 @@ async function runSingleAttempt(
 				clearTimeout(timeoutTimer);
 				timeoutTimer = undefined;
 			}
-			if (timeoutEscalationTimer) {
-				clearTimeout(timeoutEscalationTimer);
-				timeoutEscalationTimer = undefined;
-			}
 			if (resourceLimitTimer) {
 				clearTimeout(resourceLimitTimer);
 				resourceLimitTimer = undefined;
-			}
-			if (resourceLimitEscalationTimer) {
-				clearTimeout(resourceLimitEscalationTimer);
-				resourceLimitEscalationTimer = undefined;
 			}
 			if (activityTimer) {
 				clearInterval(activityTimer);
@@ -587,8 +574,7 @@ async function runSingleAttempt(
 			fireUpdate();
 			trySignalChildTree(proc, "SIGINT");
 			resourceLimitEscalationTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
-				forceTerminate("SIGTERM");
+				if (!detached) forceTerminate("SIGTERM");
 			}, 1000);
 			resourceLimitEscalationTimer.unref?.();
 		};
@@ -607,8 +593,7 @@ async function runSingleAttempt(
 			fireUpdate();
 			trySignalChildTree(proc, "SIGINT");
 			resourceLimitEscalationTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
-				forceTerminate("SIGTERM");
+				if (!detached) forceTerminate("SIGTERM");
 			}, 1000);
 			resourceLimitEscalationTimer.unref?.();
 		};
@@ -798,34 +783,11 @@ async function runSingleAttempt(
 		});
 		proc.on("exit", () => {
 			childExited = true;
-			clearFinalDrainTimers();
 		});
 		proc.on("close", (code, signal) => {
 			clearFinalDrainTimers();
 			clearStdioGuard();
 			cleanupTempDir(tempDir);
-			if (detached) {
-				if (buf.trim()) processLine(buf);
-				const completed = { ...result };
-				delete completed.detached;
-				delete completed.detachedReason;
-				completed.exitCode = signal ? (code ?? 1) : (code ?? 0);
-				if (!completed.error && assistantError) completed.error = assistantError;
-				if (completed.exitCode !== 0 && !completed.error && stderrBuf.trim()) completed.error = stderrBuf.trim();
-				if (completed.exitCode === 0 && !completed.error) {
-					const errInfo = detectSubagentError(completed.messages ?? []);
-					if (errInfo.hasError) {
-						completed.exitCode = errInfo.exitCode ?? 1;
-						completed.error = errInfo.details ? `${errInfo.errorType} failed (exit ${errInfo.exitCode}): ${errInfo.details}` : `${errInfo.errorType} failed with exit code ${errInfo.exitCode}`;
-					}
-				}
-				completed.finalOutput = stripAcceptanceReport(getFinalOutput(completed.messages ?? [])) || completed.error || "(no output)";
-				completed.progress = completed.progress ? { ...completed.progress, status: completed.exitCode === 0 ? "completed" : "failed", activityState: undefined, durationMs: Date.now() - startTime } : completed.progress;
-				completed.progressSummary = { toolCount: progress.toolCount, tokens: progress.tokens, durationMs: Date.now() - startTime };
-				void Promise.resolve(options.onDetachedComplete?.(completed)).catch((error) => console.error("Failed to deliver detached foreground completion:", error));
-				finish(-2);
-				return;
-			}
 			processClosed = true;
 			if (buf.trim()) processLine(buf);
 			if (!result.error && assistantError) result.error = assistantError;
@@ -834,6 +796,17 @@ async function runSingleAttempt(
 				result.error = stderrBuf.trim();
 			}
 			const finalCode = forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (code ?? 1) : (code ?? 0);
+			if (detached) {
+				delete result.detached;
+				delete result.detachedReason;
+				result.exitCode = finalCode;
+				const completed = finalizeCompletedAttempt();
+				void finalizeDetachedCompletion(completed)
+					.then((finalized) => options.onDetachedComplete?.(finalized))
+					.catch((error) => console.error("Failed to deliver detached foreground completion:", error));
+				finish(-2);
+				return;
+			}
 			finish(finalCode);
 		});
 		proc.on("error", (error) => {
@@ -877,8 +850,7 @@ async function runSingleAttempt(
 			fireUpdate();
 			trySignalChildTree(proc, "SIGINT");
 			timeoutEscalationTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
-				forceTerminate("SIGTERM");
+				if (!detached) forceTerminate("SIGTERM");
 			}, 1000);
 			timeoutEscalationTimer.unref?.();
 		};
@@ -926,8 +898,7 @@ async function runSingleAttempt(
 				fireUpdate();
 				trySignalChildTree(proc, "SIGINT");
 				setTimeout(() => {
-					if (settled || processClosed || detached) return;
-					forceTerminate("SIGTERM");
+					if (!detached) forceTerminate("SIGTERM");
 				}, 1000).unref?.();
 			};
 			if (options.interruptSignal.aborted) interrupt();
@@ -994,6 +965,9 @@ async function runSingleAttempt(
 		return result;
 	}
 
+	return finalizeCompletedAttempt();
+
+	function finalizeCompletedAttempt(): SingleResult {
 	if (result.error && result.exitCode === 0) {
 		result.exitCode = 1;
 	}
@@ -1117,6 +1091,74 @@ async function runSingleAttempt(
 		});
 	}
 	return result;
+	}
+
+	async function finalizeDetachedCompletion(completed: SingleResult): Promise<SingleResult> {
+		const acceptance = resolveEffectiveAcceptance({ explicit: options.acceptance });
+		const output = acceptanceOutputByResult.get(completed) ?? completed.finalOutput ?? "";
+		const initialAcceptance = await evaluateAcceptance({
+			acceptance: shouldRunAcceptanceFinalization(acceptance) ? acceptanceSelfReviewConfig(acceptance) : acceptance,
+			governing: acceptance,
+			output,
+			cwd: options.cwd ?? runtimeCwd,
+		});
+		completed.acceptance = initialAcceptance;
+		if (shouldRunAcceptanceFinalization(acceptance) && completed.exitCode === 0 && !completed.interrupted) {
+			completed.acceptance = await runAcceptanceFinalizationLoop({
+				runtimeCwd,
+				agent,
+				result: completed,
+				initialLedger: initialAcceptance,
+				initialOutput: output,
+				acceptance,
+				options,
+				systemPrompt: shared.systemPrompt,
+				resolvedSkillNames: shared.resolvedSkillNames,
+				skillsWarning: shared.skillsWarning,
+			});
+		}
+		const failure = acceptanceFailureMessage(completed.acceptance);
+		stripAcceptanceReportsFromMessages(completed.messages ?? []);
+		if (failure && completed.acceptance.explicit && completed.exitCode === 0 && !completed.interrupted) {
+			completed.exitCode = 1;
+			completed.error = completed.error ? `${completed.error}\n${failure}` : failure;
+			if (completed.progress) {
+				completed.progress.status = "failed";
+				completed.progress.error = completed.error;
+			}
+		}
+		const lastAttempt = completed.modelAttempts?.[completed.modelAttempts.length - 1];
+		if (lastAttempt) {
+			lastAttempt.success = completed.exitCode === 0 && !completed.error;
+			lastAttempt.exitCode = completed.exitCode;
+			lastAttempt.error = completed.error;
+			lastAttempt.usage = { ...completed.usage };
+		}
+		if (completed.artifactPaths) {
+			writeArtifact(completed.artifactPaths.outputPath, artifactOutputByResult.get(completed) ?? completed.finalOutput ?? "");
+			writeMetadata(completed.artifactPaths.metadataPath, {
+				runId: options.runId,
+				agent: completed.agent,
+				task: completed.task,
+				exitCode: completed.exitCode,
+				usage: completed.usage,
+				model: completed.model,
+				attemptedModels: completed.attemptedModels,
+				modelAttempts: completed.modelAttempts,
+				durationMs: completed.progressSummary?.durationMs,
+				toolCount: completed.progressSummary?.toolCount,
+				error: completed.error,
+				skills: completed.skills,
+				skillsWarning: completed.skillsWarning,
+				timestamp: Date.now(),
+			});
+			if (options.maxOutput) {
+				const truncation = truncateOutput(completed.finalOutput ?? "", { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput }, completed.artifactPaths.outputPath);
+				completed.truncation = truncation.truncated ? truncation : undefined;
+			}
+		}
+		return completed;
+	}
 }
 
 async function runAcceptanceFinalizationLoop(input: {
@@ -1260,6 +1302,8 @@ export async function runSync(
 	if (shouldRunAcceptanceFinalization(effectiveAcceptance) && !options.sessionFile) {
 		const sessionDir = options.sessionDir ?? mkdtempSync(path.join(os.tmpdir(), "pi-subagent-finalization-"));
 		options.sessionFile = path.join(sessionDir, "session.jsonl");
+		effectiveOptions.sessionDir = sessionDir;
+		effectiveOptions.sessionFile = options.sessionFile;
 	}
 	const acceptancePrompt = formatAcceptancePrompt(effectiveAcceptance);
 	const taskWithAcceptance = acceptancePrompt ? `${task}\n${acceptancePrompt}` : task;

@@ -190,6 +190,25 @@ describe("nested control routing", () => {
 		}
 	});
 
+	it("rejects unsafe async runner pids without signaling", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-interrupt-invalid-"));
+		const asyncDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-interrupt-invalid-run-"));
+		try {
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ state: "running", pid: -1 }), "utf-8");
+			const state = createState();
+			state.asyncJobs.set("async-invalid", { asyncId: "async-invalid", asyncDir, status: "running", updatedAt: 1 } as any);
+			const kill = mock.method(process, "kill", () => true);
+			const result = await createExecutor(state).execute("interrupt", { action: "interrupt", id: "async-invalid" }, new AbortController().signal, undefined, ctx(root));
+			assert.equal(result.isError, true);
+			assert.match(result.content[0]?.text ?? "", /No running async run with an interrupt-capable pid/);
+			assert.equal(kill.mock.callCount(), 0);
+		} finally {
+			mock.restoreAll();
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
 	it("renders nested children in foreground status output", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-foreground-status-"));
 		try {

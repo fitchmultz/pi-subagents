@@ -614,6 +614,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker(config.askTimeoutMs);
   const pendingIdleMessages: PendingInboundMessage[] = [];
+  const maxPendingIdleMessages = 100;
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   let replyWaiter: {
     from: string;
@@ -984,6 +985,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       syncPresenceStatus();
     }
     pendingIdleMessages.push({ ...entry, flushDelivery });
+    while (pendingIdleMessages.length > maxPendingIdleMessages) {
+      const dropped = pendingIdleMessages.shift();
+      if (dropped?.message.expectsReply) replyTracker.markReplied(dropped.message.id);
+    }
     scheduleInboundFlush(delayMs);
   }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
