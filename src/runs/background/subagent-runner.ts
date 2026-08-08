@@ -353,7 +353,7 @@ function runPiStreaming(
 		};
 
 		const failForToolLoop = (message: string) => {
-			if (settled || resourceLimitExceeded) return;
+			if (settled || resourceLimitExceeded || terminationRequested) return;
 			error = message;
 			writeOutputLine(message);
 			terminationRequested = true;

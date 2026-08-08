@@ -1825,7 +1825,7 @@ describe("async execution utilities", () => {
 	it("background runs stop repeated failed subagent calls", async () => {
 		const args = { agent: "delegate", task: "nested work", async: false };
 		mockPi.onCall({
-			jsonl: Array.from({ length: 5 }, (_, index) => {
+			jsonl: Array.from({ length: 6 }, (_, index) => {
 				const toolCallId = `call-${index}`;
 				return [
 					{ type: "tool_execution_start", toolCallId, toolName: "subagent", args },
@@ -1849,6 +1849,8 @@ describe("async execution utilities", () => {
 		assert.equal(payload.success, false);
 		assert.equal(payload.exitCode, 1);
 		assert.match(payload.results[0]?.error ?? "", /stuck repeating the same failed subagent call 5 times/);
+		const output = fs.readFileSync(path.join(ASYNC_DIR, id, "output-0.log"), "utf-8");
+		assert.equal(output.match(/stuck repeating the same failed subagent call/g)?.length, 1);
 	});
 
 	it("background implementation runs fail when no mutation attempt occurred", async () => {
