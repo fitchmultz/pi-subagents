@@ -96,6 +96,22 @@ describe("resolveSingleOutput", () => {
 		assert.equal(fs.readFileSync(outputPath, "utf-8"), "real file content");
 	});
 
+	it("keeps an identical agent rewrite instead of replacing it with receipt text", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-output-test-"));
+		tempDirs.push(dir);
+		const outputPath = path.join(dir, "review.md");
+		fs.writeFileSync(outputPath, "real file content", "utf-8");
+		const before = captureSingleOutputSnapshot(outputPath);
+
+		fs.writeFileSync(outputPath, "real file content", "utf-8");
+		const future = new Date(Date.now() + 1000);
+		fs.utimesSync(outputPath, future, future);
+
+		const result = resolveSingleOutput(outputPath, "receipt text", before);
+		assert.equal(result.fullOutput, "real file content");
+		assert.equal(fs.readFileSync(outputPath, "utf-8"), "real file content");
+	});
+
 	it("falls back to persisting the assistant output when the file was not changed", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-output-test-"));
 		tempDirs.push(dir);

@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
+import { handleManagementAction } from "../../src/agents/agent-management.ts";
 import { applyIntercomBridgeToAgent, resolveIntercomBridge } from "../../src/intercom/intercom-bridge.ts";
 
 let tempHome = "";
@@ -145,6 +146,21 @@ describe("builtin agent overrides", () => {
 		assert.equal(reviewer.thinking, "high");
 	});
 
+	it("lets a project-specific override re-enable a user-disabled builtin", () => {
+		fs.mkdirSync(path.join(tempProject, ".pi"), { recursive: true });
+		writeJson(path.join(tempHome, ".pi", "agent", "settings.json"), {
+			subagents: { disableBuiltins: true },
+		});
+		writeJson(path.join(tempProject, ".pi", "settings.json"), {
+			subagents: { agentOverrides: { reviewer: { model: "openai-codex/gpt-5.4-mini" } } },
+		});
+
+		const reviewer = discoverAgents(tempProject, "both").agents.find((agent) => agent.name === "reviewer");
+		assert.ok(reviewer);
+		assert.equal(reviewer.disabled, false);
+		assert.equal(reviewer.model, "openai-codex/gpt-5.4-mini");
+	});
+
 	it("does not apply project settings overrides when scope is user", () => {
 		fs.mkdirSync(path.join(tempProject, ".pi"), { recursive: true });
 		writeJson(path.join(tempHome, ".pi", "agent", "settings.json"), {
@@ -157,6 +173,70 @@ describe("builtin agent overrides", () => {
 		const reviewer = discoverAgents(tempProject, "user").agents.find((agent) => agent.name === "reviewer");
 		assert.ok(reviewer);
 		assert.equal(reviewer.model, "openai/gpt-5.4");
+	});
+
+	it("management list applies only settings from the requested scope", () => {
+		fs.mkdirSync(path.join(tempProject, ".pi"), { recursive: true });
+		writeJson(path.join(tempProject, ".pi", "settings.json"), {
+			subagents: { agentOverrides: { reviewer: { disabled: true } } },
+		});
+		const result = handleManagementAction("list", { agentScope: "user" }, {
+			cwd: tempProject,
+			modelRegistry: { getAvailable: () => [] },
+			isProjectTrusted: () => true,
+		});
+		assert.equal(result.isError, false);
+		assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /^- reviewer \(/m);
+	});
+
+	it("management user scope does not parse malformed project settings", () => {
+		fs.mkdirSync(path.join(tempProject, ".pi"), { recursive: true });
+		fs.writeFileSync(path.join(tempProject, ".pi", "settings.json"), '{"subagents":', "utf-8");
+
+		const result = handleManagementAction("list", { agentScope: "user" }, {
+			cwd: tempProject,
+			modelRegistry: { getAvailable: () => [] },
+			isProjectTrusted: () => true,
+		});
+		assert.equal(result.isError, false);
+		assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /^- reviewer \(/m);
+	});
+
+	it("management list surfaces current invalid agent diagnostics", () => {
+		const agentPath = path.join(tempHome, ".pi", "agent", "agents", "broken.md");
+		fs.mkdirSync(path.dirname(agentPath), { recursive: true });
+		fs.writeFileSync(agentPath, "---\nname: broken\ndescription: Broken\nallowSubagents: maybe\n---\nBody", "utf-8");
+		const originalError = console.error;
+		const loggedErrors: string[] = [];
+		console.error = (...args: unknown[]) => loggedErrors.push(args.map(String).join(" "));
+		try {
+			const invalid = handleManagementAction("list", { agentScope: "user" }, {
+				cwd: tempProject,
+				modelRegistry: { getAvailable: () => [] },
+				isProjectTrusted: () => true,
+			});
+			const invalidText = invalid.content[0]?.type === "text" ? invalid.content[0].text : "";
+			assert.match(invalidText, /Discovery diagnostics:/);
+			assert.match(invalidText, /allowSubagents must be true or false/);
+			handleManagementAction("list", { agentScope: "user" }, {
+				cwd: tempProject,
+				modelRegistry: { getAvailable: () => [] },
+				isProjectTrusted: () => true,
+			});
+			assert.equal(loggedErrors.filter((message) => message.includes(agentPath)).length, 1);
+
+			fs.writeFileSync(agentPath, "---\nname: broken\ndescription: Fixed\n---\nBody", "utf-8");
+			const fixed = handleManagementAction("list", { agentScope: "user" }, {
+				cwd: tempProject,
+				modelRegistry: { getAvailable: () => [] },
+				isProjectTrusted: () => true,
+			});
+			const fixedText = fixed.content[0]?.type === "text" ? fixed.content[0].text : "";
+			assert.doesNotMatch(fixedText, /Discovery diagnostics:/);
+			assert.match(fixedText, /^- broken \(/m);
+		} finally {
+			console.error = originalError;
+		}
 	});
 
 	it("does not apply user settings overrides when scope is project", () => {

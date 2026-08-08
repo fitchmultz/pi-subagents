@@ -59,11 +59,11 @@ import {
 	type ClaudeCodeResultEvent,
 } from "../shared/claude-code.ts";
 import { outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
-import { createStructuredOutputRuntime, readStructuredOutput } from "../shared/structured-output.ts";
+import { createStructuredOutputRuntime, readStructuredOutput, type StructuredOutputRuntime } from "../shared/structured-output.ts";
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { formatModelAttemptNote, formatModelRecoveryAttemptNote, isRecoverableSameModelFailure, isRetryableModelFailure } from "../shared/model-fallback.ts";
-import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
+import { attachPostExitStdioGuard, isChildTreeAlive, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
 import { evaluateCompletionMutationGuard, resolveCompletionPolicy } from "../shared/completion-guard.ts";
 import {
@@ -159,6 +159,7 @@ interface StepResult {
 }
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
+const ASYNC_CONTROL_REQUEST_FILE = "control-request.json";
 const MAX_SAME_MODEL_RECOVERY_RETRIES = 1;
 
 function formatProcessExitFailure(input: { agent: string; exitCode: number | null; durationMs?: number }): string {
@@ -302,6 +303,7 @@ function runPiStreaming(
 	maxTokens?: number,
 	claudeCodeInvocation?: ClaudeCodeInvocation,
 	sessionFile?: string,
+	structuredOutput?: StructuredOutputRuntime,
 ): Promise<RunPiStreamingResult> {
 	return new Promise((resolve) => {
 		const startTime = Date.now();
@@ -317,6 +319,7 @@ function runPiStreaming(
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 			env: spawnEnv,
+			detached: process.platform !== "win32",
 			windowsHide: true,
 		});
 		let stderr = "";
@@ -332,7 +335,6 @@ function runPiStreaming(
 		let observedCompletedMutation = false;
 		const mutationTracker = createMutationCompletionTracker();
 		let resourceLimitTimer: NodeJS.Timeout | undefined;
-		let resourceLimitEscalationTimer: NodeJS.Timeout | undefined;
 		const subagentListLoopGuard = createRepeatedSubagentListGuardState();
 		const rawStdoutLines: string[] = [];
 
@@ -351,11 +353,11 @@ function runPiStreaming(
 			if (settled || resourceLimitExceeded) return;
 			error = message;
 			writeOutputLine(message);
-			trySignalChild(child, "SIGINT");
-			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!settled) trySignalChild(child, "SIGTERM");
-			}, 1000);
-			resourceLimitEscalationTimer.unref?.();
+			terminationRequested = true;
+			trySignalChildTree(child, "SIGINT");
+			setTimeout(() => {
+				if (!settled && !childExited && isChildTreeAlive(child)) forceTerminate("SIGTERM");
+			}, 1000).unref?.();
 		};
 
 		const triggerResourceLimit = (kind: ResourceLimitExceeded["kind"], limit: number, observed?: number) => {
@@ -364,11 +366,11 @@ function runPiStreaming(
 			resourceLimitExceeded = { kind, limit, ...(observed !== undefined ? { observed } : {}), message };
 			error = message;
 			writeOutputLine(message);
-			trySignalChild(child, "SIGINT");
-			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!settled) trySignalChild(child, "SIGTERM");
-			}, 1000);
-			resourceLimitEscalationTimer.unref?.();
+			terminationRequested = true;
+			trySignalChildTree(child, "SIGINT");
+			setTimeout(() => {
+				if (!settled && !childExited && isChildTreeAlive(child)) forceTerminate("SIGTERM");
+			}, 1000).unref?.();
 		};
 
 		const appendChildEvent = (event: object) => {
@@ -398,8 +400,13 @@ function runPiStreaming(
 				appendChildLine("subagent.child.stdout", line);
 				return;
 			}
+			if (!event || typeof event !== "object") return;
 			if (claudeCodeInvocation && event.type === "result") {
 				const resultEvent = event as ClaudeCodeResultEvent;
+				if (structuredOutput && resultEvent.structured_output !== undefined) {
+					fs.mkdirSync(path.dirname(structuredOutput.outputPath), { recursive: true });
+					fs.writeFileSync(structuredOutput.outputPath, `${JSON.stringify(resultEvent.structured_output)}\n`, "utf-8");
+				}
 				const message = claudeCodeMessageFromResult(resultEvent, claudeCodeInvocation.model.inputModel);
 				if (sessionFile) {
 					writeClaudeCodeSessionMetadata(sessionFile, {
@@ -489,11 +496,19 @@ function runPiStreaming(
 		const FINAL_STOP_GRACE_MS = 1000;
 		const HARD_KILL_MS = 3000;
 		let childExited = false;
+		let terminationRequested = false;
 		let forcedTerminationSignal = false;
 		let cleanTerminalAssistantStopReceived = false;
 		let finalDrainTimer: NodeJS.Timeout | undefined;
 		let finalHardKillTimer: NodeJS.Timeout | undefined;
 		let settled = false;
+		const forceTerminate = (signal: NodeJS.Signals, graceMs = HARD_KILL_MS) => {
+			terminationRequested = true;
+			trySignalChildTree(child, signal);
+			setTimeout(() => {
+				if (!settled && !childExited && isChildTreeAlive(child)) trySignalChildTree(child, "SIGKILL");
+			}, graceMs).unref?.();
+		};
 		if (maxExecutionTimeMs !== undefined) {
 			resourceLimitTimer = setTimeout(() => {
 				triggerResourceLimit("maxExecutionTimeMs", maxExecutionTimeMs);
@@ -516,9 +531,10 @@ function runPiStreaming(
 			if (settled || resourceLimitExceeded) return;
 			interrupted = true;
 			if (!error) error = "Interrupted. Waiting for explicit next action.";
-			trySignalChild(child, "SIGINT");
+			terminationRequested = true;
+			trySignalChildTree(child, "SIGINT");
 			setTimeout(() => {
-				if (!settled) trySignalChild(child, "SIGTERM");
+				if (!settled && !childExited && isChildTreeAlive(child)) forceTerminate("SIGTERM");
 			}, 1000).unref?.();
 		});
 		const clearDrainTimers = () => {
@@ -534,24 +550,21 @@ function runPiStreaming(
 				clearTimeout(resourceLimitTimer);
 				resourceLimitTimer = undefined;
 			}
-			if (resourceLimitEscalationTimer) {
-				clearTimeout(resourceLimitEscalationTimer);
-				resourceLimitEscalationTimer = undefined;
-			}
 		};
 		function startFinalDrain(): void {
 			if (childExited || finalDrainTimer || settled) return;
+			terminationRequested = true;
 			finalDrainTimer = setTimeout(() => {
-				if (settled) return;
-				const termSent = trySignalChild(child, "SIGTERM");
+				if (settled || childExited) return;
+				const termSent = trySignalChildTree(child, "SIGTERM");
 				if (!termSent) return;
 				forcedTerminationSignal = true;
 				if (!cleanTerminalAssistantStopReceived && !error && !assistantError) {
 					error = `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
 				}
 				finalHardKillTimer = setTimeout(() => {
-					if (settled) return;
-					forcedTerminationSignal = trySignalChild(child, "SIGKILL") || forcedTerminationSignal;
+					finalHardKillTimer = undefined;
+					if (!settled && !childExited && isChildTreeAlive(child)) forcedTerminationSignal = trySignalChildTree(child, "SIGKILL") || forcedTerminationSignal;
 				}, HARD_KILL_MS);
 				finalHardKillTimer.unref?.();
 			}, FINAL_STOP_GRACE_MS);
@@ -559,7 +572,9 @@ function runPiStreaming(
 		}
 		child.on("exit", () => {
 			childExited = true;
-			clearDrainTimers();
+			if (terminationRequested && isChildTreeAlive(child)) {
+				forcedTerminationSignal = trySignalChildTree(child, "SIGKILL") || forcedTerminationSignal;
+			}
 		});
 		child.on("close", (exitCode, signal) => {
 			settled = true;
@@ -799,6 +814,7 @@ async function runSingleStep(
 					tools: step.tools,
 					mcpDirectTools: step.mcpDirectTools,
 					allowSubagents: step.allowSubagents,
+					outputSchema: effectiveStructuredOutput?.schema,
 				});
 				args = claudeCodeInvocation.args;
 				env = claudeCodeInvocation.env;
@@ -857,6 +873,7 @@ async function runSingleStep(
 			step.maxTokens,
 			claudeCodeInvocation,
 			step.sessionFile,
+			effectiveStructuredOutput,
 		);
 		cleanupTempDir(tempDir);
 
@@ -943,6 +960,19 @@ async function runSingleStep(
 		? resolveSingleOutput(step.outputPath, outputForPersistence, finalOutputSnapshot)
 		: { fullOutput: outputForPersistence };
 	const output = resolvedOutput.fullOutput;
+	if (resolvedOutput.saveError) {
+		const saveError = `Failed to save output file '${step.outputPath}': ${resolvedOutput.saveError}`;
+		if (finalResult) {
+			finalResult.exitCode = 1;
+			finalResult.error = saveError;
+		}
+		const lastAttempt = modelAttempts.at(-1);
+		if (lastAttempt) {
+			lastAttempt.success = false;
+			lastAttempt.exitCode = 1;
+			lastAttempt.error = saveError;
+		}
+	}
 	const cleanup = resolvedOutput.savedPath && step.outputMode !== "file-only" && step.outputPathFromAgentDefault === true
 		? cleanupSingleOutputFile(resolvedOutput.savedPath, resolvedOutput.fullOutput, finalOutputSnapshot)
 		: undefined;
@@ -1343,9 +1373,15 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const logPath = path.join(asyncDir, `subagent-log-${id}.md`);
 	const controlConfig = config.controlConfig ?? DEFAULT_CONTROL_CONFIG;
 	const activeChildInterrupts = new Map<number, () => void>();
+	const interruptActiveSiblings = (exceptIndex: number) => {
+		for (const [index, interrupt] of activeChildInterrupts) {
+			if (index !== exceptIndex) interrupt();
+		}
+	};
 	let interrupted = false;
 	let currentActivityState: ActivityState | undefined;
 	let activityTimer: NodeJS.Timeout | undefined;
+	let controlRequestTimer: NodeJS.Timeout | undefined;
 	let previousCumulativeTokens: TokenUsage = { input: 0, output: 0, total: 0 };
 	let latestSessionFile: string | undefined;
 
@@ -1484,10 +1520,20 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		for (const node of graph.nodes) updateNode(node);
 		statusPayload.workflowGraph = graph;
 	};
+	let statusWriteTimer: NodeJS.Timeout | undefined;
 	const writeStatusPayload = (): void => {
+		if (statusWriteTimer) {
+			clearTimeout(statusWriteTimer);
+			statusWriteTimer = undefined;
+		}
 		refreshWorkflowGraph();
 		writeAtomicJson(statusPath, statusPayload);
 		emitNestedSelfEvent(statusPayload.state === "running" || statusPayload.state === "queued" ? "subagent.nested.updated" : "subagent.nested.completed");
+	};
+	const scheduleStatusWrite = (): void => {
+		if (statusWriteTimer) return;
+		statusWriteTimer = setTimeout(writeStatusPayload, 200);
+		statusWriteTimer.unref?.();
 	};
 	const markDynamicGraphGroup = (stepIndex: number, status: "completed" | "failed" | "running" | "paused", error?: string, acceptance?: AcceptanceLedger): void => {
 		const groupNode = statusPayload.workflowGraph?.nodes.find((node) => node.id === `step-${stepIndex}`);
@@ -1549,11 +1595,22 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		statusPayload.lastUpdate = now;
 		writeStatusPayload();
 	};
+	const clearControlNotificationKeys = (flatIndex: number): void => {
+		const childKey = config.childIntercomTargets?.[flatIndex] ?? `${config.id}:${flatIndex}`;
+		for (const key of emittedControlEventKeys) if (key.startsWith(`${childKey}:`)) emittedControlEventKeys.delete(key);
+	};
 	const updateStepFromChildEvent = (flatIndex: number, event: ChildEvent): void => {
 		const step = statusPayload.steps[flatIndex];
 		if (!step) return;
 		const now = Date.now();
 		statusPayload.currentStep = flatIndex;
+		if (step.activityState === "needs_attention") {
+			step.activityState = undefined;
+			clearControlNotificationKeys(flatIndex);
+			statusPayload.activityState = statusPayload.steps.some((candidate) => candidate.activityState === "needs_attention")
+				? "needs_attention"
+				: undefined;
+		}
 		if (event.type === "tool_execution_start" && event.toolName) {
 			const currentPath = resolveCurrentPath(event.toolName, event.args);
 			step.toolCount = (step.toolCount ?? 0) + 1;
@@ -1632,7 +1689,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		step.lastActivityAt = now;
 		statusPayload.lastActivityAt = now;
 		statusPayload.lastUpdate = now;
-		writeStatusPayload();
+		scheduleStatusWrite();
 	};
 	const updateRunnerActivityState = (now: number): boolean => {
 		if (!controlConfig.enabled) return false;
@@ -1668,6 +1725,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					}));
 					changed = true;
 				}
+			} else if (step.activityState === "needs_attention") {
+				step.activityState = undefined;
+				clearControlNotificationKeys(index);
+				changed = true;
 			}
 		}
 		if (statusPayload.lastActivityAt !== runLastActivityAt) {
@@ -1717,6 +1778,25 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		for (const interrupt of activeChildInterrupts.values()) interrupt();
 	};
 	process.on(ASYNC_INTERRUPT_SIGNAL, interruptRunner);
+	const controlRequestPath = path.join(asyncDir, ASYNC_CONTROL_REQUEST_FILE);
+	let lastControlRequestId: string | undefined;
+	controlRequestTimer = setInterval(() => {
+		let request: { requestId?: unknown; runId?: unknown; action?: unknown };
+		try {
+			if (!fs.existsSync(controlRequestPath)) return;
+			if (fs.statSync(controlRequestPath).size > 64 * 1024) throw new Error("control request exceeds 64 KiB");
+			request = JSON.parse(fs.readFileSync(controlRequestPath, "utf-8")) as typeof request;
+			fs.rmSync(controlRequestPath, { force: true });
+		} catch (error) {
+			console.error(`Failed to read async control request '${controlRequestPath}':`, error);
+			try { fs.rmSync(controlRequestPath, { force: true }); } catch {}
+			return;
+		}
+		if (request.action !== "interrupt" || request.runId !== id || typeof request.requestId !== "string" || !request.requestId || request.requestId === lastControlRequestId) return;
+		lastControlRequestId = request.requestId;
+		interruptRunner();
+	}, 100);
+	controlRequestTimer.unref?.();
 	appendJsonl(
 		eventsPath,
 		JSON.stringify({
@@ -1899,9 +1979,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					placeholder.startedAt = now;
 					placeholder.endedAt = now;
 					placeholder.durationMs = 0;
+					placeholder.exitCode = 0;
 				}
-				previousOutput = "Dynamic fanout produced 0 results.";
 				flatIndex++;
+				previousOutput = "Dynamic fanout produced 0 results.";
 				statusPayload.lastUpdate = now;
 				markDynamicGraphGroup(stepIndex, "completed");
 				writeStatusPayload();
@@ -2024,7 +2105,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					sessionDir: config.sessionDir ? path.join(config.sessionDir, `dynamic-${stepIndex}-${taskIdx}`) : undefined,
 					flatStepCount: Math.max(statusPayload.steps.length, 1),
 				});
-				if (result.exitCode !== 0 && failFast) aborted = true;
+				if (result.exitCode !== 0 && failFast) {
+					aborted = true;
+					interruptActiveSiblings(groupStartFlatIndex + taskIdx);
+				}
 				return result;
 			});
 
@@ -2185,7 +2269,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							trackSession: true,
 							notifyCompletionGuard: true,
 						});
-						if (result.exitCode !== 0 && failFast) aborted = true;
+						if (result.exitCode !== 0 && failFast) {
+							aborted = true;
+							interruptActiveSiblings(groupStartFlatIndex + taskIdx);
+						}
 						return result;
 					},
 				);
@@ -2433,14 +2520,12 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	if (worktreeSummaries.length > 0) summary = appendWorktreeSummary(summary, worktreeSummaries.join("\n\n"));
 	let truncated = false;
 
-	if (maxOutput) {
-		const config = { ...DEFAULT_MAX_OUTPUT, ...maxOutput };
-		const lastArtifactPath = results[results.length - 1]?.artifactPaths?.outputPath;
-		const truncResult = truncateOutput(summary, config, lastArtifactPath);
-		if (truncResult.truncated) {
-			summary = truncResult.text;
-			truncated = true;
-		}
+	const outputLimits = { ...DEFAULT_MAX_OUTPUT, ...maxOutput };
+	const lastArtifactPath = results[results.length - 1]?.artifactPaths?.outputPath;
+	const truncResult = truncateOutput(summary, outputLimits, lastArtifactPath);
+	if (truncResult.truncated) {
+		summary = truncResult.text;
+		truncated = true;
 	}
 
 	const resultMode = config.resultMode ?? statusPayload.mode;
@@ -2483,6 +2568,11 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		clearInterval(activityTimer);
 		activityTimer = undefined;
 	}
+	if (controlRequestTimer) {
+		clearInterval(controlRequestTimer);
+		controlRequestTimer = undefined;
+	}
+	process.off(ASYNC_INTERRUPT_SIGNAL, interruptRunner);
 	const effectiveSessionFile = sessionFile ?? latestSessionFile ?? undefined;
 	const runEndedAt = Date.now();
 	if (interrupted) {
@@ -2501,11 +2591,12 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}));
 		}
 	}
+	const hasFailedSteps = statusPayload.steps.some((step) => step.status === "failed");
 	const hasPausedSteps = statusPayload.steps.some((step) => step.status === "paused");
 	const allResultsSucceeded = results.length > 0 && results.every((r) => r.success);
 	const allStatusStepsComplete = statusPayload.steps.length > 0 && statusPayload.steps.every((step) => step.status === "complete");
 	const allWorkflowNodesCompleted = !statusPayload.workflowGraph?.nodes?.length || statusPayload.workflowGraph.nodes.every((node) => node.status === "completed");
-	const finalRunState: AsyncStatus["state"] = interrupted || hasPausedSteps ? "paused" : allResultsSucceeded || (allStatusStepsComplete && allWorkflowNodesCompleted) ? "complete" : "failed";
+	const finalRunState: AsyncStatus["state"] = hasFailedSteps ? "failed" : interrupted || hasPausedSteps ? "paused" : allResultsSucceeded || (allStatusStepsComplete && allWorkflowNodesCompleted) ? "complete" : "failed";
 	statusPayload.state = finalRunState;
 	statusPayload.activityState = undefined;
 	statusPayload.currentTool = undefined;
@@ -2561,26 +2652,29 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			success: finalRunState === "complete",
 			state: finalRunState,
 			summary: finalRunState === "paused" ? "Paused after interrupt. Waiting for explicit next action." : summary,
-			results: results.map((r) => ({
-				agent: r.agent,
-				output: r.output,
-				error: r.error,
-				success: r.success,
-				skipped: r.skipped || undefined,
-				sessionFile: r.sessionFile,
-				intercomTarget: r.intercomTarget,
-				model: r.model,
-				attemptedModels: r.attemptedModels,
-				modelAttempts: r.modelAttempts,
-				artifactPaths: r.artifactPaths,
-				truncated: r.truncated,
-				structuredOutput: r.structuredOutput,
-				structuredOutputPath: r.structuredOutputPath,
-				structuredOutputSchemaPath: r.structuredOutputSchemaPath,
-				acceptance: r.acceptance,
-				resourceLimitExceeded: r.resourceLimitExceeded,
-				interrupted: r.interrupted,
-			})),
+			results: results.map((r) => {
+				const childOutput = truncateOutput(r.output, outputLimits, r.artifactPaths?.outputPath);
+				return {
+					agent: r.agent,
+					output: childOutput.text,
+					error: r.error,
+					success: r.success,
+					skipped: r.skipped || undefined,
+					sessionFile: r.sessionFile,
+					intercomTarget: r.intercomTarget,
+					model: r.model,
+					attemptedModels: r.attemptedModels,
+					modelAttempts: r.modelAttempts,
+					artifactPaths: r.artifactPaths,
+					truncated: r.truncated || childOutput.truncated || undefined,
+					structuredOutput: r.structuredOutput,
+					structuredOutputPath: r.structuredOutputPath,
+					structuredOutputSchemaPath: r.structuredOutputSchemaPath,
+					acceptance: r.acceptance,
+					resourceLimitExceeded: r.resourceLimitExceeded,
+					interrupted: r.interrupted,
+				};
+			}),
 			outputs,
 			workflowGraph: statusPayload.workflowGraph,
 			exitCode: finalRunState === "failed" ? 1 : 0,

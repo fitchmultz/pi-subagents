@@ -24,6 +24,13 @@ describe("agent management config parsing", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
+	it("rejects unknown config keys instead of silently ignoring typos", () => {
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
+		const result = handleManagementAction("create", { config: { name: "typo-agent", description: "test", extra: true } }, ctx);
+		assert.equal(result.isError, true);
+		assert.match(readText(result), /unknown field: extra/);
+	});
+
 	it("surfaces JSON parse errors for create config strings", () => {
 		const result = handleCreate(
 			{ config: '{"name":' },
@@ -42,6 +49,59 @@ describe("agent management config parsing", () => {
 
 		assert.equal(result.isError, true);
 		assert.match(readText(result), /config must be valid JSON:/);
+	});
+
+	it("refuses to mutate duplicate definitions within one scope", () => {
+		const originalHome = process.env.HOME;
+		const originalUserProfile = process.env.USERPROFILE;
+		process.env.HOME = tempDir;
+		process.env.USERPROFILE = tempDir;
+		const legacyPath = path.join(tempDir, ".pi", "agent", "agents", "duplicate.md");
+		const currentPath = path.join(tempDir, ".agents", "duplicate.md");
+		for (const filePath of [legacyPath, currentPath]) {
+			fs.mkdirSync(path.dirname(filePath), { recursive: true });
+			fs.writeFileSync(filePath, "---\nname: duplicate\ndescription: Duplicate\n---\nBody", "utf-8");
+		}
+		try {
+			const result = handleManagementAction("delete", { agent: "duplicate", agentScope: "user" }, {
+				cwd: tempDir,
+				modelRegistry: { getAvailable: () => [] },
+				isProjectTrusted: () => true,
+			});
+			assert.equal(result.isError, true);
+			assert.match(readText(result), /multiple definitions in scope 'user'/);
+			assert.equal(fs.existsSync(legacyPath), true);
+			assert.equal(fs.existsSync(currentPath), true);
+		} finally {
+			if (originalHome === undefined) delete process.env.HOME;
+			else process.env.HOME = originalHome;
+			if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+			else process.env.USERPROFILE = originalUserProfile;
+		}
+	});
+
+	it("refuses to mutate duplicate project agent and chain definitions", () => {
+		fs.mkdirSync(path.join(tempDir, ".git"));
+		const legacyAgent = path.join(tempDir, ".agents", "duplicate.md");
+		const currentAgent = path.join(tempDir, ".pi", "agents", "duplicate.md");
+		for (const filePath of [legacyAgent, currentAgent]) {
+			fs.mkdirSync(path.dirname(filePath), { recursive: true });
+			fs.writeFileSync(filePath, "---\nname: duplicate\ndescription: Duplicate\n---\nBody", "utf-8");
+		}
+		const chainMarkdown = path.join(tempDir, ".pi", "chains", "duplicate.chain.md");
+		const chainJson = path.join(tempDir, ".pi", "chains", "duplicate.chain.json");
+		fs.mkdirSync(path.dirname(chainMarkdown), { recursive: true });
+		fs.writeFileSync(chainMarkdown, "---\nname: duplicate-chain\ndescription: Duplicate\n---\n\n## worker\n\none\n", "utf-8");
+		fs.writeFileSync(chainJson, JSON.stringify({ name: "duplicate-chain", description: "Duplicate", chain: [{ agent: "worker", task: "two" }] }), "utf-8");
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
+
+		const agentResult = handleManagementAction("delete", { agent: "duplicate", agentScope: "project" }, ctx);
+		const chainResult = handleManagementAction("delete", { chainName: "duplicate-chain", agentScope: "project" }, ctx);
+		assert.equal(agentResult.isError, true);
+		assert.match(readText(agentResult), /multiple definitions in scope 'project'/);
+		assert.equal(chainResult.isError, true);
+		assert.match(readText(chainResult), /multiple definitions in scope 'project'/);
+		for (const filePath of [legacyAgent, currentAgent, chainMarkdown, chainJson]) assert.equal(fs.existsSync(filePath), true);
 	});
 
 	it("creates, gets, updates, and deletes a packaged agent by runtime name", () => {
@@ -255,6 +315,30 @@ Inspect
 		assert.equal(parsed.chain?.[1]?.collect?.as, "reviews");
 	});
 
+	it("serializes managed JSON chain skills in the runtime format", () => {
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
+		const chainPath = path.join(tempDir, ".pi", "chains", "review-flow.chain.json");
+		fs.mkdirSync(path.dirname(chainPath), { recursive: true });
+		fs.writeFileSync(chainPath, JSON.stringify({
+			name: "review-flow",
+			description: "Review targets",
+			chain: [{ agent: "scout", task: "Review", skill: ["review"] }],
+		}), "utf-8");
+
+		const updated = handleUpdate({
+			chainName: "review-flow",
+			config: { steps: [{ agent: "scout", task: "Review again", skills: ["review", "verification"] }] },
+		}, ctx);
+
+		assert.equal(updated.isError, false, readText(updated));
+		const parsed = JSON.parse(fs.readFileSync(chainPath, "utf-8")) as { chain?: Array<{ skill?: string[]; skills?: unknown }> };
+		assert.deepEqual(parsed.chain?.[0]?.skill, ["review", "verification"]);
+		assert.equal(parsed.chain?.[0]?.skills, undefined);
+		const got = handleManagementAction("get", { chainName: "review-flow" }, ctx);
+		assert.equal(got.isError, false, readText(got));
+		assert.match(readText(got), /Skills: review, verification/);
+	});
+
 	it("renames and repackages JSON chains while preserving JSON format and extension", () => {
 		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const chainPath = path.join(tempDir, ".pi", "chains", "dynamic-review.chain.json");
@@ -303,7 +387,7 @@ Inspect
 
 		const listed = handleManagementAction("list", {}, ctx);
 		assert.equal(listed.isError, false);
-		assert.match(readText(listed), /Chain diagnostics:/);
+		assert.match(readText(listed), /Discovery diagnostics:/);
 		assert.match(readText(listed), /broken\.chain\.json/);
 		assert.match(readText(listed), /Invalid JSON chain/);
 	});

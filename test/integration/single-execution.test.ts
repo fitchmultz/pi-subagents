@@ -381,7 +381,7 @@ describe("single sync execution", () => {
 		assert.equal(failureEvent?.type, "needs_attention");
 		assert.equal(failureEvent?.currentPath, "src/runs/background/async-status.ts");
 		assert.match(failureEvent?.recentFailureSummary ?? "", /No exact match/);
-		assert.equal(result.progress.activityState, "needs_attention");
+		assert.equal(result.progress.activityState, undefined);
 	});
 
 	it("does not surface control state or events when control is disabled", async () => {
@@ -404,6 +404,22 @@ describe("single sync execution", () => {
 		assert.equal(result.progress.activityState, undefined);
 		assert.equal(result.controlEvents, undefined);
 		assert.equal(controlEvents.length, 0);
+	});
+
+	it("ignores JSON null records from child stdout", async () => {
+		mockPi.onCall({ jsonl: [null, events.assistantMessage("still completed")] });
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Handle output", {});
+		assert.equal(result.exitCode, 0);
+		assert.match(result.finalOutput, /still completed/);
+	});
+
+	it("fails when a requested output path cannot be saved", async () => {
+		mockPi.onCall({ output: "completed work" });
+		const outputPath = path.join(tempDir, "report.md");
+		fs.mkdirSync(outputPath);
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Write report", { outputPath, outputMode: "file-only" });
+		assert.equal(result.exitCode, 1);
+		assert.match(result.error ?? "", /Failed to save output file/);
 	});
 
 	it("captures non-zero exit code", async () => {
@@ -1375,6 +1391,32 @@ describe("single sync execution", () => {
 		assert.equal(mockPi.callCount(), 2);
 	});
 
+	it("escalates a signal-resistant child to SIGKILL", { timeout: 8_000 }, async () => {
+		mockPi.onCall({ delay: 60_000, ignoreSignals: true, output: "too late" });
+		const startedAt = Date.now();
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Do not hang", { timeoutMs: 50 });
+		assert.equal(result.timedOut, true);
+		assert.ok(Date.now() - startedAt < 5_000, `termination took ${Date.now() - startedAt}ms`);
+	});
+
+	it("kills a signal-resistant descendant after the process-group leader exits", { timeout: 10_000 }, async () => {
+		const pidFile = path.join(tempDir, "descendant.pid");
+		mockPi.onCall({ output: "done", spawnSignalResistantDescendantPidFile: pidFile });
+		const startedAt = Date.now();
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Finish and clean up", {});
+		assert.equal(result.exitCode, 0);
+		assert.ok(Date.now() - startedAt < 3_000, "descendants should be killed when the process-group leader exits");
+		const descendantPid = Number(fs.readFileSync(pidFile, "utf-8"));
+		const deadline = Date.now() + 5_000;
+		while (Date.now() < deadline) {
+			try { process.kill(descendantPid, 0); } catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		assert.fail(`descendant process ${descendantPid} survived cleanup`);
+	});
+
 	it("times out the current foreground run without retrying fallback models", async () => {
 		mockPi.onCall({ delay: 10000 });
 		const agents = [makeAgent("slow", { model: "mock/primary", fallbackModels: ["mock/fallback"] })];
@@ -1570,10 +1612,12 @@ describe("single sync execution", () => {
 			// `intercomStarted=true`. Using a fixed delay here races the mock's
 			// cold spawn and flakes under load.
 			let detachEmitted = false;
+			let completedResult: Awaited<ReturnType<typeof runSync>> | undefined;
 			const runPromise = runSync(tempDir, agents, "echo", "Task", {
 				runId: `${toolName}-detach`,
 				allowIntercomDetach: true,
 				intercomEvents: eventBus,
+				onDetachedComplete: (completed) => { completedResult = completed; },
 				onUpdate: (update) => {
 					if (detachEmitted) return;
 					const progress = (update as { details?: { progress?: Array<{ currentTool?: string }> } }).details?.progress;
@@ -1592,6 +1636,12 @@ describe("single sync execution", () => {
 			assert.equal(result.finalOutput, "Detached for intercom coordination.");
 			assert.equal(result.progress?.status, "detached");
 			assert.equal(accepted, true);
+			const completionDeadline = Date.now() + 3_000;
+			while (!completedResult && Date.now() < completionDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
+			assert.match(completedResult?.finalOutput ?? "", /received pong/);
+			assert.equal(result.detached, true, "the returned detached snapshot must not be mutated after child exit");
+			assert.equal(result.finalOutput, "Detached for intercom coordination.");
+			assert.equal(result.progress?.status, "detached");
 		});
 	}
 

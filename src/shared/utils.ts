@@ -20,7 +20,7 @@ export function getAgentDir(): string {
 	return configured || path.join(os.homedir(), ".pi", "agent");
 }
 
-const statusCache = new Map<string, { mtime: number; status: AsyncStatus }>();
+const statusCache = new Map<string, { mtimeNs: bigint; status: AsyncStatus }>();
 
 function getErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -44,9 +44,9 @@ function isNotFoundError(error: unknown): boolean {
 export function readStatus(asyncDir: string): AsyncStatus | null {
 	const statusPath = path.join(asyncDir, "status.json");
 
-	let stat: fs.Stats;
+	let stat: fs.BigIntStats;
 	try {
-		stat = fs.statSync(statusPath);
+		stat = fs.statSync(statusPath, { bigint: true });
 	} catch (error) {
 		if (isNotFoundError(error)) return null;
 		throw new Error(`Failed to inspect async status file '${statusPath}': ${getErrorMessage(error)}`, {
@@ -55,7 +55,7 @@ export function readStatus(asyncDir: string): AsyncStatus | null {
 	}
 
 	const cached = statusCache.get(statusPath);
-	if (cached && cached.mtime === stat.mtimeMs) {
+	if (cached && cached.mtimeNs === stat.mtimeNs) {
 		return cached.status;
 	}
 
@@ -78,7 +78,7 @@ export function readStatus(asyncDir: string): AsyncStatus | null {
 		});
 	}
 
-	statusCache.set(statusPath, { mtime: stat.mtimeMs, status });
+	statusCache.set(statusPath, { mtimeNs: stat.mtimeNs, status });
 	if (statusCache.size > 50) {
 		const firstKey = statusCache.keys().next().value;
 		if (firstKey) statusCache.delete(firstKey);

@@ -152,6 +152,39 @@ test("reply removes pending ask after successful reply", () => {
   assert.deepEqual(tracker.listPending(1001), []);
 });
 
+test("reply bounds pending asks and queued turn contexts together", () => {
+  const tracker = new ReplyTracker();
+  const sender = createSession("sender-id", "sender");
+  for (let index = 1; index <= 150; index++) {
+    const context = tracker.recordIncomingMessage(sender, createMessage(`ask-${index}`, `Question ${index}`), index);
+    tracker.queueTurnContext(context);
+  }
+
+  assert.equal(tracker.listPending(151).length, 100);
+  assert.equal(tracker.listPending(151)[0]?.message.id, "ask-51");
+  const queued: string[] = [];
+  for (let index = 0; index < 100; index++) {
+    tracker.beginTurn(151);
+    const current = tracker.currentTurn();
+    assert.ok(current);
+    queued.push(current.message.id);
+    tracker.endAgent();
+  }
+  tracker.beginTurn(151);
+  assert.equal(tracker.currentTurn(), null);
+  assert.equal(queued[0], "ask-51");
+  assert.equal(queued.at(-1), "ask-150");
+});
+
+test("reply expires pending and queued contexts together", () => {
+  const tracker = new ReplyTracker(10);
+  const context = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-old", "Old"), 1000);
+  tracker.queueTurnContext(context);
+  tracker.beginTurn(1011);
+  assert.equal(tracker.currentTurn(), null);
+  assert.deepEqual(tracker.listPending(1011), []);
+});
+
 test("reply expires pending and active asks when sender disconnects", () => {
   const tracker = new ReplyTracker();
   const planner = createSession("planner-id", "planner");

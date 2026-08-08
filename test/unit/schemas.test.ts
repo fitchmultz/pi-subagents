@@ -177,6 +177,10 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.match(String(maxRuntimeSchema.description ?? ""), /alias/i);
 	});
 
+	it("includes top-level progress for single runs", () => {
+		assert.equal(SubagentParams?.properties?.progress?.type, "boolean");
+	});
+
 	it("includes final output truncation limits", () => {
 		const maxOutputSchema = SubagentParams?.properties?.maxOutput;
 		assert.ok(maxOutputSchema, "maxOutput schema should exist");
@@ -407,8 +411,8 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.ok(CompileSchema, "TypeBox compiler should exist");
 		const validator = CompileSchema(SubagentParams);
 		const validValues = [
-			{ skill: "review" },
-			{ skill: false },
+			{ agent: "worker", skill: "review" },
+			{ agent: "worker", skill: false },
 			{ tasks: [{ agent: "reviewer", task: "check this", reads: false }] },
 			{ tasks: [{ agent: "reviewer", task: "check this", skill: "review" }] },
 			{ tasks: [{ agent: "reviewer", task: "check this", skill: false }] },
@@ -424,6 +428,7 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ agent: "worker", task: "Fix", acceptance: { criteria: ["Patch the bug"], evidence: ["changed-files"], maxFinalizationTurns: 2 } },
 			{ agent: "worker", task: "Fix", acceptance: { verify: [{ id: "unit", command: "npm test" }] } },
 			{ agent: "worker", task: "Fix", acceptance: {} },
+			{ action: "resume", id: "run-123", message: "Continue", acceptance: { criteria: ["Finish the task"] } },
 			{ config: { name: "reviewer", description: "Review things" } },
 			{ config: JSON.stringify({ name: "reviewer", description: "Review things" }) },
 			{ agent: "scout", task: "Summarize", maxOutput: { bytes: 8192 } },
@@ -432,6 +437,17 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		];
 		const invalidValues = [
 			{ skill: 123 },
+			{ agent: "", task: "work" },
+			{ agent: "worker", task: "work", extra: true },
+			{ tasks: [] },
+			{ agent: "worker", task: "" },
+			{ agent: "worker", task: "work", worktree: true },
+			{ chain: [{ agent: "worker", task: "work" }], worktree: true },
+			{ chain: [{ parallel: [{ agent: "worker", task: "work" }], output: "ignored.md" }] },
+			{ chain: [{ agent: "worker", task: "work", concurrency: 2 }] },
+			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "reviewer" }, collect: { as: "reviews" }, worktree: true }] },
+			{ concurrency: 1.5 },
+			{ agent: "worker", tasks: [{ agent: "reviewer", task: "review" }] },
 			{ skill: [123] },
 			{ output: 123 },
 			{ tasks: [{ agent: "reviewer", task: "check this", reads: "input.md" }] },
@@ -442,6 +458,7 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ chain: [{ parallel: [{ agent: "reviewer", outputSchema: "schema.json" }] }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: [{ agent: "reviewer" }], collect: { as: "reviews" } }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "reviewer" } }] },
+			{ chain: [{ parallel: { agent: "reviewer" } }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4, expression: "items" }, parallel: { agent: "reviewer" }, collect: { as: "reviews" } }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "reviewer", as: "child" }, collect: { as: "reviews" } }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "reviewer" }, collect: { as: "reviews" }, when: "later" }] },
@@ -455,6 +472,7 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ agent: "worker", task: "Fix", acceptance: { stopRules: [""] } },
 			{ agent: "worker", task: "Fix", acceptance: { criteria: ["Patch"], review: true } },
 			{ agent: "worker", task: "Fix", acceptance: { criteria: ["Patch"], review: { agent: "reviewer", required: true } } },
+			{ action: "interrupt", id: "run-123", acceptance: { criteria: ["Ignored"] } },
 			{ config: [] },
 			{ config: null },
 			{ agent: "scout", task: "Summarize", maxOutput: { bytes: 0 } },

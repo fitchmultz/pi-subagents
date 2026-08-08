@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
-import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import { createNestedRoute, projectNestedEvents, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import {
+	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
+	SUBAGENT_PARENT_CHILD_INDEX_ENV,
+	SUBAGENT_PARENT_CONTROL_INBOX_ENV,
+	SUBAGENT_PARENT_DEPTH_ENV,
+	SUBAGENT_PARENT_EVENT_SINK_ENV,
+	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
+	SUBAGENT_PARENT_RUN_ID_ENV,
+} from "../../src/runs/shared/pi-args.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, RESULTS_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import type { MockPi } from "../support/helpers.ts";
@@ -82,6 +91,12 @@ describe("intercom result delivery cutover", () => {
 	afterEach(() => {
 		removeTempDir(tempDir);
 	});
+
+	async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (!predicate() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.equal(predicate(), true, "timed out waiting for condition");
+	}
 
 	async function readMockCallArgs(index: number): Promise<string[]> {
 		const deadline = Date.now() + 10_000;
@@ -276,7 +291,7 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(result.details?.results?.every((entry) => entry.finalOutput === undefined), true);
 	});
 
-	it("detached chain runs do not emit grouped completion receipts", async () => {
+	it("detached chain runs emit a grouped completion when the child later exits", async () => {
 		mockPi.onCall({
 			steps: [
 				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
@@ -308,7 +323,223 @@ describe("intercom result delivery cutover", () => {
 		assert.match(result.content[0]?.text ?? "", /Chain detached for intercom coordination/);
 		assert.doesNotMatch(result.content[0]?.text ?? "", /resume/);
 		assert.equal(bus.emitted.some((entry) => entry.channel === "subagent:result-intercom"), false);
+		const deadline = Date.now() + 3_000;
+		while (!bus.emitted.some((entry) => entry.channel === "subagent:result-intercom") && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		const payload = bus.emitted.find((entry) => entry.channel === "subagent:result-intercom")?.payload as { children?: Array<{ summary?: string; status?: string }> } | undefined;
+		assert.equal(payload?.children?.[0]?.status, "completed");
+		assert.match(payload?.children?.[0]?.summary ?? "", /after reply/);
 		assert.equal(mockPi.callCount(), 1);
+	});
+
+	it("keeps nested detached foreground runs live until terminal completion", async () => {
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
+				{ delay: 500, jsonl: [events.assistantMessage("nested child finished")] },
+			],
+		});
+		const rootRunId = `nested-detached-root-${Date.now().toString(36)}`;
+		const route = createNestedRoute(rootRunId);
+		const envKeys = [
+			SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
+			SUBAGENT_PARENT_EVENT_SINK_ENV,
+			SUBAGENT_PARENT_CONTROL_INBOX_ENV,
+			SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
+			SUBAGENT_PARENT_RUN_ID_ENV,
+			SUBAGENT_PARENT_CHILD_INDEX_ENV,
+			SUBAGENT_PARENT_DEPTH_ENV,
+		] as const;
+		const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+		process.env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV] = route.rootRunId;
+		process.env[SUBAGENT_PARENT_EVENT_SINK_ENV] = route.eventSink;
+		process.env[SUBAGENT_PARENT_CONTROL_INBOX_ENV] = route.controlInbox;
+		process.env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV] = route.capabilityToken;
+		process.env[SUBAGENT_PARENT_RUN_ID_ENV] = "parent-run";
+		process.env[SUBAGENT_PARENT_CHILD_INDEX_ENV] = "0";
+		process.env[SUBAGENT_PARENT_DEPTH_ENV] = "1";
+		try {
+			const { executor, events: bus, state } = makeExecutor();
+			let detached = false;
+			const immediate = await executor.execute(
+				"nested-detached",
+				{ agent: "worker", task: "Ask then finish" },
+				new AbortController().signal,
+				(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+					if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
+					detached = true;
+					bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "nested-detached" });
+				},
+				makeMinimalCtx(tempDir),
+			);
+			assert.match(immediate.content[0]?.text ?? "", /Detached for intercom coordination/);
+			const liveChildren = [...projectNestedEvents(route).children.values()];
+			assert.equal(liveChildren.length, 1);
+			assert.equal(liveChildren[0]?.state, "running");
+			assert.equal(liveChildren[0]?.ownerState, "live");
+			const nestedRunId = liveChildren[0]!.id;
+			assert.equal(state.foregroundControls.has(nestedRunId), true);
+
+			await waitFor(() => projectNestedEvents(route).children.find((child) => child.id === nestedRunId)?.state === "complete");
+			const completed = projectNestedEvents(route).children.find((child) => child.id === nestedRunId);
+			assert.equal(completed?.ownerState, "gone");
+			assert.equal(state.foregroundControls.has(nestedRunId), false);
+		} finally {
+			for (const [key, value] of previousEnv) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
+		}
+	});
+
+	it("detached chain completion keeps prior siblings and the captured child index", async () => {
+		mockPi.onCall({ output: "first done" });
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
+				{ delay: 500, jsonl: [events.assistantMessage("second done")] },
+			],
+		});
+		const { executor, events: bus } = makeExecutor({ agents: [makeAgent("a"), makeAgent("b")] });
+		let detached = false;
+		const result = await executor.execute(
+			"chain-detached-index",
+			{ chain: [{ agent: "a", task: "first" }, { agent: "b", task: "second" }] },
+			new AbortController().signal,
+			(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+				if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
+				detached = true;
+				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "chain-detached-index" });
+			},
+			makeMinimalCtx(tempDir),
+		);
+		assert.match(result.content[0]?.text ?? "", /Chain detached/);
+		const deadline = Date.now() + 3_000;
+		while (!bus.emitted.some((entry) => entry.channel === "subagent:result-intercom") && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		const payloads = bus.emitted.filter((entry) => entry.channel === "subagent:result-intercom");
+		assert.equal(payloads.length, 1);
+		const payload = payloads[0]?.payload as { children?: Array<{ agent?: string; summary?: string; index?: number }> };
+		assert.deepEqual(payload.children?.map((child) => child.agent), ["a", "b"]);
+		assert.deepEqual(payload.children?.map((child) => child.index), [0, 1]);
+		assert.match(payload.children?.[1]?.summary ?? "", /second done/);
+	});
+
+	it("detached completions validate structured output before delivery", async () => {
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
+				{ delay: 500, jsonl: [events.assistantMessage("looks done")] },
+			],
+			structuredOutput: { wrong: true },
+		});
+		const { executor, events: bus } = makeExecutor({ agents: [makeAgent("worker")] });
+		let detached = false;
+		await executor.execute(
+			"single-detached-structured",
+			{ agent: "worker", task: "return structured data", outputSchema: { type: "object", required: ["ok"], properties: { ok: { type: "string" } } } },
+			new AbortController().signal,
+			(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+				if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
+				detached = true;
+				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "single-detached-structured" });
+			},
+			makeMinimalCtx(tempDir),
+		);
+		const deadline = Date.now() + 3_000;
+		while (!bus.emitted.some((entry) => entry.channel === "subagent:result-intercom") && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		const payload = bus.emitted.find((entry) => entry.channel === "subagent:result-intercom")?.payload as { status?: string; children?: Array<{ status?: string; summary?: string }> } | undefined;
+		assert.equal(payload?.status, "failed");
+		assert.equal(payload?.children?.[0]?.status, "failed");
+		assert.match(payload?.children?.[0]?.summary ?? "", /Structured output validation failed/);
+	});
+
+	it("detached completion enforces maxOutput even when artifacts are disabled", async () => {
+		mockPi.onCall({ steps: [
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching before a long result" })] },
+			{ delay: 300, jsonl: [events.assistantMessage("first line\nsecond line\nsecret tail that must not be delivered")] },
+		] });
+		const { executor, events: bus } = makeExecutor();
+		let detached = false;
+
+		const immediate = await executor.execute(
+			"detached-truncation",
+			{ agent: "worker", task: "Produce a long report", artifacts: false, maxOutput: { bytes: 64, lines: 1 } },
+			new AbortController().signal,
+			(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+				if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
+				detached = true;
+				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "detached-truncation" });
+			},
+			makeMinimalCtx(tempDir),
+		);
+		assert.match(immediate.content[0]?.text ?? "", /Detached for intercom coordination/);
+		await waitFor(() => bus.emitted.some((entry) => entry.channel === "subagent:result-intercom"), 5_000);
+		const payload = bus.emitted.find((entry) => entry.channel === "subagent:result-intercom")?.payload as { message?: string };
+		assert.match(payload.message ?? "", /\[TRUNCATED:/);
+		assert.match(payload.message ?? "", /first line/);
+		assert.doesNotMatch(payload.message ?? "", /secret tail/);
+	});
+
+	it("detached completion does not double-emit while the placeholder acceptance check settles", async () => {
+		mockPi.onCall({ steps: [
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching during acceptance" })] },
+			{ delay: 300, jsonl: [events.assistantMessage("completed once")] },
+		] });
+		const { executor, events: bus } = makeExecutor();
+		let detached = false;
+
+		const immediate = await executor.execute(
+			"detached-acceptance-race",
+			{
+				agent: "worker",
+				task: "Complete once",
+				acceptance: { verify: [{ id: "slow-verify", command: `${JSON.stringify(process.execPath)} -e "setTimeout(() => {}, 900)"` }] },
+			},
+			new AbortController().signal,
+			(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+				if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
+				detached = true;
+				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "detached-acceptance-race" });
+			},
+			makeMinimalCtx(tempDir),
+		);
+		assert.match(immediate.content[0]?.text ?? "", /Detached for intercom coordination/);
+		await waitFor(() => bus.emitted.filter((entry) => entry.channel === "subagent:result-intercom").length === 1, 5_000);
+		await new Promise((resolve) => setTimeout(resolve, 1_100));
+		assert.equal(bus.emitted.filter((entry) => entry.channel === "subagent:result-intercom").length, 1);
+	});
+
+	it("detached finalization ignores stale update callbacks after the caller returns", async () => {
+		mockPi.onCall({ steps: [
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching before finalization" })] },
+			{ delay: 300, jsonl: [events.assistantMessage("child output")] },
+		] });
+		const { executor, events: bus } = makeExecutor();
+		let immediateReturned = false;
+		let detached = false;
+
+		const immediate = await executor.execute(
+			"detached-finalization-error",
+			{ agent: "worker", task: "Finish despite callback failure" },
+			new AbortController().signal,
+			(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+				if (!detached && update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) {
+					detached = true;
+					bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "detached-finalization-error" });
+					return;
+				}
+				if (immediateReturned) throw new Error("update callback exploded");
+			},
+			makeMinimalCtx(tempDir),
+		);
+		immediateReturned = true;
+		assert.match(immediate.content[0]?.text ?? "", /Detached for intercom coordination/);
+		await waitFor(() => bus.emitted.some((entry) => entry.channel === "subagent:result-intercom"), 5_000);
+		const payload = bus.emitted.find((entry) => entry.channel === "subagent:result-intercom")?.payload as { message?: string };
+		assert.match(payload.message ?? "", /child output/);
+		assert.doesNotMatch(payload.message ?? "", /update callback exploded/);
 	});
 
 	it("resume action sends a follow-up to a live async child when the target is registered", async () => {
@@ -424,7 +655,7 @@ describe("intercom result delivery cutover", () => {
 		);
 
 		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /can only nudge the current live child at index 0/);
+		assert.match(result.content[0]?.text ?? "", /has no live child at index 1/);
 	});
 
 	it("status action includes live intercom health when the bridge responds", async () => {
@@ -536,7 +767,7 @@ describe("intercom result delivery cutover", () => {
 				makeMinimalCtx(tempDir),
 			);
 
-			assert.equal(result.isError, undefined);
+			assert.equal(result.isError, undefined, result.content[0]?.text ?? "unexpected resume error");
 			assert.match(result.content[0]?.text ?? "", /Revived async subagent from/);
 			assert.match(result.content[0]?.text ?? "", /Agent: b/);
 			assert.match(result.content[0]?.text ?? "", new RegExp(secondSession.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -700,7 +931,7 @@ describe("intercom result delivery cutover", () => {
 			updatedAt: Date.parse("2026-06-16T12:00:00.000Z"),
 			children: [
 				{ agent: "a", index: 0, status: "completed", sessionFile: session },
-				{ agent: "b", index: 1, status: "timed-out", sessionFile: session },
+				{ agent: "b", index: 1, status: "timed-out", sessionFile: session, summary: "Detached child timed out" },
 			],
 		});
 
@@ -717,7 +948,7 @@ describe("intercom result delivery cutover", () => {
 		assert.match(text, /Run: remembered-status-run/);
 		assert.match(text, /State: remembered foreground/);
 		assert.match(text, /1\. a completed, session:/);
-		assert.match(text, /2\. b timed-out, session:/);
+		assert.match(text, /2\. b timed-out, session: .*final: Detached child timed out/);
 		assert.match(text, /Revive child: subagent\(\{ action: "resume", id: "remembered-status-run", index: 0, message: "\.\.\." \}\)/);
 		assert.doesNotMatch(text, /Async run not found/);
 		assert.equal(result.details?.managementControl?.state, "failed");

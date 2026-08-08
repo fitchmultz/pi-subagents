@@ -2,11 +2,9 @@ import { EventEmitter } from "events";
 import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.ts";
-import { getBrokerSocketPath } from "./paths.ts";
+import { getBrokerSocketPath, getLegacyBrokerSocketPath, isOwnedBrokerSocket } from "./paths.ts";
 import { isMessage, normalizeSessionInfo } from "../types.ts";
 import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode } from "../types.ts";
-
-const BROKER_SOCKET = getBrokerSocketPath();
 
 /** Default delivery-ack timeout for `send` (broker acknowledges quickly). */
 const DEFAULT_SEND_TIMEOUT_MS = 8000;
@@ -44,11 +42,51 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+function connectSocket(socketPath: string, timeoutMs = 500): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(socketPath);
+    const finish = (error?: Error) => {
+      clearTimeout(timeout);
+      socket.off("connect", onConnect);
+      socket.off("error", onError);
+      if (error) {
+        socket.destroy();
+        reject(error);
+      } else {
+        resolve(socket);
+      }
+    };
+    const onConnect = () => finish();
+    const onError = (error: Error) => finish(error);
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+    const timeout = setTimeout(() => finish(new Error(`Connection timeout: ${socketPath}`)), timeoutMs);
+    timeout.unref?.();
+  });
+}
+
+async function connectBrokerSocket(): Promise<net.Socket> {
+  const preferred = getBrokerSocketPath();
+  const legacy = process.platform === "win32" ? preferred : getLegacyBrokerSocketPath();
+  const candidates = [preferred, ...(legacy !== preferred ? [legacy] : [])];
+  let lastError: Error | undefined;
+  for (const candidate of candidates) {
+    if (!isOwnedBrokerSocket(candidate)) continue;
+    try {
+      return await connectSocket(candidate);
+    } catch (error) {
+      lastError = toError(error);
+    }
+  }
+  throw lastError ?? new Error(`Intercom broker socket is unavailable: ${preferred}`);
+}
+
 export class IntercomClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private pendingSends = new Map<string, { resolve: (r: SendResult) => void; reject: (e: Error) => void }>();
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
+  private connecting = false;
   private disconnecting = false;
   private disconnectError: Error | null = null;
   private readonly sendTimeoutMs: number;
@@ -97,13 +135,19 @@ export class IntercomClient extends EventEmitter {
     return socket;
   }
 
-  connect(session: Omit<SessionInfo, "id">): Promise<void> {
-    if (this.socket) {
-      return Promise.reject(new Error("Already connected"));
+  async connect(session: Omit<SessionInfo, "id">, requestedId?: string): Promise<void> {
+    if (this.socket || this.connecting) {
+      throw new Error("Already connected");
     }
 
+    this.connecting = true;
+    let socket: net.Socket;
+    try {
+      socket = await connectBrokerSocket();
+    } finally {
+      this.connecting = false;
+    }
     return new Promise((resolve, reject) => {
-      const socket = net.connect(BROKER_SOCKET);
       this.socket = socket;
       this.disconnectError = null;
       let settled = false;
@@ -118,6 +162,7 @@ export class IntercomClient extends EventEmitter {
           reject(new Error("Connection timeout"));
         }
       }, 10000);
+      timeout.unref?.();
 
       let connectionEstablished = false;
 
@@ -202,7 +247,7 @@ export class IntercomClient extends EventEmitter {
       this.once("_registered", onRegistered);
 
       try {
-        writeMessage(socket, { type: "register", session });
+        writeMessage(socket, { type: "register", session, requestedId });
       } catch (error) {
         cleanupConnectionAttempt();
         cleanupSocketListeners();
@@ -243,8 +288,10 @@ export class IntercomClient extends EventEmitter {
 
       case "sessions": {
         const { requestId, sessions } = brokerMessage;
-        const normalizedSessions = Array.isArray(sessions) ? sessions.map(normalizeSessionInfo) : null;
-        if (typeof requestId !== "string" || !normalizedSessions || normalizedSessions.some((session) => session === null)) {
+        const normalizedSessions = Array.isArray(sessions)
+          ? sessions.map(normalizeSessionInfo).filter((session): session is SessionInfo => session !== null)
+          : null;
+        if (typeof requestId !== "string" || !normalizedSessions) {
           throw new Error("Invalid sessions message");
         }
 
@@ -255,7 +302,7 @@ export class IntercomClient extends EventEmitter {
         }
 
         this.pendingLists.delete(requestId);
-        pending.resolve(normalizedSessions as SessionInfo[]);
+        pending.resolve(normalizedSessions);
         break;
       }
 
@@ -402,6 +449,7 @@ export class IntercomClient extends EventEmitter {
           wrappedReject(new Error("List sessions timeout"));
         }
       }, this.listTimeoutMs);
+      timeout.unref?.();
       this.pendingLists.set(requestId, { resolve: wrappedResolve, reject: wrappedReject });
       try {
         writeMessage(socket, { type: "list", requestId });
@@ -452,6 +500,7 @@ export class IntercomClient extends EventEmitter {
           wrappedReject(new Error("Send timeout"));
         }
       }, this.sendTimeoutMs);
+      timeout.unref?.();
       this.pendingSends.set(messageId, { resolve: wrappedResolve, reject: wrappedReject });
 
       try {

@@ -5,11 +5,10 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import net from "net";
 import { getPiAgentDir } from "../agent-dir.ts";
-import { getBrokerSocketPath } from "./paths.ts";
+import { getBrokerSocketPath, getLegacyBrokerSocketPath, isOwnedBrokerSocket } from "./paths.ts";
 
 const INTERCOM_DIR = join(getPiAgentDir(), "intercom");
 const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const BROKER_SOCKET = getBrokerSocketPath();
 const BROKER_PID = join(INTERCOM_DIR, "broker.pid");
 const BROKER_SPAWN_LOCK = join(INTERCOM_DIR, "broker.spawn.lock");
 
@@ -227,29 +226,29 @@ export async function stopUnhealthyBrokerBeforeSpawn(
   throw new Error(`Intercom broker PID ${pid} is alive but socket is unhealthy; refusing to spawn a second broker. Stop that process or remove the stale pid file, then retry.`);
 }
 
-function checkSocketConnectable(): Promise<boolean> {
+async function checkSocketConnectable(): Promise<boolean> {
+  const preferred = getBrokerSocketPath();
+  if (isOwnedBrokerSocket(preferred) && await checkOneSocket(preferred)) return true;
+  const legacy = process.platform === "win32" ? preferred : getLegacyBrokerSocketPath();
+  return legacy !== preferred && isOwnedBrokerSocket(legacy) && await checkOneSocket(legacy);
+}
+
+function checkOneSocket(brokerSocket: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = net.connect(BROKER_SOCKET);
+    const socket = net.connect(brokerSocket);
     const finish = (isConnected: boolean) => {
       clearTimeout(timeout);
       socket.off("connect", onConnect);
       socket.off("error", onError);
+      socket.destroy();
       resolve(isConnected);
     };
-    const onConnect = () => {
-      socket.end();
-      finish(true);
-    };
-    const onError = () => {
-      socket.destroy();
-      finish(false);
-    };
+    const onConnect = () => finish(true);
+    const onError = () => finish(false);
     socket.on("connect", onConnect);
     socket.on("error", onError);
-    const timeout = setTimeout(() => {
-      socket.destroy();
-      finish(false);
-    }, 1000);
+    const timeout = setTimeout(() => finish(false), 1000);
+    timeout.unref?.();
   });
 }
 

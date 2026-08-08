@@ -484,11 +484,11 @@ function writeEmptyPatch(patchPath: string): void {
 }
 
 function cleanupSingleWorktree(repoCwd: string, worktree: WorktreeInfo): void {
-	try { runGitChecked(repoCwd, ["worktree", "remove", "--force", worktree.path]); } catch {
-		// Cleanup is best-effort to avoid masking caller errors.
+	try { runGitChecked(repoCwd, ["worktree", "remove", "--force", worktree.path]); } catch (error) {
+		console.error(`Failed to remove worktree '${worktree.path}': ${getErrorMessage(error)}`);
 	}
-	try { runGitChecked(repoCwd, ["branch", "-D", worktree.branch]); } catch {
-		// Cleanup is best-effort to avoid masking caller errors.
+	try { runGitChecked(repoCwd, ["branch", "-D", worktree.branch]); } catch (error) {
+		console.error(`Failed to delete worktree branch '${worktree.branch}': ${getErrorMessage(error)}`);
 	}
 }
 
@@ -576,8 +576,8 @@ export function cleanupWorktrees(setup: WorktreeSetup): void {
 	for (let index = setup.worktrees.length - 1; index >= 0; index--) {
 		cleanupSingleWorktree(setup.cwd, setup.worktrees[index]!);
 	}
-	try { runGitChecked(setup.cwd, ["worktree", "prune"]); } catch {
-		// Pruning is best-effort cleanup.
+	try { runGitChecked(setup.cwd, ["worktree", "prune"]); } catch (error) {
+		console.error(`Failed to prune worktrees in '${setup.cwd}': ${getErrorMessage(error)}`);
 	}
 }
 

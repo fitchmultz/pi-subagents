@@ -3,7 +3,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
@@ -49,7 +49,7 @@ import {
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { evaluateCompletionMutationGuard, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
-import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
+import { attachPostExitStdioGuard, isChildTreeAlive, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
 import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
@@ -281,6 +281,7 @@ async function runSingleAttempt(
 				tools: agent.tools,
 				mcpDirectTools: agent.mcpDirectTools,
 				allowSubagents: agent.allowSubagents,
+				outputSchema: options.structuredOutput?.schema,
 			});
 			args = claudeCodeInvocation.args;
 			sharedEnv = claudeCodeInvocation.env;
@@ -393,6 +394,7 @@ async function runSingleAttempt(
 			cwd: options.cwd ?? runtimeCwd,
 			env: spawnEnv,
 			stdio: ["ignore", "pipe", "pipe"],
+			detached: process.platform !== "win32",
 			windowsHide: true,
 		});
 		let buf = "";
@@ -410,20 +412,28 @@ async function runSingleAttempt(
 		let removeAbortListener: (() => void) | undefined;
 		let removeInterruptListener: (() => void) | undefined;
 		let activityTimer: NodeJS.Timeout | undefined;
+		let unsubscribeIntercomDetach: (() => void) | undefined;
+		let promiseResolved = false;
+		const resolveOuter = (code: number) => {
+			if (promiseResolved) return;
+			promiseResolved = true;
+			resolve(code);
+		};
 
 		const detachForIntercom = () => {
 			detached = true;
-			processClosed = true;
 			result.detached = true;
 			result.detachedReason = "intercom coordination";
 			progress.status = "detached";
+			progress.activityState = undefined;
 			progress.durationMs = Date.now() - startTime;
 			result.progressSummary = {
 				toolCount: progress.toolCount,
 				tokens: progress.tokens,
 				durationMs: progress.durationMs,
 			};
-			finish(-2);
+			unsubscribeIntercomDetach?.();
+			resolveOuter(-2);
 		};
 
 		// If the child emits a terminal assistant stop but never exits,
@@ -431,10 +441,19 @@ async function runSingleAttempt(
 		const FINAL_STOP_GRACE_MS = 1000;
 		const HARD_KILL_MS = 3000;
 		let childExited = false;
+		let terminationRequested = false;
 		let forcedTerminationSignal = false;
 		let cleanTerminalAssistantStopReceived = false;
 		let finalDrainTimer: NodeJS.Timeout | undefined;
 		let finalHardKillTimer: NodeJS.Timeout | undefined;
+		const forceTerminate = (signal: NodeJS.Signals, graceMs = HARD_KILL_MS) => {
+			terminationRequested = true;
+			trySignalChildTree(proc, signal);
+			const timer = setTimeout(() => {
+				if (!settled && !childExited && isChildTreeAlive(proc)) trySignalChildTree(proc, "SIGKILL");
+			}, graceMs);
+			timer.unref?.();
+		};
 		const clearFinalDrainTimers = () => {
 			if (finalDrainTimer) {
 				clearTimeout(finalDrainTimer);
@@ -446,25 +465,26 @@ async function runSingleAttempt(
 			}
 		};
 		const startFinalDrain = () => {
-			if (childExited || finalDrainTimer || settled || processClosed || detached) return;
+			if (childExited || finalDrainTimer || settled || processClosed) return;
+			terminationRequested = true;
 			finalDrainTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
-				const termSent = trySignalChild(proc, "SIGTERM");
+				if (settled || processClosed || childExited) return;
+				const termSent = trySignalChildTree(proc, "SIGTERM");
 				if (!termSent) return;
 				forcedTerminationSignal = true;
 				if (!cleanTerminalAssistantStopReceived && !assistantError) {
 					result.error = result.error ?? `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
 				}
 				finalHardKillTimer = setTimeout(() => {
-					if (settled || processClosed || detached) return;
-					forcedTerminationSignal = trySignalChild(proc, "SIGKILL") || forcedTerminationSignal;
+					finalHardKillTimer = undefined;
+					if (!settled && !childExited && isChildTreeAlive(proc)) forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
 				}, HARD_KILL_MS);
 				finalHardKillTimer.unref?.();
 			}, FINAL_STOP_GRACE_MS);
 			finalDrainTimer.unref?.();
 		};
 
-		const unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
+		unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
 			if (!options.allowIntercomDetach || detached || processClosed || !intercomStarted) return;
 			if (!payload || typeof payload !== "object") return;
 			const requestId = (payload as { requestId?: unknown }).requestId;
@@ -482,17 +502,9 @@ async function runSingleAttempt(
 				clearTimeout(timeoutTimer);
 				timeoutTimer = undefined;
 			}
-			if (timeoutEscalationTimer) {
-				clearTimeout(timeoutEscalationTimer);
-				timeoutEscalationTimer = undefined;
-			}
 			if (resourceLimitTimer) {
 				clearTimeout(resourceLimitTimer);
 				resourceLimitTimer = undefined;
-			}
-			if (resourceLimitEscalationTimer) {
-				clearTimeout(resourceLimitEscalationTimer);
-				resourceLimitEscalationTimer = undefined;
 			}
 			if (activityTimer) {
 				clearInterval(activityTimer);
@@ -501,7 +513,7 @@ async function runSingleAttempt(
 			unsubscribeIntercomDetach?.();
 			removeAbortListener?.();
 			removeInterruptListener?.();
-			resolve(code);
+			resolveOuter(code);
 		};
 
 		const drainPendingControlEvents = (): ControlEvent[] | undefined => {
@@ -550,12 +562,18 @@ async function runSingleAttempt(
 				lastActivityAt: progress.lastActivityAt,
 				now,
 			});
-			return idleState === "needs_attention" && progress.activityState !== "needs_attention" ? emitNeedsAttention(now) : false;
+			if (idleState === "needs_attention" && progress.activityState !== "needs_attention") return emitNeedsAttention(now);
+			if (idleState !== "needs_attention" && progress.activityState === "needs_attention") {
+				progress.activityState = undefined;
+				emittedControlEventKeys.clear();
+				return true;
+			}
+			return false;
 		};
 
 
 		const failForToolLoop = (message: string) => {
-			if (processClosed || detached || settled || timedOut || resourceLimited) return;
+			if (processClosed || settled || timedOut || resourceLimited) return;
 			resourceLimited = true;
 			result.error = message;
 			result.finalOutput = message;
@@ -564,16 +582,16 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
-			trySignalChild(proc, "SIGINT");
+			terminationRequested = true;
+			trySignalChildTree(proc, "SIGINT");
 			resourceLimitEscalationTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
-				trySignalChild(proc, "SIGTERM");
+				if (!settled && !childExited) forceTerminate("SIGTERM");
 			}, 1000);
 			resourceLimitEscalationTimer.unref?.();
 		};
 
 		const triggerResourceLimit = (kind: "maxExecutionTimeMs" | "maxTokens", limit: number, observed?: number) => {
-			if (processClosed || detached || settled || timedOut || resourceLimited) return;
+			if (processClosed || settled || timedOut || resourceLimited) return;
 			resourceLimited = true;
 			const message = formatResourceLimitExceeded({ agent: agent.name, kind, limit, observed });
 			result.resourceLimitExceeded = { kind, limit, ...(observed !== undefined ? { observed } : {}), message };
@@ -584,16 +602,16 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
-			trySignalChild(proc, "SIGINT");
+			terminationRequested = true;
+			trySignalChildTree(proc, "SIGINT");
 			resourceLimitEscalationTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
-				trySignalChild(proc, "SIGTERM");
+				if (!settled && !childExited) forceTerminate("SIGTERM");
 			}, 1000);
 			resourceLimitEscalationTimer.unref?.();
 		};
 
 		const emitUpdateSnapshot = (text: string) => {
-			if (!options.onUpdate || processClosed) return;
+			if (!options.onUpdate || processClosed || result.detached) return;
 			const progressSnapshot = snapshotProgress(progress);
 			const resultSnapshot = snapshotResult(result, progressSnapshot);
 			const controlEvents = drainPendingControlEvents();
@@ -623,8 +641,13 @@ async function runSingleAttempt(
 				// Non-JSON stdout lines are expected; only structured events are parsed.
 				return;
 			}
+			if (!evt || typeof evt !== "object") return;
 			if (claudeCodeInvocation && evt.type === "result") {
 				const resultEvent = evt as ClaudeCodeResultEvent;
+				if (options.structuredOutput && resultEvent.structured_output !== undefined) {
+					mkdirSync(path.dirname(options.structuredOutput.outputPath), { recursive: true });
+					writeFileSync(options.structuredOutput.outputPath, `${JSON.stringify(resultEvent.structured_output)}\n`, "utf-8");
+				}
 				const message = claudeCodeMessageFromResult(resultEvent, modelArg ?? claudeCodeInvocation.model.inputModel);
 				if (options.sessionFile) {
 					writeClaudeCodeSessionMetadata(options.sessionFile, {
@@ -748,7 +771,7 @@ async function runSingleAttempt(
 
 		if (controlConfig.enabled) {
 			activityTimer = setInterval(() => {
-				if (processClosed || settled || detached) return;
+				if (processClosed || settled) return;
 				const now = Date.now();
 				if (updateActivityState(now)) {
 					progress.durationMs = now - startTime;
@@ -772,16 +795,14 @@ async function runSingleAttempt(
 		});
 		proc.on("exit", () => {
 			childExited = true;
-			clearFinalDrainTimers();
+			if (terminationRequested && isChildTreeAlive(proc)) {
+				forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
+			}
 		});
 		proc.on("close", (code, signal) => {
 			clearFinalDrainTimers();
 			clearStdioGuard();
 			cleanupTempDir(tempDir);
-			if (detached) {
-				finish(-2);
-				return;
-			}
 			processClosed = true;
 			if (buf.trim()) processLine(buf);
 			if (!result.error && assistantError) result.error = assistantError;
@@ -790,6 +811,42 @@ async function runSingleAttempt(
 				result.error = stderrBuf.trim();
 			}
 			const finalCode = forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (code ?? 1) : (code ?? 0);
+			if (detached) {
+				result.exitCode = finalCode;
+				let finalized: SingleResult;
+				try {
+					finalized = finalizeCompletedAttempt();
+				} catch (error) {
+					result.exitCode = 1;
+					result.error = `Detached completion finalization failed: ${error instanceof Error ? error.message : String(error)}`;
+					result.finalOutput = result.error;
+					progress.status = "failed";
+					progress.error = result.error;
+					finalized = result;
+				}
+				const completed = { ...finalized };
+				delete completed.detached;
+				delete completed.detachedReason;
+				artifactOutputByResult.set(completed, artifactOutputByResult.get(finalized) ?? finalized.finalOutput ?? "");
+				acceptanceOutputByResult.set(completed, acceptanceOutputByResult.get(finalized) ?? finalized.finalOutput ?? "");
+				void finalizeDetachedCompletion(completed).then(
+					(completedResult) => {
+						try { options.onDetachedComplete?.(completedResult); } catch (error) {
+							console.error("Failed to deliver detached foreground completion:", error);
+						}
+					},
+					(error) => {
+						completed.exitCode = 1;
+						completed.error = `Detached completion finalization failed: ${error instanceof Error ? error.message : String(error)}`;
+						completed.finalOutput = completed.error;
+						try { options.onDetachedComplete?.(completed); } catch (deliveryError) {
+							console.error("Failed to deliver detached foreground completion:", deliveryError);
+						}
+					},
+				);
+				finish(-2);
+				return;
+			}
 			finish(finalCode);
 		});
 		proc.on("error", (error) => {
@@ -804,13 +861,12 @@ async function runSingleAttempt(
 
 		if (options.signal) {
 			const kill = () => {
-				if (processClosed || detached) return;
+				if (processClosed) return;
 				if (options.allowIntercomDetach && intercomStarted && !detached) {
 					detachForIntercom();
 					return;
 				}
-				proc.kill("SIGTERM");
-				setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 3000);
+				forceTerminate("SIGTERM");
 			};
 			if (options.signal.aborted) kill();
 			else {
@@ -821,7 +877,7 @@ async function runSingleAttempt(
 
 		let timeoutDeadline = options.timeoutAt;
 		const triggerTimeout = () => {
-			if (processClosed || detached || settled || timedOut || resourceLimited) return;
+			if (processClosed || settled || timedOut || resourceLimited) return;
 			timedOut = true;
 			const message = formatForegroundTimeoutMessage(options.timeoutMs);
 			result.timedOut = true;
@@ -832,10 +888,10 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
-			trySignalChild(proc, "SIGINT");
+			terminationRequested = true;
+			trySignalChildTree(proc, "SIGINT");
 			timeoutEscalationTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
-				trySignalChild(proc, "SIGTERM");
+				if (!settled && !childExited) forceTerminate("SIGTERM");
 			}, 1000);
 			timeoutEscalationTimer.unref?.();
 		};
@@ -873,7 +929,7 @@ async function runSingleAttempt(
 
 		if (options.interruptSignal) {
 			const interrupt = () => {
-				if (processClosed || detached || settled || timedOut || resourceLimited) return;
+				if (processClosed || settled || timedOut || resourceLimited) return;
 				interruptedByControl = true;
 				progress.status = "running";
 				progress.durationMs = Date.now() - startTime;
@@ -881,10 +937,10 @@ async function runSingleAttempt(
 				result.finalOutput = "Interrupted. Waiting for explicit next action.";
 				progress.activityState = undefined;
 				fireUpdate();
-				trySignalChild(proc, "SIGINT");
+				terminationRequested = true;
+				trySignalChildTree(proc, "SIGINT");
 				setTimeout(() => {
-					if (settled || processClosed || detached) return;
-					trySignalChild(proc, "SIGTERM");
+					if (!settled && !childExited) forceTerminate("SIGTERM");
 				}, 1000).unref?.();
 			};
 			if (options.interruptSignal.aborted) interrupt();
@@ -948,9 +1004,12 @@ async function runSingleAttempt(
 	if (result.detached) {
 		result.exitCode = 0;
 		result.finalOutput = "Detached for intercom coordination.";
-		return result;
+		return snapshotResult(result, snapshotProgress(progress));
 	}
 
+	return finalizeCompletedAttempt();
+
+	function finalizeCompletedAttempt(): SingleResult {
 	if (result.error && result.exitCode === 0) {
 		result.exitCode = 1;
 	}
@@ -985,6 +1044,7 @@ async function runSingleAttempt(
 	}
 
 	progress.status = result.exitCode === 0 ? "completed" : "failed";
+	progress.activityState = undefined;
 	progress.durationMs = Date.now() - startTime;
 	if (result.error) {
 		progress.error = result.error;
@@ -1032,6 +1092,12 @@ async function runSingleAttempt(
 		fullOutput = stripAcceptanceReport(resolvedOutput.fullOutput);
 		result.savedOutputPath = resolvedOutput.savedPath;
 		result.outputSaveError = resolvedOutput.saveError;
+		if (resolvedOutput.saveError) {
+			result.exitCode = 1;
+			result.error = `Failed to save output file '${options.outputPath}': ${resolvedOutput.saveError}`;
+			progress.status = "failed";
+			progress.error = result.error;
+		}
 		if (resolvedOutput.savedPath) {
 			// Explicit caller output paths persist in the workspace; only agent-default
 			// materialized files (and never file-only outputs) are consumed after capture.
@@ -1052,7 +1118,7 @@ async function runSingleAttempt(
 		? result.outputReference.message
 		: fullOutput;
 	result.controlEvents = allControlEvents.length ? allControlEvents : undefined;
-	if (options.onUpdate) {
+	if (options.onUpdate && !result.detached) {
 		const finalText = result.finalOutput || result.error || "(no output)";
 		const progressSnapshot = snapshotProgress(progress);
 		const resultSnapshot = snapshotResult(result, progressSnapshot);
@@ -1067,6 +1133,72 @@ async function runSingleAttempt(
 		});
 	}
 	return result;
+	}
+
+	async function finalizeDetachedCompletion(completed: SingleResult): Promise<SingleResult> {
+		const acceptance = resolveEffectiveAcceptance({ explicit: options.acceptance });
+		const output = acceptanceOutputByResult.get(completed) ?? completed.finalOutput ?? "";
+		const initialAcceptance = await evaluateAcceptance({
+			acceptance: shouldRunAcceptanceFinalization(acceptance) ? acceptanceSelfReviewConfig(acceptance) : acceptance,
+			governing: acceptance,
+			output,
+			cwd: options.cwd ?? runtimeCwd,
+		});
+		completed.acceptance = initialAcceptance;
+		if (shouldRunAcceptanceFinalization(acceptance) && completed.exitCode === 0 && !completed.interrupted) {
+			completed.acceptance = await runAcceptanceFinalizationLoop({
+				runtimeCwd,
+				agent,
+				result: completed,
+				initialLedger: initialAcceptance,
+				initialOutput: output,
+				acceptance,
+				options,
+				systemPrompt: shared.systemPrompt,
+				resolvedSkillNames: shared.resolvedSkillNames,
+				skillsWarning: shared.skillsWarning,
+			});
+		}
+		const failure = acceptanceFailureMessage(completed.acceptance);
+		stripAcceptanceReportsFromMessages(completed.messages ?? []);
+		if (failure && completed.acceptance.explicit && completed.exitCode === 0 && !completed.interrupted) {
+			completed.exitCode = 1;
+			completed.error = completed.error ? `${completed.error}\n${failure}` : failure;
+			if (completed.progress) {
+				completed.progress.status = "failed";
+				completed.progress.error = completed.error;
+			}
+		}
+		const lastAttempt = completed.modelAttempts?.[completed.modelAttempts.length - 1];
+		if (lastAttempt) {
+			lastAttempt.success = completed.exitCode === 0 && !completed.error;
+			lastAttempt.exitCode = completed.exitCode;
+			lastAttempt.error = completed.error;
+			lastAttempt.usage = { ...completed.usage };
+		}
+		if (completed.artifactPaths) {
+			writeArtifact(completed.artifactPaths.outputPath, artifactOutputByResult.get(completed) ?? completed.finalOutput ?? "");
+			writeMetadata(completed.artifactPaths.metadataPath, {
+				runId: options.runId,
+				agent: completed.agent,
+				task: completed.task,
+				exitCode: completed.exitCode,
+				usage: completed.usage,
+				model: completed.model,
+				attemptedModels: completed.attemptedModels,
+				modelAttempts: completed.modelAttempts,
+				durationMs: completed.progressSummary?.durationMs,
+				toolCount: completed.progressSummary?.toolCount,
+				error: completed.error,
+				skills: completed.skills,
+				skillsWarning: completed.skillsWarning,
+				timestamp: Date.now(),
+			});
+		}
+		const truncation = truncateOutput(completed.finalOutput ?? "", { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput }, completed.artifactPaths?.outputPath);
+		completed.truncation = truncation.truncated ? truncation : undefined;
+		return completed;
+	}
 }
 
 async function runAcceptanceFinalizationLoop(input: {
@@ -1196,11 +1328,11 @@ export async function runSync(
 			error: outputModeValidationError,
 		};
 	}
-	if (options.timeoutAt !== undefined && Date.now() >= options.timeoutAt) {
-		return createTimedOutResult(agentName, task, options);
-	}
+	const timeoutAt = options.timeoutAt ?? (options.timeoutMs !== undefined ? Date.now() + options.timeoutMs : undefined);
+	if (timeoutAt !== undefined && Date.now() >= timeoutAt) return createTimedOutResult(agentName, task, options);
 	const effectiveOptions: RunSyncOptions = {
 		...options,
+		timeoutAt,
 		maxExecutionTimeMs: options.maxExecutionTimeMs ?? agent.maxExecutionTimeMs,
 		maxTokens: options.maxTokens ?? agent.maxTokens,
 	};
@@ -1210,6 +1342,8 @@ export async function runSync(
 	if (shouldRunAcceptanceFinalization(effectiveAcceptance) && !options.sessionFile) {
 		const sessionDir = options.sessionDir ?? mkdtempSync(path.join(os.tmpdir(), "pi-subagent-finalization-"));
 		options.sessionFile = path.join(sessionDir, "session.jsonl");
+		effectiveOptions.sessionDir = sessionDir;
+		effectiveOptions.sessionFile = options.sessionFile;
 	}
 	const acceptancePrompt = formatAcceptancePrompt(effectiveAcceptance);
 	const taskWithAcceptance = acceptancePrompt ? `${task}\n${acceptancePrompt}` : task;
@@ -1357,12 +1491,10 @@ export async function runSync(
 			timestamp: Date.now(),
 		});
 
-		if (options.maxOutput) {
-			const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
-			const truncationResult = truncateOutput(result.finalOutput ?? "", config, artifactPathsResult.outputPath);
-			if (truncationResult.truncated) result.truncation = truncationResult;
-		}
-	} else if (options.maxOutput) {
+		const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
+		const truncationResult = truncateOutput(result.finalOutput ?? "", config, artifactPathsResult.outputPath);
+		if (truncationResult.truncated) result.truncation = truncationResult;
+	} else {
 		const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
 		const truncationResult = truncateOutput(result.finalOutput ?? "", config);
 		if (truncationResult.truncated) result.truncation = truncationResult;

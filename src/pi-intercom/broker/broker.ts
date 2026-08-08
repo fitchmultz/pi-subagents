@@ -1,18 +1,19 @@
 import net from "net";
-import { writeFileSync, unlinkSync, mkdirSync } from "fs";
+import { chmodSync, writeFileSync, unlinkSync, mkdirSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { getPiAgentDir } from "../agent-dir.ts";
 import { writeMessage, createMessageReader, validateIntercomMessageSize } from "./framing.ts";
-import { getBrokerSocketPath } from "./paths.ts";
-import { isMessage, isSessionRegistration } from "../types.ts";
+import { prepareBrokerSocketPath } from "./paths.ts";
+import { isMessage, isSessionRegistration, normalizeSessionInfo } from "../types.ts";
 import type { SessionInfo, Message, BrokerMessage } from "../types.ts";
 
 const INTERCOM_DIR = join(getPiAgentDir(), "intercom");
-const SOCKET_PATH = getBrokerSocketPath();
 const PID_PATH = join(INTERCOM_DIR, "broker.pid");
 
 const REPLACE_DELIVERY_DELAY_MS = 1500;
+const MAX_PENDING_REPLACE_DELIVERIES_PER_SENDER = 100;
+const MAX_PENDING_REPLACE_DELIVERIES = 1000;
 
 interface ConnectedSession {
   socket: net.Socket;
@@ -32,22 +33,29 @@ class IntercomBroker {
   private pendingReplaceDeliveries = new Map<string, PendingReplaceDelivery>();
   private server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
+  private readonly socketPath: string;
 
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true });
+    this.socketPath = prepareBrokerSocketPath();
     if (process.platform !== "win32") {
       try {
-        unlinkSync(SOCKET_PATH);
+        unlinkSync(this.socketPath);
       } catch {
         // A clean startup has no stale socket to remove.
       }
     }
     this.server = net.createServer(this.handleConnection.bind(this));
+    this.server.on("error", (error) => {
+      console.error(`Intercom broker failed: ${error.message}`);
+      process.exitCode = 1;
+    });
   }
 
   start(): void {
-    this.server.listen(SOCKET_PATH, () => {
-      writeFileSync(PID_PATH, String(process.pid));
+    this.server.listen(this.socketPath, () => {
+      if (process.platform !== "win32") chmodSync(this.socketPath, 0o600);
+      writeFileSync(PID_PATH, String(process.pid), { mode: 0o600 });
       console.log(`Intercom broker started (pid: ${process.pid})`);
     });
     process.on("SIGTERM", () => this.shutdown());
@@ -124,7 +132,10 @@ class IntercomBroker {
           throw new Error("Received duplicate register message");
         }
 
-        const id = randomUUID();
+        const requestedId = typeof clientMessage.requestedId === "string" && /^[a-zA-Z0-9_-]{8,80}$/.test(clientMessage.requestedId)
+          ? clientMessage.requestedId
+          : undefined;
+        const id = requestedId && !this.sessions.has(requestedId) ? requestedId : randomUUID();
         setId(id);
         const now = Date.now();
         const info: SessionInfo = {
@@ -243,43 +254,18 @@ class IntercomBroker {
         }
         const session = this.sessions.get(currentId);
         if (session) {
-          if (clientMessage.name !== undefined) {
-            if (typeof clientMessage.name !== "string") {
-              throw new Error("Invalid presence name");
-            }
-            session.info.name = clientMessage.name;
-          }
-          if (clientMessage.status !== undefined) {
-            if (typeof clientMessage.status !== "string") {
-              throw new Error("Invalid presence status");
-            }
-            session.info.status = clientMessage.status;
-          }
-          if (clientMessage.model !== undefined) {
-            if (typeof clientMessage.model !== "string") {
-              throw new Error("Invalid presence model");
-            }
-            session.info.model = clientMessage.model;
-          }
-          if (clientMessage.pendingAsks !== undefined) {
-            if (typeof clientMessage.pendingAsks !== "number" || !Number.isFinite(clientMessage.pendingAsks) || clientMessage.pendingAsks < 0) {
-              throw new Error("Invalid presence pendingAsks");
-            }
-            session.info.pendingAsks = clientMessage.pendingAsks;
-          }
-          if (clientMessage.acceptsAsks !== undefined) {
-            if (typeof clientMessage.acceptsAsks !== "boolean") {
-              throw new Error("Invalid presence acceptsAsks");
-            }
-            session.info.acceptsAsks = clientMessage.acceptsAsks;
-          }
-          if (clientMessage.lastIntercomActivity !== undefined) {
-            if (typeof clientMessage.lastIntercomActivity !== "number" || !Number.isFinite(clientMessage.lastIntercomActivity)) {
-              throw new Error("Invalid presence lastIntercomActivity");
-            }
-            session.info.lastIntercomActivity = clientMessage.lastIntercomActivity;
-          }
-          session.info.lastSeen = Date.now();
+          const nextInfo = normalizeSessionInfo({
+            ...session.info,
+            ...(clientMessage.name !== undefined ? { name: clientMessage.name } : {}),
+            ...(clientMessage.status !== undefined ? { status: clientMessage.status } : {}),
+            ...(clientMessage.model !== undefined ? { model: clientMessage.model } : {}),
+            ...(clientMessage.pendingAsks !== undefined ? { pendingAsks: clientMessage.pendingAsks } : {}),
+            ...(clientMessage.acceptsAsks !== undefined ? { acceptsAsks: clientMessage.acceptsAsks } : {}),
+            ...(clientMessage.lastIntercomActivity !== undefined ? { lastIntercomActivity: clientMessage.lastIntercomActivity } : {}),
+            lastSeen: Date.now(),
+          });
+          if (!nextInfo) throw new Error("Invalid presence update");
+          session.info = nextInfo;
         }
         break;
       }
@@ -320,6 +306,19 @@ class IntercomBroker {
     const existing = this.pendingReplaceDeliveries.get(key);
     if (existing) {
       clearTimeout(existing.timer);
+    } else {
+      let senderPending = 0;
+      for (const pending of this.pendingReplaceDeliveries.values()) {
+        if (pending.fromId === fromId) senderPending++;
+      }
+      if (senderPending >= MAX_PENDING_REPLACE_DELIVERIES_PER_SENDER || this.pendingReplaceDeliveries.size >= MAX_PENDING_REPLACE_DELIVERIES) {
+        writeMessage(senderSocket, {
+          type: "delivery_failed",
+          messageId: message.id,
+          reason: "Replace-mode delivery queue is full; retry after pending updates are delivered.",
+        });
+        return;
+      }
     }
     writeMessage(senderSocket, {
       type: "delivery_queued",
@@ -394,7 +393,7 @@ class IntercomBroker {
     this.sessions.clear();
     if (process.platform !== "win32") {
       try {
-        unlinkSync(SOCKET_PATH);
+        unlinkSync(this.socketPath);
       } catch {
         // The socket may already be gone if shutdown started after a disconnect.
       }

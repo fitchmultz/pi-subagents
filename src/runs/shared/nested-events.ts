@@ -13,6 +13,7 @@ import {
 	type SubagentRunMode,
 	type SubagentState,
 } from "../../shared/types.ts";
+import { ensureTempRoot } from "../../shared/temp-root.ts";
 import { isSafeNestedPathId, parseNestedPathEnv, sanitizeNestedPath, type NestedPathEntry } from "./nested-path.ts";
 import {
 	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
@@ -67,6 +68,7 @@ export interface NestedControlRequestRecord {
 	capabilityToken: string;
 	requestId: string;
 	targetRunId: string;
+	targetChildIndex?: number;
 	action: "interrupt" | "resume";
 	message?: string;
 }
@@ -110,6 +112,7 @@ function validateRouteShape(route: NestedRoute): void {
 
 export function createNestedRoute(rootRunId: string): NestedRoute {
 	assertSafeId("rootRunId", rootRunId);
+	ensureTempRoot();
 	const capabilityToken = randomUUID();
 	const routeRoot = path.join(NESTED_EVENTS_DIR, `${rootRunId}-${capabilityToken}`);
 	const eventSink = path.join(routeRoot, "events");
@@ -565,6 +568,7 @@ function parseControlRequest(content: string, route: NestedRoute): NestedControl
 	if (raw.action !== "interrupt" && raw.action !== "resume") return undefined;
 	const ts = clampNumber(raw.ts);
 	if (ts === undefined) return undefined;
+	if (raw.targetChildIndex !== undefined && (typeof raw.targetChildIndex !== "number" || !Number.isInteger(raw.targetChildIndex) || raw.targetChildIndex < 0)) return undefined;
 	return {
 		type: "subagent.nested.control-request",
 		ts,
@@ -572,6 +576,7 @@ function parseControlRequest(content: string, route: NestedRoute): NestedControl
 		capabilityToken: route.capabilityToken,
 		requestId: raw.requestId,
 		targetRunId: raw.targetRunId,
+		...(typeof raw.targetChildIndex === "number" && Number.isInteger(raw.targetChildIndex) && raw.targetChildIndex >= 0 ? { targetChildIndex: raw.targetChildIndex } : {}),
 		action: raw.action,
 		...(stringValue(raw.message, 16_000) ? { message: stringValue(raw.message, 16_000) } : {}),
 	};
@@ -619,9 +624,9 @@ export function writeNestedControlRequest(route: NestedRoute, request: Omit<Nest
 	return writeRouteRecord(route.controlInbox, sanitized.ts, sanitized);
 }
 
-export function readNestedControlRequests(route: NestedRoute): Array<NestedControlRequestRecord & { filePath: string }> {
+export function readNestedControlRequests(route: NestedRoute, skipFiles: ReadonlySet<string> = new Set()): Array<NestedControlRequestRecord & { filePath: string }> {
 	validateRouteShape(route);
-	return readRouteFiles(route.controlInbox, (entry) => entry.endsWith(".json")).flatMap(({ filePath, content }) => {
+	return readRouteFiles(route.controlInbox, (entry) => entry.endsWith(".json") && !skipFiles.has(entry)).flatMap(({ filePath, content }) => {
 		const request = parseControlRequest(content, route);
 		return request ? [{ ...request, filePath }] : [];
 	});

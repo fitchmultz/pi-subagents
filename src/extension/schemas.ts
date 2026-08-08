@@ -7,7 +7,7 @@ import { SUBAGENT_ACTIONS } from "../shared/types.ts";
 
 const SkillOverride = Type.Unsafe({
 	anyOf: [
-		{ type: "array", items: { type: "string" } },
+		{ type: "array", items: { type: "string", minLength: 1 } },
 		{ type: "boolean" },
 		{ type: "string" },
 	],
@@ -16,7 +16,7 @@ const SkillOverride = Type.Unsafe({
 
 const OutputOverride = Type.Unsafe({
 	anyOf: [
-		{ type: "string" },
+		{ type: "string", minLength: 1 },
 		{ type: "boolean" },
 	],
 	description: "Output file path, or false to disable file output.",
@@ -29,7 +29,7 @@ const OutputModeOverride = Type.Enum(["inline", "file-only"] as const, {
 
 const ReadsOverride = Type.Unsafe({
 	anyOf: [
-		{ type: "array", items: { type: "string" } },
+		{ type: "array", items: { type: "string", minLength: 1 } },
 		{ type: "boolean" },
 	],
 	description: "Files to read before running, or false to disable",
@@ -99,8 +99,8 @@ export const AcceptanceOverride = Type.Unsafe({
 });
 
 const TaskItem = Type.Object({
-	agent: Type.String(),
-	task: Type.String(),
+	agent: Type.String({ minLength: 1 }),
+	task: Type.String({ minLength: 1 }),
 	cwd: Type.Optional(Type.String()),
 	count: Type.Optional(Type.Integer({ minimum: 1, description: "Repeat this parallel task N times." })),
 	outputSchema: Type.Optional(JsonSchemaObject),
@@ -111,12 +111,12 @@ const TaskItem = Type.Object({
 	model: Type.Optional(Type.String({ description: "Override model for this task" })),
 	skill: Type.Optional(SkillOverride),
 	acceptance: Type.Optional(AcceptanceOverride),
-});
+}, { additionalProperties: false });
 
 // Parallel task item (within a parallel step)
 const ParallelTaskSchema = Type.Object({
-	agent: Type.String(),
-	task: Type.Optional(Type.String({ description: "Task template with {task}, {previous}, {chain_dir} variables. Defaults to {previous}." })),
+	agent: Type.String({ minLength: 1 }),
+	task: Type.Optional(Type.String({ minLength: 1, description: "Task template with {task}, {previous}, {chain_dir} variables. Defaults to {previous}." })),
 	phase: Type.Optional(Type.String({ description: "Phase/group label for status and graph rendering." })),
 	label: Type.Optional(Type.String({ description: "User-facing label for this parallel task." })),
 	as: Type.Optional(Type.String({ description: "Safe identifier used as {outputs.name} in later chain steps." })),
@@ -130,7 +130,7 @@ const ParallelTaskSchema = Type.Object({
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for this task" })),
 	acceptance: Type.Optional(AcceptanceOverride),
-});
+}, { additionalProperties: false });
 
 const DynamicExpandSchema = Type.Object({
 	from: Type.Object({
@@ -144,8 +144,8 @@ const DynamicExpandSchema = Type.Object({
 }, { additionalProperties: false });
 
 const DynamicParallelTemplateSchema = Type.Object({
-	agent: Type.String(),
-	task: Type.Optional(Type.String({ description: "Task template with {item}, {item.path}, {task}, {previous}, {chain_dir}, {outputs.name} variables." })),
+	agent: Type.String({ minLength: 1 }),
+	task: Type.Optional(Type.String({ minLength: 1, description: "Task template with {item}, {item.path}, {task}, {previous}, {chain_dir}, {outputs.name} variables." })),
 	phase: Type.Optional(Type.String({ description: "Phase/group label for status and graph rendering." })),
 	label: Type.Optional(Type.String({ description: "User-facing label; item templates supported." })),
 	outputSchema: Type.Optional(JsonSchemaObject),
@@ -165,9 +165,10 @@ const DynamicCollectSchema = Type.Object({
 }, { additionalProperties: false });
 
 // Flattened so chain steps do not need an object-shape anyOf/oneOf union.
-const ChainItem = Type.Object({
-	agent: Type.Optional(Type.String({ description: "Sequential step agent name" })),
+export const ChainItemSchema = Type.Object({
+	agent: Type.Optional(Type.String({ minLength: 1, description: "Sequential step agent name" })),
 	task: Type.Optional(Type.String({
+		minLength: 1,
 		description: "Task template: {task}=original request, {previous}=prior step response, {chain_dir}=shared folder, {outputs.name}=prior named output. Required for first step; defaults to '{previous}'."
 	})),
 	phase: Type.Optional(Type.String({ description: "Phase/group label for status and graph rendering." })),
@@ -191,7 +192,7 @@ const ChainItem = Type.Object({
 	})),
 	expand: Type.Optional(DynamicExpandSchema),
 	collect: Type.Optional(DynamicCollectSchema),
-	concurrency: Type.Optional(Type.Number({ description: "Max concurrent tasks (default: 4)" })),
+	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Max concurrent tasks (default: 4)" })),
 	failFast: Type.Optional(Type.Boolean({ description: "Stop on first failure (default: false)" })),
 	worktree: Type.Optional(Type.Boolean({
 		description: "Create isolated git worktrees for each parallel task."
@@ -200,9 +201,23 @@ const ChainItem = Type.Object({
 	description: "Chain step: {agent, task?} sequential, {parallel: [...]} concurrent, or {expand, parallel: {...}, collect} dynamic fanout.",
 	additionalProperties: false,
 	allOf: [
+		{ anyOf: [{ required: ["agent"] }, { required: ["parallel"] }] },
+		{ not: { required: ["agent", "parallel"] } },
 		{ if: { required: ["expand"] }, then: { required: ["parallel", "collect"], properties: { parallel: { type: "object" } } } },
 		{ if: { required: ["collect"] }, then: { required: ["expand", "parallel"], properties: { parallel: { type: "object" } } } },
+		{ if: { required: ["parallel"], properties: { parallel: { type: "object" } } }, then: { required: ["expand", "collect"] } },
 		{ not: { required: ["expand"], properties: { parallel: { type: "array", items: {} } } } },
+		{ if: { required: ["agent"] }, then: { not: { anyOf: [{ required: ["concurrency"] }, { required: ["failFast"] }, { required: ["worktree"] }] } } },
+		{ if: { required: ["parallel"], properties: { parallel: { type: "array", items: {} } } }, then: { not: { anyOf: [
+			{ required: ["task"] }, { required: ["phase"] }, { required: ["label"] }, { required: ["as"] }, { required: ["outputSchema"] },
+			{ required: ["output"] }, { required: ["outputMode"] }, { required: ["reads"] }, { required: ["progress"] },
+			{ required: ["skill"] }, { required: ["model"] }, { required: ["acceptance"] }, { required: ["expand"] }, { required: ["collect"] },
+		] } } },
+		{ if: { required: ["parallel"], properties: { parallel: { type: "object" } } }, then: { not: { anyOf: [
+			{ required: ["task"] }, { required: ["as"] }, { required: ["outputSchema"] }, { required: ["cwd"] }, { required: ["output"] },
+			{ required: ["outputMode"] }, { required: ["reads"] }, { required: ["progress"] }, { required: ["skill"] },
+			{ required: ["model"] }, { required: ["acceptance"] }, { required: ["worktree"] },
+		] } } },
 	],
 });
 
@@ -216,11 +231,11 @@ const ControlOverrides = Type.Object({
 	notifyChannels: Type.Optional(Type.Array(Type.Enum(["event", "async", "intercom"] as const, { type: "string" }), {
 		description: "Notification channels to use when available. Defaults to event, async, and intercom.",
 	})),
-});
+}, { additionalProperties: false });
 
 export const SubagentParams = Type.Object({
-	agent: Type.Optional(Type.String({ description: "Agent name (SINGLE mode) or target for management get/update/delete" })),
-	task: Type.Optional(Type.String({ description: "Task (SINGLE mode, optional for self-contained agents)" })),
+	agent: Type.Optional(Type.String({ minLength: 1, description: "Agent name (SINGLE mode) or target for management get/update/delete" })),
+	task: Type.Optional(Type.String({ minLength: 1, description: "Task (SINGLE mode, optional for self-contained agents)" })),
 	// Management action (when present, tool operates in management mode)
 	action: Type.Optional(Type.Enum([...SUBAGENT_ACTIONS] as const, {
 		type: "string",
@@ -250,7 +265,7 @@ export const SubagentParams = Type.Object({
 		],
 		description: "Agent or chain config for create/update (object or JSON string). Agent keys: name, package, description, scope ('user'|'project'), systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext, model, tools, allowSubagents, extensions, skills, thinking, output, reads, progress, maxSubagentDepth, maxExecutionTimeMs, maxTokens. Chain keys: name, package, description, scope, steps (array of {agent, task?, output?, outputMode?, reads?, model?, skills?, progress?}). Presence of 'steps' creates a chain."
 	})),
-	tasks: Type.Optional(Type.Array(TaskItem, { description: "PARALLEL mode: concurrent [{agent, task, ...}] tasks." })),
+	tasks: Type.Optional(Type.Array(TaskItem, { minItems: 1, description: "PARALLEL mode: concurrent [{agent, task, ...}] tasks." })),
 	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "PARALLEL mode: max concurrent parallel tasks (default 4)." })),
 	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Foreground wall-clock timeout (ms); on expiry children are soft-interrupted. When async is omitted, a timeout implies foreground execution; explicit async runs reject it. Short reviewer budgets are raised to a floor; planner/researcher budgets only from run-history data." })),
 	maxRuntimeMs: Type.Optional(Type.Integer({ minimum: 1, description: "Alias for timeoutMs; same foreground-only policy." })),
@@ -258,17 +273,18 @@ export const SubagentParams = Type.Object({
 	worktree: Type.Optional(Type.Boolean({
 		description: "Isolated git worktrees per parallel task; requires clean git state; per-worktree diffs included."
 	})),
-	chain: Type.Optional(Type.Array(ChainItem, { description: "CHAIN mode: sequential pipeline; each step's response becomes {previous} for the next." })),
+	chain: Type.Optional(Type.Array(ChainItemSchema, { minItems: 1, description: "CHAIN mode: sequential pipeline; each step's response becomes {previous} for the next." })),
 	context: Type.Optional(Type.Enum(["fresh", "fork"] as const, {
 		type: "string",
 		description: "'fresh' or 'fork' (branch from parent session); overrides each agent's defaultContext. Fork is rejected for agents whose effective model uses the anthropic/ provider.",
 	})),
 	chainDir: Type.Optional(Type.String({ description: "Directory for chain artifacts (default: temp, auto-cleaned after 24h)" })),
 	async: Type.Optional(Type.Boolean({ description: "Run in background. Stock top-level default: true; set false for foreground execution." })),
-	agentScope: Type.Optional(Type.String({ description: "Agent discovery scope: 'user', 'project', or 'both' (default; project wins collisions)" })),
+	agentScope: Type.Optional(Type.Enum(["user", "project", "both"] as const, { type: "string", description: "Agent discovery scope: 'user', 'project', or 'both' (default; project wins collisions)" })),
 	cwd: Type.Optional(Type.String()),
 	artifacts: Type.Optional(Type.Boolean({ description: "Write debug artifacts (default: true)" })),
 	includeProgress: Type.Optional(Type.Boolean({ description: "Include full progress in result (default: false)" })),
+	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking for a single agent run" })),
 	share: Type.Optional(Type.Boolean({ description: "Upload session to GitHub Gist for sharing (default: false)" })),
 	sessionDir: Type.Optional(
 		Type.String({ description: "Directory for session logs (default: temp)" }),
@@ -289,4 +305,22 @@ export const SubagentParams = Type.Object({
 	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
 	outputSchema: Type.Optional(JsonSchemaObject),
 	acceptance: Type.Optional(AcceptanceOverride),
+}, {
+	additionalProperties: false,
+	allOf: [
+		{ not: { required: ["agent", "tasks"] } },
+		{ not: { required: ["agent", "chain"] } },
+		{ not: { required: ["tasks", "chain"] } },
+		{ if: { required: ["worktree"] }, then: { required: ["tasks"] } },
+		{ if: { required: ["concurrency"] }, then: { required: ["tasks"] } },
+		{ if: { required: ["chainDir"] }, then: { required: ["chain"] } },
+		{ if: { anyOf: [
+			{ required: ["output"] }, { required: ["outputMode"] }, { required: ["skill"] }, { required: ["model"] },
+			{ required: ["outputSchema"] }, { required: ["progress"] },
+		] }, then: { required: ["agent"] } },
+		{ if: { required: ["acceptance"] }, then: { anyOf: [
+			{ required: ["agent"] },
+			{ required: ["action"], properties: { action: { enum: ["resume"] } } },
+		] } },
+	],
 });

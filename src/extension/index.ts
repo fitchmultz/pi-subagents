@@ -22,6 +22,7 @@ import { discoverAgents } from "../agents/agents.ts";
 import { ARTIFACT_CLEANUP_DAYS, cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
+import { cleanupOldRunStorage, ensureSafeTempPath, ensureTempRoot } from "../shared/temp-root.ts";
 import { renderWidget, renderSubagentResult } from "../tui/render.ts";
 import { SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
@@ -87,6 +88,7 @@ function expandTilde(p: string): string {
  * the directory completely inaccessible to the creating user.
  */
 function ensureAccessibleDir(dirPath: string): void {
+	ensureSafeTempPath(dirPath);
 	fs.mkdirSync(dirPath, { recursive: true });
 	try {
 		fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
@@ -144,7 +146,7 @@ function createSlashResultComponent(
 	let lastVersion = -1;
 	container.render = (width: number): string[] => {
 		const snapshot = getSlashRenderableSnapshot(details);
-		if (snapshot.version !== lastVersion || isSlashResultRunning(snapshot.result)) {
+		if (snapshot.version !== lastVersion) {
 			lastVersion = snapshot.version;
 			rebuildSlashResultContainer(container, snapshot.result, options, theme);
 		}
@@ -221,6 +223,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		// Child runs get child-safe nested delegation from the explicit fanout-child
 		// runtime extension injected by buildPiArgs. Keep the parent extension inert
 		// when global package discovery also loads index.ts in the child process.
+		return;
+	}
+	try {
+		ensureTempRoot();
+		cleanupOldRunStorage();
+	} catch (error) {
+		console.error(`[pi-subagents] temp storage setup failed: ${error instanceof Error ? error.message : String(error)}`);
 		return;
 	}
 	const globalStore = globalThis as Record<string, unknown>;
