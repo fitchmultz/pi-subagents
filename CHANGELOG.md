@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.33.0] - 2026-08-07
+## [0.33.0] - 2026-08-08
 
 ### Added
 - Deliver the eventual grouped result when a foreground child detaches for a blocking supervisor reply and later exits, retain a compact remembered fallback when intercom delivery is unavailable, and keep isolated worktrees alive until detached children finish.
