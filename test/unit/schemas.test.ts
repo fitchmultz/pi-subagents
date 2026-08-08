@@ -451,6 +451,7 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ chain: [{ parallel: [{ agent: "reviewer", outputSchema: "schema.json" }] }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: [{ agent: "reviewer" }], collect: { as: "reviews" } }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "reviewer" } }] },
+			{ chain: [{ parallel: { agent: "reviewer" } }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4, expression: "items" }, parallel: { agent: "reviewer" }, collect: { as: "reviews" } }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "reviewer", as: "child" }, collect: { as: "reviews" } }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "reviewer" }, collect: { as: "reviews" }, when: "later" }] },

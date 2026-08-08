@@ -51,6 +51,35 @@ describe("agent management config parsing", () => {
 		assert.match(readText(result), /config must be valid JSON:/);
 	});
 
+	it("refuses to mutate duplicate definitions within one scope", () => {
+		const originalHome = process.env.HOME;
+		const originalUserProfile = process.env.USERPROFILE;
+		process.env.HOME = tempDir;
+		process.env.USERPROFILE = tempDir;
+		const legacyPath = path.join(tempDir, ".pi", "agent", "agents", "duplicate.md");
+		const currentPath = path.join(tempDir, ".agents", "duplicate.md");
+		for (const filePath of [legacyPath, currentPath]) {
+			fs.mkdirSync(path.dirname(filePath), { recursive: true });
+			fs.writeFileSync(filePath, "---\nname: duplicate\ndescription: Duplicate\n---\nBody", "utf-8");
+		}
+		try {
+			const result = handleManagementAction("delete", { agent: "duplicate", agentScope: "user" }, {
+				cwd: tempDir,
+				modelRegistry: { getAvailable: () => [] },
+				isProjectTrusted: () => true,
+			});
+			assert.equal(result.isError, true);
+			assert.match(readText(result), /multiple definitions in scope 'user'/);
+			assert.equal(fs.existsSync(legacyPath), true);
+			assert.equal(fs.existsSync(currentPath), true);
+		} finally {
+			if (originalHome === undefined) delete process.env.HOME;
+			else process.env.HOME = originalHome;
+			if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+			else process.env.USERPROFILE = originalUserProfile;
+		}
+	});
+
 	it("creates, gets, updates, and deletes a packaged agent by runtime name", () => {
 		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const created = handleCreate(
@@ -310,7 +339,7 @@ Inspect
 
 		const listed = handleManagementAction("list", {}, ctx);
 		assert.equal(listed.isError, false);
-		assert.match(readText(listed), /Chain diagnostics:/);
+		assert.match(readText(listed), /Discovery diagnostics:/);
 		assert.match(readText(listed), /broken\.chain\.json/);
 		assert.match(readText(listed), /Invalid JSON chain/);
 	});

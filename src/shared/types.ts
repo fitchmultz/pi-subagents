@@ -745,6 +745,8 @@ export interface ForegroundResumeChild {
 	index: number;
 	sessionFile?: string;
 	status: SubagentResultStatus;
+	summary?: string;
+	artifactPath?: string;
 	effectiveAcceptance?: ResolvedAcceptanceConfig;
 }
 
@@ -1007,9 +1009,18 @@ export function resolveTempScopeId(options?: {
 
 const MAX_PARALLEL = 8;
 export const MAX_CONCURRENCY = 4;
-export const TEMP_ROOT_DIR = process.env.PI_SUBAGENT_TEMP_ROOT?.trim()
-	? path.resolve(process.env.PI_SUBAGENT_TEMP_ROOT)
-	: path.join(os.tmpdir(), `pi-subagents-${resolveTempScopeId()}`);
+
+export function resolveTempRootDir(configured = process.env.PI_SUBAGENT_TEMP_ROOT): string {
+	const fallback = path.join(os.tmpdir(), `pi-subagents-${resolveTempScopeId()}`);
+	if (!configured?.trim()) return fallback;
+	const resolved = path.resolve(configured);
+	if (!path.basename(resolved).startsWith("pi-subagents-")) {
+		throw new Error("PI_SUBAGENT_TEMP_ROOT must name a dedicated 'pi-subagents-*' directory.");
+	}
+	return resolved;
+}
+
+export const TEMP_ROOT_DIR = resolveTempRootDir();
 export const RESULTS_DIR = path.join(TEMP_ROOT_DIR, "async-subagent-results");
 export const ASYNC_DIR = path.join(TEMP_ROOT_DIR, "async-subagent-runs");
 export const RUNNER_ERROR_LOG_FILE = "runner-error.log";

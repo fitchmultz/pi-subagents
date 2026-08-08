@@ -129,6 +129,8 @@ export interface ChainDiscoveryDiagnostic {
 	error: string;
 }
 
+export type AgentDiscoveryDiagnostic = ChainDiscoveryDiagnostic;
+
 export interface AgentDiscoveryOptions {
 	projectTrusted?: boolean;
 }
@@ -419,7 +421,7 @@ function applyBuiltinOverrides(
 				: agent;
 		if (projectSettingsPath) {
 			const projectOverride = projectSettings.overrides[agent.name];
-			if (projectOverride) next = applyBuiltinOverride(next, projectOverride);
+			if (projectOverride) next = applyBuiltinOverride({ ...next, disabled: false }, projectOverride);
 			else if (projectSettings.disableBuiltins !== undefined) next = applyBuiltinOverride(next, { disabled: projectSettings.disableBuiltins });
 		}
 		return next;
@@ -454,13 +456,30 @@ function isInAgentSkillSubtree(dir: string, filePath: string): boolean {
 	return path.relative(dir, filePath).split(path.sep)[0] === "skills";
 }
 
-const reportedAgentDiagnostics = new Set<string>();
+const reportedAgentDiagnostics = new Map<string, { filePath: string; error: string }>();
 
 function reportAgentDiagnostic(filePath: string, message: string): void {
-	const diagnostic = `${filePath}: ${message}`;
-	if (reportedAgentDiagnostics.has(diagnostic)) return;
-	reportedAgentDiagnostics.add(diagnostic);
-	console.error(`Invalid agent definition '${diagnostic}'`);
+	const key = `${filePath}\0${message}`;
+	if (reportedAgentDiagnostics.has(key)) return;
+	reportedAgentDiagnostics.set(key, { filePath, error: message });
+	console.error(`Invalid agent definition '${filePath}: ${message}'`);
+}
+
+function pathIsInside(dir: string, filePath: string): boolean {
+	const relative = path.relative(dir, filePath);
+	return relative !== "" && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function clearAgentDiagnosticsForDirs(dirs: string[]): void {
+	for (const [key, entry] of reportedAgentDiagnostics) {
+		if (dirs.some((dir) => pathIsInside(dir, entry.filePath))) reportedAgentDiagnostics.delete(key);
+	}
+}
+
+function agentDiagnosticsForDir(dir: string, source: "user" | "project"): AgentDiscoveryDiagnostic[] {
+	return [...reportedAgentDiagnostics.values()]
+		.filter((entry) => pathIsInside(dir, entry.filePath))
+		.map((entry) => ({ ...entry, source }));
 }
 
 function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
@@ -708,6 +727,10 @@ export function discoverAgents(cwd: string, scope: AgentScope, options: AgentDis
 	const projectSettingsPath = getProjectAgentSettingsPath(cwd, options);
 	const userSettings = scope === "project" ? EMPTY_SUBAGENT_SETTINGS : readSubagentSettings(userSettingsPath);
 	const projectSettings = scope === "user" ? EMPTY_SUBAGENT_SETTINGS : readSubagentSettings(projectSettingsPath);
+	clearAgentDiagnosticsForDirs([
+		...(scope === "project" ? [] : [userDirOld, userDirNew]),
+		...(scope === "user" ? [] : projectAgentDirs),
+	]);
 
 	const builtinAgents = applyBuiltinOverrides(
 		loadAgentsFromDir(BUILTIN_AGENTS_DIR, "builtin"),
@@ -727,12 +750,13 @@ export function discoverAgents(cwd: string, scope: AgentScope, options: AgentDis
 	return { agents, projectAgentsDir };
 }
 
-export function discoverAgentsAll(cwd: string, options: AgentDiscoveryOptions = {}): {
+export function discoverAgentsAll(cwd: string, options: AgentDiscoveryOptions = {}, scope: AgentScope = "both"): {
 	builtin: AgentConfig[];
 	user: AgentConfig[];
 	project: AgentConfig[];
 	chains: ChainConfig[];
 	chainDiagnostics: ChainDiscoveryDiagnostic[];
+	agentDiagnostics: AgentDiscoveryDiagnostic[];
 	userDir: string;
 	projectDir: string | null;
 	userChainDir: string;
@@ -747,8 +771,12 @@ export function discoverAgentsAll(cwd: string, options: AgentDiscoveryOptions = 
 	const { readDirs: projectChainDirs, preferredDir: projectChainDir } = resolveNearestProjectChainDirs(cwd, options);
 	const userSettingsPath = getUserAgentSettingsPath();
 	const projectSettingsPath = getProjectAgentSettingsPath(cwd, options);
-	const userSettings = readSubagentSettings(userSettingsPath);
-	const projectSettings = readSubagentSettings(projectSettingsPath);
+	const userSettings = scope === "project" ? EMPTY_SUBAGENT_SETTINGS : readSubagentSettings(userSettingsPath);
+	const projectSettings = scope === "user" ? EMPTY_SUBAGENT_SETTINGS : readSubagentSettings(projectSettingsPath);
+	clearAgentDiagnosticsForDirs([
+		...(scope === "project" ? [] : [userDirOld, userDirNew]),
+		...(scope === "user" ? [] : projectDirs),
+	]);
 
 	const builtin = applyBuiltinOverrides(
 		loadAgentsFromDir(BUILTIN_AGENTS_DIR, "builtin"),
@@ -756,12 +784,12 @@ export function discoverAgentsAll(cwd: string, options: AgentDiscoveryOptions = 
 		projectSettings,
 		projectSettingsPath,
 	);
-	const user = [
+	const user = scope === "project" ? [] : [
 		...loadAgentsFromDir(userDirOld, "user"),
 		...loadAgentsFromDir(userDirNew, "user"),
 	];
 	const projectMap = new Map<string, AgentConfig>();
-	for (const dir of projectDirs) {
+	for (const dir of scope === "user" ? [] : projectDirs) {
 		for (const agent of loadAgentsFromDir(dir, "project")) {
 			projectMap.set(agent.name, agent);
 		}
@@ -770,14 +798,14 @@ export function discoverAgentsAll(cwd: string, options: AgentDiscoveryOptions = 
 
 	const chainMap = new Map<string, ChainConfig>();
 	const projectChainDiagnostics: ChainDiscoveryDiagnostic[] = [];
-	for (const dir of projectChainDirs) {
+	for (const dir of scope === "user" ? [] : projectChainDirs) {
 		const loaded = loadChainsFromDir(dir, "project");
 		projectChainDiagnostics.push(...loaded.diagnostics);
 		for (const chain of loaded.chains) {
 			chainMap.set(chain.name, chain);
 		}
 	}
-	const userChains = loadChainsFromDir(userChainDir, "user");
+	const userChains = scope === "project" ? { chains: [], diagnostics: [] } : loadChainsFromDir(userChainDir, "user");
 	const chains = [
 		...userChains.chains,
 		...Array.from(chainMap.values()),
@@ -786,8 +814,12 @@ export function discoverAgentsAll(cwd: string, options: AgentDiscoveryOptions = 
 		...userChains.diagnostics,
 		...projectChainDiagnostics,
 	];
+	const agentDiagnostics = [
+		...(scope === "project" ? [] : [...agentDiagnosticsForDir(userDirOld, "user"), ...agentDiagnosticsForDir(userDirNew, "user")]),
+		...(scope === "user" ? [] : projectDirs.flatMap((dir) => agentDiagnosticsForDir(dir, "project"))),
+	];
 
 	const userDir = userDirOld;
 
-	return { builtin, user, project, chains, chainDiagnostics, userDir, projectDir, userChainDir, projectChainDir, userSettingsPath, projectSettingsPath };
+	return { builtin, user, project, chains, chainDiagnostics, agentDiagnostics, userDir, projectDir, userChainDir, projectChainDir, userSettingsPath, projectSettingsPath };
 }

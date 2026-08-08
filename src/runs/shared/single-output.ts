@@ -4,7 +4,10 @@ import type { OutputMode, SavedOutputReference } from "../../shared/types.ts";
 
 export interface SingleOutputSnapshot {
 	exists: boolean;
-	content?: string;
+	mtimeMs?: number;
+	ctimeMs?: number;
+	size?: number;
+	ino?: number;
 }
 
 export interface SingleOutputCleanupResult {
@@ -119,11 +122,20 @@ export function validateFileOnlyOutputMode(outputMode: OutputMode | undefined, o
 export function captureSingleOutputSnapshot(outputPath: string | undefined): SingleOutputSnapshot | undefined {
 	if (!outputPath) return undefined;
 	try {
-		return { exists: true, content: fs.readFileSync(outputPath, "utf-8") };
+		const stat = fs.statSync(outputPath);
+		return { exists: true, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, size: stat.size, ino: stat.ino };
 	} catch {
 		// The snapshot is advisory; resolveSingleOutput reports concrete read/write failures.
 		return { exists: false };
 	}
+}
+
+function matchesSnapshot(stat: fs.Stats, snapshot: SingleOutputSnapshot | undefined): boolean {
+	return snapshot?.exists === true
+		&& stat.mtimeMs === snapshot.mtimeMs
+		&& stat.ctimeMs === snapshot.ctimeMs
+		&& stat.size === snapshot.size
+		&& stat.ino === snapshot.ino;
 }
 
 function persistSingleOutput(
@@ -148,9 +160,9 @@ export function resolveSingleOutput(
 	if (!outputPath) return { fullOutput: fallbackOutput };
 
 	try {
-		const current = fs.readFileSync(outputPath, "utf-8");
-		if (!beforeRun?.exists || current !== beforeRun.content) {
-			return { fullOutput: current, savedPath: outputPath };
+		const stat = fs.statSync(outputPath);
+		if (!matchesSnapshot(stat, beforeRun)) {
+			return { fullOutput: fs.readFileSync(outputPath, "utf-8"), savedPath: outputPath };
 		}
 	} catch (error) {
 		const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
@@ -175,11 +187,12 @@ export function cleanupSingleOutputFile(
 	if (!outputPath) return undefined;
 	const absolutePath = path.resolve(outputPath);
 	try {
+		const stat = fs.statSync(outputPath);
 		const current = fs.readFileSync(outputPath, "utf-8");
 		if (current !== fullOutput) {
 			return { path: absolutePath, action: "skipped", reason: "file changed after capture" };
 		}
-		if (beforeRun?.exists && beforeRun.content === current) {
+		if (matchesSnapshot(stat, beforeRun)) {
 			return { path: absolutePath, action: "skipped", reason: "file preexisted and was unchanged" };
 		}
 		fs.unlinkSync(outputPath);

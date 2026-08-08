@@ -1402,8 +1402,10 @@ describe("single sync execution", () => {
 	it("kills a signal-resistant descendant after the process-group leader exits", { timeout: 10_000 }, async () => {
 		const pidFile = path.join(tempDir, "descendant.pid");
 		mockPi.onCall({ output: "done", spawnSignalResistantDescendantPidFile: pidFile });
+		const startedAt = Date.now();
 		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Finish and clean up", {});
 		assert.equal(result.exitCode, 0);
+		assert.ok(Date.now() - startedAt < 3_000, "descendants should be killed when the process-group leader exits");
 		const descendantPid = Number(fs.readFileSync(pidFile, "utf-8"));
 		const deadline = Date.now() + 5_000;
 		while (Date.now() < deadline) {

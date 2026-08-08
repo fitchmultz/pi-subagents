@@ -83,6 +83,12 @@ describe("intercom result delivery cutover", () => {
 		removeTempDir(tempDir);
 	});
 
+	async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (!predicate() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.equal(predicate(), true, "timed out waiting for condition");
+	}
+
 	async function readMockCallArgs(index: number): Promise<string[]> {
 		const deadline = Date.now() + 10_000;
 		let callFile: string | undefined;
@@ -377,6 +383,92 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(payload?.status, "failed");
 		assert.equal(payload?.children?.[0]?.status, "failed");
 		assert.match(payload?.children?.[0]?.summary ?? "", /Structured output validation failed/);
+	});
+
+	it("detached completion enforces maxOutput even when artifacts are disabled", async () => {
+		mockPi.onCall({ steps: [
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching before a long result" })] },
+			{ delay: 300, jsonl: [events.assistantMessage("first line\nsecond line\nsecret tail that must not be delivered")] },
+		] });
+		const { executor, events: bus } = makeExecutor();
+		let detached = false;
+
+		const immediate = await executor.execute(
+			"detached-truncation",
+			{ agent: "worker", task: "Produce a long report", artifacts: false, maxOutput: { bytes: 64, lines: 1 } },
+			new AbortController().signal,
+			(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+				if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
+				detached = true;
+				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "detached-truncation" });
+			},
+			makeMinimalCtx(tempDir),
+		);
+		assert.match(immediate.content[0]?.text ?? "", /Detached for intercom coordination/);
+		await waitFor(() => bus.emitted.some((entry) => entry.channel === "subagent:result-intercom"), 5_000);
+		const payload = bus.emitted.find((entry) => entry.channel === "subagent:result-intercom")?.payload as { message?: string };
+		assert.match(payload.message ?? "", /\[TRUNCATED:/);
+		assert.match(payload.message ?? "", /first line/);
+		assert.doesNotMatch(payload.message ?? "", /secret tail/);
+	});
+
+	it("detached completion does not double-emit while the placeholder acceptance check settles", async () => {
+		mockPi.onCall({ steps: [
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching during acceptance" })] },
+			{ delay: 300, jsonl: [events.assistantMessage("completed once")] },
+		] });
+		const { executor, events: bus } = makeExecutor();
+		let detached = false;
+
+		const immediate = await executor.execute(
+			"detached-acceptance-race",
+			{
+				agent: "worker",
+				task: "Complete once",
+				acceptance: { verify: [{ id: "slow-verify", command: `${JSON.stringify(process.execPath)} -e "setTimeout(() => {}, 900)"` }] },
+			},
+			new AbortController().signal,
+			(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+				if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
+				detached = true;
+				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "detached-acceptance-race" });
+			},
+			makeMinimalCtx(tempDir),
+		);
+		assert.match(immediate.content[0]?.text ?? "", /Detached for intercom coordination/);
+		await waitFor(() => bus.emitted.filter((entry) => entry.channel === "subagent:result-intercom").length === 1, 5_000);
+		await new Promise((resolve) => setTimeout(resolve, 1_100));
+		assert.equal(bus.emitted.filter((entry) => entry.channel === "subagent:result-intercom").length, 1);
+	});
+
+	it("detached finalization converts update callback failures into a delivered failed result", async () => {
+		mockPi.onCall({ steps: [
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching before finalization" })] },
+			{ delay: 300, jsonl: [events.assistantMessage("child output")] },
+		] });
+		const { executor, events: bus } = makeExecutor();
+		let immediateReturned = false;
+		let detached = false;
+
+		const immediate = await executor.execute(
+			"detached-finalization-error",
+			{ agent: "worker", task: "Finish despite callback failure" },
+			new AbortController().signal,
+			(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+				if (!detached && update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) {
+					detached = true;
+					bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "detached-finalization-error" });
+					return;
+				}
+				if (immediateReturned) throw new Error("update callback exploded");
+			},
+			makeMinimalCtx(tempDir),
+		);
+		immediateReturned = true;
+		assert.match(immediate.content[0]?.text ?? "", /Detached for intercom coordination/);
+		await waitFor(() => bus.emitted.some((entry) => entry.channel === "subagent:result-intercom"), 5_000);
+		const payload = bus.emitted.find((entry) => entry.channel === "subagent:result-intercom")?.payload as { message?: string };
+		assert.match(payload.message ?? "", /Detached completion finalization failed: update callback exploded/);
 	});
 
 	it("resume action sends a follow-up to a live async child when the target is registered", async () => {

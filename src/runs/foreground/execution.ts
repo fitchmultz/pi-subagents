@@ -434,14 +434,16 @@ async function runSingleAttempt(
 		const FINAL_STOP_GRACE_MS = 1000;
 		const HARD_KILL_MS = 3000;
 		let childExited = false;
+		let terminationRequested = false;
 		let forcedTerminationSignal = false;
 		let cleanTerminalAssistantStopReceived = false;
 		let finalDrainTimer: NodeJS.Timeout | undefined;
 		let finalHardKillTimer: NodeJS.Timeout | undefined;
 		const forceTerminate = (signal: NodeJS.Signals, graceMs = HARD_KILL_MS) => {
+			terminationRequested = true;
 			trySignalChildTree(proc, signal);
 			const timer = setTimeout(() => {
-				if (!detached && isChildTreeAlive(proc)) trySignalChildTree(proc, "SIGKILL");
+				if (!detached && !settled && !childExited && isChildTreeAlive(proc)) trySignalChildTree(proc, "SIGKILL");
 			}, graceMs);
 			timer.unref?.();
 		};
@@ -450,15 +452,16 @@ async function runSingleAttempt(
 				clearTimeout(finalDrainTimer);
 				finalDrainTimer = undefined;
 			}
-			if (finalHardKillTimer && !forcedTerminationSignal) {
+			if (finalHardKillTimer) {
 				clearTimeout(finalHardKillTimer);
 				finalHardKillTimer = undefined;
 			}
 		};
 		const startFinalDrain = () => {
 			if (childExited || finalDrainTimer || settled || processClosed || detached) return;
+			terminationRequested = true;
 			finalDrainTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
+				if (settled || processClosed || detached || childExited) return;
 				const termSent = trySignalChildTree(proc, "SIGTERM");
 				if (!termSent) return;
 				forcedTerminationSignal = true;
@@ -467,7 +470,7 @@ async function runSingleAttempt(
 				}
 				finalHardKillTimer = setTimeout(() => {
 					finalHardKillTimer = undefined;
-					if (!detached && isChildTreeAlive(proc)) forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
+					if (!detached && !settled && !childExited && isChildTreeAlive(proc)) forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
 				}, HARD_KILL_MS);
 				finalHardKillTimer.unref?.();
 			}, FINAL_STOP_GRACE_MS);
@@ -572,9 +575,10 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
+			terminationRequested = true;
 			trySignalChildTree(proc, "SIGINT");
 			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!detached) forceTerminate("SIGTERM");
+				if (!detached && !settled && !childExited) forceTerminate("SIGTERM");
 			}, 1000);
 			resourceLimitEscalationTimer.unref?.();
 		};
@@ -591,9 +595,10 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
+			terminationRequested = true;
 			trySignalChildTree(proc, "SIGINT");
 			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!detached) forceTerminate("SIGTERM");
+				if (!detached && !settled && !childExited) forceTerminate("SIGTERM");
 			}, 1000);
 			resourceLimitEscalationTimer.unref?.();
 		};
@@ -783,6 +788,9 @@ async function runSingleAttempt(
 		});
 		proc.on("exit", () => {
 			childExited = true;
+			if (terminationRequested && !detached && isChildTreeAlive(proc)) {
+				forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
+			}
 		});
 		proc.on("close", (code, signal) => {
 			clearFinalDrainTimers();
@@ -797,12 +805,25 @@ async function runSingleAttempt(
 			}
 			const finalCode = forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (code ?? 1) : (code ?? 0);
 			if (detached) {
-				delete result.detached;
-				delete result.detachedReason;
 				result.exitCode = finalCode;
-				const completed = finalizeCompletedAttempt();
+				let finalized: SingleResult;
+				try {
+					finalized = finalizeCompletedAttempt();
+				} catch (error) {
+					result.exitCode = 1;
+					result.error = `Detached completion finalization failed: ${error instanceof Error ? error.message : String(error)}`;
+					result.finalOutput = result.error;
+					progress.status = "failed";
+					progress.error = result.error;
+					finalized = result;
+				}
+				const completed = { ...finalized };
+				delete completed.detached;
+				delete completed.detachedReason;
+				artifactOutputByResult.set(completed, artifactOutputByResult.get(finalized) ?? finalized.finalOutput ?? "");
+				acceptanceOutputByResult.set(completed, acceptanceOutputByResult.get(finalized) ?? finalized.finalOutput ?? "");
 				void finalizeDetachedCompletion(completed)
-					.then((finalized) => options.onDetachedComplete?.(finalized))
+					.then((completedResult) => options.onDetachedComplete?.(completedResult))
 					.catch((error) => console.error("Failed to deliver detached foreground completion:", error));
 				finish(-2);
 				return;
@@ -848,9 +869,10 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
+			terminationRequested = true;
 			trySignalChildTree(proc, "SIGINT");
 			timeoutEscalationTimer = setTimeout(() => {
-				if (!detached) forceTerminate("SIGTERM");
+				if (!detached && !settled && !childExited) forceTerminate("SIGTERM");
 			}, 1000);
 			timeoutEscalationTimer.unref?.();
 		};
@@ -896,9 +918,10 @@ async function runSingleAttempt(
 				result.finalOutput = "Interrupted. Waiting for explicit next action.";
 				progress.activityState = undefined;
 				fireUpdate();
+				terminationRequested = true;
 				trySignalChildTree(proc, "SIGINT");
 				setTimeout(() => {
-					if (!detached) forceTerminate("SIGTERM");
+					if (!detached && !settled && !childExited) forceTerminate("SIGTERM");
 				}, 1000).unref?.();
 			};
 			if (options.interruptSignal.aborted) interrupt();
@@ -1152,11 +1175,9 @@ async function runSingleAttempt(
 				skillsWarning: completed.skillsWarning,
 				timestamp: Date.now(),
 			});
-			if (options.maxOutput) {
-				const truncation = truncateOutput(completed.finalOutput ?? "", { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput }, completed.artifactPaths.outputPath);
-				completed.truncation = truncation.truncated ? truncation : undefined;
-			}
 		}
+		const truncation = truncateOutput(completed.finalOutput ?? "", { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput }, completed.artifactPaths?.outputPath);
+		completed.truncation = truncation.truncated ? truncation : undefined;
 		return completed;
 	}
 }
@@ -1451,12 +1472,10 @@ export async function runSync(
 			timestamp: Date.now(),
 		});
 
-		if (options.maxOutput) {
-			const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
-			const truncationResult = truncateOutput(result.finalOutput ?? "", config, artifactPathsResult.outputPath);
-			if (truncationResult.truncated) result.truncation = truncationResult;
-		}
-	} else if (options.maxOutput) {
+		const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
+		const truncationResult = truncateOutput(result.finalOutput ?? "", config, artifactPathsResult.outputPath);
+		if (truncationResult.truncated) result.truncation = truncationResult;
+	} else {
 		const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
 		const truncationResult = truncateOutput(result.finalOutput ?? "", config);
 		if (truncationResult.truncated) result.truncation = truncationResult;

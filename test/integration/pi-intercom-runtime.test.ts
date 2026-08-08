@@ -1265,6 +1265,11 @@ test("compose overlay preserves complete bracketed pastes as literal content", a
     (result) => { doneResult = result; },
   );
   partialPasteOverlay.handleInput("\x1b[200~unterminated");
+  assert.match(partialPasteOverlay.render(100).join("\n"), /unterminated/);
+  partialPasteOverlay.handleInput("\x1b");
+  assert.equal(doneResult, undefined, "escape bytes inside an incomplete paste are literal paste content");
+  partialPasteOverlay.handleInput("\x1b[201~");
+  assert.match(partialPasteOverlay.render(100).join("\n"), /unterminated/);
   partialPasteOverlay.handleInput("\x1b");
   assert.deepEqual(doneResult, { sent: false });
 
@@ -1515,6 +1520,38 @@ test("busy interactive sessions idle-gate default asks and steer default sends w
     assert.equal(harness.sentMessages[1]?.message.customType, "intercom_message");
     assert.deepEqual(harness.sentMessages[1]?.options, { deliverAs: "steer" });
     assert.match(harness.sentMessages[1]?.message.content ?? "", /Plain send should steer current work/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("busy interactive sessions reject overload instead of silently evicting queued asks", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("interactive-overload-worker", {
+    hasUI: true,
+    isIdle: () => false,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    const target = await waitForSessionByName(planner, "interactive-overload-worker");
+    const overloadReply = once(planner, "message") as Promise<[SessionInfo, Message]>;
+    for (let index = 0; index <= 100; index += 1) {
+      assert.equal((await planner.send(target.id, {
+        messageId: `overload-ask-${index}`,
+        text: `Queued question ${index}`,
+        expectsReply: true,
+      })).delivered, true);
+    }
+
+    const [, reply] = await overloadReply;
+    assert.equal(reply.replyTo, "overload-ask-100");
+    assert.match(reply.content.text, /Recipient queue is full/);
+    assert.equal(reply.content.attachments?.some((attachment) => attachment.name === "pi-intercom-recipient-turn-failure"), true);
+    assert.equal(harness.sentMessages.length, 0);
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
@@ -2968,7 +3005,7 @@ test("async subagent result intercom events wake the current orchestrator sessio
   assert.deepEqual(deliveryAcks, [{ requestId: "result-1", delivered: true }]);
 });
 
-test("foreground subagent result intercom events are acknowledged without messaging the current orchestrator session", async () => {
+test("foreground subagent result intercom events reach the current orchestrator before acknowledgment", async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const harness = createExtensionHarness("orchestrator");
   const { sentMessages } = harness;
@@ -2984,7 +3021,9 @@ test("foreground subagent result intercom events are acknowledged without messag
   });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(sentMessages, []);
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0]?.message.content ?? "", /Run: c0cefc68/);
+  assert.equal(sentMessages[0]?.options?.triggerTurn, true);
   assert.deepEqual(deliveryAcks, [{ requestId: "result-foreground", delivered: true }]);
 });
 

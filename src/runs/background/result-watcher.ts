@@ -217,9 +217,7 @@ export function createResultWatcher(
 
 	const ensurePeriodicScan = () => {
 		if (periodicScanTimer) return;
-		periodicScanTimer = timers.setInterval(() => {
-			if (state.asyncJobs.size > 0) primeExistingResults();
-		}, POLL_INTERVAL_MS);
+		periodicScanTimer = timers.setInterval(primeExistingResults, POLL_INTERVAL_MS);
 		periodicScanTimer.unref?.();
 	};
 

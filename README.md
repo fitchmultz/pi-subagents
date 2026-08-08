@@ -885,6 +885,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
 | `async` | boolean | top-level: true | Background execution. Child-safe nested calls retain their foreground default so the result returns in the calling child's report. Set `false` for foreground execution; `clarify: true` and foreground timeout fields also keep the run foreground. |
 | `cwd` | string | runtime cwd | Override working directory. |
+| `progress` | boolean | agent default | Maintain `progress.md` for a single run. Parallel task-level progress is maintained in each task cwd; chain progress is maintained in `chainDir`. |
 | `maxOutput` | object | 200KB, 5000 lines | Final output truncation limits. |
 | `artifacts` | boolean | true | Write input, output, and metadata debug artifacts. JSONL is not written. |
 | `includeProgress` | boolean | false | Include full progress in result. |

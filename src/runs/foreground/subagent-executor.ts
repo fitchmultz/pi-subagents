@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -113,7 +114,7 @@ import {
 	resolveCurrentMaxSubagentDepth,
 } from "../../shared/types.ts";
 
-const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
+const ASYNC_CONTROL_REQUEST_FILE = "control-request.json";
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
 
 function maxParallelTasksMessage(maxParallelTasks: number): string {
@@ -570,7 +571,7 @@ function finalAssistantTextFromSession(sessionFile: string | undefined): string 
 
 function refreshDetachedForegroundChildren(run: ForegroundResumeRun): Array<{ child: ForegroundResumeRun["children"][number]; finalOutput?: string }> {
 	return run.children.map((child) => {
-		const finalOutput = child.status === "detached" ? finalAssistantTextFromSession(child.sessionFile) : undefined;
+		const finalOutput = child.summary ?? (child.status === "detached" ? finalAssistantTextFromSession(child.sessionFile) : undefined);
 		if (finalOutput) {
 			child.status = "completed";
 			run.updatedAt = Date.now();
@@ -596,7 +597,7 @@ function rememberedForegroundStatusResult(run: ForegroundResumeRun): SubagentExe
 		`Updated: ${new Date(run.updatedAt).toISOString()}`,
 		`Cwd: ${run.cwd}`,
 		"Children:",
-		...children.map(({ child, finalOutput }) => `  ${child.index + 1}. ${child.agent} ${child.status}${child.sessionFile ? `, session: ${child.sessionFile}` : ""}${finalOutput ? `, final: ${compactStatusText(finalOutput)}` : ""}`),
+		...children.map(({ child, finalOutput }) => `  ${child.index + 1}. ${child.agent} ${child.status}${child.sessionFile ? `, session: ${child.sessionFile}` : ""}${child.artifactPath ? `, artifact: ${child.artifactPath}` : ""}${finalOutput ? `, final: ${compactStatusText(finalOutput)}` : ""}`),
 		foregroundResumeGuidance(run),
 	];
 	return {
@@ -746,20 +747,28 @@ function emitControlNotification(input: {
 	}
 }
 
+function writeAsyncInterruptRequest(asyncDir: string, runId: string): void {
+	writeAtomicJson(path.join(asyncDir, ASYNC_CONTROL_REQUEST_FILE), {
+		requestId: randomUUID(),
+		runId,
+		action: "interrupt",
+		createdAt: Date.now(),
+	});
+}
+
 function interruptAsyncRun(state: SubagentState, runId: string | undefined): SubagentExecutionResult | null {
 	const target = getAsyncInterruptTarget(state, runId);
 	if (!target) return null;
 	const status = readStatus(target.asyncDir);
-	if (!status || status.state !== "running" || typeof status.pid !== "number" || !Number.isSafeInteger(status.pid) || status.pid <= 1 || status.pid === process.pid) {
+	if (!status || status.runId !== target.asyncId || status.state !== "running") {
 		return {
-			content: [{ type: "text", text: `No running async run with an interrupt-capable pid was found for '${runId ?? "current"}'.` }],
+			content: [{ type: "text", text: `No running async run with a matching control channel was found for '${runId ?? "current"}'.` }],
 			isError: true,
 			details: { mode: "management", results: [] },
 		};
 	}
 	try {
-		process.kill(status.pid, 0);
-		process.kill(status.pid, ASYNC_INTERRUPT_SIGNAL);
+		writeAsyncInterruptRequest(target.asyncDir, target.asyncId);
 		const tracked = state.asyncJobs.get(target.asyncId);
 		if (tracked) {
 			tracked.activityState = undefined;
@@ -864,10 +873,9 @@ function directNestedAsyncInterrupt(target: ResolvedSubagentRunId & { kind: "nes
 	const asyncDir = resolveNestedAsyncDir(target.match.rootRunId, run);
 	if (!asyncDir) return undefined;
 	const status = readStatus(asyncDir);
-	const pid = typeof status?.pid === "number" && status.pid > 0 ? status.pid : run.pid;
-	if (!status || status.state !== "running" || typeof pid !== "number" || pid <= 0) return undefined;
+	if (!status || status.runId !== run.id || status.state !== "running") return undefined;
 	try {
-		process.kill(pid, ASYNC_INTERRUPT_SIGNAL);
+		writeAsyncInterruptRequest(asyncDir, run.id);
 		return { content: [{ type: "text", text: `Interrupt requested for nested async run ${run.id}.` }], details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: run.id, intercomTarget: run.intercomTarget ?? run.leafIntercomTarget, canInterrupt: true }) } };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -1138,7 +1146,7 @@ async function resumeAsyncRun(input: {
 }
 
 function resultSummaryForIntercom(result: SingleResult): string {
-	const output = getSingleResultOutput(result);
+	const output = result.truncation?.truncated ? result.truncation.text : getSingleResultOutput(result);
 	if (result.exitCode !== 0 && result.error) {
 		return output ? `${result.error}\n\nOutput:\n${output}` : result.error;
 	}
@@ -1194,6 +1202,7 @@ async function emitForegroundResultIntercom(input: {
 interface DetachedCompletionGroup {
 	onComplete: (result: SingleResult, index: number) => void;
 	setResults: (results: SingleResult[], nestedChildren?: NestedRunSummary[]) => void;
+	hasDetached: () => boolean;
 }
 
 function createDetachedCompletionGroup(input: {
@@ -1203,16 +1212,22 @@ function createDetachedCompletionGroup(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	chainSteps?: number;
+	onSettled?: () => void;
 }): DetachedCompletionGroup {
 	let results: SingleResult[] | undefined;
 	let nestedChildren: NestedRunSummary[] | undefined;
 	let wasDetached = false;
 	let deliveryStarted = false;
+	let settledCallbackStarted = false;
 	const completions = new Map<number, SingleResult>();
 
 	const maybeEmit = () => {
 		if (!wasDetached || deliveryStarted || !results || results.some((result) => result.detached)) return;
 		deliveryStarted = true;
+		if (!settledCallbackStarted && input.onSettled) {
+			settledCallbackStarted = true;
+			queueMicrotask(input.onSettled);
+		}
 		void emitForegroundResultIntercom({
 			pi: input.pi,
 			intercomBridge: input.intercomBridge,
@@ -1235,6 +1250,8 @@ function createDetachedCompletionGroup(input: {
 			const child = remembered?.children[index];
 			if (child) {
 				child.status = resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted, timedOut: result.timedOut });
+				child.summary = compactStatusText(resultSummaryForIntercom(result));
+				child.artifactPath = result.artifactPaths?.outputPath;
 				remembered!.updatedAt = Date.now();
 			}
 			maybeEmit();
@@ -1246,6 +1263,7 @@ function createDetachedCompletionGroup(input: {
 			for (const [index, result] of completions) results[index] = result;
 			maybeEmit();
 		},
+		hasDetached: () => wasDetached,
 	};
 }
 
@@ -2490,6 +2508,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 	);
 	if (errorResult) return errorResult;
 
+	let worktreeCleanupDeferred = false;
 	try {
 		const duplicateOutputError = findDuplicateParallelOutputPath({
 			tasks,
@@ -2518,7 +2537,14 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		const timeoutExtensionRegistry = data.foregroundTimeoutMs !== undefined && timeoutAt !== undefined
 			? createForegroundTimeoutExtensionRegistry(foregroundControl)
 			: undefined;
-		const detachedCompletions = createDetachedCompletionGroup({ pi: deps.pi, state: deps.state, intercomBridge: data.intercomBridge, runId, mode: "parallel" });
+		const detachedCompletions = createDetachedCompletionGroup({
+			pi: deps.pi,
+			state: deps.state,
+			intercomBridge: data.intercomBridge,
+			runId,
+			mode: "parallel",
+			...(worktreeSetup ? { onSettled: () => cleanupWorktrees(worktreeSetup) } : {}),
+		});
 		const results = await runForegroundParallelTasks({
 			tasks,
 			taskTexts,
@@ -2576,6 +2602,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		});
 		rememberForegroundRun(deps.state, { runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
 		detachedCompletions.setResults(details.results, foregroundControl?.nestedChildren);
+		worktreeCleanupDeferred = Boolean(worktreeSetup && detachedCompletions.hasDetached());
 		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks);
 		if (timedOut) {
 			return {
@@ -2657,7 +2684,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			...(ok !== results.length ? { isError: true } : {}),
 		};
 	} finally {
-		if (worktreeSetup) cleanupWorktrees(worktreeSetup);
+		if (worktreeSetup && !worktreeCleanupDeferred) cleanupWorktrees(worktreeSetup);
 	}
 }
 

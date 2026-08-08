@@ -71,8 +71,35 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 				if (seen.has(request.requestId) || inFlight.has(request.requestId)) continue;
 				inFlight.add(request.requestId);
 				void (async () => {
+					const claimPath = `${request.filePath}.claimed`;
 					try {
 						let result = pendingResults.get(request.requestId);
+						if (!result && pendingResults.size >= 100) {
+							result = {
+								ts: Date.now(),
+								requestId: request.requestId,
+								targetRunId: request.targetRunId,
+								ok: false,
+								message: "Nested control result queue is full; retry after pending results are delivered.",
+							};
+						}
+						if (!result) {
+							try {
+								const claimFd = fs.openSync(claimPath, "wx", 0o600);
+								try { fs.writeFileSync(claimFd, `${request.requestId}\n`, "utf-8"); } finally { fs.closeSync(claimFd); }
+							} catch (error) {
+								const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+								result = {
+									ts: Date.now(),
+									requestId: request.requestId,
+									targetRunId: request.targetRunId,
+									ok: false,
+									message: code === "EEXIST"
+										? "Nested control request was already claimed; refusing to execute it again because the original outcome is unavailable."
+										: `Failed to claim nested control request safely: ${error instanceof Error ? error.message : String(error)}`,
+								};
+							}
+						}
 						if (!result) {
 							let ok = false;
 							let message = "Control request failed.";
@@ -111,15 +138,24 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 						try {
 							writeNestedControlResult(route, result);
 						} catch (error) {
-							pendingResults.set(request.requestId, result);
-							while (pendingResults.size > 100) pendingResults.delete(pendingResults.keys().next().value!);
+							if (pendingResults.size < 100 || pendingResults.has(request.requestId)) pendingResults.set(request.requestId, result);
 							console.error(`Failed to write nested control result for request '${request.requestId}' targeting '${request.targetRunId}' via inbox '${route.controlInbox}'; keeping request for retry:`, error);
 							return;
 						}
 						pendingResults.delete(request.requestId);
 						addBounded(seen, request.requestId);
 						addBounded(seenFiles, path.basename(request.filePath));
-						try { fs.unlinkSync(request.filePath); } catch {}
+						let requestRemoved = false;
+						try {
+							fs.unlinkSync(request.filePath);
+							requestRemoved = true;
+						} catch (error) {
+							const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+							requestRemoved = code === "ENOENT";
+						}
+						if (requestRemoved) {
+							try { fs.unlinkSync(claimPath); } catch {}
+						}
 					} finally {
 						inFlight.delete(request.requestId);
 					}

@@ -10,21 +10,33 @@ function sanitizePipeSegment(value: string): string {
 	return value.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "default";
 }
 
-function agentDigest(agentDir: string): string {
-	return createHash("sha256").update(agentDir).digest("hex").slice(0, 16);
+function agentDigest(agentDir: string, uid?: number): string {
+	return createHash("sha256").update(uid === undefined ? agentDir : `${uid}:${agentDir}`).digest("hex").slice(0, 16);
 }
 
 export function getLegacyBrokerSocketPath(agentDir: string = getPiAgentDir(), tempDir: string = tmpdir()): string {
 	return join(tempDir, `pi-intercom-${agentDigest(agentDir)}.sock`);
 }
 
+export function isOwnedBrokerSocket(socketPath: string, platform: NodeJS.Platform = process.platform): boolean {
+	if (platform === "win32") return true;
+	try {
+		const stat = fs.lstatSync(socketPath);
+		const uid = process.getuid?.();
+		return stat.isSocket() && (uid === undefined || stat.uid === uid);
+	} catch {
+		return false;
+	}
+}
+
 export function getBrokerSocketPath(
 	platform: NodeJS.Platform = process.platform,
 	agentDir: string = getPiAgentDir(),
 	tempDir: string = tmpdir(),
+	uid: number | undefined = process.getuid?.(),
 ): string {
 	if (platform === "win32") return `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(agentDir)}`;
-	const suffix = `pi-intercom-${agentDigest(agentDir)}`;
+	const suffix = `pi-intercom-${agentDigest(agentDir, uid)}`;
 	const preferred = join(tempDir, suffix, "broker.sock");
 	return Buffer.byteLength(preferred) <= MAX_UNIX_SOCKET_PATH_BYTES
 		? preferred
@@ -36,18 +48,6 @@ export function prepareBrokerSocketPath(
 	agentDir: string = getPiAgentDir(),
 ): string {
 	if (platform === "win32") return getBrokerSocketPath(platform, agentDir);
-	const legacyPath = getLegacyBrokerSocketPath(agentDir);
-	try {
-		const legacyStat = fs.lstatSync(legacyPath);
-		const uid = process.getuid?.();
-		if (legacyStat.isSocket() && (uid === undefined || legacyStat.uid === uid)) {
-			fs.chmodSync(legacyPath, 0o600);
-			return legacyPath;
-		}
-	} catch {
-		// No live pre-0.33 socket to migrate through.
-	}
-
 	const socketPath = getBrokerSocketPath(platform, agentDir);
 	const brokerDir = dirname(socketPath);
 	fs.mkdirSync(brokerDir, { recursive: true, mode: 0o700 });

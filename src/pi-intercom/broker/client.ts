@@ -2,7 +2,7 @@ import { EventEmitter } from "events";
 import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.ts";
-import { prepareBrokerSocketPath } from "./paths.ts";
+import { getBrokerSocketPath, getLegacyBrokerSocketPath, isOwnedBrokerSocket } from "./paths.ts";
 import { isMessage, normalizeSessionInfo } from "../types.ts";
 import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode } from "../types.ts";
 
@@ -42,11 +42,51 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+function connectSocket(socketPath: string, timeoutMs = 500): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(socketPath);
+    const finish = (error?: Error) => {
+      clearTimeout(timeout);
+      socket.off("connect", onConnect);
+      socket.off("error", onError);
+      if (error) {
+        socket.destroy();
+        reject(error);
+      } else {
+        resolve(socket);
+      }
+    };
+    const onConnect = () => finish();
+    const onError = (error: Error) => finish(error);
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+    const timeout = setTimeout(() => finish(new Error(`Connection timeout: ${socketPath}`)), timeoutMs);
+    timeout.unref?.();
+  });
+}
+
+async function connectBrokerSocket(): Promise<net.Socket> {
+  const preferred = getBrokerSocketPath();
+  const legacy = process.platform === "win32" ? preferred : getLegacyBrokerSocketPath();
+  const candidates = [preferred, ...(legacy !== preferred ? [legacy] : [])];
+  let lastError: Error | undefined;
+  for (const candidate of candidates) {
+    if (!isOwnedBrokerSocket(candidate)) continue;
+    try {
+      return await connectSocket(candidate);
+    } catch (error) {
+      lastError = toError(error);
+    }
+  }
+  throw lastError ?? new Error(`Intercom broker socket is unavailable: ${preferred}`);
+}
+
 export class IntercomClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private pendingSends = new Map<string, { resolve: (r: SendResult) => void; reject: (e: Error) => void }>();
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
+  private connecting = false;
   private disconnecting = false;
   private disconnectError: Error | null = null;
   private readonly sendTimeoutMs: number;
@@ -95,20 +135,19 @@ export class IntercomClient extends EventEmitter {
     return socket;
   }
 
-  connect(session: Omit<SessionInfo, "id">, requestedId?: string): Promise<void> {
-    if (this.socket) {
-      return Promise.reject(new Error("Already connected"));
+  async connect(session: Omit<SessionInfo, "id">, requestedId?: string): Promise<void> {
+    if (this.socket || this.connecting) {
+      throw new Error("Already connected");
     }
 
+    this.connecting = true;
+    let socket: net.Socket;
+    try {
+      socket = await connectBrokerSocket();
+    } finally {
+      this.connecting = false;
+    }
     return new Promise((resolve, reject) => {
-      let brokerSocket: string;
-      try {
-        brokerSocket = prepareBrokerSocketPath();
-      } catch (error) {
-        reject(toError(error));
-        return;
-      }
-      const socket = net.connect(brokerSocket);
       this.socket = socket;
       this.disconnectError = null;
       let settled = false;

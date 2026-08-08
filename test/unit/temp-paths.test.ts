@@ -8,6 +8,7 @@ import {
 	TEMP_ARTIFACTS_DIR,
 	TEMP_ROOT_DIR,
 	getAsyncConfigPath,
+	resolveTempRootDir,
 	resolveTempScopeId,
 } from "../../src/shared/types.ts";
 
@@ -49,6 +50,14 @@ describe("resolveTempScopeId", () => {
 			homedir: () => "/home/12345/app user",
 		});
 		assert.equal(scope, "home-home-12345-app-user");
+	});
+});
+
+describe("resolveTempRootDir", () => {
+	it("accepts only dedicated pi-subagents directories", () => {
+		assert.equal(resolveTempRootDir("/tmp/pi-subagents-isolated"), path.resolve("/tmp/pi-subagents-isolated"));
+		assert.throws(() => resolveTempRootDir("/tmp"), /dedicated 'pi-subagents-\*' directory/);
+		assert.throws(() => resolveTempRootDir("/"), /dedicated 'pi-subagents-\*' directory/);
 	});
 });
 

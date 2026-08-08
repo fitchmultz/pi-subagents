@@ -220,7 +220,6 @@ describe("result watcher", () => {
 			};
 			const state = createState();
 			state.currentSessionId = "session-1";
-			state.asyncJobs.set("active", { asyncId: "active", asyncDir: resultsDir, status: "running" });
 			let poll: (() => void) | undefined;
 			const fakeWatcher = {
 				on() { return fakeWatcher; },

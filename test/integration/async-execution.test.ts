@@ -439,9 +439,13 @@ describe("async execution utilities", () => {
 			shareEnabled: false,
 			maxSubagentDepth: 2,
 		});
-		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.filter((step) => step.status === "running").length === 2 && typeof status.pid === "number", 10_000);
+		await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.filter((step) => step.status === "running").length === 2, 10_000);
 		await waitForMockPiCalls(mockPi, 2, 10_000);
-		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
+		const controlRequestPath = path.join(ASYNC_DIR, id, "control-request.json");
+		fs.writeFileSync(controlRequestPath, JSON.stringify({ requestId: "wrong-run", runId: "stale-run", action: "interrupt", createdAt: Date.now() }), "utf-8");
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.equal((await waitForAsyncStatus(id, (status) => status.state === "running", 2_000)).state, "running");
+		fs.writeFileSync(controlRequestPath, JSON.stringify({ requestId: "integration-interrupt", runId: id, action: "interrupt", createdAt: Date.now() }), "utf-8");
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
@@ -2259,6 +2263,7 @@ describe("async execution utilities", () => {
 		const pidFile = path.join(tempDir, "async-descendant.pid");
 		mockPi.onCall({ output: "async descendant done", spawnSignalResistantDescendantPidFile: pidFile });
 		const id = `async-descendant-${Date.now().toString(36)}`;
+		const startedAt = Date.now();
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Finish and clean descendants",
@@ -2268,6 +2273,7 @@ describe("async execution utilities", () => {
 			maxSubagentDepth: 2,
 		});
 		await waitForAsyncResultFile(id, 10_000);
+		assert.ok(Date.now() - startedAt < 3_000, "background descendants should be killed when the process-group leader exits");
 		const descendantPid = Number(fs.readFileSync(pidFile, "utf-8"));
 		const deadline = Date.now() + 5_000;
 		while (Date.now() < deadline) {

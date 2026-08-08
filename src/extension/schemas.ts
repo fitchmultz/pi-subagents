@@ -204,6 +204,7 @@ export const ChainItemSchema = Type.Object({
 		{ not: { required: ["agent", "parallel"] } },
 		{ if: { required: ["expand"] }, then: { required: ["parallel", "collect"], properties: { parallel: { type: "object" } } } },
 		{ if: { required: ["collect"] }, then: { required: ["expand", "parallel"], properties: { parallel: { type: "object" } } } },
+		{ if: { required: ["parallel"], properties: { parallel: { type: "object" } } }, then: { required: ["expand", "collect"] } },
 		{ not: { required: ["expand"], properties: { parallel: { type: "array", items: {} } } } },
 	],
 });

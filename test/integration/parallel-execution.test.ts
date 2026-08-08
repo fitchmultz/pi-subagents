@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { runSync } from "../../src/runs/foreground/execution.ts";
+import { INTERCOM_DETACH_REQUEST_EVENT } from "../../src/shared/types.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { mapConcurrent } from "../../src/shared/utils.ts";
 import type { MockPi } from "../support/helpers.ts";
@@ -18,6 +19,7 @@ import {
 	createEventBus,
 	createMockPi,
 	createTempDir,
+	events,
 	makeAgent,
 	makeAgentConfigs,
 	makeMinimalCtx,
@@ -196,6 +198,47 @@ describe("parallel agent execution", () => {
 		assert.equal(result.details.results.length, 2);
 		assert.equal(result.details.results[0].exitCode, 0);
 		assert.equal(result.details.results[1].exitCode, 0);
+	});
+
+	it("keeps a detached child's worktree until that child exits", async () => {
+		initGitRepo(tempDir);
+		mockPi.onCall({ steps: [
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "Need input" })] },
+			{ delay: 500, jsonl: [events.assistantMessage("finished in worktree")] },
+		] });
+		const bus = createEventBus();
+		const executor = createSubagentExecutor({
+			pi: { events: bus, getSessionName: () => undefined },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			config: {},
+			asyncByDefault: false,
+			tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir,
+			expandTilde: (value: string) => value,
+			discoverAgents: () => ({ agents: [makeAgent("worker")] }),
+		});
+		let detached = false;
+
+		const result = await executor.execute(
+			"detached-worktree",
+			{ tasks: [{ agent: "worker", task: "Wait for input" }], worktree: true },
+			new AbortController().signal,
+			(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+				if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
+				detached = true;
+				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "detached-worktree" });
+			},
+			makeMinimalCtx(tempDir),
+		);
+		assert.match(result.content[0]?.text ?? "", /detached for intercom coordination/i);
+		const callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"));
+		assert.ok(callFile);
+		const worktreeCwd = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).cwd as string;
+		assert.notEqual(worktreeCwd, tempDir);
+		assert.equal(fs.existsSync(worktreeCwd), true, "worktree must remain while the detached child is active");
+		const deadline = Date.now() + 5_000;
+		while (fs.existsSync(worktreeCwd) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.equal(fs.existsSync(worktreeCwd), false, "worktree should be cleaned after detached completion");
 	});
 
 	it("top-level foreground parallel timeout preserves worktrees when diff capture setup fails", async () => {

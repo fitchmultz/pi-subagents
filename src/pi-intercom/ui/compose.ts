@@ -59,16 +59,14 @@ export class ComposeOverlay implements Component {
   handleInput(data: string): void {
     if (this.sending || this.completed) return;
 
-    if (this.keybindings.matches(data, "tui.select.cancel")) {
-      this.finish({ sent: false });
-      return;
-    }
-
     let pasted = false;
     if (this.pasteBuffer !== null) {
       this.pasteBuffer += data;
       const end = this.pasteBuffer.indexOf(BRACKETED_PASTE_END);
-      if (end === -1 && this.pasteBuffer.length <= MAX_PASTE_CHARS) return;
+      if (end === -1 && this.pasteBuffer.length <= MAX_PASTE_CHARS) {
+        this.tui.requestRender();
+        return;
+      }
       data = end === -1
         ? this.pasteBuffer
         : this.pasteBuffer.slice(0, end) + this.pasteBuffer.slice(end + BRACKETED_PASTE_END.length);
@@ -80,6 +78,7 @@ export class ComposeOverlay implements Component {
       const end = body.indexOf(BRACKETED_PASTE_END);
       if (end === -1 && body.length <= MAX_PASTE_CHARS) {
         this.pasteBuffer = body;
+        this.tui.requestRender();
         return;
       }
       data = end === -1 ? body : body.slice(0, end) + body.slice(end + BRACKETED_PASTE_END.length);
@@ -87,6 +86,11 @@ export class ComposeOverlay implements Component {
       pasted = true;
     }
     if (!data) return;
+
+    if (!pasted && this.keybindings.matches(data, "tui.select.cancel")) {
+      this.finish({ sent: false });
+      return;
+    }
 
     if (!pasted && data === "\t") {
       this.mode = this.mode === "send" ? "ask" : "send";
@@ -155,7 +159,10 @@ export class ComposeOverlay implements Component {
   }
 
   private renderInputLines(row: (text?: string) => string, lines: string[], contentWidth: number): void {
-    const rawLines = this.inputBuffer.split("\n");
+    const pendingPaste = this.pasteBuffer === null
+      ? ""
+      : [...this.pasteBuffer].filter((character) => character >= " " || character === "\n" || character === "\t").join("");
+    const rawLines = `${this.inputBuffer}${pendingPaste}`.split("\n");
     const visibleLines = rawLines.slice(-8);
     visibleLines.forEach((line, index) => {
       const isLast = index === visibleLines.length - 1;

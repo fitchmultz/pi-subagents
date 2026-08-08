@@ -5,20 +5,20 @@
 ## [0.33.0] - 2026-08-07
 
 ### Added
-- Deliver the eventual grouped result when a foreground child detaches for a blocking supervisor reply and later exits, instead of requiring status polling to recover its final response.
+- Deliver the eventual grouped result when a foreground child detaches for a blocking supervisor reply and later exits, retain a compact remembered fallback when intercom delivery is unavailable, and keep isolated worktrees alive until detached children finish.
 
 ### Changed
 - Align the bundled agent model, fallback, and thinking defaults with the current user profiles: lower `reviewer-gpt` and `reviewer-claude` to high thinking, route `reviewer-security` through Grok first, and move `watcher` to GPT-5.6 Sol at medium thinking.
-- Tighten the public tool schema, saved workflow parsing, agent scope handling, and management config validation so malformed or ambiguous requests fail before child launch.
+- Tighten the public tool schema, saved workflow parsing, agent scope handling, and management config validation so malformed or ambiguous requests fail before child launch. Unknown tool fields and empty explicit task strings now fail validation instead of being ignored.
 - Make the async widget reflow against its live width and Ctrl+O state, keep terminal failures visible, and bound expanded rows more conservatively on short terminals.
 
 ### Fixed
-- Terminate complete child process groups with SIGKILL escalation, interrupt every active parallel child, and cancel running static and dynamic parallel siblings when fail-fast trips.
-- Honor custom `chainDir` in detached chains, resolve top-level parallel reads, outputs, and progress in each task cwd, handle empty dynamic fanout without leaking phantom status rows, create `progress.md` without clobbering concurrent work, and fail runs when requested outputs cannot be saved.
+- Terminate complete child process groups with guarded SIGKILL escalation, route async interrupts through run-owned control files instead of persisted PIDs, interrupt every active parallel child, and cancel running static and dynamic parallel siblings when fail-fast trips.
+- Honor custom `chainDir` in detached chains and use the shared chain directory consistently for default async chain reads, outputs, `{chain_dir}`, and progress; resolve top-level parallel reads, outputs, and progress in each task cwd; handle empty dynamic fanout without leaking phantom status rows; create `progress.md` without clobbering concurrent work; and fail runs when requested outputs cannot be saved.
 - Preserve Claude Code structured output through native JSON Schema mode, enforce per-criterion acceptance evidence, and detect content changes to pre-existing output files.
-- Deliver async result events before completion cleanup, limit fallback polling to active jobs, debounce status writes, clear recovered attention notifications, and harden stale status, nested control, and parallel-group normalization.
-- Preserve builtin override precedence and last-definition-wins discovery while surfacing invalid agent, chain, frontmatter, slash-command, and config diagnostics.
-- Harden the bundled intercom broker with stable reconnect identities, private socket/PID/config/atomic files, migration through a live legacy socket, bounded pending asks, validated wire fields, reply attachments, and fatal startup error handling.
+- Deliver async result events before completion cleanup, inject acknowledged foreground grouped results back into the active orchestrator before it can continue without the child output, keep periodic fallback scanning available for orphaned completion files after reloads, debounce status writes, clear recovered attention notifications, and harden stale status, nested control, and parallel-group normalization.
+- Preserve builtin override precedence and effective last-definition-wins discovery, refuse ambiguous management mutations when duplicate definitions exist in one scope, and surface invalid agent, chain, frontmatter, slash-command, and config diagnostics.
+- Harden the bundled intercom broker with stable reconnect identities, private socket/PID/config/atomic files, read-only dual-connect fallback to an owned live legacy socket, explicit queue-overload rejection, validated wire fields, reply attachments, and fatal startup error handling.
 - Clean old user-scoped temp runs at startup and report worktree cleanup failures instead of silently discarding them.
 
 ## [0.32.0] - 2026-08-06

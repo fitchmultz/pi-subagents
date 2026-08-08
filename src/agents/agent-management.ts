@@ -87,14 +87,14 @@ function discoveryOptions(ctx: ManagementContext): { projectTrusted: boolean } {
 	return { projectTrusted: ctx.isProjectTrusted() };
 }
 
-function availableNames(ctx: ManagementContext, kind: "agent" | "chain"): string[] {
-	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
+function availableNames(ctx: ManagementContext, kind: "agent" | "chain", scope: AgentScope = "both"): string[] {
+	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx), scope);
 	const items = kind === "agent" ? allAgents(d) : d.chains;
 	return [...new Set(items.map((x) => x.name))].sort((a, b) => a.localeCompare(b));
 }
 
 function findAgents(name: string, ctx: ManagementContext, scope: AgentScope = "both"): AgentConfig[] {
-	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
+	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx), scope);
 	const raw = name.trim();
 	const sanitized = sanitizeName(raw);
 	return allAgents(d)
@@ -105,7 +105,7 @@ function findAgents(name: string, ctx: ManagementContext, scope: AgentScope = "b
 function findChains(name: string, ctx: ManagementContext, scope: AgentScope = "both"): ChainConfig[] {
 	const raw = name.trim();
 	const sanitized = sanitizeName(raw);
-	return discoverAgentsAll(ctx.cwd, discoveryOptions(ctx)).chains
+	return discoverAgentsAll(ctx.cwd, discoveryOptions(ctx), scope).chains
 		.filter((c) => (scope === "both" || c.source === scope) && (c.name === raw || c.name === sanitized))
 		.sort((a, b) => a.source.localeCompare(b.source));
 }
@@ -118,7 +118,7 @@ function findEffectiveAgents(name: string, ctx: ManagementContext, scope: AgentS
 }
 
 function nameExistsInScope(ctx: ManagementContext, scope: ManagementScope, name: string, excludePath?: string): boolean {
-	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
+	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx), scope);
 	for (const a of scope === "user" ? d.user : d.project) {
 		if (a.name === name && a.filePath !== excludePath) return true;
 	}
@@ -396,12 +396,17 @@ function resolveTarget<T extends { source: AgentSource; filePath: string }>(
 	const scope = asDisambiguationScope(scopeHint);
 	if (!scope) {
 		const paths = mutable.map((m) => `${m.source}: ${m.filePath}`).join("\n");
-		return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' exists in both scopes. Specify agentScope: 'user' or 'project'.\n${paths}`, true);
+		const sources = new Set(mutable.map((entry) => entry.source));
+		return sources.size === 1
+			? result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' has multiple definitions in ${mutable[0]!.source} scope and cannot be modified safely. Remove or rename one definition first.\n${paths}`, true)
+			: result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' exists in both scopes. Specify agentScope: 'user' or 'project'.\n${paths}`, true);
 	}
 	const scoped = mutable.filter((m) => m.source === scope);
 	if (scoped.length === 0) return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' not found in scope '${scope}'.`, true);
-	// Discovery uses last-definition-wins inside one scope (for example ~/.agents over the legacy user dir).
-	return scoped[scoped.length - 1]!;
+	if (scoped.length > 1) {
+		return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' has multiple definitions in scope '${scope}' and cannot be modified safely. Remove or rename one definition first:\n${scoped.map((entry) => entry.filePath).join("\n")}`, true);
+	}
+	return scoped[0]!;
 }
 
 function renamePath(
@@ -529,11 +534,11 @@ function formatAgentListLine(a: AgentConfig): string {
 export function handleList(params: ManagementParams, ctx: ManagementContext): SubagentExecutionResult {
 	const scope = normalizeListScope(params.agentScope);
 	if (!scope) return result("agentScope must be 'user', 'project', or 'both'.", true);
-	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
+	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx), scope);
 	const agents = discoverAgents(ctx.cwd, scope, discoveryOptions(ctx)).agents
 		.sort((a, b) => a.name.localeCompare(b.name));
 	const chains = d.chains.filter((c) => scope === "both" || c.source === scope).sort((a, b) => a.name.localeCompare(b.name));
-	const diagnostics = d.chainDiagnostics.filter((entry) => scope === "both" || entry.source === scope);
+	const diagnostics = [...d.agentDiagnostics, ...d.chainDiagnostics];
 	const roleOrder: AgentListRole[] = ["Recon", "Planning", "Implementation", "Review", "Coordination", "Specialized", "Custom/other"];
 	const lines: string[] = ["Executable agents (grouped by role):"];
 	if (!agents.length) {
@@ -549,7 +554,7 @@ export function handleList(params: ManagementParams, ctx: ManagementContext): Su
 		"",
 		"Chains:",
 		...(chains.length ? chains.map((c) => `- ${c.name} (${c.source}): ${c.description}`) : ["- (none)"]),
-		...(diagnostics.length ? ["", "Chain diagnostics:", ...diagnostics.map((entry) => `- ${entry.filePath}: ${entry.error}`)] : []),
+		...(diagnostics.length ? ["", "Discovery diagnostics:", ...diagnostics.map((entry) => `- ${entry.filePath}: ${entry.error}`)] : []),
 	);
 	return result(lines.join("\n"));
 }
@@ -564,7 +569,7 @@ function handleGet(params: ManagementParams, ctx: ManagementContext): SubagentEx
 	if (params.agent) {
 		const matches = findEffectiveAgents(params.agent, ctx, scope);
 		if (!matches.length) {
-			const msg = `Agent '${params.agent}' not found. Available: ${availableNames(ctx, "agent").join(", ") || "none"}.`;
+			const msg = `Agent '${params.agent}' not found. Available: ${availableNames(ctx, "agent", scope).join(", ") || "none"}.`;
 			if (!hasBoth) return result(msg, true);
 			blocks.push(msg);
 		} else {
@@ -575,7 +580,7 @@ function handleGet(params: ManagementParams, ctx: ManagementContext): SubagentEx
 	if (params.chainName) {
 		const matches = findChains(params.chainName, ctx, scope);
 		if (!matches.length) {
-			const msg = `Chain '${params.chainName}' not found. Available: ${availableNames(ctx, "chain").join(", ") || "none"}.`;
+			const msg = `Chain '${params.chainName}' not found. Available: ${availableNames(ctx, "chain", scope).join(", ") || "none"}.`;
 			if (!hasBoth) return result(msg, true);
 			blocks.push(msg);
 		} else {

@@ -1335,6 +1335,38 @@ describe("chain execution — parallel steps", () => {
 		assert.equal(result.details.results.some((entry) => entry.exitCode === 1), true);
 	});
 
+	it("keeps a detached parallel-chain worktree until its child exits", async () => {
+		initGitRepo(tempDir);
+		mockPi.onCall({ steps: [
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "Need input" })] },
+			{ delay: 500, jsonl: [events.assistantMessage("finished in chain worktree")] },
+		] });
+		const agents = [makeAgent("a", { systemPrompt: "Intercom orchestration channel:" })];
+		const intercomEvents = createEventBus();
+		let detached = false;
+
+		const result = await executeChain(makeChainParams([{
+			parallel: [{ agent: "a", task: "Wait for input" }],
+			worktree: true,
+		}], agents, {
+			intercomEvents,
+			onUpdate(update: { details?: { progress?: Array<{ currentTool?: string }> } }) {
+				if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
+				detached = true;
+				intercomEvents.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "chain-worktree-detach" });
+			},
+		}));
+
+		assert.match(result.content[0]?.text ?? "", /Chain detached for intercom coordination/);
+		const callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"));
+		assert.ok(callFile);
+		const worktreeCwd = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).cwd as string;
+		assert.equal(fs.existsSync(worktreeCwd), true, "chain worktree must remain while the detached child is active");
+		const deadline = Date.now() + 5_000;
+		while (fs.existsSync(worktreeCwd) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.equal(fs.existsSync(worktreeCwd), false, "chain worktree should be cleaned after detached completion");
+	});
+
 	it("reports failed dynamic items while preserving a sibling detach", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "a" }, { path: "b" }] } });
 		mockPi.onCall({ steps: [{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] }, { delay: 1000 }] });

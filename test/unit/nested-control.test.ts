@@ -156,13 +156,16 @@ describe("nested control routing", () => {
 		const asyncDir = path.join(TEMP_ROOT_DIR, "nested-subagent-runs", "root-control", "nested-direct");
 		try {
 			fs.mkdirSync(asyncDir, { recursive: true });
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ state: "running", pid: 12345 }), "utf-8");
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: "nested-direct", state: "running", pid: 12345 }), "utf-8");
 			const route = createNestedRun("nested-direct", "running", { asyncDir, intercomTarget: "nested-target" });
 			const kill = mock.method(process, "kill", () => true);
 			const result = await createExecutor(stateWithNestedRoute(route)).execute("interrupt", { action: "interrupt", id: "nested-direct" }, new AbortController().signal, undefined, ctx(root));
 
 			assert.equal(result.isError, undefined);
-			assert.equal(kill.mock.callCount(), 1);
+			assert.equal(kill.mock.callCount(), 0);
+			const request = JSON.parse(fs.readFileSync(path.join(asyncDir, "control-request.json"), "utf-8"));
+			assert.equal(request.runId, "nested-direct");
+			assert.equal(request.action, "interrupt");
 			assert.deepEqual(result.details.managementControl?.capabilities, ["status", "interrupt"]);
 		} finally {
 			mock.restoreAll();
@@ -175,13 +178,14 @@ describe("nested control routing", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-interrupt-"));
 		const asyncDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-interrupt-run-"));
 		try {
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ state: "running", pid: 12345 }), "utf-8");
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: "async-live", state: "running", pid: 12345 }), "utf-8");
 			const state = createState();
 			state.asyncJobs.set("async-live", { asyncId: "async-live", asyncDir, status: "running", updatedAt: 1 } as any);
 			mock.method(process, "kill", () => true);
 			const result = await createExecutor(state).execute("interrupt", { action: "interrupt", id: "async-live" }, new AbortController().signal, undefined, ctx(root));
 
 			assert.equal(result.isError, undefined);
+			assert.equal(JSON.parse(fs.readFileSync(path.join(asyncDir, "control-request.json"), "utf-8")).runId, "async-live");
 			assert.deepEqual(result.details.managementControl?.capabilities, ["status"]);
 		} finally {
 			mock.restoreAll();
@@ -190,18 +194,19 @@ describe("nested control routing", () => {
 		}
 	});
 
-	it("rejects unsafe async runner pids without signaling", async () => {
+	it("rejects async status that does not belong to the targeted run", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-interrupt-invalid-"));
 		const asyncDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-interrupt-invalid-run-"));
 		try {
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ state: "running", pid: -1 }), "utf-8");
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: "another-run", state: "running", pid: -1 }), "utf-8");
 			const state = createState();
 			state.asyncJobs.set("async-invalid", { asyncId: "async-invalid", asyncDir, status: "running", updatedAt: 1 } as any);
 			const kill = mock.method(process, "kill", () => true);
 			const result = await createExecutor(state).execute("interrupt", { action: "interrupt", id: "async-invalid" }, new AbortController().signal, undefined, ctx(root));
 			assert.equal(result.isError, true);
-			assert.match(result.content[0]?.text ?? "", /No running async run with an interrupt-capable pid/);
+			assert.match(result.content[0]?.text ?? "", /No running async run with a matching control channel/);
 			assert.equal(kill.mock.callCount(), 0);
+			assert.equal(fs.existsSync(path.join(asyncDir, "control-request.json")), false);
 		} finally {
 			mock.restoreAll();
 			fs.rmSync(root, { recursive: true, force: true });
@@ -504,6 +509,35 @@ describe("nested control routing", () => {
 		} finally {
 			console.error = originalError;
 		}
+	});
+
+	it("refuses to replay a nested control request that was durably claimed", async () => {
+		const route = createNestedRoute("root-claimed-request");
+		routeRoots.push(path.dirname(route.eventSink));
+		setNestedRouteEnv(route, "root-claimed-request");
+		process.env[SUBAGENT_CHILD_ENV] = "1";
+		process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
+		const pi = {
+			events: { emit() {}, on() { return () => {}; } },
+			registerTool() {},
+			on() {},
+			getSessionName() { return "child"; },
+		} as any;
+		const requestPath = writeNestedControlRequest(route, {
+			ts: Date.now(),
+			requestId: "already-claimed",
+			targetRunId: "unknown-original-owner",
+			action: "interrupt",
+		});
+		fs.writeFileSync(`${requestPath}.claimed`, "already-claimed\n", "utf-8");
+
+		registerFanoutChildSubagentExtension(pi);
+		await waitFor(() => readNestedControlResults(route).some((result) => result.requestId === "already-claimed"));
+		const result = readNestedControlResults(route).find((entry) => entry.requestId === "already-claimed");
+		assert.equal(result?.ok, false);
+		assert.match(result?.message ?? "", /refusing to execute it again/);
+		assert.equal(fs.existsSync(requestPath), false);
+		assert.equal(fs.existsSync(`${requestPath}.claimed`), false);
 	});
 
 	it("negatively acknowledges ownerless fanout child control requests and removes them", async () => {

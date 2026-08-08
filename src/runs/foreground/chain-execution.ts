@@ -638,6 +638,20 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			const parallelTemplates = stepTemplates as string[];
 			const parallelCwd = resolveChildCwd(cwd ?? ctx.cwd, step.cwd);
 			let worktreeSetup: WorktreeSetup | undefined;
+			let worktreeCleanupDeferred = false;
+			let expectedDetachedCompletions: number | undefined;
+			let worktreeCleanupScheduled = false;
+			const completedDetachedIndexes = new Set<number>();
+			const scheduleDetachedWorktreeCleanup = () => {
+				if (!worktreeSetup || worktreeCleanupScheduled || expectedDetachedCompletions === undefined || completedDetachedIndexes.size < expectedDetachedCompletions) return;
+				worktreeCleanupScheduled = true;
+				queueMicrotask(() => cleanupWorktrees(worktreeSetup!));
+			};
+			const handleParallelDetachedCompletion = (result: SingleResult, index: number) => {
+				completedDetachedIndexes.add(index);
+				onDetachedComplete?.(result, index);
+				scheduleDetachedWorktreeCleanup();
+			};
 			if (step.worktree) {
 				const worktreeTaskCwdConflict = findWorktreeTaskCwdConflict(step.parallel, parallelCwd);
 				if (worktreeTaskCwdConflict) {
@@ -715,8 +729,11 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					worktreeSetup,
 					maxSubagentDepth: params.maxSubagentDepth,
 					projectTrust: params.projectTrust,
-					onDetachedComplete,
+					onDetachedComplete: handleParallelDetachedCompletion,
 				});
+				expectedDetachedCompletions = parallelResults.filter((result) => result.detached).length;
+				worktreeCleanupDeferred = Boolean(worktreeSetup && expectedDetachedCompletions > 0);
+				scheduleDetachedWorktreeCleanup();
 				globalTaskIndex += step.parallel.length;
 
 				for (const result of parallelResults) {
@@ -824,7 +841,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				});
 				prev = appendWorktreeSummary(aggregateParallelOutputs(taskResults), worktreeSummary);
 			} finally {
-				if (worktreeSetup) cleanupWorktrees(worktreeSetup);
+				if (worktreeSetup && !worktreeCleanupDeferred) cleanupWorktrees(worktreeSetup);
 			}
 		} else if (isDynamicParallelStep(step)) {
 			if (Object.hasOwn(step, "acceptance")) {

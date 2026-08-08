@@ -967,6 +967,29 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       sendIncomingMessage(entry, index === triggerIndex ? "trigger" : "followUp");
     });
   }
+  function rejectInboundQueueOverload(entry: InboundMessageEntry): void {
+    const activeClient = client;
+    const message = "Recipient queue is full; this message was not queued. Retry after the recipient becomes idle.";
+    if (!activeClient?.isConnected()) {
+      console.error(`${message} Sender: ${entry.from.name || entry.from.id}`);
+      return;
+    }
+    void activeClient.send(entry.from.id, {
+      text: entry.message.expectsReply ? `${RECIPIENT_TURN_FAILED_PREFIX} ${message}` : message,
+      ...(entry.message.expectsReply ? {
+        replyTo: entry.message.id,
+        attachments: [{ type: "context", name: RECIPIENT_TURN_FAILED_ATTACHMENT, content: message }],
+      } : {}),
+    }).then((result) => {
+      if (result.delivered && entry.message.expectsReply) {
+        replyTracker.markReplied(entry.message.id);
+        syncPresenceStatus();
+      }
+    }).catch(() => {
+      // Best effort: the sender may disconnect after receiving the rejection.
+    });
+  }
+
   function queueIdleMessage(entry: InboundMessageEntry, flushDelivery: PendingInboundMessage["flushDelivery"] = "auto", delayMs = INBOUND_FLUSH_DELAY_MS): void {
     let replacedPendingAsk = false;
     if (entry.message.queueMode === "replace" && entry.message.threadId) {
@@ -984,11 +1007,11 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (replacedPendingAsk) {
       syncPresenceStatus();
     }
-    pendingIdleMessages.push({ ...entry, flushDelivery });
-    while (pendingIdleMessages.length > maxPendingIdleMessages) {
-      const dropped = pendingIdleMessages.shift();
-      if (dropped?.message.expectsReply) replyTracker.markReplied(dropped.message.id);
+    if (pendingIdleMessages.length >= maxPendingIdleMessages) {
+      rejectInboundQueueOverload(entry);
+      return;
     }
+    pendingIdleMessages.push({ ...entry, flushDelivery });
     scheduleInboundFlush(delayMs);
   }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
@@ -1267,8 +1290,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (currentSessionTargetMatches(parsed.to)) {
-        if ((options.sender === "subagent-result" && parsed.source === "foreground")
-          || (options.sender === "subagent-control" && (parsed.source === "foreground" || parsed.source === "async"))) {
+        if (options.sender === "subagent-control" && (parsed.source === "foreground" || parsed.source === "async")) {
           if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
           return;
         }
@@ -1293,8 +1315,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (currentSessionTargetMatches(parsed.to, target, activeClient)) {
-        if ((options.sender === "subagent-result" && parsed.source === "foreground")
-          || (options.sender === "subagent-control" && (parsed.source === "foreground" || parsed.source === "async"))) {
+        if (options.sender === "subagent-control" && (parsed.source === "foreground" || parsed.source === "async")) {
           if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
           return;
         }

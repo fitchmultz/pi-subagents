@@ -159,6 +159,7 @@ interface StepResult {
 }
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
+const ASYNC_CONTROL_REQUEST_FILE = "control-request.json";
 const MAX_SAME_MODEL_RECOVERY_RETRIES = 1;
 
 function formatProcessExitFailure(input: { agent: string; exitCode: number | null; durationMs?: number }): string {
@@ -334,7 +335,7 @@ function runPiStreaming(
 		let observedCompletedMutation = false;
 		const mutationTracker = createMutationCompletionTracker();
 		let resourceLimitTimer: NodeJS.Timeout | undefined;
-			const subagentListLoopGuard = createRepeatedSubagentListGuardState();
+		const subagentListLoopGuard = createRepeatedSubagentListGuardState();
 		const rawStdoutLines: string[] = [];
 
 		const writeOutputLine = (line: string) => {
@@ -352,9 +353,10 @@ function runPiStreaming(
 			if (settled || resourceLimitExceeded) return;
 			error = message;
 			writeOutputLine(message);
+			terminationRequested = true;
 			trySignalChildTree(child, "SIGINT");
 			setTimeout(() => {
-				if (isChildTreeAlive(child)) forceTerminate("SIGTERM");
+				if (!settled && !childExited && isChildTreeAlive(child)) forceTerminate("SIGTERM");
 			}, 1000);
 		};
 
@@ -364,9 +366,10 @@ function runPiStreaming(
 			resourceLimitExceeded = { kind, limit, ...(observed !== undefined ? { observed } : {}), message };
 			error = message;
 			writeOutputLine(message);
+			terminationRequested = true;
 			trySignalChildTree(child, "SIGINT");
 			setTimeout(() => {
-				if (isChildTreeAlive(child)) forceTerminate("SIGTERM");
+				if (!settled && !childExited && isChildTreeAlive(child)) forceTerminate("SIGTERM");
 			}, 1000);
 		};
 
@@ -493,15 +496,17 @@ function runPiStreaming(
 		const FINAL_STOP_GRACE_MS = 1000;
 		const HARD_KILL_MS = 3000;
 		let childExited = false;
+		let terminationRequested = false;
 		let forcedTerminationSignal = false;
 		let cleanTerminalAssistantStopReceived = false;
 		let finalDrainTimer: NodeJS.Timeout | undefined;
 		let finalHardKillTimer: NodeJS.Timeout | undefined;
 		let settled = false;
 		const forceTerminate = (signal: NodeJS.Signals, graceMs = HARD_KILL_MS) => {
+			terminationRequested = true;
 			trySignalChildTree(child, signal);
 			setTimeout(() => {
-				if (isChildTreeAlive(child)) trySignalChildTree(child, "SIGKILL");
+				if (!settled && !childExited && isChildTreeAlive(child)) trySignalChildTree(child, "SIGKILL");
 			}, graceMs);
 		};
 		if (maxExecutionTimeMs !== undefined) {
@@ -526,9 +531,10 @@ function runPiStreaming(
 			if (settled || resourceLimitExceeded) return;
 			interrupted = true;
 			if (!error) error = "Interrupted. Waiting for explicit next action.";
+			terminationRequested = true;
 			trySignalChildTree(child, "SIGINT");
 			setTimeout(() => {
-				if (isChildTreeAlive(child)) forceTerminate("SIGTERM");
+				if (!settled && !childExited && isChildTreeAlive(child)) forceTerminate("SIGTERM");
 			}, 1000);
 		});
 		const clearDrainTimers = () => {
@@ -536,7 +542,7 @@ function runPiStreaming(
 				clearTimeout(finalDrainTimer);
 				finalDrainTimer = undefined;
 			}
-			if (finalHardKillTimer && !forcedTerminationSignal) {
+			if (finalHardKillTimer) {
 				clearTimeout(finalHardKillTimer);
 				finalHardKillTimer = undefined;
 			}
@@ -547,8 +553,9 @@ function runPiStreaming(
 		};
 		function startFinalDrain(): void {
 			if (childExited || finalDrainTimer || settled) return;
+			terminationRequested = true;
 			finalDrainTimer = setTimeout(() => {
-				if (settled) return;
+				if (settled || childExited) return;
 				const termSent = trySignalChildTree(child, "SIGTERM");
 				if (!termSent) return;
 				forcedTerminationSignal = true;
@@ -557,13 +564,16 @@ function runPiStreaming(
 				}
 				finalHardKillTimer = setTimeout(() => {
 					finalHardKillTimer = undefined;
-					if (isChildTreeAlive(child)) forcedTerminationSignal = trySignalChildTree(child, "SIGKILL") || forcedTerminationSignal;
+					if (!settled && !childExited && isChildTreeAlive(child)) forcedTerminationSignal = trySignalChildTree(child, "SIGKILL") || forcedTerminationSignal;
 				}, HARD_KILL_MS);
 			}, FINAL_STOP_GRACE_MS);
 			finalDrainTimer.unref?.();
 		}
 		child.on("exit", () => {
 			childExited = true;
+			if (terminationRequested && isChildTreeAlive(child)) {
+				forcedTerminationSignal = trySignalChildTree(child, "SIGKILL") || forcedTerminationSignal;
+			}
 		});
 		child.on("close", (exitCode, signal) => {
 			settled = true;
@@ -949,14 +959,17 @@ async function runSingleStep(
 		? resolveSingleOutput(step.outputPath, outputForPersistence, finalOutputSnapshot)
 		: { fullOutput: outputForPersistence };
 	const output = resolvedOutput.fullOutput;
-	if (resolvedOutput.saveError && finalResult) {
-		finalResult.exitCode = 1;
-		finalResult.error = `Failed to save output file '${step.outputPath}': ${resolvedOutput.saveError}`;
+	if (resolvedOutput.saveError) {
+		const saveError = `Failed to save output file '${step.outputPath}': ${resolvedOutput.saveError}`;
+		if (finalResult) {
+			finalResult.exitCode = 1;
+			finalResult.error = saveError;
+		}
 		const lastAttempt = modelAttempts.at(-1);
 		if (lastAttempt) {
 			lastAttempt.success = false;
 			lastAttempt.exitCode = 1;
-			lastAttempt.error = finalResult.error;
+			lastAttempt.error = saveError;
 		}
 	}
 	const cleanup = resolvedOutput.savedPath && step.outputMode !== "file-only" && step.outputPathFromAgentDefault === true
@@ -1367,6 +1380,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	let interrupted = false;
 	let currentActivityState: ActivityState | undefined;
 	let activityTimer: NodeJS.Timeout | undefined;
+	let controlRequestTimer: NodeJS.Timeout | undefined;
 	let previousCumulativeTokens: TokenUsage = { input: 0, output: 0, total: 0 };
 	let latestSessionFile: string | undefined;
 
@@ -1763,6 +1777,25 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		for (const interrupt of activeChildInterrupts.values()) interrupt();
 	};
 	process.on(ASYNC_INTERRUPT_SIGNAL, interruptRunner);
+	const controlRequestPath = path.join(asyncDir, ASYNC_CONTROL_REQUEST_FILE);
+	let lastControlRequestId: string | undefined;
+	controlRequestTimer = setInterval(() => {
+		let request: { requestId?: unknown; runId?: unknown; action?: unknown };
+		try {
+			if (!fs.existsSync(controlRequestPath)) return;
+			if (fs.statSync(controlRequestPath).size > 64 * 1024) throw new Error("control request exceeds 64 KiB");
+			request = JSON.parse(fs.readFileSync(controlRequestPath, "utf-8")) as typeof request;
+			fs.rmSync(controlRequestPath, { force: true });
+		} catch (error) {
+			console.error(`Failed to read async control request '${controlRequestPath}':`, error);
+			try { fs.rmSync(controlRequestPath, { force: true }); } catch {}
+			return;
+		}
+		if (request.action !== "interrupt" || request.runId !== id || typeof request.requestId !== "string" || !request.requestId || request.requestId === lastControlRequestId) return;
+		lastControlRequestId = request.requestId;
+		interruptRunner();
+	}, 100);
+	controlRequestTimer.unref?.();
 	appendJsonl(
 		eventsPath,
 		JSON.stringify({
@@ -2486,14 +2519,12 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	if (worktreeSummaries.length > 0) summary = appendWorktreeSummary(summary, worktreeSummaries.join("\n\n"));
 	let truncated = false;
 
-	if (maxOutput) {
-		const config = { ...DEFAULT_MAX_OUTPUT, ...maxOutput };
-		const lastArtifactPath = results[results.length - 1]?.artifactPaths?.outputPath;
-		const truncResult = truncateOutput(summary, config, lastArtifactPath);
-		if (truncResult.truncated) {
-			summary = truncResult.text;
-			truncated = true;
-		}
+	const outputLimits = { ...DEFAULT_MAX_OUTPUT, ...maxOutput };
+	const lastArtifactPath = results[results.length - 1]?.artifactPaths?.outputPath;
+	const truncResult = truncateOutput(summary, outputLimits, lastArtifactPath);
+	if (truncResult.truncated) {
+		summary = truncResult.text;
+		truncated = true;
 	}
 
 	const resultMode = config.resultMode ?? statusPayload.mode;
@@ -2536,6 +2567,11 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		clearInterval(activityTimer);
 		activityTimer = undefined;
 	}
+	if (controlRequestTimer) {
+		clearInterval(controlRequestTimer);
+		controlRequestTimer = undefined;
+	}
+	process.off(ASYNC_INTERRUPT_SIGNAL, interruptRunner);
 	const effectiveSessionFile = sessionFile ?? latestSessionFile ?? undefined;
 	const runEndedAt = Date.now();
 	if (interrupted) {
