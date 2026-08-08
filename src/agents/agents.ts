@@ -457,11 +457,13 @@ function isInAgentSkillSubtree(dir: string, filePath: string): boolean {
 }
 
 const reportedAgentDiagnostics = new Map<string, { filePath: string; error: string }>();
+const loggedAgentDiagnostics = new Set<string>();
 
 function reportAgentDiagnostic(filePath: string, message: string): void {
 	const key = `${filePath}\0${message}`;
-	if (reportedAgentDiagnostics.has(key)) return;
 	reportedAgentDiagnostics.set(key, { filePath, error: message });
+	if (loggedAgentDiagnostics.has(key)) return;
+	loggedAgentDiagnostics.add(key);
 	console.error(`Invalid agent definition '${filePath}: ${message}'`);
 }
 
@@ -656,7 +658,7 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 }
 
 function loadChainsFromDir(dir: string, source: "user" | "project"): { chains: ChainConfig[]; diagnostics: ChainDiscoveryDiagnostic[] } {
-	const chains = new Map<string, ChainConfig>();
+	const chains: ChainConfig[] = [];
 	const diagnostics: ChainDiscoveryDiagnostic[] = [];
 
 	for (const filePath of listFilesRecursive(dir, (fileName) => fileName.endsWith(".chain.md") || fileName.endsWith(".chain.json"))) {
@@ -669,16 +671,14 @@ function loadChainsFromDir(dir: string, source: "user" | "project"): { chains: C
 
 		try {
 			const chain = filePath.endsWith(".chain.json") ? parseJsonChain(content, source, filePath) : parseChain(content, source, filePath);
-			const existing = chains.get(chain.name);
-			if (existing && existing.filePath.endsWith(".chain.json") && filePath.endsWith(".chain.md")) continue;
-			chains.set(chain.name, chain);
+			chains.push(chain);
 		} catch (error) {
 			diagnostics.push({ source, filePath, error: error instanceof Error ? error.message : String(error) });
 			continue;
 		}
 	}
 
-	return { chains: Array.from(chains.values()), diagnostics };
+	return { chains, diagnostics };
 }
 
 function isDirectory(p: string): boolean {
@@ -788,27 +788,19 @@ export function discoverAgentsAll(cwd: string, options: AgentDiscoveryOptions = 
 		...loadAgentsFromDir(userDirOld, "user"),
 		...loadAgentsFromDir(userDirNew, "user"),
 	];
-	const projectMap = new Map<string, AgentConfig>();
-	for (const dir of scope === "user" ? [] : projectDirs) {
-		for (const agent of loadAgentsFromDir(dir, "project")) {
-			projectMap.set(agent.name, agent);
-		}
-	}
-	const project = Array.from(projectMap.values());
+	const project = (scope === "user" ? [] : projectDirs).flatMap((dir) => loadAgentsFromDir(dir, "project"));
 
-	const chainMap = new Map<string, ChainConfig>();
+	const projectChains: ChainConfig[] = [];
 	const projectChainDiagnostics: ChainDiscoveryDiagnostic[] = [];
 	for (const dir of scope === "user" ? [] : projectChainDirs) {
 		const loaded = loadChainsFromDir(dir, "project");
 		projectChainDiagnostics.push(...loaded.diagnostics);
-		for (const chain of loaded.chains) {
-			chainMap.set(chain.name, chain);
-		}
+		projectChains.push(...loaded.chains);
 	}
 	const userChains = scope === "project" ? { chains: [], diagnostics: [] } : loadChainsFromDir(userChainDir, "user");
 	const chains = [
 		...userChains.chains,
-		...Array.from(chainMap.values()),
+		...projectChains,
 	];
 	const chainDiagnostics = [
 		...userChains.diagnostics,

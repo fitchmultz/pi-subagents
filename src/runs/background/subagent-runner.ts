@@ -357,7 +357,7 @@ function runPiStreaming(
 			trySignalChildTree(child, "SIGINT");
 			setTimeout(() => {
 				if (!settled && !childExited && isChildTreeAlive(child)) forceTerminate("SIGTERM");
-			}, 1000);
+			}, 1000).unref?.();
 		};
 
 		const triggerResourceLimit = (kind: ResourceLimitExceeded["kind"], limit: number, observed?: number) => {
@@ -370,7 +370,7 @@ function runPiStreaming(
 			trySignalChildTree(child, "SIGINT");
 			setTimeout(() => {
 				if (!settled && !childExited && isChildTreeAlive(child)) forceTerminate("SIGTERM");
-			}, 1000);
+			}, 1000).unref?.();
 		};
 
 		const appendChildEvent = (event: object) => {
@@ -507,7 +507,7 @@ function runPiStreaming(
 			trySignalChildTree(child, signal);
 			setTimeout(() => {
 				if (!settled && !childExited && isChildTreeAlive(child)) trySignalChildTree(child, "SIGKILL");
-			}, graceMs);
+			}, graceMs).unref?.();
 		};
 		if (maxExecutionTimeMs !== undefined) {
 			resourceLimitTimer = setTimeout(() => {
@@ -535,7 +535,7 @@ function runPiStreaming(
 			trySignalChildTree(child, "SIGINT");
 			setTimeout(() => {
 				if (!settled && !childExited && isChildTreeAlive(child)) forceTerminate("SIGTERM");
-			}, 1000);
+			}, 1000).unref?.();
 		});
 		const clearDrainTimers = () => {
 			if (finalDrainTimer) {
@@ -566,6 +566,7 @@ function runPiStreaming(
 					finalHardKillTimer = undefined;
 					if (!settled && !childExited && isChildTreeAlive(child)) forcedTerminationSignal = trySignalChildTree(child, "SIGKILL") || forcedTerminationSignal;
 				}, HARD_KILL_MS);
+				finalHardKillTimer.unref?.();
 			}, FINAL_STOP_GRACE_MS);
 			finalDrainTimer.unref?.();
 		}
@@ -2590,11 +2591,12 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}));
 		}
 	}
+	const hasFailedSteps = statusPayload.steps.some((step) => step.status === "failed");
 	const hasPausedSteps = statusPayload.steps.some((step) => step.status === "paused");
 	const allResultsSucceeded = results.length > 0 && results.every((r) => r.success);
 	const allStatusStepsComplete = statusPayload.steps.length > 0 && statusPayload.steps.every((step) => step.status === "complete");
 	const allWorkflowNodesCompleted = !statusPayload.workflowGraph?.nodes?.length || statusPayload.workflowGraph.nodes.every((node) => node.status === "completed");
-	const finalRunState: AsyncStatus["state"] = interrupted || hasPausedSteps ? "paused" : allResultsSucceeded || (allStatusStepsComplete && allWorkflowNodesCompleted) ? "complete" : "failed";
+	const finalRunState: AsyncStatus["state"] = hasFailedSteps ? "failed" : interrupted || hasPausedSteps ? "paused" : allResultsSucceeded || (allStatusStepsComplete && allWorkflowNodesCompleted) ? "complete" : "failed";
 	statusPayload.state = finalRunState;
 	statusPayload.activityState = undefined;
 	statusPayload.currentTool = undefined;
@@ -2650,26 +2652,29 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			success: finalRunState === "complete",
 			state: finalRunState,
 			summary: finalRunState === "paused" ? "Paused after interrupt. Waiting for explicit next action." : summary,
-			results: results.map((r) => ({
-				agent: r.agent,
-				output: r.output,
-				error: r.error,
-				success: r.success,
-				skipped: r.skipped || undefined,
-				sessionFile: r.sessionFile,
-				intercomTarget: r.intercomTarget,
-				model: r.model,
-				attemptedModels: r.attemptedModels,
-				modelAttempts: r.modelAttempts,
-				artifactPaths: r.artifactPaths,
-				truncated: r.truncated,
-				structuredOutput: r.structuredOutput,
-				structuredOutputPath: r.structuredOutputPath,
-				structuredOutputSchemaPath: r.structuredOutputSchemaPath,
-				acceptance: r.acceptance,
-				resourceLimitExceeded: r.resourceLimitExceeded,
-				interrupted: r.interrupted,
-			})),
+			results: results.map((r) => {
+				const childOutput = truncateOutput(r.output, outputLimits, r.artifactPaths?.outputPath);
+				return {
+					agent: r.agent,
+					output: childOutput.text,
+					error: r.error,
+					success: r.success,
+					skipped: r.skipped || undefined,
+					sessionFile: r.sessionFile,
+					intercomTarget: r.intercomTarget,
+					model: r.model,
+					attemptedModels: r.attemptedModels,
+					modelAttempts: r.modelAttempts,
+					artifactPaths: r.artifactPaths,
+					truncated: r.truncated || childOutput.truncated || undefined,
+					structuredOutput: r.structuredOutput,
+					structuredOutputPath: r.structuredOutputPath,
+					structuredOutputSchemaPath: r.structuredOutputSchemaPath,
+					acceptance: r.acceptance,
+					resourceLimitExceeded: r.resourceLimitExceeded,
+					interrupted: r.interrupted,
+				};
+			}),
 			outputs,
 			workflowGraph: statusPayload.workflowGraph,
 			exitCode: finalRunState === "failed" ? 1 : 0,

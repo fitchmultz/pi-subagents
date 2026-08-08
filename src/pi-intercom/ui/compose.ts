@@ -7,6 +7,8 @@ import type { SessionInfo } from "../types.ts";
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 const MAX_PASTE_CHARS = 1_000_000;
+const INCOMPLETE_PASTE_IDLE_MS = 200;
+const PASTE_RENDER_TAIL_CHARS = 8192;
 
 export interface ComposeResult {
   sent: boolean;
@@ -29,6 +31,8 @@ export class ComposeOverlay implements Component {
   private sending: boolean = false;
   private error: string | null = null;
   private pasteBuffer: string | null = null;
+  private pasteStartPrefix = "";
+  private pasteIdleTimer: NodeJS.Timeout | null = null;
 
   constructor(
     tui: TUI,
@@ -53,7 +57,24 @@ export class ComposeOverlay implements Component {
   private finish(result: ComposeResult): void {
     if (this.completed) return;
     this.completed = true;
+    if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
+    this.pasteIdleTimer = null;
     this.done(result);
+  }
+
+  private scheduleIncompletePasteFlush(): void {
+    if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
+    this.pasteIdleTimer = setTimeout(() => {
+      this.pasteIdleTimer = null;
+      if (this.pasteBuffer === null || this.completed) return;
+      const data = this.pasteBuffer.replace(/\r\n?/g, "\n");
+      this.pasteBuffer = null;
+      const printable = [...data].filter((character) => character >= " " || character === "\n" || character === "\t").join("");
+      if (printable) this.inputBuffer += printable;
+      this.error = null;
+      this.tui.requestRender();
+    }, INCOMPLETE_PASTE_IDLE_MS);
+    this.pasteIdleTimer.unref?.();
   }
 
   handleInput(data: string): void {
@@ -64,6 +85,7 @@ export class ComposeOverlay implements Component {
       this.pasteBuffer += data;
       const end = this.pasteBuffer.indexOf(BRACKETED_PASTE_END);
       if (end === -1 && this.pasteBuffer.length <= MAX_PASTE_CHARS) {
+        this.scheduleIncompletePasteFlush();
         this.tui.requestRender();
         return;
       }
@@ -71,13 +93,33 @@ export class ComposeOverlay implements Component {
         ? this.pasteBuffer
         : this.pasteBuffer.slice(0, end) + this.pasteBuffer.slice(end + BRACKETED_PASTE_END.length);
       this.pasteBuffer = null;
+      if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
+      this.pasteIdleTimer = null;
       data = data.replace(/\r\n?/g, "\n");
       pasted = true;
-    } else if (data.startsWith(BRACKETED_PASTE_START)) {
+    } else {
+      if (this.pasteStartPrefix) {
+        if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
+        this.pasteIdleTimer = null;
+        data = this.pasteStartPrefix + data;
+        this.pasteStartPrefix = "";
+      }
+      if (data.length > 1 && data !== BRACKETED_PASTE_START && BRACKETED_PASTE_START.startsWith(data)) {
+        this.pasteStartPrefix = data;
+        this.pasteIdleTimer = setTimeout(() => {
+          this.pasteIdleTimer = null;
+          this.pasteStartPrefix = "";
+        }, INCOMPLETE_PASTE_IDLE_MS);
+        this.pasteIdleTimer.unref?.();
+        return;
+      }
+    }
+    if (!pasted && data.startsWith(BRACKETED_PASTE_START)) {
       const body = data.slice(BRACKETED_PASTE_START.length);
       const end = body.indexOf(BRACKETED_PASTE_END);
       if (end === -1 && body.length <= MAX_PASTE_CHARS) {
         this.pasteBuffer = body;
+        this.scheduleIncompletePasteFlush();
         this.tui.requestRender();
         return;
       }
@@ -161,8 +203,8 @@ export class ComposeOverlay implements Component {
   private renderInputLines(row: (text?: string) => string, lines: string[], contentWidth: number): void {
     const pendingPaste = this.pasteBuffer === null
       ? ""
-      : [...this.pasteBuffer].filter((character) => character >= " " || character === "\n" || character === "\t").join("");
-    const rawLines = `${this.inputBuffer}${pendingPaste}`.split("\n");
+      : [...this.pasteBuffer.slice(-PASTE_RENDER_TAIL_CHARS)].filter((character) => character >= " " || character === "\n" || character === "\t").join("");
+    const rawLines = `${this.inputBuffer.slice(-PASTE_RENDER_TAIL_CHARS)}${pendingPaste}`.split("\n");
     const visibleLines = rawLines.slice(-8);
     visibleLines.forEach((line, index) => {
       const isLast = index === visibleLines.length - 1;

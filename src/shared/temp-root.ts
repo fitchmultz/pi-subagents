@@ -13,6 +13,12 @@ export function ensureTempRoot(): void {
 	if (process.platform !== "win32") fs.chmodSync(TEMP_ROOT_DIR, 0o700);
 }
 
+export function ensureSafeTempPath(candidate: string): void {
+	const root = path.resolve(TEMP_ROOT_DIR);
+	const resolved = path.resolve(candidate);
+	if (resolved === root || resolved.startsWith(`${root}${path.sep}`)) ensureTempRoot();
+}
+
 function removeOldEntries(root: string, now: number, skipActiveStatus = false): void {
 	let entries: fs.Dirent[];
 	try {
@@ -23,7 +29,7 @@ function removeOldEntries(root: string, now: number, skipActiveStatus = false): 
 	for (const entry of entries) {
 		const entryPath = path.join(root, entry.name);
 		try {
-			const stat = fs.statSync(entryPath);
+			const stat = fs.lstatSync(entryPath);
 			if (now - stat.mtimeMs <= MAX_RUN_AGE_MS) continue;
 			if (skipActiveStatus && entry.isDirectory()) {
 				try {

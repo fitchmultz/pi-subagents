@@ -145,7 +145,7 @@ const DynamicExpandSchema = Type.Object({
 
 const DynamicParallelTemplateSchema = Type.Object({
 	agent: Type.String({ minLength: 1 }),
-	task: Type.Optional(Type.String({ description: "Task template with {item}, {item.path}, {task}, {previous}, {chain_dir}, {outputs.name} variables." })),
+	task: Type.Optional(Type.String({ minLength: 1, description: "Task template with {item}, {item.path}, {task}, {previous}, {chain_dir}, {outputs.name} variables." })),
 	phase: Type.Optional(Type.String({ description: "Phase/group label for status and graph rendering." })),
 	label: Type.Optional(Type.String({ description: "User-facing label; item templates supported." })),
 	outputSchema: Type.Optional(JsonSchemaObject),
@@ -168,6 +168,7 @@ const DynamicCollectSchema = Type.Object({
 export const ChainItemSchema = Type.Object({
 	agent: Type.Optional(Type.String({ minLength: 1, description: "Sequential step agent name" })),
 	task: Type.Optional(Type.String({
+		minLength: 1,
 		description: "Task template: {task}=original request, {previous}=prior step response, {chain_dir}=shared folder, {outputs.name}=prior named output. Required for first step; defaults to '{previous}'."
 	})),
 	phase: Type.Optional(Type.String({ description: "Phase/group label for status and graph rendering." })),
@@ -206,6 +207,17 @@ export const ChainItemSchema = Type.Object({
 		{ if: { required: ["collect"] }, then: { required: ["expand", "parallel"], properties: { parallel: { type: "object" } } } },
 		{ if: { required: ["parallel"], properties: { parallel: { type: "object" } } }, then: { required: ["expand", "collect"] } },
 		{ not: { required: ["expand"], properties: { parallel: { type: "array", items: {} } } } },
+		{ if: { required: ["agent"] }, then: { not: { anyOf: [{ required: ["concurrency"] }, { required: ["failFast"] }, { required: ["worktree"] }] } } },
+		{ if: { required: ["parallel"], properties: { parallel: { type: "array", items: {} } } }, then: { not: { anyOf: [
+			{ required: ["task"] }, { required: ["phase"] }, { required: ["label"] }, { required: ["as"] }, { required: ["outputSchema"] },
+			{ required: ["output"] }, { required: ["outputMode"] }, { required: ["reads"] }, { required: ["progress"] },
+			{ required: ["skill"] }, { required: ["model"] }, { required: ["acceptance"] }, { required: ["expand"] }, { required: ["collect"] },
+		] } } },
+		{ if: { required: ["parallel"], properties: { parallel: { type: "object" } } }, then: { not: { anyOf: [
+			{ required: ["task"] }, { required: ["as"] }, { required: ["outputSchema"] }, { required: ["cwd"] }, { required: ["output"] },
+			{ required: ["outputMode"] }, { required: ["reads"] }, { required: ["progress"] }, { required: ["skill"] },
+			{ required: ["model"] }, { required: ["acceptance"] }, { required: ["worktree"] },
+		] } } },
 	],
 });
 
@@ -223,7 +235,7 @@ const ControlOverrides = Type.Object({
 
 export const SubagentParams = Type.Object({
 	agent: Type.Optional(Type.String({ minLength: 1, description: "Agent name (SINGLE mode) or target for management get/update/delete" })),
-	task: Type.Optional(Type.String({ description: "Task (SINGLE mode, optional for self-contained agents)" })),
+	task: Type.Optional(Type.String({ minLength: 1, description: "Task (SINGLE mode, optional for self-contained agents)" })),
 	// Management action (when present, tool operates in management mode)
 	action: Type.Optional(Type.Enum([...SUBAGENT_ACTIONS] as const, {
 		type: "string",
@@ -299,5 +311,12 @@ export const SubagentParams = Type.Object({
 		{ not: { required: ["agent", "tasks"] } },
 		{ not: { required: ["agent", "chain"] } },
 		{ not: { required: ["tasks", "chain"] } },
+		{ if: { required: ["worktree"] }, then: { required: ["tasks"] } },
+		{ if: { required: ["concurrency"] }, then: { required: ["tasks"] } },
+		{ if: { required: ["chainDir"] }, then: { required: ["chain"] } },
+		{ if: { anyOf: [
+			{ required: ["output"] }, { required: ["outputMode"] }, { required: ["skill"] }, { required: ["model"] },
+			{ required: ["outputSchema"] }, { required: ["acceptance"] }, { required: ["progress"] },
+		] }, then: { required: ["agent"] } },
 	],
 });

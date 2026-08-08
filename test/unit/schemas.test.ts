@@ -411,8 +411,8 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.ok(CompileSchema, "TypeBox compiler should exist");
 		const validator = CompileSchema(SubagentParams);
 		const validValues = [
-			{ skill: "review" },
-			{ skill: false },
+			{ agent: "worker", skill: "review" },
+			{ agent: "worker", skill: false },
 			{ tasks: [{ agent: "reviewer", task: "check this", reads: false }] },
 			{ tasks: [{ agent: "reviewer", task: "check this", skill: "review" }] },
 			{ tasks: [{ agent: "reviewer", task: "check this", skill: false }] },
@@ -439,6 +439,12 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ agent: "", task: "work" },
 			{ agent: "worker", task: "work", extra: true },
 			{ tasks: [] },
+			{ agent: "worker", task: "" },
+			{ agent: "worker", task: "work", worktree: true },
+			{ chain: [{ agent: "worker", task: "work" }], worktree: true },
+			{ chain: [{ parallel: [{ agent: "worker", task: "work" }], output: "ignored.md" }] },
+			{ chain: [{ agent: "worker", task: "work", concurrency: 2 }] },
+			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "reviewer" }, collect: { as: "reviews" }, worktree: true }] },
 			{ concurrency: 1.5 },
 			{ agent: "worker", tasks: [{ agent: "reviewer", task: "review" }] },
 			{ skill: [123] },

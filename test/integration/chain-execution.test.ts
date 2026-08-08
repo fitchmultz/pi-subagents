@@ -1345,10 +1345,14 @@ describe("chain execution — parallel steps", () => {
 		const intercomEvents = createEventBus();
 		let detached = false;
 
+		const chainBase = path.join(tempDir, "chain-artifacts");
+		const runId = "chain-detached-worktree";
 		const result = await executeChain(makeChainParams([{
 			parallel: [{ agent: "a", task: "Wait for input" }],
 			worktree: true,
 		}], agents, {
+			chainDir: chainBase,
+			runId,
 			intercomEvents,
 			onUpdate(update: { details?: { progress?: Array<{ currentTool?: string }> } }) {
 				if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
@@ -1362,9 +1366,12 @@ describe("chain execution — parallel steps", () => {
 		assert.ok(callFile);
 		const worktreeCwd = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).cwd as string;
 		assert.equal(fs.existsSync(worktreeCwd), true, "chain worktree must remain while the detached child is active");
+		fs.writeFileSync(path.join(worktreeCwd, "tracked.txt"), "edit after chain detachment\n", "utf-8");
 		const deadline = Date.now() + 5_000;
 		while (fs.existsSync(worktreeCwd) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
 		assert.equal(fs.existsSync(worktreeCwd), false, "chain worktree should be cleaned after detached completion");
+		const patch = fs.readFileSync(path.join(chainBase, runId, "worktree-diffs", "step-0", "task-0-a.patch"), "utf-8");
+		assert.match(patch, /edit after chain detachment/);
 	});
 
 	it("reports failed dynamic items while preserving a sibling detach", async () => {
@@ -1493,6 +1500,28 @@ describe("chain execution — parallel steps", () => {
 		assert.ok(result.isError, "chain should reject conflicting task cwd under worktree");
 		assert.match(result.content[0]?.text ?? "", /worktree isolation uses the shared cwd/i);
 		assert.match(result.content[0]?.text ?? "", /task 2 \(b\) sets cwd/i);
+	});
+
+	it("cleans a successful parallel-chain worktree exactly once", async () => {
+		initGitRepo(tempDir);
+		mockPi.onCall({ output: "done" });
+		const errors: string[] = [];
+		const originalConsoleError = console.error;
+		console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+		try {
+			const result = await executeChain(makeChainParams([{
+				parallel: [{ agent: "a", task: "Task A" }],
+				worktree: true,
+			}], [makeAgent("a")]));
+			assert.equal(result.isError, undefined);
+			const callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"));
+			assert.ok(callFile);
+			const worktreeCwd = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).cwd as string;
+			assert.equal(fs.existsSync(worktreeCwd), false);
+			assert.deepEqual(errors.filter((message) => /Failed to (remove worktree|delete worktree branch)/.test(message)), []);
+		} finally {
+			console.error = originalConsoleError;
+		}
 	});
 
 	it("preserves worktrees and reports diff setup failure on parallel step timeout", async () => {

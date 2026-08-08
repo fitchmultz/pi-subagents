@@ -80,6 +80,30 @@ describe("agent management config parsing", () => {
 		}
 	});
 
+	it("refuses to mutate duplicate project agent and chain definitions", () => {
+		fs.mkdirSync(path.join(tempDir, ".git"));
+		const legacyAgent = path.join(tempDir, ".agents", "duplicate.md");
+		const currentAgent = path.join(tempDir, ".pi", "agents", "duplicate.md");
+		for (const filePath of [legacyAgent, currentAgent]) {
+			fs.mkdirSync(path.dirname(filePath), { recursive: true });
+			fs.writeFileSync(filePath, "---\nname: duplicate\ndescription: Duplicate\n---\nBody", "utf-8");
+		}
+		const chainMarkdown = path.join(tempDir, ".pi", "chains", "duplicate.chain.md");
+		const chainJson = path.join(tempDir, ".pi", "chains", "duplicate.chain.json");
+		fs.mkdirSync(path.dirname(chainMarkdown), { recursive: true });
+		fs.writeFileSync(chainMarkdown, "---\nname: duplicate-chain\ndescription: Duplicate\n---\n\n## worker\n\none\n", "utf-8");
+		fs.writeFileSync(chainJson, JSON.stringify({ name: "duplicate-chain", description: "Duplicate", chain: [{ agent: "worker", task: "two" }] }), "utf-8");
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
+
+		const agentResult = handleManagementAction("delete", { agent: "duplicate", agentScope: "project" }, ctx);
+		const chainResult = handleManagementAction("delete", { chainName: "duplicate-chain", agentScope: "project" }, ctx);
+		assert.equal(agentResult.isError, true);
+		assert.match(readText(agentResult), /multiple definitions in scope 'project'/);
+		assert.equal(chainResult.isError, true);
+		assert.match(readText(chainResult), /multiple definitions in scope 'project'/);
+		for (const filePath of [legacyAgent, currentAgent, chainMarkdown, chainJson]) assert.equal(fs.existsSync(filePath), true);
+	});
+
 	it("creates, gets, updates, and deletes a packaged agent by runtime name", () => {
 		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const created = handleCreate(

@@ -5,13 +5,15 @@ import { randomUUID } from "crypto";
 import { getPiAgentDir } from "../agent-dir.ts";
 import { writeMessage, createMessageReader, validateIntercomMessageSize } from "./framing.ts";
 import { prepareBrokerSocketPath } from "./paths.ts";
-import { isMessage, isSessionRegistration } from "../types.ts";
+import { isMessage, isSessionRegistration, normalizeSessionInfo } from "../types.ts";
 import type { SessionInfo, Message, BrokerMessage } from "../types.ts";
 
 const INTERCOM_DIR = join(getPiAgentDir(), "intercom");
 const PID_PATH = join(INTERCOM_DIR, "broker.pid");
 
 const REPLACE_DELIVERY_DELAY_MS = 1500;
+const MAX_PENDING_REPLACE_DELIVERIES_PER_SENDER = 100;
+const MAX_PENDING_REPLACE_DELIVERIES = 1000;
 
 interface ConnectedSession {
   socket: net.Socket;
@@ -252,43 +254,18 @@ class IntercomBroker {
         }
         const session = this.sessions.get(currentId);
         if (session) {
-          if (clientMessage.name !== undefined) {
-            if (typeof clientMessage.name !== "string") {
-              throw new Error("Invalid presence name");
-            }
-            session.info.name = clientMessage.name;
-          }
-          if (clientMessage.status !== undefined) {
-            if (typeof clientMessage.status !== "string") {
-              throw new Error("Invalid presence status");
-            }
-            session.info.status = clientMessage.status;
-          }
-          if (clientMessage.model !== undefined) {
-            if (typeof clientMessage.model !== "string") {
-              throw new Error("Invalid presence model");
-            }
-            session.info.model = clientMessage.model;
-          }
-          if (clientMessage.pendingAsks !== undefined) {
-            if (typeof clientMessage.pendingAsks !== "number" || !Number.isFinite(clientMessage.pendingAsks) || clientMessage.pendingAsks < 0) {
-              throw new Error("Invalid presence pendingAsks");
-            }
-            session.info.pendingAsks = clientMessage.pendingAsks;
-          }
-          if (clientMessage.acceptsAsks !== undefined) {
-            if (typeof clientMessage.acceptsAsks !== "boolean") {
-              throw new Error("Invalid presence acceptsAsks");
-            }
-            session.info.acceptsAsks = clientMessage.acceptsAsks;
-          }
-          if (clientMessage.lastIntercomActivity !== undefined) {
-            if (typeof clientMessage.lastIntercomActivity !== "number" || !Number.isFinite(clientMessage.lastIntercomActivity)) {
-              throw new Error("Invalid presence lastIntercomActivity");
-            }
-            session.info.lastIntercomActivity = clientMessage.lastIntercomActivity;
-          }
-          session.info.lastSeen = Date.now();
+          const nextInfo = normalizeSessionInfo({
+            ...session.info,
+            ...(clientMessage.name !== undefined ? { name: clientMessage.name } : {}),
+            ...(clientMessage.status !== undefined ? { status: clientMessage.status } : {}),
+            ...(clientMessage.model !== undefined ? { model: clientMessage.model } : {}),
+            ...(clientMessage.pendingAsks !== undefined ? { pendingAsks: clientMessage.pendingAsks } : {}),
+            ...(clientMessage.acceptsAsks !== undefined ? { acceptsAsks: clientMessage.acceptsAsks } : {}),
+            ...(clientMessage.lastIntercomActivity !== undefined ? { lastIntercomActivity: clientMessage.lastIntercomActivity } : {}),
+            lastSeen: Date.now(),
+          });
+          if (!nextInfo) throw new Error("Invalid presence update");
+          session.info = nextInfo;
         }
         break;
       }
@@ -329,6 +306,19 @@ class IntercomBroker {
     const existing = this.pendingReplaceDeliveries.get(key);
     if (existing) {
       clearTimeout(existing.timer);
+    } else {
+      let senderPending = 0;
+      for (const pending of this.pendingReplaceDeliveries.values()) {
+        if (pending.fromId === fromId) senderPending++;
+      }
+      if (senderPending >= MAX_PENDING_REPLACE_DELIVERIES_PER_SENDER || this.pendingReplaceDeliveries.size >= MAX_PENDING_REPLACE_DELIVERIES) {
+        writeMessage(senderSocket, {
+          type: "delivery_failed",
+          messageId: message.id,
+          reason: "Replace-mode delivery queue is full; retry after pending updates are delivered.",
+        });
+        return;
+      }
     }
     writeMessage(senderSocket, {
       type: "delivery_queued",

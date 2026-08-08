@@ -236,9 +236,12 @@ describe("parallel agent execution", () => {
 		const worktreeCwd = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).cwd as string;
 		assert.notEqual(worktreeCwd, tempDir);
 		assert.equal(fs.existsSync(worktreeCwd), true, "worktree must remain while the detached child is active");
+		fs.writeFileSync(path.join(worktreeCwd, "tracked.txt"), "edit after top-level detachment\n", "utf-8");
 		const deadline = Date.now() + 5_000;
 		while (fs.existsSync(worktreeCwd) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
 		assert.equal(fs.existsSync(worktreeCwd), false, "worktree should be cleaned after detached completion");
+		const patch = fs.readFileSync(path.join(result.details.artifacts?.dir ?? path.join(tempDir, "subagent-artifacts"), "worktree-diffs", "task-0-worker.patch"), "utf-8");
+		assert.match(patch, /edit after top-level detachment/);
 	});
 
 	it("top-level foreground parallel timeout preserves worktrees when diff capture setup fails", async () => {
@@ -361,6 +364,22 @@ describe("parallel agent execution", () => {
 
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /outputMode: "file-only"/);
+		assert.equal(mockPi.callCount(), 0);
+	});
+
+	it("rejects wrong-mode worktree and ignored chain fields before launch", async () => {
+		const executor = makeExecutor([makeAgent("worker")]);
+		const signal = new AbortController().signal;
+		const ctx = makeMinimalCtx(tempDir);
+		const single = await executor.execute("wrong-mode-single-worktree", { agent: "worker", task: "work", worktree: true } as never, signal, undefined, ctx);
+		const chain = await executor.execute("wrong-mode-chain-worktree", { chain: [{ agent: "worker", task: "work" }], worktree: true } as never, signal, undefined, ctx);
+		const flattened = await executor.execute("ignored-parallel-field", { chain: [{ parallel: [{ agent: "worker", task: "work" }], output: "ignored.md" }] } as never, signal, undefined, ctx);
+		const emptyTask = await executor.execute("empty-parallel-task", { tasks: [{ agent: "worker", task: "" }] } as never, signal, undefined, ctx);
+
+		assert.match(single.content[0]?.text ?? "", /worktree.*tasks parallel mode/i);
+		assert.match(chain.content[0]?.text ?? "", /worktree.*tasks parallel mode/i);
+		assert.match(flattened.content[0]?.text ?? "", /fields are not supported.*output/i);
+		assert.match(emptyTask.content[0]?.text ?? "", /task must be a non-empty string/i);
 		assert.equal(mockPi.callCount(), 0);
 	});
 

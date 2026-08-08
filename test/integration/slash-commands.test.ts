@@ -254,7 +254,7 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		assert.equal(sent.length, 2);
 		assert.equal((sent[0] as { display?: boolean }).display, true);
 		assert.equal((sent[0] as { content?: string }).content, "Running subagent...");
-		assert.equal((sent[1] as { display?: boolean }).display, true);
+		assert.equal((sent[1] as { display?: boolean }).display, false);
 		assert.match((sent[1] as { content?: string }).content ?? "", /Commit finished/);
 	});
 
@@ -301,10 +301,10 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		assert.equal((sent[0] as { display?: boolean }).display, true);
 		assert.equal((sent[0] as { content?: string }).content, "inspect this");
 		assert.equal((sent[1] as { customType?: string; display?: boolean }).customType, SLASH_RESULT_TYPE);
-		assert.equal((sent[1] as { display?: boolean }).display, true);
+		assert.equal((sent[1] as { display?: boolean }).display, false);
 		assert.match((sent[1] as { content?: string }).content ?? "", /Scout finished/);
 		assert.match((sent[1] as { content?: string }).content ?? "", /Child session exports\n\n- `\/tmp\/child-session\.jsonl`/);
-		assert.deepEqual(log, ["send:visible", "status:running...", "send:visible", "status:clear"]);
+		assert.deepEqual(log, ["send:visible", "status:running...", "send:hidden", "status:clear"]);
 
 		const visibleDetails = resolveSlashMessageDetails!((sent[0] as { details?: unknown }).details);
 		assert.ok(visibleDetails);
@@ -403,9 +403,9 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		assert.equal((sent[0] as { display?: boolean }).display, true);
 		assert.equal((sent[0] as { content?: string }).content, "inspect this");
 		assert.equal((sent[1] as { customType?: string; display?: boolean }).customType, SLASH_RESULT_TYPE);
-		assert.equal((sent[1] as { display?: boolean }).display, true);
+		assert.equal((sent[1] as { display?: boolean }).display, false);
 		assert.match((sent[1] as { content?: string }).content ?? "", /Subagent failed/);
-		assert.deepEqual(log, ["send:visible", "status:running...", "send:visible", "status:clear"]);
+		assert.deepEqual(log, ["send:visible", "status:running...", "send:hidden", "status:clear"]);
 
 		const visibleDetails = resolveSlashMessageDetails!((sent[0] as { details?: unknown }).details);
 		assert.ok(visibleDetails);
@@ -789,6 +789,28 @@ User chain task
 			});
 
 			assert.equal((params as { chain?: Array<{ task?: string }> }).chain?.[0]?.task, "Project chain task");
+		});
+	});
+
+	it("/run-chain preserves JSON precedence for duplicate same-scope saved chains", async () => {
+		await withTempProject("pi-run-chain-format-priority-", async (root) => {
+			writeProjectChain(root, "review-flow.chain.md", `---
+name: review-flow
+description: Markdown review flow
+---
+
+## scout
+
+Markdown chain task
+`);
+			writeProjectChain(root, "review-flow.chain.json", JSON.stringify({
+				name: "review-flow",
+				description: "JSON review flow",
+				chain: [{ agent: "scout", task: "JSON chain task" }],
+			}));
+
+			const { params } = await captureSlashCommandParams("run-chain", "review-flow -- Shared task", root);
+			assert.equal((params as { chain?: Array<{ task?: string }> }).chain?.[0]?.task, "JSON chain task");
 		});
 	});
 

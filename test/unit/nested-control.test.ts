@@ -16,7 +16,7 @@ import {
 	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
 	SUBAGENT_PARENT_RUN_ID_ENV,
 } from "../../src/runs/shared/pi-args.ts";
-import { ASYNC_DIR, TEMP_ROOT_DIR, type SubagentState } from "../../src/shared/types.ts";
+import { ASYNC_DIR, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, SUBAGENT_RESULT_INTERCOM_EVENT, TEMP_ROOT_DIR, type SubagentState } from "../../src/shared/types.ts";
 
 const routeRoots: string[] = [];
 const savedEnv = {
@@ -158,6 +158,10 @@ describe("nested control routing", () => {
 			fs.mkdirSync(asyncDir, { recursive: true });
 			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: "nested-direct", state: "running", pid: 12345 }), "utf-8");
 			const route = createNestedRun("nested-direct", "running", { asyncDir, intercomTarget: "nested-target" });
+			setTimeout(() => {
+				const request = readNestedControlRequests(route)[0];
+				if (request) writeNestedControlResult(route, { ts: Date.now(), requestId: request.requestId, targetRunId: request.targetRunId, ok: false, message: "foreground owner does not own async run" });
+			}, 50);
 			const kill = mock.method(process, "kill", () => true);
 			const result = await createExecutor(stateWithNestedRoute(route)).execute("interrupt", { action: "interrupt", id: "nested-direct" }, new AbortController().signal, undefined, ctx(root));
 
@@ -348,6 +352,45 @@ describe("nested control routing", () => {
 				const payload = event.payload as { to?: unknown };
 				return payload.to === "attacker-target" || payload.to === "attacker-leaf";
 			}), false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("falls back to the advertised leaf target when a nested async owner rejects resume routing", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-resume-fallback-"));
+		try {
+			const listeners = new Map<string, Set<(payload: unknown) => void>>();
+			const emitted: Array<{ name: string; payload: unknown }> = [];
+			const events = {
+				on(name: string, listener: (payload: unknown) => void) {
+					const set = listeners.get(name) ?? new Set();
+					set.add(listener);
+					listeners.set(name, set);
+					return () => set.delete(listener);
+				},
+				emit(name: string, payload: unknown) {
+					emitted.push({ name, payload });
+					if (name === SUBAGENT_RESULT_INTERCOM_EVENT) {
+						const requestId = (payload as { requestId: string }).requestId;
+						queueMicrotask(() => listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT)?.forEach((listener) => listener({ requestId, delivered: true })));
+					}
+					listeners.get(name)?.forEach((listener) => listener(payload));
+				},
+			};
+			const route = createNestedRun("nested-resume-fallback", "running", { leafIntercomTarget: "nested-leaf-target" });
+			const executor = createExecutor(stateWithNestedRoute(route), [], true, events);
+			setTimeout(() => {
+				const request = readNestedControlRequests(route)[0];
+				if (request) writeNestedControlResult(route, { ts: Date.now(), requestId: request.requestId, targetRunId: request.targetRunId, ok: false, message: "owner does not have this async job" });
+			}, 50);
+
+			const result = await executor.execute("resume", { action: "resume", id: "nested-resume-fallback", message: "continue directly" }, new AbortController().signal, undefined, ctx(root));
+			assert.equal(result.isError, undefined);
+			assert.match(text(result), /Delivered follow-up directly/);
+			const delivery = emitted.find((entry) => entry.name === SUBAGENT_RESULT_INTERCOM_EVENT)?.payload as { to?: string; message?: string };
+			assert.equal(delivery.to, "nested-leaf-target");
+			assert.match(delivery.message ?? "", /continue directly/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

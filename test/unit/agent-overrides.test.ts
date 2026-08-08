@@ -207,7 +207,8 @@ describe("builtin agent overrides", () => {
 		fs.mkdirSync(path.dirname(agentPath), { recursive: true });
 		fs.writeFileSync(agentPath, "---\nname: broken\ndescription: Broken\nallowSubagents: maybe\n---\nBody", "utf-8");
 		const originalError = console.error;
-		console.error = () => {};
+		const loggedErrors: string[] = [];
+		console.error = (...args: unknown[]) => loggedErrors.push(args.map(String).join(" "));
 		try {
 			const invalid = handleManagementAction("list", { agentScope: "user" }, {
 				cwd: tempProject,
@@ -217,6 +218,12 @@ describe("builtin agent overrides", () => {
 			const invalidText = invalid.content[0]?.type === "text" ? invalid.content[0].text : "";
 			assert.match(invalidText, /Discovery diagnostics:/);
 			assert.match(invalidText, /allowSubagents must be true or false/);
+			handleManagementAction("list", { agentScope: "user" }, {
+				cwd: tempProject,
+				modelRegistry: { getAvailable: () => [] },
+				isProjectTrusted: () => true,
+			});
+			assert.equal(loggedErrors.filter((message) => message.includes(agentPath)).length, 1);
 
 			fs.writeFileSync(agentPath, "---\nname: broken\ndescription: Fixed\n---\nBody", "utf-8");
 			const fixed = handleManagementAction("list", { agentScope: "user" }, {

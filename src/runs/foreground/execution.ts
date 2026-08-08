@@ -412,10 +412,16 @@ async function runSingleAttempt(
 		let removeAbortListener: (() => void) | undefined;
 		let removeInterruptListener: (() => void) | undefined;
 		let activityTimer: NodeJS.Timeout | undefined;
+		let unsubscribeIntercomDetach: (() => void) | undefined;
+		let promiseResolved = false;
+		const resolveOuter = (code: number) => {
+			if (promiseResolved) return;
+			promiseResolved = true;
+			resolve(code);
+		};
 
 		const detachForIntercom = () => {
 			detached = true;
-			processClosed = true;
 			result.detached = true;
 			result.detachedReason = "intercom coordination";
 			progress.status = "detached";
@@ -426,7 +432,8 @@ async function runSingleAttempt(
 				tokens: progress.tokens,
 				durationMs: progress.durationMs,
 			};
-			finish(-2);
+			unsubscribeIntercomDetach?.();
+			resolveOuter(-2);
 		};
 
 		// If the child emits a terminal assistant stop but never exits,
@@ -443,7 +450,7 @@ async function runSingleAttempt(
 			terminationRequested = true;
 			trySignalChildTree(proc, signal);
 			const timer = setTimeout(() => {
-				if (!detached && !settled && !childExited && isChildTreeAlive(proc)) trySignalChildTree(proc, "SIGKILL");
+				if (!settled && !childExited && isChildTreeAlive(proc)) trySignalChildTree(proc, "SIGKILL");
 			}, graceMs);
 			timer.unref?.();
 		};
@@ -458,10 +465,10 @@ async function runSingleAttempt(
 			}
 		};
 		const startFinalDrain = () => {
-			if (childExited || finalDrainTimer || settled || processClosed || detached) return;
+			if (childExited || finalDrainTimer || settled || processClosed) return;
 			terminationRequested = true;
 			finalDrainTimer = setTimeout(() => {
-				if (settled || processClosed || detached || childExited) return;
+				if (settled || processClosed || childExited) return;
 				const termSent = trySignalChildTree(proc, "SIGTERM");
 				if (!termSent) return;
 				forcedTerminationSignal = true;
@@ -470,14 +477,14 @@ async function runSingleAttempt(
 				}
 				finalHardKillTimer = setTimeout(() => {
 					finalHardKillTimer = undefined;
-					if (!detached && !settled && !childExited && isChildTreeAlive(proc)) forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
+					if (!settled && !childExited && isChildTreeAlive(proc)) forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
 				}, HARD_KILL_MS);
 				finalHardKillTimer.unref?.();
 			}, FINAL_STOP_GRACE_MS);
 			finalDrainTimer.unref?.();
 		};
 
-		const unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
+		unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
 			if (!options.allowIntercomDetach || detached || processClosed || !intercomStarted) return;
 			if (!payload || typeof payload !== "object") return;
 			const requestId = (payload as { requestId?: unknown }).requestId;
@@ -506,7 +513,7 @@ async function runSingleAttempt(
 			unsubscribeIntercomDetach?.();
 			removeAbortListener?.();
 			removeInterruptListener?.();
-			resolve(code);
+			resolveOuter(code);
 		};
 
 		const drainPendingControlEvents = (): ControlEvent[] | undefined => {
@@ -566,7 +573,7 @@ async function runSingleAttempt(
 
 
 		const failForToolLoop = (message: string) => {
-			if (processClosed || detached || settled || timedOut || resourceLimited) return;
+			if (processClosed || settled || timedOut || resourceLimited) return;
 			resourceLimited = true;
 			result.error = message;
 			result.finalOutput = message;
@@ -578,13 +585,13 @@ async function runSingleAttempt(
 			terminationRequested = true;
 			trySignalChildTree(proc, "SIGINT");
 			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!detached && !settled && !childExited) forceTerminate("SIGTERM");
+				if (!settled && !childExited) forceTerminate("SIGTERM");
 			}, 1000);
 			resourceLimitEscalationTimer.unref?.();
 		};
 
 		const triggerResourceLimit = (kind: "maxExecutionTimeMs" | "maxTokens", limit: number, observed?: number) => {
-			if (processClosed || detached || settled || timedOut || resourceLimited) return;
+			if (processClosed || settled || timedOut || resourceLimited) return;
 			resourceLimited = true;
 			const message = formatResourceLimitExceeded({ agent: agent.name, kind, limit, observed });
 			result.resourceLimitExceeded = { kind, limit, ...(observed !== undefined ? { observed } : {}), message };
@@ -598,13 +605,13 @@ async function runSingleAttempt(
 			terminationRequested = true;
 			trySignalChildTree(proc, "SIGINT");
 			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!detached && !settled && !childExited) forceTerminate("SIGTERM");
+				if (!settled && !childExited) forceTerminate("SIGTERM");
 			}, 1000);
 			resourceLimitEscalationTimer.unref?.();
 		};
 
 		const emitUpdateSnapshot = (text: string) => {
-			if (!options.onUpdate || processClosed) return;
+			if (!options.onUpdate || processClosed || result.detached) return;
 			const progressSnapshot = snapshotProgress(progress);
 			const resultSnapshot = snapshotResult(result, progressSnapshot);
 			const controlEvents = drainPendingControlEvents();
@@ -764,7 +771,7 @@ async function runSingleAttempt(
 
 		if (controlConfig.enabled) {
 			activityTimer = setInterval(() => {
-				if (processClosed || settled || detached) return;
+				if (processClosed || settled) return;
 				const now = Date.now();
 				if (updateActivityState(now)) {
 					progress.durationMs = now - startTime;
@@ -788,7 +795,7 @@ async function runSingleAttempt(
 		});
 		proc.on("exit", () => {
 			childExited = true;
-			if (terminationRequested && !detached && isChildTreeAlive(proc)) {
+			if (terminationRequested && isChildTreeAlive(proc)) {
 				forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
 			}
 		});
@@ -822,9 +829,21 @@ async function runSingleAttempt(
 				delete completed.detachedReason;
 				artifactOutputByResult.set(completed, artifactOutputByResult.get(finalized) ?? finalized.finalOutput ?? "");
 				acceptanceOutputByResult.set(completed, acceptanceOutputByResult.get(finalized) ?? finalized.finalOutput ?? "");
-				void finalizeDetachedCompletion(completed)
-					.then((completedResult) => options.onDetachedComplete?.(completedResult))
-					.catch((error) => console.error("Failed to deliver detached foreground completion:", error));
+				void finalizeDetachedCompletion(completed).then(
+					(completedResult) => {
+						try { options.onDetachedComplete?.(completedResult); } catch (error) {
+							console.error("Failed to deliver detached foreground completion:", error);
+						}
+					},
+					(error) => {
+						completed.exitCode = 1;
+						completed.error = `Detached completion finalization failed: ${error instanceof Error ? error.message : String(error)}`;
+						completed.finalOutput = completed.error;
+						try { options.onDetachedComplete?.(completed); } catch (deliveryError) {
+							console.error("Failed to deliver detached foreground completion:", deliveryError);
+						}
+					},
+				);
 				finish(-2);
 				return;
 			}
@@ -842,7 +861,7 @@ async function runSingleAttempt(
 
 		if (options.signal) {
 			const kill = () => {
-				if (processClosed || detached) return;
+				if (processClosed) return;
 				if (options.allowIntercomDetach && intercomStarted && !detached) {
 					detachForIntercom();
 					return;
@@ -858,7 +877,7 @@ async function runSingleAttempt(
 
 		let timeoutDeadline = options.timeoutAt;
 		const triggerTimeout = () => {
-			if (processClosed || detached || settled || timedOut || resourceLimited) return;
+			if (processClosed || settled || timedOut || resourceLimited) return;
 			timedOut = true;
 			const message = formatForegroundTimeoutMessage(options.timeoutMs);
 			result.timedOut = true;
@@ -872,7 +891,7 @@ async function runSingleAttempt(
 			terminationRequested = true;
 			trySignalChildTree(proc, "SIGINT");
 			timeoutEscalationTimer = setTimeout(() => {
-				if (!detached && !settled && !childExited) forceTerminate("SIGTERM");
+				if (!settled && !childExited) forceTerminate("SIGTERM");
 			}, 1000);
 			timeoutEscalationTimer.unref?.();
 		};
@@ -910,7 +929,7 @@ async function runSingleAttempt(
 
 		if (options.interruptSignal) {
 			const interrupt = () => {
-				if (processClosed || detached || settled || timedOut || resourceLimited) return;
+				if (processClosed || settled || timedOut || resourceLimited) return;
 				interruptedByControl = true;
 				progress.status = "running";
 				progress.durationMs = Date.now() - startTime;
@@ -921,7 +940,7 @@ async function runSingleAttempt(
 				terminationRequested = true;
 				trySignalChildTree(proc, "SIGINT");
 				setTimeout(() => {
-					if (!detached && !settled && !childExited) forceTerminate("SIGTERM");
+					if (!settled && !childExited) forceTerminate("SIGTERM");
 				}, 1000).unref?.();
 			};
 			if (options.interruptSignal.aborted) interrupt();
@@ -1099,7 +1118,7 @@ async function runSingleAttempt(
 		? result.outputReference.message
 		: fullOutput;
 	result.controlEvents = allControlEvents.length ? allControlEvents : undefined;
-	if (options.onUpdate) {
+	if (options.onUpdate && !result.detached) {
 		const finalText = result.finalOutput || result.error || "(no output)";
 		const progressSnapshot = snapshotProgress(progress);
 		const resultSnapshot = snapshotResult(result, progressSnapshot);

@@ -572,7 +572,7 @@ function finalAssistantTextFromSession(sessionFile: string | undefined): string 
 function refreshDetachedForegroundChildren(run: ForegroundResumeRun): Array<{ child: ForegroundResumeRun["children"][number]; finalOutput?: string }> {
 	return run.children.map((child) => {
 		const finalOutput = child.summary ?? (child.status === "detached" ? finalAssistantTextFromSession(child.sessionFile) : undefined);
-		if (finalOutput) {
+		if (finalOutput && child.status === "detached") {
 			child.status = "completed";
 			run.updatedAt = Date.now();
 		}
@@ -747,7 +747,7 @@ function emitControlNotification(input: {
 	}
 }
 
-function writeAsyncInterruptRequest(asyncDir: string, runId: string): void {
+export function writeAsyncInterruptRequest(asyncDir: string, runId: string): void {
 	writeAtomicJson(path.join(asyncDir, ASYNC_CONTROL_REQUEST_FILE), {
 		requestId: randomUUID(),
 		runId,
@@ -858,10 +858,12 @@ async function waitForNestedControlResult(target: ResolvedSubagentRunId & { kind
 
 async function sendNestedControlRequest(target: ResolvedSubagentRunId & { kind: "nested" }, action: "interrupt" | "resume", message?: string) {
 	const requestId = randomUUID();
+	const targetChildIndex = target.match.run.path?.[0]?.stepIndex ?? target.match.run.parentStepIndex;
 	writeNestedControlRequest(target.match.route, {
 		ts: Date.now(),
 		requestId,
 		targetRunId: target.match.run.id,
+		...(targetChildIndex !== undefined ? { targetChildIndex } : {}),
 		action,
 		...(message ? { message } : {}),
 	});
@@ -889,25 +891,37 @@ async function interruptNestedRun(target: ResolvedSubagentRunId & { kind: "neste
 	if (run.state === "failed") return { content: [{ type: "text", text: `Nested run ${run.id} has failed and cannot be interrupted.` }], isError: true, details: { mode: "management", results: [] } };
 	if (run.state === "paused") return { content: [{ type: "text", text: `Nested run ${run.id} is already paused.` }], isError: true, details: { mode: "management", results: [] } };
 	const result = await sendNestedControlRequest(target, "interrupt");
-	if (result) return {
+	if (result?.ok) return {
 		content: [{ type: "text", text: result.message }],
-		isError: result.ok ? undefined : true,
 		details: {
 			mode: "management", results: [],
-			...(result.ok ? { managementControl: buildManagementControl({ state: "live", runId: run.id, intercomTarget: run.intercomTarget ?? run.leafIntercomTarget, canResume: true, canInterrupt: true }) } : {}),
+			managementControl: buildManagementControl({ state: "live", runId: run.id, intercomTarget: run.intercomTarget ?? run.leafIntercomTarget, canResume: true, canInterrupt: true }),
 		},
 	};
 	const direct = directNestedAsyncInterrupt(target);
 	if (direct) return direct;
+	if (result) return { content: [{ type: "text", text: result.message }], isError: true, details: { mode: "management", results: [] } };
 	return { content: [{ type: "text", text: `Nested run ${run.id} owner is not reachable and no safe direct async interrupt fallback is available.` }], isError: true, details: { mode: "management", results: [] } };
 }
 
 const LIVE_ACCEPTANCE_OVERRIDE_NOTICE = "Acceptance override applies only to revive and was not applied to this live delivery.";
 
-async function resumeLiveNestedRun(input: { target: ResolvedSubagentRunId & { kind: "nested" }; message: string; acceptanceOverrideSupplied: boolean }): Promise<SubagentExecutionResult> {
+async function resumeLiveNestedRun(input: { target: ResolvedSubagentRunId & { kind: "nested" }; message: string; acceptanceOverrideSupplied: boolean; events: IntercomEventBus }): Promise<SubagentExecutionResult> {
 	const run = input.target.match.run;
 	const result = await sendNestedControlRequest(input.target, "resume", input.message);
-	if (result) return { content: [{ type: "text", text: [result.message, input.acceptanceOverrideSupplied ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined].filter(Boolean).join("\n") }], isError: result.ok ? undefined : true, details: { mode: "management", results: [] } };
+	if (result?.ok) return { content: [{ type: "text", text: [result.message, input.acceptanceOverrideSupplied ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined].filter(Boolean).join("\n") }], details: { mode: "management", results: [] } };
+	const directTarget = run.leafIntercomTarget ?? run.intercomTarget;
+	if (directTarget) {
+		const delivered = await deliverSubagentIntercomMessageEvent(
+			input.events,
+			directTarget,
+			`Follow-up for nested run ${run.id}:\n\n${input.message}`,
+			500,
+			{ source: "nested-resume-fallback", runId: run.id, agent: run.agent, index: run.currentStep },
+		);
+		if (delivered) return { content: [{ type: "text", text: [`Delivered follow-up directly to live nested run ${run.id}.`, input.acceptanceOverrideSupplied ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined].filter(Boolean).join("\n") }], details: { mode: "management", results: [] } };
+	}
+	if (result) return { content: [{ type: "text", text: result.message }], isError: true, details: { mode: "management", results: [] } };
 	return { content: [{ type: "text", text: `Nested run ${run.id} appears live but its owner route is not reachable. Wait for completion, then retry action='resume'.` }], isError: true, details: { mode: "management", results: [] } };
 }
 
@@ -1029,7 +1043,7 @@ async function resumeAsyncRun(input: {
 		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
 		if (resolved?.kind === "nested") {
 			if (resolved.match.run.state === "running" || resolved.match.run.state === "queued") {
-				return resumeLiveNestedRun({ target: resolved, message: followUp, acceptanceOverrideSupplied: input.params.acceptance !== undefined });
+				return resumeLiveNestedRun({ target: resolved, message: followUp, acceptanceOverrideSupplied: input.params.acceptance !== undefined, events: input.deps.pi.events });
 			}
 			const trustedSessionRoots = [
 				...(input.deps.config.defaultSessionDir ? [path.resolve(input.deps.expandTilde(input.deps.config.defaultSessionDir))] : []),
@@ -1212,6 +1226,7 @@ function createDetachedCompletionGroup(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	chainSteps?: number;
+	finalizeResults?: (results: SingleResult[]) => void;
 	onSettled?: () => void;
 }): DetachedCompletionGroup {
 	let results: SingleResult[] | undefined;
@@ -1224,6 +1239,17 @@ function createDetachedCompletionGroup(input: {
 	const maybeEmit = () => {
 		if (!wasDetached || deliveryStarted || !results || results.some((result) => result.detached)) return;
 		deliveryStarted = true;
+		try {
+			input.finalizeResults?.(results);
+		} catch (error) {
+			const target = results[0];
+			if (target) {
+				target.exitCode = 1;
+				target.error = `Detached completion finalization failed: ${error instanceof Error ? error.message : String(error)}`;
+				target.finalOutput = target.error;
+				target.truncation = undefined;
+			}
+		}
 		if (!settledCallbackStarted && input.onSettled) {
 			settledCallbackStarted = true;
 			queueMicrotask(input.onSettled);
@@ -1407,6 +1433,14 @@ function validateAcceptanceForExecution(params: SubagentParamsLike): SubagentExe
 	return null;
 }
 
+const SEQUENTIAL_CHAIN_STEP_KEYS = new Set(["agent", "task", "phase", "label", "as", "outputSchema", "cwd", "output", "outputMode", "reads", "progress", "skill", "model", "acceptance"]);
+const STATIC_PARALLEL_STEP_KEYS = new Set(["parallel", "concurrency", "failFast", "worktree", "cwd"]);
+const DYNAMIC_PARALLEL_STEP_KEYS = new Set(["expand", "parallel", "collect", "concurrency", "failFast", "phase", "label"]);
+
+function unsupportedChainStepFields(step: object, allowed: Set<string>): string[] {
+	return Object.keys(step).filter((key) => !allowed.has(key));
+}
+
 function validateExecutionInput(
 	params: SubagentParamsLike,
 	agents: AgentConfig[],
@@ -1417,6 +1451,12 @@ function validateExecutionInput(
 ): SubagentExecutionResult | null {
 	const acceptanceError = validateAcceptanceForExecution(params);
 	if (acceptanceError) return acceptanceError;
+
+	if (params.tasks && params.tasks.length === 0) return validationErrorResult("parallel", "tasks must contain at least one task.");
+	if (params.worktree !== undefined && !hasTasks) return validationErrorResult(getRequestedModeLabel(params), "Top-level worktree is supported only with tasks parallel mode.");
+	if (hasSingle && params.task !== undefined && (typeof params.task !== "string" || params.task.trim().length === 0)) {
+		return validationErrorResult("single", "task must be a non-empty string when provided.");
+	}
 
 	if (Number(hasChain) + Number(hasTasks) + Number(hasSingle) !== 1) {
 		return {
@@ -1445,6 +1485,7 @@ function validateExecutionInput(
 	if (hasTasks && params.tasks) {
 		for (let i = 0; i < params.tasks.length; i++) {
 			const task = params.tasks[i]!;
+			if (typeof task.task !== "string" || task.task.trim().length === 0) return validationErrorResult("parallel", `tasks[${i}].task must be a non-empty string.`);
 			if (!agents.find((agent) => agent.name === task.agent)) {
 				return {
 					content: [{ type: "text", text: `Unknown agent: ${task.agent} (task ${i + 1})` }],
@@ -1488,6 +1529,18 @@ function validateExecutionInput(
 		}
 		for (let i = 0; i < params.chain.length; i++) {
 			const step = params.chain[i] as ChainStep;
+			const allowedKeys = isParallelStep(step) ? STATIC_PARALLEL_STEP_KEYS : isDynamicParallelStep(step) ? DYNAMIC_PARALLEL_STEP_KEYS : SEQUENTIAL_CHAIN_STEP_KEYS;
+			const unsupportedFields = unsupportedChainStepFields(step, allowedKeys);
+			if (unsupportedFields.length > 0) return validationErrorResult("chain", `chain[${i}] fields are not supported for this step mode: ${unsupportedFields.join(", ")}.`);
+			if (Object.hasOwn(step, "task") && (typeof (step as { task?: unknown }).task !== "string" || !(step as { task: string }).task.trim())) {
+				return validationErrorResult("chain", `chain[${i}].task must be a non-empty string when provided.`);
+			}
+			if (isParallelStep(step)) {
+				const emptyTaskIndex = step.parallel.findIndex((task) => Object.hasOwn(task, "task") && (typeof task.task !== "string" || !task.task.trim()));
+				if (emptyTaskIndex >= 0) return validationErrorResult("chain", `chain[${i}].parallel[${emptyTaskIndex}].task must be a non-empty string when provided.`);
+			} else if (isDynamicParallelStep(step) && Object.hasOwn(step.parallel, "task") && (typeof step.parallel.task !== "string" || !step.parallel.task.trim())) {
+				return validationErrorResult("chain", `chain[${i}].parallel.task must be a non-empty string when provided.`);
+			}
 			const stepAgents = getStepAgents(step);
 			for (const agentName of stepAgents) {
 				if (!agents.find((a) => a.name === agentName)) {
@@ -2543,7 +2596,16 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			intercomBridge: data.intercomBridge,
 			runId,
 			mode: "parallel",
-			...(worktreeSetup ? { onSettled: () => cleanupWorktrees(worktreeSetup) } : {}),
+			...(worktreeSetup ? {
+				finalizeResults: (settledResults: SingleResult[]) => {
+					const suffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks);
+					const target = settledResults[0];
+					if (!suffix || !target) return;
+					if (target.truncation?.truncated) target.truncation.text = appendWorktreeSuffix(target.truncation.text, suffix);
+					else target.finalOutput = appendWorktreeSuffix(getSingleResultOutput(target), suffix);
+				},
+				onSettled: () => cleanupWorktrees(worktreeSetup),
+			} : {}),
 		});
 		const results = await runForegroundParallelTasks({
 			tasks,
@@ -2603,7 +2665,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		rememberForegroundRun(deps.state, { runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
 		detachedCompletions.setResults(details.results, foregroundControl?.nestedChildren);
 		worktreeCleanupDeferred = Boolean(worktreeSetup && detachedCompletions.hasDetached());
-		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks);
+		const worktreeSuffix = worktreeCleanupDeferred ? "" : buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks);
 		if (timedOut) {
 			return {
 				content: [{ type: "text", text: appendWorktreeSuffix(`Parallel run timed out (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}`, worktreeSuffix) }],

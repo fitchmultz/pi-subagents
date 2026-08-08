@@ -1273,6 +1273,36 @@ test("compose overlay preserves complete bracketed pastes as literal content", a
   partialPasteOverlay.handleInput("\x1b");
   assert.deepEqual(doneResult, { sent: false });
 
+  doneResult = undefined;
+  const splitPasteOverlay = new ComposeOverlay(
+    { requestRender: () => undefined } as never,
+    { fg: (_name: string, text: string) => text, bold: (text: string) => text } as never,
+    keybindings as never,
+    { id: "target-session", name: "worker", cwd: repoDir, model: "test-model" },
+    "worker",
+    { send: async () => ({ id: "unused", accepted: true, delivered: true }) } as never,
+    (result) => { doneResult = result; },
+  );
+  splitPasteOverlay.handleInput("\x1b[20");
+  splitPasteOverlay.handleInput("0~split start marker");
+  splitPasteOverlay.handleInput("\x1b[201~");
+  assert.match(splitPasteOverlay.render(100).join("\n"), /split start marker/);
+
+  doneResult = undefined;
+  const abandonedPasteOverlay = new ComposeOverlay(
+    { requestRender: () => undefined } as never,
+    { fg: (_name: string, text: string) => text, bold: (text: string) => text } as never,
+    keybindings as never,
+    { id: "target-session", name: "worker", cwd: repoDir, model: "test-model" },
+    "worker",
+    { send: async () => ({ id: "unused", accepted: true, delivered: true }) } as never,
+    (result) => { doneResult = result; },
+  );
+  abandonedPasteOverlay.handleInput("\x1b[200~abandoned paste");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  abandonedPasteOverlay.handleInput("\x1b");
+  assert.deepEqual(doneResult, { sent: false });
+
   const tailSent: string[] = [];
   const tailOverlay = new ComposeOverlay(
     { requestRender: () => undefined } as never,
@@ -1287,6 +1317,27 @@ test("compose overlay preserves complete bracketed pastes as literal content", a
   tailOverlay.handleInput("\r");
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(tailSent, ["bodytail"]);
+});
+
+test("invalid presence updates cannot poison peer session lists", { concurrency: false }, async () => {
+  const broker = await setupBroker();
+  const badPeer = new IntercomClient();
+  const healthyPeer = new IntercomClient();
+  try {
+    await connectClient(badPeer, "bad-presence-peer");
+    await connectClient(healthyPeer, "healthy-presence-peer");
+    badPeer.updatePresence({ name: "bad\u0001name", pendingAsks: 0.5 } as never);
+    const deadline = Date.now() + 2_000;
+    while (badPeer.isConnected() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(badPeer.isConnected(), false);
+    const sessions = await healthyPeer.listSessions();
+    assert.equal(sessions.some((session) => session.name === "healthy-presence-peer"), true);
+    assert.equal(sessions.some((session) => session.name?.includes("bad")), false);
+  } finally {
+    await badPeer.disconnect().catch(() => undefined);
+    await healthyPeer.disconnect().catch(() => undefined);
+    await stopBroker(broker);
+  }
 });
 
 test("sessions publish automatic lifecycle status", { concurrency: false }, async () => {
@@ -1764,6 +1815,36 @@ test("replace queue mode coalesces quick idle updates before waking", { concurre
     assert.deepEqual(harness.sentMessages[0]?.options, { triggerTurn: true });
   } finally {
     await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("broker bounds unique replace-mode threads per sender", { concurrency: false }, async () => {
+  const { planner, orchestrator, cleanup } = await setupClients();
+  try {
+    assert.ok(orchestrator.sessionId);
+    orchestrator.updatePresence({ status: "idle", acceptsAsks: true });
+    await waitForSessionStatus(planner, "orchestrator", "idle");
+    for (let index = 0; index < 100; index++) {
+      const result = await planner.send(orchestrator.sessionId, {
+        messageId: `replace-bound-${index}`,
+        text: `update ${index}`,
+        delivery: "queue",
+        queueMode: "replace",
+        threadId: `unique-thread-${index}`,
+      });
+      assert.equal(result.accepted, true);
+    }
+    const rejected = await planner.send(orchestrator.sessionId, {
+      messageId: "replace-bound-overflow",
+      text: "overflow",
+      delivery: "queue",
+      queueMode: "replace",
+      threadId: "unique-thread-overflow",
+    });
+    assert.equal(rejected.accepted, false);
+    assert.match(rejected.reason ?? "", /queue is full/i);
+  } finally {
     await cleanup();
   }
 });

@@ -140,7 +140,10 @@ const discoverSavedChains = (state: SubagentState): ChainConfig[] => {
 	if (!state.baseCwd) return [];
 	const chainsByName = new Map<string, ChainConfig>();
 	for (const chain of discoverAgentsAll(state.baseCwd, { projectTrusted: projectTrusted(state) }).chains) {
-		chainsByName.set(chain.name, chain);
+		const existing = chainsByName.get(chain.name);
+		const projectOverride = existing?.source === "user" && chain.source === "project";
+		const sameScopeJsonOverride = existing?.source === chain.source && chain.filePath.endsWith(".chain.json") && !existing.filePath.endsWith(".chain.json");
+		if (!existing || projectOverride || sameScopeJsonOverride) chainsByName.set(chain.name, chain);
 	}
 	return Array.from(chainsByName.values());
 };
@@ -338,7 +341,7 @@ async function runSlashSubagent(
 		pi.sendMessage({
 			customType: SLASH_RESULT_TYPE,
 			content: buildSlashExportText(response),
-			display: true,
+			display: false,
 			details: finalDetails,
 		});
 		if (ctx.hasUI) {
@@ -353,7 +356,7 @@ async function runSlashSubagent(
 		pi.sendMessage({
 			customType: SLASH_RESULT_TYPE,
 			content: `## Subagent result\n\n${message}`,
-			display: true,
+			display: false,
 			details: failedDetails,
 		});
 		if (ctx.hasUI) {

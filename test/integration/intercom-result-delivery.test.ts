@@ -441,7 +441,7 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(bus.emitted.filter((entry) => entry.channel === "subagent:result-intercom").length, 1);
 	});
 
-	it("detached finalization converts update callback failures into a delivered failed result", async () => {
+	it("detached finalization ignores stale update callbacks after the caller returns", async () => {
 		mockPi.onCall({ steps: [
 			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching before finalization" })] },
 			{ delay: 300, jsonl: [events.assistantMessage("child output")] },
@@ -468,7 +468,8 @@ describe("intercom result delivery cutover", () => {
 		assert.match(immediate.content[0]?.text ?? "", /Detached for intercom coordination/);
 		await waitFor(() => bus.emitted.some((entry) => entry.channel === "subagent:result-intercom"), 5_000);
 		const payload = bus.emitted.find((entry) => entry.channel === "subagent:result-intercom")?.payload as { message?: string };
-		assert.match(payload.message ?? "", /Detached completion finalization failed: update callback exploded/);
+		assert.match(payload.message ?? "", /child output/);
+		assert.doesNotMatch(payload.message ?? "", /update callback exploded/);
 	});
 
 	it("resume action sends a follow-up to a live async child when the target is registered", async () => {
@@ -696,7 +697,7 @@ describe("intercom result delivery cutover", () => {
 				makeMinimalCtx(tempDir),
 			);
 
-			assert.equal(result.isError, undefined);
+			assert.equal(result.isError, undefined, result.content[0]?.text ?? "unexpected resume error");
 			assert.match(result.content[0]?.text ?? "", /Revived async subagent from/);
 			assert.match(result.content[0]?.text ?? "", /Agent: b/);
 			assert.match(result.content[0]?.text ?? "", new RegExp(secondSession.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -860,7 +861,7 @@ describe("intercom result delivery cutover", () => {
 			updatedAt: Date.parse("2026-06-16T12:00:00.000Z"),
 			children: [
 				{ agent: "a", index: 0, status: "completed", sessionFile: session },
-				{ agent: "b", index: 1, status: "timed-out", sessionFile: session },
+				{ agent: "b", index: 1, status: "timed-out", sessionFile: session, summary: "Detached child timed out" },
 			],
 		});
 
@@ -877,7 +878,7 @@ describe("intercom result delivery cutover", () => {
 		assert.match(text, /Run: remembered-status-run/);
 		assert.match(text, /State: remembered foreground/);
 		assert.match(text, /1\. a completed, session:/);
-		assert.match(text, /2\. b timed-out, session:/);
+		assert.match(text, /2\. b timed-out, session: .*final: Detached child timed out/);
 		assert.match(text, /Revive child: subagent\(\{ action: "resume", id: "remembered-status-run", index: 0, message: "\.\.\." \}\)/);
 		assert.doesNotMatch(text, /Async run not found/);
 		assert.equal(result.details?.managementControl?.state, "failed");

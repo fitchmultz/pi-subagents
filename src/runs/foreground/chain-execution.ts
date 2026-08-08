@@ -641,16 +641,31 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			let worktreeCleanupDeferred = false;
 			let expectedDetachedCompletions: number | undefined;
 			let worktreeCleanupScheduled = false;
-			const completedDetachedIndexes = new Set<number>();
-			const scheduleDetachedWorktreeCleanup = () => {
-				if (!worktreeSetup || worktreeCleanupScheduled || expectedDetachedCompletions === undefined || completedDetachedIndexes.size < expectedDetachedCompletions) return;
+			const detachedCompletionResults = new Map<number, SingleResult>();
+			const finalizeDetachedWorktrees = () => {
+				if (!worktreeSetup || worktreeCleanupScheduled || expectedDetachedCompletions === undefined || expectedDetachedCompletions === 0 || detachedCompletionResults.size < expectedDetachedCompletions) return;
 				worktreeCleanupScheduled = true;
+				const worktreeSummary = formatParallelWorktreeSummary(
+					worktreeSetup,
+					path.join(chainDir, "worktree-diffs", `step-${stepIndex}`),
+					step.parallel.map((task) => task.agent),
+				);
+				const completions = [...detachedCompletionResults.entries()].sort(([left], [right]) => left - right);
+				const first = completions[0]?.[1];
+				if (worktreeSummary && first) {
+					if (first.truncation?.truncated) first.truncation.text = appendWorktreeSummary(first.truncation.text, worktreeSummary);
+					else first.finalOutput = appendWorktreeSummary(getSingleResultOutput(first), worktreeSummary);
+				}
+				for (const [index, result] of completions) onDetachedComplete?.(result, index);
 				queueMicrotask(() => cleanupWorktrees(worktreeSetup!));
 			};
 			const handleParallelDetachedCompletion = (result: SingleResult, index: number) => {
-				completedDetachedIndexes.add(index);
-				onDetachedComplete?.(result, index);
-				scheduleDetachedWorktreeCleanup();
+				if (!worktreeSetup) {
+					onDetachedComplete?.(result, index);
+					return;
+				}
+				detachedCompletionResults.set(index, result);
+				finalizeDetachedWorktrees();
 			};
 			if (step.worktree) {
 				const worktreeTaskCwdConflict = findWorktreeTaskCwdConflict(step.parallel, parallelCwd);
@@ -733,7 +748,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				});
 				expectedDetachedCompletions = parallelResults.filter((result) => result.detached).length;
 				worktreeCleanupDeferred = Boolean(worktreeSetup && expectedDetachedCompletions > 0);
-				scheduleDetachedWorktreeCleanup();
+				finalizeDetachedWorktrees();
 				globalTaskIndex += step.parallel.length;
 
 				for (const result of parallelResults) {
@@ -741,7 +756,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					if (result.progress) allProgress.push(result.progress);
 					if (result.artifactPaths) allArtifactPaths.push(result.artifactPaths);
 				}
-				const worktreeSummary = formatParallelWorktreeSummary(
+				const worktreeSummary = worktreeCleanupDeferred ? "" : formatParallelWorktreeSummary(
 					worktreeSetup,
 					path.join(chainDir, "worktree-diffs", `step-${stepIndex}`),
 					agentNames,

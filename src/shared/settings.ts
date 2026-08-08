@@ -7,6 +7,7 @@ import * as path from "node:path";
 import type { AgentConfig } from "../agents/agents.ts";
 import { normalizeSkillInput } from "../agents/skills.ts";
 import { CHAIN_RUNS_DIR, type AcceptanceInput, type JsonSchemaObject, type OutputMode } from "./types.ts";
+import { ensureTempRoot } from "./temp-root.ts";
 const CHAIN_DIR_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const INITIAL_PROGRESS_CONTENT = "# Progress\n\n## Status\nIn Progress\n\n## Tasks\n\n## Files Changed\n\n## Notes\n";
 
@@ -126,6 +127,7 @@ export function getStepAgents(step: ChainStep): string[] {
 // =============================================================================
 
 export function createChainDir(runId: string, baseDir?: string, cwd = process.cwd()): string {
+	if (!baseDir) ensureTempRoot();
 	const chainDir = path.join(baseDir ? path.resolve(cwd, baseDir) : CHAIN_RUNS_DIR, runId);
 	fs.mkdirSync(chainDir, { recursive: true });
 	return chainDir;
@@ -154,7 +156,7 @@ export function cleanupOldChainDirs(): void {
 	for (const dir of dirs) {
 		try {
 			const dirPath = path.join(CHAIN_RUNS_DIR, dir);
-			const stat = fs.statSync(dirPath);
+			const stat = fs.lstatSync(dirPath);
 			if (stat.isDirectory() && now - stat.mtimeMs > CHAIN_DIR_MAX_AGE_MS) {
 				fs.rmSync(dirPath, { recursive: true });
 			}

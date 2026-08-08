@@ -259,6 +259,25 @@ describe("async execution utilities", () => {
 		await waitForAsyncResultFile(chainId, 10_000);
 	});
 
+	it("applies maxOutput to persisted per-child async results", async () => {
+		const longOutput = Array.from({ length: 100 }, (_, index) => `line-${index}`).join("\n") + "\nSECRET_TAIL";
+		mockPi.onCall({ output: longOutput });
+		const id = `itest-ae-${process.pid}-max-output-${Date.now().toString(36)}`;
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Produce bounded output",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-max-output" },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+			maxOutput: { lines: 5, bytes: 200 },
+		});
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		assert.match(payload.results[0]?.output ?? "", /TRUNCATED/);
+		assert.doesNotMatch(payload.results[0]?.output ?? "", /SECRET_TAIL/);
+	});
+
 	it("honors top-level progress for async single runs", async () => {
 		mockPi.onCall({ output: "progress done" });
 		const id = `itest-ae-${process.pid}-progress-single-${Date.now().toString(36)}`;
@@ -424,6 +443,12 @@ describe("async execution utilities", () => {
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
 		assert.ok(Date.now() - startedAt < 2_000, `async failFast took ${Date.now() - startedAt}ms`);
 		assert.equal(payload.results[1]?.interrupted, true);
+		assert.equal(payload.state, "failed");
+		assert.equal(payload.exitCode, 1);
+		assert.doesNotMatch(payload.summary, /Paused after interrupt/);
+		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		assert.equal(status.state, "failed");
+		assert.match(status.error ?? "", /worker/);
 	});
 
 	it("async parallel interrupt pauses every running child and does not start queued work", async () => {

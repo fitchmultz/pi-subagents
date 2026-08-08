@@ -288,8 +288,10 @@ export class IntercomClient extends EventEmitter {
 
       case "sessions": {
         const { requestId, sessions } = brokerMessage;
-        const normalizedSessions = Array.isArray(sessions) ? sessions.map(normalizeSessionInfo) : null;
-        if (typeof requestId !== "string" || !normalizedSessions || normalizedSessions.some((session) => session === null)) {
+        const normalizedSessions = Array.isArray(sessions)
+          ? sessions.map(normalizeSessionInfo).filter((session): session is SessionInfo => session !== null)
+          : null;
+        if (typeof requestId !== "string" || !normalizedSessions) {
           throw new Error("Invalid sessions message");
         }
 
@@ -300,7 +302,7 @@ export class IntercomClient extends EventEmitter {
         }
 
         this.pendingLists.delete(requestId);
-        pending.resolve(normalizedSessions as SessionInfo[]);
+        pending.resolve(normalizedSessions);
         break;
       }
 
