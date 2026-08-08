@@ -764,6 +764,11 @@ export interface TimeoutExtensionResult {
 
 export type TimeoutExtensionCallback = (additionalMs: number) => TimeoutExtensionResult;
 
+export interface ForegroundActiveChildControl {
+	agent: string;
+	interrupt?: () => boolean;
+}
+
 export interface ForegroundControlState {
 	runId: string;
 	mode: SubagentRunMode;
@@ -781,6 +786,7 @@ export interface ForegroundControlState {
 	toolCount?: number;
 	nestedRoute?: NestedRouteInfo;
 	nestedChildren?: NestedRunSummary[];
+	activeChildren?: Map<number, ForegroundActiveChildControl>;
 	timeoutAt?: number;
 	extendTimeout?: TimeoutExtensionCallback;
 	interrupt?: () => boolean;
@@ -867,6 +873,7 @@ export interface RunSyncOptions {
 	timeoutAt?: number;
 	registerTimeoutExtension?: (extend: TimeoutExtensionCallback) => void;
 	allowIntercomDetach?: boolean;
+	onDetachedComplete?: (result: SingleResult) => void | Promise<void>;
 	intercomEvents?: IntercomEventBus;
 	onUpdate?: (r: SubagentExecutionResult) => void;
 	onControlEvent?: (event: ControlEvent) => void;
@@ -1000,7 +1007,9 @@ export function resolveTempScopeId(options?: {
 
 const MAX_PARALLEL = 8;
 export const MAX_CONCURRENCY = 4;
-export const TEMP_ROOT_DIR = path.join(os.tmpdir(), `pi-subagents-${resolveTempScopeId()}`);
+export const TEMP_ROOT_DIR = process.env.PI_SUBAGENT_TEMP_ROOT?.trim()
+	? path.resolve(process.env.PI_SUBAGENT_TEMP_ROOT)
+	: path.join(os.tmpdir(), `pi-subagents-${resolveTempScopeId()}`);
 export const RESULTS_DIR = path.join(TEMP_ROOT_DIR, "async-subagent-results");
 export const ASYNC_DIR = path.join(TEMP_ROOT_DIR, "async-subagent-runs");
 export const RUNNER_ERROR_LOG_FILE = "runner-error.log";
@@ -1013,7 +1022,7 @@ export const SLASH_SUBAGENT_STARTED_EVENT = "subagent:slash:started";
 export const SLASH_SUBAGENT_RESPONSE_EVENT = "subagent:slash:response";
 export const SLASH_SUBAGENT_UPDATE_EVENT = "subagent:slash:update";
 export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
-export const POLL_INTERVAL_MS = 250;
+export const POLL_INTERVAL_MS = 1000;
 export const MAX_WIDGET_JOBS = 4;
 export const DEFAULT_SUBAGENT_MAX_DEPTH = 2;
 export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "doctor"] as const;

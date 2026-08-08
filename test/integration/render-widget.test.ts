@@ -32,12 +32,13 @@ function firstRunningGlyph(text: string): string {
 function createUiContext(expanded = false) {
 	const widgets: unknown[] = [];
 	let renderRequests = 0;
+	let toolsExpanded = expanded;
 	const ctx = {
 		mode: "tui",
 		hasUI: true,
 		ui: {
 			theme,
-			getToolsExpanded: () => expanded,
+			getToolsExpanded: () => toolsExpanded,
 			setWidget: (_key: string, value: unknown) => {
 				widgets.push(value);
 			},
@@ -49,6 +50,9 @@ function createUiContext(expanded = false) {
 	return {
 		ctx,
 		widgets,
+		setExpanded(value: boolean) {
+			toolsExpanded = value;
+		},
 		get renderRequests() {
 			return renderRequests;
 		},
@@ -148,6 +152,27 @@ describe("subagent async widget rendering", () => {
 		assert.doesNotMatch(text, /Agent \d\/3/);
 		assert.doesNotMatch(text, /widget truncated/);
 		assert.equal(lines.length, 1, "a single collapsed run should cost one terminal line");
+	});
+
+	it("reuses the installed component across resize and Ctrl+O changes", () => {
+		const ui = createUiContext(false);
+		renderWidget(ui.ctx as never, [{
+			asyncId: "failed-1",
+			asyncDir: "/tmp/failed",
+			status: "failed",
+			mode: "single",
+			agents: ["worker"],
+			toolCount: 3,
+			steps: [{ agent: "worker", status: "failed", error: "write failed" }],
+		}]);
+		const widget = ui.widgets.at(-1) as (_tui: unknown, widgetTheme: typeof theme) => { render(width: number): string[] };
+		const component = widget(undefined, theme);
+		const collapsed = component.render(100).join("\n");
+		assert.match(collapsed, /Failed · write failed/);
+		ui.setExpanded(true);
+		const expanded = component.render(50);
+		assert.ok(expanded.length > 1);
+		assert.ok(expanded.every((line) => line.length <= 50));
 	});
 
 	it("keeps expanded widget rows unwrapped in a narrow terminal", () => {

@@ -296,15 +296,16 @@ function widgetActivity(job: AsyncJobState, includeCounts = true): string {
 	if (job.currentPath) facts.push(shortenPath(job.currentPath));
 	if (includeCounts && job.turnCount !== undefined) facts.push(`${job.turnCount} turns`);
 	if (includeCounts && job.toolCount !== undefined) facts.push(`${job.toolCount} tools`);
+	if (job.status !== "running") {
+		const status = job.status === "queued" ? "queued…" : job.status === "paused" ? "Paused" : job.status === "failed" ? "Failed" : "Done";
+		const error = job.status === "failed" ? job.steps?.find((step) => step.error)?.error : undefined;
+		return [status, error ? firstOutputLine(error) : "", ...facts].filter(Boolean).join(" · ");
+	}
 	const activity = buildLiveStatusLine(job, job.updatedAt);
 	if (activity && facts.length) return `${activity} · ${facts.join(" · ")}`;
 	if (activity) return activity;
 	if (facts.length) return facts.join(" · ");
-	if (job.status === "running") return "thinking…";
-	if (job.status === "queued") return "queued…";
-	if (job.status === "paused") return "Paused";
-	if (job.status === "failed") return "Failed";
-	return "Done";
+	return "thinking…";
 }
 
 function widgetStepRunningSeed(step: NonNullable<AsyncJobState["steps"]>[number], fallbackIndex?: number): number | undefined {
@@ -720,7 +721,7 @@ function widgetStats(job: AsyncJobState, theme: Theme): string {
 	}
 	if (job.toolCount !== undefined) parts.push(formatToolUseStat(job.toolCount));
 	if (job.totalTokens?.total) parts.push(formatTokenStat(job.totalTokens.total));
-	if (job.startedAt !== undefined && job.updatedAt !== undefined) parts.push(formatDuration(Math.max(0, job.updatedAt - job.startedAt)));
+	if (job.status !== "queued" && job.startedAt !== undefined && job.updatedAt !== undefined) parts.push(formatDuration(Math.max(0, job.updatedAt - job.startedAt)));
 	return statJoin(theme, parts);
 }
 
@@ -907,7 +908,7 @@ function collapsedJobRow(job: AsyncJobState, theme: Theme, width: number): strin
 	const runningSteps = job.steps?.filter((step) => step.status === "running") ?? [];
 	const soloStep = runningSteps.length === 1 ? runningSteps[0] : undefined;
 	const activity = job.status !== "running"
-		? ""
+		? widgetActivity(job, false)
 		: soloStep
 			? widgetStepActivityLine(soloStep, width, false, job.updatedAt)
 			: widgetActivity(job, false);
@@ -917,7 +918,7 @@ function collapsedJobRow(job: AsyncJobState, theme: Theme, width: number): strin
 function fitWidgetLineBudget(lines: string[], theme: Theme, width: number, expanded: boolean): string[] {
 	const rows = process.stdout.rows || 30;
 	const budget = expanded
-		? Math.max(12, Math.min(24, Math.floor(rows * 0.55)))
+		? Math.max(4, Math.min(24, Math.floor(rows * 0.4)))
 		: MAX_WIDGET_JOBS + 2;
 	if (lines.length <= budget) return lines;
 	const visibleLines = Math.max(1, budget - 1);
@@ -928,15 +929,19 @@ function fitWidgetLineBudget(lines: string[], theme: Theme, width: number, expan
 	return [...lines.slice(0, visibleLines), truncLine(theme.fg("dim", hint), width)];
 }
 
-function buildWidgetComponent(jobs: AsyncJobState[], expanded: boolean): (_tui: unknown, theme: Theme) => Component {
-	return (_tui, theme) => {
-		// Text pads one column on each side, so building at full width wraps every long row.
-		const width = getTermWidth() - 2;
-		const lines = buildWidgetLines(jobs, theme, width, expanded);
-		const container = new Container();
-		for (const line of fitWidgetLineBudget(lines, theme, width, expanded)) container.addChild(new Text(line, 1, 0));
-		return container;
-	};
+function buildWidgetComponent(jobs: AsyncJobState[], isExpanded: () => boolean): (_tui: unknown, theme: Theme) => Component {
+	return (_tui, theme) => ({
+		render(availableWidth: number): string[] {
+			// Text pads one column on each side, so build against its inner width on every render.
+			const width = Math.max(1, availableWidth - 2);
+			const expanded = isExpanded();
+			const lines = fitWidgetLineBudget(buildWidgetLines(jobs, theme, width, expanded), theme, width, expanded);
+			const container = new Container();
+			for (const line of lines) container.addChild(new Text(line, 1, 0));
+			return container.render(availableWidth);
+		},
+		invalidate(): void {},
+	});
 }
 
 export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = getTermWidth(), expanded = false): string[] {
@@ -1022,7 +1027,7 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 		return;
 	}
 	if (!isTuiContext(ctx)) return;
-	ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(jobs, ctx.ui.getToolsExpanded()));
+	ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(jobs, () => ctx.ui.getToolsExpanded()));
 }
 
 function renderSingleCompact(d: Details, r: Details["results"][number], theme: Theme): Component {
@@ -1109,7 +1114,10 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 		const rowNumber = multiLabel.showActiveGroupOnly ? (i - multiLabel.groupStartIndex + 1) : (i + 1);
 		return { kind: "result", resultIndex: i, rowNumber, agentName: useResultsDirectly ? (r?.agent || `${fallbackLabel}-${rowNumber}`) : (d.chainAgents![i] || r?.agent || `${fallbackLabel}-${rowNumber}`) };
 	});
-	for (const entry of renderEntries) {
+	const maxCompactRows = 6;
+	const visibleEntries = hasRunning || failed || paused ? renderEntries : renderEntries.slice(0, maxCompactRows);
+	let showLiveDetailHint = false;
+	for (const entry of visibleEntries) {
 		if (entry.kind === "placeholder") {
 			const glyph = widgetStepGlyph(entry.status as AsyncJobStep["status"], theme);
 			const statusLabel = widgetStepStatus(entry.status as AsyncJobStep["status"], theme);
@@ -1141,7 +1149,7 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 		if (rRunning && rProg && "status" in rProg) {
 			const activity = compactCurrentActivity(rProg);
 			c.addChild(new Text(truncLine(theme.fg("dim", `    ⎿  ${activity}`), width), 0, 0));
-			c.addChild(new Text(truncLine(theme.fg("accent", "    Press Ctrl+O for live detail"), width), 0, 0));
+			showLiveDetailHint = true;
 		} else if (!rPending && (r.exitCode !== 0 || r.interrupted || r.detached || r.timedOut || hasEmptyTextOutputWithoutOutputTarget(r.task, output))) {
 			c.addChild(new Text(truncLine(theme.fg(r.exitCode !== 0 ? "error" : "dim", `    ⎿  ${resultStatusLine(r, output)}`), width), 0, 0));
 		}
@@ -1149,6 +1157,8 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 		if (outputTarget) c.addChild(new Text(truncLine(theme.fg("dim", `    output: ${outputTarget}`), width), 0, 0));
 		if (r.artifactPaths) c.addChild(new Text(truncLine(theme.fg("dim", `    output: ${shortenPath(r.artifactPaths.outputPath)}`), width), 0, 0));
 	}
+	if (renderEntries.length > visibleEntries.length) c.addChild(new Text(theme.fg("dim", `  +${renderEntries.length - visibleEntries.length} more · Ctrl+O expands`), 0, 0));
+	if (showLiveDetailHint) c.addChild(new Text(theme.fg("accent", "  Press Ctrl+O for live detail"), 0, 0));
 	if (d.artifacts) c.addChild(new Text(truncLine(theme.fg("dim", `  artifacts: ${shortenPath(d.artifacts.dir)}`), width), 0, 0));
 	return c;
 }

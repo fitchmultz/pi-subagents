@@ -27,6 +27,7 @@ export class ComposeOverlay implements Component {
   private completed = false;
   private sending: boolean = false;
   private error: string | null = null;
+  private pasteBuffer: string | null = null;
 
   constructor(
     tui: TUI,
@@ -57,9 +58,23 @@ export class ComposeOverlay implements Component {
   handleInput(data: string): void {
     if (this.sending || this.completed) return;
 
-    const pasted = data.startsWith(BRACKETED_PASTE_START) && data.endsWith(BRACKETED_PASTE_END);
-    if (pasted) {
-      data = data.slice(BRACKETED_PASTE_START.length, -BRACKETED_PASTE_END.length).replace(/\r\n?/g, "\n");
+    let pasted = false;
+    if (this.pasteBuffer !== null) {
+      this.pasteBuffer += data;
+      const end = this.pasteBuffer.indexOf(BRACKETED_PASTE_END);
+      if (end === -1) return;
+      data = this.pasteBuffer.slice(0, end).replace(/\r\n?/g, "\n");
+      this.pasteBuffer = null;
+      pasted = true;
+    } else if (data.startsWith(BRACKETED_PASTE_START)) {
+      const body = data.slice(BRACKETED_PASTE_START.length);
+      const end = body.indexOf(BRACKETED_PASTE_END);
+      if (end === -1) {
+        this.pasteBuffer = body;
+        return;
+      }
+      data = body.slice(0, end).replace(/\r\n?/g, "\n");
+      pasted = true;
     } else if (this.keybindings.matches(data, "tui.select.cancel")) {
       this.finish({ sent: false });
       return;
@@ -68,6 +83,7 @@ export class ComposeOverlay implements Component {
 
     if (!pasted && data === "\t") {
       this.mode = this.mode === "send" ? "ask" : "send";
+      this.error = null;
       this.tui.requestRender();
       return;
     }
@@ -77,7 +93,7 @@ export class ComposeOverlay implements Component {
     }
 
     if (!pasted && this.keybindings.matches(data, "tui.select.confirm")) {
-      if (this.inputBuffer.length > 0) {
+      if (this.inputBuffer.trim().length > 0) {
         void this.sendMessage();
       }
       return;
@@ -85,6 +101,7 @@ export class ComposeOverlay implements Component {
 
     if (!pasted && this.keybindings.matches(data, "tui.editor.deleteCharBackward")) {
       this.inputBuffer = [...this.inputBuffer].slice(0, -1).join("");
+      this.error = null;
       this.tui.requestRender();
       return;
     }
@@ -92,6 +109,7 @@ export class ComposeOverlay implements Component {
     const printable = [...data].filter(c => c >= " " || c === "\n" || c === "\t").join("");
     if (printable) {
       this.inputBuffer += printable;
+      this.error = null;
       this.tui.requestRender();
     }
   }
@@ -129,12 +147,18 @@ export class ComposeOverlay implements Component {
     }
   }
 
-  private renderInputLines(row: (text?: string) => string, lines: string[]): void {
+  private renderInputLines(row: (text?: string) => string, lines: string[], contentWidth: number): void {
     const rawLines = this.inputBuffer.split("\n");
     const visibleLines = rawLines.slice(-8);
     visibleLines.forEach((line, index) => {
       const isLast = index === visibleLines.length - 1;
-      lines.push(row(`${index === 0 ? " > " : "   "}${line}${isLast ? "█" : ""}`));
+      const prefix = index === 0 ? " > " : "   ";
+      if (isLast) {
+        const graphemes = [...line];
+        while (visibleWidth(graphemes.join("")) > Math.max(1, contentWidth - prefix.length - 1)) graphemes.shift();
+        line = graphemes.join("");
+      }
+      lines.push(row(`${prefix}${line}${isLast ? "█" : ""}`));
     });
   }
 
@@ -145,7 +169,7 @@ export class ComposeOverlay implements Component {
     const footer = `${this.keybindings.getKeys("tui.select.confirm").join("/")}: ${this.mode === "ask" ? "Request reply" : "Send"} • Tab: ${this.mode === "ask" ? "Send mode" : "Request-reply mode"} • ${this.keybindings.getKeys("tui.select.cancel").join("/")}: Close`;
     const border = (text: string) => this.theme.fg("accent", text);
     const row = (text = "") => {
-      const clipped = truncateToWidth(text, contentWidth, "", true);
+      const clipped = truncateToWidth(text, contentWidth, "…", true);
       return `${border("│")}${clipped}${" ".repeat(Math.max(0, contentWidth - visibleWidth(clipped)))}${border("│")}`;
     };
 
@@ -161,9 +185,9 @@ export class ComposeOverlay implements Component {
     } else if (this.error) {
       lines.push(row(this.theme.fg("error", ` Error: ${this.error}`)));
       lines.push(row());
-      this.renderInputLines(row, lines);
+      this.renderInputLines(row, lines, contentWidth);
     } else {
-      this.renderInputLines(row, lines);
+      this.renderInputLines(row, lines, contentWidth);
     }
 
     lines.push(row());

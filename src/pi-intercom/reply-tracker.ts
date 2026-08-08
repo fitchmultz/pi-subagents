@@ -48,7 +48,9 @@ export class ReplyTracker {
   recordIncomingMessage(from: SessionInfo, message: Message, receivedAt = Date.now()): IntercomContext {
     const context = { from, message, receivedAt };
     if (message.expectsReply) {
+      this.pruneExpired(receivedAt);
       this.pendingAsks.set(message.id, context);
+      while (this.pendingAsks.size > 100) this.pendingAsks.delete(this.pendingAsks.keys().next().value!);
     }
     return context;
   }

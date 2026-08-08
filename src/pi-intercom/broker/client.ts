@@ -97,7 +97,7 @@ export class IntercomClient extends EventEmitter {
     return socket;
   }
 
-  connect(session: Omit<SessionInfo, "id">): Promise<void> {
+  connect(session: Omit<SessionInfo, "id">, requestedId?: string): Promise<void> {
     if (this.socket) {
       return Promise.reject(new Error("Already connected"));
     }
@@ -118,6 +118,7 @@ export class IntercomClient extends EventEmitter {
           reject(new Error("Connection timeout"));
         }
       }, 10000);
+      timeout.unref?.();
 
       let connectionEstablished = false;
 
@@ -202,7 +203,7 @@ export class IntercomClient extends EventEmitter {
       this.once("_registered", onRegistered);
 
       try {
-        writeMessage(socket, { type: "register", session });
+        writeMessage(socket, { type: "register", session, requestedId });
       } catch (error) {
         cleanupConnectionAttempt();
         cleanupSocketListeners();
@@ -402,6 +403,7 @@ export class IntercomClient extends EventEmitter {
           wrappedReject(new Error("List sessions timeout"));
         }
       }, this.listTimeoutMs);
+      timeout.unref?.();
       this.pendingLists.set(requestId, { resolve: wrappedResolve, reject: wrappedReject });
       try {
         writeMessage(socket, { type: "list", requestId });
@@ -452,6 +454,7 @@ export class IntercomClient extends EventEmitter {
           wrappedReject(new Error("Send timeout"));
         }
       }, this.sendTimeoutMs);
+      timeout.unref?.();
       this.pendingSends.set(messageId, { resolve: wrappedResolve, reject: wrappedReject });
 
       try {

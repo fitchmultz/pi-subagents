@@ -125,8 +125,8 @@ export function getStepAgents(step: ChainStep): string[] {
 // Chain Directory Management
 // =============================================================================
 
-export function createChainDir(runId: string, baseDir?: string): string {
-	const chainDir = path.join(baseDir ? path.resolve(baseDir) : CHAIN_RUNS_DIR, runId);
+export function createChainDir(runId: string, baseDir?: string, cwd = process.cwd()): string {
+	const chainDir = path.join(baseDir ? path.resolve(cwd, baseDir) : CHAIN_RUNS_DIR, runId);
 	fs.mkdirSync(chainDir, { recursive: true });
 	return chainDir;
 }
@@ -285,7 +285,12 @@ function resolveChainPath(filePath: string, chainDir: string): string {
  * These are appended to the task to tell the agent what to read/write.
  */
 export function writeInitialProgressFile(progressDir: string): void {
-	fs.writeFileSync(path.join(progressDir, "progress.md"), INITIAL_PROGRESS_CONTENT);
+	fs.mkdirSync(progressDir, { recursive: true });
+	try {
+		fs.writeFileSync(path.join(progressDir, "progress.md"), INITIAL_PROGRESS_CONTENT, { encoding: "utf-8", flag: "wx" });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	}
 }
 
 export function buildChainInstructions(

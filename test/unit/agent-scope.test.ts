@@ -13,8 +13,8 @@ describe("resolveExecutionAgentScope", () => {
 		assert.equal(resolveExecutionAgentScope("both"), "both");
 	});
 
-	it("falls back to both for invalid scopes", () => {
-		assert.equal(resolveExecutionAgentScope("invalid"), "both");
-		assert.equal(resolveExecutionAgentScope(""), "both");
+	it("rejects invalid scopes instead of broadening discovery", () => {
+		assert.throws(() => resolveExecutionAgentScope("invalid"), /agentScope/);
+		assert.throws(() => resolveExecutionAgentScope(""), /agentScope/);
 	});
 });

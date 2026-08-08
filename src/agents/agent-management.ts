@@ -17,6 +17,7 @@ import {
 	parsePackageName,
 } from "./agents.ts";
 import { serializeAgent } from "./agent-serializer.ts";
+import { mergeAgentsForScope } from "./agent-selection.ts";
 import { serializeChain, serializeJsonChain } from "./chain-serializer.ts";
 import { discoverAvailableSkills } from "./skills.ts";
 import { isClaudeCodeModel } from "../runs/shared/claude-code.ts";
@@ -171,6 +172,8 @@ function skillsWarning(ctx: ManagementContext, skills: string[] | undefined): st
 	return missing.length ? `Warning: skills not found: ${missing.join(", ")}.` : undefined;
 }
 
+const SAVED_CHAIN_STEP_KEYS = new Set(["agent", "task", "phase", "label", "as", "outputSchema", "output", "outputMode", "reads", "model", "skills", "progress"]);
+
 function parseStepList(raw: unknown): { steps?: ChainStepConfig[]; error?: string } {
 	if (!Array.isArray(raw)) return { error: "config.steps must be an array." };
 	if (raw.length === 0) return { error: "config.steps must include at least one step." };
@@ -179,6 +182,9 @@ function parseStepList(raw: unknown): { steps?: ChainStepConfig[]; error?: strin
 		const item = raw[i];
 		if (!item || typeof item !== "object" || Array.isArray(item)) return { error: `config.steps[${i}] must be an object.` };
 		const s = item as Record<string, unknown>;
+		if (hasKey(s, "skill")) return { error: `config.steps[${i}].skill is not supported; use skills.` };
+		const unknownKeys = Object.keys(s).filter((key) => !SAVED_CHAIN_STEP_KEYS.has(key));
+		if (unknownKeys.length) return { error: `config.steps[${i}] has unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.` };
 		if (typeof s.agent !== "string" || !s.agent.trim()) return { error: `config.steps[${i}].agent must be a non-empty string.` };
 		const step: ChainStepConfig = { agent: s.agent.trim(), task: typeof s.task === "string" ? s.task : "" };
 		if (hasKey(s, "phase")) {
@@ -208,8 +214,8 @@ function parseStepList(raw: unknown): { steps?: ChainStepConfig[]; error?: strin
 		}
 		if (hasKey(s, "reads")) {
 			if (s.reads === false) step.reads = false;
-			else if (Array.isArray(s.reads)) step.reads = s.reads.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);
-			else return { error: `config.steps[${i}].reads must be an array or false.` };
+			else if (Array.isArray(s.reads) && s.reads.every((value) => typeof value === "string")) step.reads = s.reads.map((value) => value.trim()).filter(Boolean);
+			else return { error: `config.steps[${i}].reads must be a string array or false.` };
 		}
 		if (hasKey(s, "model")) {
 			if (typeof s.model === "string") step.model = s.model;
@@ -220,8 +226,8 @@ function parseStepList(raw: unknown): { steps?: ChainStepConfig[]; error?: strin
 		}
 		if (hasKey(s, "skills")) {
 			if (s.skills === false) step.skills = false;
-			else if (Array.isArray(s.skills)) step.skills = s.skills.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);
-			else return { error: `config.steps[${i}].skills must be an array or false.` };
+			else if (Array.isArray(s.skills) && s.skills.every((value) => typeof value === "string")) step.skills = s.skills.map((value) => value.trim()).filter(Boolean);
+			else return { error: `config.steps[${i}].skills must be a string array or false.` };
 		}
 		if (hasKey(s, "progress")) {
 			if (typeof s.progress === "boolean") step.progress = s.progress;
@@ -244,7 +250,22 @@ function parseTools(raw: string): { tools?: string[]; mcpDirectTools?: string[] 
 	return { tools: tools.length ? tools : undefined, mcpDirectTools: mcpDirectTools.length ? mcpDirectTools : undefined };
 }
 
+const CHAIN_CONFIG_KEYS = new Set(["name", "package", "description", "scope", "steps"]);
+
+function validateChainConfigKeys(cfg: Record<string, unknown>): string | undefined {
+	const unknownKeys = Object.keys(cfg).filter((key) => !CHAIN_CONFIG_KEYS.has(key));
+	return unknownKeys.length ? `config has unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.` : undefined;
+}
+
+const AGENT_CONFIG_KEYS = new Set([
+	"name", "package", "description", "scope", "systemPrompt", "model", "fallbackModels", "tools", "skills", "extensions", "thinking",
+	"systemPromptMode", "inheritProjectContext", "inheritSkills", "defaultContext", "output", "reads", "progress", "allowSubagents",
+	"maxSubagentDepth", "maxExecutionTimeMs", "maxTokens", "completionGuard",
+]);
+
 function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknown>): string | undefined {
+	const unknownKeys = Object.keys(cfg).filter((key) => !AGENT_CONFIG_KEYS.has(key));
+	if (unknownKeys.length) return `config has unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`;
 	if (hasKey(cfg, "systemPrompt")) {
 		if (cfg.systemPrompt === false || cfg.systemPrompt === "") target.systemPrompt = "";
 		else if (typeof cfg.systemPrompt === "string") target.systemPrompt = cfg.systemPrompt;
@@ -380,8 +401,8 @@ function resolveTarget<T extends { source: AgentSource; filePath: string }>(
 	}
 	const scoped = mutable.filter((m) => m.source === scope);
 	if (scoped.length === 0) return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' not found in scope '${scope}'.`, true);
-	if (scoped.length > 1) return result(`Multiple ${kind}s named '${name}' found in scope '${scope}': ${scoped.map((m) => m.filePath).join(", ")}`, true);
-	return scoped[0]!;
+	// Discovery uses last-definition-wins inside one scope (for example ~/.agents over the legacy user dir).
+	return scoped[scoped.length - 1]!;
 }
 
 function renamePath(
@@ -507,9 +528,11 @@ function formatAgentListLine(a: AgentConfig): string {
 }
 
 export function handleList(params: ManagementParams, ctx: ManagementContext): SubagentExecutionResult {
-	const scope = normalizeListScope(params.agentScope) ?? "both";
+	const scope = normalizeListScope(params.agentScope);
+	if (!scope) return result("agentScope must be 'user', 'project', or 'both'.", true);
 	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
-	const agents = discoverAgents(ctx.cwd, scope, discoveryOptions(ctx)).agents
+	const agents = mergeAgentsForScope(scope, d.user, d.project, d.builtin)
+		.filter((agent) => agent.disabled !== true)
 		.sort((a, b) => a.name.localeCompare(b.name));
 	const chains = d.chains.filter((c) => scope === "both" || c.source === scope).sort((a, b) => a.name.localeCompare(b.name));
 	const diagnostics = d.chainDiagnostics.filter((entry) => scope === "both" || entry.source === scope);
@@ -538,8 +561,9 @@ function handleGet(params: ManagementParams, ctx: ManagementContext): SubagentEx
 	const hasBoth = Boolean(params.agent && params.chainName);
 	const blocks: string[] = [];
 	let anyFound = false;
+	const scope = normalizeListScope(params.agentScope);
+	if (!scope) return result("agentScope must be 'user', 'project', or 'both'.", true);
 	if (params.agent) {
-		const scope = normalizeListScope(params.agentScope) ?? "both";
 		const matches = findEffectiveAgents(params.agent, ctx, scope);
 		if (!matches.length) {
 			const msg = `Agent '${params.agent}' not found. Available: ${availableNames(ctx, "agent").join(", ") || "none"}.`;
@@ -551,7 +575,7 @@ function handleGet(params: ManagementParams, ctx: ManagementContext): SubagentEx
 		}
 	}
 	if (params.chainName) {
-		const matches = findChains(params.chainName, ctx, "both");
+		const matches = findChains(params.chainName, ctx, scope);
 		if (!matches.length) {
 			const msg = `Chain '${params.chainName}' not found. Available: ${availableNames(ctx, "chain").join(", ") || "none"}.`;
 			if (!hasBoth) return result(msg, true);
@@ -593,6 +617,8 @@ export function handleCreate(params: ManagementParams, ctx: ManagementContext): 
 	const warnings: string[] = [];
 	if (!isChain && d.builtin.some((a) => a.name === runtimeName)) warnings.push(`Note: this shadows the builtin agent '${runtimeName}'.`);
 	if (isChain) {
+		const keyError = validateChainConfigKeys(cfg);
+		if (keyError) return result(keyError, true);
 		const parsed = parseStepList(cfg.steps);
 		if (parsed.error) return result(parsed.error, true);
 		const chain: ChainConfig = { name: runtimeName, localName: name, packageName: parsedPackage.packageName, description: cfg.description.trim(), source: scope, filePath: targetPath, steps: parsed.steps! };
@@ -691,6 +717,8 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 	const targetOrError = resolveTarget("chain", params.chainName!, findChains(params.chainName!, ctx, scopeHint ?? "both"), ctx, params.agentScope);
 	if ("content" in targetOrError) return targetOrError;
 	const target = targetOrError;
+	const keyError = validateChainConfigKeys(cfg);
+	if (keyError) return result(keyError, true);
 	const updated: ChainConfig = { ...target, steps: [...target.steps] };
 	const oldName = target.name;
 	if (hasKey(cfg, "name") && (typeof cfg.name !== "string" || !cfg.name.trim())) return result("config.name must be a non-empty string when provided.", true);
@@ -756,6 +784,9 @@ function handleDelete(params: ManagementParams, ctx: ManagementContext): Subagen
 }
 
 export function handleManagementAction(action: string, params: ManagementParams, ctx: ManagementContext): SubagentExecutionResult {
+	if (params.agentScope !== undefined && normalizeListScope(params.agentScope) === undefined) {
+		return result("agentScope must be 'user', 'project', or 'both'.", true);
+	}
 	switch (action as ManagementAction) {
 		case "list": return handleList(params, ctx);
 		case "get": return handleGet(params, ctx);

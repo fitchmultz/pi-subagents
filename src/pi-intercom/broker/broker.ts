@@ -1,5 +1,5 @@
 import net from "net";
-import { writeFileSync, unlinkSync, mkdirSync } from "fs";
+import { chmodSync, writeFileSync, unlinkSync, mkdirSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { getPiAgentDir } from "../agent-dir.ts";
@@ -43,11 +43,16 @@ class IntercomBroker {
       }
     }
     this.server = net.createServer(this.handleConnection.bind(this));
+    this.server.on("error", (error) => {
+      console.error(`Intercom broker failed: ${error.message}`);
+      process.exitCode = 1;
+    });
   }
 
   start(): void {
     this.server.listen(SOCKET_PATH, () => {
-      writeFileSync(PID_PATH, String(process.pid));
+      if (process.platform !== "win32") chmodSync(SOCKET_PATH, 0o600);
+      writeFileSync(PID_PATH, String(process.pid), { mode: 0o600 });
       console.log(`Intercom broker started (pid: ${process.pid})`);
     });
     process.on("SIGTERM", () => this.shutdown());
@@ -124,7 +129,10 @@ class IntercomBroker {
           throw new Error("Received duplicate register message");
         }
 
-        const id = randomUUID();
+        const requestedId = typeof clientMessage.requestedId === "string" && /^[a-zA-Z0-9_-]{8,80}$/.test(clientMessage.requestedId)
+          ? clientMessage.requestedId
+          : undefined;
+        const id = requestedId && !this.sessions.has(requestedId) ? requestedId : randomUUID();
         setId(id);
         const now = Date.now();
         const info: SessionInfo = {

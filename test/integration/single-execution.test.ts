@@ -381,7 +381,7 @@ describe("single sync execution", () => {
 		assert.equal(failureEvent?.type, "needs_attention");
 		assert.equal(failureEvent?.currentPath, "src/runs/background/async-status.ts");
 		assert.match(failureEvent?.recentFailureSummary ?? "", /No exact match/);
-		assert.equal(result.progress.activityState, "needs_attention");
+		assert.equal(result.progress.activityState, undefined);
 	});
 
 	it("does not surface control state or events when control is disabled", async () => {
@@ -404,6 +404,22 @@ describe("single sync execution", () => {
 		assert.equal(result.progress.activityState, undefined);
 		assert.equal(result.controlEvents, undefined);
 		assert.equal(controlEvents.length, 0);
+	});
+
+	it("ignores JSON null records from child stdout", async () => {
+		mockPi.onCall({ jsonl: [null, events.assistantMessage("still completed")] });
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Handle output", {});
+		assert.equal(result.exitCode, 0);
+		assert.match(result.finalOutput, /still completed/);
+	});
+
+	it("fails when a requested output path cannot be saved", async () => {
+		mockPi.onCall({ output: "completed work" });
+		const outputPath = path.join(tempDir, "report.md");
+		fs.mkdirSync(outputPath);
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Write report", { outputPath, outputMode: "file-only" });
+		assert.equal(result.exitCode, 1);
+		assert.match(result.error ?? "", /Failed to save output file/);
 	});
 
 	it("captures non-zero exit code", async () => {
@@ -1373,6 +1389,14 @@ describe("single sync execution", () => {
 		assert.equal(result.modelAttempts?.length, 2);
 		assert.match(result.modelAttempts?.[0]?.error ?? "", /database is locked/);
 		assert.equal(mockPi.callCount(), 2);
+	});
+
+	it("escalates a signal-resistant child to SIGKILL", { timeout: 8_000 }, async () => {
+		mockPi.onCall({ delay: 60_000, ignoreSignals: true, output: "too late" });
+		const startedAt = Date.now();
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Do not hang", { timeoutMs: 50 });
+		assert.equal(result.timedOut, true);
+		assert.ok(Date.now() - startedAt < 5_000, `termination took ${Date.now() - startedAt}ms`);
 	});
 
 	it("times out the current foreground run without retrying fallback models", async () => {

@@ -130,6 +130,7 @@ interface ParallelChainRunInput {
 	maxSubagentDepth: number;
 	nestedRoute?: NestedRouteInfo;
 	projectTrust?: ChildProjectTrustPolicy;
+	onDetachedComplete?: (result: SingleResult, index: number) => void;
 }
 
 function buildChainExecutionDetails(input: ChainExecutionDetailsInput): Details {
@@ -193,6 +194,16 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 	const concurrency = input.step.concurrency ?? MAX_CONCURRENCY;
 	const failFast = input.step.failFast ?? false;
 	let aborted = false;
+	const failFastController = new AbortController();
+	const activeChildren = input.foregroundControl?.activeChildren ?? new Map();
+	if (input.foregroundControl) {
+		input.foregroundControl.activeChildren = activeChildren;
+		input.foregroundControl.interrupt = () => {
+			let interrupted = false;
+			for (const child of activeChildren.values()) interrupted = child.interrupt?.() === true || interrupted;
+			return interrupted;
+		};
+	}
 
 	const parallelResults = await mapConcurrent(
 		input.step.parallel,
@@ -240,18 +251,22 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				? (path.isAbsolute(behavior.output) ? behavior.output : path.join(input.chainDir, behavior.output))
 				: undefined;
 			const interruptController = new AbortController();
+			const globalIndex = input.globalTaskIndex + taskIndex;
 			if (input.foregroundControl) {
 				input.foregroundControl.currentAgent = task.agent;
-				input.foregroundControl.currentIndex = input.globalTaskIndex + taskIndex;
+				input.foregroundControl.currentIndex = globalIndex;
 				input.foregroundControl.currentActivityState = undefined;
 				input.foregroundControl.updatedAt = Date.now();
-				input.foregroundControl.interrupt = () => {
-					if (interruptController.signal.aborted) return false;
-					interruptController.abort();
-					input.foregroundControl!.currentActivityState = undefined;
-					input.foregroundControl!.updatedAt = Date.now();
-					return true;
-				};
+				activeChildren.set(globalIndex, {
+					agent: task.agent,
+					interrupt: () => {
+						if (interruptController.signal.aborted) return false;
+						interruptController.abort();
+						input.foregroundControl!.currentActivityState = undefined;
+						input.foregroundControl!.updatedAt = Date.now();
+						return true;
+					},
+				});
 			}
 
 			const structuredRuntime = task.outputSchema
@@ -263,10 +278,11 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 			const result = await runSync(input.ctx.cwd, input.agents, task.agent, taskStr, {
 				cwd: taskCwd,
 				signal: input.signal,
-				interruptSignal: interruptController.signal,
+				interruptSignal: failFast ? AbortSignal.any([interruptController.signal, failFastController.signal]) : interruptController.signal,
 				...(input.timeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: input.timeoutMs, timeoutAt } : {}),
 				...(input.timeoutMs !== undefined && timeoutAt !== undefined && input.timeoutExtensionRegistry ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { unregisterTimeoutExtension = input.timeoutExtensionRegistry?.register(String(input.globalTaskIndex + taskIndex), extend); } } : {}),
 				allowIntercomDetach: taskAgentConfig?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
+				onDetachedComplete: (result) => input.onDetachedComplete?.(result, globalIndex),
 				intercomEvents: input.intercomEvents,
 				runId: input.runId,
 				index: input.globalTaskIndex + taskIndex,
@@ -337,14 +353,24 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 					: undefined,
 			}).finally(() => {
 				unregisterTimeoutExtension?.();
-				if (input.foregroundControl?.currentIndex === input.globalTaskIndex + taskIndex) {
-					input.foregroundControl.interrupt = undefined;
+				activeChildren.delete(globalIndex);
+				if (input.foregroundControl?.currentIndex === globalIndex) {
+					const next = activeChildren.entries().next().value as [number, { agent: string }] | undefined;
+					input.foregroundControl.currentIndex = next?.[0];
+					input.foregroundControl.currentAgent = next?.[1].agent;
 					input.foregroundControl.updatedAt = Date.now();
 				}
+				if (input.foregroundControl && activeChildren.size === 0) input.foregroundControl.interrupt = undefined;
 			});
 
+			if (result.interrupted && failFastController.signal.aborted && !interruptController.signal.aborted) {
+				result.interrupted = undefined;
+				result.exitCode = -1;
+				result.error = "Interrupted due to fail-fast";
+			}
 			if (result.exitCode !== 0 && failFast) {
 				aborted = true;
+				failFastController.abort();
 			}
 			recordRun(task.agent, cleanTask, result.exitCode, result.progressSummary?.durationMs ?? 0);
 			return result;
@@ -386,6 +412,7 @@ interface ChainExecutionParams {
 	worktreeSetupHookTimeoutMs?: number;
 	timeoutMs?: number;
 	projectTrust?: ChildProjectTrustPolicy;
+	onDetachedComplete?: (result: SingleResult, index: number) => void;
 }
 
 interface ChainExecutionResult {
@@ -427,6 +454,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		intercomEvents,
 		chainSkills: chainSkillsParam,
 		chainDir: chainDirBase,
+		onDetachedComplete,
 	} = params;
 	const chainSkills = chainSkillsParam ?? [];
 
@@ -485,7 +513,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		throw error;
 	}
 
-	const chainDir = createChainDir(runId, chainDirBase);
+	const chainDir = createChainDir(runId, chainDirBase, cwd ?? ctx.cwd);
 	const hasParallelSteps = chainSteps.some((step) => isParallelStep(step) || isDynamicParallelStep(step));
 	let templates: ResolvedTemplates = resolveChainTemplates(chainSteps);
 	const shouldClarify = clarify === true && ctx.hasUI && !hasParallelSteps;
@@ -687,6 +715,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					worktreeSetup,
 					maxSubagentDepth: params.maxSubagentDepth,
 					projectTrust: params.projectTrust,
+					onDetachedComplete,
 				});
 				globalTaskIndex += step.parallel.length;
 
@@ -903,6 +932,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				nestedRoute: params.nestedRoute,
 				maxSubagentDepth: params.maxSubagentDepth,
 				projectTrust: params.projectTrust,
+				onDetachedComplete,
 			});
 			globalTaskIndex += dynamicParallelStep.parallel.length;
 
@@ -1093,6 +1123,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				...(params.timeoutMs !== undefined && stepTimeoutAt !== undefined ? { timeoutMs: params.timeoutMs, timeoutAt: stepTimeoutAt } : {}),
 				...(params.timeoutMs !== undefined && stepTimeoutAt !== undefined && timeoutExtensionRegistry ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { unregisterTimeoutExtension = timeoutExtensionRegistry.register(String(globalTaskIndex), extend); } } : {}),
 				allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
+				onDetachedComplete: (result) => onDetachedComplete?.(result, globalTaskIndex),
 				intercomEvents,
 				runId,
 				index: globalTaskIndex,

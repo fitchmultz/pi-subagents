@@ -53,6 +53,25 @@ describe("async status helpers", () => {
 		}
 	});
 
+	it("accepts logical chain steps with no flat child after empty fanout", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-status-empty-fanout-"));
+		try {
+			createAsyncDir(root, "run-empty", {
+				runId: "run-empty",
+				mode: "chain",
+				state: "complete",
+				startedAt: 100,
+				lastUpdate: 200,
+				chainStepCount: 2,
+				currentStep: 0,
+				steps: [{ agent: "producer", status: "complete" }],
+			});
+			assert.equal(listAsyncRuns(root)[0]?.chainStepCount, 2);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("formats model thinking in step summaries", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-status-model-thinking-"));
 		try {

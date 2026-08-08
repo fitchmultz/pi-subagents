@@ -410,29 +410,19 @@ function applyBuiltinOverrides(
 	projectSettings: SubagentSettings,
 	projectSettingsPath: string | null,
 ): AgentConfig[] {
-	const projectBulkDisabled = projectSettings.disableBuiltins === true && projectSettingsPath !== null;
-	const userBulkDisabled = projectSettings.disableBuiltins === undefined && userSettings.disableBuiltins === true;
-
 	return builtinAgents.map((agent) => {
-		const projectOverride = projectSettings.overrides[agent.name];
-		if (projectOverride && projectSettingsPath) {
-			return applyBuiltinOverride(agent, projectOverride);
-		}
-
-		if (projectBulkDisabled && projectSettingsPath) {
-			return applyBuiltinOverride(agent, { disabled: true });
-		}
-
 		const userOverride = userSettings.overrides[agent.name];
-		if (userOverride) {
-			return applyBuiltinOverride(agent, userOverride);
+		let next = userOverride
+			? applyBuiltinOverride(agent, userOverride)
+			: userSettings.disableBuiltins === true
+				? applyBuiltinOverride(agent, { disabled: true })
+				: agent;
+		if (projectSettingsPath) {
+			const projectOverride = projectSettings.overrides[agent.name];
+			if (projectOverride) next = applyBuiltinOverride(next, projectOverride);
+			else if (projectSettings.disableBuiltins !== undefined) next = applyBuiltinOverride(next, { disabled: projectSettings.disableBuiltins });
 		}
-
-		if (userBulkDisabled) {
-			return applyBuiltinOverride(agent, { disabled: true });
-		}
-
-		return agent;
+		return next;
 	});
 }
 
@@ -464,6 +454,15 @@ function isInAgentSkillSubtree(dir: string, filePath: string): boolean {
 	return path.relative(dir, filePath).split(path.sep)[0] === "skills";
 }
 
+const reportedAgentDiagnostics = new Set<string>();
+
+function reportAgentDiagnostic(filePath: string, message: string): void {
+	const diagnostic = `${filePath}: ${message}`;
+	if (reportedAgentDiagnostics.has(diagnostic)) return;
+	reportedAgentDiagnostics.add(diagnostic);
+	console.error(`Invalid agent definition '${diagnostic}'`);
+}
+
 function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
@@ -472,19 +471,24 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 		let content: string;
 		try {
 			content = fs.readFileSync(filePath, "utf-8");
-		} catch {
+		} catch (error) {
+			reportAgentDiagnostic(filePath, `cannot read file: ${error instanceof Error ? error.message : String(error)}`);
 			continue;
 		}
 
 		const { frontmatter, body } = parseFrontmatter(content);
 
 		if (!frontmatter.name || !frontmatter.description) {
+			reportAgentDiagnostic(filePath, "frontmatter must include name and description");
 			continue;
 		}
 
 		const localName = frontmatter.name;
 		const parsedPackage = parsePackageName(frontmatter.package, `Agent '${localName}' package`);
-		if (parsedPackage.error) continue;
+		if (parsedPackage.error) {
+			reportAgentDiagnostic(filePath, parsedPackage.error);
+			continue;
+		}
 		const packageName = parsedPackage.packageName;
 		const runtimeName = buildRuntimeName(localName, packageName);
 
@@ -553,9 +557,35 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			if (!KNOWN_FIELDS.has(key)) extraFields[key] = value;
 		}
 
+		const booleanFields = ["allowSubagents", "inheritProjectContext", "inheritSkills", "defaultProgress", "interactive", "completionGuard"] as const;
+		const invalidBoolean = booleanFields.find((field) => frontmatter[field] !== undefined && frontmatter[field] !== "true" && frontmatter[field] !== "false");
+		if (invalidBoolean) {
+			reportAgentDiagnostic(filePath, `${invalidBoolean} must be true or false`);
+			continue;
+		}
+		if (frontmatter.systemPromptMode !== undefined && frontmatter.systemPromptMode !== "append" && frontmatter.systemPromptMode !== "replace") {
+			reportAgentDiagnostic(filePath, "systemPromptMode must be append or replace");
+			continue;
+		}
+		if (frontmatter.defaultContext !== undefined && frontmatter.defaultContext !== "fresh" && frontmatter.defaultContext !== "fork") {
+			reportAgentDiagnostic(filePath, "defaultContext must be fresh or fork");
+			continue;
+		}
 		const parsedMaxSubagentDepth = Number(frontmatter.maxSubagentDepth);
 		const parsedMaxExecutionTimeMs = Number(frontmatter.maxExecutionTimeMs);
 		const parsedMaxTokens = Number(frontmatter.maxTokens);
+		if (frontmatter.maxSubagentDepth !== undefined && (!Number.isInteger(parsedMaxSubagentDepth) || parsedMaxSubagentDepth < 0)) {
+			reportAgentDiagnostic(filePath, "maxSubagentDepth must be an integer >= 0");
+			continue;
+		}
+		if (frontmatter.maxExecutionTimeMs !== undefined && (!Number.isInteger(parsedMaxExecutionTimeMs) || parsedMaxExecutionTimeMs < 1)) {
+			reportAgentDiagnostic(filePath, "maxExecutionTimeMs must be an integer >= 1");
+			continue;
+		}
+		if (frontmatter.maxTokens !== undefined && (!Number.isInteger(parsedMaxTokens) || parsedMaxTokens < 1)) {
+			reportAgentDiagnostic(filePath, "maxTokens must be an integer >= 1");
+			continue;
+		}
 		const completionGuard = frontmatter.completionGuard === "false"
 			? false
 			: frontmatter.completionGuard === "true"

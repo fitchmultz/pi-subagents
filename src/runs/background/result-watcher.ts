@@ -102,7 +102,7 @@ export function createResultWatcher(
 			}
 			const now = Date.now();
 			const completionKey = buildCompletionKey(data, `result:${file}`);
-			if (markSeenWithTtl(state.completionSeen, completionKey, now, completionTtlMs)) {
+			if (state.completionSeen.has(completionKey)) {
 				fsApi.unlinkSync(resultPath);
 				return;
 			}
@@ -182,6 +182,7 @@ export function createResultWatcher(
 						: [],
 				} : {}),
 			});
+			markSeenWithTtl(state.completionSeen, completionKey, now, completionTtlMs);
 			fsApi.unlinkSync(resultPath);
 		} catch (error) {
 			if (isNotFoundError(error)) return;
@@ -206,7 +207,9 @@ export function createResultWatcher(
 
 	const ensurePeriodicScan = () => {
 		if (periodicScanTimer) return;
-		periodicScanTimer = timers.setInterval(primeExistingResults, POLL_INTERVAL_MS);
+		periodicScanTimer = timers.setInterval(() => {
+			if (state.asyncJobs.size > 0) primeExistingResults();
+		}, POLL_INTERVAL_MS);
 		periodicScanTimer.unref?.();
 	};
 

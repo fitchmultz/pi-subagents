@@ -619,9 +619,9 @@ export function writeNestedControlRequest(route: NestedRoute, request: Omit<Nest
 	return writeRouteRecord(route.controlInbox, sanitized.ts, sanitized);
 }
 
-export function readNestedControlRequests(route: NestedRoute): Array<NestedControlRequestRecord & { filePath: string }> {
+export function readNestedControlRequests(route: NestedRoute, skipFiles: ReadonlySet<string> = new Set()): Array<NestedControlRequestRecord & { filePath: string }> {
 	validateRouteShape(route);
-	return readRouteFiles(route.controlInbox, (entry) => entry.endsWith(".json")).flatMap(({ filePath, content }) => {
+	return readRouteFiles(route.controlInbox, (entry) => entry.endsWith(".json") && !skipFiles.has(entry)).flatMap(({ filePath, content }) => {
 		const request = parseControlRequest(content, route);
 		return request ? [{ ...request, filePath }] : [];
 	});

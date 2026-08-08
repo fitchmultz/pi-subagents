@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -86,12 +87,20 @@ function runNodeTest(label, imports, files, timeoutMs) {
     ...files,
   ];
   const startedAt = Date.now();
-  const result = spawnSync(process.execPath, args, {
-    stdio: "inherit",
-    env: sanitizedEnv(),
-    timeout: timeoutMs,
-    killSignal: "SIGTERM",
-  });
+  const tempRoot = mkdtempSync(join(tmpdir(), "pi-subagents-test-"));
+  const env = sanitizedEnv();
+  env.PI_SUBAGENT_TEMP_ROOT = tempRoot;
+  let result;
+  try {
+    result = spawnSync(process.execPath, args, {
+      stdio: "inherit",
+      env,
+      timeout: timeoutMs,
+      killSignal: "SIGTERM",
+    });
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
   const elapsedMs = Date.now() - startedAt;
   if (result.error) {
     if (result.error.code === "ETIMEDOUT") {

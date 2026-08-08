@@ -43,18 +43,26 @@ const parseInlineConfig = (raw: string): InlineConfig => {
 		if (!trimmed) continue;
 		const eq = trimmed.indexOf("=");
 		if (eq === -1) {
-			if (trimmed === "progress") config.progress = true;
+			if (trimmed !== "progress") throw new Error(`Unknown inline option '${trimmed}'.`);
+			config.progress = true;
 			continue;
 		}
 		const key = trimmed.slice(0, eq).trim();
 		const val = trimmed.slice(eq + 1).trim();
 		switch (key) {
 			case "output": config.output = val === "false" ? false : val; break;
-			case "outputMode": if (val === "inline" || val === "file-only") config.outputMode = val; break;
+			case "outputMode":
+				if (val !== "inline" && val !== "file-only") throw new Error("outputMode must be inline or file-only.");
+				config.outputMode = val;
+				break;
 			case "reads": config.reads = val === "false" ? false : val.split("+").filter(Boolean); break;
 			case "model": config.model = val || undefined; break;
 			case "skill": case "skills": config.skill = val === "false" ? false : val.split("+").filter(Boolean); break;
-			case "progress": config.progress = val !== "false"; break;
+			case "progress":
+				if (val !== "true" && val !== "false") throw new Error("progress must be true or false.");
+				config.progress = val === "true";
+				break;
+			default: throw new Error(`Unknown inline option '${key}'.`);
 		}
 	}
 	return config;
@@ -64,7 +72,15 @@ const parseAgentToken = (token: string): { name: string; config: InlineConfig } 
 	const bracket = token.indexOf("[");
 	if (bracket === -1) return { name: token, config: {} };
 	const end = token.lastIndexOf("]");
-	return { name: token.slice(0, bracket), config: parseInlineConfig(token.slice(bracket + 1, end !== -1 ? end : undefined)) };
+	if (end !== token.length - 1 || end < bracket) throw new Error(`Malformed inline options in '${token}'; close the trailing ].`);
+	const name = token.slice(0, bracket);
+	if (!name) throw new Error("Agent name is required before inline options.");
+	return { name, config: parseInlineConfig(token.slice(bracket + 1, end)) };
+};
+
+const unwrapQuotedTask = (task: string): string => {
+	const match = task.match(/^(?:"([\s\S]*)"|'([\s\S]*)')$/);
+	return match ? (match[1] ?? match[2] ?? "") : task;
 };
 
 const extractExecutionFlags = (rawArgs: string): { args: string; async?: boolean; fork: boolean; error?: string } => {
@@ -388,8 +404,13 @@ const parseAgentArgs = (
 					agentPart = trimmed;
 				}
 			}
-			const parsed = parseAgentToken(agentPart);
-			steps.push({ ...parsed, task });
+			try {
+				const parsed = parseAgentToken(agentPart);
+				steps.push({ ...parsed, task });
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				return null;
+			}
 		}
 		sharedTask = steps.find((s) => s.task)?.task ?? "";
 	} else {
@@ -404,7 +425,12 @@ const parseAgentArgs = (
 			ctx.ui.notify(usage, "error");
 			return null;
 		}
-		steps = agentsPart.split(/\s+/).filter(Boolean).map((t) => parseAgentToken(t));
+		try {
+			steps = agentsPart.split(/\s+/).filter(Boolean).map((token) => parseAgentToken(token));
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			return null;
+		}
 	}
 
 	if (steps.length === 0) {
@@ -447,8 +473,15 @@ export function registerSlashCommands(
 			const input = cleanedArgs.trim();
 			const firstSpace = input.indexOf(" ");
 			if (!input) { ctx.ui.notify("Usage: /run <agent> [task] [--bg|--fg] [--fork]", "error"); return; }
-			const { name: agentName, config: inline } = parseAgentToken(firstSpace === -1 ? input : input.slice(0, firstSpace));
-			const task = firstSpace === -1 ? "" : input.slice(firstSpace + 1).trim();
+			let parsedAgent: ReturnType<typeof parseAgentToken>;
+			try {
+				parsedAgent = parseAgentToken(firstSpace === -1 ? input : input.slice(0, firstSpace));
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				return;
+			}
+			const { name: agentName, config: inline } = parsedAgent;
+			const task = firstSpace === -1 ? "" : unwrapQuotedTask(input.slice(firstSpace + 1).trim());
 
 			if (!state.baseCwd) { ctx.ui.notify("Subagent session cwd is not initialized yet", "error"); return; }
 			const agents = discoverAgents(state.baseCwd, "both", { projectTrusted: ctx.isProjectTrusted() }).agents;
@@ -463,6 +496,7 @@ export function registerSlashCommands(
 			if (inline.outputMode !== undefined) params.outputMode = inline.outputMode;
 			if (inline.skill !== undefined) params.skill = inline.skill;
 			if (inline.model) params.model = inline.model;
+			if (inline.progress !== undefined) params.progress = inline.progress;
 			if (asyncMode !== undefined) params.async = asyncMode;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);
@@ -520,7 +554,14 @@ export function registerSlashCommands(
 				ctx.ui.notify(`Unknown chain: ${chainName}`, "error");
 				return;
 			}
-			const params: SubagentParamsLike = { chain: mapSavedChainSteps(chain), task, clarify: false, agentScope: "both" };
+			let savedSteps: ChainStep[];
+			try {
+				savedSteps = mapSavedChainSteps(chain);
+			} catch (error) {
+				ctx.ui.notify(`Cannot load chain '${chainName}': ${error instanceof Error ? error.message : String(error)}`, "error");
+				return;
+			}
+			const params: SubagentParamsLike = { chain: savedSteps, task, clarify: false, agentScope: "both" };
 			if (asyncMode !== undefined) params.async = asyncMode;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);

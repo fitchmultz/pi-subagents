@@ -4,6 +4,7 @@ AGENTS.md
 node_modules/
 .fallow/
 audit/
+.dogfood/
 
 context.md
 package-lock.json

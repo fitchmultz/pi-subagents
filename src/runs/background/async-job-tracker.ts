@@ -65,6 +65,22 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	};
 	const emitNewControlEvents = (job: AsyncJobState) => {
 		const eventsPath = path.join(job.asyncDir, "events.jsonl");
+		try {
+			const size = (options.statSync ?? fs.statSync)(eventsPath).size;
+			if (size === (job.controlEventCursor ?? 0)) return;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			console.error(`Failed to inspect async control events for '${job.asyncDir}':`, error);
+			return;
+		}
+		try {
+			const stat = fs.statSync(eventsPath);
+			if (stat.size <= (job.controlEventCursor ?? 0)) return;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			console.error(`Failed to inspect async control events for '${job.asyncDir}':`, error);
+			return;
+		}
 		let fd: number;
 		try {
 			fd = fs.openSync(eventsPath, "r");
@@ -403,6 +419,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		state.cleanupTimers.clear();
 		state.asyncJobs.clear();
 		state.foregroundControls?.clear();
+		state.foregroundRuns?.clear();
 		state.lastForegroundControlId = null;
 		state.resultFileCoalescer.clear();
 		if (ctx && isTuiContext(ctx)) {

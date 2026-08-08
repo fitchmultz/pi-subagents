@@ -59,11 +59,11 @@ import {
 	type ClaudeCodeResultEvent,
 } from "../shared/claude-code.ts";
 import { outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
-import { createStructuredOutputRuntime, readStructuredOutput } from "../shared/structured-output.ts";
+import { createStructuredOutputRuntime, readStructuredOutput, type StructuredOutputRuntime } from "../shared/structured-output.ts";
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { formatModelAttemptNote, formatModelRecoveryAttemptNote, isRecoverableSameModelFailure, isRetryableModelFailure } from "../shared/model-fallback.ts";
-import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
+import { attachPostExitStdioGuard, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
 import { evaluateCompletionMutationGuard, resolveCompletionPolicy } from "../shared/completion-guard.ts";
 import {
@@ -302,6 +302,7 @@ function runPiStreaming(
 	maxTokens?: number,
 	claudeCodeInvocation?: ClaudeCodeInvocation,
 	sessionFile?: string,
+	structuredOutput?: StructuredOutputRuntime,
 ): Promise<RunPiStreamingResult> {
 	return new Promise((resolve) => {
 		const startTime = Date.now();
@@ -317,6 +318,7 @@ function runPiStreaming(
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 			env: spawnEnv,
+			detached: process.platform !== "win32",
 			windowsHide: true,
 		});
 		let stderr = "";
@@ -351,9 +353,9 @@ function runPiStreaming(
 			if (settled || resourceLimitExceeded) return;
 			error = message;
 			writeOutputLine(message);
-			trySignalChild(child, "SIGINT");
+			trySignalChildTree(child, "SIGINT");
 			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!settled) trySignalChild(child, "SIGTERM");
+				if (!settled) forceTerminate("SIGTERM");
 			}, 1000);
 			resourceLimitEscalationTimer.unref?.();
 		};
@@ -364,9 +366,9 @@ function runPiStreaming(
 			resourceLimitExceeded = { kind, limit, ...(observed !== undefined ? { observed } : {}), message };
 			error = message;
 			writeOutputLine(message);
-			trySignalChild(child, "SIGINT");
+			trySignalChildTree(child, "SIGINT");
 			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!settled) trySignalChild(child, "SIGTERM");
+				if (!settled) forceTerminate("SIGTERM");
 			}, 1000);
 			resourceLimitEscalationTimer.unref?.();
 		};
@@ -398,8 +400,13 @@ function runPiStreaming(
 				appendChildLine("subagent.child.stdout", line);
 				return;
 			}
+			if (!event || typeof event !== "object") return;
 			if (claudeCodeInvocation && event.type === "result") {
 				const resultEvent = event as ClaudeCodeResultEvent;
+				if (structuredOutput && resultEvent.structured_output !== undefined) {
+					fs.mkdirSync(path.dirname(structuredOutput.outputPath), { recursive: true });
+					fs.writeFileSync(structuredOutput.outputPath, `${JSON.stringify(resultEvent.structured_output)}\n`, "utf-8");
+				}
 				const message = claudeCodeMessageFromResult(resultEvent, claudeCodeInvocation.model.inputModel);
 				if (sessionFile) {
 					writeClaudeCodeSessionMetadata(sessionFile, {
@@ -493,7 +500,17 @@ function runPiStreaming(
 		let cleanTerminalAssistantStopReceived = false;
 		let finalDrainTimer: NodeJS.Timeout | undefined;
 		let finalHardKillTimer: NodeJS.Timeout | undefined;
+		const terminationTimers = new Set<NodeJS.Timeout>();
 		let settled = false;
+		const forceTerminate = (signal: NodeJS.Signals, graceMs = HARD_KILL_MS) => {
+			trySignalChildTree(child, signal);
+			const timer = setTimeout(() => {
+				terminationTimers.delete(timer);
+				if (!settled && !childExited) trySignalChildTree(child, "SIGKILL");
+			}, graceMs);
+			terminationTimers.add(timer);
+			timer.unref?.();
+		};
 		if (maxExecutionTimeMs !== undefined) {
 			resourceLimitTimer = setTimeout(() => {
 				triggerResourceLimit("maxExecutionTimeMs", maxExecutionTimeMs);
@@ -516,9 +533,9 @@ function runPiStreaming(
 			if (settled || resourceLimitExceeded) return;
 			interrupted = true;
 			if (!error) error = "Interrupted. Waiting for explicit next action.";
-			trySignalChild(child, "SIGINT");
+			trySignalChildTree(child, "SIGINT");
 			setTimeout(() => {
-				if (!settled) trySignalChild(child, "SIGTERM");
+				if (!settled) forceTerminate("SIGTERM");
 			}, 1000).unref?.();
 		});
 		const clearDrainTimers = () => {
@@ -538,12 +555,14 @@ function runPiStreaming(
 				clearTimeout(resourceLimitEscalationTimer);
 				resourceLimitEscalationTimer = undefined;
 			}
+			for (const timer of terminationTimers) clearTimeout(timer);
+			terminationTimers.clear();
 		};
 		function startFinalDrain(): void {
 			if (childExited || finalDrainTimer || settled) return;
 			finalDrainTimer = setTimeout(() => {
 				if (settled) return;
-				const termSent = trySignalChild(child, "SIGTERM");
+				const termSent = trySignalChildTree(child, "SIGTERM");
 				if (!termSent) return;
 				forcedTerminationSignal = true;
 				if (!cleanTerminalAssistantStopReceived && !error && !assistantError) {
@@ -551,7 +570,7 @@ function runPiStreaming(
 				}
 				finalHardKillTimer = setTimeout(() => {
 					if (settled) return;
-					forcedTerminationSignal = trySignalChild(child, "SIGKILL") || forcedTerminationSignal;
+					forcedTerminationSignal = trySignalChildTree(child, "SIGKILL") || forcedTerminationSignal;
 				}, HARD_KILL_MS);
 				finalHardKillTimer.unref?.();
 			}, FINAL_STOP_GRACE_MS);
@@ -799,6 +818,7 @@ async function runSingleStep(
 					tools: step.tools,
 					mcpDirectTools: step.mcpDirectTools,
 					allowSubagents: step.allowSubagents,
+					outputSchema: effectiveStructuredOutput?.schema,
 				});
 				args = claudeCodeInvocation.args;
 				env = claudeCodeInvocation.env;
@@ -857,6 +877,7 @@ async function runSingleStep(
 			step.maxTokens,
 			claudeCodeInvocation,
 			step.sessionFile,
+			effectiveStructuredOutput,
 		);
 		cleanupTempDir(tempDir);
 
@@ -943,6 +964,16 @@ async function runSingleStep(
 		? resolveSingleOutput(step.outputPath, outputForPersistence, finalOutputSnapshot)
 		: { fullOutput: outputForPersistence };
 	const output = resolvedOutput.fullOutput;
+	if (resolvedOutput.saveError && finalResult) {
+		finalResult.exitCode = 1;
+		finalResult.error = `Failed to save output file '${step.outputPath}': ${resolvedOutput.saveError}`;
+		const lastAttempt = modelAttempts.at(-1);
+		if (lastAttempt) {
+			lastAttempt.success = false;
+			lastAttempt.exitCode = 1;
+			lastAttempt.error = finalResult.error;
+		}
+	}
 	const cleanup = resolvedOutput.savedPath && step.outputMode !== "file-only" && step.outputPathFromAgentDefault === true
 		? cleanupSingleOutputFile(resolvedOutput.savedPath, resolvedOutput.fullOutput, finalOutputSnapshot)
 		: undefined;
@@ -1343,6 +1374,11 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const logPath = path.join(asyncDir, `subagent-log-${id}.md`);
 	const controlConfig = config.controlConfig ?? DEFAULT_CONTROL_CONFIG;
 	const activeChildInterrupts = new Map<number, () => void>();
+	const interruptActiveSiblings = (exceptIndex: number) => {
+		for (const [index, interrupt] of activeChildInterrupts) {
+			if (index !== exceptIndex) interrupt();
+		}
+	};
 	let interrupted = false;
 	let currentActivityState: ActivityState | undefined;
 	let activityTimer: NodeJS.Timeout | undefined;
@@ -1484,10 +1520,20 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		for (const node of graph.nodes) updateNode(node);
 		statusPayload.workflowGraph = graph;
 	};
+	let statusWriteTimer: NodeJS.Timeout | undefined;
 	const writeStatusPayload = (): void => {
+		if (statusWriteTimer) {
+			clearTimeout(statusWriteTimer);
+			statusWriteTimer = undefined;
+		}
 		refreshWorkflowGraph();
 		writeAtomicJson(statusPath, statusPayload);
 		emitNestedSelfEvent(statusPayload.state === "running" || statusPayload.state === "queued" ? "subagent.nested.updated" : "subagent.nested.completed");
+	};
+	const scheduleStatusWrite = (): void => {
+		if (statusWriteTimer) return;
+		statusWriteTimer = setTimeout(writeStatusPayload, 200);
+		statusWriteTimer.unref?.();
 	};
 	const markDynamicGraphGroup = (stepIndex: number, status: "completed" | "failed" | "running" | "paused", error?: string, acceptance?: AcceptanceLedger): void => {
 		const groupNode = statusPayload.workflowGraph?.nodes.find((node) => node.id === `step-${stepIndex}`);
@@ -1549,11 +1595,22 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		statusPayload.lastUpdate = now;
 		writeStatusPayload();
 	};
+	const clearControlNotificationKeys = (flatIndex: number): void => {
+		const childKey = config.childIntercomTargets?.[flatIndex] ?? `${config.id}:${flatIndex}`;
+		for (const key of emittedControlEventKeys) if (key.startsWith(`${childKey}:`)) emittedControlEventKeys.delete(key);
+	};
 	const updateStepFromChildEvent = (flatIndex: number, event: ChildEvent): void => {
 		const step = statusPayload.steps[flatIndex];
 		if (!step) return;
 		const now = Date.now();
 		statusPayload.currentStep = flatIndex;
+		if (step.activityState === "needs_attention") {
+			step.activityState = undefined;
+			clearControlNotificationKeys(flatIndex);
+			statusPayload.activityState = statusPayload.steps.some((candidate) => candidate.activityState === "needs_attention")
+				? "needs_attention"
+				: undefined;
+		}
 		if (event.type === "tool_execution_start" && event.toolName) {
 			const currentPath = resolveCurrentPath(event.toolName, event.args);
 			step.toolCount = (step.toolCount ?? 0) + 1;
@@ -1632,7 +1689,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		step.lastActivityAt = now;
 		statusPayload.lastActivityAt = now;
 		statusPayload.lastUpdate = now;
-		writeStatusPayload();
+		scheduleStatusWrite();
 	};
 	const updateRunnerActivityState = (now: number): boolean => {
 		if (!controlConfig.enabled) return false;
@@ -1668,6 +1725,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					}));
 					changed = true;
 				}
+			} else if (step.activityState === "needs_attention") {
+				step.activityState = undefined;
+				clearControlNotificationKeys(index);
+				changed = true;
 			}
 		}
 		if (statusPayload.lastActivityAt !== runLastActivityAt) {
@@ -1893,15 +1954,14 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					stepIndex,
 				};
 				statusPayload.outputs = outputs;
-				const placeholder = statusPayload.steps[groupStartFlatIndex];
-				if (placeholder) {
-					placeholder.status = "complete";
-					placeholder.startedAt = now;
-					placeholder.endedAt = now;
-					placeholder.durationMs = 0;
-				}
+				statusPayload.steps.splice(groupStartFlatIndex, 1);
+				mutatingFailureStates.splice(groupStartFlatIndex, 1);
+				mutationTrackers.splice(groupStartFlatIndex, 1);
+				config.childIntercomTargets?.splice(groupStartFlatIndex, 1);
+				statusPayload.parallelGroups = statusPayload.parallelGroups
+					.filter((group) => group.stepIndex !== stepIndex)
+					.map((group) => group.start > groupStartFlatIndex ? { ...group, start: group.start - 1 } : group);
 				previousOutput = "Dynamic fanout produced 0 results.";
-				flatIndex++;
 				statusPayload.lastUpdate = now;
 				markDynamicGraphGroup(stepIndex, "completed");
 				writeStatusPayload();
@@ -2024,7 +2084,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					sessionDir: config.sessionDir ? path.join(config.sessionDir, `dynamic-${stepIndex}-${taskIdx}`) : undefined,
 					flatStepCount: Math.max(statusPayload.steps.length, 1),
 				});
-				if (result.exitCode !== 0 && failFast) aborted = true;
+				if (result.exitCode !== 0 && failFast) {
+					aborted = true;
+					interruptActiveSiblings(groupStartFlatIndex + taskIdx);
+				}
 				return result;
 			});
 
@@ -2185,7 +2248,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							trackSession: true,
 							notifyCompletionGuard: true,
 						});
-						if (result.exitCode !== 0 && failFast) aborted = true;
+						if (result.exitCode !== 0 && failFast) {
+							aborted = true;
+							interruptActiveSiblings(groupStartFlatIndex + taskIdx);
+						}
 						return result;
 					},
 				);

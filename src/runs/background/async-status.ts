@@ -160,8 +160,8 @@ function validateStatusForSummary(status: AsyncStatus, source: string): void {
 	if (record.currentStep !== undefined && (typeof record.currentStep !== "number" || !Number.isSafeInteger(record.currentStep) || record.currentStep < 0 || record.currentStep >= steps.length)) {
 		throw new Error(`Invalid async status '${source}': currentStep must index a persisted step.`);
 	}
-	if (record.chainStepCount !== undefined && (typeof record.chainStepCount !== "number" || !Number.isSafeInteger(record.chainStepCount) || record.chainStepCount < 1 || record.chainStepCount > steps.length)) {
-		throw new Error(`Invalid async status '${source}': chainStepCount must be a positive count no greater than steps.length.`);
+	if (record.chainStepCount !== undefined && (typeof record.chainStepCount !== "number" || !Number.isSafeInteger(record.chainStepCount) || record.chainStepCount < 1)) {
+		throw new Error(`Invalid async status '${source}': chainStepCount must be a positive integer.`);
 	}
 	for (const [index, value] of steps.entries()) {
 		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid async status '${source}': steps[${index}] must be an object.`);

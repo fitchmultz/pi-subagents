@@ -177,6 +177,10 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.match(String(maxRuntimeSchema.description ?? ""), /alias/i);
 	});
 
+	it("includes top-level progress for single runs", () => {
+		assert.equal(SubagentParams?.properties?.progress?.type, "boolean");
+	});
+
 	it("includes final output truncation limits", () => {
 		const maxOutputSchema = SubagentParams?.properties?.maxOutput;
 		assert.ok(maxOutputSchema, "maxOutput schema should exist");

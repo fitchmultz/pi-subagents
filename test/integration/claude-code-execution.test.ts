@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { runSync } from "../../src/runs/foreground/execution.ts";
 import { readClaudeCodeSessionMetadata } from "../../src/runs/shared/claude-code.ts";
+import { createStructuredOutputRuntime } from "../../src/runs/shared/structured-output.ts";
 import { makeAgent, createTempDir, removeTempDir } from "../support/helpers.ts";
 
 function installMockClaude(root: string): { callsDir: string; restore: () => void } {
@@ -33,7 +34,8 @@ process.stdout.write(JSON.stringify({
   session_id: sessionId,
   total_cost_usd: 0.01,
   usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 3, cache_creation_input_tokens: 5 },
-  modelUsage: { "claude-sonnet-5": { contextWindow: 1000000, maxOutputTokens: 64000 } }
+  modelUsage: { "claude-sonnet-5": { contextWindow: 1000000, maxOutputTokens: 64000 } },
+  ...(args.includes("--json-schema") ? { structured_output: { ok: true } } : {})
 }) + "\\n");
 `, "utf-8");
 	const launcher = path.join(binDir, "claude");
@@ -101,6 +103,18 @@ describe("Claude Code child backend", () => {
 		assert.ok(secondCall.args.includes("--resume"));
 		assert.equal(secondCall.args[secondCall.args.indexOf("--resume") + 1], metadata.sessionId);
 		assert.ok(!secondCall.args.includes("--session-id"));
+	});
+
+	it("uses Claude Code native structured output", async () => {
+		const schema = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
+		const result = await runSync(tempDir, [makeAgent("echo", { model: "claude-code/sonnet" })], "echo", "return JSON", {
+			cwd: tempDir,
+			structuredOutput: createStructuredOutputRuntime(schema, path.join(tempDir, "structured")),
+		});
+		assert.equal(result.exitCode, 0);
+		assert.deepEqual(result.structuredOutput, { ok: true });
+		const args = readCalls(mock.callsDir)[0]!.args;
+		assert.deepEqual(args.slice(args.indexOf("--json-schema"), args.indexOf("--json-schema") + 2), ["--json-schema", JSON.stringify(schema)]);
 	});
 
 	it("fails closed for Claude Code agents with MCP direct tool allowlists", async () => {

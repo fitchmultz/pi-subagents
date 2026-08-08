@@ -1428,6 +1428,19 @@ describe("chain execution — parallel steps", () => {
 		assert.ok(result.isError, "chain should fail when parallel step fails");
 	});
 
+	it("failFast interrupts running parallel siblings", async () => {
+		mockPi.onCall({ matchArgsIncludes: "mock/fail", exitCode: 1, stderr: "stop now" });
+		mockPi.onCall({ matchArgsIncludes: "mock/slow", delay: 5_000, output: "too slow" });
+		const startedAt = Date.now();
+		const result = await executeChain(makeChainParams([{
+			parallel: [{ agent: "a", task: "Task A" }, { agent: "b", task: "Task B" }],
+			failFast: true,
+		}], [makeAgent("a", { model: "mock/fail" }), makeAgent("b", { model: "mock/slow" })]));
+		assert.equal(result.isError, true);
+		assert.ok(Date.now() - startedAt < 2_000, `failFast took ${Date.now() - startedAt}ms`);
+		assert.equal(mockPi.callCount(), 2);
+	});
+
 	it("rejects worktree parallel steps that set a different task cwd", async () => {
 		const agents = [makeAgent("a"), makeAgent("b")];
 		const result = await executeChain(

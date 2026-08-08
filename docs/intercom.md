@@ -52,7 +52,7 @@ A session becomes intercom-connected when all of these are true:
 - the session has started or reloaded after the extension was installed
 - the local broker is running or can be auto-started
 
-The session list only shows intercom-connected sessions, not every open Pi process on the machine.
+The session list only shows intercom-connected sessions, not every open Pi process on the machine. Reconnecting the same Pi session reuses a stable broker identity, so transient broker or extension restarts do not create a second logical sender.
 
 If a session is unnamed, pi-intercom now exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d` so other sessions can still target it. That alias is not persisted as the Pi session title, so `pi --resume` can keep showing the transcript snippet instead of a generic `session-...` name.
 

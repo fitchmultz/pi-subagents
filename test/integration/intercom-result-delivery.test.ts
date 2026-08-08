@@ -276,7 +276,7 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(result.details?.results?.every((entry) => entry.finalOutput === undefined), true);
 	});
 
-	it("detached chain runs do not emit grouped completion receipts", async () => {
+	it("detached chain runs emit a grouped completion when the child later exits", async () => {
 		mockPi.onCall({
 			steps: [
 				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
@@ -308,6 +308,13 @@ describe("intercom result delivery cutover", () => {
 		assert.match(result.content[0]?.text ?? "", /Chain detached for intercom coordination/);
 		assert.doesNotMatch(result.content[0]?.text ?? "", /resume/);
 		assert.equal(bus.emitted.some((entry) => entry.channel === "subagent:result-intercom"), false);
+		const deadline = Date.now() + 3_000;
+		while (!bus.emitted.some((entry) => entry.channel === "subagent:result-intercom") && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		const payload = bus.emitted.find((entry) => entry.channel === "subagent:result-intercom")?.payload as { children?: Array<{ summary?: string; status?: string }> } | undefined;
+		assert.equal(payload?.children?.[0]?.status, "completed");
+		assert.match(payload?.children?.[0]?.summary ?? "", /after reply/);
 		assert.equal(mockPi.callCount(), 1);
 	});
 
@@ -424,7 +431,7 @@ describe("intercom result delivery cutover", () => {
 		);
 
 		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /can only nudge the current live child at index 0/);
+		assert.match(result.content[0]?.text ?? "", /has no live child at index 1/);
 	});
 
 	it("status action includes live intercom health when the bridge responds", async () => {

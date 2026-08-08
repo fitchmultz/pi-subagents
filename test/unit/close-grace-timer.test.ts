@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { describe, it, type TestContext } from "node:test";
-import { attachPostExitStdioGuard, trySignalChild } from "../../src/shared/post-exit-stdio-guard.ts";
+import { attachPostExitStdioGuard, trySignalChild, trySignalChildTree } from "../../src/shared/post-exit-stdio-guard.ts";
 
 type GuardChild = Parameters<typeof attachPostExitStdioGuard>[0];
 
@@ -22,6 +22,12 @@ describe("attachPostExitStdioGuard", () => {
 		assert.equal(trySignalChild({ kill: () => true }, "SIGTERM"), true);
 		assert.equal(trySignalChild({ kill: () => false }, "SIGTERM"), false);
 		assert.equal(trySignalChild({ kill: () => { throw new Error("gone"); } }, "SIGTERM"), false);
+	});
+
+	it("falls back to signaling the child when no process group exists", () => {
+		const signals: Array<NodeJS.Signals | number | undefined> = [];
+		assert.equal(trySignalChildTree({ pid: 2_147_483_647, kill: (signal) => { signals.push(signal); return true; } }, "SIGTERM"), true);
+		assert.deepEqual(signals, ["SIGTERM"]);
 	});
 
 	it("cancels cleanup after a clean close", (t) => {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
 import path from "node:path";
@@ -589,6 +590,7 @@ async function settleWithin<T>(operation: () => Promise<T>, timeoutMs: number): 
       resolve(value);
     };
     const timer = setTimeout(() => finish(null), timeoutMs);
+    timer.unref?.();
     void Promise.resolve().then(operation).then((value) => finish(value), () => finish(null));
   });
 }
@@ -630,6 +632,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       const timeout = setTimeout(() => {
         rejectReplyWaiter(new Error(`No reply from "${from}" within ${Math.max(1, Math.round(config.askTimeoutMs / 60000))} minute(s)`));
       }, config.askTimeoutMs);
+      timeout.unref?.();
       const cleanup = () => {
         clearTimeout(timeout);
         signal?.removeEventListener("abort", onAbort);
@@ -717,6 +720,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         scheduleReconnect();
       });
     }, 0);
+    startupConnectTimer.unref?.();
   }
   function clearInboundFlushTimer(): void {
     if (!inboundFlushTimer) {
@@ -911,6 +915,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       inboundFlushTimer = null;
       flushIdleMessages(scheduledGeneration);
     }, delayMs);
+    inboundFlushTimer.unref?.();
   }
   function flushIdleMessages(generation = runtimeGeneration): void {
     if (pendingIdleMessages.length === 0) {
@@ -1125,6 +1130,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         // ensureConnected("background") already queued the next retry.
       });
     }, getReconnectDelayMs());
+    reconnectTimer.unref?.();
   }
   async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay" | "peer-awareness"): Promise<IntercomClient> {
     if (disposed) {
@@ -1151,7 +1157,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         if (reason !== "peer-awareness") {
           await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
         }
-        await nextClient.connect(await buildRegistration());
+        await nextClient.connect(await buildRegistration(), `pi-${createHash("sha256").update(currentSessionId).digest("hex").slice(0, 32)}`);
         if (!getLiveContext(contextAtStart, generationAtStart)) {
           await nextClient.disconnect();
           throw new Error("Intercom runtime no longer active");
@@ -2128,6 +2134,7 @@ Usage:
             }
             const result = await connectedClient.send(target.from.id, {
               text: message,
+              attachments,
               replyTo: target.message.id,
             });
             if (!result.accepted) {

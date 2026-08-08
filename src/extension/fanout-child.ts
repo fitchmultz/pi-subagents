@@ -57,11 +57,12 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 	}
 	if (!route) return undefined;
 	const seen = new Set<string>();
+	const seenFiles = new Set<string>();
 	const inFlight = new Set<string>();
 	const pendingResults = new Map<string, Parameters<typeof writeNestedControlResult>[1]>();
 	const timer = setInterval(() => {
 		try {
-			for (const request of readNestedControlRequests(route)) {
+			for (const request of readNestedControlRequests(route, seenFiles)) {
 				if (seen.has(request.requestId) || inFlight.has(request.requestId)) continue;
 				inFlight.add(request.requestId);
 				void (async () => {
@@ -111,6 +112,7 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 						}
 						pendingResults.delete(request.requestId);
 						seen.add(request.requestId);
+						seenFiles.add(path.basename(request.filePath));
 						try { fs.unlinkSync(request.filePath); } catch {}
 					} finally {
 						inFlight.delete(request.requestId);

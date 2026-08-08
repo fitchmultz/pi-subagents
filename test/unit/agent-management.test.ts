@@ -24,6 +24,13 @@ describe("agent management config parsing", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
+	it("rejects unknown config keys instead of silently ignoring typos", () => {
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
+		const result = handleManagementAction("create", { config: { name: "typo-agent", description: "test", extra: true } }, ctx);
+		assert.equal(result.isError, true);
+		assert.match(readText(result), /unknown field: extra/);
+	});
+
 	it("surfaces JSON parse errors for create config strings", () => {
 		const result = handleCreate(
 			{ config: '{"name":' },

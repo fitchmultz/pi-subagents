@@ -15,8 +15,8 @@ export function isSafeNestedPathId(value: unknown): value is string {
 		&& !value.includes("..");
 }
 
-function finiteNumber(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+function stepIndex(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
 function nonEmptyString(value: unknown, max: number): string | undefined {
@@ -31,7 +31,7 @@ export function sanitizeNestedPath(value: unknown): NestedPathEntry[] {
 		if (!isSafeNestedPathId(record.runId)) return undefined;
 		return {
 			runId: record.runId,
-			...(finiteNumber(record.stepIndex) !== undefined ? { stepIndex: finiteNumber(record.stepIndex) } : {}),
+			...(stepIndex(record.stepIndex) !== undefined ? { stepIndex: stepIndex(record.stepIndex) } : {}),
 			...(nonEmptyString(record.agent, 128) ? { agent: nonEmptyString(record.agent, 128) } : {}),
 		};
 	}).filter((part): part is NestedPathEntry => Boolean(part)).slice(0, MAX_NESTED_PATH_ENTRIES);

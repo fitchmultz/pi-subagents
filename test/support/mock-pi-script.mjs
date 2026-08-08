@@ -212,6 +212,10 @@ async function main() {
 	fs.writeFileSync(tempCallPath, JSON.stringify(callRecord), "utf-8");
 	fs.renameSync(tempCallPath, callPath);
 
+	if (response.ignoreSignals === true) {
+		process.on("SIGINT", () => {});
+		process.on("SIGTERM", () => {});
+	}
 	if (typeof response.delay === "number" && response.delay > 0) {
 		await new Promise((resolve) => setTimeout(resolve, response.delay));
 	}

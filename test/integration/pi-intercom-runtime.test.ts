@@ -894,9 +894,12 @@ test("recipient turn failures do not report after an ask is already replied", { 
     const replyResult = await intercomTool.execute("reply-before-error", {
       action: "reply",
       message: "normal reply",
+      attachments: [{ type: "context", name: "answer.txt", content: "supporting context" }],
     }, new AbortController().signal, undefined, harness.ctx);
     assert.equal(replyResult.isError, false);
-    assert.equal((await firstReplyPromise).message.content.text, "normal reply");
+    const receivedReply = (await firstReplyPromise).message;
+    assert.equal(receivedReply.content.text, "normal reply");
+    assert.deepEqual(receivedReply.content.attachments, [{ type: "context", name: "answer.txt", content: "supporting context" }]);
 
     let unexpectedFailureReply = false;
     const handler = (_from: SessionInfo, message: Message) => {

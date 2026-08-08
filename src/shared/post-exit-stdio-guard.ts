@@ -12,6 +12,7 @@ interface ChildWithPipedStdio {
 }
 
 interface ChildWithKill {
+	pid?: number;
 	kill(signal?: NodeJS.Signals | number): boolean;
 }
 
@@ -21,6 +22,19 @@ export function trySignalChild(child: ChildWithKill, signal: NodeJS.Signals): bo
 	} catch {
 		return false;
 	}
+}
+
+/** Signal the whole detached child process group on POSIX, or the child itself elsewhere. */
+export function trySignalChildTree(child: ChildWithKill, signal: NodeJS.Signals): boolean {
+	if (process.platform !== "win32" && child.pid) {
+		try {
+			process.kill(-child.pid, signal);
+			return true;
+		} catch {
+			// Fall back when the child is not a process-group leader.
+		}
+	}
+	return trySignalChild(child, signal);
 }
 
 export function attachPostExitStdioGuard(
