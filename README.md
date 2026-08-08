@@ -285,7 +285,7 @@ pi remove git:github.com/fitchmultz/pi-intercom
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-Most users do not call `intercom` directly. `pi-subagents` injects fixed default bridge instructions and auto-adds `intercom` and `contact_supervisor` when a child has an explicit tool list. If an agent sets an explicit `extensions` allowlist, include `pi-intercom` there or those child tools stay sandboxed out. The bridge resolves that entry, including old standalone paths, to the bundled extension.
+Most users do not call `intercom` directly. `pi-subagents` injects fixed default bridge instructions and auto-adds `intercom`, `contact_supervisor`, and any required `structured_output` tool when a child has an explicit tool list. If an agent sets an explicit `extensions` allowlist, include `pi-intercom` there or those child tools stay sandboxed out. The bridge resolves that entry, including old standalone paths, to the bundled extension.
 
 Use it for work where the child might need a decision instead of guessing:
 

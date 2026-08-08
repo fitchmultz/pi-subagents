@@ -53,6 +53,16 @@ test("empty-result management output collapses long reports", () => {
 	assert.equal(componentText(renderSubagentResult(result, { expanded: true }, theme as any)), output);
 });
 
+test("single-line management output with a trailing newline stays compact", () => {
+	const output = `${"long".repeat(100)}\n`;
+	const component = renderSubagentResult({
+		content: [{ type: "text", text: output }],
+		details: { mode: "single", results: [] },
+	}, { expanded: false }, theme as any);
+
+	assert.ok(componentText(component).length < output.length);
+});
+
 test("compact parallel rendering shows each child model", () => {
 	const component = renderSubagentResult({
 		content: [{ type: "text", text: "done" }],
