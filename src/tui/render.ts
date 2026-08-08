@@ -1176,7 +1176,12 @@ export function renderSubagentResult(
 		const t = result.content[0];
 		const text = t?.type === "text" ? t.text : "(no output)";
 		const contextPrefix = d?.context === "fork" ? `${theme.fg("warning", "[fork]")} ` : "";
-		return new Text(`${contextPrefix}${text}`, 0, 0);
+		if (options.expanded) return new Text(`${contextPrefix}${text}`, 0, 0);
+		const lines = text.split("\n");
+		if (lines.length === 1) return new Text(truncLine(`${contextPrefix}${text}`, getTermWidth() - 4), 0, 0);
+		const visibleLines = lines.slice(0, 12);
+		if (lines.length > visibleLines.length) visibleLines.push(theme.fg("dim", `+${lines.length - visibleLines.length} more · Ctrl+O expands`));
+		return new Text(`${contextPrefix}${visibleLines.join("\n")}`, 0, 0);
 	}
 
 	const expanded = options.expanded;

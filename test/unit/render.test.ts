@@ -40,6 +40,19 @@ test("empty-result management output preserves every line", () => {
 	assert.equal(componentText(component), output);
 });
 
+test("empty-result management output collapses long reports", () => {
+	const output = Array.from({ length: 14 }, (_, index) => `line ${index + 1}`).join("\n");
+	const result = {
+		content: [{ type: "text", text: output }],
+		details: { mode: "single", results: [] },
+	};
+
+	const compact = componentText(renderSubagentResult(result, { expanded: false }, theme as any));
+	assert.match(compact, /line 12\n\+2 more · Ctrl\+O expands$/);
+	assert.doesNotMatch(compact, /line 13/);
+	assert.equal(componentText(renderSubagentResult(result, { expanded: true }, theme as any)), output);
+});
+
 test("compact parallel rendering shows each child model", () => {
 	const component = renderSubagentResult({
 		content: [{ type: "text", text: "done" }],
