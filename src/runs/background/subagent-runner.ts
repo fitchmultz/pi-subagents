@@ -77,8 +77,8 @@ import {
 	summarizeRecentMutatingFailures,
 } from "../shared/mutating-tool-guard.ts";
 import {
-	createRepeatedSubagentListGuardState,
-	recordToolStartForSubagentListLoopGuard,
+	createRepeatedSubagentCallGuardState,
+	recordToolStartForSubagentLoopGuard,
 } from "../shared/subagent-tool-loop-guard.ts";
 import { parseSessionTokens } from "../../shared/session-tokens.ts";
 import {
@@ -335,7 +335,7 @@ function runPiStreaming(
 		let observedCompletedMutation = false;
 		const mutationTracker = createMutationCompletionTracker();
 		let resourceLimitTimer: NodeJS.Timeout | undefined;
-		const subagentListLoopGuard = createRepeatedSubagentListGuardState();
+		const subagentLoopGuard = createRepeatedSubagentCallGuardState();
 		const rawStdoutLines: string[] = [];
 
 		const writeOutputLine = (line: string) => {
@@ -426,8 +426,8 @@ function runPiStreaming(
 			onChildEvent?.(event);
 
 			if (event.type === "tool_execution_start" && event.toolName) {
-				const loopFailure = recordToolStartForSubagentListLoopGuard({
-					state: subagentListLoopGuard,
+				const loopFailure = recordToolStartForSubagentLoopGuard({
+					state: subagentLoopGuard,
 					toolName: event.toolName,
 					args: event.args,
 				});

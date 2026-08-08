@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.33.2] - 2026-08-08
+
+### Fixed
+- Stop any child that repeats the same `subagent` call five times within its recent tool window, including rejected nested delegation loops that previously ran until timeout.
+
 ## [0.33.1] - 2026-08-08
 
 ### Fixed

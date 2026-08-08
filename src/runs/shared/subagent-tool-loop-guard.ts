@@ -1,11 +1,11 @@
-const REPEATED_SUBAGENT_LIST_LIMIT = 5;
-const SUBAGENT_LIST_WINDOW_SIZE = REPEATED_SUBAGENT_LIST_LIMIT * 2 - 1;
+const REPEATED_SUBAGENT_CALL_LIMIT = 5;
+const SUBAGENT_CALL_WINDOW_SIZE = REPEATED_SUBAGENT_CALL_LIMIT * 2 - 1;
 
-export interface RepeatedSubagentListGuardState {
-	recentStarts: boolean[];
+export interface RepeatedSubagentCallGuardState {
+	recentStarts: Array<string | undefined>;
 }
 
-export function createRepeatedSubagentListGuardState(): RepeatedSubagentListGuardState {
+export function createRepeatedSubagentCallGuardState(): RepeatedSubagentCallGuardState {
 	return { recentStarts: [] };
 }
 
@@ -13,24 +13,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export function isSubagentListToolStart(toolName: unknown, args: unknown): boolean {
-	return toolName === "subagent" && isRecord(args) && args.action === "list";
+function subagentCallKey(toolName: unknown, args: unknown): string | undefined {
+	return toolName === "subagent" && isRecord(args) ? JSON.stringify(args) : undefined;
 }
 
-export function recordToolStartForSubagentListLoopGuard(input: {
-	state: RepeatedSubagentListGuardState;
+export function recordToolStartForSubagentLoopGuard(input: {
+	state: RepeatedSubagentCallGuardState;
 	toolName: unknown;
 	args: unknown;
 	limit?: number;
 }): string | undefined {
-	const isList = isSubagentListToolStart(input.toolName, input.args);
-	const limit = input.limit ?? REPEATED_SUBAGENT_LIST_LIMIT;
-	input.state.recentStarts.push(isList);
-	if (input.state.recentStarts.length > SUBAGENT_LIST_WINDOW_SIZE) input.state.recentStarts.shift();
-	if (!isList) return undefined;
-	const recentCount = input.state.recentStarts.filter(Boolean).length;
+	const callKey = subagentCallKey(input.toolName, input.args);
+	const limit = input.limit ?? REPEATED_SUBAGENT_CALL_LIMIT;
+	input.state.recentStarts.push(callKey);
+	if (input.state.recentStarts.length > SUBAGENT_CALL_WINDOW_SIZE) input.state.recentStarts.shift();
+	if (!callKey) return undefined;
+	const recentCount = input.state.recentStarts.filter((entry) => entry === callKey).length;
 	if (recentCount >= limit) {
-		return `Child appears stuck repeating subagent({ action: "list" }) ${recentCount} times. Stopping to avoid a tool loop.`;
+		return `Child appears stuck repeating the same subagent call ${recentCount} times. Stopping to avoid a tool loop.`;
 	}
 	return undefined;
 }

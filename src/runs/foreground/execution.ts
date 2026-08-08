@@ -81,8 +81,8 @@ import {
 	summarizeRecentMutatingFailures,
 } from "../shared/mutating-tool-guard.ts";
 import {
-	createRepeatedSubagentListGuardState,
-	recordToolStartForSubagentListLoopGuard,
+	createRepeatedSubagentCallGuardState,
+	recordToolStartForSubagentLoopGuard,
 } from "../shared/subagent-tool-loop-guard.ts";
 import {
 	acceptanceFailureMessage,
@@ -524,7 +524,7 @@ async function runSingleAttempt(
 		};
 
 		const mutationTracker = createMutationCompletionTracker();
-		const subagentListLoopGuard = createRepeatedSubagentListGuardState();
+		const subagentLoopGuard = createRepeatedSubagentCallGuardState();
 		const mutatingFailures = createMutatingFailureState();
 		const mutatingFailureWindowMs = 5 * 60_000;
 		const currentToolDurationMs = (now: number) => progress.currentToolStartedAt ? Math.max(0, now - progress.currentToolStartedAt) : undefined;
@@ -669,8 +669,8 @@ async function runSingleAttempt(
 			updateActivityState(now);
 
 			if (evt.type === "tool_execution_start") {
-				const loopFailure = recordToolStartForSubagentListLoopGuard({
-					state: subagentListLoopGuard,
+				const loopFailure = recordToolStartForSubagentLoopGuard({
+					state: subagentLoopGuard,
 					toolName: evt.toolName,
 					args: evt.args,
 				});
