@@ -462,6 +462,10 @@ const MAX_LOGGED_AGENT_DIAGNOSTICS = 1_000;
 
 function reportAgentDiagnostic(filePath: string, message: string): void {
 	const key = `${filePath}\0${message}`;
+	if (!reportedAgentDiagnostics.has(key) && reportedAgentDiagnostics.size >= MAX_LOGGED_AGENT_DIAGNOSTICS) {
+		const oldest = reportedAgentDiagnostics.keys().next().value;
+		if (oldest !== undefined) reportedAgentDiagnostics.delete(oldest);
+	}
 	reportedAgentDiagnostics.set(key, { filePath, error: message });
 	if (loggedAgentDiagnostics.has(key)) return;
 	if (loggedAgentDiagnostics.size >= MAX_LOGGED_AGENT_DIAGNOSTICS) {

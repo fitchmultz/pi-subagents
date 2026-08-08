@@ -3566,7 +3566,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		}
 
 		const completeNestedForeground = (result: SubagentExecutionResult): void => {
-			if (inheritedNestedRoute && result.details?.results.some((child) => child.detached)) {
+			if (inheritedNestedRoute && nestedParentAddress && result.details?.results.some((child) => child.detached)) {
 				deferForegroundCleanup = !detachedNestedSettled;
 				return;
 			}

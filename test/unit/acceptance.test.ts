@@ -280,7 +280,7 @@ describe("acceptance gates", () => {
 		const acceptance = resolveEffectiveAcceptance({
 			explicit: {
 				criteria: ["Patch bug"],
-				verify: [{ id: "noisy", command: "node -e \"process.stdout.write('x'.repeat(100000)); process.stderr.write('y'.repeat(100000))\"", timeoutMs: 30_000 }],
+				verify: [{ id: "noisy", command: "node -e \"process.stdout.write(' '.repeat(20) + 'x'.repeat(100000)); process.stderr.write('y'.repeat(100000))\"", timeoutMs: 30_000 }],
 			},
 		});
 		const ledger = await evaluateAcceptance({ acceptance, output: report(), cwd });

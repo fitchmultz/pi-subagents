@@ -78,7 +78,7 @@ export class ComposeOverlay implements Component {
   }
 
   handleInput(data: string): void {
-    if (this.sending || this.completed) return;
+    if (this.sending || this.completed || !data) return;
 
     let pasted = false;
     if (this.pasteBuffer !== null) {
@@ -110,7 +110,7 @@ export class ComposeOverlay implements Component {
           this.pasteIdleTimer = null;
           const pendingPrefix = this.pasteStartPrefix;
           this.pasteStartPrefix = "";
-          if (pendingPrefix === "\x1b") this.finish({ sent: false });
+          if (pendingPrefix === "\x1b" && this.keybindings.matches(pendingPrefix, "tui.select.cancel")) this.finish({ sent: false });
         }, INCOMPLETE_PASTE_IDLE_MS);
         this.pasteIdleTimer.unref?.();
         return;

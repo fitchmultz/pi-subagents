@@ -84,12 +84,20 @@ function runStructuralChecks(acceptance: ResolvedAcceptanceConfig, report: Accep
 	return checks;
 }
 
-const MAX_VERIFY_OUTPUT_CHARS = 12_001;
+const MAX_VERIFY_OUTPUT_CHARS = 12_000;
 
-function trimOutput(value: string): string | undefined {
+function appendVerifyOutput(current: string, chunk: Buffer): { value: string; truncated: boolean } {
+	const text = chunk.toString();
+	const remaining = Math.max(0, MAX_VERIFY_OUTPUT_CHARS - current.length);
+	return { value: current + text.slice(0, remaining), truncated: text.length > remaining };
+}
+
+function trimOutput(value: string, truncated = false): string | undefined {
 	const trimmed = value.trim();
-	if (!trimmed) return undefined;
-	return trimmed.length > 12_000 ? `${trimmed.slice(0, 12_000)}\n...[truncated]` : trimmed;
+	if (!trimmed && !truncated) return undefined;
+	return truncated || trimmed.length > MAX_VERIFY_OUTPUT_CHARS
+		? `${trimmed.slice(0, MAX_VERIFY_OUTPUT_CHARS)}${trimmed ? "\n" : ""}...[truncated]`
+		: trimmed;
 }
 
 function runVerifyCommand(command: AcceptanceVerifyCommand, defaultCwd: string): Promise<AcceptanceVerifyResult> {
@@ -98,6 +106,8 @@ function runVerifyCommand(command: AcceptanceVerifyCommand, defaultCwd: string):
 		const cwd = command.cwd ? path.resolve(defaultCwd, command.cwd) : defaultCwd;
 		let stdout = "";
 		let stderr = "";
+		let stdoutTruncated = false;
+		let stderrTruncated = false;
 		let timedOut = false;
 		const child = spawn(command.command, {
 			cwd,
@@ -112,12 +122,16 @@ function runVerifyCommand(command: AcceptanceVerifyCommand, defaultCwd: string):
 			setTimeout(() => child.kill("SIGKILL"), 1000).unref?.();
 		}, command.timeoutMs ?? 120_000);
 		timeout.unref?.();
-child.stdout.on("data", (chunk: Buffer) => {
-if (stdout.length < MAX_VERIFY_OUTPUT_CHARS) stdout += chunk.toString().slice(0, MAX_VERIFY_OUTPUT_CHARS - stdout.length);
-});
-child.stderr.on("data", (chunk: Buffer) => {
-if (stderr.length < MAX_VERIFY_OUTPUT_CHARS) stderr += chunk.toString().slice(0, MAX_VERIFY_OUTPUT_CHARS - stderr.length);
-});
+		child.stdout.on("data", (chunk: Buffer) => {
+			const next = appendVerifyOutput(stdout, chunk);
+			stdout = next.value;
+			stdoutTruncated ||= next.truncated;
+		});
+		child.stderr.on("data", (chunk: Buffer) => {
+			const next = appendVerifyOutput(stderr, chunk);
+			stderr = next.value;
+			stderrTruncated ||= next.truncated;
+		});
 		child.on("close", (exitCode) => {
 			clearTimeout(timeout);
 			const durationMs = Date.now() - startedAt;
@@ -128,8 +142,8 @@ if (stderr.length < MAX_VERIFY_OUTPUT_CHARS) stderr += chunk.toString().slice(0,
 				cwd,
 				exitCode,
 				status: timedOut ? "timed-out" : passed ? "passed" : command.allowFailure ? "allowed-failure" : "failed",
-				stdout: trimOutput(stdout),
-				stderr: trimOutput(stderr),
+				stdout: trimOutput(stdout, stdoutTruncated),
+				stderr: trimOutput(stderr, stderrTruncated),
 				durationMs,
 			});
 		});
