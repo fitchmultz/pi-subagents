@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.33.2] - 2026-08-08
+
+### Fixed
+- Stop children that repeat an identical failed `subagent` call five times within the recent subagent-call window, including rejected nested delegations that previously ran until timeout, without blocking successful repeated calls.
+
 ## [0.33.1] - 2026-08-08
 
 ### Fixed

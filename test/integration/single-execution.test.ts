@@ -413,6 +413,24 @@ describe("single sync execution", () => {
 		assert.match(result.finalOutput, /still completed/);
 	});
 
+	it("stops repeated failed subagent calls", async () => {
+		const args = { agent: "delegate", task: "nested work", async: false };
+		mockPi.onCall({
+			jsonl: Array.from({ length: 5 }, (_, index) => {
+				const toolCallId = `call-${index}`;
+				return [
+					{ type: "tool_execution_start", toolCallId, toolName: "subagent", args },
+					{ type: "tool_execution_end", toolCallId, toolName: "subagent", isError: true },
+				];
+			}).flat(),
+		});
+
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Delegate nested work", {});
+		assert.equal(result.exitCode, 1);
+		assert.match(result.error ?? "", /stuck repeating the same failed subagent call 5 times/);
+		assert.equal(result.progress.toolCount, 5);
+	});
+
 	it("fails when a requested output path cannot be saved", async () => {
 		mockPi.onCall({ output: "completed work" });
 		const outputPath = path.join(tempDir, "report.md");

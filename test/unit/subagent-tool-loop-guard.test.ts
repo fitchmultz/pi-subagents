@@ -1,31 +1,101 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-	createRepeatedSubagentListGuardState,
-	recordToolStartForSubagentListLoopGuard,
+	createRepeatedSubagentCallGuardState,
+	recordToolEndForSubagentLoopGuard,
+	recordToolStartForSubagentLoopGuard,
 } from "../../src/runs/shared/subagent-tool-loop-guard.ts";
 
 describe("subagent tool loop guard", () => {
 	it("fails after repeated subagent list calls", () => {
-		const state = createRepeatedSubagentListGuardState();
+		const state = createRepeatedSubagentCallGuardState();
 		for (let i = 0; i < 4; i++) {
-			assert.equal(recordToolStartForSubagentListLoopGuard({ state, toolName: "subagent", args: { action: "list" } }), undefined);
+			assert.equal(recordToolStartForSubagentLoopGuard({ state, toolName: "subagent", args: { action: "list" } }), undefined);
 		}
 		assert.match(
-			recordToolStartForSubagentListLoopGuard({ state, toolName: "subagent", args: { action: "list" } }) ?? "",
+			recordToolStartForSubagentLoopGuard({ state, toolName: "subagent", args: { action: "list" } }) ?? "",
 			/stuck repeating subagent\(\{ action: "list" \}\) 5 times/,
 		);
 	});
 
 	it("catches non-consecutive list ping-pong within the recent window", () => {
-		const state = createRepeatedSubagentListGuardState();
+		const state = createRepeatedSubagentCallGuardState();
 		for (let i = 0; i < 4; i++) {
-			assert.equal(recordToolStartForSubagentListLoopGuard({ state, toolName: "subagent", args: { action: "list" } }), undefined);
-			recordToolStartForSubagentListLoopGuard({ state, toolName: "read", args: { path: "file.ts" } });
+			assert.equal(recordToolStartForSubagentLoopGuard({ state, toolName: "subagent", args: { action: "list" } }), undefined);
+			recordToolStartForSubagentLoopGuard({ state, toolName: "read", args: { path: "file.ts" } });
 		}
 		assert.match(
-			recordToolStartForSubagentListLoopGuard({ state, toolName: "subagent", args: { action: "list" } }) ?? "",
+			recordToolStartForSubagentLoopGuard({ state, toolName: "subagent", args: { action: "list" } }) ?? "",
 			/stuck repeating subagent\(\{ action: "list" \}\) 5 times/,
 		);
+	});
+
+	it("fails after repeated rejected delegation calls", () => {
+		const state = createRepeatedSubagentCallGuardState();
+		const args = { agent: "delegate", task: "nested work", async: false };
+		let failure: string | undefined;
+		for (let i = 0; i < 5; i++) {
+			const toolCallId = `call-${i}`;
+			assert.equal(recordToolStartForSubagentLoopGuard({ state, toolCallId, toolName: "subagent", args }), undefined);
+			failure = recordToolEndForSubagentLoopGuard({ state, toolCallId, toolName: "subagent", isError: true });
+		}
+		assert.match(failure ?? "", /stuck repeating the same failed subagent call 5 times/);
+	});
+
+	it("keeps failed-call history across unrelated tools", () => {
+		const state = createRepeatedSubagentCallGuardState();
+		const args = { agent: "delegate", task: "nested work", async: false };
+		let failure: string | undefined;
+		for (let i = 0; i < 5; i++) {
+			const toolCallId = `call-${i}`;
+			recordToolStartForSubagentLoopGuard({ state, toolCallId, toolName: "subagent", args });
+			failure = recordToolEndForSubagentLoopGuard({ state, toolCallId, toolName: "subagent", isError: true });
+			recordToolStartForSubagentLoopGuard({ state, toolName: "read", args: { path: "one.ts" } });
+			recordToolStartForSubagentLoopGuard({ state, toolName: "read", args: { path: "two.ts" } });
+		}
+		assert.match(failure ?? "", /stuck repeating the same failed subagent call 5 times/);
+	});
+
+	it("matches failed calls regardless of argument key order", () => {
+		const state = createRepeatedSubagentCallGuardState();
+		let failure: string | undefined;
+		for (let i = 0; i < 5; i++) {
+			const toolCallId = `call-${i}`;
+			const args = i % 2
+				? { task: "nested work", async: false, agent: "delegate" }
+				: { agent: "delegate", task: "nested work", async: false };
+			recordToolStartForSubagentLoopGuard({ state, toolCallId, toolName: "subagent", args });
+			failure = recordToolEndForSubagentLoopGuard({ state, toolCallId, toolName: "subagent", isError: true });
+		}
+		assert.match(failure ?? "", /stuck repeating the same failed subagent call 5 times/);
+	});
+
+	it("matches a failed end when only the end includes a tool call id", () => {
+		const state = createRepeatedSubagentCallGuardState();
+		const args = { agent: "delegate", task: "nested work" };
+		let failure: string | undefined;
+		for (let i = 0; i < 5; i++) {
+			recordToolStartForSubagentLoopGuard({ state, toolName: "subagent", args });
+			failure = recordToolEndForSubagentLoopGuard({ state, toolCallId: `call-${i}`, toolName: "subagent", isError: true });
+		}
+		assert.match(failure ?? "", /stuck repeating the same failed subagent call 5 times/);
+	});
+
+	it("ignores arguments that cannot be canonicalized", () => {
+		const state = createRepeatedSubagentCallGuardState();
+		const args: Record<string, unknown> = { agent: "delegate" };
+		args.self = args;
+		assert.doesNotThrow(() => recordToolStartForSubagentLoopGuard({ state, toolName: "subagent", args }));
+		assert.equal(state.recentSubagentCalls.length, 0);
+	});
+
+	it("allows repeated successful delegation calls", () => {
+		const state = createRepeatedSubagentCallGuardState();
+		const args = { agent: "delegate", task: "repeat sample", async: false };
+		for (let i = 0; i < 6; i++) {
+			const toolCallId = `call-${i}`;
+			assert.equal(recordToolStartForSubagentLoopGuard({ state, toolCallId, toolName: "subagent", args }), undefined);
+			assert.equal(recordToolEndForSubagentLoopGuard({ state, toolCallId, toolName: "subagent", isError: false }), undefined);
+		}
 	});
 });

@@ -77,8 +77,9 @@ import {
 	summarizeRecentMutatingFailures,
 } from "../shared/mutating-tool-guard.ts";
 import {
-	createRepeatedSubagentListGuardState,
-	recordToolStartForSubagentListLoopGuard,
+	createRepeatedSubagentCallGuardState,
+	recordToolEndForSubagentLoopGuard,
+	recordToolStartForSubagentLoopGuard,
 } from "../shared/subagent-tool-loop-guard.ts";
 import { parseSessionTokens } from "../../shared/session-tokens.ts";
 import {
@@ -246,8 +247,10 @@ type ChildMessage = Message & {
 interface ChildEvent {
 	type?: string;
 	message?: ChildMessage;
+	toolCallId?: string;
 	toolName?: string;
 	args?: Record<string, unknown>;
+	isError?: boolean;
 }
 
 interface RunPiStreamingResult {
@@ -335,7 +338,7 @@ function runPiStreaming(
 		let observedCompletedMutation = false;
 		const mutationTracker = createMutationCompletionTracker();
 		let resourceLimitTimer: NodeJS.Timeout | undefined;
-		const subagentListLoopGuard = createRepeatedSubagentListGuardState();
+		const subagentLoopGuard = createRepeatedSubagentCallGuardState();
 		const rawStdoutLines: string[] = [];
 
 		const writeOutputLine = (line: string) => {
@@ -350,7 +353,7 @@ function runPiStreaming(
 		};
 
 		const failForToolLoop = (message: string) => {
-			if (settled || resourceLimitExceeded) return;
+			if (settled || resourceLimitExceeded || terminationRequested) return;
 			error = message;
 			writeOutputLine(message);
 			terminationRequested = true;
@@ -426,8 +429,9 @@ function runPiStreaming(
 			onChildEvent?.(event);
 
 			if (event.type === "tool_execution_start" && event.toolName) {
-				const loopFailure = recordToolStartForSubagentListLoopGuard({
-					state: subagentListLoopGuard,
+				const loopFailure = recordToolStartForSubagentLoopGuard({
+					state: subagentLoopGuard,
+					toolCallId: event.toolCallId,
 					toolName: event.toolName,
 					args: event.args,
 				});
@@ -438,6 +442,17 @@ function runPiStreaming(
 				mutationTracker.recordToolStart({ toolName: event.toolName, args: event.args });
 				const toolArgs = extractToolArgsPreview(event.args ?? {});
 				writeOutputLine(toolArgs ? `${event.toolName}: ${toolArgs}` : event.toolName);
+				return;
+			}
+
+			if (event.type === "tool_execution_end") {
+				const loopFailure = recordToolEndForSubagentLoopGuard({
+					state: subagentLoopGuard,
+					toolCallId: event.toolCallId,
+					toolName: event.toolName,
+					isError: event.isError,
+				});
+				if (loopFailure) failForToolLoop(loopFailure);
 				return;
 			}
 
