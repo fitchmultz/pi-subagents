@@ -655,7 +655,7 @@ describe("fork context execution wiring", () => {
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
 				{ name: "scout", description: "Scout", defaultContext: "fresh" },
-				{ name: "worker", description: "Worker", defaultContext: "fork" },
+				{ name: "worker", description: "Worker", defaultContext: "fork", tools: ["read"] },
 			],
 			projectAgentsDir: null,
 		}));

@@ -6,6 +6,9 @@ import type { SessionInfo } from "../types.ts";
 
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
+const MAX_PASTE_CHARS = 1_000_000;
+const INCOMPLETE_PASTE_IDLE_MS = 200;
+const PASTE_RENDER_TAIL_CHARS = 8192;
 
 export interface ComposeResult {
   sent: boolean;
@@ -27,6 +30,9 @@ export class ComposeOverlay implements Component {
   private completed = false;
   private sending: boolean = false;
   private error: string | null = null;
+  private pasteBuffer: string | null = null;
+  private pasteStartPrefix = "";
+  private pasteIdleTimer: NodeJS.Timeout | null = null;
 
   constructor(
     tui: TUI,
@@ -51,23 +57,86 @@ export class ComposeOverlay implements Component {
   private finish(result: ComposeResult): void {
     if (this.completed) return;
     this.completed = true;
+    if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
+    this.pasteIdleTimer = null;
     this.done(result);
+  }
+
+  private scheduleIncompletePasteFlush(): void {
+    if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
+    this.pasteIdleTimer = setTimeout(() => {
+      this.pasteIdleTimer = null;
+      if (this.pasteBuffer === null || this.completed) return;
+      const data = this.pasteBuffer.replace(/\r\n?/g, "\n");
+      this.pasteBuffer = null;
+      const printable = [...data].filter((character) => character >= " " || character === "\n" || character === "\t").join("");
+      if (printable) this.inputBuffer += printable;
+      this.error = null;
+      this.tui.requestRender();
+    }, INCOMPLETE_PASTE_IDLE_MS);
+    this.pasteIdleTimer.unref?.();
   }
 
   handleInput(data: string): void {
     if (this.sending || this.completed) return;
 
-    const pasted = data.startsWith(BRACKETED_PASTE_START) && data.endsWith(BRACKETED_PASTE_END);
-    if (pasted) {
-      data = data.slice(BRACKETED_PASTE_START.length, -BRACKETED_PASTE_END.length).replace(/\r\n?/g, "\n");
-    } else if (this.keybindings.matches(data, "tui.select.cancel")) {
-      this.finish({ sent: false });
-      return;
+    let pasted = false;
+    if (this.pasteBuffer !== null) {
+      this.pasteBuffer += data;
+      const end = this.pasteBuffer.indexOf(BRACKETED_PASTE_END);
+      if (end === -1 && this.pasteBuffer.length <= MAX_PASTE_CHARS) {
+        this.scheduleIncompletePasteFlush();
+        this.tui.requestRender();
+        return;
+      }
+      data = end === -1
+        ? this.pasteBuffer
+        : this.pasteBuffer.slice(0, end) + this.pasteBuffer.slice(end + BRACKETED_PASTE_END.length);
+      this.pasteBuffer = null;
+      if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
+      this.pasteIdleTimer = null;
+      data = data.replace(/\r\n?/g, "\n");
+      pasted = true;
+    } else {
+      if (this.pasteStartPrefix) {
+        if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
+        this.pasteIdleTimer = null;
+        data = this.pasteStartPrefix + data;
+        this.pasteStartPrefix = "";
+      }
+      if (data.length > 1 && data !== BRACKETED_PASTE_START && BRACKETED_PASTE_START.startsWith(data)) {
+        this.pasteStartPrefix = data;
+        this.pasteIdleTimer = setTimeout(() => {
+          this.pasteIdleTimer = null;
+          this.pasteStartPrefix = "";
+        }, INCOMPLETE_PASTE_IDLE_MS);
+        this.pasteIdleTimer.unref?.();
+        return;
+      }
+    }
+    if (!pasted && data.startsWith(BRACKETED_PASTE_START)) {
+      const body = data.slice(BRACKETED_PASTE_START.length);
+      const end = body.indexOf(BRACKETED_PASTE_END);
+      if (end === -1 && body.length <= MAX_PASTE_CHARS) {
+        this.pasteBuffer = body;
+        this.scheduleIncompletePasteFlush();
+        this.tui.requestRender();
+        return;
+      }
+      data = end === -1 ? body : body.slice(0, end) + body.slice(end + BRACKETED_PASTE_END.length);
+      data = data.replace(/\r\n?/g, "\n");
+      pasted = true;
     }
     if (!data) return;
 
+    if (!pasted && this.keybindings.matches(data, "tui.select.cancel")) {
+      this.finish({ sent: false });
+      return;
+    }
+
     if (!pasted && data === "\t") {
       this.mode = this.mode === "send" ? "ask" : "send";
+      this.error = null;
       this.tui.requestRender();
       return;
     }
@@ -77,7 +146,7 @@ export class ComposeOverlay implements Component {
     }
 
     if (!pasted && this.keybindings.matches(data, "tui.select.confirm")) {
-      if (this.inputBuffer.length > 0) {
+      if (this.inputBuffer.trim().length > 0) {
         void this.sendMessage();
       }
       return;
@@ -85,6 +154,7 @@ export class ComposeOverlay implements Component {
 
     if (!pasted && this.keybindings.matches(data, "tui.editor.deleteCharBackward")) {
       this.inputBuffer = [...this.inputBuffer].slice(0, -1).join("");
+      this.error = null;
       this.tui.requestRender();
       return;
     }
@@ -92,6 +162,7 @@ export class ComposeOverlay implements Component {
     const printable = [...data].filter(c => c >= " " || c === "\n" || c === "\t").join("");
     if (printable) {
       this.inputBuffer += printable;
+      this.error = null;
       this.tui.requestRender();
     }
   }
@@ -129,12 +200,29 @@ export class ComposeOverlay implements Component {
     }
   }
 
-  private renderInputLines(row: (text?: string) => string, lines: string[]): void {
-    const rawLines = this.inputBuffer.split("\n");
+  private renderInputLines(row: (text?: string) => string, lines: string[], contentWidth: number): void {
+    const pendingPaste = this.pasteBuffer === null
+      ? ""
+      : [...this.pasteBuffer.slice(-PASTE_RENDER_TAIL_CHARS)].filter((character) => character >= " " || character === "\n" || character === "\t").join("");
+    const rawLines = `${this.inputBuffer.slice(-PASTE_RENDER_TAIL_CHARS)}${pendingPaste}`.split("\n");
     const visibleLines = rawLines.slice(-8);
     visibleLines.forEach((line, index) => {
       const isLast = index === visibleLines.length - 1;
-      lines.push(row(`${index === 0 ? " > " : "   "}${line}${isLast ? "█" : ""}`));
+      const prefix = index === 0 ? " > " : "   ";
+      if (isLast) {
+        const graphemes = [...line];
+        const budget = Math.max(1, contentWidth - prefix.length - 1);
+        let used = 0;
+        let start = graphemes.length;
+        while (start > 0) {
+          const width = visibleWidth(graphemes[start - 1]!);
+          if (used + width > budget) break;
+          used += width;
+          start--;
+        }
+        line = graphemes.slice(start).join("");
+      }
+      lines.push(row(`${prefix}${line}${isLast ? "█" : ""}`));
     });
   }
 
@@ -145,7 +233,7 @@ export class ComposeOverlay implements Component {
     const footer = `${this.keybindings.getKeys("tui.select.confirm").join("/")}: ${this.mode === "ask" ? "Request reply" : "Send"} • Tab: ${this.mode === "ask" ? "Send mode" : "Request-reply mode"} • ${this.keybindings.getKeys("tui.select.cancel").join("/")}: Close`;
     const border = (text: string) => this.theme.fg("accent", text);
     const row = (text = "") => {
-      const clipped = truncateToWidth(text, contentWidth, "", true);
+      const clipped = truncateToWidth(text, contentWidth, "…", true);
       return `${border("│")}${clipped}${" ".repeat(Math.max(0, contentWidth - visibleWidth(clipped)))}${border("│")}`;
     };
 
@@ -161,9 +249,9 @@ export class ComposeOverlay implements Component {
     } else if (this.error) {
       lines.push(row(this.theme.fg("error", ` Error: ${this.error}`)));
       lines.push(row());
-      this.renderInputLines(row, lines);
+      this.renderInputLines(row, lines, contentWidth);
     } else {
-      this.renderInputLines(row, lines);
+      this.renderInputLines(row, lines, contentWidth);
     }
 
     lines.push(row());

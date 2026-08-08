@@ -894,9 +894,12 @@ test("recipient turn failures do not report after an ask is already replied", { 
     const replyResult = await intercomTool.execute("reply-before-error", {
       action: "reply",
       message: "normal reply",
+      attachments: [{ type: "context", name: "answer.txt", content: "supporting context" }],
     }, new AbortController().signal, undefined, harness.ctx);
     assert.equal(replyResult.isError, false);
-    assert.equal((await firstReplyPromise).message.content.text, "normal reply");
+    const receivedReply = (await firstReplyPromise).message;
+    assert.equal(receivedReply.content.text, "normal reply");
+    assert.deepEqual(receivedReply.content.attachments, [{ type: "context", name: "answer.txt", content: "supporting context" }]);
 
     let unexpectedFailureReply = false;
     const handler = (_from: SessionInfo, message: Message) => {
@@ -1250,6 +1253,91 @@ test("compose overlay preserves complete bracketed pastes as literal content", a
   );
   cancelOverlay.handleInput("\x1b");
   assert.deepEqual(doneResult, { sent: false });
+
+  doneResult = undefined;
+  const partialPasteOverlay = new ComposeOverlay(
+    { requestRender: () => undefined } as never,
+    { fg: (_name: string, text: string) => text, bold: (text: string) => text } as never,
+    keybindings as never,
+    { id: "target-session", name: "worker", cwd: repoDir, model: "test-model" },
+    "worker",
+    { send: async () => ({ id: "unused", accepted: true, delivered: true }) } as never,
+    (result) => { doneResult = result; },
+  );
+  partialPasteOverlay.handleInput("\x1b[200~unterminated");
+  assert.match(partialPasteOverlay.render(100).join("\n"), /unterminated/);
+  partialPasteOverlay.handleInput("\x1b");
+  assert.equal(doneResult, undefined, "escape bytes inside an incomplete paste are literal paste content");
+  partialPasteOverlay.handleInput("\x1b[201~");
+  assert.match(partialPasteOverlay.render(100).join("\n"), /unterminated/);
+  partialPasteOverlay.handleInput("\x1b");
+  assert.deepEqual(doneResult, { sent: false });
+
+  doneResult = undefined;
+  const splitPasteOverlay = new ComposeOverlay(
+    { requestRender: () => undefined } as never,
+    { fg: (_name: string, text: string) => text, bold: (text: string) => text } as never,
+    keybindings as never,
+    { id: "target-session", name: "worker", cwd: repoDir, model: "test-model" },
+    "worker",
+    { send: async () => ({ id: "unused", accepted: true, delivered: true }) } as never,
+    (result) => { doneResult = result; },
+  );
+  splitPasteOverlay.handleInput("\x1b[20");
+  splitPasteOverlay.handleInput("0~split start marker");
+  splitPasteOverlay.handleInput("\x1b[201~");
+  assert.match(splitPasteOverlay.render(100).join("\n"), /split start marker/);
+
+  doneResult = undefined;
+  const abandonedPasteOverlay = new ComposeOverlay(
+    { requestRender: () => undefined } as never,
+    { fg: (_name: string, text: string) => text, bold: (text: string) => text } as never,
+    keybindings as never,
+    { id: "target-session", name: "worker", cwd: repoDir, model: "test-model" },
+    "worker",
+    { send: async () => ({ id: "unused", accepted: true, delivered: true }) } as never,
+    (result) => { doneResult = result; },
+  );
+  abandonedPasteOverlay.handleInput("\x1b[200~abandoned paste");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  abandonedPasteOverlay.handleInput("\x1b");
+  assert.deepEqual(doneResult, { sent: false });
+
+  const tailSent: string[] = [];
+  const tailOverlay = new ComposeOverlay(
+    { requestRender: () => undefined } as never,
+    { fg: (_name: string, text: string) => text, bold: (text: string) => text } as never,
+    keybindings as never,
+    { id: "target-session", name: "worker", cwd: repoDir, model: "test-model" },
+    "worker",
+    { send: async (_to: string, options: { text: string }) => { tailSent.push(options.text); return { id: "tail", accepted: true, delivered: true }; } } as never,
+    () => {},
+  );
+  tailOverlay.handleInput("\x1b[200~body\x1b[201~tail");
+  tailOverlay.handleInput("\r");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(tailSent, ["bodytail"]);
+});
+
+test("invalid presence updates cannot poison peer session lists", { concurrency: false }, async () => {
+  const broker = await setupBroker();
+  const badPeer = new IntercomClient();
+  const healthyPeer = new IntercomClient();
+  try {
+    await connectClient(badPeer, "bad-presence-peer");
+    await connectClient(healthyPeer, "healthy-presence-peer");
+    badPeer.updatePresence({ name: "bad\u0001name", pendingAsks: 0.5 } as never);
+    const deadline = Date.now() + 2_000;
+    while (badPeer.isConnected() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(badPeer.isConnected(), false);
+    const sessions = await healthyPeer.listSessions();
+    assert.equal(sessions.some((session) => session.name === "healthy-presence-peer"), true);
+    assert.equal(sessions.some((session) => session.name?.includes("bad")), false);
+  } finally {
+    await badPeer.disconnect().catch(() => undefined);
+    await healthyPeer.disconnect().catch(() => undefined);
+    await stopBroker(broker);
+  }
 });
 
 test("sessions publish automatic lifecycle status", { concurrency: false }, async () => {
@@ -1489,6 +1577,38 @@ test("busy interactive sessions idle-gate default asks and steer default sends w
   }
 });
 
+test("busy interactive sessions reject overload instead of silently evicting queued asks", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("interactive-overload-worker", {
+    hasUI: true,
+    isIdle: () => false,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    const target = await waitForSessionByName(planner, "interactive-overload-worker");
+    const overloadReply = once(planner, "message") as Promise<[SessionInfo, Message]>;
+    for (let index = 0; index <= 100; index += 1) {
+      assert.equal((await planner.send(target.id, {
+        messageId: `overload-ask-${index}`,
+        text: `Queued question ${index}`,
+        expectsReply: true,
+      })).delivered, true);
+    }
+
+    const [, reply] = await overloadReply;
+    assert.equal(reply.replyTo, "overload-ask-100");
+    assert.match(reply.content.text, /Recipient queue is full/);
+    assert.equal(reply.content.attachments?.some((attachment) => attachment.name === "pi-intercom-recipient-turn-failure"), true);
+    assert.equal(harness.sentMessages.length, 0);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
 test("busy interactive sessions defer explicit queued sends and idle-gate default asks", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { planner, cleanup } = await setupClients();
@@ -1695,6 +1815,36 @@ test("replace queue mode coalesces quick idle updates before waking", { concurre
     assert.deepEqual(harness.sentMessages[0]?.options, { triggerTurn: true });
   } finally {
     await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("broker bounds unique replace-mode threads per sender", { concurrency: false }, async () => {
+  const { planner, orchestrator, cleanup } = await setupClients();
+  try {
+    assert.ok(orchestrator.sessionId);
+    orchestrator.updatePresence({ status: "idle", acceptsAsks: true });
+    await waitForSessionStatus(planner, "orchestrator", "idle");
+    for (let index = 0; index < 100; index++) {
+      const result = await planner.send(orchestrator.sessionId, {
+        messageId: `replace-bound-${index}`,
+        text: `update ${index}`,
+        delivery: "queue",
+        queueMode: "replace",
+        threadId: `unique-thread-${index}`,
+      });
+      assert.equal(result.accepted, true);
+    }
+    const rejected = await planner.send(orchestrator.sessionId, {
+      messageId: "replace-bound-overflow",
+      text: "overflow",
+      delivery: "queue",
+      queueMode: "replace",
+      threadId: "unique-thread-overflow",
+    });
+    assert.equal(rejected.accepted, false);
+    assert.match(rejected.reason ?? "", /queue is full/i);
+  } finally {
     await cleanup();
   }
 });
@@ -2936,7 +3086,7 @@ test("async subagent result intercom events wake the current orchestrator sessio
   assert.deepEqual(deliveryAcks, [{ requestId: "result-1", delivered: true }]);
 });
 
-test("foreground subagent result intercom events are acknowledged without messaging the current orchestrator session", async () => {
+test("foreground subagent result intercom events reach the current orchestrator before acknowledgment", async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const harness = createExtensionHarness("orchestrator");
   const { sentMessages } = harness;
@@ -2952,7 +3102,9 @@ test("foreground subagent result intercom events are acknowledged without messag
   });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(sentMessages, []);
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0]?.message.content ?? "", /Run: c0cefc68/);
+  assert.equal(sentMessages[0]?.options?.triggerTurn, true);
   assert.deepEqual(deliveryAcks, [{ requestId: "result-foreground", delivered: true }]);
 });
 

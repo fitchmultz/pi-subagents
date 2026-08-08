@@ -177,6 +177,10 @@ describe("async execution utilities", () => {
 
 	afterEach(() => {
 		removeTempDir(tempDir);
+		const prefix = `itest-ae-${process.pid}-`;
+		if (fs.existsSync(ASYNC_DIR)) for (const dir of fs.readdirSync(ASYNC_DIR).filter((entry) => entry.startsWith(prefix))) fs.rmSync(path.join(ASYNC_DIR, dir), { recursive: true, force: true });
+		if (fs.existsSync(RESULTS_DIR)) for (const file of fs.readdirSync(RESULTS_DIR).filter((entry) => entry.startsWith(prefix))) fs.rmSync(path.join(RESULTS_DIR, file), { force: true });
+		if (fs.existsSync(TEMP_ROOT_DIR)) for (const file of fs.readdirSync(TEMP_ROOT_DIR).filter((entry) => entry.includes(prefix))) fs.rmSync(path.join(TEMP_ROOT_DIR, file), { recursive: true, force: true });
 	});
 
 	it("readStatus returns null for missing directory", () => {
@@ -214,7 +218,7 @@ describe("async execution utilities", () => {
 			maxSubagentDepth: 2,
 		};
 		mockPi.onCall({ output: "single done" });
-		const singleId = `async-handoff-single-${Date.now().toString(36)}`;
+		const singleId = `itest-ae-${process.pid}-handoff-single-${Date.now().toString(36)}`;
 		const singleResult = executeAsyncSingle(singleId, {
 			agent: "worker",
 			task: "Do work",
@@ -228,7 +232,7 @@ describe("async execution utilities", () => {
 
 		mockPi.onCall({ output: "parallel one done" });
 		mockPi.onCall({ output: "parallel two done" });
-		const parallelId = `async-handoff-parallel-${Date.now().toString(36)}`;
+		const parallelId = `itest-ae-${process.pid}-handoff-parallel-${Date.now().toString(36)}`;
 		const parallelResult = executeAsyncChain(parallelId, {
 			chain: [{ parallel: [{ agent: "worker", task: "Do one" }, { agent: "reviewer", task: "Do two" }] }],
 			resultMode: "parallel",
@@ -244,7 +248,7 @@ describe("async execution utilities", () => {
 		assert.equal(parallelPayload.agent, "parallel:worker+reviewer");
 
 		mockPi.onCall({ output: "chain done" });
-		const chainId = `async-handoff-chain-${Date.now().toString(36)}`;
+		const chainId = `itest-ae-${process.pid}-handoff-chain-${Date.now().toString(36)}`;
 		const chainResult = executeAsyncChain(chainId, {
 			chain: [{ agent: "worker", task: "Do chained work" }],
 			agents: [makeAgent("worker")],
@@ -255,9 +259,44 @@ describe("async execution utilities", () => {
 		await waitForAsyncResultFile(chainId, 10_000);
 	});
 
+	it("applies maxOutput to persisted per-child async results", async () => {
+		const longOutput = Array.from({ length: 100 }, (_, index) => `line-${index}`).join("\n") + "\nSECRET_TAIL";
+		mockPi.onCall({ output: longOutput });
+		const id = `itest-ae-${process.pid}-max-output-${Date.now().toString(36)}`;
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Produce bounded output",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-max-output" },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+			maxOutput: { lines: 5, bytes: 200 },
+		});
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		assert.match(payload.results[0]?.output ?? "", /TRUNCATED/);
+		assert.doesNotMatch(payload.results[0]?.output ?? "", /SECRET_TAIL/);
+	});
+
+	it("honors top-level progress for async single runs", async () => {
+		mockPi.onCall({ output: "progress done" });
+		const id = `itest-ae-${process.pid}-progress-single-${Date.now().toString(36)}`;
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Track progress",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-progress" },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+			progress: true,
+		});
+		await waitForAsyncResultFile(id, 10_000);
+		assert.match(fs.readFileSync(path.join(tempDir, "progress.md"), "utf-8"), /Progress/);
+	});
+
 	it("writes only the fixed async input, output, and metadata artifacts", async () => {
 		mockPi.onCall({ output: "async artifact result" });
-		const id = `async-artifacts-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-artifacts-${Date.now().toString(36)}`;
 		const artifactsDir = path.join(tempDir, "artifacts");
 		executeAsyncSingle(id, {
 			agent: "worker",
@@ -284,7 +323,7 @@ describe("async execution utilities", () => {
 		process.env.NODE_OPTIONS = [originalNodeOptions, `--require ${JSON.stringify(preloadPath)}`].filter(Boolean).join(" ");
 		try {
 			mockPi.onCall({ output: "done" });
-			const id = `async-runner-stderr-${Date.now().toString(36)}`;
+			const id = `itest-ae-${process.pid}-runner-stderr-${Date.now().toString(36)}`;
 			executeAsyncSingle(id, {
 				agent: "worker",
 				task: "Do work",
@@ -303,7 +342,7 @@ describe("async execution utilities", () => {
 
 	it("async single enforces agent maxTokens from observed usage", async () => {
 		mockPi.onCall({ output: "Used async tokens" });
-		const id = `async-token-limit-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-token-limit-${Date.now().toString(36)}`;
 
 		executeAsyncSingle(id, {
 			agent: "worker",
@@ -329,7 +368,7 @@ describe("async execution utilities", () => {
 
 	it("async single enforces agent maxExecutionTimeMs without retrying fallback models", async () => {
 		mockPi.onCall({ matchArgsIncludes: "Run too long", delay: 5_000, output: "too slow" });
-		const id = `async-time-limit-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-time-limit-${Date.now().toString(36)}`;
 		const startedAt = Date.now();
 
 		executeAsyncSingle(id, {
@@ -361,7 +400,7 @@ describe("async execution utilities", () => {
 	it("async chain parallel records per-child maxExecutionTimeMs failures", async () => {
 		mockPi.onCall({ matchArgsIncludes: "Slow child", delay: 5_000, output: "too slow" });
 		mockPi.onCall({ matchArgsIncludes: "Fast child", output: "review ok" });
-		const id = `async-parallel-time-limit-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-parallel-time-limit-${Date.now().toString(36)}`;
 
 		executeAsyncChain(id, {
 			chain: [{ parallel: [{ agent: "worker", task: "Slow child" }, { agent: "reviewer", task: "Fast child" }], concurrency: 1, failFast: false }],
@@ -387,10 +426,35 @@ describe("async execution utilities", () => {
 		assert.equal(status.steps?.[1]?.status, "complete");
 	});
 
+	it("async failFast interrupts running static parallel siblings", async () => {
+		mockPi.onCall({ matchArgsIncludes: "Fail now", exitCode: 1, stderr: "stop now" });
+		mockPi.onCall({ matchArgsIncludes: "Wait slowly", delay: 5_000, output: "too slow" });
+		const id = `itest-ae-${process.pid}-parallel-fail-fast-${Date.now().toString(36)}`;
+		const startedAt = Date.now();
+		executeAsyncChain(id, {
+			chain: [{ parallel: [{ agent: "worker", task: "Fail now" }, { agent: "reviewer", task: "Wait slowly" }], failFast: true }],
+			resultMode: "parallel",
+			agents: [makeAgent("worker"), makeAgent("reviewer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-parallel-fail-fast" },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		assert.ok(Date.now() - startedAt < 2_000, `async failFast took ${Date.now() - startedAt}ms`);
+		assert.equal(payload.results[1]?.interrupted, true);
+		assert.equal(payload.state, "failed");
+		assert.equal(payload.exitCode, 1);
+		assert.doesNotMatch(payload.summary, /Paused after interrupt/);
+		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		assert.equal(status.state, "failed");
+		assert.match(status.error ?? "", /worker/);
+	});
+
 	it("async parallel interrupt pauses every running child and does not start queued work", async () => {
 		mockPi.onCall({ delay: 5_000, output: "first should be interrupted" });
 		mockPi.onCall({ delay: 5_000, output: "second should be interrupted" });
-		const id = `async-parallel-interrupt-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-parallel-interrupt-${Date.now().toString(36)}`;
 
 		executeAsyncChain(id, {
 			chain: [{ parallel: [{ agent: "worker", task: "First", as: "firstOutput" }, { agent: "reviewer", task: "Second" }, { agent: "worker", task: "Queued" }], concurrency: 2 }],
@@ -400,9 +464,13 @@ describe("async execution utilities", () => {
 			shareEnabled: false,
 			maxSubagentDepth: 2,
 		});
-		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.filter((step) => step.status === "running").length === 2 && typeof status.pid === "number", 10_000);
+		await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.filter((step) => step.status === "running").length === 2, 10_000);
 		await waitForMockPiCalls(mockPi, 2, 10_000);
-		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
+		const controlRequestPath = path.join(ASYNC_DIR, id, "control-request.json");
+		fs.writeFileSync(controlRequestPath, JSON.stringify({ requestId: "wrong-run", runId: "stale-run", action: "interrupt", createdAt: Date.now() }), "utf-8");
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.equal((await waitForAsyncStatus(id, (status) => status.state === "running", 2_000)).state, "running");
+		fs.writeFileSync(controlRequestPath, JSON.stringify({ requestId: "integration-interrupt", runId: id, action: "interrupt", createdAt: Date.now() }), "utf-8");
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
@@ -424,7 +492,7 @@ describe("async execution utilities", () => {
 
 	it("async sequential interrupt does not publish named output", async () => {
 		mockPi.onCall({ delay: 5_000, output: "first should be interrupted", structuredOutput: { value: "partial" } });
-		const id = `async-sequential-interrupt-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-sequential-interrupt-${Date.now().toString(36)}`;
 		executeAsyncChain(id, {
 			chain: [
 				{ agent: "worker", task: "First", as: "firstOutput", outputSchema: { type: "object" } },
@@ -578,7 +646,7 @@ describe("async execution utilities", () => {
 	});
 
 	it("rejects duplicate explicit output paths before starting async chain parallel children", async () => {
-		const id = `async-chain-duplicate-output-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-chain-duplicate-output-${Date.now().toString(36)}`;
 		const result = executeAsyncChain!(id, {
 			chain: [{ parallel: [
 				{ agent: "reviewer", task: "Review A", output: "same.md" },
@@ -680,7 +748,7 @@ describe("async execution utilities", () => {
 		].join("\n");
 		mockPi.onCall({ output: report });
 		mockPi.onCall({ output: report });
-		const id = `async-acceptance-guard-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-acceptance-guard-${Date.now().toString(36)}`;
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Create async-guard-acceptance.txt with accepted criteria",
@@ -721,7 +789,7 @@ describe("async execution utilities", () => {
 		].join("\n");
 		mockPi.onCall({ output: failingReport });
 		mockPi.onCall({ output: failingReport });
-		const id = `async-acceptance-exhaust-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-acceptance-exhaust-${Date.now().toString(36)}`;
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Complete accepted work",
@@ -761,7 +829,7 @@ describe("async execution utilities", () => {
 		].join("\n");
 		mockPi.onCall({ output: report });
 		mockPi.onCall({ delay: 5_000, output: report });
-		const id = `async-acceptance-interrupt-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-acceptance-interrupt-${Date.now().toString(36)}`;
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Complete accepted work",
@@ -828,7 +896,7 @@ describe("async execution utilities", () => {
 	});
 
 	it("async chains reject malformed named output references before spawning", async () => {
-		const id = `async-malformed-output-ref-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-malformed-output-ref-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
 			chain: [{ agent: "consumer", task: "Use {outputs.bad-name}" }],
 			agents: [makeAgent("consumer")],
@@ -850,7 +918,7 @@ describe("async execution utilities", () => {
 		};
 		mockPi.onCall({ output: "structured prose", structuredOutput: { value: "Alpha structured" } });
 		mockPi.onCall({ output: "used named output" });
-		const id = `async-structured-chain-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-structured-chain-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
 			chain: [
 				{
@@ -891,7 +959,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" } });
 		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" } });
 		mockPi.onCall({ output: "used reviews" });
-		const id = `async-dynamic-placeholder-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-dynamic-placeholder-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
 			chain: [
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
@@ -936,7 +1004,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" } });
 		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" } });
 		mockPi.onCall({ output: "used reviews" });
-		const id = `async-dynamic-chain-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-dynamic-chain-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
 			chain: [
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
@@ -983,7 +1051,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" }, echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
 		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" }, echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
 		mockPi.onCall({ output: "used reviews" });
-		const id = `async-dynamic-context-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-dynamic-context-${Date.now().toString(36)}`;
 		const forkA = path.join(tempDir, "fork-a.jsonl");
 		const forkB = path.join(tempDir, "fork-b.jsonl");
 		fs.writeFileSync(forkA, "");
@@ -1025,7 +1093,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		mockPi.onCall({ output: "review-a" });
 		mockPi.onCall({ output: "review-b" });
-		const id = `async-dynamic-default-output-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-dynamic-default-output-${Date.now().toString(36)}`;
 		const result = executeAsyncChain!(id, {
 			chain: [
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
@@ -1063,7 +1131,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "review-a" });
 		mockPi.onCall({ output: "review-b" });
 		mockPi.onCall({ output: "final-review" });
-		const id = `async-dynamic-cross-step-output-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-dynamic-cross-step-output-${Date.now().toString(36)}`;
 		const result = executeAsyncChain!(id, {
 			chain: [
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
@@ -1099,7 +1167,7 @@ describe("async execution utilities", () => {
 
 	it("async dynamic fanout rejects duplicate explicit output paths before starting children", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
-		const id = `async-dynamic-duplicate-output-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-dynamic-duplicate-output-${Date.now().toString(36)}`;
 		const result = executeAsyncChain!(id, {
 			chain: [
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
@@ -1126,7 +1194,7 @@ describe("async execution utilities", () => {
 
 	it("async dynamic empty fanout completes and persists an empty collection", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [] } });
-		const id = `async-dynamic-empty-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-dynamic-empty-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
 			chain: [
 				{ agent: "producer", task: "Produce no targets", as: "targets", outputSchema: { type: "object" } },
@@ -1151,6 +1219,7 @@ describe("async execution utilities", () => {
 		assert.deepEqual(payload.outputs?.reviews?.structured, []);
 		assert.equal(status.state, "complete");
 		assert.deepEqual(status.steps?.map((step) => step.status), ["complete", "complete"]);
+		assert.equal((status as AsyncStatusPayload & { chainStepCount?: number }).chainStepCount, 2);
 		assert.equal(mockPi.callCount(), 1);
 	});
 
@@ -1158,7 +1227,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		mockPi.onCall({ delay: 5_000, output: "review-a", structuredOutput: { ok: "a" } });
 		mockPi.onCall({ delay: 5_000, output: "review-b", structuredOutput: { ok: "b" } });
-		const id = `async-dynamic-interrupt-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-dynamic-interrupt-${Date.now().toString(36)}`;
 		executeAsyncChain(id, {
 			chain: [
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
@@ -1194,7 +1263,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INTERCOM_SESSION_NAME"], structuredOutput: { ok: "a" } });
 		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INTERCOM_SESSION_NAME"], structuredOutput: { ok: "b" } });
 		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INTERCOM_SESSION_NAME"] });
-		const id = `async-dynamic-targets-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-dynamic-targets-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
 			chain: [
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
@@ -1231,7 +1300,7 @@ describe("async execution utilities", () => {
 
 	it("async dynamic pre-spawn failures persist failed graph status and error", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
-		const id = `async-dynamic-prespawn-fail-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-dynamic-prespawn-fail-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
 			chain: [
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
@@ -1263,7 +1332,7 @@ describe("async execution utilities", () => {
 	it("async dynamic collect schema failures persist failed graph status and details", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }] } });
 		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" } });
-		const id = `async-dynamic-collect-fail-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-dynamic-collect-fail-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
 			chain: [
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
@@ -1287,6 +1356,33 @@ describe("async execution utilities", () => {
 		assert.ok(Array.isArray(payload.results.at(-1)?.structuredOutput), "failed collect result should preserve ordered collection details");
 		assert.equal(payload.workflowGraph?.nodes?.[1]?.status, "failed");
 		assert.match(payload.workflowGraph?.nodes?.[1]?.error ?? "", /Collected output validation failed/);
+	});
+
+	it("top-level async parallel resolves reads and output against each task cwd", async () => {
+		const pkgDir = path.join(tempDir, "pkg");
+		fs.mkdirSync(pkgDir);
+		fs.writeFileSync(path.join(pkgDir, "input.md"), "input", "utf-8");
+		mockPi.onCall({ output: "Package report" });
+		const id = `itest-ae-${process.pid}-parallel-cwd-${Date.now().toString(36)}`;
+		executeAsyncChain(id, {
+			chain: [{ parallel: [{ agent: "worker", task: "Package work", cwd: "pkg", output: "report.md", reads: ["input.md"], progress: true }] }],
+			resultMode: "parallel",
+			agents: [makeAgent("worker")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-parallel-cwd" },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		await waitForAsyncResultFile(id, 10_000);
+		const callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"));
+		assert.ok(callFile);
+		const call = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")) as { args: string[]; cwd: string };
+		assert.equal(fs.realpathSync(call.cwd), fs.realpathSync(pkgDir));
+		const taskArg = call.args.at(-1) ?? "";
+		assert.match(taskArg, new RegExp(path.join(pkgDir, "input.md").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+		assert.match(taskArg, new RegExp(path.join(pkgDir, "report.md").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+		assert.equal(fs.readFileSync(path.join(pkgDir, "report.md"), "utf-8"), "Package report");
+		assert.equal(fs.existsSync(path.join(pkgDir, "progress.md")), true);
+		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), false);
 	});
 
 	it("top-level async worktree parallel resolves reads and output against the worktree cwd", async () => {
@@ -1450,7 +1546,7 @@ describe("async execution utilities", () => {
 			exitCode: 1,
 		});
 		mockPi.onCall({ output: "Recovered asynchronously" });
-		const id = `async-fallback-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-fallback-${Date.now().toString(36)}`;
 		const sessionRoot = path.join(tempDir, "sessions");
 		const asyncDir = path.join(ASYNC_DIR, id);
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
@@ -1509,7 +1605,7 @@ describe("async execution utilities", () => {
 			}],
 			exitCode: 0,
 		});
-		const id = `async-zero-exit-provider-error-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-zero-exit-provider-error-${Date.now().toString(36)}`;
 		const asyncDir = path.join(ASYNC_DIR, id);
 		executeAsyncSingle(id, {
 			agent: "worker",
@@ -1547,7 +1643,7 @@ describe("async execution utilities", () => {
 				events.assistantMessage("Recovered asynchronously"),
 			],
 		});
-		const id = `async-recovered-child-error-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-recovered-child-error-${Date.now().toString(36)}`;
 		const asyncDir = path.join(ASYNC_DIR, id);
 		executeAsyncSingle(id, {
 			agent: "worker",
@@ -1589,7 +1685,7 @@ describe("async execution utilities", () => {
 				events.assistantMessage(""),
 			],
 		});
-		const id = `async-provider-error-empty-stop-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-provider-error-empty-stop-${Date.now().toString(36)}`;
 		const asyncDir = path.join(ASYNC_DIR, id);
 		executeAsyncSingle(id, {
 			agent: "worker",
@@ -1616,7 +1712,7 @@ describe("async execution utilities", () => {
 
 	it("background file-only runs write full output but return only a file reference", async () => {
 		mockPi.onCall({ output: "async full output\nwith details" });
-		const id = `async-file-only-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-file-only-${Date.now().toString(36)}`;
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 		const outputPath = path.join(tempDir, "async-file-only.md");
 		const run = executeAsyncSingle(id, {
@@ -1648,9 +1744,29 @@ describe("async execution utilities", () => {
 		assert.equal(fs.readFileSync(outputPath, "utf-8"), "async full output\nwith details");
 	});
 
+	it("background runs fail when requested output cannot be saved", async () => {
+		mockPi.onCall({ output: "completed work" });
+		const id = `itest-ae-${process.pid}-output-save-fail-${Date.now().toString(36)}`;
+		const outputPath = path.join(tempDir, "report.md");
+		fs.mkdirSync(outputPath);
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Do work",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			shareEnabled: false,
+			output: outputPath,
+			outputMode: "file-only",
+			maxSubagentDepth: 2,
+		});
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, false);
+		assert.match(payload.results[0]?.error ?? "", /Failed to save output file/);
+	});
+
 	it("background single runs treat string false as disabled output", async () => {
 		mockPi.onCall({ output: "async inline report" });
-		const id = `async-string-false-output-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-string-false-output-${Date.now().toString(36)}`;
 		const run = executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Do work",
@@ -1678,7 +1794,7 @@ describe("async execution utilities", () => {
 			jsonl: [events.toolResult("bash", "connection refused", true)],
 		});
 
-		const id = `async-hidden-failure-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-hidden-failure-${Date.now().toString(36)}`;
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 		const sessionRoot = path.join(tempDir, "sessions");
 
@@ -1709,7 +1825,7 @@ describe("async execution utilities", () => {
 	it("background implementation runs fail when no mutation attempt occurred", async () => {
 		mockPi.onCall({ output: "I’ll do that now and report back after implementing." });
 
-		const id = `async-no-mutation-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-no-mutation-${Date.now().toString(36)}`;
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 		const sessionRoot = path.join(tempDir, "sessions");
 
@@ -1757,7 +1873,7 @@ describe("async execution utilities", () => {
 			],
 		});
 
-		const id = `async-mutation-success-text-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-mutation-success-text-${Date.now().toString(36)}`;
 		const sessionRoot = path.join(tempDir, "sessions");
 
 		executeAsyncSingle(id, {
@@ -1781,7 +1897,7 @@ describe("async execution utilities", () => {
 	it("background bash-enabled non-implementation agents can opt out of the completion guard", async () => {
 		mockPi.onCall({ output: "cold start test after patch" });
 
-		const id = `async-completion-guard-optout-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-completion-guard-optout-${Date.now().toString(36)}`;
 		const sessionRoot = path.join(tempDir, "sessions");
 
 		executeAsyncSingle(id, {
@@ -1809,7 +1925,7 @@ describe("async execution utilities", () => {
 	it("background runs prefer the parent session provider for ambiguous bare model ids", async () => {
 		mockPi.onCall({ output: "Done asynchronously" });
 
-		const id = `async-provider-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-provider-${Date.now().toString(36)}`;
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 		const sessionRoot = path.join(tempDir, "sessions");
 
@@ -1849,7 +1965,7 @@ describe("async execution utilities", () => {
 	it("background runs resolve skills from the effective task cwd", async () => {
 		mockPi.onCall({ output: "Done asynchronously" });
 		const taskCwd = createTempDir("pi-subagent-async-task-cwd-");
-		const id = `async-skill-cwd-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-skill-cwd-${Date.now().toString(36)}`;
 		const asyncDir = path.join(ASYNC_DIR, id);
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 		const statusPath = path.join(asyncDir, "status.json");
@@ -1885,7 +2001,7 @@ describe("async execution utilities", () => {
 	});
 
 	it("background single runs report unavailable pi-subagents skill requests", () => {
-		const id = `async-pi-subagents-skill-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-pi-subagents-skill-${Date.now().toString(36)}`;
 		const result = executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Do work",
@@ -1903,7 +2019,7 @@ describe("async execution utilities", () => {
 	});
 
 	it("background chains report unavailable pi-subagents skill requests", () => {
-		const id = `async-chain-pi-subagents-skill-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-chain-pi-subagents-skill-${Date.now().toString(36)}`;
 		const result = executeAsyncChain(id, {
 			chain: [{ agent: "worker", task: "Do work", skill: ["pi-subagents"] }],
 			agents: [makeAgent("worker")],
@@ -1918,10 +2034,28 @@ describe("async execution utilities", () => {
 		assert.match(result.content[0]?.text ?? "", /Skills not found: pi-subagents/);
 	});
 
+	it("background chains honor custom chainDir for templates and progress", async () => {
+		mockPi.onCall({ output: "done" });
+		const id = `itest-ae-${process.pid}-chain-dir-${Date.now().toString(36)}`;
+		const base = path.join(tempDir, "custom-chain-root");
+		executeAsyncChain(id, {
+			chain: [{ parallel: [{ agent: "worker", task: "Implement change in {chain_dir}", progress: true }] }],
+			agents: [makeAgent("worker", { tools: ["read"] })],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-chain-dir" },
+			chainDir: base,
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		await waitForAsyncResultFile(id, 10_000);
+		const chainDir = path.join(base, id);
+		assert.match(readLastMockPiArgs(mockPi).join(" "), new RegExp(chainDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+		assert.equal(fs.existsSync(path.join(chainDir, "progress.md")), true);
+	});
+
 	it("background chains resolve relative step cwd values against the shared cwd", async () => {
 		mockPi.onCall({ output: "Done asynchronously" });
 		const chainCwd = createTempDir("pi-subagent-async-chain-cwd-");
-		const id = `async-chain-skill-cwd-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-chain-skill-cwd-${Date.now().toString(36)}`;
 		const asyncDir = path.join(ASYNC_DIR, id);
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 		const statusPath = path.join(asyncDir, "status.json");
@@ -1972,7 +2106,7 @@ describe("async execution utilities", () => {
 			],
 		});
 
-		const id = `async-parallel-tool-sync-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-parallel-tool-sync-${Date.now().toString(36)}`;
 		const asyncDir = path.join(ASYNC_DIR, id);
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 
@@ -2013,7 +2147,7 @@ describe("async execution utilities", () => {
 	});
 
 	it("returns a tool error when the detached runner config cannot be written", () => {
-		const id = `async-write-fail-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-write-fail-${Date.now().toString(36)}`;
 		assert.ok(TEMP_ROOT_DIR, "TEMP_ROOT_DIR should be available for async tests");
 		fs.mkdirSync(TEMP_ROOT_DIR, { recursive: true });
 		fs.mkdirSync(path.join(TEMP_ROOT_DIR, `async-cfg-${id}.json`), { recursive: true });
@@ -2034,7 +2168,7 @@ describe("async execution utilities", () => {
 	});
 
 	it("returns a tool error when an async run uses a missing cwd", () => {
-		const id = `async-missing-cwd-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-missing-cwd-${Date.now().toString(36)}`;
 		const missingCwd = path.join(tempDir, "missing-cwd");
 
 		const singleResult = executeAsyncSingle(id, {
@@ -2052,7 +2186,7 @@ describe("async execution utilities", () => {
 		assert.match(singleResult.content[0]?.text ?? "", /Failed to start async run/);
 		assert.match(singleResult.content[0]?.text ?? "", /cwd does not exist/);
 
-		const chainId = `async-missing-cwd-chain-${Date.now().toString(36)}`;
+		const chainId = `itest-ae-${process.pid}-missing-cwd-chain-${Date.now().toString(36)}`;
 		const chainResult = executeAsyncChain(chainId, {
 			chain: [{ agent: "worker", task: "Do work" }],
 			agents: [makeAgent("worker")],
@@ -2072,7 +2206,7 @@ describe("async execution utilities", () => {
 		const originalExecPath = process.execPath;
 		process.execPath = path.join(tempDir, "missing-node");
 		try {
-			const id = `async-spawn-fail-${Date.now().toString(36)}`;
+			const id = `itest-ae-${process.pid}-spawn-fail-${Date.now().toString(36)}`;
 			const result = executeAsyncSingle(id, {
 				agent: "worker",
 				task: "Do work",
@@ -2092,7 +2226,7 @@ describe("async execution utilities", () => {
 	});
 
 	it("returns a tool error when an async chain cannot write its detached runner config", () => {
-		const id = `async-chain-write-fail-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-chain-write-fail-${Date.now().toString(36)}`;
 		assert.ok(TEMP_ROOT_DIR, "TEMP_ROOT_DIR should be available for async tests");
 		fs.mkdirSync(TEMP_ROOT_DIR, { recursive: true });
 		fs.mkdirSync(path.join(TEMP_ROOT_DIR, `async-cfg-${id}.json`), { recursive: true });
@@ -2118,7 +2252,7 @@ describe("async execution utilities", () => {
 			keepAliveAfterFinalMessageMs: 10000,
 		});
 
-		const id = `async-final-drain-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-final-drain-${Date.now().toString(36)}`;
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 		const sessionRoot = path.join(tempDir, "sessions");
 
@@ -2150,13 +2284,39 @@ describe("async execution utilities", () => {
 		assert.equal(payload.results[0].output, "async-done-before-drain");
 	});
 
+	it("background cleanup kills descendants after the runner leader exits", { timeout: 10_000 }, async () => {
+		const pidFile = path.join(tempDir, "async-descendant.pid");
+		mockPi.onCall({ output: "async descendant done", spawnSignalResistantDescendantPidFile: pidFile });
+		const id = `async-descendant-${Date.now().toString(36)}`;
+		const startedAt = Date.now();
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Finish and clean descendants",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-descendant" },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		await waitForAsyncResultFile(id, 10_000);
+		assert.ok(Date.now() - startedAt < 3_000, "background descendants should be killed when the process-group leader exits");
+		const descendantPid = Number(fs.readFileSync(pidFile, "utf-8"));
+		const deadline = Date.now() + 5_000;
+		while (Date.now() < deadline) {
+			try { process.kill(descendantPid, 0); } catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		assert.fail(`descendant process ${descendantPid} survived cleanup`);
+	});
+
 	it("background forced drain after empty terminal assistant output is cleanup success", async () => {
 		mockPi.onCall({
 			jsonl: [events.assistantMessage("")],
 			keepAliveAfterFinalMessageMs: 10000,
 		});
 
-		const id = `async-final-drain-empty-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-final-drain-empty-${Date.now().toString(36)}`;
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 
 		const start = Date.now();
@@ -2201,7 +2361,7 @@ describe("async execution utilities", () => {
 			keepAliveAfterFinalMessageMs: 10000,
 		});
 
-		const id = `async-final-drain-error-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-final-drain-error-${Date.now().toString(36)}`;
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 
 		executeAsyncSingle(id, {
@@ -2237,7 +2397,7 @@ describe("async execution utilities", () => {
 			],
 		});
 
-		const id = `async-tool-failures-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-tool-failures-${Date.now().toString(36)}`;
 		const asyncDir = path.join(ASYNC_DIR, id);
 		const eventsPath = path.join(asyncDir, "events.jsonl");
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
@@ -2303,7 +2463,7 @@ describe("async execution utilities", () => {
 			],
 		});
 
-		const id = `async-stream-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-stream-${Date.now().toString(36)}`;
 		const asyncDir = path.join(ASYNC_DIR, id);
 		const eventsPath = path.join(asyncDir, "events.jsonl");
 		const outputPath = path.join(asyncDir, "output-0.log");

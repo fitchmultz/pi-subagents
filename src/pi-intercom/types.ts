@@ -38,6 +38,17 @@ export interface Message {
   };
 }
 
+const UNSAFE_TEXT_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
+const UNSAFE_LABEL_CONTROLS = /[\u0000-\u001f\u007f-\u009f]/;
+
+function safeText(value: string): boolean {
+  return !UNSAFE_TEXT_CONTROLS.test(value);
+}
+
+function safeLabel(value: string): boolean {
+  return value.length > 0 && !UNSAFE_LABEL_CONTROLS.test(value);
+}
+
 export interface Attachment {
   type: "file" | "snippet" | "context";
   name: string;
@@ -60,11 +71,8 @@ export function isAttachment(value: unknown): value is Attachment {
     return false;
   }
 
-  if (typeof attachment.name !== "string" || typeof attachment.content !== "string") {
-    return false;
-  }
-
-  return attachment.language === undefined || typeof attachment.language === "string";
+  if (typeof attachment.name !== "string" || !safeLabel(attachment.name) || typeof attachment.content !== "string" || !safeText(attachment.content)) return false;
+  return attachment.language === undefined || (typeof attachment.language === "string" && safeLabel(attachment.language));
 }
 
 export function normalizeSessionInfo(value: unknown): SessionInfo | null {
@@ -82,11 +90,11 @@ export function isMessage(value: unknown): value is Message {
 
   const message = value as Record<string, unknown>;
 
-  if (typeof message.id !== "string" || typeof message.timestamp !== "number") {
+  if (typeof message.id !== "string" || !safeLabel(message.id) || typeof message.timestamp !== "number" || !Number.isFinite(message.timestamp)) {
     return false;
   }
 
-  if (message.replyTo !== undefined && typeof message.replyTo !== "string") {
+  if (message.replyTo !== undefined && (typeof message.replyTo !== "string" || !safeLabel(message.replyTo))) {
     return false;
   }
 
@@ -115,7 +123,7 @@ export function isMessage(value: unknown): value is Message {
     return false;
   }
 
-  if (message.threadId !== undefined && (typeof message.threadId !== "string" || message.threadId.trim() === "")) {
+  if (message.threadId !== undefined && (typeof message.threadId !== "string" || !safeLabel(message.threadId.trim()))) {
     return false;
   }
 
@@ -144,7 +152,7 @@ export function isMessage(value: unknown): value is Message {
   }
 
   const content = message.content as Record<string, unknown>;
-  if (typeof content.text !== "string") {
+  if (typeof content.text !== "string" || !safeText(content.text)) {
     return false;
   }
 
@@ -155,13 +163,13 @@ export function isMessage(value: unknown): value is Message {
 export function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id"> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const session = value as Record<string, unknown>;
-  if (typeof session.cwd !== "string" || typeof session.model !== "string") return false;
-  if (session.name !== undefined && typeof session.name !== "string") return false;
+  if (typeof session.cwd !== "string" || !safeLabel(session.cwd) || typeof session.model !== "string" || !safeLabel(session.model)) return false;
+  if (session.name !== undefined && (typeof session.name !== "string" || !safeLabel(session.name))) return false;
   if (session.projectId !== undefined && (typeof session.projectId !== "string" || !/^[a-f0-9]{64}$/.test(session.projectId))) return false;
-  if (session.status !== undefined && typeof session.status !== "string") return false;
-  if (session.lastSeen !== undefined && typeof session.lastSeen !== "number") return false;
-  if (session.lastIntercomActivity !== undefined && typeof session.lastIntercomActivity !== "number") return false;
-  if (session.pendingAsks !== undefined && typeof session.pendingAsks !== "number") return false;
+  if (session.status !== undefined && (typeof session.status !== "string" || !safeLabel(session.status))) return false;
+  if (session.lastSeen !== undefined && (typeof session.lastSeen !== "number" || !Number.isFinite(session.lastSeen))) return false;
+  if (session.lastIntercomActivity !== undefined && (typeof session.lastIntercomActivity !== "number" || !Number.isFinite(session.lastIntercomActivity))) return false;
+  if (session.pendingAsks !== undefined && (typeof session.pendingAsks !== "number" || !Number.isInteger(session.pendingAsks) || session.pendingAsks < 0)) return false;
   return session.acceptsAsks === undefined || typeof session.acceptsAsks === "boolean";
 }
 

@@ -4,8 +4,8 @@ import * as path from "node:path";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "../agents/agents.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
-import { createSubagentExecutor, normalizeSubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
-import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
+import { createSubagentExecutor, normalizeSubagentParamsLike, writeAsyncInterruptRequest } from "../runs/foreground/subagent-executor.ts";
+import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV, SUBAGENT_PARENT_CHILD_INDEX_ENV } from "../runs/shared/pi-args.ts";
 import { readNestedControlRequests, resolveNestedRouteFromEnv, writeNestedControlResult } from "../runs/shared/nested-events.ts";
 import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.ts";
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
@@ -48,6 +48,11 @@ function createChildSafeState(): SubagentState {
 	};
 }
 
+function addBounded(set: Set<string>, value: string, max = 1000): void {
+	set.add(value);
+	while (set.size > max) set.delete(set.values().next().value!);
+}
+
 function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState): NodeJS.Timeout | undefined {
 	let route;
 	try {
@@ -57,45 +62,88 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 	}
 	if (!route) return undefined;
 	const seen = new Set<string>();
+	const seenFiles = new Set<string>();
 	const inFlight = new Set<string>();
 	const pendingResults = new Map<string, Parameters<typeof writeNestedControlResult>[1]>();
+	const parsedChildIndex = Number(process.env[SUBAGENT_PARENT_CHILD_INDEX_ENV]);
+	const localChildIndex = Number.isInteger(parsedChildIndex) && parsedChildIndex >= 0 ? parsedChildIndex : undefined;
 	const timer = setInterval(() => {
 		try {
-			for (const request of readNestedControlRequests(route)) {
+			for (const request of readNestedControlRequests(route, seenFiles)) {
 				if (seen.has(request.requestId) || inFlight.has(request.requestId)) continue;
+				if (request.targetChildIndex !== undefined && request.targetChildIndex !== localChildIndex) continue;
+				const foregroundControl = state.foregroundControls.get(request.targetRunId);
+				const asyncJob = state.asyncJobs.get(request.targetRunId);
+				if (!foregroundControl && !asyncJob && (request.targetChildIndex !== undefined || Date.now() - request.ts < 400)) continue;
 				inFlight.add(request.requestId);
 				void (async () => {
+					const claimPath = `${request.filePath}.claimed`;
 					try {
 						let result = pendingResults.get(request.requestId);
+						if (!result && pendingResults.size >= 100) {
+							result = {
+								ts: Date.now(),
+								requestId: request.requestId,
+								targetRunId: request.targetRunId,
+								ok: false,
+								message: "Nested control result queue is full; retry after pending results are delivered.",
+							};
+						}
+						if (!result) {
+							try {
+								const claimFd = fs.openSync(claimPath, "wx", 0o600);
+								try { fs.writeFileSync(claimFd, `${request.requestId}\n`, "utf-8"); } finally { fs.closeSync(claimFd); }
+							} catch (error) {
+								const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+								result = {
+									ts: Date.now(),
+									requestId: request.requestId,
+									targetRunId: request.targetRunId,
+									ok: false,
+									message: code === "EEXIST"
+										? "Nested control request was already claimed; refusing to execute it again because the original outcome is unavailable."
+										: `Failed to claim nested control request safely: ${error instanceof Error ? error.message : String(error)}`,
+								};
+							}
+						}
 						if (!result) {
 							let ok = false;
 							let message = "Control request failed.";
 							try {
 								const control = state.foregroundControls.get(request.targetRunId);
-								if (!control) {
+								const liveAsyncJob = state.asyncJobs.get(request.targetRunId);
+								if (!control && !liveAsyncJob) {
 									message = `Nested run ${request.targetRunId} is not active in this fanout child.`;
-								} else if (request.action === "interrupt") {
+								} else if (liveAsyncJob && request.action === "interrupt") {
+									writeAsyncInterruptRequest(liveAsyncJob.asyncDir, liveAsyncJob.asyncId);
+									ok = true;
+									message = `Interrupt requested for nested async run ${request.targetRunId}.`;
+								} else if (control && request.action === "interrupt") {
 									ok = control.interrupt?.() === true;
 									message = ok
 										? `Interrupt requested for nested run ${request.targetRunId}.`
 										: `Nested run ${request.targetRunId} has no active child step to interrupt.`;
 								} else if (!request.message?.trim()) {
 									message = "Nested resume requires message.";
-								} else if (!control.currentAgent) {
-									message = `Nested run ${request.targetRunId} has no active child message route.`;
 								} else {
-									const index = control.currentIndex ?? 0;
-									const target = resolveSubagentIntercomTarget(request.targetRunId, control.currentAgent, index);
-									ok = await deliverSubagentIntercomMessageEvent(
-										pi.events,
-										target,
-										`Follow-up for nested run ${request.targetRunId} (${control.currentAgent}):\n\n${request.message.trim()}`,
-										500,
-										{ source: "nested-resume", runId: request.targetRunId, agent: control.currentAgent, index },
-									);
-									message = ok
-										? `Delivered follow-up to live nested run ${request.targetRunId}.`
-										: `Nested child intercom target is not registered: ${target}`;
+									const asyncIndex = liveAsyncJob?.steps?.findIndex((step) => step.status === "running") ?? -1;
+									const index = control?.currentIndex ?? (asyncIndex >= 0 ? asyncIndex : 0);
+									const agent = control?.currentAgent ?? liveAsyncJob?.steps?.[index]?.agent ?? liveAsyncJob?.agents?.[index];
+									if (!agent) {
+										message = `Nested run ${request.targetRunId} has no active child message route.`;
+									} else {
+										const target = resolveSubagentIntercomTarget(request.targetRunId, agent, index);
+										ok = await deliverSubagentIntercomMessageEvent(
+											pi.events,
+											target,
+											`Follow-up for nested run ${request.targetRunId} (${agent}):\n\n${request.message.trim()}`,
+											500,
+											{ source: "nested-resume", runId: request.targetRunId, agent, index },
+										);
+										message = ok
+											? `Delivered follow-up to live nested run ${request.targetRunId}.`
+											: `Nested child intercom target is not registered: ${target}`;
+									}
 								}
 							} catch (error) {
 								message = error instanceof Error ? error.message : String(error);
@@ -105,13 +153,24 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 						try {
 							writeNestedControlResult(route, result);
 						} catch (error) {
-							pendingResults.set(request.requestId, result);
+							if (pendingResults.size < 100 || pendingResults.has(request.requestId)) pendingResults.set(request.requestId, result);
 							console.error(`Failed to write nested control result for request '${request.requestId}' targeting '${request.targetRunId}' via inbox '${route.controlInbox}'; keeping request for retry:`, error);
 							return;
 						}
 						pendingResults.delete(request.requestId);
-						seen.add(request.requestId);
-						try { fs.unlinkSync(request.filePath); } catch {}
+						addBounded(seen, request.requestId);
+						addBounded(seenFiles, path.basename(request.filePath));
+						let requestRemoved = false;
+						try {
+							fs.unlinkSync(request.filePath);
+							requestRemoved = true;
+						} catch (error) {
+							const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+							requestRemoved = code === "ENOENT";
+						}
+						if (requestRemoved) {
+							try { fs.unlinkSync(claimPath); } catch {}
+						}
 					} finally {
 						inFlight.delete(request.requestId);
 					}

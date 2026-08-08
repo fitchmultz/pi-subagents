@@ -9,7 +9,9 @@ interface MockPiResponse {
 	stderr?: string;
 	exitCode?: number;
 	delay?: number;
+	ignoreSignals?: boolean;
 	keepAliveAfterFinalMessageMs?: number;
+	spawnSignalResistantDescendantPidFile?: string;
 	jsonl?: unknown[];
 	steps?: Array<{
 		delay?: number;

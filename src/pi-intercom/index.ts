@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
 import path from "node:path";
@@ -589,6 +590,7 @@ async function settleWithin<T>(operation: () => Promise<T>, timeoutMs: number): 
       resolve(value);
     };
     const timer = setTimeout(() => finish(null), timeoutMs);
+    timer.unref?.();
     void Promise.resolve().then(operation).then((value) => finish(value), () => finish(null));
   });
 }
@@ -612,6 +614,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker(config.askTimeoutMs);
   const pendingIdleMessages: PendingInboundMessage[] = [];
+  const maxPendingIdleMessages = 100;
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   let replyWaiter: {
     from: string;
@@ -630,6 +633,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       const timeout = setTimeout(() => {
         rejectReplyWaiter(new Error(`No reply from "${from}" within ${Math.max(1, Math.round(config.askTimeoutMs / 60000))} minute(s)`));
       }, config.askTimeoutMs);
+      timeout.unref?.();
       const cleanup = () => {
         clearTimeout(timeout);
         signal?.removeEventListener("abort", onAbort);
@@ -717,6 +721,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         scheduleReconnect();
       });
     }, 0);
+    startupConnectTimer.unref?.();
   }
   function clearInboundFlushTimer(): void {
     if (!inboundFlushTimer) {
@@ -911,6 +916,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       inboundFlushTimer = null;
       flushIdleMessages(scheduledGeneration);
     }, delayMs);
+    inboundFlushTimer.unref?.();
   }
   function flushIdleMessages(generation = runtimeGeneration): void {
     if (pendingIdleMessages.length === 0) {
@@ -961,6 +967,29 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       sendIncomingMessage(entry, index === triggerIndex ? "trigger" : "followUp");
     });
   }
+  function rejectInboundQueueOverload(entry: InboundMessageEntry): void {
+    const activeClient = client;
+    const message = "Recipient queue is full; this message was not queued. Retry after the recipient becomes idle.";
+    if (!activeClient?.isConnected()) {
+      console.error(`${message} Sender: ${entry.from.name || entry.from.id}`);
+      return;
+    }
+    void activeClient.send(entry.from.id, {
+      text: entry.message.expectsReply ? `${RECIPIENT_TURN_FAILED_PREFIX} ${message}` : message,
+      ...(entry.message.expectsReply ? {
+        replyTo: entry.message.id,
+        attachments: [{ type: "context", name: RECIPIENT_TURN_FAILED_ATTACHMENT, content: message }],
+      } : {}),
+    }).then((result) => {
+      if (result.delivered && entry.message.expectsReply) {
+        replyTracker.markReplied(entry.message.id);
+        syncPresenceStatus();
+      }
+    }).catch(() => {
+      // Best effort: the sender may disconnect after receiving the rejection.
+    });
+  }
+
   function queueIdleMessage(entry: InboundMessageEntry, flushDelivery: PendingInboundMessage["flushDelivery"] = "auto", delayMs = INBOUND_FLUSH_DELAY_MS): void {
     let replacedPendingAsk = false;
     if (entry.message.queueMode === "replace" && entry.message.threadId) {
@@ -977,6 +1006,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     if (replacedPendingAsk) {
       syncPresenceStatus();
+    }
+    if (pendingIdleMessages.length >= maxPendingIdleMessages) {
+      rejectInboundQueueOverload(entry);
+      return;
     }
     pendingIdleMessages.push({ ...entry, flushDelivery });
     scheduleInboundFlush(delayMs);
@@ -1125,6 +1158,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         // ensureConnected("background") already queued the next retry.
       });
     }, getReconnectDelayMs());
+    reconnectTimer.unref?.();
   }
   async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay" | "peer-awareness"): Promise<IntercomClient> {
     if (disposed) {
@@ -1151,7 +1185,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         if (reason !== "peer-awareness") {
           await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
         }
-        await nextClient.connect(await buildRegistration());
+        await nextClient.connect(await buildRegistration(), `pi-${createHash("sha256").update(currentSessionId).digest("hex").slice(0, 32)}`);
         if (!getLiveContext(contextAtStart, generationAtStart)) {
           await nextClient.disconnect();
           throw new Error("Intercom runtime no longer active");
@@ -1256,8 +1290,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (currentSessionTargetMatches(parsed.to)) {
-        if ((options.sender === "subagent-result" && parsed.source === "foreground")
-          || (options.sender === "subagent-control" && (parsed.source === "foreground" || parsed.source === "async"))) {
+        if (options.sender === "subagent-control" && (parsed.source === "foreground" || parsed.source === "async")) {
           if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
           return;
         }
@@ -1282,8 +1315,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (currentSessionTargetMatches(parsed.to, target, activeClient)) {
-        if ((options.sender === "subagent-result" && parsed.source === "foreground")
-          || (options.sender === "subagent-control" && (parsed.source === "foreground" || parsed.source === "async"))) {
+        if (options.sender === "subagent-control" && (parsed.source === "foreground" || parsed.source === "async")) {
           if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
           return;
         }
@@ -2128,6 +2160,7 @@ Usage:
             }
             const result = await connectedClient.send(target.from.id, {
               text: message,
+              attachments,
               replyTo: target.message.id,
             });
             if (!result.accepted) {

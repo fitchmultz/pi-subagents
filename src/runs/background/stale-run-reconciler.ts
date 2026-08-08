@@ -5,6 +5,7 @@ import { RESULTS_DIR, RUNNER_ERROR_LOG_FILE, type AsyncParallelGroupStatus, type
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { nestedSummaryFromAsyncStatus, projectNestedEvents, resolveNestedAsyncDir, writeNestedEvent, type NestedRoute } from "../shared/nested-events.ts";
 import { readAsyncResultFileIfExists } from "./async-result-file.ts";
+import { readStatus } from "../../shared/utils.ts";
 
 export type PidLiveness = "alive" | "dead" | "unknown";
 
@@ -38,10 +39,6 @@ interface ReconcileAsyncRunResult {
 	message?: string;
 }
 
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
 function isNotFoundError(error: unknown): boolean {
 	return typeof error === "object"
 		&& error !== null
@@ -55,23 +52,7 @@ function appendJsonl(filePath: string, payload: object): void {
 }
 
 function readStatusFile(asyncDir: string): AsyncStatus | null {
-	const statusPath = path.join(asyncDir, "status.json");
-	let content: string;
-	try {
-		content = fs.readFileSync(statusPath, "utf-8");
-	} catch (error) {
-		if (isNotFoundError(error)) return null;
-		throw new Error(`Failed to read async status file '${statusPath}': ${getErrorMessage(error)}`, {
-			cause: error instanceof Error ? error : undefined,
-		});
-	}
-	try {
-		return JSON.parse(content) as AsyncStatus;
-	} catch (error) {
-		throw new Error(`Failed to parse async status file '${statusPath}': ${getErrorMessage(error)}`, {
-			cause: error instanceof Error ? error : undefined,
-		});
-	}
+	return readStatus(asyncDir);
 }
 
 interface ResultRepairData {

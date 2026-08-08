@@ -5,8 +5,9 @@ import type { OutputMode, SavedOutputReference } from "../../shared/types.ts";
 export interface SingleOutputSnapshot {
 	exists: boolean;
 	mtimeMs?: number;
+	ctimeMs?: number;
 	size?: number;
-	content?: string;
+	ino?: number;
 }
 
 export interface SingleOutputCleanupResult {
@@ -122,11 +123,19 @@ export function captureSingleOutputSnapshot(outputPath: string | undefined): Sin
 	if (!outputPath) return undefined;
 	try {
 		const stat = fs.statSync(outputPath);
-		return { exists: true, mtimeMs: stat.mtimeMs, size: stat.size, content: fs.readFileSync(outputPath, "utf-8") };
+		return { exists: true, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, size: stat.size, ino: stat.ino };
 	} catch {
 		// The snapshot is advisory; resolveSingleOutput reports concrete read/write failures.
 		return { exists: false };
 	}
+}
+
+function matchesSnapshot(stat: fs.Stats, snapshot: SingleOutputSnapshot | undefined): boolean {
+	return snapshot?.exists === true
+		&& stat.mtimeMs === snapshot.mtimeMs
+		&& stat.ctimeMs === snapshot.ctimeMs
+		&& stat.size === snapshot.size
+		&& stat.ino === snapshot.ino;
 }
 
 function persistSingleOutput(
@@ -150,26 +159,14 @@ export function resolveSingleOutput(
 ): { fullOutput: string; savedPath?: string; saveError?: string } {
 	if (!outputPath) return { fullOutput: fallbackOutput };
 
-	let changedSinceStart = false;
 	try {
 		const stat = fs.statSync(outputPath);
-		changedSinceStart = !beforeRun?.exists
-			|| stat.mtimeMs !== beforeRun.mtimeMs
-			|| stat.size !== beforeRun.size;
+		if (!matchesSnapshot(stat, beforeRun)) {
+			return { fullOutput: fs.readFileSync(outputPath, "utf-8"), savedPath: outputPath };
+		}
 	} catch (error) {
 		const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
 		if (code !== "ENOENT" && code !== "ENOTDIR") {
-			return {
-				fullOutput: fallbackOutput,
-				saveError: `Failed to inspect output file: ${error instanceof Error ? error.message : String(error)}`,
-			};
-		}
-	}
-
-	if (changedSinceStart) {
-		try {
-			return { fullOutput: fs.readFileSync(outputPath, "utf-8"), savedPath: outputPath };
-		} catch (error) {
 			return {
 				fullOutput: fallbackOutput,
 				saveError: `Failed to read changed output file: ${error instanceof Error ? error.message : String(error)}`,
@@ -190,11 +187,12 @@ export function cleanupSingleOutputFile(
 	if (!outputPath) return undefined;
 	const absolutePath = path.resolve(outputPath);
 	try {
+		const stat = fs.statSync(outputPath);
 		const current = fs.readFileSync(outputPath, "utf-8");
 		if (current !== fullOutput) {
 			return { path: absolutePath, action: "skipped", reason: "file changed after capture" };
 		}
-		if (beforeRun?.exists && beforeRun.content === current) {
+		if (matchesSnapshot(stat, beforeRun)) {
 			return { path: absolutePath, action: "skipped", reason: "file preexisted and was unchanged" };
 		}
 		fs.unlinkSync(outputPath);

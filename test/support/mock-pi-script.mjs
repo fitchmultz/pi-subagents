@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawn } from "node:child_process";
 
 const queueDir = process.env.MOCK_PI_QUEUE_DIR;
 
@@ -212,6 +213,10 @@ async function main() {
 	fs.writeFileSync(tempCallPath, JSON.stringify(callRecord), "utf-8");
 	fs.renameSync(tempCallPath, callPath);
 
+	if (response.ignoreSignals === true) {
+		process.on("SIGINT", () => {});
+		process.on("SIGTERM", () => {});
+	}
 	if (typeof response.delay === "number" && response.delay > 0) {
 		await new Promise((resolve) => setTimeout(resolve, response.delay));
 	}
@@ -248,6 +253,10 @@ async function main() {
 
 	if (typeof response.keepAliveAfterFinalMessageMs === "number" && response.keepAliveAfterFinalMessageMs > 0) {
 		await new Promise((resolve) => setTimeout(resolve, response.keepAliveAfterFinalMessageMs));
+	}
+	if (typeof response.spawnSignalResistantDescendantPidFile === "string") {
+		const descendant = spawn(process.execPath, ["-e", "process.on('SIGINT',()=>{});process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], { stdio: ["ignore", "inherit", "inherit"] });
+		fs.writeFileSync(response.spawnSignalResistantDescendantPidFile, String(descendant.pid), "utf-8");
 	}
 
 	process.exit(typeof response.exitCode === "number" ? response.exitCode : 0);

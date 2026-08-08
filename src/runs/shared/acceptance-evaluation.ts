@@ -26,19 +26,29 @@ function isStringArray(value: unknown): value is string[] {
 
 function checkCriteriaSatisfied(criteria: ResolvedAcceptanceGate[], report: AcceptanceReport): AcceptanceRuntimeCheck[] {
 	const reports = new Map((report.criteriaSatisfied ?? []).filter((item) => item.id).map((item) => [item.id!, item]));
-	return criteria.filter((criterion) => criterion.severity !== "recommended").map((criterion) => {
+	const checks: AcceptanceRuntimeCheck[] = [];
+	for (const criterion of criteria.filter((item) => item.severity !== "recommended")) {
 		const item = reports.get(criterion.id);
-		if (!item) return { id: `criterion:${criterion.id}`, status: "failed", message: `Required criterion '${criterion.id}' was not reported.` };
-		if (item.status !== "satisfied") return { id: `criterion:${criterion.id}`, status: "failed", message: `Required criterion '${criterion.id}' was reported as ${item.status}.` };
-		return { id: `criterion:${criterion.id}`, status: "passed", message: `Required criterion '${criterion.id}' satisfied.` };
-	});
+		if (!item) checks.push({ id: `criterion:${criterion.id}`, status: "failed", message: `Required criterion '${criterion.id}' was not reported.` });
+		else if (item.status !== "satisfied") checks.push({ id: `criterion:${criterion.id}`, status: "failed", message: `Required criterion '${criterion.id}' was reported as ${item.status}.` });
+		else checks.push({ id: `criterion:${criterion.id}`, status: "passed", message: `Required criterion '${criterion.id}' satisfied.` });
+		for (const kind of criterion.evidence ?? []) {
+			const present = reportEvidencePresent(report, kind);
+			checks.push({
+				id: `criterion:${criterion.id}:evidence:${kind}`,
+				status: present ? "passed" : "failed",
+				message: present ? `${kind} evidence present for '${criterion.id}'.` : `${kind} evidence missing for required criterion '${criterion.id}'.`,
+			});
+		}
+	}
+	return checks;
 }
 
 function reportEvidencePresent(report: AcceptanceReport, kind: AcceptanceEvidenceKind): boolean {
 	switch (kind) {
 		case "changed-files": return isStringArray(report.changedFiles) && report.changedFiles.length > 0;
 		case "tests-added": return isStringArray(report.testsAddedOrUpdated) && report.testsAddedOrUpdated.length > 0;
-		case "commands-run": return Array.isArray(report.commandsRun) && report.commandsRun.length > 0;
+		case "commands-run": return Array.isArray(report.commandsRun) && report.commandsRun.some((command) => command.result !== "not-run");
 		case "validation-output": return isStringArray(report.validationOutput) && report.validationOutput.length > 0;
 		case "residual-risks": return isStringArray(report.residualRisks);
 		case "no-staged-files": return report.noStagedFiles === true;
@@ -70,7 +80,7 @@ function runStructuralChecks(acceptance: ResolvedAcceptanceConfig, report: Accep
 			message: present ? `${kind} evidence present.` : `${kind} evidence missing from child report.`,
 		});
 	}
-	if (acceptance.evidence.includes("no-staged-files")) checks.push(checkNoStagedFiles(cwd));
+	if (acceptance.evidence.includes("no-staged-files") || acceptance.criteria.some((criterion) => criterion.evidence?.includes("no-staged-files"))) checks.push(checkNoStagedFiles(cwd));
 	return checks;
 }
 

@@ -80,8 +80,11 @@ export function createResultWatcher(
 	const fsApi = deps.fs ?? fs;
 	const timers = deps.timers ?? { setTimeout, clearTimeout, setInterval, clearInterval };
 	let periodicScanTimer: ReturnType<typeof setInterval> | null = null;
+	const processingCompletionKeys = new Set<string>();
 
 	const handleResult = async (file: string) => {
+		let claimedCompletionKey: string | undefined;
+		let completionEmitted = false;
 		const resultPath = path.join(resultsDir, file);
 		if (!fsApi.existsSync(resultPath)) return;
 		try {
@@ -102,10 +105,6 @@ export function createResultWatcher(
 			}
 			const now = Date.now();
 			const completionKey = buildCompletionKey(data, `result:${file}`);
-			if (markSeenWithTtl(state.completionSeen, completionKey, now, completionTtlMs)) {
-				fsApi.unlinkSync(resultPath);
-				return;
-			}
 
 			const hasResultChildren = Array.isArray(data.results) && data.results.length > 0;
 			const resultChildren = hasResultChildren
@@ -139,6 +138,14 @@ export function createResultWatcher(
 					...(childNestedChildren ? { children: childNestedChildren } : {}),
 				};
 			}), nestedChildren);
+
+			if (processingCompletionKeys.has(completionKey)) return;
+			if (markSeenWithTtl(state.completionSeen, completionKey, now, completionTtlMs)) {
+				fsApi.unlinkSync(resultPath);
+				return;
+			}
+			processingCompletionKeys.add(completionKey);
+			claimedCompletionKey = completionKey;
 
 			const intercomTarget = data.intercomTarget?.trim();
 			let intercomResultDelivered = false;
@@ -182,10 +189,14 @@ export function createResultWatcher(
 						: [],
 				} : {}),
 			});
+			completionEmitted = true;
 			fsApi.unlinkSync(resultPath);
 		} catch (error) {
+			if (claimedCompletionKey && !completionEmitted) state.completionSeen.delete(claimedCompletionKey);
 			if (isNotFoundError(error)) return;
 			console.error(`Failed to process subagent result file '${resultPath}':`, error);
+		} finally {
+			if (claimedCompletionKey) processingCompletionKeys.delete(claimedCompletionKey);
 		}
 	};
 

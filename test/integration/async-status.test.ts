@@ -53,6 +53,25 @@ describe("async status helpers", () => {
 		}
 	});
 
+	it("rejects logical chain counts that exceed persisted step rows", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-status-empty-fanout-"));
+		try {
+			createAsyncDir(root, "run-empty", {
+				runId: "run-empty",
+				mode: "chain",
+				state: "complete",
+				startedAt: 100,
+				lastUpdate: 200,
+				chainStepCount: 2,
+				currentStep: 0,
+				steps: [{ agent: "producer", status: "complete" }],
+			});
+			assert.throws(() => listAsyncRuns(root), /chainStepCount must be a positive count no greater than steps\.length/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("formats model thinking in step summaries", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-status-model-thinking-"));
 		try {

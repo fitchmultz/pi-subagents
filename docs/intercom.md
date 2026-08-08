@@ -52,7 +52,7 @@ A session becomes intercom-connected when all of these are true:
 - the session has started or reloaded after the extension was installed
 - the local broker is running or can be auto-started
 
-The session list only shows intercom-connected sessions, not every open Pi process on the machine.
+The session list only shows intercom-connected sessions, not every open Pi process on the machine. Reconnecting the same Pi session reuses a stable broker identity, so transient broker or extension restarts do not create a second logical sender.
 
 If a session is unnamed, pi-intercom now exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d` so other sessions can still target it. That alias is not persisted as the Pi session title, so `pi --resume` can keep showing the transcript snippet instead of a generic `session-...` name.
 
@@ -117,7 +117,7 @@ Found the issue — UserService.validate() doesn't check for null input.
 See auth.ts:142-156.
 ```
 
-The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients do not need raw sender or `replyTo` IDs. `send` and `reply` default to steer: they wake an idle recipient or reach a busy recipient at the next tool boundary. An omitted `ask` still honors recipient availability; use explicit steer only when the sender must remain alive for a busy recipient's reply. The recipient should incorporate relevant context and continue its active task unless the message explicitly replaces it. Use `delivery:"queue"` only when delay is intentional; `queueMode:"replace"` keeps only the latest undelivered thread update. Attachment content is included in the agent-visible body and stored in Pi session history. Only passive `send` renders without waking the recipient model.
+The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients do not need raw sender or `replyTo` IDs. `send` and `reply` default to steer: they wake an idle recipient or reach a busy recipient at the next tool boundary. An omitted `ask` still honors recipient availability; use explicit steer only when the sender must remain alive for a busy recipient's reply. The recipient should incorporate relevant context and continue its active task unless the message explicitly replaces it. Use `delivery:"queue"` only when delay is intentional; `queueMode:"replace"` keeps only the latest undelivered thread update. The bounded recipient queue rejects overload explicitly instead of silently dropping an already accepted message. Attachment content is included in the agent-visible body and stored in Pi session history. Only passive `send` renders without waking the recipient model.
 
 ## Workflow: Planner-Worker Coordination
 

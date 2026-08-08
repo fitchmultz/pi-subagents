@@ -875,6 +875,47 @@ describe("result watcher", () => {
 		}
 	});
 
+	it("claims a result before awaiting intercom delivery", async () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-race-"));
+		try {
+			const emitted: Array<{ event: string; data: unknown }> = [];
+			const listeners = new Map<string, Set<(payload: unknown) => void>>();
+			const pi = {
+				events: {
+					on(event: string, handler: (payload: unknown) => void) {
+						const handlers = listeners.get(event) ?? new Set();
+						handlers.add(handler);
+						listeners.set(event, handlers);
+						return () => handlers.delete(handler);
+					},
+					emit(event: string, data: unknown) {
+						emitted.push({ event, data });
+						for (const handler of listeners.get(event) ?? []) handler(data);
+					},
+				},
+			};
+			const resultPath = path.join(resultsDir, "async-race.json");
+			fs.writeFileSync(resultPath, JSON.stringify({ id: "async-race", cwd: "/repo", success: true, summary: "done", intercomTarget: "parent" }), "utf-8");
+			const watcher = createResultWatcher(pi, createState(), resultsDir, 60_000);
+			const originalError = console.error;
+			console.error = () => {};
+			try {
+				watcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				watcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 600));
+			} finally {
+				console.error = originalError;
+				watcher.stopResultWatcher();
+			}
+			assert.equal(emitted.filter((entry) => entry.event === "subagent:result-intercom").length, 1);
+			assert.equal(emitted.filter((entry) => entry.event === "subagent:async-complete").length, 1);
+			assert.equal(fs.existsSync(resultPath), false);
+		} finally {
+			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
 	it("logs one unacknowledged grouped async intercom delivery before completing", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
 		try {

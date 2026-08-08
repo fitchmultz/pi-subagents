@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
+import type { JsonSchemaObject } from "../../shared/types.ts";
 import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
 
 const PREFIX = "claude-code/";
@@ -56,6 +57,7 @@ export interface ClaudeCodeResultEvent {
 		cache_creation_input_tokens?: number;
 	};
 	modelUsage?: Record<string, { contextWindow?: number; maxOutputTokens?: number }>;
+	structured_output?: unknown;
 }
 
 export function isClaudeCodeModel(model: string | undefined): boolean {
@@ -163,6 +165,7 @@ export function buildClaudeCodeInvocation(input: {
 	tools?: string[];
 	mcpDirectTools?: string[];
 	allowSubagents?: boolean;
+	outputSchema?: JsonSchemaObject;
 }): ClaudeCodeInvocation {
 	const parsed = parseClaudeCodeModel(input.model);
 	const existing = readClaudeCodeSessionMetadata(input.sessionFile);
@@ -180,6 +183,7 @@ export function buildClaudeCodeInvocation(input: {
 	}
 	if (input.allowSubagents) throw new Error("Claude Code backend does not support nested subagent fanout. Use a Pi-backed model for allowSubagents.");
 	const mappedTools = mapClaudeCodeTools(input.tools, input.mcpDirectTools);
+	if (input.outputSchema) args.push("--json-schema", JSON.stringify(input.outputSchema));
 	args.push(input.task);
 	if (mappedTools) args.push("--tools", mappedTools);
 	return {

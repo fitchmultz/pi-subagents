@@ -3,18 +3,24 @@ import { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./
 import { parseFrontmatter } from "./frontmatter.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../runs/shared/chain-outputs.ts";
 import { validateAcceptanceInput } from "../runs/shared/acceptance.ts";
+import { Errors, Check } from "typebox/value";
+import { ChainItemSchema } from "../extension/schemas.ts";
 import type { ChainStep } from "../shared/settings.ts";
 
 function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
 	const lines = sectionBody.split("\n");
 	const blankIndex = lines.findIndex((line) => line.trim() === "");
 	const configLines = blankIndex === -1 ? lines : lines.slice(0, blankIndex);
-	const task = (blankIndex === -1 ? "" : lines.slice(blankIndex + 1).join("\n")).trim();
+	const leadingTaskLines: string[] = [];
+	const taskLines = blankIndex === -1 ? [] : lines.slice(blankIndex + 1);
 
-	const step: ChainStepConfig = { agent, task };
+	const step: ChainStepConfig = { agent, task: "" };
 	for (const line of configLines) {
 		const match = line.match(/^([\w-]+):\s*(.*)$/);
-		if (!match) continue;
+		if (!match) {
+			leadingTaskLines.push(line);
+			continue;
+		}
 		const key = match[1].trim().toLowerCase();
 		const rawValue = match[2].trim();
 
@@ -43,7 +49,8 @@ function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
 			continue;
 		}
 		if (key === "outputmode") {
-			if (rawValue === "inline" || rawValue === "file-only") step.outputMode = rawValue;
+			if (rawValue !== "inline" && rawValue !== "file-only") throw new Error(`Invalid outputMode '${rawValue}' for step '${agent}'.`);
+			step.outputMode = rawValue;
 			continue;
 		}
 		if (key === "reads") {
@@ -75,11 +82,14 @@ function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
 			continue;
 		}
 		if (key === "progress") {
-			if (rawValue === "true") step.progress = true;
-			else if (rawValue === "false") step.progress = false;
+			if (rawValue !== "true" && rawValue !== "false") throw new Error(`Invalid progress '${rawValue}' for step '${agent}'; use true or false.`);
+			step.progress = rawValue === "true";
+			continue;
 		}
+		leadingTaskLines.push(line);
 	}
 
+	step.task = [...leadingTaskLines, ...taskLines].join("\n").trim();
 	return step;
 }
 
@@ -102,6 +112,7 @@ export function parseChain(content: string, source: "user" | "project", filePath
 		steps.push(parseStepBody(agent, sectionBody));
 	}
 
+	if (steps.length === 0) throw new Error("Chain must include at least one ## agent step.");
 	const localName = frontmatter.name;
 	const parsedPackage = parsePackageName(frontmatter.package, `Chain '${localName}' package`);
 	if (parsedPackage.error) throw new Error(parsedPackage.error);
@@ -124,6 +135,9 @@ export function parseChain(content: string, source: "user" | "project", filePath
 	};
 }
 
+const JSON_CHAIN_STEP_KEYS = new Set(["agent", "task", "phase", "label", "as", "outputSchema", "cwd", "output", "outputMode", "reads", "progress", "skill", "model", "acceptance", "parallel", "expand", "collect", "concurrency", "failFast", "worktree"]);
+const JSON_PARALLEL_TASK_KEYS = new Set(["agent", "task", "phase", "label", "as", "outputSchema", "cwd", "count", "output", "outputMode", "reads", "progress", "skill", "model", "acceptance"]);
+
 export function parseJsonChain(content: string, source: "user" | "project", filePath: string): ChainConfig {
 	let parsed: unknown;
 	try {
@@ -142,8 +156,8 @@ export function parseJsonChain(content: string, source: "user" | "project", file
 	if (typeof input.description !== "string" || !input.description.trim()) {
 		throw new Error(`JSON chain '${filePath}' must include string description.`);
 	}
-	if (!Array.isArray(input.chain)) {
-		throw new Error(`JSON chain '${filePath}' must include array chain.`);
+	if (!Array.isArray(input.chain) || input.chain.length === 0) {
+		throw new Error(`JSON chain '${filePath}' must include a non-empty array chain.`);
 	}
 	for (let i = 0; i < input.chain.length; i++) {
 		const step = input.chain[i];
@@ -151,7 +165,29 @@ export function parseJsonChain(content: string, source: "user" | "project", file
 			throw new Error(`JSON chain '${filePath}' step ${i + 1} must be an object.`);
 		}
 		const stepRecord = step as Record<string, unknown>;
+		const unknownKeys = Object.keys(stepRecord).filter((key) => !JSON_CHAIN_STEP_KEYS.has(key));
+		if (unknownKeys.length) throw new Error(`JSON chain '${filePath}' step ${i + 1} has unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`);
 		const parallel = stepRecord.parallel;
+		if (parallel !== undefined && stepRecord.agent !== undefined) throw new Error(`JSON chain '${filePath}' step ${i + 1} cannot set both agent and parallel.`);
+		if (parallel === undefined) {
+			if (typeof stepRecord.agent !== "string" || !stepRecord.agent.trim()) throw new Error(`JSON chain '${filePath}' step ${i + 1} must include a non-empty agent.`);
+		} else if (Array.isArray(parallel)) {
+			if (parallel.length === 0) throw new Error(`JSON chain '${filePath}' step ${i + 1} parallel must not be empty.`);
+			for (let taskIndex = 0; taskIndex < parallel.length; taskIndex++) {
+				const task = parallel[taskIndex];
+				if (!task || typeof task !== "object" || Array.isArray(task) || typeof (task as Record<string, unknown>).agent !== "string" || !(task as Record<string, string>).agent.trim()) {
+					throw new Error(`JSON chain '${filePath}' step ${i + 1} parallel task ${taskIndex + 1} must include a non-empty agent.`);
+				}
+				const taskUnknownKeys = Object.keys(task as Record<string, unknown>).filter((key) => !JSON_PARALLEL_TASK_KEYS.has(key));
+				if (taskUnknownKeys.length) throw new Error(`JSON chain '${filePath}' step ${i + 1} parallel task ${taskIndex + 1} has unknown field${taskUnknownKeys.length === 1 ? "" : "s"}: ${taskUnknownKeys.join(", ")}.`);
+			}
+		} else if (typeof parallel === "object" && parallel !== null) {
+			if (typeof (parallel as Record<string, unknown>).agent !== "string" || !(parallel as Record<string, string>).agent.trim()) throw new Error(`JSON chain '${filePath}' step ${i + 1} dynamic template must include a non-empty agent.`);
+			if (!stepRecord.expand || typeof stepRecord.expand !== "object" || !stepRecord.collect || typeof stepRecord.collect !== "object") throw new Error(`JSON chain '${filePath}' step ${i + 1} dynamic fanout requires expand and collect objects.`);
+		} else {
+			throw new Error(`JSON chain '${filePath}' step ${i + 1} parallel must be an array or object.`);
+		}
+		if (stepRecord.concurrency !== undefined && (typeof stepRecord.concurrency !== "number" || !Number.isInteger(stepRecord.concurrency) || stepRecord.concurrency < 1)) throw new Error(`JSON chain '${filePath}' step ${i + 1} concurrency must be an integer >= 1.`);
 		if (Array.isArray(parallel) && Object.hasOwn(stepRecord, "acceptance")) {
 			throw new Error(`Invalid JSON chain '${filePath}': step ${i + 1} acceptance is not supported on static parallel groups; set acceptance on each parallel task.`);
 		}
@@ -183,6 +219,13 @@ export function parseJsonChain(content: string, source: "user" | "project", file
 	} catch (error) {
 		if (error instanceof ChainOutputValidationError) throw new Error(`Invalid JSON chain '${filePath}': ${error.message}`);
 		throw error;
+	}
+	for (let i = 0; i < input.chain.length; i++) {
+		const step = input.chain[i];
+		if (!Check(ChainItemSchema, step)) {
+			const issue = [...Errors(ChainItemSchema, step)][0];
+			throw new Error(`JSON chain '${filePath}' step ${i + 1} is invalid${issue ? `: ${issue.message}` : ""}.`);
+		}
 	}
 	const parsedPackage = parsePackageName(typeof input.package === "string" ? input.package : undefined, `Chain '${input.name}' package`);
 	if (parsedPackage.error) throw new Error(parsedPackage.error);

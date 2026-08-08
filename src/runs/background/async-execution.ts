@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { applyThinkingSuffix } from "../shared/pi-args.ts";
 import { injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
-import { buildChainInstructions, isDynamicParallelStep, isParallelStep, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
+import { buildChainInstructions, createChainDir, isDynamicParallelStep, isParallelStep, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
 import type { RunnerStep, RunnerSubagentStep } from "../shared/parallel-utils.ts";
 import { resolvePiPackageRoot } from "../shared/pi-spawn.ts";
 import { buildSkillInjection, normalizeSkillInput, resolveSkillsWithFallback } from "../../agents/skills.ts";
@@ -40,6 +40,7 @@ import {
 	resolveChildMaxSubagentDepth,
 } from "../../shared/types.ts";
 import { nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
+import { ensureTempRoot } from "../../shared/temp-root.ts";
 
 const piPackageRoot = resolvePiPackageRoot();
 
@@ -111,6 +112,7 @@ interface AsyncChainParams {
 	ctx: AsyncExecutionContext;
 	availableModels?: AvailableModelInfo[];
 	cwd?: string;
+	chainDir?: string;
 	maxOutput?: MaxOutputConfig;
 	artifactsDir?: string;
 	shareEnabled: boolean;
@@ -153,6 +155,7 @@ interface AsyncSingleParams {
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
 	acceptance?: AcceptanceInput;
+	progress?: boolean;
 	projectTrust?: ChildProjectTrustPolicy;
 }
 
@@ -185,9 +188,9 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, asyncDir: string)
 		return { error: `cwd does not exist: ${cwd}` };
 	}
 
-	fs.mkdirSync(TEMP_ROOT_DIR, { recursive: true });
+	ensureTempRoot();
 	const cfgPath = getAsyncConfigPath(suffix);
-	fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+	fs.writeFileSync(cfgPath, JSON.stringify(cfg), { mode: 0o600 });
 	const runner = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-runner.ts");
 
 	const errorLogFd = fs.openSync(path.join(asyncDir, RUNNER_ERROR_LOG_FILE), "a");
@@ -253,6 +256,7 @@ export function executeAsyncChain(
 	const chainSkills = params.chainSkills ?? [];
 	const availableModels = params.availableModels;
 	const runnerCwd = resolveChildCwd(ctx.cwd, cwd);
+	const chainDir = resultMode === "chain" ? createChainDir(id, params.chainDir, runnerCwd) : runnerCwd;
 	const firstStep = chain[0];
 	const originalTask = params.task ?? (firstStep
 		? (isParallelStep(firstStep)
@@ -319,7 +323,7 @@ export function executeAsyncChain(
 		const a = agents.find((x) => x.name === s.agent)!;
 		const outputIndex = outputMaterializationIndex++;
 		const stepCwd = resolveChildCwd(runnerCwd, s.cwd);
-		const instructionCwd = behaviorCwd ?? stepCwd;
+		const instructionCwd = behaviorCwd ?? (resultMode === "chain" ? chainDir : stepCwd);
 		const behavior = suppressProgressForReadOnlyTask(resolvedBehavior ?? resolveStepBehavior(a, buildStepOverrides(s), chainSkills), s.task, originalTask);
 		const outputUsesAgentDefault = usesAgentDefaultOutput(s.output) || s.outputFromAgentDefault === true;
 		const output = outputUsesAgentDefault
@@ -336,15 +340,15 @@ export function executeAsyncChain(
 		}
 
 		const readInstructions = buildChainInstructions({ ...behavior, output: false, progress: false }, instructionCwd, false);
-		const isFirstProgressAgent = behavior.progress && !progressPrecreated && !progressInstructionCreated;
-		if (behavior.progress) progressInstructionCreated = true;
-		const progressInstructions = buildChainInstructions({ ...behavior, output: false, reads: false }, runnerCwd, isFirstProgressAgent);
+		const isFirstProgressAgent = behavior.progress && !progressPrecreated && (resultMode !== "chain" || !progressInstructionCreated);
+		if (behavior.progress && resultMode === "chain") progressInstructionCreated = true;
+		const progressInstructions = buildChainInstructions({ ...behavior, output: false, reads: false }, instructionCwd, isFirstProgressAgent);
 		const outputPath = resolveSingleOutputPath(output, ctx.cwd, instructionCwd);
 		const validationError = validateFileOnlyOutputMode(behavior.outputMode, outputPath, `Async step (${s.agent})`);
 		if (validationError) throw new AsyncStartValidationError(validationError);
 		let taskTemplate = s.task ?? "{previous}";
 		taskTemplate = taskTemplate.replace(/\{task\}/g, originalTask ?? "");
-		taskTemplate = taskTemplate.replace(/\{chain_dir\}/g, runnerCwd);
+		taskTemplate = taskTemplate.replace(/\{chain_dir\}/g, chainDir);
 		const task = injectSingleOutputInstruction(`${readInstructions.prefix}${taskTemplate}${progressInstructions.suffix}`, outputPath);
 
 		const primaryModel = resolveModelCandidate(behavior.model ?? a.model, availableModels, ctx.currentModelProvider);
@@ -412,9 +416,9 @@ export function executeAsyncChain(
 					const agent = agents.find((candidate) => candidate.name === task.agent)!;
 					return suppressProgressForReadOnlyTask(resolveStepBehavior(agent, buildStepOverrides(task), chainSkills), task.task, originalTask);
 				});
-				const progressPrecreated = parallelBehaviors.some((behavior) => behavior.progress);
+				const progressPrecreated = resultMode === "chain" && parallelBehaviors.some((behavior) => behavior.progress);
 				if (progressPrecreated) {
-					if (!s.worktree) writeInitialProgressFile(runnerCwd);
+					if (!s.worktree) writeInitialProgressFile(chainDir);
 					progressInstructionCreated = true;
 				}
 				const parallelSteps = s.parallel.map((t, taskIndex) => {
@@ -426,7 +430,16 @@ export function executeAsyncChain(
 							behaviorCwd = undefined;
 						}
 					}
-					return buildSeqStep(t, nextSessionFile(), behaviorCwd, progressPrecreated, parallelBehaviors[taskIndex]);
+					const taskProgressPrecreated = progressPrecreated || (resultMode !== "chain" && parallelBehaviors[taskIndex]?.progress === true && !s.worktree);
+					if (taskProgressPrecreated && !progressPrecreated) {
+						const progressCwd = resolveChildCwd(runnerCwd, t.cwd);
+						try {
+							writeInitialProgressFile(progressCwd);
+						} catch (error) {
+							throw new AsyncStartValidationError(`Failed to initialize progress in '${progressCwd}': ${error instanceof Error ? error.message : String(error)}`);
+						}
+					}
+					return buildSeqStep(t, nextSessionFile(), behaviorCwd, taskProgressPrecreated, parallelBehaviors[taskIndex]);
 				});
 				const duplicateOutputError = findDuplicateRunnerOutputPath(parallelSteps);
 				if (duplicateOutputError) throw new AsyncStartValidationError(duplicateOutputError);
@@ -442,7 +455,7 @@ export function executeAsyncChain(
 				const behavior = suppressProgressForReadOnlyTask(resolveStepBehavior(agent, buildStepOverrides(s.parallel), chainSkills), s.parallel.task, originalTask);
 				const progressPrecreated = behavior.progress;
 				if (progressPrecreated) {
-					writeInitialProgressFile(runnerCwd);
+					writeInitialProgressFile(chainDir);
 					progressInstructionCreated = true;
 				}
 				const maxItems = s.expand.maxItems ?? params.dynamicFanoutMaxItems ?? 0;
@@ -683,7 +696,12 @@ export function executeAsyncSingle(
 	const outputMode = params.outputMode ?? "inline";
 	const validationError = validateFileOnlyOutputMode(outputMode, outputPath, `Async single run (${agent})`);
 	if (validationError) return formatAsyncStartError("single", validationError);
-	const taskWithOutputInstruction = injectSingleOutputInstruction(task, outputPath);
+	let taskWithOutputInstruction = task;
+	if (params.progress) {
+		writeInitialProgressFile(runnerCwd);
+		taskWithOutputInstruction += buildChainInstructions({ output: false, outputMode: "inline", reads: false, progress: true, skills: false }, runnerCwd, true).suffix;
+	}
+	taskWithOutputInstruction = injectSingleOutputInstruction(taskWithOutputInstruction, outputPath);
 	const model = applyThinkingSuffix(
 		resolveModelCandidate(params.modelOverride ?? agentConfig.model, availableModels, ctx.currentModelProvider),
 		agentConfig.thinking,

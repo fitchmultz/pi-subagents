@@ -82,7 +82,7 @@ export function normalizeChildProjectTrustPolicy(input: unknown): ChildProjectTr
 	if (typeof input === "object" && input !== null && "childRuns" in input) {
 		return normalizeChildProjectTrustPolicy((input as { childRuns?: unknown }).childRuns);
 	}
-	return "inherit";
+	return input === undefined ? "inherit" : "no-approve";
 }
 
 export function resolveConfiguredChildProjectTrustPolicy(input: unknown, argv: string[] = process.argv): ChildProjectTrustPolicy {
