@@ -85,6 +85,32 @@ describe("temp-root write boundaries", () => {
 			fs.rmSync(scratch, { recursive: true, force: true });
 		}
 	});
+
+	it("refuses cleanup through symlinked temp subdirectories", { skip: process.platform === "win32" }, () => {
+		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "pi-temp-cleanup-boundary-"));
+		const configuredRoot = path.join(scratch, "pi-subagents-cleanup");
+		const target = path.join(scratch, "target");
+		fs.mkdirSync(configuredRoot);
+		fs.mkdirSync(target);
+		const outsideFile = path.join(target, "old-result.json");
+		fs.writeFileSync(outsideFile, "keep", "utf-8");
+		const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+		fs.utimesSync(outsideFile, old, old);
+		try {
+			fs.symlinkSync(target, path.join(configuredRoot, "async-subagent-results"), "dir");
+			const tempRootModule = new URL("../../src/shared/temp-root.ts", import.meta.url).href;
+			const script = `import { cleanupOldRunStorage } from ${JSON.stringify(tempRootModule)}; cleanupOldRunStorage();`;
+			const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+				encoding: "utf-8",
+				env: { ...process.env, PI_SUBAGENT_TEMP_ROOT: configuredRoot },
+			});
+			assert.notEqual(result.status, 0);
+			assert.match(result.stderr, /Unsafe symlink in pi-subagents temp path/);
+			assert.equal(fs.readFileSync(outsideFile, "utf-8"), "keep");
+		} finally {
+			fs.rmSync(scratch, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("shared temp paths", () => {

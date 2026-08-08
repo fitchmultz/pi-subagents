@@ -276,6 +276,21 @@ describe("acceptance gates", () => {
 		assert.equal(failLedger.verifyRuns[0]?.status, "failed");
 	}));
 
+	it("bounds verify command output while continuing to drain the child", async () => withTempRepo(async (cwd) => {
+		const acceptance = resolveEffectiveAcceptance({
+			explicit: {
+				criteria: ["Patch bug"],
+				verify: [{ id: "noisy", command: "node -e \"process.stdout.write('x'.repeat(100000)); process.stderr.write('y'.repeat(100000))\"", timeoutMs: 30_000 }],
+			},
+		});
+		const ledger = await evaluateAcceptance({ acceptance, output: report(), cwd });
+		assert.equal(ledger.status, "verified");
+		assert.match(ledger.verifyRuns[0]?.stdout ?? "", /\[truncated\]$/);
+		assert.match(ledger.verifyRuns[0]?.stderr ?? "", /\[truncated\]$/);
+		assert.ok((ledger.verifyRuns[0]?.stdout?.length ?? 0) < 12_100);
+		assert.ok((ledger.verifyRuns[0]?.stderr?.length ?? 0) < 12_100);
+	}));
+
 	it("self-review finalization does not mark a run verified by itself", async () => withTempRepo(async (cwd) => {
 		const acceptance = resolveEffectiveAcceptance({
 			explicit: { criteria: ["Patch bug"] },

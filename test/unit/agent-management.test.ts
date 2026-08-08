@@ -315,6 +315,30 @@ Inspect
 		assert.equal(parsed.chain?.[1]?.collect?.as, "reviews");
 	});
 
+	it("serializes managed JSON chain skills in the runtime format", () => {
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
+		const chainPath = path.join(tempDir, ".pi", "chains", "review-flow.chain.json");
+		fs.mkdirSync(path.dirname(chainPath), { recursive: true });
+		fs.writeFileSync(chainPath, JSON.stringify({
+			name: "review-flow",
+			description: "Review targets",
+			chain: [{ agent: "scout", task: "Review", skill: ["review"] }],
+		}), "utf-8");
+
+		const updated = handleUpdate({
+			chainName: "review-flow",
+			config: { steps: [{ agent: "scout", task: "Review again", skills: ["review", "verification"] }] },
+		}, ctx);
+
+		assert.equal(updated.isError, false, readText(updated));
+		const parsed = JSON.parse(fs.readFileSync(chainPath, "utf-8")) as { chain?: Array<{ skill?: string[]; skills?: unknown }> };
+		assert.deepEqual(parsed.chain?.[0]?.skill, ["review", "verification"]);
+		assert.equal(parsed.chain?.[0]?.skills, undefined);
+		const got = handleManagementAction("get", { chainName: "review-flow" }, ctx);
+		assert.equal(got.isError, false, readText(got));
+		assert.match(readText(got), /Skills: review, verification/);
+	});
+
 	it("renames and repackages JSON chains while preserving JSON format and extension", () => {
 		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const chainPath = path.join(tempDir, ".pi", "chains", "dynamic-review.chain.json");

@@ -1252,6 +1252,8 @@ test("compose overlay preserves complete bracketed pastes as literal content", a
     (result) => { doneResult = result; },
   );
   cancelOverlay.handleInput("\x1b");
+  assert.equal(doneResult, undefined);
+  await new Promise((resolve) => setTimeout(resolve, 250));
   assert.deepEqual(doneResult, { sent: false });
 
   doneResult = undefined;
@@ -1271,6 +1273,7 @@ test("compose overlay preserves complete bracketed pastes as literal content", a
   partialPasteOverlay.handleInput("\x1b[201~");
   assert.match(partialPasteOverlay.render(100).join("\n"), /unterminated/);
   partialPasteOverlay.handleInput("\x1b");
+  await new Promise((resolve) => setTimeout(resolve, 250));
   assert.deepEqual(doneResult, { sent: false });
 
   doneResult = undefined;
@@ -1283,8 +1286,9 @@ test("compose overlay preserves complete bracketed pastes as literal content", a
     { send: async () => ({ id: "unused", accepted: true, delivered: true }) } as never,
     (result) => { doneResult = result; },
   );
-  splitPasteOverlay.handleInput("\x1b[20");
-  splitPasteOverlay.handleInput("0~split start marker");
+  splitPasteOverlay.handleInput("\x1b");
+  assert.equal(doneResult, undefined, "a split paste marker must not cancel the overlay");
+  splitPasteOverlay.handleInput("[200~split start marker");
   splitPasteOverlay.handleInput("\x1b[201~");
   assert.match(splitPasteOverlay.render(100).join("\n"), /split start marker/);
 
@@ -1301,7 +1305,23 @@ test("compose overlay preserves complete bracketed pastes as literal content", a
   abandonedPasteOverlay.handleInput("\x1b[200~abandoned paste");
   await new Promise((resolve) => setTimeout(resolve, 250));
   abandonedPasteOverlay.handleInput("\x1b");
+  await new Promise((resolve) => setTimeout(resolve, 250));
   assert.deepEqual(doneResult, { sent: false });
+
+  const overflowOverlay = new ComposeOverlay(
+    { requestRender: () => undefined } as never,
+    { fg: (_name: string, text: string) => text, bold: (text: string) => text } as never,
+    keybindings as never,
+    { id: "target-session", name: "worker", cwd: repoDir, model: "test-model" },
+    "worker",
+    { send: async () => ({ id: "unused", accepted: true, delivered: true }) } as never,
+    () => {},
+  );
+  overflowOverlay.handleInput(`\x1b[200~${"x".repeat(1_000_001)}`);
+  overflowOverlay.handleInput("tail\x1b[201~");
+  const overflowRendered = overflowOverlay.render(100).join("\n");
+  assert.match(overflowRendered, /tail/);
+  assert.doesNotMatch(overflowRendered, /\[201~/);
 
   const tailSent: string[] = [];
   const tailOverlay = new ComposeOverlay(

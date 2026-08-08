@@ -84,6 +84,8 @@ function runStructuralChecks(acceptance: ResolvedAcceptanceConfig, report: Accep
 	return checks;
 }
 
+const MAX_VERIFY_OUTPUT_CHARS = 12_001;
+
 function trimOutput(value: string): string | undefined {
 	const trimmed = value.trim();
 	if (!trimmed) return undefined;
@@ -110,12 +112,12 @@ function runVerifyCommand(command: AcceptanceVerifyCommand, defaultCwd: string):
 			setTimeout(() => child.kill("SIGKILL"), 1000).unref?.();
 		}, command.timeoutMs ?? 120_000);
 		timeout.unref?.();
-		child.stdout.on("data", (chunk: Buffer) => {
-			stdout += chunk.toString();
-		});
-		child.stderr.on("data", (chunk: Buffer) => {
-			stderr += chunk.toString();
-		});
+child.stdout.on("data", (chunk: Buffer) => {
+if (stdout.length < MAX_VERIFY_OUTPUT_CHARS) stdout += chunk.toString().slice(0, MAX_VERIFY_OUTPUT_CHARS - stdout.length);
+});
+child.stderr.on("data", (chunk: Buffer) => {
+if (stderr.length < MAX_VERIFY_OUTPUT_CHARS) stderr += chunk.toString().slice(0, MAX_VERIFY_OUTPUT_CHARS - stderr.length);
+});
 		child.on("close", (exitCode) => {
 			clearTimeout(timeout);
 			const durationMs = Date.now() - startedAt;

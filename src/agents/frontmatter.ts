@@ -3,8 +3,8 @@ export function parseFrontmatter(content: string): { frontmatter: Record<string,
 	const normalized = content.replace(/\r\n/g, "\n");
 	const lines = normalized.split("\n");
 
-	if (lines[0] !== "---") return { frontmatter, body: normalized };
-	const endIndex = lines.findIndex((line, index) => index > 0 && line === "---");
+	if (!/^---\s*$/.test(lines[0] ?? "")) return { frontmatter, body: normalized };
+	const endIndex = lines.findIndex((line, index) => index > 0 && /^---\s*$/.test(line));
 	if (endIndex === -1) return { frontmatter, body: normalized };
 
 	for (const line of lines.slice(1, endIndex)) {

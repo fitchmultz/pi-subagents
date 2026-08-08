@@ -458,11 +458,16 @@ function isInAgentSkillSubtree(dir: string, filePath: string): boolean {
 
 const reportedAgentDiagnostics = new Map<string, { filePath: string; error: string }>();
 const loggedAgentDiagnostics = new Set<string>();
+const MAX_LOGGED_AGENT_DIAGNOSTICS = 1_000;
 
 function reportAgentDiagnostic(filePath: string, message: string): void {
 	const key = `${filePath}\0${message}`;
 	reportedAgentDiagnostics.set(key, { filePath, error: message });
 	if (loggedAgentDiagnostics.has(key)) return;
+	if (loggedAgentDiagnostics.size >= MAX_LOGGED_AGENT_DIAGNOSTICS) {
+		const oldest = loggedAgentDiagnostics.values().next().value;
+		if (oldest !== undefined) loggedAgentDiagnostics.delete(oldest);
+	}
 	loggedAgentDiagnostics.add(key);
 	console.error(`Invalid agent definition '${filePath}: ${message}'`);
 }

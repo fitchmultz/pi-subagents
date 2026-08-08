@@ -43,6 +43,7 @@ export function appendJsonl(filePath: string, line: string): void {
 }
 
 export function cleanupOldArtifacts(dir: string, maxAgeDays: number): void {
+	ensureSafeTempPath(dir);
 	if (!fs.existsSync(dir)) return;
 
 	const markerPath = path.join(dir, CLEANUP_MARKER_FILE);

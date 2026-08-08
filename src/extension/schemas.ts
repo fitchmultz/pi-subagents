@@ -316,7 +316,11 @@ export const SubagentParams = Type.Object({
 		{ if: { required: ["chainDir"] }, then: { required: ["chain"] } },
 		{ if: { anyOf: [
 			{ required: ["output"] }, { required: ["outputMode"] }, { required: ["skill"] }, { required: ["model"] },
-			{ required: ["outputSchema"] }, { required: ["acceptance"] }, { required: ["progress"] },
+			{ required: ["outputSchema"] }, { required: ["progress"] },
 		] }, then: { required: ["agent"] } },
+		{ if: { required: ["acceptance"] }, then: { anyOf: [
+			{ required: ["agent"] },
+			{ required: ["action"], properties: { action: { enum: ["resume"] } } },
+		] } },
 	],
 });

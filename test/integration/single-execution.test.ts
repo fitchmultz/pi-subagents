@@ -1612,10 +1612,12 @@ describe("single sync execution", () => {
 			// `intercomStarted=true`. Using a fixed delay here races the mock's
 			// cold spawn and flakes under load.
 			let detachEmitted = false;
+			let completedResult: Awaited<ReturnType<typeof runSync>> | undefined;
 			const runPromise = runSync(tempDir, agents, "echo", "Task", {
 				runId: `${toolName}-detach`,
 				allowIntercomDetach: true,
 				intercomEvents: eventBus,
+				onDetachedComplete: (completed) => { completedResult = completed; },
 				onUpdate: (update) => {
 					if (detachEmitted) return;
 					const progress = (update as { details?: { progress?: Array<{ currentTool?: string }> } }).details?.progress;
@@ -1634,6 +1636,12 @@ describe("single sync execution", () => {
 			assert.equal(result.finalOutput, "Detached for intercom coordination.");
 			assert.equal(result.progress?.status, "detached");
 			assert.equal(accepted, true);
+			const completionDeadline = Date.now() + 3_000;
+			while (!completedResult && Date.now() < completionDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
+			assert.match(completedResult?.finalOutput ?? "", /received pong/);
+			assert.equal(result.detached, true, "the returned detached snapshot must not be mutated after child exit");
+			assert.equal(result.finalOutput, "Detached for intercom coordination.");
+			assert.equal(result.progress?.status, "detached");
 		});
 	}
 

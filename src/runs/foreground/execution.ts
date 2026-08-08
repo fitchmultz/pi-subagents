@@ -1004,7 +1004,7 @@ async function runSingleAttempt(
 	if (result.detached) {
 		result.exitCode = 0;
 		result.finalOutput = "Detached for intercom coordination.";
-		return result;
+		return snapshotResult(result, snapshotProgress(progress));
 	}
 
 	return finalizeCompletedAttempt();

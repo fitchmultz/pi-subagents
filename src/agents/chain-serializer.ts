@@ -234,6 +234,14 @@ export function parseJsonChain(content: string, source: "user" | "project", file
 		if (key === "name" || key === "package" || key === "description" || key === "chain") continue;
 		if (typeof value === "string") extraFields[key] = value;
 	}
+	const steps = (input.chain as Array<Record<string, unknown>>).map((step) => {
+		if (!Object.hasOwn(step, "skill")) return step as ChainStepConfig;
+		const { skill, ...normalized } = step;
+		return {
+			...normalized,
+			skills: typeof skill === "string" ? [skill] : skill as string[] | false,
+		} as ChainStepConfig;
+	});
 	return {
 		name: buildRuntimeName(input.name.trim(), parsedPackage.packageName),
 		localName: input.name.trim(),
@@ -241,16 +249,20 @@ export function parseJsonChain(content: string, source: "user" | "project", file
 		description: input.description.trim(),
 		source,
 		filePath,
-		steps: input.chain as ChainStepConfig[],
+		steps,
 		extraFields: Object.keys(extraFields).length > 0 ? extraFields : undefined,
 	};
 }
 
 export function serializeJsonChain(config: ChainConfig): string {
+	const chain = config.steps.map((step) => {
+		const { skills, ...serialized } = step;
+		return skills === undefined ? serialized : { ...serialized, skill: skills };
+	});
 	const root: Record<string, unknown> = {
 		name: frontmatterNameForConfig(config),
 		description: config.description,
-		chain: config.steps,
+		chain,
 	};
 	if (config.packageName) root.package = config.packageName;
 	if (config.extraFields) {

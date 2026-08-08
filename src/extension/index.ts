@@ -22,7 +22,7 @@ import { discoverAgents } from "../agents/agents.ts";
 import { ARTIFACT_CLEANUP_DAYS, cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
-import { cleanupOldRunStorage, ensureTempRoot } from "../shared/temp-root.ts";
+import { cleanupOldRunStorage, ensureSafeTempPath, ensureTempRoot } from "../shared/temp-root.ts";
 import { renderWidget, renderSubagentResult } from "../tui/render.ts";
 import { SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
@@ -88,6 +88,7 @@ function expandTilde(p: string): string {
  * the directory completely inaccessible to the creating user.
  */
 function ensureAccessibleDir(dirPath: string): void {
+	ensureSafeTempPath(dirPath);
 	fs.mkdirSync(dirPath, { recursive: true });
 	try {
 		fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
@@ -229,6 +230,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		cleanupOldRunStorage();
 	} catch (error) {
 		console.error(`[pi-subagents] temp storage setup failed: ${error instanceof Error ? error.message : String(error)}`);
+		return;
 	}
 	const globalStore = globalThis as Record<string, unknown>;
 	const runtimeCleanupStoreKey = "__piSubagentRuntimeCleanup";

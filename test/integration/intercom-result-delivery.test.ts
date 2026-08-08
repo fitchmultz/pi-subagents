@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
-import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import { createNestedRoute, projectNestedEvents, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import {
+	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
+	SUBAGENT_PARENT_CHILD_INDEX_ENV,
+	SUBAGENT_PARENT_CONTROL_INBOX_ENV,
+	SUBAGENT_PARENT_DEPTH_ENV,
+	SUBAGENT_PARENT_EVENT_SINK_ENV,
+	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
+	SUBAGENT_PARENT_RUN_ID_ENV,
+} from "../../src/runs/shared/pi-args.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, RESULTS_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import type { MockPi } from "../support/helpers.ts";
@@ -322,6 +331,67 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(payload?.children?.[0]?.status, "completed");
 		assert.match(payload?.children?.[0]?.summary ?? "", /after reply/);
 		assert.equal(mockPi.callCount(), 1);
+	});
+
+	it("keeps nested detached foreground runs live until terminal completion", async () => {
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
+				{ delay: 500, jsonl: [events.assistantMessage("nested child finished")] },
+			],
+		});
+		const rootRunId = `nested-detached-root-${Date.now().toString(36)}`;
+		const route = createNestedRoute(rootRunId);
+		const envKeys = [
+			SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
+			SUBAGENT_PARENT_EVENT_SINK_ENV,
+			SUBAGENT_PARENT_CONTROL_INBOX_ENV,
+			SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
+			SUBAGENT_PARENT_RUN_ID_ENV,
+			SUBAGENT_PARENT_CHILD_INDEX_ENV,
+			SUBAGENT_PARENT_DEPTH_ENV,
+		] as const;
+		const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+		process.env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV] = route.rootRunId;
+		process.env[SUBAGENT_PARENT_EVENT_SINK_ENV] = route.eventSink;
+		process.env[SUBAGENT_PARENT_CONTROL_INBOX_ENV] = route.controlInbox;
+		process.env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV] = route.capabilityToken;
+		process.env[SUBAGENT_PARENT_RUN_ID_ENV] = "parent-run";
+		process.env[SUBAGENT_PARENT_CHILD_INDEX_ENV] = "0";
+		process.env[SUBAGENT_PARENT_DEPTH_ENV] = "1";
+		try {
+			const { executor, events: bus, state } = makeExecutor();
+			let detached = false;
+			const immediate = await executor.execute(
+				"nested-detached",
+				{ agent: "worker", task: "Ask then finish" },
+				new AbortController().signal,
+				(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
+					if (detached || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
+					detached = true;
+					bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "nested-detached" });
+				},
+				makeMinimalCtx(tempDir),
+			);
+			assert.match(immediate.content[0]?.text ?? "", /Detached for intercom coordination/);
+			const liveChildren = [...projectNestedEvents(route).children.values()];
+			assert.equal(liveChildren.length, 1);
+			assert.equal(liveChildren[0]?.state, "running");
+			assert.equal(liveChildren[0]?.ownerState, "live");
+			const nestedRunId = liveChildren[0]!.id;
+			assert.equal(state.foregroundControls.has(nestedRunId), true);
+
+			await waitFor(() => projectNestedEvents(route).children.find((child) => child.id === nestedRunId)?.state === "complete");
+			const completed = projectNestedEvents(route).children.find((child) => child.id === nestedRunId);
+			assert.equal(completed?.ownerState, "gone");
+			assert.equal(state.foregroundControls.has(nestedRunId), false);
+		} finally {
+			for (const [key, value] of previousEnv) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
+		}
 	});
 
 	it("detached chain completion keeps prior siblings and the captured child index", async () => {

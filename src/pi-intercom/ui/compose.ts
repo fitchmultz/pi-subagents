@@ -104,11 +104,13 @@ export class ComposeOverlay implements Component {
         data = this.pasteStartPrefix + data;
         this.pasteStartPrefix = "";
       }
-      if (data.length > 1 && data !== BRACKETED_PASTE_START && BRACKETED_PASTE_START.startsWith(data)) {
+      if (data !== BRACKETED_PASTE_START && BRACKETED_PASTE_START.startsWith(data)) {
         this.pasteStartPrefix = data;
         this.pasteIdleTimer = setTimeout(() => {
           this.pasteIdleTimer = null;
+          const pendingPrefix = this.pasteStartPrefix;
           this.pasteStartPrefix = "";
+          if (pendingPrefix === "\x1b") this.finish({ sent: false });
         }, INCOMPLETE_PASTE_IDLE_MS);
         this.pasteIdleTimer.unref?.();
         return;
@@ -127,6 +129,7 @@ export class ComposeOverlay implements Component {
       data = data.replace(/\r\n?/g, "\n");
       pasted = true;
     }
+    if (!pasted && data.includes(BRACKETED_PASTE_END)) data = data.replaceAll(BRACKETED_PASTE_END, "");
     if (!data) return;
 
     if (!pasted && this.keybindings.matches(data, "tui.select.cancel")) {

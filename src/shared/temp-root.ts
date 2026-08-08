@@ -16,7 +16,20 @@ export function ensureTempRoot(): void {
 export function ensureSafeTempPath(candidate: string): void {
 	const root = path.resolve(TEMP_ROOT_DIR);
 	const resolved = path.resolve(candidate);
-	if (resolved === root || resolved.startsWith(`${root}${path.sep}`)) ensureTempRoot();
+	const relative = path.relative(root, resolved);
+	if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return;
+	ensureTempRoot();
+	let current = root;
+	for (const segment of relative.split(path.sep).filter(Boolean)) {
+		current = path.join(current, segment);
+		try {
+			const stat = fs.lstatSync(current);
+			if (stat.isSymbolicLink()) throw new Error(`Unsafe symlink in pi-subagents temp path: ${current}`);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw error;
+		}
+	}
 }
 
 function removeOldEntries(root: string, now: number, skipActiveStatus = false): void {
@@ -47,7 +60,12 @@ function removeOldEntries(root: string, now: number, skipActiveStatus = false): 
 }
 
 export function cleanupOldRunStorage(now = Date.now()): void {
-	removeOldEntries(ASYNC_DIR, now, true);
-	removeOldEntries(RESULTS_DIR, now);
-	removeOldEntries(path.join(TEMP_ROOT_DIR, "nested-subagent-runs"), now);
+	for (const [dir, skipActiveStatus] of [
+		[ASYNC_DIR, true],
+		[RESULTS_DIR, false],
+		[path.join(TEMP_ROOT_DIR, "nested-subagent-runs"), false],
+	] as const) {
+		ensureSafeTempPath(dir);
+		removeOldEntries(dir, now, skipActiveStatus);
+	}
 }

@@ -382,6 +382,7 @@ interface ExecutionContextData {
 	controlConfig: ResolvedControlConfig;
 	intercomBridge: IntercomBridgeState;
 	nestedRoute?: NestedRouteInfo;
+	onDetachedResultsSettled?: (mode: SubagentRunMode, results: SingleResult[], totalSteps?: number) => void;
 }
 
 function resolveRequestedCwd(runtimeCwd: string, requestedCwd: string | undefined): string {
@@ -1227,6 +1228,7 @@ function createDetachedCompletionGroup(input: {
 	mode: SubagentRunMode;
 	chainSteps?: number;
 	finalizeResults?: (results: SingleResult[]) => void;
+	onResultsSettled?: (results: SingleResult[]) => void;
 	onSettled?: () => void;
 }): DetachedCompletionGroup {
 	let results: SingleResult[] | undefined;
@@ -1249,6 +1251,11 @@ function createDetachedCompletionGroup(input: {
 				target.finalOutput = target.error;
 				target.truncation = undefined;
 			}
+		}
+		try {
+			input.onResultsSettled?.(results);
+		} catch (error) {
+			console.error("Failed to finalize detached nested status:", error);
 		}
 		if (!settledCallbackStarted && input.onSettled) {
 			settledCallbackStarted = true;
@@ -1945,7 +1952,15 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 	const chainSkills = normalized === false ? [] : (normalized ?? []);
 	const chain = wrapChainTasksForAgentContext(params.chain as ChainStep[], params.context, agents);
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth);
-	const detachedCompletions = createDetachedCompletionGroup({ pi: deps.pi, state: deps.state, intercomBridge: data.intercomBridge, runId, mode: "chain", chainSteps: chain.length });
+	const detachedCompletions = createDetachedCompletionGroup({
+		pi: deps.pi,
+		state: deps.state,
+		intercomBridge: data.intercomBridge,
+		runId,
+		mode: "chain",
+		chainSteps: chain.length,
+		onResultsSettled: (results) => data.onDetachedResultsSettled?.("chain", results, chain.length),
+	});
 	const chainResult = await executeChain({
 		chain,
 		task: params.task,
@@ -2596,6 +2611,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			intercomBridge: data.intercomBridge,
 			runId,
 			mode: "parallel",
+			onResultsSettled: (results) => data.onDetachedResultsSettled?.("parallel", results),
 			...(worktreeSetup ? {
 				finalizeResults: (settledResults: SingleResult[]) => {
 					const suffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks);
@@ -2940,7 +2956,14 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		: undefined;
 
 	const timeoutAt = foregroundControl?.timeoutAt ?? (data.foregroundTimeoutMs !== undefined ? Date.now() + data.foregroundTimeoutMs : undefined);
-	const detachedCompletions = createDetachedCompletionGroup({ pi: deps.pi, state: deps.state, intercomBridge: data.intercomBridge, runId, mode: "single" });
+	const detachedCompletions = createDetachedCompletionGroup({
+		pi: deps.pi,
+		state: deps.state,
+		intercomBridge: data.intercomBridge,
+		runId,
+		mode: "single",
+		onResultsSettled: (results) => data.onDetachedResultsSettled?.("single", results),
+	});
 	const r = await runSync(ctx.cwd, agents, params.agent!, task, {
 		cwd: effectiveCwd,
 		signal,
@@ -3456,6 +3479,14 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			deps.state.foregroundControls.set(runId, foregroundControl);
 			deps.state.lastForegroundControlId = runId;
 		}
+		let deferForegroundCleanup = false;
+		let detachedNestedSettled = false;
+		const cleanupForegroundControl = () => {
+			if (!foregroundControl) return;
+			clearPendingForegroundControlNotices(deps.state, runId);
+			deps.state.foregroundControls.delete(runId);
+			if (deps.state.lastForegroundControlId === runId) deps.state.lastForegroundControlId = null;
+		};
 
 		const writeNestedForegroundEvent = (type: "subagent.nested.started" | "subagent.nested.completed", result?: SubagentExecutionResult): void => {
 			if (!inheritedNestedRoute || !nestedParentAddress) return;
@@ -3516,6 +3547,32 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 		};
 
+		if (inheritedNestedRoute && nestedParentAddress) {
+			execData.onDetachedResultsSettled = (mode, results, totalSteps) => {
+				detachedNestedSettled = true;
+				deferForegroundCleanup = false;
+				const failure = results.find((result) => result.exitCode !== 0);
+				writeNestedForegroundEvent("subagent.nested.completed", {
+					content: [{ type: "text", text: failure?.error ?? "Detached nested run completed." }],
+					isError: Boolean(failure),
+					details: {
+						mode,
+						results,
+						...(totalSteps !== undefined ? { totalSteps } : {}),
+					},
+				});
+				cleanupForegroundControl();
+			};
+		}
+
+		const completeNestedForeground = (result: SubagentExecutionResult): void => {
+			if (inheritedNestedRoute && result.details?.results.some((child) => child.detached)) {
+				deferForegroundCleanup = !detachedNestedSettled;
+				return;
+			}
+			writeNestedForegroundEvent("subagent.nested.completed", result);
+		};
+
 		let nestedForegroundStarted = false;
 		try {
 			const asyncResult = runAsyncPath(execData, deps);
@@ -3526,17 +3583,17 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 			if (hasChain && effectiveParams.chain) {
 				const result = await runChainPath(execData, deps);
-				writeNestedForegroundEvent("subagent.nested.completed", result);
+				completeNestedForeground(result);
 				return withForkContext(result, invocationContext);
 			}
 			if (hasTasks && effectiveParams.tasks) {
 				const result = await runParallelPath(execData, deps);
-				writeNestedForegroundEvent("subagent.nested.completed", result);
+				completeNestedForeground(result);
 				return withForkContext(result, invocationContext);
 			}
 			if (hasSingle) {
 				const result = await runSinglePath(execData, deps);
-				writeNestedForegroundEvent("subagent.nested.completed", result);
+				completeNestedForeground(result);
 				return withForkContext(result, invocationContext);
 			}
 		} catch (error) {
@@ -3544,13 +3601,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			if (nestedForegroundStarted) writeNestedForegroundEvent("subagent.nested.completed", errorResult);
 			return errorResult;
 		} finally {
-			if (foregroundControl) {
-				clearPendingForegroundControlNotices(deps.state, runId);
-				deps.state.foregroundControls.delete(runId);
-				if (deps.state.lastForegroundControlId === runId) {
-					deps.state.lastForegroundControlId = null;
-				}
-			}
+			if (!deferForegroundCleanup) cleanupForegroundControl();
 		}
 
 		return withForkContext({

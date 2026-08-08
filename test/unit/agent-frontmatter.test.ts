@@ -6,6 +6,7 @@ import { afterEach, describe, it } from "node:test";
 import { serializeAgent } from "../../src/agents/agent-serializer.ts";
 import { parseChain, serializeChain } from "../../src/agents/chain-serializer.ts";
 import { discoverAgents, discoverAgentsAll, type AgentConfig } from "../../src/agents/agents.ts";
+import { parseFrontmatter } from "../../src/agents/frontmatter.ts";
 
 const tempDirs: string[] = [];
 
@@ -15,6 +16,15 @@ afterEach(() => {
 		if (!dir) continue;
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+describe("agent frontmatter parsing", () => {
+	it("accepts delimiter lines with trailing whitespace", () => {
+		const parsed = parseFrontmatter("---   \nname: worker\ndescription: Worker\n--- \t\nDo work\n");
+		assert.equal(parsed.frontmatter.name, "worker");
+		assert.equal(parsed.frontmatter.description, "Worker");
+		assert.equal(parsed.body, "Do work");
+	});
 });
 
 describe("agent frontmatter defaultContext", () => {
