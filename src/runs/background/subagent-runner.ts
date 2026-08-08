@@ -78,6 +78,7 @@ import {
 } from "../shared/mutating-tool-guard.ts";
 import {
 	createRepeatedSubagentCallGuardState,
+	recordToolEndForSubagentLoopGuard,
 	recordToolStartForSubagentLoopGuard,
 } from "../shared/subagent-tool-loop-guard.ts";
 import { parseSessionTokens } from "../../shared/session-tokens.ts";
@@ -246,8 +247,10 @@ type ChildMessage = Message & {
 interface ChildEvent {
 	type?: string;
 	message?: ChildMessage;
+	toolCallId?: string;
 	toolName?: string;
 	args?: Record<string, unknown>;
+	isError?: boolean;
 }
 
 interface RunPiStreamingResult {
@@ -428,6 +431,7 @@ function runPiStreaming(
 			if (event.type === "tool_execution_start" && event.toolName) {
 				const loopFailure = recordToolStartForSubagentLoopGuard({
 					state: subagentLoopGuard,
+					toolCallId: event.toolCallId,
 					toolName: event.toolName,
 					args: event.args,
 				});
@@ -438,6 +442,17 @@ function runPiStreaming(
 				mutationTracker.recordToolStart({ toolName: event.toolName, args: event.args });
 				const toolArgs = extractToolArgsPreview(event.args ?? {});
 				writeOutputLine(toolArgs ? `${event.toolName}: ${toolArgs}` : event.toolName);
+				return;
+			}
+
+			if (event.type === "tool_execution_end") {
+				const loopFailure = recordToolEndForSubagentLoopGuard({
+					state: subagentLoopGuard,
+					toolCallId: event.toolCallId,
+					toolName: event.toolName,
+					isError: event.isError,
+				});
+				if (loopFailure) failForToolLoop(loopFailure);
 				return;
 			}
 

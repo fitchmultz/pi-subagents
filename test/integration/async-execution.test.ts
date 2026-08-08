@@ -1822,6 +1822,35 @@ describe("async execution utilities", () => {
 		assert.equal(payload.results[0].success, false);
 	});
 
+	it("background runs stop repeated failed subagent calls", async () => {
+		const args = { agent: "delegate", task: "nested work", async: false };
+		mockPi.onCall({
+			jsonl: Array.from({ length: 5 }, (_, index) => {
+				const toolCallId = `call-${index}`;
+				return [
+					{ type: "tool_execution_start", toolCallId, toolName: "subagent", args },
+					{ type: "tool_execution_end", toolCallId, toolName: "subagent", isError: true },
+				];
+			}).flat(),
+		});
+
+		const id = `itest-ae-${process.pid}-subagent-loop-${Date.now().toString(36)}`;
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Delegate nested work",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			shareEnabled: false,
+			sessionRoot: path.join(tempDir, "sessions"),
+			maxSubagentDepth: 2,
+		});
+
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, false);
+		assert.equal(payload.exitCode, 1);
+		assert.match(payload.results[0]?.error ?? "", /stuck repeating the same failed subagent call 5 times/);
+	});
+
 	it("background implementation runs fail when no mutation attempt occurred", async () => {
 		mockPi.onCall({ output: "I’ll do that now and report back after implementing." });
 

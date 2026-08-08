@@ -5,7 +5,7 @@
 ## [0.33.2] - 2026-08-08
 
 ### Fixed
-- Stop any child that repeats the same `subagent` call five times within its recent tool window, including rejected nested delegation loops that previously ran until timeout.
+- Stop children that repeat the same failed `subagent` call five times within the recent tool window, including rejected nested delegations that previously ran until timeout, without blocking successful repeated calls.
 
 ## [0.33.1] - 2026-08-08
 

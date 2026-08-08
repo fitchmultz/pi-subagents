@@ -82,6 +82,7 @@ import {
 } from "../shared/mutating-tool-guard.ts";
 import {
 	createRepeatedSubagentCallGuardState,
+	recordToolEndForSubagentLoopGuard,
 	recordToolStartForSubagentLoopGuard,
 } from "../shared/subagent-tool-loop-guard.ts";
 import {
@@ -634,9 +635,9 @@ async function runSingleAttempt(
 
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
-			let evt: { type?: string; message?: Message; toolName?: string; args?: unknown };
+			let evt: { type?: string; message?: Message; toolCallId?: string; toolName?: string; args?: unknown; isError?: boolean };
 			try {
-				evt = JSON.parse(line) as { type?: string; message?: Message; toolName?: string; args?: unknown };
+				evt = JSON.parse(line) as typeof evt;
 			} catch {
 				// Non-JSON stdout lines are expected; only structured events are parsed.
 				return;
@@ -671,6 +672,7 @@ async function runSingleAttempt(
 			if (evt.type === "tool_execution_start") {
 				const loopFailure = recordToolStartForSubagentLoopGuard({
 					state: subagentLoopGuard,
+					toolCallId: evt.toolCallId,
 					toolName: evt.toolName,
 					args: evt.args,
 				});
@@ -706,6 +708,16 @@ async function runSingleAttempt(
 				progress.currentToolStartedAt = undefined;
 				progress.currentPath = undefined;
 				fireUpdate();
+				const loopFailure = recordToolEndForSubagentLoopGuard({
+					state: subagentLoopGuard,
+					toolCallId: evt.toolCallId,
+					toolName: evt.toolName,
+					isError: evt.isError,
+				});
+				if (loopFailure) {
+					failForToolLoop(loopFailure);
+					return;
+				}
 			}
 
 			if (evt.type === "message_end" && evt.message) {
