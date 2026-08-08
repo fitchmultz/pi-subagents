@@ -80,9 +80,10 @@ function sanitizedEnv() {
   return env;
 }
 
-function runNodeTest(label, imports, files, timeoutMs) {
+function runNodeTest(label, imports, files, timeoutMs, concurrency) {
   const args = [
     ...imports.flatMap((specifier) => ["--import", specifier]),
+    ...(concurrency ? [`--test-concurrency=${concurrency}`] : []),
     "--test",
     ...files,
   ];
@@ -122,7 +123,7 @@ function runNodeTest(label, imports, files, timeoutMs) {
 
 const { mode, timeoutMs } = parseArgs(process.argv.slice(2));
 const unit = () => runNodeTest("unit tests", [], testFiles("test/unit"), timeoutMs);
-const integration = () => runNodeTest("integration tests", [], testFiles("test/integration"), timeoutMs);
+const integration = () => runNodeTest("integration tests", [], testFiles("test/integration"), timeoutMs, 4);
 
 let status;
 switch (mode) {

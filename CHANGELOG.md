@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-08-08
+
+### Fixed
+- Keep the required `structured_output` tool enabled when a child agent defines an explicit tool allowlist.
+- Render complete multiline doctor and management results in slash-command cards instead of truncating the whole report as one terminal line.
+- Tell nested orchestrators when a foreground child call has completed so model-sensitive loops do not relaunch the same successful task.
+- Cap integration-test file concurrency so timing-sensitive process and timeout checks stay deterministic on busy developer machines.
+
 ## [0.33.0] - 2026-08-08
 
 ### Added

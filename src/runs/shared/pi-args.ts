@@ -152,6 +152,7 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	if (input.tools?.length) {
 		const builtinTools = [...declaredBuiltinTools];
 		if (input.allowSubagents === true && declaredBuiltinTools.length > 0 && !builtinTools.includes("subagent")) builtinTools.push("subagent");
+		if (input.structuredOutput && builtinTools.length > 0 && !builtinTools.includes("structured_output")) builtinTools.push("structured_output");
 		for (const tool of input.tools) {
 			if (!declaredBuiltinTools.includes(tool) && (tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) {
 				toolExtensionPaths.push(tool);

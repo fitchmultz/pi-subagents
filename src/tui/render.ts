@@ -1176,7 +1176,7 @@ export function renderSubagentResult(
 		const t = result.content[0];
 		const text = t?.type === "text" ? t.text : "(no output)";
 		const contextPrefix = d?.context === "fork" ? `${theme.fg("warning", "[fork]")} ` : "";
-		return new Text(truncLine(`${contextPrefix}${text}`, getTermWidth() - 4), 0, 0);
+		return new Text(`${contextPrefix}${text}`, 0, 0);
 	}
 
 	const expanded = options.expanded;

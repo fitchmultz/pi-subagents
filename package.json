@@ -1,6 +1,6 @@
 {
   "name": "pi-subagents",
-  "version": "0.33.0",
+  "version": "0.33.1",
   "description": "Pi extension for subagent orchestration and local session coordination",
   "author": "Nico Bailon",
   "license": "MIT",

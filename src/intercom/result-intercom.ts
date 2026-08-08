@@ -218,6 +218,9 @@ function formatSubagentResultIntercomMessage(input: {
 		`Status: ${input.status}`,
 		`Children: ${formatStatusCounts(counts)}`,
 	];
+	if (input.source === "foreground" && input.status === "completed") {
+		lines.push("This completes the matching subagent call. Continue the parent task without relaunching the same call.");
+	}
 	if (input.mode === "chain" && typeof input.chainSteps === "number") {
 		lines.push(`Chain steps: ${input.chainSteps}`);
 	}

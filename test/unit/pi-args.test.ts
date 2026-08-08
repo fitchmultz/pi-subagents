@@ -337,6 +337,24 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		assert.equal(toolsArg, "read,grep,find,ls,bash,edit,write,contact_supervisor");
 	});
 
+	it("keeps structured_output available with explicit tool allowlists", () => {
+		const { args } = buildPiArgs({
+			baseArgs: ["-p"],
+			task: "hello",
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			tools: ["read"],
+			structuredOutput: {
+				schema: { type: "object", properties: {} },
+				schemaPath: "/tmp/schema.json",
+				outputPath: "/tmp/output.json",
+			},
+		});
+
+		assert.equal(args[args.indexOf("--tools") + 1], "read,structured_output");
+	});
+
 	it("augments explicit builtin allowlists with selected direct MCP tool names", () => {
 		const fixture = createMcpFixture();
 		writeMcpFixture(fixture);

@@ -30,6 +30,16 @@ function result(agent: string, output: string) {
 	};
 }
 
+test("empty-result management output preserves every line", () => {
+	const output = `Runtime\n- cwd: /${"long/".repeat(40)}\n\nFilesystem\n- temp root: /tmp/pi-subagents-test`;
+	const component = renderSubagentResult({
+		content: [{ type: "text", text: output }],
+		details: { mode: "single", results: [] },
+	}, { expanded: false }, theme as any);
+
+	assert.equal(componentText(component), output);
+});
+
 test("compact parallel rendering shows each child model", () => {
 	const component = renderSubagentResult({
 		content: [{ type: "text", text: "done" }],

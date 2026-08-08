@@ -45,6 +45,7 @@ describe("result intercom formatter", () => {
 		assert.match(payload.message, /Mode: chain/);
 		assert.match(payload.message, /Status: failed/);
 		assert.match(payload.message, /Children: 1 completed, 1 failed/);
+		assert.doesNotMatch(payload.message, /without relaunching the same call/);
 		assert.match(payload.message, /Chain steps: 4/);
 		assert.match(payload.message, /Intercom targets below identify child sessions used while they were running/);
 		assert.match(payload.message, /1\. reviewer-a — completed/);
@@ -52,6 +53,19 @@ describe("result intercom formatter", () => {
 		assert.match(payload.message, /2\. reviewer-b — failed/);
 		assert.match(payload.message, /Output artifact: \/tmp\/a\.md/);
 		assert.match(payload.message, /Session: \/tmp\/a-session\.jsonl/);
+	});
+
+	it("tells nested orchestrators not to relaunch completed foreground calls", () => {
+		const payload = buildSubagentResultIntercomPayload({
+			to: "orchestrator",
+			runId: "run-complete",
+			mode: "single",
+			source: "foreground",
+			children: [{ agent: "delegate", status: "completed", summary: "done" }],
+		});
+
+		assert.match(payload.message, /This completes the matching subagent call/);
+		assert.match(payload.message, /without relaunching the same call/);
 	});
 
 	it("advertises async revive only for single-child results with an existing session", () => {
