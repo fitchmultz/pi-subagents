@@ -6,6 +6,7 @@
 
 ### Changed
 - Sync the bundled Fitch role profiles to the current tuned model, fallback, and thinking defaults while preserving role-specific model diversity and reserving `openai-codex/` routes for fallback billing pools.
+- Treat `context-builder`, `reviewer`, and `reviewer-ponytail` as fresh-context-only after their synced routes gained Anthropic primaries or fallbacks; use a fork-eligible role such as `oracle` or `scout` for branched-session work.
 
 ## [0.33.2] - 2026-08-08
 

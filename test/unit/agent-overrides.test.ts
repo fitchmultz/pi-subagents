@@ -95,7 +95,7 @@ describe("builtin agent overrides", () => {
 		assert.equal(delegate?.fallbackModels, undefined);
 	});
 
-	it("reserves openai-codex routes for fallbacks", () => {
+	it("never uses openai-codex routes as primaries", () => {
 		for (const agent of discoverAgentsAll(tempProject).builtin) {
 			assert.doesNotMatch(agent.model ?? "", /^openai-codex\//, `${agent.name} must not use the Codex billing pool as primary`);
 		}

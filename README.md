@@ -397,16 +397,16 @@ Slash commands run in the background by default. Add `--fg` only when the comman
 Add `--fork` to start each child from a real branched session created from the parent’s current leaf:
 
 ```text
-/run reviewer "review this diff" --fork
+/run oracle "review this decision" --fork
 /chain scout "analyze this branch" -> oracle "plan next steps" --fork
-/parallel scout "audit frontend" -> reviewer "review backend constraints" --fork
+/parallel scout "audit frontend" -> oracle "review backend constraints" --fork
 ```
 
 You can combine either execution override with `--fork`:
 
 ```text
-/run reviewer "review this diff" --fork --fg
-/run reviewer "review this diff" --fork --bg
+/run oracle "review this decision" --fork --fg
+/run oracle "review this decision" --fork --bg
 ```
 
 Background runs are detached. Prefer separate single-agent runs for independent fanout so each completion wakes the parent instead of waiting for every child. The parent should continue useful work; if none remains, it should end the turn and wait instead of running sleep or status-polling loops. Pi will deliver each completion. When an active goal is incomplete and child evidence gates its next step, set `async: false`. Non-interactive one-shot Pi callers should also set `async: false` when stdout must contain the child result; omitted `async` returns only the launch receipt.
