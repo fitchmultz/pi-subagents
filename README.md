@@ -185,12 +185,13 @@ The bundled Fitch role profiles pin explicit primary and fallback routes. `deleg
 
 | Primary route | Agents |
 |---------------|--------|
-| `xai/grok-4.5` | `scout`, `context-builder`, `fixer`, `worker`, `reviewer-security` |
-| `openai/gpt-5.6-sol` | `watcher` |
-| `openai-codex/gpt-5.6-sol` | `debugger`, `oracle`, `planner`, `researcher`, `reviewer`, `reviewer-gpt`, `reviewer-ponytail` |
-| `anthropic/claude-opus-5` | `reviewer-claude` |
-| `anthropic/claude-fable-5` | `ui-designer`, `writer` |
+| `anthropic/claude-opus-5` | `context-builder`, `debugger`, `fixer`, `planner`, `researcher`, `reviewer`, `reviewer-claude`, `ui-designer` |
+| `openai/gpt-5.6-sol` | `oracle`, `reviewer-gpt`, `scout`, `watcher`, `worker` |
+| `fireworks/accounts/fireworks/routers/kimi-k3-fast` | `reviewer-ponytail`, `reviewer-security` |
+| `anthropic/claude-fable-5` | `writer` |
 | Current Pi model | `delegate` |
+
+The routes preserve tuned role diversity across providers. `openai/` handles OpenAI primaries while `openai-codex/` is reserved for the separate fallback billing pool.
 
 Fallback routes live in each `agents/*.md` file. Override a role if those routes are unavailable in your Pi setup; you do not need to copy the bundled agent file.
 

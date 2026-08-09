@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.33.3] - 2026-08-09
+
+### Changed
+- Sync the bundled Fitch role profiles to the current tuned model, fallback, and thinking defaults while preserving role-specific model diversity and reserving `openai-codex/` routes for fallback billing pools.
+
 ## [0.33.2] - 2026-08-08
 
 ### Fixed

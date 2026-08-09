@@ -49,14 +49,33 @@ describe("builtin agent overrides", () => {
 				"reviewer", "reviewer-claude", "reviewer-gpt", "reviewer-ponytail", "reviewer-security", "scout", "ui-designer", "watcher", "worker", "writer",
 			],
 		);
-		for (const agent of builtins.filter((candidate) => candidate.name !== "delegate")) {
-			assert.ok(agent.model, `${agent.name} should have a configured model`);
-			assert.ok(agent.fallbackModels?.length, `${agent.name} should have configured fallback models`);
+		const expectedRoutes = {
+			"context-builder": { model: "anthropic/claude-opus-5", fallbackModels: ["anthropic/claude-fable-5", "openai/gpt-5.6-sol"], thinking: "xhigh" },
+			debugger: { model: "anthropic/claude-opus-5", fallbackModels: ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-sol"], thinking: "max" },
+			fixer: { model: "anthropic/claude-opus-5", fallbackModels: ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-sol"], thinking: "max" },
+			oracle: { model: "openai/gpt-5.6-sol", fallbackModels: ["openai-codex/gpt-5.6-sol"], thinking: "max" },
+			planner: { model: "anthropic/claude-opus-5", fallbackModels: ["anthropic/claude-fable-5", "openai/gpt-5.6-sol"], thinking: "xhigh" },
+			researcher: { model: "anthropic/claude-opus-5", fallbackModels: ["anthropic/claude-fable-5", "openai/gpt-5.6-sol"], thinking: "xhigh" },
+			reviewer: { model: "anthropic/claude-opus-5", fallbackModels: ["openai/gpt-5.6-sol", "anthropic/claude-fable-5"], thinking: "max" },
+			"reviewer-claude": { model: "anthropic/claude-opus-5", fallbackModels: ["anthropic/claude-fable-5"], thinking: "max" },
+			"reviewer-gpt": { model: "openai/gpt-5.6-sol", fallbackModels: ["openai-codex/gpt-5.6-sol"], thinking: "max" },
+			"reviewer-ponytail": { model: "fireworks/accounts/fireworks/routers/kimi-k3-fast", fallbackModels: ["anthropic/claude-fable-5"], thinking: "max" },
+			"reviewer-security": { model: "fireworks/accounts/fireworks/routers/kimi-k3-fast", fallbackModels: ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-sol"], thinking: "max" },
+			scout: { model: "openai/gpt-5.6-sol", fallbackModels: ["openai-codex/gpt-5.6-sol"], thinking: "high" },
+			"ui-designer": { model: "anthropic/claude-opus-5", fallbackModels: ["anthropic/claude-fable-5", "openai-codex/gpt-5.6-sol"], thinking: "xhigh" },
+			watcher: { model: "openai/gpt-5.6-sol", fallbackModels: ["fireworks/accounts/fireworks/routers/kimi-k3-fast"], thinking: "high" },
+			worker: { model: "openai/gpt-5.6-sol", fallbackModels: ["anthropic/claude-opus-5", "openai-codex/gpt-5.6-sol"], thinking: "max" },
+			writer: { model: "anthropic/claude-fable-5", fallbackModels: ["anthropic/claude-opus-5"], thinking: "high" },
+		};
+		for (const [name, expected] of Object.entries(expectedRoutes)) {
+			const agent = builtins.find((candidate) => candidate.name === name);
+			assert.deepEqual(
+				{ model: agent?.model, fallbackModels: agent?.fallbackModels, thinking: agent?.thinking },
+				expected,
+				`${name} route drift`,
+			);
 		}
 		const watcher = builtins.find((agent) => agent.name === "watcher");
-		assert.equal(watcher?.model, "openai/gpt-5.6-sol");
-		assert.equal(watcher?.thinking, "medium");
-		assert.deepEqual(watcher?.fallbackModels, ["xai/grok-4.5"]);
 		assert.equal(watcher?.maxSubagentDepth, 0);
 		assert.equal(watcher?.completionGuard, false);
 		assert.match(watcher?.systemPrompt ?? "", /Do not modify the watched target/);
@@ -71,36 +90,14 @@ describe("builtin agent overrides", () => {
 			const effectivePrompt = applyIntercomBridgeToAgent(agent, resolveIntercomBridge("main")).systemPrompt;
 			assert.doesNotMatch(effectivePrompt, /plan[- ]changing|changes? the plan/i, `${agent.name} progress guidance drift`);
 		}
-		const reviewerClaude = builtins.find((agent) => agent.name === "reviewer-claude");
-		assert.equal(reviewerClaude?.model, "anthropic/claude-opus-5");
-		assert.equal(reviewerClaude?.thinking, "high");
-		assert.deepEqual(reviewerClaude?.fallbackModels, ["anthropic/claude-fable-5", "xai/grok-4.5"]);
-		const reviewerGpt = builtins.find((agent) => agent.name === "reviewer-gpt");
-		assert.equal(reviewerGpt?.thinking, "high");
-		const reviewerSecurity = builtins.find((agent) => agent.name === "reviewer-security");
-		assert.equal(reviewerSecurity?.model, "xai/grok-4.5");
-		assert.equal(reviewerSecurity?.thinking, "xhigh");
-		assert.deepEqual(reviewerSecurity?.fallbackModels, ["openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol"]);
 		const delegate = builtins.find((agent) => agent.name === "delegate");
 		assert.equal(delegate?.model, undefined);
 		assert.equal(delegate?.fallbackModels, undefined);
 	});
 
-	it("keeps Cursor out of the affected bundled fallback routes", () => {
-		const builtins = new Map(discoverAgentsAll(tempProject).builtin.map((agent) => [agent.name, agent]));
-		const expected = {
-			"context-builder": ["openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol"],
-			fixer: ["openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol", "anthropic/claude-opus-5"],
-			oracle: ["openai/gpt-5.6-sol"],
-			reviewer: ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-terra"],
-			"reviewer-gpt": ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-terra"],
-			"reviewer-security": ["openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol"],
-			scout: ["openai-codex/gpt-5.6-luna", "openai/gpt-5.6-luna"],
-			worker: ["openai-codex/gpt-5.6-sol", "openai/gpt-5.6-sol", "anthropic/claude-opus-5"],
-		};
-
-		for (const [name, fallbackModels] of Object.entries(expected)) {
-			assert.deepEqual(builtins.get(name)?.fallbackModels, fallbackModels, `${name} fallback route drift`);
+	it("reserves openai-codex routes for fallbacks", () => {
+		for (const agent of discoverAgentsAll(tempProject).builtin) {
+			assert.doesNotMatch(agent.model ?? "", /^openai-codex\//, `${agent.name} must not use the Codex billing pool as primary`);
 		}
 	});
 
