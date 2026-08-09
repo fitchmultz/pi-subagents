@@ -185,12 +185,13 @@ The bundled Fitch role profiles pin explicit primary and fallback routes. `deleg
 
 | Primary route | Agents |
 |---------------|--------|
-| `xai/grok-4.5` | `scout`, `context-builder`, `fixer`, `worker`, `reviewer-security` |
-| `openai/gpt-5.6-sol` | `watcher` |
-| `openai-codex/gpt-5.6-sol` | `debugger`, `oracle`, `planner`, `researcher`, `reviewer`, `reviewer-gpt`, `reviewer-ponytail` |
-| `anthropic/claude-opus-5` | `reviewer-claude` |
-| `anthropic/claude-fable-5` | `ui-designer`, `writer` |
+| `anthropic/claude-opus-5` | `context-builder`, `debugger`, `fixer`, `planner`, `researcher`, `reviewer`, `reviewer-claude`, `ui-designer` |
+| `openai/gpt-5.6-sol` | `oracle`, `reviewer-gpt`, `scout`, `watcher`, `worker` |
+| `fireworks/accounts/fireworks/routers/kimi-k3-fast` | `reviewer-ponytail`, `reviewer-security` |
+| `anthropic/claude-fable-5` | `writer` |
 | Current Pi model | `delegate` |
+
+The routes preserve tuned role diversity across providers. `openai/` handles OpenAI primaries while `openai-codex/` is reserved for the separate fallback billing pool.
 
 Fallback routes live in each `agents/*.md` file. Override a role if those routes are unavailable in your Pi setup; you do not need to copy the bundled agent file.
 
@@ -396,16 +397,16 @@ Slash commands run in the background by default. Add `--fg` only when the comman
 Add `--fork` to start each child from a real branched session created from the parent’s current leaf:
 
 ```text
-/run reviewer "review this diff" --fork
+/run oracle "review this decision" --fork
 /chain scout "analyze this branch" -> oracle "plan next steps" --fork
-/parallel scout "audit frontend" -> reviewer "review backend constraints" --fork
+/parallel scout "audit frontend" -> oracle "review backend constraints" --fork
 ```
 
 You can combine either execution override with `--fork`:
 
 ```text
-/run reviewer "review this diff" --fork --fg
-/run reviewer "review this diff" --fork --bg
+/run oracle "review this decision" --fork --fg
+/run oracle "review this decision" --fork --bg
 ```
 
 Background runs are detached. Prefer separate single-agent runs for independent fanout so each completion wakes the parent instead of waiting for every child. The parent should continue useful work; if none remains, it should end the turn and wait instead of running sleep or status-polling loops. Pi will deliver each completion. When an active goal is incomplete and child evidence gates its next step, set `async: false`. Non-interactive one-shot Pi callers should also set `async: false` when stdout must contain the child result; omitted `async` returns only the launch receipt.

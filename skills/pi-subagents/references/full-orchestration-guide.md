@@ -147,22 +147,22 @@ and user/project agents override builtins with the same name.
 
 | Agent | Purpose | Primary model | Typical output / role |
 |-------|---------|---------------|------------------------|
-| `scout` | Fast codebase recon | `xai/grok-4.5` | Writes `context.md` handoff material |
-| `context-builder` | Requirements/codebase handoff builder | `xai/grok-4.5` | Writes structured context and meta-prompts |
-| `researcher` | Evidence-driven technical research | `openai-codex/gpt-5.6-sol` | Writes `research.md` |
+| `scout` | Fast codebase recon | `openai/gpt-5.6-sol` | Writes `context.md` handoff material |
+| `context-builder` | Requirements/codebase handoff builder | `anthropic/claude-opus-5` | Writes structured context and meta-prompts |
+| `researcher` | Evidence-driven technical research | `anthropic/claude-opus-5` | Writes `research.md` |
 | `watcher` | Read-only background monitoring | `openai/gpt-5.6-sol` | Queues the latest material transition; returns at the terminal condition |
-| `planner` | Creates implementation plans | `openai-codex/gpt-5.6-sol` | Writes `plan.md` |
-| `worker` | Bounded implementation | `xai/grok-4.5` | Single-writer implementation and validation |
-| `debugger` | Root-cause diagnosis | `openai-codex/gpt-5.6-sol` | Writes `diagnosis.md` |
-| `fixer` | Decided, bounded remediation | `xai/grok-4.5` | Applies an explicit fix list |
-| `reviewer` | General implementation review | `openai-codex/gpt-5.6-sol` | Review-only by default |
-| `reviewer-gpt` | Strict completion gate | `openai-codex/gpt-5.6-sol` | Maintainability/correctness review |
+| `planner` | Creates implementation plans | `anthropic/claude-opus-5` | Writes `plan.md` |
+| `worker` | Bounded implementation | `openai/gpt-5.6-sol` | Single-writer implementation and validation |
+| `debugger` | Root-cause diagnosis | `anthropic/claude-opus-5` | Writes `diagnosis.md` |
+| `fixer` | Decided, bounded remediation | `anthropic/claude-opus-5` | Applies an explicit fix list |
+| `reviewer` | General implementation review | `anthropic/claude-opus-5` | Review-only by default |
+| `reviewer-gpt` | Strict completion gate | `openai/gpt-5.6-sol` | Maintainability/correctness review |
 | `reviewer-claude` | Cross-model product-risk review | `anthropic/claude-opus-5` | Independent review |
-| `reviewer-security` | Trust-boundary review | `xai/grok-4.5` | Security/data-safety findings |
-| `reviewer-ponytail` | Over-engineering and slop review | `openai-codex/gpt-5.6-sol` | Deletion-focused findings; behavior-preserving only |
-| `ui-designer` | UI and accessibility review | `anthropic/claude-fable-5` | Rendered UX guidance |
+| `reviewer-security` | Trust-boundary review | `fireworks/accounts/fireworks/routers/kimi-k3-fast` | Security/data-safety findings |
+| `reviewer-ponytail` | Over-engineering and slop review | `fireworks/accounts/fireworks/routers/kimi-k3-fast` | Deletion-focused findings; behavior-preserving only |
+| `ui-designer` | UI and accessibility review | `anthropic/claude-opus-5` | Rendered UX guidance |
 | `writer` | Human-facing writing | `anthropic/claude-fable-5` | Writes `draft.md` |
-| `oracle` | Decision-consistency advisory review | `openai-codex/gpt-5.6-sol` | Forked advisory review |
+| `oracle` | Decision-consistency advisory review | `openai/gpt-5.6-sol` | Forked advisory review |
 | `delegate` | Lightweight generic delegate | inherits default | No fixed output; generic delegated work |
 
 The Fitch role profiles pin primary and fallback routes; `delegate` inherits the current Pi model. Keep those configured defaults unless a run, user setting, or project setting has a concrete reason to override them.

@@ -1,8 +1,8 @@
 ---
 name: scout
 description: Fast codebase recon that returns compressed context for handoff
-model: xai/grok-4.5
-fallbackModels: openai-codex/gpt-5.6-luna, openai/gpt-5.6-luna
+model: openai/gpt-5.6-sol
+fallbackModels: openai-codex/gpt-5.6-sol
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: true

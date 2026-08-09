@@ -2,8 +2,8 @@
 name: watcher
 description: Background watcher for changing external state with coalesced supervisor updates
 model: openai/gpt-5.6-sol
-fallbackModels: xai/grok-4.5
-thinking: medium
+fallbackModels: fireworks/accounts/fireworks/routers/kimi-k3-fast
+thinking: high
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true

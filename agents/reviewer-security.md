@@ -1,9 +1,9 @@
 ---
 name: reviewer-security
 description: Security and data-safety reviewer for changed code, dependencies, and exposed surfaces
-model: xai/grok-4.5
-fallbackModels: openai-codex/gpt-5.6-sol, openai/gpt-5.6-sol
-thinking: xhigh
+model: fireworks/accounts/fireworks/routers/kimi-k3-fast
+fallbackModels: openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
+thinking: max
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true
