@@ -572,7 +572,7 @@ export function registerSlashCommands(
 	});
 
 	pi.registerCommand("parallel", {
-		description: "Run agents in parallel: /parallel scout \"task1\" -> reviewer \"task2\" [--bg|--fg] [--fork]",
+		description: "Run agents in parallel: /parallel scout \"task1\" -> oracle \"task2\" [--bg|--fg] [--fork]",
 		getArgumentCompletions: makeAgentCompletions(state, true),
 		handler: async (args, ctx) => {
 			const flags = extractExecutionFlags(args);
