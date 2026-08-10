@@ -604,7 +604,7 @@ test("before_agent_start adds a bounded hint only for same-project peers", { con
   }
 });
 
-test("background reconnect chain survives a failed attempt", { concurrency: false }, async () => {
+test("background reconnect chain survives a failed attempt", { concurrency: false, skip: process.platform === "win32" }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const configPath = path.join(sharedAgentDir, "intercom", "config.json");
   // Broker self-spawn must fail deterministically during this test: node
@@ -647,6 +647,57 @@ test("background reconnect chain survives a failed attempt", { concurrency: fals
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
     assert.ok(reconnected, "extension should reconnect via a retry scheduled after a failed background attempt");
+  } finally {
+    rmSync(configPath, { force: true });
+    await probe.disconnect().catch(() => undefined);
+    await harness.emitLifecycle("session_shutdown");
+    await stopBroker(broker);
+  }
+});
+
+test("failed foreground attempt during backoff re-arms the reconnect chain", { concurrency: false, skip: process.platform === "win32" }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const configPath = path.join(sharedAgentDir, "intercom", "config.json");
+  mkdirSync(path.dirname(configPath), { recursive: true });
+  writeFileSync(configPath, JSON.stringify({ brokerCommand: process.execPath, brokerArgs: ["-e", "process.exit(0)"] }));
+  let broker = await setupBroker();
+  const harness = createExtensionHarness("reconnect-takeover-controller");
+  const probe = new IntercomClient();
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await connectClient(probe, "reconnect-takeover-probe", {});
+    await waitForSessionByName(probe, "reconnect-takeover-controller");
+    await probe.disconnect().catch(() => undefined);
+
+    // Disconnect schedules a background retry at 1s. A foreground tool call
+    // inside that backoff window clears the pending timer on entry and then
+    // fails (broker down, spawn config failing). Without retry re-arming on
+    // every failed live attempt, this cancellation permanently ends
+    // recovery: no timer remains and nothing else restores one.
+    await stopBroker(broker);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
+    const result = await intercomTool.execute("tool-during-backoff", { action: "list" }, new AbortController().signal, undefined, harness.ctx)
+      .catch(() => ({ isError: true, content: [] }));
+    assert.equal(result.isError, true, "listing without a broker should fail");
+
+    // Hold the broker down long enough that at least one re-armed background
+    // retry also fails, then restore it and require reconnection.
+    await new Promise((resolve) => setTimeout(resolve, 2350));
+    broker = await setupBroker();
+    await connectClient(probe, "reconnect-takeover-probe", {});
+    const deadline = Date.now() + 12_000;
+    let reconnected = false;
+    while (Date.now() < deadline) {
+      const sessions = await probe.listSessions().catch(() => []);
+      if (sessions.some((session) => session.name === "reconnect-takeover-controller")) {
+        reconnected = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    assert.ok(reconnected, "a failed foreground attempt during backoff must re-arm the background retry chain");
   } finally {
     rmSync(configPath, { force: true });
     await probe.disconnect().catch(() => undefined);

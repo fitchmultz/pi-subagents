@@ -1204,7 +1204,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         if (client === nextClient) {
           client = null;
         }
-        retryAfterSettle = reason === "background" && Boolean(getLiveContext(contextAtStart, generationAtStart));
+        // Retry intent must not depend on the caller: a foreground tool or
+        // overlay attempt clears any pending reconnect timer on entry, so a
+        // failed attempt that does not re-arm would silently end recovery
+        // (background reasons coalescing behind a foreground promise lose
+        // their reason too). scheduleReconnect() self-guards against
+        // duplicates via the timer, promise, and liveness checks.
+        retryAfterSettle = Boolean(getLiveContext(contextAtStart, generationAtStart));
         throw toError(error);
       } finally {
         if (reconnectPromise === nextReconnectPromise) {
