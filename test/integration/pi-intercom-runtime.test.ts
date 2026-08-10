@@ -604,6 +604,57 @@ test("before_agent_start adds a bounded hint only for same-project peers", { con
   }
 });
 
+test("background reconnect chain survives a failed attempt", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const configPath = path.join(sharedAgentDir, "intercom", "config.json");
+  // Broker self-spawn must fail deterministically during this test: node
+  // evaluates -e and exits 0 without reading the broker script argument, so
+  // spawnBrokerIfNeeded rejects fast ("exited before startup"). The config is
+  // read once at extension registration, so the extension can never revive
+  // the broker itself; only its own retry chain plus an externally restarted
+  // broker can restore the connection. That isolates the regression: a retry
+  // chain that dies after one failed attempt never reconnects here.
+  mkdirSync(path.dirname(configPath), { recursive: true });
+  writeFileSync(configPath, JSON.stringify({ brokerCommand: process.execPath, brokerArgs: ["-e", "process.exit(0)"] }));
+  let broker = await setupBroker();
+  const harness = createExtensionHarness("reconnect-chain-controller");
+  const probe = new IntercomClient();
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await connectClient(probe, "reconnect-chain-probe", {});
+    await waitForSessionByName(probe, "reconnect-chain-controller");
+    await probe.disconnect().catch(() => undefined);
+
+    // Kill the broker and hold it down past the first background retry
+    // (scheduled at 1s; the failing spawn rejects within milliseconds), so
+    // the retry chain must survive at least one full failure.
+    await stopBroker(broker);
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+
+    // Broker returns; only retry #2 or later can observe it. Backoff after
+    // one failure is 2s, then 5s, so allow a generous window.
+    broker = await setupBroker();
+    await connectClient(probe, "reconnect-chain-probe", {});
+    const deadline = Date.now() + 12_000;
+    let reconnected = false;
+    while (Date.now() < deadline) {
+      const sessions = await probe.listSessions().catch(() => []);
+      if (sessions.some((session) => session.name === "reconnect-chain-controller")) {
+        reconnected = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    assert.ok(reconnected, "extension should reconnect via a retry scheduled after a failed background attempt");
+  } finally {
+    rmSync(configPath, { force: true });
+    await probe.disconnect().catch(() => undefined);
+    await harness.emitLifecycle("session_shutdown");
+    await stopBroker(broker);
+  }
+});
+
 test("before_agent_start fails open while project identity resolution is slow", { concurrency: false, skip: process.platform === "win32" }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const broker = await setupBroker();

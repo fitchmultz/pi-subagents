@@ -1183,6 +1183,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return reconnectPromise;
     }
     let nextReconnectPromise!: Promise<IntercomClient>;
+    let retryAfterSettle = false;
     nextReconnectPromise = (async () => {
       const nextClient = new IntercomClient({ sendTimeoutMs: config.sendTimeoutMs, listTimeoutMs: config.listTimeoutMs });
       client = nextClient;
@@ -1203,14 +1204,19 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         if (client === nextClient) {
           client = null;
         }
-        if (reason === "background" && getLiveContext(contextAtStart, generationAtStart)) {
-          scheduleReconnect();
-        }
+        retryAfterSettle = reason === "background" && Boolean(getLiveContext(contextAtStart, generationAtStart));
         throw toError(error);
       } finally {
         if (reconnectPromise === nextReconnectPromise) {
           reconnectPromise = null;
           reconnectPromiseGeneration = null;
+        }
+        // scheduleReconnect() refuses to schedule while reconnectPromise is
+        // set, so a failed background attempt must queue its next retry only
+        // after the promise slot clears. Scheduling from the catch block ran
+        // before that and silently killed the retry chain on first failure.
+        if (retryAfterSettle) {
+          scheduleReconnect();
         }
       }
     })();
