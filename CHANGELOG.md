@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
-- Stop the peer-awareness hint from invalidating the provider prompt cache: the hint is now a constant count-free string, pinned for the rest of the session once peers are first seen, so fleet churn (session spawns/exits, subagent children joining the broker) no longer rewrites the system prompt between turns. Pinned turns also skip the per-turn broker list round trip. Measured on 2026-08-10: the varying count caused 93 full-context cache misses (~$159) in six hours across one fleet.
+- Stop the peer-awareness hint from invalidating the provider prompt cache: the hint is now a constant count-free string, pinned for the rest of the session once peers are first seen, so fleet churn (session spawns/exits, subagent children joining the broker) no longer rewrites the system prompt between turns. Pinned turns also skip the per-turn broker list round trip. Measured on 2026-08-10 across one fleet: 54 run-boundary full-context hot-cache misses (~$92, upper bound) attributable to the varying count in six hours; a further 40 mid-run misses (~$67) were provider-side eviction/routing and are unaffected by this fix.
 - Keep composed tool-schema constraints compatible with Fireworks-hosted models without weakening validation for other providers.
 
 ## [0.33.3] - 2026-08-09
