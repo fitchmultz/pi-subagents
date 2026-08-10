@@ -14,7 +14,7 @@ import { InlineMessageComponent } from "./ui/inline-message.ts";
 import { loadConfig, type IntercomConfig } from "./config.ts";
 import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
-import { formatPeerAwarenessHint, formatSessionTarget, formatTargetOptions, resolveSessionProjectId, targetDisplayName, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
+import { formatPeerAwarenessHint, formatSessionTarget, formatTargetOptions, PEER_AWARENESS_HINT, resolveSessionProjectId, targetDisplayName, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
 import { registerSubagentLiveEventHandlers } from "./subagent-live-events.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -609,6 +609,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let disposed = true;
   let runtimeStarted = false;
   let runtimeGeneration = 0;
+  // Once peers have been seen, the hint is pinned for the rest of the session:
+  // the identical string is re-appended on every turn without another broker
+  // round trip. This keeps the system prompt byte-stable across fleet churn
+  // (session spawns/exits, subagent panels), which keeps the provider prompt
+  // cache valid; the hint text is written so it stays true after peers exit.
+  let peerAwarenessHintPinned = false;
   let agentRunning = false;
   let lastIntercomActivity = 0;
   const activeTools = new Map<string, string>();
@@ -1177,6 +1183,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return reconnectPromise;
     }
     let nextReconnectPromise!: Promise<IntercomClient>;
+    let retryAfterSettle = false;
     nextReconnectPromise = (async () => {
       const nextClient = new IntercomClient({ sendTimeoutMs: config.sendTimeoutMs, listTimeoutMs: config.listTimeoutMs });
       client = nextClient;
@@ -1197,14 +1204,25 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         if (client === nextClient) {
           client = null;
         }
-        if (reason === "background" && getLiveContext(contextAtStart, generationAtStart)) {
-          scheduleReconnect();
-        }
+        // Retry intent must not depend on the caller: a foreground tool or
+        // overlay attempt clears any pending reconnect timer on entry, so a
+        // failed attempt that does not re-arm would silently end recovery
+        // (background reasons coalescing behind a foreground promise lose
+        // their reason too). scheduleReconnect() self-guards against
+        // duplicates via the timer, promise, and liveness checks.
+        retryAfterSettle = Boolean(getLiveContext(contextAtStart, generationAtStart));
         throw toError(error);
       } finally {
         if (reconnectPromise === nextReconnectPromise) {
           reconnectPromise = null;
           reconnectPromiseGeneration = null;
+        }
+        // scheduleReconnect() refuses to schedule while reconnectPromise is
+        // set, so a failed background attempt must queue its next retry only
+        // after the promise slot clears. Scheduling from the catch block ran
+        // before that and silently killed the retry chain on first failure.
+        if (retryAfterSettle) {
+          scheduleReconnect();
         }
       }
     })();
@@ -1389,6 +1407,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     disposed = false;
     runtimeStarted = true;
     runtimeGeneration += 1;
+    // A session boundary starts from a cold prompt cache, so re-detect peers
+    // instead of carrying a pin from a previous session in this process.
+    peerAwarenessHintPinned = false;
     reconnectAttempt = 0;
     clearReconnectTimer();
     clearStartupConnectTimer();
@@ -1517,6 +1538,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (childOrchestratorMetadata) return;
     const generation = runtimeGeneration;
     if (!getLiveContext(ctx, generation)) return;
+    if (peerAwarenessHintPinned) {
+      return { systemPrompt: `${event.systemPrompt}\n\n${PEER_AWARENESS_HINT}` };
+    }
 
     const deadline = Date.now() + PEER_AWARENESS_LIST_TIMEOUT_MS;
     let activeClient = client?.isConnected() ? client : null;
@@ -1541,6 +1565,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (!sessions || client !== activeClient || !getLiveContext(ctx, generation)) return;
     const hint = formatPeerAwarenessHint(sessions, currentBrokerSessionId);
     if (!hint) return;
+    peerAwarenessHintPinned = true;
     return { systemPrompt: `${event.systemPrompt}\n\n${hint}` };
   });
 
