@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Keep composed tool-schema constraints compatible with Fireworks-hosted models without weakening validation for other providers.
+
 ## [0.33.3] - 2026-08-09
 
 ### Changed

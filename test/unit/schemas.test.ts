@@ -100,10 +100,10 @@ function hasAnyOfArrayWithStringItems(schema: JsonSchemaNode | undefined): boole
 	});
 }
 
-function isRequiredOnlySchema(value: unknown): boolean {
+function isUntypedRequiredSchema(value: unknown): boolean {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-	const keys = Object.keys(value as Record<string, unknown>);
-	return keys.length === 1 && keys[0] === "required";
+	const schema = value as JsonSchemaNode;
+	return Object.hasOwn(schema, "required") && schema.type !== "object";
 }
 
 let schemas: Record<string, JsonSchemaNode> = {};
@@ -285,25 +285,30 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.deepEqual(missingItemsPaths, []);
 	});
 
-	it("does not encode acceptance contract presence with required-only schema nodes", () => {
-		const rejectedPaths: string[] = [];
+	it("uses provider-compatible composed object schemas", () => {
+		const untypedRequiredPaths: string[] = [];
+		const repeatedNotPaths: string[] = [];
 
 		for (const [name, schema] of Object.entries(schemas)) {
-			const stack: Array<{ path: string; value: unknown; insideAcceptance: boolean }> = [{ path: name, value: schema, insideAcceptance: false }];
+			const stack: Array<{ path: string; value: unknown }> = [{ path: name, value: schema }];
 			while (stack.length > 0) {
 				const current = stack.pop()!;
-				const insideAcceptance = current.insideAcceptance
-					|| (current.value && typeof current.value === "object" && !Array.isArray(current.value) && String((current.value as JsonSchemaNode).description ?? "").startsWith("Optional acceptance contract."));
-				if (insideAcceptance && isRequiredOnlySchema(current.value)) rejectedPaths.push(current.path);
+				if (isUntypedRequiredSchema(current.value)) untypedRequiredPaths.push(current.path);
 				if (Array.isArray(current.value)) {
-					current.value.forEach((value, index) => stack.push({ path: `${current.path}[${index}]`, value, insideAcceptance }));
+					current.value.forEach((value, index) => stack.push({ path: `${current.path}[${index}]`, value }));
 				} else if (current.value && typeof current.value === "object") {
-					for (const [key, value] of Object.entries(current.value)) stack.push({ path: `${current.path}.${key}`, value, insideAcceptance });
+					const node = current.value as JsonSchemaNode;
+					const allOf = node.allOf;
+					if (Array.isArray(allOf) && allOf.filter((entry) => entry && typeof entry === "object" && Object.hasOwn(entry, "not")).length > 1) {
+						repeatedNotPaths.push(`${current.path}.allOf`);
+					}
+					for (const [key, value] of Object.entries(node)) stack.push({ path: `${current.path}.${key}`, value });
 				}
 			}
 		}
 
-		assert.deepEqual(rejectedPaths, []);
+		assert.deepEqual(untypedRequiredPaths, []);
+		assert.deepEqual(repeatedNotPaths, []);
 	});
 
 	it("does not emit provider-rejected union schema shapes", () => {
