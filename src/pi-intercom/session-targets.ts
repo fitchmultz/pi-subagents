@@ -104,6 +104,13 @@ export function targetDisplayName(session: TargetIdentity, allSessions: TargetId
     : session.name;
 }
 
+// The hint is deliberately a constant: it is appended to the system prompt,
+// which is the very start of the provider prompt-cache prefix. Any per-turn
+// variation there (live peer counts, checkout counts) invalidates the entire
+// cached context for every turn in which fleet membership changed, which is
+// expensive on large sessions. Live details belong behind intercom list.
+export const PEER_AWARENESS_HINT = `Other Pi sessions may be connected to this project. If you have not checked them for this task, use intercom({ action: "list" }) before duplicating substantial work or changing shared state. Coordinate only when work overlaps; use subagent controls for managed child runs.`;
+
 export function formatPeerAwarenessHint<T extends ProjectSessionIdentity>(sessions: T[], currentSessionId: string): string | undefined {
   const current = sessions.find((session) => session.id === currentSessionId);
   if (!current) return undefined;
@@ -115,12 +122,7 @@ export function formatPeerAwarenessHint<T extends ProjectSessionIdentity>(sessio
   });
   if (peers.length === 0) return undefined;
 
-  const sameCheckout = peers.filter((session) => session.cwd === current.cwd).length;
-  const peerCount = `${peers.length} other Pi session${peers.length === 1 ? " is" : "s are"}`;
-  const checkoutCount = sameCheckout > 0
-    ? ` (${sameCheckout} in this checkout)`
-    : "";
-  return `${peerCount} connected to this project${checkoutCount}. If you have not checked them for this task, use intercom({ action: "list" }) before duplicating substantial work or changing shared state. Coordinate only when work overlaps; use subagent controls for managed child runs.`;
+  return PEER_AWARENESS_HINT;
 }
 
 export function resolveSessionTarget<T extends TargetIdentity>(sessions: T[], rawTarget: string): TargetResolution<T> {

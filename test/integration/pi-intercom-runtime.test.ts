@@ -583,8 +583,18 @@ test("before_agent_start adds a bounded hint only for same-project peers", { con
     const results = await harness.emitLifecycle("before_agent_start", { systemPrompt: "base prompt" });
     const update = results.find((result) => result && typeof result === "object" && "systemPrompt" in result) as { systemPrompt: string } | undefined;
     assert.ok(update);
-    assert.match(update.systemPrompt, /^base prompt\n\n1 other Pi session is connected to this project\./);
+    assert.match(update.systemPrompt, /^base prompt\n\nOther Pi sessions may be connected to this project\./);
     assert.doesNotMatch(update.systemPrompt, /same-project-peer|unrelated-peer/);
+
+    // Prompt-cache regression guard: once peers have been seen, the appended
+    // hint must stay byte-identical on later turns even after fleet membership
+    // changes (here: the only peer disconnects). A varying system prompt
+    // invalidates the provider prompt cache for the entire context.
+    await related.disconnect();
+    const afterChurn = await harness.emitLifecycle("before_agent_start", { systemPrompt: "base prompt" });
+    const churnUpdate = afterChurn.find((result) => result && typeof result === "object" && "systemPrompt" in result) as { systemPrompt: string } | undefined;
+    assert.ok(churnUpdate);
+    assert.equal(churnUpdate.systemPrompt, update.systemPrompt);
   } finally {
     await related.disconnect().catch(() => undefined);
     await unrelated.disconnect().catch(() => undefined);
