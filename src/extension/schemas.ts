@@ -5,6 +5,8 @@
 import { Type } from "typebox";
 import { SUBAGENT_ACTIONS } from "../shared/types.ts";
 
+const requiredObject = (...required: string[]) => ({ type: "object" as const, required });
+
 const SkillOverride = Type.Unsafe({
 	anyOf: [
 		{ type: "array", items: { type: "string", minLength: 1 } },
@@ -201,22 +203,24 @@ export const ChainItemSchema = Type.Object({
 	description: "Chain step: {agent, task?} sequential, {parallel: [...]} concurrent, or {expand, parallel: {...}, collect} dynamic fanout.",
 	additionalProperties: false,
 	allOf: [
-		{ anyOf: [{ required: ["agent"] }, { required: ["parallel"] }] },
-		{ not: { required: ["agent", "parallel"] } },
-		{ if: { required: ["expand"] }, then: { required: ["parallel", "collect"], properties: { parallel: { type: "object" } } } },
-		{ if: { required: ["collect"] }, then: { required: ["expand", "parallel"], properties: { parallel: { type: "object" } } } },
-		{ if: { required: ["parallel"], properties: { parallel: { type: "object" } } }, then: { required: ["expand", "collect"] } },
-		{ not: { required: ["expand"], properties: { parallel: { type: "array", items: {} } } } },
-		{ if: { required: ["agent"] }, then: { not: { anyOf: [{ required: ["concurrency"] }, { required: ["failFast"] }, { required: ["worktree"] }] } } },
-		{ if: { required: ["parallel"], properties: { parallel: { type: "array", items: {} } } }, then: { not: { anyOf: [
-			{ required: ["task"] }, { required: ["phase"] }, { required: ["label"] }, { required: ["as"] }, { required: ["outputSchema"] },
-			{ required: ["output"] }, { required: ["outputMode"] }, { required: ["reads"] }, { required: ["progress"] },
-			{ required: ["skill"] }, { required: ["model"] }, { required: ["acceptance"] }, { required: ["expand"] }, { required: ["collect"] },
+		{ anyOf: [requiredObject("agent"), requiredObject("parallel")] },
+		{ not: { anyOf: [
+			requiredObject("agent", "parallel"),
+			{ ...requiredObject("expand"), properties: { parallel: { type: "array", items: {} } } },
+		] } },
+		{ if: requiredObject("expand"), then: { ...requiredObject("parallel", "collect"), properties: { parallel: { type: "object" } } } },
+		{ if: requiredObject("collect"), then: { ...requiredObject("expand", "parallel"), properties: { parallel: { type: "object" } } } },
+		{ if: { ...requiredObject("parallel"), properties: { parallel: { type: "object" } } }, then: requiredObject("expand", "collect") },
+		{ if: requiredObject("agent"), then: { not: { anyOf: [requiredObject("concurrency"), requiredObject("failFast"), requiredObject("worktree")] } } },
+		{ if: { ...requiredObject("parallel"), properties: { parallel: { type: "array", items: {} } } }, then: { not: { anyOf: [
+			requiredObject("task"), requiredObject("phase"), requiredObject("label"), requiredObject("as"), requiredObject("outputSchema"),
+			requiredObject("output"), requiredObject("outputMode"), requiredObject("reads"), requiredObject("progress"),
+			requiredObject("skill"), requiredObject("model"), requiredObject("acceptance"), requiredObject("expand"), requiredObject("collect"),
 		] } } },
-		{ if: { required: ["parallel"], properties: { parallel: { type: "object" } } }, then: { not: { anyOf: [
-			{ required: ["task"] }, { required: ["as"] }, { required: ["outputSchema"] }, { required: ["cwd"] }, { required: ["output"] },
-			{ required: ["outputMode"] }, { required: ["reads"] }, { required: ["progress"] }, { required: ["skill"] },
-			{ required: ["model"] }, { required: ["acceptance"] }, { required: ["worktree"] },
+		{ if: { ...requiredObject("parallel"), properties: { parallel: { type: "object" } } }, then: { not: { anyOf: [
+			requiredObject("task"), requiredObject("as"), requiredObject("outputSchema"), requiredObject("cwd"), requiredObject("output"),
+			requiredObject("outputMode"), requiredObject("reads"), requiredObject("progress"), requiredObject("skill"),
+			requiredObject("model"), requiredObject("acceptance"), requiredObject("worktree"),
 		] } } },
 	],
 });
@@ -308,19 +312,21 @@ export const SubagentParams = Type.Object({
 }, {
 	additionalProperties: false,
 	allOf: [
-		{ not: { required: ["agent", "tasks"] } },
-		{ not: { required: ["agent", "chain"] } },
-		{ not: { required: ["tasks", "chain"] } },
-		{ if: { required: ["worktree"] }, then: { required: ["tasks"] } },
-		{ if: { required: ["concurrency"] }, then: { required: ["tasks"] } },
-		{ if: { required: ["chainDir"] }, then: { required: ["chain"] } },
+		{ not: { anyOf: [
+			requiredObject("agent", "tasks"),
+			requiredObject("agent", "chain"),
+			requiredObject("tasks", "chain"),
+		] } },
+		{ if: requiredObject("worktree"), then: requiredObject("tasks") },
+		{ if: requiredObject("concurrency"), then: requiredObject("tasks") },
+		{ if: requiredObject("chainDir"), then: requiredObject("chain") },
 		{ if: { anyOf: [
-			{ required: ["output"] }, { required: ["outputMode"] }, { required: ["skill"] }, { required: ["model"] },
-			{ required: ["outputSchema"] }, { required: ["progress"] },
-		] }, then: { required: ["agent"] } },
-		{ if: { required: ["acceptance"] }, then: { anyOf: [
-			{ required: ["agent"] },
-			{ required: ["action"], properties: { action: { enum: ["resume"] } } },
+			requiredObject("output"), requiredObject("outputMode"), requiredObject("skill"), requiredObject("model"),
+			requiredObject("outputSchema"), requiredObject("progress"),
+		] }, then: requiredObject("agent") },
+		{ if: requiredObject("acceptance"), then: { anyOf: [
+			requiredObject("agent"),
+			{ ...requiredObject("action"), properties: { action: { enum: ["resume"] } } },
 		] } },
 	],
 });
