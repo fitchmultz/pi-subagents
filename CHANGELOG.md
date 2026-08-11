@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.33.4] - 2026-08-11
 
 ### Fixed
 - Garbage-collect `nested-subagent-events` route directories in startup retention: they accumulated forever, and startup job restore readdir'd the pile once per async run (O(runs × routes)), putting most of startup CPU in `readdir` on a bloated temp root. Routes are removed after the same 7-day window, but stay while writes still land inside them (live nested descendants, foreground roots) or while their root run is active, and operational read failures now fail closed instead of deleting live state.
