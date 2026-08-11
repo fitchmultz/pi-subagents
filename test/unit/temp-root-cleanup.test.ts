@@ -1,0 +1,54 @@
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { describe, it } from "node:test";
+import { ASYNC_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
+import { cleanupOldRunStorage } from "../../src/shared/temp-root.ts";
+
+const NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
+const OLD = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+
+function makeRoute(rootRunId: string, old: boolean): string {
+	const routeRoot = path.join(NESTED_EVENTS_DIR, `${rootRunId}-token`);
+	fs.mkdirSync(routeRoot, { recursive: true });
+	fs.writeFileSync(path.join(routeRoot, "route.json"), `${JSON.stringify({ rootRunId, capabilityToken: "token" })}\n`);
+	if (old) fs.utimesSync(routeRoot, OLD, OLD);
+	return routeRoot;
+}
+
+function makeRun(id: string, state: string, old: boolean): void {
+	const dir = path.join(ASYNC_DIR, id);
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify({ state }));
+	if (old) fs.utimesSync(dir, OLD, OLD);
+}
+
+describe("cleanupOldRunStorage nested events", () => {
+	it("removes stale routes whose root run is gone", () => {
+		const route = makeRoute("test-cleanup-gone", true);
+		cleanupOldRunStorage();
+		assert.equal(fs.existsSync(route), false);
+	});
+
+	it("removes stale routes with malformed route metadata", () => {
+		const routeRoot = path.join(NESTED_EVENTS_DIR, "test-cleanup-junk-token");
+		fs.mkdirSync(routeRoot, { recursive: true });
+		fs.writeFileSync(path.join(routeRoot, "route.json"), "not json");
+		fs.utimesSync(routeRoot, OLD, OLD);
+		cleanupOldRunStorage();
+		assert.equal(fs.existsSync(routeRoot), false);
+	});
+
+	it("keeps stale routes while the root run is active", () => {
+		makeRun("test-cleanup-live", "running", true);
+		const route = makeRoute("test-cleanup-live", true);
+		cleanupOldRunStorage();
+		assert.equal(fs.existsSync(route), true);
+	});
+
+	it("keeps fresh routes even when the root run is gone", () => {
+		const route = makeRoute("test-cleanup-fresh", false);
+		cleanupOldRunStorage();
+		assert.equal(fs.existsSync(route), true);
+	});
+});

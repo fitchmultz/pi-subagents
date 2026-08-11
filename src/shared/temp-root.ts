@@ -32,7 +32,7 @@ export function ensureSafeTempPath(candidate: string): void {
 	}
 }
 
-function removeOldEntries(root: string, now: number, skipActiveStatus = false): void {
+function removeOldEntries(root: string, now: number, statusPath?: (entryPath: string) => string): void {
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(root, { withFileTypes: true });
@@ -44,9 +44,9 @@ function removeOldEntries(root: string, now: number, skipActiveStatus = false): 
 		try {
 			const stat = fs.lstatSync(entryPath);
 			if (now - stat.mtimeMs <= MAX_RUN_AGE_MS) continue;
-			if (skipActiveStatus && entry.isDirectory()) {
+			if (statusPath && entry.isDirectory()) {
 				try {
-					const status = JSON.parse(fs.readFileSync(path.join(entryPath, "status.json"), "utf-8")) as { state?: string };
+					const status = JSON.parse(fs.readFileSync(statusPath(entryPath), "utf-8")) as { state?: string };
 					if (status.state === "running" || status.state === "queued") continue;
 				} catch {
 					// Old malformed/incomplete directories are safe to remove.
@@ -59,13 +59,22 @@ function removeOldEntries(root: string, now: number, skipActiveStatus = false): 
 	}
 }
 
+function nestedRouteStatusPath(routeRoot: string): string {
+	const metadata = JSON.parse(fs.readFileSync(path.join(routeRoot, "route.json"), "utf-8")) as { rootRunId?: unknown };
+	if (typeof metadata.rootRunId !== "string" || !metadata.rootRunId || metadata.rootRunId.includes("/") || metadata.rootRunId.includes("..")) {
+		throw new Error("Invalid nested route metadata.");
+	}
+	return path.join(ASYNC_DIR, metadata.rootRunId, "status.json");
+}
+
 export function cleanupOldRunStorage(now = Date.now()): void {
-	for (const [dir, skipActiveStatus] of [
-		[ASYNC_DIR, true],
-		[RESULTS_DIR, false],
-		[path.join(TEMP_ROOT_DIR, "nested-subagent-runs"), false],
+	for (const [dir, statusPath] of [
+		[ASYNC_DIR, (entryPath: string) => path.join(entryPath, "status.json")],
+		[RESULTS_DIR, undefined],
+		[path.join(TEMP_ROOT_DIR, "nested-subagent-runs"), undefined],
+		[path.join(TEMP_ROOT_DIR, "nested-subagent-events"), nestedRouteStatusPath],
 	] as const) {
 		ensureSafeTempPath(dir);
-		removeOldEntries(dir, now, skipActiveStatus);
+		removeOldEntries(dir, now, statusPath);
 	}
 }
