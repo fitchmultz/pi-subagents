@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { isSafeNestedPathId } from "../runs/shared/nested-path.ts";
 import { ASYNC_DIR, RESULTS_DIR, TEMP_ROOT_DIR } from "./types.ts";
 
 const MAX_RUN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -32,7 +33,24 @@ export function ensureSafeTempPath(candidate: string): void {
 	}
 }
 
-function removeOldEntries(root: string, now: number, skipActiveStatus = false): void {
+// Missing, malformed, or non-object JSON means the entry is incomplete garbage and safe
+// to remove. Operational read failures throw so callers fail closed instead of deleting.
+function readJsonObject(file: string): Record<string, unknown> | undefined {
+	try {
+		const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf-8"));
+		return parsed !== null && typeof parsed === "object" ? parsed as Record<string, unknown> : undefined;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return undefined;
+		throw error;
+	}
+}
+
+function activeStatus(statusFile: string): boolean {
+	const status = readJsonObject(statusFile);
+	return status?.state === "running" || status?.state === "queued";
+}
+
+function removeOldEntries(root: string, now: number, keepActive?: (entryPath: string) => boolean): void {
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(root, { withFileTypes: true });
@@ -44,28 +62,40 @@ function removeOldEntries(root: string, now: number, skipActiveStatus = false): 
 		try {
 			const stat = fs.lstatSync(entryPath);
 			if (now - stat.mtimeMs <= MAX_RUN_AGE_MS) continue;
-			if (skipActiveStatus && entry.isDirectory()) {
-				try {
-					const status = JSON.parse(fs.readFileSync(path.join(entryPath, "status.json"), "utf-8")) as { state?: string };
-					if (status.state === "running" || status.state === "queued") continue;
-				} catch {
-					// Old malformed/incomplete directories are safe to remove.
-				}
-			}
+			if (keepActive && entry.isDirectory() && keepActive(entryPath)) continue;
 			fs.rmSync(entryPath, { recursive: entry.isDirectory(), force: true });
 		} catch {
-			// Startup retention cleanup is best effort.
+			// Startup retention cleanup is best effort; entries that fail closed are skipped.
 		}
 	}
 }
 
+// A route is live while anything still writes into it (nested descendants can outlive a
+// terminal root, and foreground roots have no async status at all) or while its root run
+// reports an active state. Child writes land in the events/ and controls/ subdirs without
+// bumping the route-root mtime; registry projection renames into routeRoot, which the
+// caller's mtime gate already covers.
+function nestedRouteActive(routeRoot: string, now: number): boolean {
+	for (const name of ["events", "controls"]) {
+		try {
+			if (now - fs.statSync(path.join(routeRoot, name)).mtimeMs <= MAX_RUN_AGE_MS) return true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	}
+	const metadata = readJsonObject(path.join(routeRoot, "route.json"));
+	if (!metadata || !isSafeNestedPathId(metadata.rootRunId)) return false;
+	return activeStatus(path.join(ASYNC_DIR, metadata.rootRunId, "status.json"));
+}
+
 export function cleanupOldRunStorage(now = Date.now()): void {
-	for (const [dir, skipActiveStatus] of [
-		[ASYNC_DIR, true],
-		[RESULTS_DIR, false],
-		[path.join(TEMP_ROOT_DIR, "nested-subagent-runs"), false],
+	for (const [dir, keepActive] of [
+		[ASYNC_DIR, (entryPath: string) => activeStatus(path.join(entryPath, "status.json"))],
+		[RESULTS_DIR, undefined],
+		[path.join(TEMP_ROOT_DIR, "nested-subagent-runs"), undefined],
+		[path.join(TEMP_ROOT_DIR, "nested-subagent-events"), (entryPath: string) => nestedRouteActive(entryPath, now)],
 	] as const) {
 		ensureSafeTempPath(dir);
-		removeOldEntries(dir, now, skipActiveStatus);
+		removeOldEntries(dir, now, keepActive);
 	}
 }
