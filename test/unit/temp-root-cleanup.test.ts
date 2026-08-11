@@ -51,4 +51,26 @@ describe("cleanupOldRunStorage nested events", () => {
 		cleanupOldRunStorage();
 		assert.equal(fs.existsSync(route), true);
 	});
+
+	it("keeps stale routes while writes still land inside them", () => {
+		makeRun("test-cleanup-terminal", "complete", false);
+		const route = makeRoute("test-cleanup-terminal", true);
+		// Nested descendants can outlive a terminal root, and foreground roots have no
+		// async status at all: recent event writes are the only liveness signal.
+		fs.mkdirSync(path.join(route, "events"), { recursive: true });
+		cleanupOldRunStorage();
+		assert.equal(fs.existsSync(route), true);
+	});
+
+	it("fails closed when route metadata cannot be read", () => {
+		const route = makeRoute("test-cleanup-eacces", true);
+		const routeFile = path.join(route, "route.json");
+		fs.chmodSync(routeFile, 0o000);
+		try {
+			cleanupOldRunStorage();
+			assert.equal(fs.existsSync(route), true);
+		} finally {
+			fs.chmodSync(routeFile, 0o600);
+		}
+	});
 });
