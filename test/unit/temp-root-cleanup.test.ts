@@ -31,12 +31,14 @@ describe("cleanupOldRunStorage nested events", () => {
 	});
 
 	it("removes stale routes with malformed route metadata", () => {
-		const routeRoot = path.join(NESTED_EVENTS_DIR, "test-cleanup-junk-token");
-		fs.mkdirSync(routeRoot, { recursive: true });
-		fs.writeFileSync(path.join(routeRoot, "route.json"), "not json");
-		fs.utimesSync(routeRoot, OLD, OLD);
-		cleanupOldRunStorage();
-		assert.equal(fs.existsSync(routeRoot), false);
+		for (const [name, content] of [["junk", "not json"], ["null", "null"]] as const) {
+			const routeRoot = path.join(NESTED_EVENTS_DIR, `test-cleanup-${name}-token`);
+			fs.mkdirSync(routeRoot, { recursive: true });
+			fs.writeFileSync(path.join(routeRoot, "route.json"), content);
+			fs.utimesSync(routeRoot, OLD, OLD);
+			cleanupOldRunStorage();
+			assert.equal(fs.existsSync(routeRoot), false);
+		}
 	});
 
 	it("keeps stale routes while the root run is active", () => {
@@ -62,7 +64,16 @@ describe("cleanupOldRunStorage nested events", () => {
 		assert.equal(fs.existsSync(route), true);
 	});
 
-	it("fails closed when route metadata cannot be read", () => {
+	it("removes stale runs whose status is not a JSON object", () => {
+		const dir = path.join(ASYNC_DIR, "test-cleanup-nullstatus");
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(path.join(dir, "status.json"), "null");
+		fs.utimesSync(dir, OLD, OLD);
+		cleanupOldRunStorage();
+		assert.equal(fs.existsSync(dir), false);
+	});
+
+	it("fails closed when route metadata cannot be read", { skip: process.platform === "win32" }, () => {
 		const route = makeRoute("test-cleanup-eacces", true);
 		const routeFile = path.join(route, "route.json");
 		fs.chmodSync(routeFile, 0o000);

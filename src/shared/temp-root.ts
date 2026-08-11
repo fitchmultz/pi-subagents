@@ -33,16 +33,21 @@ export function ensureSafeTempPath(candidate: string): void {
 	}
 }
 
-// Missing or malformed status means the entry is incomplete and safe to remove.
-// Operational read failures throw so the caller fails closed instead of deleting live work.
-function activeStatus(statusFile: string): boolean {
+// Missing, malformed, or non-object JSON means the entry is incomplete garbage and safe
+// to remove. Operational read failures throw so callers fail closed instead of deleting.
+function readJsonObject(file: string): Record<string, unknown> | undefined {
 	try {
-		const status = JSON.parse(fs.readFileSync(statusFile, "utf-8")) as { state?: string };
-		return status.state === "running" || status.state === "queued";
+		const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf-8"));
+		return parsed !== null && typeof parsed === "object" ? parsed as Record<string, unknown> : undefined;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return false;
+		if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return undefined;
 		throw error;
 	}
+}
+
+function activeStatus(statusFile: string): boolean {
+	const status = readJsonObject(statusFile);
+	return status?.state === "running" || status?.state === "queued";
 }
 
 function removeOldEntries(root: string, now: number, keepActive?: (entryPath: string) => boolean): void {
@@ -67,24 +72,19 @@ function removeOldEntries(root: string, now: number, keepActive?: (entryPath: st
 
 // A route is live while anything still writes into it (nested descendants can outlive a
 // terminal root, and foreground roots have no async status at all) or while its root run
-// reports an active state. Writes land in events/, controls/, and registry.json; route-root
-// mtime alone only advances on creation and registry projection.
+// reports an active state. Child writes land in the events/ and controls/ subdirs without
+// bumping the route-root mtime; registry projection renames into routeRoot, which the
+// caller's mtime gate already covers.
 function nestedRouteActive(routeRoot: string, now: number): boolean {
-	for (const name of ["events", "controls", "registry.json"]) {
+	for (const name of ["events", "controls"]) {
 		try {
 			if (now - fs.statSync(path.join(routeRoot, name)).mtimeMs <= MAX_RUN_AGE_MS) return true;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 	}
-	let metadata: { rootRunId?: unknown };
-	try {
-		metadata = JSON.parse(fs.readFileSync(path.join(routeRoot, "route.json"), "utf-8"));
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return false;
-		throw error;
-	}
-	if (!isSafeNestedPathId(metadata.rootRunId)) return false;
+	const metadata = readJsonObject(path.join(routeRoot, "route.json"));
+	if (!metadata || !isSafeNestedPathId(metadata.rootRunId)) return false;
 	return activeStatus(path.join(ASYNC_DIR, metadata.rootRunId, "status.json"));
 }
 
