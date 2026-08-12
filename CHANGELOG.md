@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Isolate the temp-root cleanup unit test even when run directly, preventing its fake active async run and nested routes from leaking into the shared startup-discovery directory.
+
 ## [0.33.4] - 2026-08-11
 
 ### Fixed

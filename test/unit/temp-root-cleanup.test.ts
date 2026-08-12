@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "node:test";
-import { ASYNC_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
-import { cleanupOldRunStorage } from "../../src/shared/temp-root.ts";
+import { after, describe, it } from "node:test";
+
+const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-temp-root-test-"));
+process.env.PI_SUBAGENT_TEMP_ROOT = TEST_ROOT;
+const { ASYNC_DIR, TEMP_ROOT_DIR } = await import("../../src/shared/types.ts");
+const { cleanupOldRunStorage } = await import("../../src/shared/temp-root.ts");
+after(() => fs.rmSync(TEST_ROOT, { recursive: true, force: true }));
 
 const NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
 const OLD = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
