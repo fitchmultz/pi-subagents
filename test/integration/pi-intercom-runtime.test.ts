@@ -399,6 +399,18 @@ async function waitForSentMessages(harness: ReturnType<typeof createExtensionHar
   throw new Error(`Timed out waiting for ${count} sent messages; got ${harness.sentMessages.length}`);
 }
 
+async function ackSentIntercom(harness: ReturnType<typeof createExtensionHarness>, index = -1): Promise<void> {
+  const sent = harness.sentMessages.at(index);
+  assert.ok(sent, "expected a sent intercom message to ack");
+  await harness.emitLifecycle("message_end", {
+    message: {
+      role: "custom",
+      customType: "intercom_message",
+      details: sent.message.details,
+    },
+  });
+}
+
 function waitForReply(client: InstanceType<typeof IntercomClient>, replyTo: string, timeoutMs = 5000): Promise<{ from: SessionInfo; message: Message; }> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -1709,6 +1721,69 @@ test("busy interactive sessions idle-gate default asks and steer default sends w
   }
 });
 
+test("unconsumed inbound steers re-deliver after the recipient aborts", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { planner, cleanup } = await setupClients();
+  let idle = false;
+  const harness = createExtensionHarness("abort-redeliver-worker", {
+    hasUI: true,
+    isIdle: () => idle,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await harness.emitLifecycle("agent_start");
+    const target = await waitForSessionByName(planner, "abort-redeliver-worker");
+    assert.equal((await planner.send(target.id, {
+      messageId: "aborted-steer",
+      text: "Keep this after Esc.",
+    })).delivered, true);
+    await waitForSentMessages(harness, 1);
+    assert.deepEqual(harness.sentMessages[0]?.options, { deliverAs: "steer" });
+
+    idle = true;
+    await harness.emitLifecycle("agent_end");
+    await harness.emitLifecycle("agent_settled");
+
+    assert.equal(harness.sentMessages.length, 2);
+    assert.deepEqual(harness.sentMessages[1]?.options, { triggerTurn: true });
+    assert.match(harness.sentMessages[1]?.message.content ?? "", /Keep this after Esc/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("consumed inbound steers are not re-delivered after settle", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("ack-no-duplicate-worker", {
+    hasUI: true,
+    isIdle: () => true,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await harness.emitLifecycle("agent_start");
+    const target = await waitForSessionByName(planner, "ack-no-duplicate-worker");
+    assert.equal((await planner.send(target.id, {
+      messageId: "consumed-steer",
+      text: "Already injected.",
+    })).delivered, true);
+    await waitForSentMessages(harness, 1);
+    await ackSentIntercom(harness);
+    await harness.emitLifecycle("agent_end");
+    await harness.emitLifecycle("agent_settled");
+    assert.equal(harness.sentMessages.length, 1);
+    assert.deepEqual(harness.sentMessages[0]?.options, { deliverAs: "steer" });
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
 test("busy interactive sessions reject overload instead of silently evicting queued asks", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { planner, cleanup } = await setupClients();
@@ -1769,6 +1844,7 @@ test("busy interactive sessions defer explicit queued sends and idle-gate defaul
     await new Promise((resolve) => setTimeout(resolve, 250));
     assert.equal(harness.sentMessages.length, 1);
     assert.deepEqual(harness.sentMessages[0]?.options, { deliverAs: "followUp" });
+    await ackSentIntercom(harness);
 
     idle = true;
     await harness.emitLifecycle("agent_end");
