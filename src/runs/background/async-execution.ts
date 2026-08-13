@@ -191,11 +191,13 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, asyncDir: string)
 	ensureTempRoot();
 	const cfgPath = getAsyncConfigPath(suffix);
 	fs.writeFileSync(cfgPath, JSON.stringify(cfg), { mode: 0o600 });
-	const runner = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-runner.ts");
+	const runnerDir = path.dirname(fileURLToPath(import.meta.url));
+	const launcher = path.join(runnerDir, "subagent-runner-launcher.ts");
+	const runner = path.join(runnerDir, "subagent-runner.ts");
 
 	const errorLogFd = fs.openSync(path.join(asyncDir, RUNNER_ERROR_LOG_FILE), "a");
 	try {
-		const proc = spawn(process.execPath, [runner, cfgPath], {
+		const proc = spawn(process.execPath, [launcher, runner, cfgPath], {
 			cwd,
 			detached: true,
 			stdio: ["ignore", "ignore", errorLogFd],
