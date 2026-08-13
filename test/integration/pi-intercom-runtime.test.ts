@@ -1909,6 +1909,86 @@ test("idle flush wakes a queued ask before an earlier plain message", { concurre
   }
 });
 
+test("non-UI replace asks wake when the recipient becomes idle", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { planner, cleanup } = await setupClients();
+  let idle = false;
+  const harness = createExtensionHarness("nonui-replace-ask-worker", {
+    hasUI: false,
+    isIdle: () => idle,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await harness.emitLifecycle("agent_start");
+    const target = await waitForSessionByName(planner, "nonui-replace-ask-worker");
+    const queued = await planner.send(target.id, {
+      messageId: "nonui-replace-ask",
+      text: "Non-UI replace ask.",
+      expectsReply: true,
+      delivery: "queue",
+      queueMode: "replace",
+      threadId: "nonui-ask",
+    });
+    assert.equal(queued.accepted, true);
+    await new Promise((resolve) => setTimeout(resolve, 1700));
+    assert.equal(harness.sentMessages.length, 0);
+
+    idle = true;
+    await harness.emitLifecycle("agent_end");
+    await harness.emitLifecycle("agent_settled");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(harness.sentMessages.length, 1);
+    assert.deepEqual(harness.sentMessages[0]?.options, { triggerTurn: true });
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /Non-UI replace ask/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("idle flush delivers passives before waking an ask", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { planner, cleanup } = await setupClients();
+  let idle = false;
+  const harness = createExtensionHarness("passive-before-ask-worker", {
+    hasUI: true,
+    isIdle: () => idle,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    const target = await waitForSessionByName(planner, "passive-before-ask-worker");
+    assert.equal((await planner.send(target.id, {
+      messageId: "passive-first",
+      text: "Passive breadcrumb.",
+      delivery: "passive",
+    })).delivered, true);
+    assert.equal((await planner.send(target.id, {
+      messageId: "ask-after-passive",
+      text: "Ask after passive.",
+      expectsReply: true,
+    })).delivered, true);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(harness.sentMessages.length, 0);
+
+    idle = true;
+    await harness.emitLifecycle("agent_end");
+    await harness.emitLifecycle("agent_settled");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(harness.sentMessages.length, 2);
+    assert.equal(harness.sentMessages[0]?.options, undefined);
+    assert.deepEqual(harness.sentMessages[1]?.options, { triggerTurn: true });
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /Passive breadcrumb/);
+    assert.match(harness.sentMessages[1]?.message.content ?? "", /Ask after passive/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
 test("busy interactive sessions reject overload instead of silently evicting queued asks", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { planner, cleanup } = await setupClients();

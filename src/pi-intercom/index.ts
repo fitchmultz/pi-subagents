@@ -848,26 +848,23 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return askIndex === -1 ? entries.findIndex(canTrigger) : askIndex;
   }
   function sendTriggerFirst(entries: PendingInboundMessage[], generation = runtimeGeneration): void {
-    const triggerIndex = queuedTriggerIndex(entries);
-    if (triggerIndex > 0) {
-      entries.unshift(entries.splice(triggerIndex, 1)[0]!);
-    }
-    let sentTrigger = false;
+    const passives: PendingInboundMessage[] = [];
+    const rest: PendingInboundMessage[] = [];
     for (const entry of entries) {
-      if (entry.flushDelivery === "passive") {
-        sendIncomingMessage(entry, "passive", generation);
-        continue;
-      }
-      if (entry.flushDelivery === "steer") {
-        sendIncomingMessage(entry, "steer", generation);
-        continue;
-      }
+      if (entry.flushDelivery === "passive") passives.push(entry);
+      else rest.push(entry);
+    }
+    for (const entry of passives) sendIncomingMessage(entry, "passive", generation);
+    const triggerIndex = queuedTriggerIndex(rest);
+    if (triggerIndex > 0) rest.unshift(rest.splice(triggerIndex, 1)[0]!);
+    let sentTrigger = false;
+    for (const entry of rest) {
       if (!sentTrigger && triggerIndex !== -1) {
         sendIncomingMessage(entry, "trigger", generation);
         sentTrigger = true;
         continue;
       }
-      sendIncomingMessage(entry, "followUp", generation);
+      sendIncomingMessage(entry, entry.flushDelivery === "steer" ? "steer" : "followUp", generation);
     }
   }
   function currentSessionTargetMatches(to: string, resolvedTo?: string | null, activeClient?: IntercomClient): boolean {
