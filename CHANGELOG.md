@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.33.7] - 2026-08-13
 
 ### Fixed
 - Bound outstanding inbound redelivery to the same 100-message recipient queue limit.
