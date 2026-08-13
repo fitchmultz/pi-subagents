@@ -399,8 +399,8 @@ async function waitForSentMessages(harness: ReturnType<typeof createExtensionHar
   throw new Error(`Timed out waiting for ${count} sent messages; got ${harness.sentMessages.length}`);
 }
 
-async function ackSentIntercom(harness: ReturnType<typeof createExtensionHarness>, index = -1): Promise<void> {
-  const sent = harness.sentMessages.at(index);
+async function ackSentIntercom(harness: ReturnType<typeof createExtensionHarness>): Promise<void> {
+  const sent = harness.sentMessages.at(-1);
   assert.ok(sent, "expected a sent intercom message to ack");
   await harness.emitLifecycle("message_end", {
     message: {
@@ -1822,6 +1822,38 @@ test("unconsumed inbound messages survive a second abort", { concurrency: false 
     assert.deepEqual(harness.sentMessages[5]?.options, { deliverAs: "followUp" });
     assert.match(harness.sentMessages[4]?.message.content ?? "", /First leftover/);
     assert.match(harness.sentMessages[5]?.message.content ?? "", /Second leftover/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("outstanding inbound redelivery keeps only the newest 100 leftovers", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("outstanding-cap-worker", {
+    hasUI: true,
+    isIdle: () => false,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await harness.emitLifecycle("agent_start");
+    const target = await waitForSessionByName(planner, "outstanding-cap-worker");
+    for (let index = 0; index < 101; index += 1) {
+      assert.equal((await planner.send(target.id, {
+        messageId: `cap-steer-${index}`,
+        text: `Leftover ${index}.`,
+      })).delivered, true);
+    }
+    await waitForSentMessages(harness, 101);
+    await harness.emitLifecycle("agent_end");
+    await harness.emitLifecycle("agent_settled");
+    assert.equal(harness.sentMessages.length, 201);
+    assert.match(harness.sentMessages[101]?.message.content ?? "", /Leftover 1\./);
+    assert.match(harness.sentMessages[200]?.message.content ?? "", /Leftover 100\./);
+    assert.equal(harness.sentMessages.slice(101).some((sent) => /Leftover 0\./.test(sent.message.content ?? "")), false);
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();

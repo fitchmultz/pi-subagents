@@ -857,14 +857,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     for (const entry of passives) sendIncomingMessage(entry, "passive", generation);
     const triggerIndex = queuedTriggerIndex(rest);
     if (triggerIndex > 0) rest.unshift(rest.splice(triggerIndex, 1)[0]!);
-    let sentTrigger = false;
-    for (const entry of rest) {
-      if (!sentTrigger && triggerIndex !== -1) {
-        sendIncomingMessage(entry, "trigger", generation);
-        sentTrigger = true;
-        continue;
-      }
-      sendIncomingMessage(entry, entry.flushDelivery === "steer" ? "steer" : "followUp", generation);
+    for (const [index, entry] of rest.entries()) {
+      sendIncomingMessage(
+        entry,
+        index === 0 && triggerIndex !== -1 ? "trigger" : entry.flushDelivery === "steer" ? "steer" : "followUp",
+        generation,
+      );
     }
   }
   function currentSessionTargetMatches(to: string, resolvedTo?: string | null, activeClient?: IntercomClient): boolean {
@@ -886,6 +884,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     if (delivery !== "passive") {
       replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
+      if (outstandingInbound.size >= maxPendingIdleMessages && !outstandingInbound.has(entry.message.id)) {
+        const oldest = outstandingInbound.keys().next().value;
+        if (oldest) outstandingInbound.delete(oldest);
+      }
       outstandingInbound.set(entry.message.id, entry);
     }
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
