@@ -1784,6 +1784,50 @@ test("consumed inbound steers are not re-delivered after settle", { concurrency:
   }
 });
 
+test("unconsumed inbound messages survive a second abort", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("repeat-abort-worker", {
+    hasUI: true,
+    isIdle: () => false,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await harness.emitLifecycle("agent_start");
+    const target = await waitForSessionByName(planner, "repeat-abort-worker");
+    assert.equal((await planner.send(target.id, {
+      messageId: "first-steer",
+      text: "First leftover.",
+    })).delivered, true);
+    assert.equal((await planner.send(target.id, {
+      messageId: "second-steer",
+      text: "Second leftover.",
+    })).delivered, true);
+    await waitForSentMessages(harness, 2);
+
+    await harness.emitLifecycle("agent_end");
+    await harness.emitLifecycle("agent_settled");
+    assert.equal(harness.sentMessages.length, 4);
+    assert.deepEqual(harness.sentMessages[2]?.options, { triggerTurn: true });
+    assert.deepEqual(harness.sentMessages[3]?.options, { deliverAs: "followUp" });
+    assert.match(harness.sentMessages[2]?.message.content ?? "", /First leftover/);
+    assert.match(harness.sentMessages[3]?.message.content ?? "", /Second leftover/);
+
+    await harness.emitLifecycle("agent_end");
+    await harness.emitLifecycle("agent_settled");
+    assert.equal(harness.sentMessages.length, 6);
+    assert.deepEqual(harness.sentMessages[4]?.options, { triggerTurn: true });
+    assert.deepEqual(harness.sentMessages[5]?.options, { deliverAs: "followUp" });
+    assert.match(harness.sentMessages[4]?.message.content ?? "", /First leftover/);
+    assert.match(harness.sentMessages[5]?.message.content ?? "", /Second leftover/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
 test("busy interactive sessions reject overload instead of silently evicting queued asks", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { planner, cleanup } = await setupClients();

@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
-- Re-deliver inbound intercom steers and follow-ups after the recipient aborts, so Esc no longer drops unconsumed peer messages.
+- Re-deliver inbound intercom steers and follow-ups after the recipient aborts, including a second Esc, so unconsumed peer messages are not dropped.
 - Retry detached runner startup when an in-place extension update temporarily removes its runtime dependencies.
 
 ## [0.33.5] - 2026-08-11

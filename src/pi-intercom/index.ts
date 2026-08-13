@@ -866,8 +866,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     if (delivery !== "passive") {
       replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
-    }
-    if (delivery === "steer" || delivery === "followUp") {
       outstandingInbound.set(entry.message.id, entry);
     }
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
@@ -1034,14 +1032,18 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     pendingIdleMessages.push({ ...entry, flushDelivery });
     scheduleInboundFlush(delayMs);
   }
-  function redeliverUnconsumedInbound(generation = runtimeGeneration): void {
+  function redeliverUnconsumedInbound(): void {
     if (outstandingInbound.size === 0) return;
+    // Pi drains steer/follow-up queues before agent_settled. Leftovers here were
+    // dropped by abort, not left sitting in those queues.
     const leftover = [...outstandingInbound.values()];
     outstandingInbound.clear();
     const now = Date.now();
+    let index = 0;
     for (const entry of leftover) {
       if (isStaleSubagentProgressUpdate(entry, now)) continue;
-      sendIncomingMessage(entry, "trigger", generation);
+      sendIncomingMessage(entry, index === 0 ? "trigger" : "followUp");
+      index += 1;
     }
   }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
@@ -1483,11 +1485,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     scheduleInboundFlush(0);
   });
   pi.on("message_end", (event) => {
-    const inboundId = inboundIdFromCustomMessage((event as { message?: unknown }).message);
+    const message = (event as { message?: unknown }).message;
+    const inboundId = inboundIdFromCustomMessage(message);
     if (inboundId) outstandingInbound.delete(inboundId);
     const activeClient = client;
     const context = replyTracker.currentTurn();
-    const errorMessage = getAssistantErrorMessage((event as { message?: unknown }).message);
+    const errorMessage = getAssistantErrorMessage(message);
     if (!activeClient?.isConnected() || !context?.message.expectsReply || !errorMessage) {
       return;
     }

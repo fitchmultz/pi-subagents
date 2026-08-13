@@ -34,6 +34,18 @@ test("reply resolves from current triggered message context", () => {
   assert.equal(tracker.resolveReplyTarget({}, 1002).from.id, "planner-id");
 });
 
+test("queueTurnContext ignores a second enqueue of the same ask", () => {
+  const tracker = new ReplyTracker();
+  const context = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "Need a decision"), 1000);
+  tracker.queueTurnContext(context);
+  tracker.queueTurnContext(context);
+  tracker.beginTurn(1001);
+  assert.equal(tracker.currentTurn()?.message.id, "ask-1");
+  tracker.endAgent();
+  tracker.beginTurn(1002);
+  assert.equal(tracker.currentTurn(), null);
+});
+
 test("non-ask trigger context does not override a pending ask reply target", () => {
   const tracker = new ReplyTracker();
   const ask = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "Need a decision"), 1000);
