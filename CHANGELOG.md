@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.33.6] - 2026-08-13
 
 ### Fixed
 - Re-deliver inbound intercom steers and follow-ups after the recipient aborts, including a second Esc, so unconsumed peer messages are not dropped.
