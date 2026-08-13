@@ -1850,10 +1850,11 @@ test("outstanding inbound redelivery keeps only the newest 100 leftovers", { con
     await waitForSentMessages(harness, 101);
     await harness.emitLifecycle("agent_end");
     await harness.emitLifecycle("agent_settled");
-    assert.equal(harness.sentMessages.length, 201);
-    assert.match(harness.sentMessages[101]?.message.content ?? "", /Leftover 1\./);
-    assert.match(harness.sentMessages[200]?.message.content ?? "", /Leftover 100\./);
-    assert.equal(harness.sentMessages.slice(101).some((sent) => /Leftover 0\./.test(sent.message.content ?? "")), false);
+    const redelivered = harness.sentMessages.slice(101);
+    assert.equal(redelivered.length, 100);
+    assert.match(redelivered[0]?.message.content ?? "", /Leftover 1\./);
+    assert.match(redelivered.at(-1)?.message.content ?? "", /Leftover 100\./);
+    assert.equal(redelivered.some((sent) => /Leftover 0\./.test(sent.message.content ?? "")), false);
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
