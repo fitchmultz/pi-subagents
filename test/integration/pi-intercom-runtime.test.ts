@@ -1828,6 +1828,87 @@ test("unconsumed inbound messages survive a second abort", { concurrency: false 
   }
 });
 
+test("recovery wakes an ask before a plain leftover", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { planner, cleanup } = await setupClients();
+  const harness = createExtensionHarness("ask-first-recovery-worker", {
+    hasUI: true,
+    isIdle: () => false,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await harness.emitLifecycle("agent_start");
+    const target = await waitForSessionByName(planner, "ask-first-recovery-worker");
+    assert.equal((await planner.send(target.id, {
+      messageId: "plain-before-ask",
+      text: "Plain leftover.",
+    })).delivered, true);
+    assert.equal((await planner.send(target.id, {
+      messageId: "ask-after-plain",
+      text: "Ask leftover.",
+      expectsReply: true,
+      delivery: "steer",
+    })).delivered, true);
+    await waitForSentMessages(harness, 2);
+
+    await harness.emitLifecycle("agent_end");
+    await harness.emitLifecycle("agent_settled");
+    assert.equal(harness.sentMessages.length, 4);
+    assert.deepEqual(harness.sentMessages[2]?.options, { triggerTurn: true });
+    assert.deepEqual(harness.sentMessages[3]?.options, { deliverAs: "followUp" });
+    assert.match(harness.sentMessages[2]?.message.content ?? "", /Ask leftover/);
+    assert.match(harness.sentMessages[3]?.message.content ?? "", /Plain leftover/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
+test("idle flush wakes a queued ask before an earlier plain message", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { planner, cleanup } = await setupClients();
+  let idle = false;
+  const harness = createExtensionHarness("ask-first-flush-worker", {
+    hasUI: true,
+    isIdle: () => idle,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    const target = await waitForSessionByName(planner, "ask-first-flush-worker");
+    assert.equal((await planner.send(target.id, {
+      messageId: "queued-plain",
+      text: "Queued plain.",
+      delivery: "queue",
+      queueMode: "replace",
+      threadId: "plain-thread",
+    })).delivered, true);
+    assert.equal((await planner.send(target.id, {
+      messageId: "queued-ask",
+      text: "Queued ask.",
+      expectsReply: true,
+    })).delivered, true);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(harness.sentMessages.length, 0);
+
+    idle = true;
+    await harness.emitLifecycle("agent_end");
+    await harness.emitLifecycle("agent_settled");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(harness.sentMessages.length, 2);
+    assert.deepEqual(harness.sentMessages[0]?.options, { triggerTurn: true });
+    assert.deepEqual(harness.sentMessages[1]?.options, { deliverAs: "followUp" });
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /Queued ask/);
+    assert.match(harness.sentMessages[1]?.message.content ?? "", /Queued plain/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
 test("busy interactive sessions reject overload instead of silently evicting queued asks", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { planner, cleanup } = await setupClients();

@@ -847,6 +847,29 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const askIndex = entries.findIndex((entry) => canTrigger(entry) && entry.message.expectsReply === true);
     return askIndex === -1 ? entries.findIndex(canTrigger) : askIndex;
   }
+  function sendTriggerFirst(entries: PendingInboundMessage[], generation = runtimeGeneration): void {
+    const triggerIndex = queuedTriggerIndex(entries);
+    if (triggerIndex > 0) {
+      entries.unshift(entries.splice(triggerIndex, 1)[0]!);
+    }
+    let sentTrigger = false;
+    for (const entry of entries) {
+      if (entry.flushDelivery === "passive") {
+        sendIncomingMessage(entry, "passive", generation);
+        continue;
+      }
+      if (entry.flushDelivery === "steer") {
+        sendIncomingMessage(entry, "steer", generation);
+        continue;
+      }
+      if (!sentTrigger && triggerIndex !== -1) {
+        sendIncomingMessage(entry, "trigger", generation);
+        sentTrigger = true;
+        continue;
+      }
+      sendIncomingMessage(entry, "followUp", generation);
+    }
+  }
   function currentSessionTargetMatches(to: string, resolvedTo?: string | null, activeClient?: IntercomClient): boolean {
     const targets = new Set<string>();
     const addTarget = (target: string | undefined | null) => {
@@ -972,18 +995,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       .splice(0, pendingIdleMessages.length)
       .filter((entry) => !isStaleSubagentProgressUpdate(entry, now));
     if (entries.length === 0) return;
-    const triggerIndex = queuedTriggerIndex(entries);
-    entries.forEach((entry, index) => {
-      if (entry.flushDelivery === "passive") {
-        sendIncomingMessage(entry, "passive");
-        return;
-      }
-      if (entry.flushDelivery === "steer") {
-        sendIncomingMessage(entry, "steer", generation);
-        return;
-      }
-      sendIncomingMessage(entry, index === triggerIndex ? "trigger" : "followUp");
-    });
+    sendTriggerFirst(entries, generation);
   }
   function rejectInboundQueueOverload(entry: InboundMessageEntry): void {
     const activeClient = client;
@@ -1036,15 +1048,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (outstandingInbound.size === 0) return;
     // Pi drains steer/follow-up queues before agent_settled. Leftovers here were
     // dropped by abort, not left sitting in those queues.
-    const leftover = [...outstandingInbound.values()];
-    outstandingInbound.clear();
     const now = Date.now();
-    let index = 0;
-    for (const entry of leftover) {
-      if (isStaleSubagentProgressUpdate(entry, now)) continue;
-      sendIncomingMessage(entry, index === 0 ? "trigger" : "followUp");
-      index += 1;
-    }
+    const leftover = [...outstandingInbound.values()]
+      .filter((entry) => !isStaleSubagentProgressUpdate(entry, now))
+      .map((entry) => ({ ...entry, flushDelivery: "auto" as const }));
+    outstandingInbound.clear();
+    sendTriggerFirst(leftover);
   }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
