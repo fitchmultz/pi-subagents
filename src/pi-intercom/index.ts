@@ -856,16 +856,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     for (const entry of passives) sendIncomingMessage(entry, "passive", generation);
     const triggerIndex = queuedTriggerIndex(rest);
-    if (triggerIndex > 0) rest.unshift(rest.splice(triggerIndex, 1)[0]!);
-    let sentTrigger = false;
-    for (const entry of rest) {
-      if (!sentTrigger && triggerIndex !== -1) {
-        sendIncomingMessage(entry, "trigger", generation);
-        sentTrigger = true;
-        continue;
-      }
-      sendIncomingMessage(entry, entry.flushDelivery === "steer" ? "steer" : "followUp", generation);
-    }
+    if (triggerIndex !== -1) sendIncomingMessage(rest.splice(triggerIndex, 1)[0]!, "trigger", generation);
+    for (const entry of rest) sendIncomingMessage(entry, entry.flushDelivery === "steer" ? "steer" : "followUp", generation);
   }
   function currentSessionTargetMatches(to: string, resolvedTo?: string | null, activeClient?: IntercomClient): boolean {
     const targets = new Set<string>();
@@ -887,6 +879,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (delivery !== "passive") {
       replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
       outstandingInbound.set(entry.message.id, entry);
+      while (outstandingInbound.size > maxPendingIdleMessages) outstandingInbound.delete(outstandingInbound.keys().next().value!);
     }
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
     const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";

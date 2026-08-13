@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Bound outstanding inbound redelivery to the same 100-message recipient queue limit.
+
+### Changed
+- Document that Esc before consume re-delivers steered intercom messages after the turn settles.
+
 ## [0.33.6] - 2026-08-13
 
 ### Fixed
