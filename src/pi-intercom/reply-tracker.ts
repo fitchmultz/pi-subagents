@@ -59,6 +59,7 @@ export class ReplyTracker {
 
   queueTurnContext(context: IntercomContext): void {
     if (!context.message.expectsReply) return;
+    if (this.hasTurnContext(context.message.id)) return;
     this.pendingTurnContexts.push(context);
     while (this.pendingTurnContexts.length > MAX_PENDING_ASKS) {
       const dropped = this.pendingTurnContexts.shift();
@@ -183,6 +184,12 @@ export class ReplyTracker {
   listPending(now = Date.now()): IntercomContext[] {
     this.pruneExpired(now);
     return Array.from(this.pendingAsks.values()).sort((a, b) => a.receivedAt - b.receivedAt);
+  }
+
+  private hasTurnContext(messageId: string): boolean {
+    return this.pendingTurnContexts.some((context) => context.message.id === messageId)
+      || this.currentTurnContext?.message.id === messageId
+      || this.activeAgentContext?.message.id === messageId;
   }
 
   private removeContext(messageId: string): void {

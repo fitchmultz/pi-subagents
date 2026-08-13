@@ -101,6 +101,16 @@ function replyFailureReason(message: string): "no_pending_reply" | "ambiguous_re
   return "reply_failed";
 }
 
+function inboundIdFromCustomMessage(message: unknown): string | undefined {
+  if (typeof message !== "object" || message === null) return undefined;
+  const record = message as Record<string, unknown>;
+  if (record.customType !== "intercom_message") return undefined;
+  const details = record.details;
+  if (typeof details !== "object" || details === null) return undefined;
+  const inboundId = (details as { message?: { id?: unknown } }).message?.id;
+  return typeof inboundId === "string" ? inboundId : undefined;
+}
+
 function getAssistantErrorMessage(message: unknown): string | null {
   if (typeof message !== "object" || message === null) {
     return null;
@@ -620,6 +630,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker(config.askTimeoutMs);
   const pendingIdleMessages: PendingInboundMessage[] = [];
+  const outstandingInbound = new Map<string, InboundMessageEntry>();
   const maxPendingIdleMessages = 100;
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   let replyWaiter: {
@@ -836,6 +847,26 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const askIndex = entries.findIndex((entry) => canTrigger(entry) && entry.message.expectsReply === true);
     return askIndex === -1 ? entries.findIndex(canTrigger) : askIndex;
   }
+  function sendTriggerFirst(entries: PendingInboundMessage[], generation = runtimeGeneration): void {
+    const passives: PendingInboundMessage[] = [];
+    const rest: PendingInboundMessage[] = [];
+    for (const entry of entries) {
+      if (entry.flushDelivery === "passive") passives.push(entry);
+      else rest.push(entry);
+    }
+    for (const entry of passives) sendIncomingMessage(entry, "passive", generation);
+    const triggerIndex = queuedTriggerIndex(rest);
+    if (triggerIndex > 0) rest.unshift(rest.splice(triggerIndex, 1)[0]!);
+    let sentTrigger = false;
+    for (const entry of rest) {
+      if (!sentTrigger && triggerIndex !== -1) {
+        sendIncomingMessage(entry, "trigger", generation);
+        sentTrigger = true;
+        continue;
+      }
+      sendIncomingMessage(entry, entry.flushDelivery === "steer" ? "steer" : "followUp", generation);
+    }
+  }
   function currentSessionTargetMatches(to: string, resolvedTo?: string | null, activeClient?: IntercomClient): boolean {
     const targets = new Set<string>();
     const addTarget = (target: string | undefined | null) => {
@@ -855,6 +886,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     if (delivery !== "passive") {
       replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
+      outstandingInbound.set(entry.message.id, entry);
     }
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
     const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
@@ -960,18 +992,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       .splice(0, pendingIdleMessages.length)
       .filter((entry) => !isStaleSubagentProgressUpdate(entry, now));
     if (entries.length === 0) return;
-    const triggerIndex = queuedTriggerIndex(entries);
-    entries.forEach((entry, index) => {
-      if (entry.flushDelivery === "passive") {
-        sendIncomingMessage(entry, "passive");
-        return;
-      }
-      if (entry.flushDelivery === "steer") {
-        sendIncomingMessage(entry, "steer", generation);
-        return;
-      }
-      sendIncomingMessage(entry, index === triggerIndex ? "trigger" : "followUp");
-    });
+    sendTriggerFirst(entries, generation);
   }
   function rejectInboundQueueOverload(entry: InboundMessageEntry): void {
     const activeClient = client;
@@ -1019,6 +1040,17 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     pendingIdleMessages.push({ ...entry, flushDelivery });
     scheduleInboundFlush(delayMs);
+  }
+  function redeliverUnconsumedInbound(): void {
+    if (outstandingInbound.size === 0) return;
+    // Pi drains steer/follow-up queues before agent_settled. Leftovers here were
+    // dropped by abort, not left sitting in those queues.
+    const now = Date.now();
+    const leftover = [...outstandingInbound.values()]
+      .filter((entry) => !isStaleSubagentProgressUpdate(entry, now))
+      .map((entry) => ({ ...entry, flushDelivery: "auto" as const }));
+    outstandingInbound.clear();
+    sendTriggerFirst(leftover);
   }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
@@ -1419,6 +1451,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     agentRunning = false;
     lastIntercomActivity = 0;
     activeTools.clear();
+    outstandingInbound.clear();
     scheduleStartupConnection(ctx, runtimeGeneration);
   });
 
@@ -1439,6 +1472,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     rejectReplyWaiter(new Error("Session shutting down"));
     replyTracker.reset();
     pendingIdleMessages.length = 0;
+    outstandingInbound.clear();
     clearInboundFlushTimer();
     agentRunning = false;
     activeTools.clear();
@@ -1457,9 +1491,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     scheduleInboundFlush(0);
   });
   pi.on("message_end", (event) => {
+    const message = (event as { message?: unknown }).message;
+    const inboundId = inboundIdFromCustomMessage(message);
+    if (inboundId) outstandingInbound.delete(inboundId);
     const activeClient = client;
     const context = replyTracker.currentTurn();
-    const errorMessage = getAssistantErrorMessage((event as { message?: unknown }).message);
+    const errorMessage = getAssistantErrorMessage(message);
     if (!activeClient?.isConnected() || !context?.message.expectsReply || !errorMessage) {
       return;
     }
@@ -1511,6 +1548,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     activeTools.clear();
     replyTracker.endAgent();
     syncPresenceStatus();
+    redeliverUnconsumedInbound();
     scheduleInboundFlush(0);
   });
   pi.on("turn_start", (_event, ctx) => {
