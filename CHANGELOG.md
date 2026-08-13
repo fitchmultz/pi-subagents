@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Retry detached runner startup when an in-place extension update temporarily removes its runtime dependencies.
+
 ## [0.33.5] - 2026-08-11
 
 ### Fixed

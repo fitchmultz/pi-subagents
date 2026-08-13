@@ -318,7 +318,7 @@ describe("async execution utilities", () => {
 	it("captures detached runner stderr in the async run directory", async () => {
 		const marker = `runner-stderr-${Date.now().toString(36)}`;
 		const preloadPath = path.join(tempDir, "runner-stderr.cjs");
-		fs.writeFileSync(preloadPath, `if (process.argv.some((arg) => arg.endsWith("subagent-runner.ts"))) process.stderr.write(${JSON.stringify(`${marker}\n`)});\n`, "utf-8");
+		fs.writeFileSync(preloadPath, `if (process.argv[1]?.endsWith("subagent-runner.ts")) process.stderr.write(${JSON.stringify(`${marker}\n`)});\n`, "utf-8");
 		const originalNodeOptions = process.env.NODE_OPTIONS;
 		process.env.NODE_OPTIONS = [originalNodeOptions, `--require ${JSON.stringify(preloadPath)}`].filter(Boolean).join(" ");
 		try {

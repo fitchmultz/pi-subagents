@@ -75,6 +75,7 @@ for (const path of [
 	"src/pi-intercom/broker/broker.ts",
 	"src/pi-intercom/ui/session-list.ts",
 	"src/shared/types.ts",
+	"src/runs/background/subagent-runner-launcher.ts",
 	"agents/reviewer.md",
 	"agents/reviewer-gpt.md",
 	"agents/watcher.md",
