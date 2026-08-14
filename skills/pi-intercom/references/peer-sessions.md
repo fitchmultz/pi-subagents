@@ -39,7 +39,7 @@ Run from the pi-subagents package checkout when testing the bundled intercom ext
 SOCKET="${TMPDIR:-/tmp}/pi-intercom-tmux.sock"
 SESSION="pi-worker"
 ROOT="$PWD"
-tmux -S "$SOCKET" new -d -s "$SESSION" -c "$ROOT" "pi --name worker --extension \"$ROOT/src/pi-intercom/index.ts\" --skill \"$ROOT/skills/pi-intercom\""
+tmux -S "$SOCKET" new -d -s "$SESSION" -c "$ROOT" "pi --name worker --extension \"$ROOT/dist/pi-intercom/index.js\" --skill \"$ROOT/skills/pi-intercom\""
 tmux -S "$SOCKET" attach -t "$SESSION"
 ```
 
