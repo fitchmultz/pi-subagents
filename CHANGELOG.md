@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.34.0] - 2026-08-13
+
+### Changed
+- The Pi extension manifest now loads precompiled `dist/extension/index.js` and `dist/pi-intercom/index.js` instead of transpiling the ~32kloc TypeScript graph at every pi startup. A `prepare` lifecycle script builds `dist/` on install and update, including Pi's `npm install --omit=dev` git-install flow.
+- Runtime sibling-module paths (intercom bundled extension, broker, async runner/launcher, local fork start command) now resolve `.ts` vs `.js` from the running module's own extension, so both source and compiled layouts work.
+
 ## [0.33.7] - 2026-08-13
 
 ### Fixed

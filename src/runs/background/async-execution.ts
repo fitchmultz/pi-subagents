@@ -192,8 +192,9 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, asyncDir: string)
 	const cfgPath = getAsyncConfigPath(suffix);
 	fs.writeFileSync(cfgPath, JSON.stringify(cfg), { mode: 0o600 });
 	const runnerDir = path.dirname(fileURLToPath(import.meta.url));
-	const launcher = path.join(runnerDir, "subagent-runner-launcher.ts");
-	const runner = path.join(runnerDir, "subagent-runner.ts");
+	const moduleExtension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+	const launcher = path.join(runnerDir, `subagent-runner-launcher${moduleExtension}`);
+	const runner = path.join(runnerDir, `subagent-runner${moduleExtension}`);
 
 	const errorLogFd = fs.openSync(path.join(asyncDir, RUNNER_ERROR_LOG_FILE), "a");
 	try {

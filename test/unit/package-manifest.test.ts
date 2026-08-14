@@ -90,7 +90,7 @@ test("package lock uses the public npm registry", () => {
 
 test("one manifest bundles subagents and intercom", () => {
 	const pi = readPackageJson().pi as { extensions?: unknown; skills?: unknown };
-	assert.deepEqual(pi.extensions, ["./src/extension/index.ts", "./src/pi-intercom/index.ts"]);
+	assert.deepEqual(pi.extensions, ["./dist/extension/index.js", "./dist/pi-intercom/index.js"]);
 	assert.deepEqual(pi.skills, ["./skills"]);
 	assert.equal(fs.existsSync(path.join(projectRoot, "scripts", "intercom-smoke-package.mjs")), false);
 });

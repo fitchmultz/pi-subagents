@@ -1,5 +1,6 @@
 .pi/
 .DS_Store
+dist/
 AGENTS.md
 node_modules/
 .fallow/

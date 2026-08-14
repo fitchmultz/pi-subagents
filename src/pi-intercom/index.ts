@@ -588,7 +588,7 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 function localForkStartCommand(): string {
-  return `pi --name worker --extension ${shellQuote(path.join(PACKAGE_ROOT, "src", "pi-intercom", "index.ts"))} --skill ${shellQuote(path.join(PACKAGE_ROOT, "skills", "pi-intercom"))}`;
+  return `pi --name worker --extension ${shellQuote(fileURLToPath(import.meta.url))} --skill ${shellQuote(path.join(PACKAGE_ROOT, "skills", "pi-intercom"))}`;
 }
 async function settleWithin<T>(operation: () => Promise<T>, timeoutMs: number): Promise<T | null> {
   return await new Promise((resolve) => {
