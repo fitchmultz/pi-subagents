@@ -3,7 +3,7 @@ import { execFile as execFileCallback, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
 
@@ -68,8 +68,11 @@ async function runBuild(
 	nodeArgs: string[] = [],
 ): Promise<{ code: number; stderr: string }> {
 	try {
-		await execFile(process.execPath, [...nodeArgs, buildScript], { cwd, env: { ...process.env, ...env } });
-		return { code: 0, stderr: "" };
+		const { stderr } = await execFile(process.execPath, [...nodeArgs, buildScript], {
+			cwd,
+			env: { ...process.env, ...env },
+		});
+		return { code: 0, stderr };
 	} catch (error) {
 		const failure = error as { code?: number; stderr?: string };
 		return { code: failure.code ?? 1, stderr: failure.stderr ?? "" };
@@ -157,7 +160,7 @@ test("build.mjs: concurrent build storms all succeed and leave a valid dist", { 
 test("build.mjs: publishes its retained staging tree instead of timing out on a slow winner", { timeout: 10_000 }, async () => {
 	const dir = makeFixture();
 	try {
-		const result = await runBuild(dir, {}, ["--import", join(dir, "late-winner-preload.mjs")]);
+		const result = await runBuild(dir, {}, ["--import", pathToFileURL(join(dir, "late-winner-preload.mjs")).href]);
 
 		assert.deepEqual(result, { code: 0, stderr: "" });
 		assert.ok(existsSync(join(dir, "dist", "index.js")));
