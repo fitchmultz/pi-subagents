@@ -173,7 +173,9 @@ test("build.mjs: caps persistent rename failures and preserves the diagnostic", 
 
 test("build.mjs: rethrows when the staged emit disappears before publication", { timeout: 10_000 }, () =>
 	withFixture(async (dir) => {
-		const { code } = await runBuild(dir, { BUILD_SWAP_FAULT: "vanish-staging" }, faultArgs());
-		assert.notEqual(code, 0);
+		const result = await runBuild(dir, { BUILD_SWAP_FAULT: "vanish-staging" }, faultArgs());
+		assert.notEqual(result.code, 0);
+		assert.match(result.stderr, /ENOENT/);
 		assert.ok(!existsSync(join(dir, "dist")));
+		assert.deepEqual(stagingDirs(dir), []);
 	}));
