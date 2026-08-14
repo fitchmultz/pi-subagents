@@ -24,6 +24,9 @@ const path = require("node:path");
 const outDir = process.argv[process.argv.indexOf("--outDir") + 1];
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(path.join(outDir, "index.js"), "export const built = true;\\n");
+if (process.env.TSC_STUB_SABOTAGE_STAGING === "1") {
+	fs.rmSync(outDir, { recursive: true, force: true });
+}
 `;
 
 function makeFixture(): string {
@@ -82,6 +85,7 @@ test("build.mjs: reaps staging dirs owned by dead pids and keeps live ones", asy
 	const dir = makeFixture();
 	try {
 		const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
+		assert.equal(typeof deadPid, "number");
 		mkdirSync(join(dir, `dist.staging.${deadPid}`, "partial"), { recursive: true });
 		const livePid = process.pid; // this test runner is alive for the whole build
 		mkdirSync(join(dir, `dist.staging.${livePid}`, "inflight"), { recursive: true });
@@ -95,14 +99,33 @@ test("build.mjs: reaps staging dirs owned by dead pids and keeps live ones", asy
 	}
 });
 
-test("build.mjs: concurrent builds all succeed and leave a valid dist", async () => {
+test("build.mjs: concurrent build storms all succeed and leave a valid dist", { timeout: 30_000 }, async () => {
 	const dir = makeFixture();
 	try {
-		const exitCodes = await Promise.all(Array.from({ length: 6 }, () => runBuild(dir)));
+		// 12-wide x 3 rounds: wide enough to exercise the rename race and the
+		// mid-swap winner poll with useful probability on every run.
+		for (let round = 0; round < 3; round++) {
+			const exitCodes = await Promise.all(Array.from({ length: 12 }, () => runBuild(dir)));
 
-		assert.deepEqual(exitCodes, [0, 0, 0, 0, 0, 0]);
-		assert.ok(existsSync(join(dir, "dist", "index.js")));
-		assert.deepEqual(stagingDirs(dir), []);
+			assert.deepEqual(exitCodes, Array.from({ length: 12 }, () => 0));
+			assert.ok(existsSync(join(dir, "dist", "index.js")));
+			assert.deepEqual(stagingDirs(dir), []);
+		}
+	} finally {
+		rmSync(dir, { force: true, recursive: true });
+	}
+});
+
+test("build.mjs: rethrows the rename failure when no concurrent winner exists", { timeout: 10_000 }, async () => {
+	const dir = makeFixture();
+	try {
+		// The sabotage stub deletes its own emit after compiling, so the build's
+		// rename fails (ENOENT) and no winner ever repopulates dist/: the poll
+		// must exhaust and rethrow instead of reporting a phantom race win.
+		const exitCode = await runBuild(dir, { TSC_STUB_SABOTAGE_STAGING: "1" });
+
+		assert.notEqual(exitCode, 0);
+		assert.ok(!existsSync(join(dir, "dist")));
 	} finally {
 		rmSync(dir, { force: true, recursive: true });
 	}
