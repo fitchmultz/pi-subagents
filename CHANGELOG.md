@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.34.4] - 2026-08-14
+
+### Changed
+- Build cleanup is uniformly best-effort, so a locked staging tree cannot turn a successful concurrent race loss into failure or mask the compiler/publish error that matters.
+- `scripts/build.mjs` now separates stranded-tree reaping, compilation, and publication behind named retry/cleanup constants and helpers while preserving the cross-repo build contract.
+- `scripts/prepare.mjs` structurally preserves the original build error when the final dev-dependency prune also fails; the prune warns and may leave the dev toolchain for manual cleanup.
+- An empty `dist/` is no longer accepted as a concurrent winner; this build retains and retries its staged emit instead.
+- Deterministic tests now cover an unreapable strand, failed old-output removal, concurrent-winner discard, empty-directory rejection, vanished staging, and retry-cap exhaustion. The real-process smoke narrows from three twelve-wide rounds to one four-way round while deterministic faults cover each publication branch without destabilizing unrelated process-heavy suites. A publish failure after old-output removal fails loudly and may leave `dist/` absent.
+
 ## [0.34.3] - 2026-08-14
 
 ### Changed
