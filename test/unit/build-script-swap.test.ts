@@ -103,6 +103,21 @@ test("build.mjs: warns and continues when stranded staging cannot be removed", (
 		assert.ok(existsSync(join(dir, "dist", "index.js")));
 	}));
 
+test("build.mjs: fails loudly when the previous dist cannot be removed", () =>
+	withFixture(async (dir) => {
+		mkdirSync(join(dir, "dist"));
+		writeFileSync(join(dir, "dist", "sentinel.txt"), "previous build");
+		const result = await runBuild(
+			dir,
+			{ BUILD_SWAP_FAULT: "stale-rm", LOCKED_STAGING_NAME: "dist" },
+			faultArgs(),
+		);
+		assert.notEqual(result.code, 0);
+		assert.match(result.stderr, /synthetic stale-staging lock/);
+		assert.ok(existsSync(join(dir, "dist", "sentinel.txt")));
+		assert.deepEqual(stagingDirs(dir), []);
+	}));
+
 test("build.mjs: concurrent build storms succeed with valid dist", { timeout: 30_000 }, () =>
 	withFixture(async (dir) => {
 		const results = await Promise.all(Array.from({ length: 4 }, () => runBuild(dir)));
@@ -158,7 +173,7 @@ test("build.mjs: caps persistent rename failures and preserves the diagnostic", 
 
 test("build.mjs: rethrows when the staged emit disappears before publication", { timeout: 10_000 }, () =>
 	withFixture(async (dir) => {
-		const { code } = await runBuild(dir, { TSC_STUB_SABOTAGE_STAGING: "1" });
+		const { code } = await runBuild(dir, { BUILD_SWAP_FAULT: "vanish-staging" }, faultArgs());
 		assert.notEqual(code, 0);
 		assert.ok(!existsSync(join(dir, "dist")));
 	}));

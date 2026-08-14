@@ -8,6 +8,3 @@ const path = require("node:path");
 const outDir = process.argv[process.argv.indexOf("--outDir") + 1];
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(path.join(outDir, "index.js"), "export const built = true;\n");
-if (process.env.TSC_STUB_SABOTAGE_STAGING === "1") {
-	fs.rmSync(outDir, { recursive: true, force: true });
-}

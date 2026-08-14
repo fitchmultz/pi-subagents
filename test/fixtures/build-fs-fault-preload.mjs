@@ -49,6 +49,12 @@ const faults = {
 			throw new Error("synthetic permanent rename failure");
 		};
 	},
+	"vanish-staging"() {
+		fsPromises.rename = async (...args) => {
+			await originalRm(args[0], { force: true, recursive: true });
+			return originalRename(...args);
+		};
+	},
 	"empty-dist"() {
 		let firstRename = true;
 		fsPromises.rename = async (...args) => {

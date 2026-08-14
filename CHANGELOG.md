@@ -6,12 +6,13 @@
 - Build cleanup is uniformly best-effort, so a locked staging tree cannot turn a successful concurrent race loss into failure or mask the compiler/publish error that matters.
 - `scripts/build.mjs` now separates stranded-tree reaping, compilation, and publication behind named retry/cleanup constants and helpers while preserving the cross-repo build contract.
 - `scripts/prepare.mjs` structurally preserves the original build error when the final dev-dependency prune also fails; the prune warns and may leave the dev toolchain for manual cleanup.
-- Deterministic tests now cover an unreapable strand, concurrent-winner discard, empty-directory rejection, and retry-cap exhaustion. A publish failure after old-output removal fails loudly and may leave `dist/` absent.
+- An empty `dist/` is no longer accepted as a concurrent winner; this build retains and retries its staged emit instead.
+- Deterministic tests now cover an unreapable strand, failed old-output removal, concurrent-winner discard, empty-directory rejection, vanished staging, and retry-cap exhaustion. The real-process smoke remains four-way while deterministic faults cover each publication branch without destabilizing unrelated process-heavy suites. A publish failure after old-output removal fails loudly and may leave `dist/` absent.
 
 ## [0.34.3] - 2026-08-14
 
 ### Changed
-- `dist/` is now published by retrying this build's own `rename` instead of waiting on another build. A rename failure yields only when `dist/` exists and is non-empty (an existence check, not an errno check, so platforms that report a different code for rename-onto-existing-directory still behave correctly); otherwise the staging tree is retained and the rename retried, so this build can publish its own output rather than wait on a concurrent winner's scheduling. This replaces the bounded poll shipped in 0.34.2, which could still fail a build whose concurrent winner was descheduled past the poll window.
+- `dist/` is now published by retrying this build's own `rename` instead of waiting on another build. A rename failure yields only when `dist/` already exists (an existence check, not an errno check, so platforms that report a different code for rename-onto-existing-directory still behave correctly); otherwise the staging tree is retained and the rename retried, so this build can publish its own output rather than wait on a concurrent winner's scheduling. This replaces the bounded poll shipped in 0.34.2, which could still fail a build whose concurrent winner was descheduled past the poll window.
 - Staging-reaper documentation now states its precise guarantee: only pids already gone at probe time are eligible; pid reuse between probe and removal remains inherent to pid-based reaping.
 - Swap coverage now includes the deterministic slow-winner regression, and concurrent-storm failures surface the build's stderr instead of only its exit code.
 
