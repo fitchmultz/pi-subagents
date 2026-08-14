@@ -1,6 +1,7 @@
 .pi/
 .DS_Store
 dist/
+dist.staging*/
 AGENTS.md
 node_modules/
 .fallow/
