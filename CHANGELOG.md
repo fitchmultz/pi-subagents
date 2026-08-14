@@ -1,9 +1,9 @@
 # Changelog
 
-## [0.34.1] - 2026-08-13
+## [0.34.1] - 2026-08-14
 
 ### Changed
-- `scripts/build.mjs` now emits into a pid-scoped `dist.staging.<pid>` directory and atomically swaps it into `dist/`. A failed build preserves the previous working dist, concurrent builds cannot clobber each other or swap a partial emit into place, and a build that loses the swap race to a concurrent winner exits 0 (the winner's tree is an equivalent fresh emit). `rm(dist)` failures still fail loudly. Ports the build hardening reviewed in pi-cursor-sdk v0.3.0.
+- `scripts/build.mjs` now emits into a pid-scoped `dist.staging.<pid>` directory and atomically swaps it into `dist/`. A failed build preserves the previous working dist, concurrent builds cannot clobber each other or swap a partial emit into place, and a build that loses the swap race to a concurrent winner normally exits 0 (the winner's tree is an equivalent fresh emit; a narrow timing window can still surface the loss as a loud failure). `rm(dist)` failures always fail loudly. Ports the build hardening reviewed in pi-cursor-sdk v0.3.0.
 
 ## [0.34.0] - 2026-08-13
 
