@@ -8,7 +8,11 @@ import {
 } from "../shared/types.ts";
 
 const DEFAULT_INTERCOM_TARGET_PREFIX = "subagent-chat";
-const BUNDLED_INTERCOM_EXTENSION_PATH = fileURLToPath(new URL("../pi-intercom/index.ts", import.meta.url));
+// Resolve the bundled intercom extension next to this module in both layouts:
+// TypeScript sources (tests, jiti) and compiled dist output.
+const BUNDLED_INTERCOM_EXTENSION_PATH = fileURLToPath(
+	new URL(import.meta.url.endsWith(".ts") ? "../pi-intercom/index.ts" : "../pi-intercom/index.js", import.meta.url),
+);
 export const INTERCOM_BRIDGE_MARKER = "Intercom orchestration channel:";
 const DEFAULT_INTERCOM_BRIDGE_TEMPLATE = `The inherited thread is reference-only. Do not continue that conversation or send questions, status updates, or completion handoffs to the supervisor in normal assistant text.
 

@@ -1,6 +1,6 @@
 {
   "name": "pi-subagents",
-  "version": "0.33.7",
+  "version": "0.34.0",
   "description": "Pi extension for subagent orchestration and local session coordination",
   "author": "Nico Bailon",
   "license": "MIT",
@@ -25,7 +25,10 @@
     "coordination"
   ],
   "files": [
+    "dist",
     "src/**/*.ts",
+    "tsconfig.build.json",
+    "tsconfig.json",
     "scripts/",
     "agents/",
     "skills/**/*",
@@ -35,6 +38,8 @@
     "CHANGELOG.md"
   ],
   "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "prepare": "node ./scripts/prepare.mjs",
     "test": "npm run test:unit",
     "test:unit": "node scripts/run-tests.mjs unit",
     "test:integration": "node scripts/run-tests.mjs integration",
@@ -47,8 +52,8 @@
   },
   "pi": {
     "extensions": [
-      "./src/extension/index.ts",
-      "./src/pi-intercom/index.ts"
+      "./dist/extension/index.js",
+      "./dist/pi-intercom/index.js"
     ],
     "skills": [
       "./skills"

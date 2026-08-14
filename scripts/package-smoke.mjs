@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
 const packageJson = require("../package.json");
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-	console.log(`Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing.\n\nChecks:\n  - npm pack --dry-run includes subagent and intercom runtime resources\n  - package.json pi manifest points at both extensions and skills without registering example prompts\n  - both extension entrypoints load through native Node TypeScript stripping\n  - a packed production install with dev dependencies omitted can load the detached runner and native broker\n\nExit codes:\n  0  smoke passed\n  1  package shape or runtime load check failed`);
+	console.log(`Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing.\n\nChecks:\n  - npm pack --dry-run includes subagent and intercom runtime resources\n  - package.json pi manifest points at both extensions and skills without registering example prompts\n  - both compiled dist extension entrypoints load as native ES modules\n  - a packed production install with dev dependencies omitted can load the detached runner and native broker\n\nExit codes:\n  0  smoke passed\n  1  package shape or runtime load check failed`);
 	process.exit(0);
 }
 
@@ -69,6 +69,10 @@ for (const path of [
 	"package.json",
 	"LICENSE",
 	"README.md",
+	"dist/extension/index.js",
+	"dist/pi-intercom/index.js",
+	"dist/pi-intercom/broker/broker.js",
+	"dist/runs/background/subagent-runner-launcher.js",
 	"src/extension/index.ts",
 	"src/extension/schemas.ts",
 	"src/pi-intercom/index.ts",
@@ -92,12 +96,12 @@ assertNotPackedFile(pack.files, "install.mjs");
 
 if (packageJson.private !== true) fail("package.json must stay private for this GitHub/local fork");
 if (packageJson.bin !== undefined) fail("package.json must not expose an npx/bin installer for this GitHub/local fork");
-if (!packageJson.pi?.extensions?.includes("./src/extension/index.ts")) fail("package.json pi.extensions must include ./src/extension/index.ts");
-if (!packageJson.pi?.extensions?.includes("./src/pi-intercom/index.ts")) fail("package.json pi.extensions must include ./src/pi-intercom/index.ts");
+if (!packageJson.pi?.extensions?.includes("./dist/extension/index.js")) fail("package.json pi.extensions must include ./dist/extension/index.js");
+if (!packageJson.pi?.extensions?.includes("./dist/pi-intercom/index.js")) fail("package.json pi.extensions must include ./dist/pi-intercom/index.js");
 if (!packageJson.pi?.skills?.includes("./skills")) fail("package.json pi.skills must include ./skills");
 if (packageJson.pi?.prompts !== undefined) fail("package.json pi.prompts must stay unset so example prompts are not registered as slash commands");
 
-for (const entrypoint of ["../src/extension/index.ts", "../src/pi-intercom/index.ts"]) {
+for (const entrypoint of ["../dist/extension/index.js", "../dist/pi-intercom/index.js"]) {
 	const extensionModule = await import(new URL(entrypoint, import.meta.url));
 	if (typeof extensionModule.default !== "function") fail(`${entrypoint} did not load a default registration function`);
 }
@@ -119,11 +123,25 @@ try {
 	const gitPackageRoot = join(productionRoot, "git-package");
 	cpSync(installedRoot, gitPackageRoot, { recursive: true });
 	run("npm", ["install", "--ignore-scripts", "--omit=dev"], gitPackageRoot);
-	await import(pathToFileURL(join(gitPackageRoot, "src", "runs", "shared", "acceptance-contract.ts")).href);
-	const brokerSpawn = await import(pathToFileURL(join(gitPackageRoot, "src", "pi-intercom", "broker", "spawn.ts")).href);
+	await import(pathToFileURL(join(gitPackageRoot, "dist", "runs", "shared", "acceptance-contract.js")).href);
+	const brokerSpawn = await import(pathToFileURL(join(gitPackageRoot, "dist", "pi-intercom", "broker", "spawn.js")).href);
 	const brokerCwd = brokerSpawn.getBrokerSpawnOptions().cwd;
 	if (realpathSync(brokerCwd) !== realpathSync(gitPackageRoot)) throw new Error(`packed broker resolved ${brokerCwd} instead of ${gitPackageRoot}`);
-	run(process.execPath, ["--check", join(gitPackageRoot, "src", "pi-intercom", "broker", "broker.ts")], gitPackageRoot);
+	run(process.execPath, ["--check", join(gitPackageRoot, "dist", "pi-intercom", "broker", "broker.js")], gitPackageRoot);
+	const distPiArgs = await import(pathToFileURL(join(gitPackageRoot, "dist", "runs", "shared", "pi-args.js")).href);
+	const childArgs = distPiArgs.buildPiArgs({
+		baseArgs: [],
+		task: "package-smoke",
+		sessionEnabled: false,
+		inheritProjectContext: false,
+		inheritSkills: false,
+		allowSubagents: true,
+	}).args ?? [];
+	const childExtensionPaths = childArgs.flatMap((arg, index) => (arg === "--extension" ? [childArgs[index + 1]] : []));
+	if (childExtensionPaths.length === 0) throw new Error("dist buildPiArgs emitted no --extension paths");
+	for (const extensionPath of childExtensionPaths) {
+		if (!existsSync(extensionPath)) throw new Error(`dist buildPiArgs emitted a missing --extension path: ${extensionPath}`);
+	}
 } catch (error) {
 	productionImportError = error;
 } finally {

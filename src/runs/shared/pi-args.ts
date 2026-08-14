@@ -8,8 +8,10 @@ import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./s
 import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
 import type { ChildProjectTrustPolicy, JsonSchemaObject } from "../../shared/types.ts";
 const TASK_ARG_LIMIT = 8000;
-const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-prompt-runtime.ts");
-const FANOUT_CHILD_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "extension", "fanout-child.ts");
+// Resolve sibling extensions in both layouts: TypeScript sources (tests, jiti) and compiled dist output.
+const MODULE_EXTENSION = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), `subagent-prompt-runtime${MODULE_EXTENSION}`);
+const FANOUT_CHILD_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "extension", `fanout-child${MODULE_EXTENSION}`);
 export const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 export const SUBAGENT_ORCHESTRATOR_TARGET_ENV = "PI_SUBAGENT_ORCHESTRATOR_TARGET";
 export const SUBAGENT_RUN_ID_ENV = "PI_SUBAGENT_RUN_ID";

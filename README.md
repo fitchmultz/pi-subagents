@@ -19,8 +19,11 @@ pi install git:github.com/fitchmultz/pi-subagents
 That is the only required step. This personal fork is not published to npm and does not provide an `npx` installer. Use `pi update --extensions` to refresh it. Local checkout installs remain available for development:
 
 ```bash
+npm install   # builds dist/, which the pi manifest loads
 pi install /absolute/path/to/pi-subagents
 ```
+
+Local path installs do not run npm for you, and the manifest points at compiled `dist/` output, so run `npm install` (or `npm run build` after source edits) before installing or the extensions will not load.
 
 Pi 0.84.0 or later is required. Pi core packages remain optional wildcard peers, as recommended for Pi packages, while this repository validates against exact Pi 0.84.0 development dependencies.
 

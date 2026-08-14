@@ -147,7 +147,10 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
     }
     await stopUnhealthyBrokerBeforeSpawn();
 
-    const brokerPath = join(dirname(fileURLToPath(import.meta.url)), "broker.ts");
+    const brokerPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      import.meta.url.endsWith(".ts") ? "broker.ts" : "broker.js",
+    );
     const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs);
     if (launch.kind === "windows-launcher") {
       writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
