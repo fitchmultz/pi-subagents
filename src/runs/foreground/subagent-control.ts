@@ -1002,4 +1002,3 @@ export async function maybeBuildForegroundIntercomReceipt(input: {
 		status: payload.status,
 	};
 }
-
