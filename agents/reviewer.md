@@ -1,8 +1,8 @@
 ---
 name: reviewer
 description: Code review specialist that validates implementation and reports issues
-model: anthropic/claude-opus-5
-fallbackModels: openai/gpt-5.6-sol, anthropic/claude-fable-5
+model: cloudflare-ai-gateway/claude-opus-5
+fallbackModels: anthropic/claude-opus-5, openai/gpt-5.6-sol, anthropic/claude-fable-5
 thinking: max
 systemPromptMode: replace
 inheritProjectContext: true

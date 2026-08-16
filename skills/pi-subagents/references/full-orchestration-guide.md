@@ -148,20 +148,20 @@ and user/project agents override builtins with the same name.
 | Agent | Purpose | Primary model | Typical output / role |
 |-------|---------|---------------|------------------------|
 | `scout` | Fast codebase recon | `openai/gpt-5.6-sol` | Writes `context.md` handoff material |
-| `context-builder` | Requirements/codebase handoff builder | `anthropic/claude-opus-5` | Writes structured context and meta-prompts |
-| `researcher` | Evidence-driven technical research | `anthropic/claude-opus-5` | Writes `research.md` |
+| `context-builder` | Requirements/codebase handoff builder | `cloudflare-ai-gateway/claude-opus-5` | Writes structured context and meta-prompts |
+| `researcher` | Evidence-driven technical research | `cloudflare-ai-gateway/claude-opus-5` | Writes `research.md` |
 | `watcher` | Read-only background monitoring | `openai/gpt-5.6-sol` | Queues the latest material transition; returns at the terminal condition |
-| `planner` | Creates implementation plans | `anthropic/claude-opus-5` | Writes `plan.md` |
+| `planner` | Creates implementation plans | `cloudflare-ai-gateway/claude-opus-5` | Writes `plan.md` |
 | `worker` | Bounded implementation | `openai/gpt-5.6-sol` | Single-writer implementation and validation |
-| `debugger` | Root-cause diagnosis | `anthropic/claude-opus-5` | Writes `diagnosis.md` |
-| `fixer` | Decided, bounded remediation | `anthropic/claude-opus-5` | Applies an explicit fix list |
-| `reviewer` | General implementation review | `anthropic/claude-opus-5` | Review-only by default |
+| `debugger` | Root-cause diagnosis | `cloudflare-ai-gateway/claude-opus-5` | Writes `diagnosis.md` |
+| `fixer` | Decided, bounded remediation | `cloudflare-ai-gateway/claude-opus-5` | Applies an explicit fix list |
+| `reviewer` | General implementation review | `cloudflare-ai-gateway/claude-opus-5` | Review-only by default |
 | `reviewer-gpt` | Strict completion gate | `openai/gpt-5.6-sol` | Maintainability/correctness review |
-| `reviewer-claude` | Cross-model product-risk review | `anthropic/claude-opus-5` | Independent review |
+| `reviewer-claude` | Cross-model product-risk review | `cloudflare-ai-gateway/claude-fable-5` | Independent review |
 | `reviewer-security` | Trust-boundary review | `fireworks/accounts/fireworks/routers/kimi-k3-fast` | Security/data-safety findings |
 | `reviewer-ponytail` | Over-engineering and slop review | `fireworks/accounts/fireworks/routers/kimi-k3-fast` | Deletion-focused findings; behavior-preserving only |
-| `ui-designer` | UI and accessibility review | `anthropic/claude-opus-5` | Rendered UX guidance |
-| `writer` | Human-facing writing | `anthropic/claude-fable-5` | Writes `draft.md` |
+| `ui-designer` | UI and accessibility review | `cloudflare-ai-gateway/claude-opus-5` | Rendered UX guidance |
+| `writer` | Human-facing writing | `cloudflare-ai-gateway/claude-fable-5` | Writes `draft.md` |
 | `oracle` | Decision-consistency advisory review | `openai/gpt-5.6-sol` | Forked advisory review |
 | `delegate` | Lightweight generic delegate | inherits default | No fixed output; generic delegated work |
 
