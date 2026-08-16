@@ -9,6 +9,8 @@ import {
 	createWorktrees,
 	diffWorktrees,
 	findWorktreeTaskCwdConflict,
+	appendWorktreeSummary,
+	extractWorktreeSummary,
 	formatWorktreeDiffSummary,
 	resolveExpectedWorktreeAgentCwd,
 	type WorktreeSetup,
@@ -499,5 +501,17 @@ setTimeout(() => {
 		} finally {
 			cleanupRepo(repoDir);
 		}
+	});
+});
+
+describe("worktree summary helpers", () => {
+	it("appends a summary only when one exists", () => {
+		assert.equal(appendWorktreeSummary("output", ""), "output");
+		assert.equal(appendWorktreeSummary("output", "=== Worktree Changes ==="), "output\n\n=== Worktree Changes ===");
+	});
+
+	it("extracts the worktree marker and following text", () => {
+		assert.equal(extractWorktreeSummary("prefix\n=== Worktree Changes ===\nfiles"), "=== Worktree Changes ===\nfiles");
+		assert.equal(extractWorktreeSummary("no marker"), "");
 	});
 });

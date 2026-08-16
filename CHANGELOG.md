@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.34.7] - 2026-08-16
+
+### Changed
+- Split the foreground executor into params, control, and path modules, and moved shared worktree-summary and duplicate-output-path helpers into the existing worktree and single-output modules. Public tool behavior is unchanged.
+- Drop the resolved per-agent context note and the leftover peer-hint "counts only" wording now that the hint is a constant string.
+
 ## [0.34.6] - 2026-08-16
 
 ### Fixed

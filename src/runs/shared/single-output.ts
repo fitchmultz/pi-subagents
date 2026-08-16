@@ -112,6 +112,22 @@ export function formatConsumedOutputReference(outputPath: string, fullOutput: st
 	};
 }
 
+export function findDuplicateOutputPath(
+	items: ReadonlyArray<{ agent: string; outputPath?: string }>,
+): string | undefined {
+	const seen = new Map<string, { index: number; agent: string }>();
+	for (let index = 0; index < items.length; index++) {
+		const outputPath = items[index]?.outputPath;
+		if (!outputPath) continue;
+		const previous = seen.get(outputPath);
+		if (previous) {
+			return `Parallel tasks ${previous.index + 1} (${previous.agent}) and ${index + 1} (${items[index]!.agent}) resolve output to the same path: ${outputPath}. Use distinct output paths.`;
+		}
+		seen.set(outputPath, { index, agent: items[index]!.agent });
+	}
+	return undefined;
+}
+
 export function validateFileOnlyOutputMode(outputMode: OutputMode | undefined, outputPath: string | undefined, context: string): string | undefined {
 	if (outputMode === "file-only" && !outputPath) {
 		return `${context} sets outputMode: "file-only" but does not configure an output file. Set output to a path or use outputMode: "inline".`;

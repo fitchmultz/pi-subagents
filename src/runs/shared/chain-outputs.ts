@@ -1,10 +1,9 @@
 import { isDynamicParallelStep, isParallelStep, type ChainStep, type SequentialStep } from "../../shared/settings.ts";
 import type { ChainOutputMap, ChainOutputMapEntry, SingleResult } from "../../shared/types.ts";
 import { getSingleResultOutput } from "../../shared/utils.ts";
-import { DynamicFanoutError, hasDynamicFanoutFields, type DynamicFanoutConfig, validateDynamicStepShape } from "./dynamic-fanout.ts";
+import { DynamicFanoutError, hasDynamicFanoutFields, isSafeOutputName, type DynamicFanoutConfig, validateDynamicStepShape } from "./dynamic-fanout.ts";
 
 const OUTPUT_REF_PATTERN = /\{outputs\.([^}]*)\}/g;
-const SAFE_OUTPUT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export class ChainOutputValidationError extends Error {}
 
@@ -41,7 +40,7 @@ export function validateChainOutputBindings(steps: ChainStep[], dynamicFanoutCon
 			}
 		}
 		for (const name of outputNamesForStep(step)) {
-			if (!SAFE_OUTPUT_NAME_PATTERN.test(name)) {
+			if (!isSafeOutputName(name)) {
 				throw new ChainOutputValidationError(`Invalid chain output name '${name}' at step ${stepIndex + 1}. Use /^[A-Za-z_][A-Za-z0-9_]*$/.`);
 			}
 			if (seen.has(name)) {
@@ -53,7 +52,7 @@ export function validateChainOutputBindings(steps: ChainStep[], dynamicFanoutCon
 			for (const match of template.matchAll(OUTPUT_REF_PATTERN)) {
 				const rawReference = match[0];
 				const name = match[1]!;
-				if (!SAFE_OUTPUT_NAME_PATTERN.test(name)) {
+				if (!isSafeOutputName(name)) {
 					throw new ChainOutputValidationError(`Invalid chain output reference '${rawReference}' at step ${stepIndex + 1}. Use {outputs.name} with /^[A-Za-z_][A-Za-z0-9_]*$/ names.`);
 				}
 				if (!available.has(name)) {
@@ -69,7 +68,7 @@ export function validateChainOutputBindings(steps: ChainStep[], dynamicFanoutCon
 
 export function resolveOutputReferences(template: string, outputs: ChainOutputMap): string {
 	return template.replace(OUTPUT_REF_PATTERN, (rawReference, name: string) => {
-		if (!SAFE_OUTPUT_NAME_PATTERN.test(name)) {
+		if (!isSafeOutputName(name)) {
 			throw new ChainOutputValidationError(`Invalid chain output reference '${rawReference}'. Use {outputs.name} with /^[A-Za-z_][A-Za-z0-9_]*$/ names.`);
 		}
 		const entry = outputs[name];

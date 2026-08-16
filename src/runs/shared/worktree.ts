@@ -609,3 +609,22 @@ export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
 	}
 	return lines.join("\n").trimEnd();
 }
+
+export function formatParallelWorktreeSummary(
+	worktreeSetup: WorktreeSetup | undefined,
+	diffsDir: string,
+	agents: string[],
+): string {
+	if (!worktreeSetup) return "";
+	return formatWorktreeDiffSummary(diffWorktrees(worktreeSetup, agents, diffsDir));
+}
+
+export function appendWorktreeSummary(output: string, worktreeSummary: string): string {
+	return worktreeSummary ? `${output}\n\n${worktreeSummary}` : output;
+}
+
+export function extractWorktreeSummary(text: string): string {
+	const marker = "=== Worktree Changes ===";
+	const index = text.indexOf(marker);
+	return index >= 0 ? text.slice(index).trim() : "";
+}
