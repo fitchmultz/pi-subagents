@@ -384,6 +384,28 @@ describe("single sync execution", () => {
 		assert.equal(result.progress.activityState, undefined);
 	});
 
+	it("does not escalate successful mutating results that mention failure words", async () => {
+		const diffHit = [
+			events.toolStart("bash", { command: "git diff origin/main...HEAD -- extensions/write-prompt.ts > /tmp/review-write-prompt.diff && sed -n '1,360p' /tmp/review-write-prompt.diff" }),
+			events.toolEnd("bash"),
+			events.toolResult("bash", "diff --git a/extensions/write-prompt.ts\nerrorMessage\nRewrite failed"),
+		];
+		mockPi.onCall({
+			jsonl: [...diffHit, ...diffHit, ...diffHit, events.assistantMessage("Reviewed the diff.")],
+		});
+		const agents = [makeAgent("worker")];
+		const controlEvents: NonNullable<RunSyncResult["controlEvents"]> = [];
+
+		const result = await runSync(tempDir, agents, "worker", "Review the branch diff", {
+			runId: "run-false-positive-diff",
+			controlConfig: { enabled: true, failedToolAttemptsBeforeAttention: 3, notifyOn: ["needs_attention"] },
+			onControlEvent: (event: NonNullable<RunSyncResult["controlEvents"]>[number]) => controlEvents.push(event),
+		});
+
+		assert.equal(result.exitCode, 0);
+		assert.equal(controlEvents.find((event) => event.reason === "tool_failures"), undefined);
+	});
+
 	it("does not surface control state or events when control is disabled", async () => {
 		mockPi.onCall({
 			jsonl: [

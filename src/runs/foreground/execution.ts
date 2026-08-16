@@ -73,7 +73,6 @@ import {
 import {
 	createMutatingFailureState,
 	createMutationCompletionTracker,
-	didMutatingToolFail,
 	recordMutatingFailure,
 	resetMutatingFailureState,
 	resolveCurrentPath,
@@ -755,7 +754,7 @@ async function runSingleAttempt(
 					appendRecentOutput(progress, resultText.split("\n").slice(-10));
 					const toolSnapshot = mutationTracker.recordToolResult(evt.message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown });
 					if (toolSnapshot?.completedMutation) observedCompletedMutation = true;
-					if (toolSnapshot?.mutates && (toolSnapshot.errored || didMutatingToolFail(resultText))) {
+					if (toolSnapshot?.mutates && toolSnapshot.errored) {
 						recordMutatingFailure(mutatingFailures, {
 							tool: toolSnapshot.tool,
 							path: toolSnapshot.path,

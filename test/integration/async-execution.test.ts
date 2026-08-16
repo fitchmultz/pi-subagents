@@ -2485,6 +2485,44 @@ describe("async execution utilities", () => {
 		}
 	});
 
+	it("background runs do not escalate successful mutating results that mention failure words", async () => {
+		const diffHit = [
+			events.toolStart("bash", { command: "git diff origin/main...HEAD -- extensions/write-prompt.ts > /tmp/review-write-prompt.diff && sed -n '1,360p' /tmp/review-write-prompt.diff" }),
+			events.toolEnd("bash"),
+			events.toolResult("bash", "diff --git a/extensions/write-prompt.ts\nerrorMessage\nRewrite failed"),
+		];
+		mockPi.onCall({
+			jsonl: [...diffHit, ...diffHit, ...diffHit, events.assistantMessage("Reviewed the diff.")],
+		});
+
+		const id = `itest-ae-${process.pid}-tool-failures-false-positive-${Date.now().toString(36)}`;
+		const asyncDir = path.join(ASYNC_DIR, id);
+
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Review the branch diff",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			shareEnabled: false,
+			sessionRoot: path.join(tempDir, "sessions"),
+			maxSubagentDepth: 2,
+			controlConfig: {
+				enabled: true,
+				needsAttentionAfterMs: 999_999,
+				failedToolAttemptsBeforeAttention: 3,
+				notifyOn: ["needs_attention"],
+				notifyChannels: ["event", "async", "intercom"],
+			},
+		});
+
+		const resultPath = await waitForAsyncResultFile(id, 10_000);
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+		assert.equal(payload.success, true);
+		const eventsPath = path.join(asyncDir, "events.jsonl");
+		const eventText = fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf-8") : "";
+		assert.doesNotMatch(eventText, /"reason":"tool_failures"/);
+	});
+
 	it("background runs stream child events and live output while active", async () => {
 		mockPi.onCall({
 			steps: [
