@@ -69,7 +69,6 @@ import { evaluateCompletionMutationGuard, resolveCompletionPolicy } from "../sha
 import {
 	createMutatingFailureState,
 	createMutationCompletionTracker,
-	didMutatingToolFail,
 	recordMutatingFailure,
 	resetMutatingFailureState,
 	resolveCurrentPath,
@@ -1650,7 +1649,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			const toolSnapshot = mutationTrackers[flatIndex]?.recordToolResult(event.message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown });
 			const resultText = extractTextFromContent(event.message.content);
 			appendRecentStepOutput(step, resultText.split("\n").slice(-10));
-			if (toolSnapshot?.mutates && (toolSnapshot.errored || didMutatingToolFail(resultText))) {
+			if (toolSnapshot?.mutates && toolSnapshot.errored) {
 				const state = mutatingFailureStates[flatIndex]!;
 				recordMutatingFailure(state, {
 					tool: toolSnapshot.tool,

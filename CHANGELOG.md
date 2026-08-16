@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.34.6] - 2026-08-16
+
+### Fixed
+- Count mutating-tool failures for `needs_attention` only when the tool result sets `isError: true`. Successful commands whose output happens to contain words like `error` or `failed` (for example `git diff > /tmp/...`) no longer page the parent.
+
 ## [0.34.5] - 2026-08-16
 
 ### Changed

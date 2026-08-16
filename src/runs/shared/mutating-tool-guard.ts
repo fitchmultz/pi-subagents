@@ -29,18 +29,6 @@ const MUTATING_BASH_PATTERNS = [
 	/\bopen\s*\([^)]*,\s*["'][wa]/,
 ];
 
-const MUTATING_FAILURE_HINTS = [
-	"failed",
-	"error",
-	"no exact match",
-	"did not match",
-	"malformed",
-	"rejected",
-	"unable",
-	"cannot",
-	"could not",
-];
-
 export function resolveCurrentPath(toolName: string | undefined, args: Record<string, unknown> | undefined): string | undefined {
 	if (!toolName || !args) return undefined;
 	const direct = ["path", "file", "filename", "target", "cwd"];
@@ -150,12 +138,6 @@ export function createMutationCompletionTracker(): {
 		},
 	};
 }
-
-export function didMutatingToolFail(text: string): boolean {
-	const lowered = text.toLowerCase();
-	return MUTATING_FAILURE_HINTS.some((hint) => lowered.includes(hint));
-}
-
 
 export function resetMutatingFailureState(state: MutatingFailureState): void {
 	state.consecutiveFailures = 0;
