@@ -58,24 +58,24 @@ import {
 	resolveRememberedForegroundRun,
 	resolveRequestedCwd,
 	resumeAsyncRun,
-} from "./subagent-control.ts";
+} from "./foreground-control.ts";
 import {
 	buildRequestedModeError,
 	normalizeRepeatedParallelCounts,
 	normalizeRoleForegroundTimeout,
 	resolveForegroundTimeoutMs,
-	runAsyncPath,
-	runChainPath,
-	runParallelPath,
-	runSinglePath,
 	toExecutionErrorResult,
 	validateExecutionInput,
 	withForkContext,
-} from "./subagent-paths.ts";
+} from "./execution-input.ts";
+import { runAsyncPath } from "./run-async-path.ts";
+import { runChainPath } from "./run-chain-path.ts";
+import { runParallelPath } from "./run-parallel-path.ts";
+import { runSinglePath } from "./run-single-path.ts";
 
 export type { SubagentParamsLike } from "./subagent-params.ts";
 export { normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "./subagent-params.ts";
-export { writeAsyncInterruptRequest } from "./subagent-control.ts";
+export { writeAsyncInterruptRequest } from "./foreground-control.ts";
 
 export function createSubagentExecutor(deps: ExecutorDeps): {
 	execute: (

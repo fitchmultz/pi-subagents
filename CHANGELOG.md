@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.34.8] - 2026-08-16
+
+### Changed
+- Rename the foreground control module so it no longer shares a filename with shared control helpers, and move the four run-path functions into their own files. Public tool behavior is unchanged.
+
 ## [0.34.7] - 2026-08-16
 
 ### Changed
