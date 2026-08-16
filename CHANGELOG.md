@@ -3,7 +3,7 @@
 ## [0.34.5] - 2026-08-16
 
 ### Changed
-- Sync bundled Fitch role profiles to the current user routes: Claude primaries go through `cloudflare-ai-gateway/` with direct Anthropic fallbacks, `reviewer-claude` and `writer` use Fable, and `oracle`, `reviewer-gpt`, `reviewer-claude`, and `worker` use `xhigh` thinking.
+- Sync bundled Fitch role profiles to the current user routes: Claude primaries go through `cloudflare-ai-gateway/` with direct Anthropic fallbacks, `reviewer-claude` and `writer` use Fable, `researcher` uses `openai/gpt-5.6-sol`, and `oracle`, `reviewer-gpt`, `reviewer-claude`, and `worker` use `xhigh` thinking.
 
 ## [0.34.4] - 2026-08-14
 

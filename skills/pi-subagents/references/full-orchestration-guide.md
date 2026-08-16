@@ -149,7 +149,7 @@ and user/project agents override builtins with the same name.
 |-------|---------|---------------|------------------------|
 | `scout` | Fast codebase recon | `openai/gpt-5.6-sol` | Writes `context.md` handoff material |
 | `context-builder` | Requirements/codebase handoff builder | `cloudflare-ai-gateway/claude-opus-5` | Writes structured context and meta-prompts |
-| `researcher` | Evidence-driven technical research | `cloudflare-ai-gateway/claude-opus-5` | Writes `research.md` |
+| `researcher` | Evidence-driven technical research | `openai/gpt-5.6-sol` | Writes `research.md` |
 | `watcher` | Read-only background monitoring | `openai/gpt-5.6-sol` | Queues the latest material transition; returns at the terminal condition |
 | `planner` | Creates implementation plans | `cloudflare-ai-gateway/claude-opus-5` | Writes `plan.md` |
 | `worker` | Bounded implementation | `openai/gpt-5.6-sol` | Single-writer implementation and validation |

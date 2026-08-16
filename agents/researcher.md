@@ -1,8 +1,8 @@
 ---
 name: researcher
 description: Evidence-driven technical researcher for consequential decisions
-model: cloudflare-ai-gateway/claude-opus-5
-fallbackModels: anthropic/claude-opus-5, anthropic/claude-fable-5, openai/gpt-5.6-sol
+model: openai/gpt-5.6-sol
+fallbackModels: openai-codex/gpt-5.6-sol
 thinking: xhigh
 systemPromptMode: replace
 inheritProjectContext: true

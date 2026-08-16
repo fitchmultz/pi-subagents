@@ -188,9 +188,9 @@ The bundled Fitch role profiles pin explicit primary and fallback routes. `deleg
 
 | Primary route | Agents |
 |---------------|--------|
-| `cloudflare-ai-gateway/claude-opus-5` | `context-builder`, `debugger`, `fixer`, `planner`, `researcher`, `reviewer`, `ui-designer` |
+| `cloudflare-ai-gateway/claude-opus-5` | `context-builder`, `debugger`, `fixer`, `planner`, `reviewer`, `ui-designer` |
 | `cloudflare-ai-gateway/claude-fable-5` | `reviewer-claude`, `writer` |
-| `openai/gpt-5.6-sol` | `oracle`, `reviewer-gpt`, `scout`, `watcher`, `worker` |
+| `openai/gpt-5.6-sol` | `oracle`, `researcher`, `reviewer-gpt`, `scout`, `watcher`, `worker` |
 | `fireworks/accounts/fireworks/routers/kimi-k3-fast` | `reviewer-ponytail`, `reviewer-security` |
 | Current Pi model | `delegate` |
 
