@@ -11,7 +11,7 @@ Coordinate named Pi sessions on the same machine with the least context loss and
 
 ## Source of truth
 
-- A bounded ambient hint may report that same-project peers are connected. It contains counts only and never sends a message; use `intercom({ action: "list" })` before choosing a target.
+- A bounded ambient hint may report that same-project peers are connected. It is a constant count-free string and never sends a message; use `intercom({ action: "list" })` before choosing a target.
 - `intercom({ action: "list" })` is the source of truth for targetable sessions. It shows only intercom-connected sessions, not every Pi process, with live ask capability, busy/idle/unknown state, recent intercom activity, and delivery guidance. The current-session row is not targetable; choose a peer from Other sessions.
 - Tool call shapes and options live in the live `intercom` / `contact_supervisor` schemas, `docs/intercom.md`, and `src/pi-intercom/index.ts`. Read those when a parameter detail is needed; do not invent fields.
 - Pi CLI flags for local peer sessions are `--name`, `--extension`, and `--skill`.

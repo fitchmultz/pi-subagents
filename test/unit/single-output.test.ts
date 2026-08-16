@@ -12,6 +12,7 @@ import {
 	normalizeSingleOutputOverride,
 	resolveSingleOutput,
 	resolveSingleOutputPath,
+	findDuplicateOutputPath,
 	validateFileOnlyOutputMode,
 } from "../../src/runs/shared/single-output.ts";
 
@@ -233,5 +234,23 @@ describe("finalizeSingleOutput", () => {
 		});
 
 		assert.equal(result.displayOutput, "truncated output");
+	});
+});
+
+describe("findDuplicateOutputPath", () => {
+	it("reports colliding resolved output paths with 1-based task indexes", () => {
+		const error = findDuplicateOutputPath([
+			{ agent: "reviewer", outputPath: "/tmp/same.md" },
+			{ agent: "worker" },
+			{ agent: "fixer", outputPath: "/tmp/same.md" },
+		]);
+		assert.equal(
+			error,
+			"Parallel tasks 1 (reviewer) and 3 (fixer) resolve output to the same path: /tmp/same.md. Use distinct output paths.",
+		);
+	});
+
+	it("ignores missing output paths", () => {
+		assert.equal(findDuplicateOutputPath([{ agent: "a" }, { agent: "b", outputPath: "/tmp/only.md" }]), undefined);
 	});
 });

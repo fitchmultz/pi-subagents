@@ -6,7 +6,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
 import { PI_CODING_AGENT_PACKAGE, getPiSpawnCommand, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
-import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, formatConsumedOutputReference, formatSavedOutputReference, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
+import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, findDuplicateOutputPath, formatConsumedOutputReference, formatSavedOutputReference, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	type AcceptanceFinalizationTurn,
 	type AcceptanceLedger,
@@ -82,11 +82,11 @@ import {
 } from "../shared/subagent-tool-loop-guard.ts";
 import { parseSessionTokens } from "../../shared/session-tokens.ts";
 import {
+	appendWorktreeSummary,
 	cleanupWorktrees,
 	createWorktrees,
-	diffWorktrees,
 	findWorktreeTaskCwdConflict,
-	formatWorktreeDiffSummary,
+	formatParallelWorktreeSummary,
 	formatWorktreeTaskCwdConflict,
 	type WorktreeSetup,
 } from "../shared/worktree.ts";
@@ -1314,40 +1314,23 @@ function prepareParallelTaskRun(
 	};
 }
 
-function formatParallelWorktreeSummary(
+function formatRunnerWorktreeSummary(
 	worktreeSetup: WorktreeSetup | undefined,
 	asyncDir: string,
 	stepIndex: number,
 	group: Extract<RunnerStep, { parallel: SubagentStep[] }>,
 ): string {
-	if (!worktreeSetup) return "";
-	const diffsDir = path.join(asyncDir, "worktree-diffs", `step-${stepIndex}`);
-	const diffs = diffWorktrees(worktreeSetup, group.parallel.map((task) => task.agent), diffsDir);
-	return formatWorktreeDiffSummary(diffs);
-}
-
-function appendWorktreeSummary(output: string, worktreeSummary: string): string {
-	return worktreeSummary ? `${output}\n\n${worktreeSummary}` : output;
+	return formatParallelWorktreeSummary(
+		worktreeSetup,
+		path.join(asyncDir, "worktree-diffs", `step-${stepIndex}`),
+		group.parallel.map((task) => task.agent),
+	);
 }
 
 function ensureParallelProgressFile(cwd: string, group: Extract<RunnerStep, { parallel: SubagentStep[] }>): void {
 	const progressPath = path.join(cwd, "progress.md");
 	if (!group.parallel.some((task) => task.task.includes(`Update progress at: ${progressPath}`))) return;
 	writeInitialProgressFile(cwd);
-}
-
-function findDuplicateOutputPath(steps: SubagentStep[]): string | undefined {
-	const seen = new Map<string, { index: number; agent: string }>();
-	for (let index = 0; index < steps.length; index++) {
-		const outputPath = steps[index]?.outputPath;
-		if (!outputPath) continue;
-		const previous = seen.get(outputPath);
-		if (previous) {
-			return `Parallel tasks ${previous.index + 1} (${previous.agent}) and ${index + 1} (${steps[index]!.agent}) resolve output to the same path: ${outputPath}. Use distinct output paths.`;
-		}
-		seen.set(outputPath, { index, agent: steps[index]!.agent });
-	}
-	return undefined;
 }
 
 function materializeDynamicDefaultOutputPath(input: {
@@ -2354,7 +2337,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					attemptedModels: r.attemptedModels,
 				})),
 				);
-				const worktreeSummary = formatParallelWorktreeSummary(worktreeSetup, asyncDir, stepIndex, group);
+				const worktreeSummary = formatRunnerWorktreeSummary(worktreeSetup, asyncDir, stepIndex, group);
 				previousOutput = appendWorktreeSummary(previousOutput, worktreeSummary);
 				if (worktreeSummary) worktreeSummaries.push(worktreeSummary);
 

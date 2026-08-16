@@ -39,11 +39,11 @@ import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, resolve
 import { formatDetachedIntercomGuidance } from "../shared/intercom-detach.ts";
 import { recordRun } from "../shared/run-history.ts";
 import {
+	appendWorktreeSummary,
 	cleanupWorktrees,
 	createWorktrees,
-	diffWorktrees,
 	findWorktreeTaskCwdConflict,
-	formatWorktreeDiffSummary,
+	formatParallelWorktreeSummary,
 	formatWorktreeTaskCwdConflict,
 	type WorktreeSetup,
 } from "../shared/worktree.ts";
@@ -174,20 +174,6 @@ function ensureParallelProgressFile(
 	}
 	writeInitialProgressFile(chainDir);
 	return true;
-}
-
-function formatParallelWorktreeSummary(
-	worktreeSetup: WorktreeSetup | undefined,
-	diffsDir: string,
-	agents: string[],
-): string {
-	if (!worktreeSetup) return "";
-	const diffs = diffWorktrees(worktreeSetup, agents, diffsDir);
-	return formatWorktreeDiffSummary(diffs);
-}
-
-function appendWorktreeSummary(output: string, worktreeSummary: string): string {
-	return worktreeSummary ? `${output}\n\n${worktreeSummary}` : output;
 }
 
 async function runParallelChainTasks(input: ParallelChainRunInput): Promise<SingleResult[]> {
