@@ -188,10 +188,10 @@ The bundled Fitch role profiles pin explicit primary and fallback routes. `deleg
 
 | Primary route | Agents |
 |---------------|--------|
-| `anthropic/claude-opus-5` | `context-builder`, `debugger`, `fixer`, `planner`, `researcher`, `reviewer`, `reviewer-claude`, `ui-designer` |
-| `openai/gpt-5.6-sol` | `oracle`, `reviewer-gpt`, `scout`, `watcher`, `worker` |
+| `cloudflare-ai-gateway/claude-opus-5` | `context-builder`, `debugger`, `fixer`, `planner`, `reviewer`, `ui-designer` |
+| `cloudflare-ai-gateway/claude-fable-5` | `reviewer-claude`, `writer` |
+| `openai/gpt-5.6-sol` | `oracle`, `researcher`, `reviewer-gpt`, `scout`, `watcher`, `worker` |
 | `fireworks/accounts/fireworks/routers/kimi-k3-fast` | `reviewer-ponytail`, `reviewer-security` |
-| `anthropic/claude-fable-5` | `writer` |
 | Current Pi model | `delegate` |
 
 The routes preserve tuned role diversity across providers. `openai/` handles OpenAI primaries while `openai-codex/` is reserved for the separate fallback billing pool.

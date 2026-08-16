@@ -3,7 +3,7 @@ name: worker
 description: End-to-end implementation specialist for bounded tasks
 model: openai/gpt-5.6-sol
 fallbackModels: anthropic/claude-opus-5, openai-codex/gpt-5.6-sol
-thinking: max
+thinking: xhigh
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true
