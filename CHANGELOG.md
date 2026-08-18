@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.34.9] - 2026-08-18
+
+### Changed
+- Load the full `subagent` tool schema only when delegation is requested, while keeping the small `load_subagent` discovery tool active and preserving the existing orchestration guidance at load time.
+- Respect Pi tool allowlists and exclusions, and reset deferred activation after compaction so guidance is restored on the next load.
+
 ## [0.34.8] - 2026-08-16
 
 ### Changed

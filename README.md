@@ -99,7 +99,7 @@ That is enough to start.
 
 Pi is the parent session. A subagent is a focused child Pi session with its own job.
 
-When you ask for a subagent, Pi starts the child and gives it the task. Runs launch in the background by default, then notify the originating session on completion. Set `async: false` or use `--fg` when you explicitly need foreground streaming.
+When you ask for a subagent, Pi calls `load_subagent` to load the full orchestration schema on demand, then starts the child and gives it the task. Runs launch in the background by default, then notify the originating session on completion. Set `async: false` or use `--fg` when you explicitly need foreground streaming.
 
 Installing the extension does not start an automatic reviewer in the background. It gives Pi a delegation tool. `acceptance.review` is not a supported shortcut: review remains parent-controlled so a worker cannot spend a full run and then fail for a reviewer result the runtime never produced. If you want every implementation reviewed, say that in your prompt or put it in your project instructions:
 

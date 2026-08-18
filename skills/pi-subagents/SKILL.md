@@ -9,6 +9,7 @@ Parent-orchestrator skill for launching focused child Pi sessions. Parent owns o
 
 ## Hard constraints
 
+- If `subagent` is not active, call `load_subagent` first; it exposes the full orchestration schema on the next turn.
 - Before executing subagents in a session, call `subagent({ action: "list" })` unless the executable agent/chain is already known; treat its descriptions as the current role/model policy.
 - Treat child output as evidence to inspect, not automatic truth.
 - Keep writes single-threaded unless writers are isolated with `worktree: true`.
