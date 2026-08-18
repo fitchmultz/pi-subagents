@@ -28,18 +28,24 @@ function runProbe(script: string, options: { env?: NodeJS.ProcessEnv } = {}): vo
 }
 
 describe("subagent extension child mode", () => {
-	it("preserves tool output expansion before direct subagent tool execution", () => {
+	it("loads the full subagent tool on demand without losing guidance or output state", () => {
 		const script = String.raw`
 			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
 			const events = { on() { return () => {}; }, emit() {} };
-			let registeredTool;
+			const registeredTools = new Map();
+			const handlers = new Map();
+			const activeSets = [];
+			let activeTools = ["read", "load_subagent", "subagent"];
 			const fakePi = new Proxy({
 				events,
-				registerTool(tool) { registeredTool = tool; },
+				registerTool(tool) { registeredTools.set(tool.name, tool); },
 				registerCommand() {},
 				registerShortcut() {},
 				registerMessageRenderer() {},
 				sendMessage() {},
+				on(event, handler) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
+				getActiveTools() { return [...activeTools]; },
+				setActiveTools(names) { activeTools = [...names]; activeSets.push([...names]); },
 				getSessionName() { return undefined; },
 			}, {
 				get(target, prop) {
@@ -48,15 +54,44 @@ describe("subagent extension child mode", () => {
 				},
 			});
 			registerSubagentExtension(fakePi);
-			if (!registeredTool) throw new Error("tool not registered");
-			if (!registeredTool.promptSnippet?.includes("Delegate bounded work")) throw new Error("missing parent promptSnippet");
-			const parentGuidelines = registeredTool.promptGuidelines ?? [];
-			if (!parentGuidelines.some((line) => line.includes("action: \"list\""))) throw new Error("missing list-before-execute guideline");
-			if (!parentGuidelines.some((line) => line.includes("parent session responsible"))) throw new Error("missing parent-owns-final-decision guideline");
-			if (!parentGuidelines.some((line) => line.includes("review-only tasks") && line.includes("omit acceptance"))) throw new Error("missing lightweight-review guideline");
-			if (!parentGuidelines.some((line) => line.includes("end the turn") && line.includes("completion wakes the parent"))) throw new Error("missing async no-poll guideline");
-			if (!parentGuidelines.some((line) => line.includes("incomplete active Pi goal") && line.includes("async:false") && line.includes("do not end the turn"))) throw new Error("missing active-goal foreground exception guideline");
-			if (!parentGuidelines.some((line) => line.includes("non-blocking steer") && line.includes("supplements the active task"))) throw new Error("missing steer-first nudge guideline");
+			const registeredTool = registeredTools.get("subagent");
+			const loader = registeredTools.get("load_subagent");
+			if (!registeredTool) throw new Error("subagent tool not registered");
+			if (!loader) throw new Error("subagent loader not registered");
+			if (registeredTool.promptSnippet !== undefined) throw new Error("full tool promptSnippet should load lazily");
+			if (registeredTool.promptGuidelines !== undefined) throw new Error("full tool promptGuidelines should load lazily");
+			if (!loader.promptSnippet?.includes("subagent orchestration")) throw new Error("missing loader discovery snippet");
+
+			const sessionStartHandlers = handlers.get("session_start") ?? [];
+			if (sessionStartHandlers.length < 2) throw new Error("missing session-start activation reset");
+			await sessionStartHandlers[0]();
+			if (JSON.stringify(activeTools) !== JSON.stringify(["read", "load_subagent"])) {
+				throw new Error("session start did not preserve active tools while hiding subagent: " + JSON.stringify(activeTools));
+			}
+
+			const loadResult = await loader.execute("load", {}, new AbortController().signal);
+			if (JSON.stringify(activeTools) !== JSON.stringify(["read", "load_subagent", "subagent"])) {
+				throw new Error("loader did not add subagent: " + JSON.stringify(activeTools));
+			}
+			if (JSON.stringify(loadResult.details?.added) !== JSON.stringify(["subagent"])) throw new Error("loader did not report added tool");
+			const loaderText = loadResult.content.map((part) => part.type === "text" ? part.text : "").join("\n");
+			if (!loaderText.includes('action: "list"')) throw new Error("missing list-before-execute guidance");
+			if (!loaderText.includes("parent session responsible")) throw new Error("missing parent-owns-final-decision guidance");
+			if (!loaderText.includes("review-only tasks") || !loaderText.includes("omit acceptance")) throw new Error("missing lightweight-review guidance");
+			if (!loaderText.includes("incomplete active Pi goal") || !loaderText.includes("async:false")) throw new Error("missing foreground-exception guidance");
+			if (!loaderText.includes("non-blocking steer") || !loaderText.includes("supplements the active task")) throw new Error("missing steer-first guidance");
+			const activeSetCount = activeSets.length;
+			const repeatedLoad = await loader.execute("load-again", {}, new AbortController().signal);
+			if (activeSets.length !== activeSetCount) throw new Error("repeated load rewrote the active tool set");
+			if (repeatedLoad.details?.added?.length !== 0) throw new Error("repeated load reported a duplicate tool");
+
+			const sessionTreeHandlers = handlers.get("session_tree") ?? [];
+			if (sessionTreeHandlers.length !== 1) throw new Error("missing session-tree activation reset");
+			await sessionTreeHandlers[0]();
+			if (JSON.stringify(activeTools) !== JSON.stringify(["read", "load_subagent"])) {
+				throw new Error("tree navigation did not hide subagent: " + JSON.stringify(activeTools));
+			}
+
 			const calls = [];
 			let expanded = false;
 			const ctx = {

@@ -17,6 +17,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.ts";
 import { ARTIFACT_CLEANUP_DAYS, cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
@@ -59,6 +60,19 @@ import {
 } from "./control-notices.ts";
 
 export { loadConfig } from "./config.ts";
+
+const SUBAGENT_TOOL_NAME = "subagent";
+const SUBAGENT_LOADER_TOOL_NAME = "load_subagent";
+const SUBAGENT_GUIDELINES = [
+	"Use subagent for materially parallelizable scouting, review, or implementation work where another focused agent adds value.",
+	"Top-level subagent execution uses the stock async default unless configuration opts out. Launch a small bounded fanout of independent agents as separate single-agent runs so each completion wakes the parent, with at most one writer. Use one tasks call for non-review fanout when all child results are required together, when shared concurrency/task limits are needed, or when multiple writers require worktree isolation; the parent receives one aggregate completion. If no useful parent work remains, end the turn and wait instead of polling; completion wakes the parent. When an incomplete active Pi goal needs same-turn child evidence, set async:false and do not end the turn before that evidence arrives.",
+	"Before executing subagent runs, call subagent with { action: \"list\" } unless the requested executable agent or chain is already known from this conversation.",
+	"Keep the parent session responsible for final decisions, verification, and user-facing status; treat subagent output as evidence to review, not automatic truth.",
+	"Keep independent review as a separate parent-launched reviewer run after the worker; acceptance.review is unsupported.",
+	"For review-only tasks, omit acceptance unless the user explicitly requests a same-session acceptance contract; acceptance adds a finalization turn and is not independent review.",
+	"For live child guidance, answers, corrections, or blockers, inspect status and prefer action='nudge'; it sends a non-blocking steer that supplements the active task unless the message explicitly replaces it. Use the shown blocking intercom ask only when the parent must stay alive waiting for a reply.",
+	"Do not use subagent when a direct local tool call or small edit is cheaper than delegation.",
+] as const;
 
 /**
  * Derive subagent session base directory from parent session file.
@@ -393,21 +407,33 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}, 0);
 	}
 
+	pi.registerTool({
+		name: SUBAGENT_LOADER_TOOL_NAME,
+		label: "Load Subagent",
+		description: "Enable the full subagent orchestration tool for delegation, parallel reviewers, chains, or async-run control. After loading, call subagent with { action: \"list\" } before execution.",
+		promptSnippet: "Enable subagent orchestration when delegation, parallel review, or async-run control would help.",
+		parameters: Type.Object({}),
+		async execute() {
+			const activeTools = pi.getActiveTools();
+			const added = activeTools.includes(SUBAGENT_TOOL_NAME) ? [] : [SUBAGENT_TOOL_NAME];
+			if (added.length > 0) pi.setActiveTools([...activeTools, ...added]);
+			return {
+				content: [{
+					type: "text" as const,
+					text: [
+						`Subagent ${added.length > 0 ? "enabled" : "already enabled"}.`,
+						...SUBAGENT_GUIDELINES.map((guideline) => `- ${guideline}`),
+					].join("\n"),
+				}],
+				details: { added },
+			};
+		},
+	});
+
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",
 		label: "Subagent",
 		description: `Delegate bounded work to configured Pi subagents, chains, or parallel reviewers; manage agent definitions; inspect/control async runs. Use exactly one execution mode (agent, tasks, or chain) or one management/control action. Before execution, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled. Parallel tasks support output?,reads?,progress?. maxOutput accepts { bytes?: number, lines?: number }. Prefer acceptance for goal/spec handoffs and status/resume/interrupt/extend/nudge for active runs.`,
-		promptSnippet: "Delegate bounded work to configured subagents, chains, or parallel reviewers while the parent session stays in control.",
-		promptGuidelines: [
-			"Use subagent for materially parallelizable scouting, review, or implementation work where another focused agent adds value.",
-			"Top-level subagent execution uses the stock async default unless configuration opts out. Launch a small bounded fanout of independent agents as separate single-agent runs so each completion wakes the parent, with at most one writer. Use one tasks call for non-review fanout when all child results are required together, when shared concurrency/task limits are needed, or when multiple writers require worktree isolation; the parent receives one aggregate completion. If no useful parent work remains, end the turn and wait instead of polling; completion wakes the parent. When an incomplete active Pi goal needs same-turn child evidence, set async:false and do not end the turn before that evidence arrives.",
-			"Before executing subagent runs, call subagent with { action: \"list\" } unless the requested executable agent or chain is already known from this conversation.",
-			"Keep the parent session responsible for final decisions, verification, and user-facing status; treat subagent output as evidence to review, not automatic truth.",
-			"Keep independent review as a separate parent-launched reviewer run after the worker; acceptance.review is unsupported.",
-			"For review-only tasks, omit acceptance unless the user explicitly requests a same-session acceptance contract; acceptance adds a finalization turn and is not independent review.",
-			"For live child guidance, answers, corrections, or blockers, inspect status and prefer action='nudge'; it sends a non-blocking steer that supplements the active task unless the message explicitly replaces it. Use the shown blocking intercom ask only when the parent must stay alive waiting for a reply.",
-			"Do not use subagent when a direct local tool call or small edit is cheaper than delegation.",
-		],
 		parameters: SubagentParams,
 
 		async execute(id, params, signal, onUpdate, ctx) {
@@ -452,6 +478,17 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.registerTool(tool);
+
+	const resetSubagentToolActivation = () => {
+		const activeTools = pi.getActiveTools();
+		const resetTools = activeTools.filter((name) => name !== SUBAGENT_TOOL_NAME);
+		if (!resetTools.includes(SUBAGENT_LOADER_TOOL_NAME)) resetTools.push(SUBAGENT_LOADER_TOOL_NAME);
+		if (resetTools.length === activeTools.length && resetTools.every((name, index) => name === activeTools[index])) return;
+		pi.setActiveTools(resetTools);
+	};
+	pi.on("session_start", resetSubagentToolActivation);
+	pi.on("session_tree", resetSubagentToolActivation);
+
 	registerSlashCommands(pi, state);
 
 	const eventUnsubscribeStoreKey = "__piSubagentEventUnsubscribes";
@@ -488,7 +525,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
 
 	pi.on("tool_result", (event, ctx) => {
-		if (event.toolName !== "subagent") return;
+		if (event.toolName !== SUBAGENT_TOOL_NAME) return;
 		if (!isTuiContext(ctx)) return;
 		state.lastUiContext = ctx;
 		if (state.asyncJobs.size > 0) {
