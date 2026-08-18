@@ -414,6 +414,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Enable subagent orchestration when delegation, parallel review, or async-run control would help.",
 		parameters: Type.Object({}),
 		async execute() {
+			if (!pi.getAllTools().some((tool) => tool.name === SUBAGENT_TOOL_NAME)) {
+				throw new Error("Subagent is unavailable because the full tool is excluded from this session.");
+			}
 			const activeTools = pi.getActiveTools();
 			const added = activeTools.includes(SUBAGENT_TOOL_NAME) ? [] : [SUBAGENT_TOOL_NAME];
 			if (added.length > 0) pi.setActiveTools([...activeTools, ...added]);
@@ -431,7 +434,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
-		name: "subagent",
+		name: SUBAGENT_TOOL_NAME,
 		label: "Subagent",
 		description: `Delegate bounded work to configured Pi subagents, chains, or parallel reviewers; manage agent definitions; inspect/control async runs. Use exactly one execution mode (agent, tasks, or chain) or one management/control action. Before execution, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled. Parallel tasks support output?,reads?,progress?. maxOutput accepts { bytes?: number, lines?: number }. Prefer acceptance for goal/spec handoffs and status/resume/interrupt/extend/nudge for active runs.`,
 		parameters: SubagentParams,
@@ -480,6 +483,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	pi.registerTool(tool);
 
 	const resetSubagentToolActivation = () => {
+		if (!pi.getAllTools().some((tool) => tool.name === SUBAGENT_LOADER_TOOL_NAME)) return;
 		const activeTools = pi.getActiveTools();
 		const resetTools = activeTools.filter((name) => name !== SUBAGENT_TOOL_NAME);
 		if (!resetTools.includes(SUBAGENT_LOADER_TOOL_NAME)) resetTools.push(SUBAGENT_LOADER_TOOL_NAME);
@@ -488,6 +492,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	};
 	pi.on("session_start", resetSubagentToolActivation);
 	pi.on("session_tree", resetSubagentToolActivation);
+	pi.on("session_compact", resetSubagentToolActivation);
 
 	registerSlashCommands(pi, state);
 

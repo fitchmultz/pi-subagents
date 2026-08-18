@@ -45,6 +45,7 @@ describe("subagent extension child mode", () => {
 				sendMessage() {},
 				on(event, handler) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
 				getActiveTools() { return [...activeTools]; },
+				getAllTools() { return [...registeredTools.values()]; },
 				setActiveTools(names) { activeTools = [...names]; activeSets.push([...names]); },
 				getSessionName() { return undefined; },
 			}, {
@@ -61,10 +62,21 @@ describe("subagent extension child mode", () => {
 			if (registeredTool.promptSnippet !== undefined) throw new Error("full tool promptSnippet should load lazily");
 			if (registeredTool.promptGuidelines !== undefined) throw new Error("full tool promptGuidelines should load lazily");
 			if (!loader.promptSnippet?.includes("subagent orchestration")) throw new Error("missing loader discovery snippet");
+			const description = registeredTool.description;
+			for (const builtinName of ["scout", "worker", "planner"]) {
+				if (description.includes(builtinName)) throw new Error("description advertises hardcoded builtin: " + builtinName);
+			}
+			if (!description.includes('{ action: "list" }')) throw new Error("description is missing list discovery");
+			if (!description.includes("executable/non-disabled")) throw new Error("description is missing executable guidance");
+			if (!description.includes("output?,reads?,progress?")) throw new Error("description is missing parallel overrides");
+			if (!description.includes("maxOutput") || !description.includes("bytes?: number, lines?: number")) throw new Error("description is missing maxOutput guidance");
 
 			const sessionStartHandlers = handlers.get("session_start") ?? [];
-			if (sessionStartHandlers.length < 2) throw new Error("missing session-start activation reset");
-			await sessionStartHandlers[0]();
+			const sessionTreeHandlers = handlers.get("session_tree") ?? [];
+			const sessionCompactHandlers = handlers.get("session_compact") ?? [];
+			const resetHandler = sessionTreeHandlers.find((handler) => sessionStartHandlers.includes(handler) && sessionCompactHandlers.includes(handler));
+			if (!resetHandler) throw new Error("missing shared lifecycle activation reset");
+			await resetHandler();
 			if (JSON.stringify(activeTools) !== JSON.stringify(["read", "load_subagent"])) {
 				throw new Error("session start did not preserve active tools while hiding subagent: " + JSON.stringify(activeTools));
 			}
@@ -85,11 +97,14 @@ describe("subagent extension child mode", () => {
 			if (activeSets.length !== activeSetCount) throw new Error("repeated load rewrote the active tool set");
 			if (repeatedLoad.details?.added?.length !== 0) throw new Error("repeated load reported a duplicate tool");
 
-			const sessionTreeHandlers = handlers.get("session_tree") ?? [];
-			if (sessionTreeHandlers.length !== 1) throw new Error("missing session-tree activation reset");
-			await sessionTreeHandlers[0]();
+			await resetHandler();
 			if (JSON.stringify(activeTools) !== JSON.stringify(["read", "load_subagent"])) {
 				throw new Error("tree navigation did not hide subagent: " + JSON.stringify(activeTools));
+			}
+			await loader.execute("load-after-tree", {}, new AbortController().signal);
+			await resetHandler();
+			if (JSON.stringify(activeTools) !== JSON.stringify(["read", "load_subagent"])) {
+				throw new Error("compaction did not hide subagent: " + JSON.stringify(activeTools));
 			}
 
 			const calls = [];
@@ -124,10 +139,10 @@ describe("subagent extension child mode", () => {
 		const script = String.raw`
 			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
 			const events = { on() { return () => {}; }, emit() {} };
-			let registeredTool;
+			const registeredTools = new Map();
 			const fakePi = new Proxy({
 				events,
-				registerTool(tool) { registeredTool = tool; },
+				registerTool(tool) { registeredTools.set(tool.name, tool); },
 				registerCommand() {},
 				registerShortcut() {},
 				registerMessageRenderer() {},
@@ -140,6 +155,7 @@ describe("subagent extension child mode", () => {
 				},
 			});
 			registerSubagentExtension(fakePi);
+			const registeredTool = registeredTools.get("subagent");
 			if (!registeredTool) throw new Error("tool not registered");
 			const theme = { fg(_name, text) { return text; }, bold(text) { return text; } };
 			const defaultSingle = registeredTool.renderCall({ agent: "worker" }, theme).text;
