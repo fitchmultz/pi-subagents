@@ -428,7 +428,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 						...SUBAGENT_GUIDELINES.map((guideline) => `- ${guideline}`),
 					].join("\n"),
 				}],
-				details: { added },
+				details: {},
 			};
 		},
 	});

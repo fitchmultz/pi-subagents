@@ -85,8 +85,8 @@ describe("subagent extension child mode", () => {
 			if (JSON.stringify(activeTools) !== JSON.stringify(["read", "load_subagent", "subagent"])) {
 				throw new Error("loader did not add subagent: " + JSON.stringify(activeTools));
 			}
-			if (JSON.stringify(loadResult.details?.added) !== JSON.stringify(["subagent"])) throw new Error("loader did not report added tool");
 			const loaderText = loadResult.content.map((part) => part.type === "text" ? part.text : "").join("\n");
+			if (!loaderText.startsWith("Subagent enabled.")) throw new Error("loader did not report activation");
 			if (!loaderText.includes('action: "list"')) throw new Error("missing list-before-execute guidance");
 			if (!loaderText.includes("parent session responsible")) throw new Error("missing parent-owns-final-decision guidance");
 			if (!loaderText.includes("review-only tasks") || !loaderText.includes("omit acceptance")) throw new Error("missing lightweight-review guidance");
@@ -95,7 +95,8 @@ describe("subagent extension child mode", () => {
 			const activeSetCount = activeSets.length;
 			const repeatedLoad = await loader.execute("load-again", {}, new AbortController().signal);
 			if (activeSets.length !== activeSetCount) throw new Error("repeated load rewrote the active tool set");
-			if (repeatedLoad.details?.added?.length !== 0) throw new Error("repeated load reported a duplicate tool");
+			const repeatedText = repeatedLoad.content.map((part) => part.type === "text" ? part.text : "").join("\n");
+			if (!repeatedText.startsWith("Subagent already enabled.")) throw new Error("repeated load did not report its no-op");
 
 			await resetHandler();
 			if (JSON.stringify(activeTools) !== JSON.stringify(["read", "load_subagent"])) {
