@@ -2,7 +2,7 @@
 name: context-builder
 description: Analyzes requirements and codebase, generates context and meta-prompt
 model: cloudflare-ai-gateway/claude-opus-5
-fallbackModels: anthropic/claude-opus-5, anthropic/claude-fable-5, openai/gpt-5.6-sol
+fallbackModels: anthropic/claude-opus-5, cloudflare-ai-gateway/claude-fable-5, openai/gpt-5.6-sol
 thinking: xhigh
 systemPromptMode: replace
 inheritProjectContext: true
