@@ -157,7 +157,7 @@ and user/project agents override builtins with the same name.
 | `fixer` | Decided, bounded remediation | `cloudflare-ai-gateway/claude-opus-5` | Applies an explicit fix list |
 | `reviewer` | General implementation review | `cloudflare-ai-gateway/claude-opus-5` | Review-only by default |
 | `reviewer-gpt` | Strict completion gate | `openai/gpt-5.6-sol` | Maintainability/correctness review |
-| `reviewer-claude` | Cross-model product-risk review | `cloudflare-ai-gateway/claude-fable-5` | Independent review |
+| `reviewer-claude` | Cross-model product-risk review | `cloudflare-ai-gateway/claude-opus-5` | Independent review |
 | `reviewer-security` | Trust-boundary review | `fireworks/accounts/fireworks/routers/kimi-k3-fast` | Security/data-safety findings |
 | `reviewer-ponytail` | Over-engineering and slop review | `fireworks/accounts/fireworks/routers/kimi-k3-fast` | Deletion-focused findings; behavior-preserving only |
 | `ui-designer` | UI and accessibility review | `cloudflare-ai-gateway/claude-opus-5` | Rendered UX guidance |

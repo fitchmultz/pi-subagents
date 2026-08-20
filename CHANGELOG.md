@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.34.10] - 2026-08-20
+
+### Changed
+- Sync the bundled role routes with the active Fitch profile overrides: `reviewer-claude` now uses gateway Opus at max thinking, and Claude fallbacks consistently prefer the configured gateway routes where available.
+
 ## [0.34.9] - 2026-08-18
 
 ### Changed

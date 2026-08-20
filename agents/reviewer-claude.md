@@ -1,9 +1,9 @@
 ---
 name: reviewer-claude
 description: Independent cross-model reviewer for assumptions, edge cases, and product risk
-model: cloudflare-ai-gateway/claude-fable-5
-fallbackModels: anthropic/claude-fable-5, anthropic/claude-opus-5
-thinking: xhigh
+model: cloudflare-ai-gateway/claude-opus-5
+fallbackModels: anthropic/claude-opus-5, cloudflare-ai-gateway/claude-fable-5
+thinking: max
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true

@@ -2,7 +2,7 @@
 name: writer
 description: Human-facing writing specialist for documentation, announcements, guides, and polished copy
 model: cloudflare-ai-gateway/claude-fable-5
-fallbackModels: anthropic/claude-fable-5, anthropic/claude-opus-5
+fallbackModels: anthropic/claude-fable-5, cloudflare-ai-gateway/claude-opus-5
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: true
