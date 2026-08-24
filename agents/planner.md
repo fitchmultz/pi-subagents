@@ -1,9 +1,9 @@
 ---
 name: planner
 description: Creates implementation plans from context and requirements
-model: cloudflare-ai-gateway/claude-opus-5
+model: cloudflare-ai-gateway/claude-fable-5
 fallbackModels: anthropic/claude-opus-5, cloudflare-ai-gateway/claude-fable-5, openai/gpt-5.6-sol
-thinking: xhigh
+thinking: high
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true

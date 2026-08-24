@@ -1,9 +1,9 @@
 ---
 name: fixer
 description: Bounded remediation agent that applies an explicit list of fixes without broad replanning
-model: cloudflare-ai-gateway/claude-opus-5
+model: cloudflare-ai-gateway/claude-fable-5
 fallbackModels: anthropic/claude-opus-5, openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
-thinking: max
+thinking: high
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true
