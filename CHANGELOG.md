@@ -5,6 +5,9 @@
 ### Changed
 - Sync the bundled role routes with the active Fitch profile overrides: `context-builder` defaults to gateway Fable at medium thinking; `debugger`, `fixer`, `planner`, `reviewer`, `reviewer-claude`, and `ui-designer` default to gateway Fable at high thinking.
 
+### Fixed
+- Ignore reserved `AGENTS.md` instruction files during recursive subagent discovery.
+
 ## [0.34.9] - 2026-08-18
 
 ### Changed

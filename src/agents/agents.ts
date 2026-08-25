@@ -496,7 +496,7 @@ function agentDiagnosticsForDir(dir: string, source: "user" | "project"): AgentD
 function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
-	for (const filePath of listFilesRecursive(dir, (fileName) => fileName.endsWith(".md") && !fileName.endsWith(".chain.md") && fileName !== "SKILL.template.md")) {
+	for (const filePath of listFilesRecursive(dir, (fileName) => fileName.endsWith(".md") && !fileName.endsWith(".chain.md") && fileName !== "SKILL.template.md" && fileName !== "AGENTS.md")) {
 		if (isInAgentSkillSubtree(dir, filePath)) continue;
 		let content: string;
 		try {
