@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.34.11] - 2026-08-25
+
+### Fixed
+- Ignore reserved `AGENTS.md` instruction files during recursive subagent discovery.
+
 ## [0.34.10] - 2026-08-20
 
 ### Changed

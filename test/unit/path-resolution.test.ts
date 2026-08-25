@@ -3,7 +3,7 @@ import * as assert from "node:assert";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { discoverAgents } from "../../src/agents/agents.ts";
+import { discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
 import { resolveSkillPath, clearSkillCache } from "../../src/agents/skills.ts";
 
 const tmpDir = path.join(os.tmpdir(), "pi-path-resolution-test");
@@ -92,6 +92,14 @@ describe("Path resolution for .agents and ~/.agents", () => {
 		const agent = result.agents.find((a) => a.name === "test-agent-2");
 		assert.ok(agent);
 		assert.strictEqual(agent?.filePath, path.join(userAgentsDir, "test-agent-2.md"));
+	});
+
+	test("should ignore AGENTS.md in ~/.agents", () => {
+		const instructionsPath = path.join(fakeHomeDir, ".agents", "AGENTS.md");
+		fs.writeFileSync(instructionsPath, "# User instructions\n");
+
+		const result = discoverAgentsAll(cwdDir, {}, "user");
+		assert.equal(result.agentDiagnostics.some((diagnostic) => diagnostic.filePath === instructionsPath), false);
 	});
 
 	test("should not treat ~/.agents as a project agent directory", () => {
