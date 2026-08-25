@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.34.12] - 2026-08-25
 
 ### Changed
 - Route the six agents that previously used `openai/gpt-5.6-sol` through `cloudflare-ai-gateway/gpt-5.6-sol`, with direct OpenAI moved to the front of each existing fallback list.
