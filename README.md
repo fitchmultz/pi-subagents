@@ -184,13 +184,16 @@ Use the narrowest role that fits the task. Keep implementation to one writer and
 
 ## Changing a builtin agent's model
 
-The bundled Fitch role profiles all use the same primary and fallback routes.
+The bundled Fitch role profiles pin explicit primary and fallback routes. `delegate` inherits the current Pi model.
 
 | Primary route | Agents |
 |---------------|--------|
-| `cloudflare-ai-gateway/gpt-5.6-sol` | All builtin agents |
+| `cloudflare-ai-gateway/claude-fable-5` | `context-builder`, `debugger`, `fixer`, `planner`, `reviewer`, `reviewer-claude`, `ui-designer`, `writer` |
+| `cloudflare-ai-gateway/gpt-5.6-sol` | `oracle`, `researcher`, `reviewer-gpt`, `scout`, `watcher`, `worker` |
+| `fireworks/accounts/fireworks/routers/kimi-k3-fast` | `reviewer-ponytail`, `reviewer-security` |
+| Current Pi model | `delegate` |
 
-Every profile falls back to `openai/gpt-5.6-sol`, then `openai-codex/gpt-5.6-sol`. Override a role if those routes are unavailable in your Pi setup; you do not need to copy the bundled agent file.
+The six gateway Sol profiles fall back to direct `openai/gpt-5.6-sol` first, then retain their previous fallback routes. Override a role if those routes are unavailable in your Pi setup; you do not need to copy the bundled agent file.
 
 For one run, put the override in the command:
 
@@ -443,7 +446,7 @@ Agent locations, lowest to highest priority:
 
 Project discovery also reads legacy `.agents/**/*.md` files. Nested subdirectories are discovered recursively. `.chain.md` files do not define agents. If both `.agents/` and `.pi/agents/` define the same parsed runtime agent name, `.pi/agents/` wins. Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions.
 
-Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. Every Fitch role profile uses gateway Sol with direct OpenAI and OpenAI Codex fallbacks. `oracle` is the only packaged fork-default role. The other Fitch profiles default to fresh context and use Pi's normal tool surface.
+Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. The Fitch role profiles pin provider models and fallback routes; direct OpenAI primaries use gateway Sol with direct OpenAI first in the fallback list. `delegate` inherits the current Pi model. `oracle` is the only packaged fork-default role. The other Fitch profiles default to fresh context and use Pi's normal tool surface.
 
 ### Builtin overrides
 

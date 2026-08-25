@@ -1,8 +1,8 @@
 ---
 name: reviewer-ponytail
 description: Over-engineering and slop review for diffs, gated on preserving intended behavior
-model: cloudflare-ai-gateway/gpt-5.6-sol
-fallbackModels: openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
+model: fireworks/accounts/fireworks/routers/kimi-k3-fast
+fallbackModels: anthropic/claude-fable-5
 thinking: max
 systemPromptMode: replace
 inheritProjectContext: true

@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Changed
-- Route every bundled agent through `cloudflare-ai-gateway/gpt-5.6-sol` by default, with ordered `openai/gpt-5.6-sol` and `openai-codex/gpt-5.6-sol` fallbacks.
+- Route the six agents that previously used `openai/gpt-5.6-sol` through `cloudflare-ai-gateway/gpt-5.6-sol`, with direct OpenAI moved to the front of each existing fallback list.
 
 ## [0.34.11] - 2026-08-25
 

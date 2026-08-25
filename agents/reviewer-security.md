@@ -1,7 +1,7 @@
 ---
 name: reviewer-security
 description: Security and data-safety reviewer for changed code, dependencies, and exposed surfaces
-model: cloudflare-ai-gateway/gpt-5.6-sol
+model: fireworks/accounts/fireworks/routers/kimi-k3-fast
 fallbackModels: openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
 thinking: max
 systemPromptMode: replace
