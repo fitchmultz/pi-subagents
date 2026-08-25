@@ -147,25 +147,25 @@ and user/project agents override builtins with the same name.
 
 | Agent | Purpose | Primary model | Typical output / role |
 |-------|---------|---------------|------------------------|
-| `scout` | Fast codebase recon | `openai/gpt-5.6-sol` | Writes `context.md` handoff material |
-| `context-builder` | Requirements/codebase handoff builder | `cloudflare-ai-gateway/claude-opus-5` | Writes structured context and meta-prompts |
-| `researcher` | Evidence-driven technical research | `openai/gpt-5.6-sol` | Writes `research.md` |
-| `watcher` | Read-only background monitoring | `openai/gpt-5.6-sol` | Queues the latest material transition; returns at the terminal condition |
-| `planner` | Creates implementation plans | `cloudflare-ai-gateway/claude-opus-5` | Writes `plan.md` |
-| `worker` | Bounded implementation | `openai/gpt-5.6-sol` | Single-writer implementation and validation |
-| `debugger` | Root-cause diagnosis | `cloudflare-ai-gateway/claude-opus-5` | Writes `diagnosis.md` |
-| `fixer` | Decided, bounded remediation | `cloudflare-ai-gateway/claude-opus-5` | Applies an explicit fix list |
-| `reviewer` | General implementation review | `cloudflare-ai-gateway/claude-opus-5` | Review-only by default |
-| `reviewer-gpt` | Strict completion gate | `openai/gpt-5.6-sol` | Maintainability/correctness review |
-| `reviewer-claude` | Cross-model product-risk review | `cloudflare-ai-gateway/claude-opus-5` | Independent review |
+| `scout` | Fast codebase recon | `cloudflare-ai-gateway/gpt-5.6-sol` | Writes `context.md` handoff material |
+| `context-builder` | Requirements/codebase handoff builder | `cloudflare-ai-gateway/claude-fable-5` | Writes structured context and meta-prompts |
+| `researcher` | Evidence-driven technical research | `cloudflare-ai-gateway/gpt-5.6-sol` | Writes `research.md` |
+| `watcher` | Read-only background monitoring | `cloudflare-ai-gateway/gpt-5.6-sol` | Queues the latest material transition; returns at the terminal condition |
+| `planner` | Creates implementation plans | `cloudflare-ai-gateway/claude-fable-5` | Writes `plan.md` |
+| `worker` | Bounded implementation | `cloudflare-ai-gateway/gpt-5.6-sol` | Single-writer implementation and validation |
+| `debugger` | Root-cause diagnosis | `cloudflare-ai-gateway/claude-fable-5` | Writes `diagnosis.md` |
+| `fixer` | Decided, bounded remediation | `cloudflare-ai-gateway/claude-fable-5` | Applies an explicit fix list |
+| `reviewer` | General implementation review | `cloudflare-ai-gateway/claude-fable-5` | Review-only by default |
+| `reviewer-gpt` | Strict completion gate | `cloudflare-ai-gateway/gpt-5.6-sol` | Maintainability/correctness review |
+| `reviewer-claude` | Cross-model product-risk review | `cloudflare-ai-gateway/claude-fable-5` | Independent review |
 | `reviewer-security` | Trust-boundary review | `fireworks/accounts/fireworks/routers/kimi-k3-fast` | Security/data-safety findings |
 | `reviewer-ponytail` | Over-engineering and slop review | `fireworks/accounts/fireworks/routers/kimi-k3-fast` | Deletion-focused findings; behavior-preserving only |
-| `ui-designer` | UI and accessibility review | `cloudflare-ai-gateway/claude-opus-5` | Rendered UX guidance |
+| `ui-designer` | UI and accessibility review | `cloudflare-ai-gateway/claude-fable-5` | Rendered UX guidance |
 | `writer` | Human-facing writing | `cloudflare-ai-gateway/claude-fable-5` | Writes `draft.md` |
-| `oracle` | Decision-consistency advisory review | `openai/gpt-5.6-sol` | Forked advisory review |
+| `oracle` | Decision-consistency advisory review | `cloudflare-ai-gateway/gpt-5.6-sol` | Forked advisory review |
 | `delegate` | Lightweight generic delegate | inherits default | No fixed output; generic delegated work |
 
-The Fitch role profiles pin primary and fallback routes; `delegate` inherits the current Pi model. Keep those configured defaults unless a run, user setting, or project setting has a concrete reason to override them.
+The Fitch role profiles pin primary and fallback routes; the six gateway Sol profiles put direct OpenAI first in their fallback lists. `delegate` inherits the current Pi model. Keep those configured defaults unless a run, user setting, or project setting has a concrete reason to override them.
 
 For one run, use inline config:
 
