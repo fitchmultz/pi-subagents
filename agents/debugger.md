@@ -1,8 +1,8 @@
 ---
 name: debugger
 description: Root-cause diagnostician that reproduces failures and produces evidence-backed repair instructions
-model: cloudflare-ai-gateway/claude-fable-5
-fallbackModels: anthropic/claude-opus-5, openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
+model: cloudflare-ai-gateway/gpt-5.6-sol
+fallbackModels: openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: true

@@ -1,8 +1,8 @@
 ---
 name: reviewer-claude
 description: Independent cross-model reviewer for assumptions, edge cases, and product risk
-model: cloudflare-ai-gateway/claude-fable-5
-fallbackModels: anthropic/claude-opus-5, cloudflare-ai-gateway/claude-fable-5
+model: cloudflare-ai-gateway/gpt-5.6-sol
+fallbackModels: openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: true

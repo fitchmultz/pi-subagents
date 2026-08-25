@@ -1,6 +1,8 @@
 ---
 name: delegate
-description: Lightweight subagent that inherits the parent model with no default reads
+description: Lightweight subagent for generic delegated work with no default reads
+model: cloudflare-ai-gateway/gpt-5.6-sol
+fallbackModels: openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
 systemPromptMode: append
 inheritProjectContext: true
 tools: read, grep, find, ls, bash, edit, write, contact_supervisor

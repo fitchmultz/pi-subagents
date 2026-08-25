@@ -1,8 +1,8 @@
 ---
 name: reviewer-gpt
 description: Strict maintainability and correctness gate for completed changes
-model: openai/gpt-5.6-sol
-fallbackModels: openai-codex/gpt-5.6-sol
+model: cloudflare-ai-gateway/gpt-5.6-sol
+fallbackModels: openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
 thinking: xhigh
 systemPromptMode: replace
 inheritProjectContext: true

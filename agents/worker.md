@@ -1,8 +1,8 @@
 ---
 name: worker
 description: End-to-end implementation specialist for bounded tasks
-model: openai/gpt-5.6-sol
-fallbackModels: cloudflare-ai-gateway/claude-opus-5, openai-codex/gpt-5.6-sol
+model: cloudflare-ai-gateway/gpt-5.6-sol
+fallbackModels: openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
 thinking: xhigh
 systemPromptMode: replace
 inheritProjectContext: true
