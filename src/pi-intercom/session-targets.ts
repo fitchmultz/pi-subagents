@@ -111,18 +111,21 @@ export function targetDisplayName(session: TargetIdentity, allSessions: TargetId
 // expensive on large sessions. Live details belong behind intercom list.
 export const PEER_AWARENESS_HINT = `Other Pi sessions may be connected to this project. If you have not checked them for this task, use intercom({ action: "list" }) before duplicating substantial work or changing shared state. Coordinate only when work overlaps; use subagent controls for managed child runs.`;
 
-export function formatPeerAwarenessHint<T extends ProjectSessionIdentity>(sessions: T[], currentSessionId: string): string | undefined {
+export function filterProjectSessions<T extends ProjectSessionIdentity>(sessions: T[], currentSessionId: string): T[] {
   const current = sessions.find((session) => session.id === currentSessionId);
-  if (!current) return undefined;
+  if (!current) return [];
 
-  const peers = sessions.filter((session) => {
-    if (session.id === currentSessionId) return false;
-    if (session.cwd === current.cwd) return true;
-    return Boolean(current.projectId && session.projectId && session.projectId === current.projectId);
-  });
-  if (peers.length === 0) return undefined;
+  return sessions.filter((session) =>
+    session.id === currentSessionId
+    || session.cwd === current.cwd
+    || Boolean(current.projectId && session.projectId && session.projectId === current.projectId)
+  );
+}
 
-  return PEER_AWARENESS_HINT;
+export function formatPeerAwarenessHint<T extends ProjectSessionIdentity>(sessions: T[], currentSessionId: string): string | undefined {
+  return filterProjectSessions(sessions, currentSessionId).some((session) => session.id !== currentSessionId)
+    ? PEER_AWARENESS_HINT
+    : undefined;
 }
 
 export function resolveSessionTarget<T extends TargetIdentity>(sessions: T[], rawTarget: string): TargetResolution<T> {

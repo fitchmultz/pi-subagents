@@ -45,7 +45,7 @@ PI_REAL_SMOKE_MODEL=openai-codex/gpt-5.6-sol npm run smoke:real-pi -- --llm
 
 The `--llm` mode copies local `auth.json` and `models.json` into the isolated Pi agent dir. Set `PI_REAL_SMOKE_AUTH_AGENT_DIR` if your auth files are not in `~/.pi/agent`.
 
-Pi-intercom automatically gives ordinary agents a bounded presence hint when another connected session is working in the same Git repository, including separate worktrees. The hint is a constant count-free string; agents still use `intercom({ action: "list" })` for current targets, and no message is sent automatically. Managed `pi-subagents` children keep their dedicated supervisor channel instead of receiving the peer hint. Project matching is an advisory presence signal, not an authorization boundary. Add project instructions only when you want a stricter mandatory coordination policy.
+Pi-intercom automatically gives ordinary agents a bounded presence hint when another connected session is working in the same Git repository, including separate worktrees. The hint is a constant count-free string; agents still use `intercom({ action: "list" })` for current-project targets, and no message is sent automatically. Both the tool and `/intercom` overlay default to that repository/worktree scope. Use `intercom({ action: "list", scope: "all" })` or `/intercom all` only when intentionally discovering sessions in other projects. Managed `pi-subagents` children keep their dedicated supervisor channel instead of receiving the peer hint. Project matching is an advisory presence signal, not an authorization boundary. Add project instructions only when you want a stricter mandatory coordination policy.
 
 A session becomes intercom-connected when all of these are true:
 - the bundled intercom extension is enabled through `pi config`
@@ -60,7 +60,7 @@ If a session is unnamed, pi-intercom now exposes a runtime-only fallback alias l
 
 ### From the Keyboard
 
-Press **Alt+M** or type `/intercom` to open the session list overlay:
+Press **Alt+M** or type `/intercom` to open the current-project session list overlay. Type `/intercom all` to include sessions in other projects:
 
 1. **Select a session** — Use arrow keys to pick a target session
 2. **Compose message** — Write your message in the compose overlay. Pasted multiline handoffs are preserved.
@@ -72,7 +72,7 @@ Press **Alt+M** or type `/intercom` to open the session list overlay:
 The agent can list sessions and send messages using the `intercom` tool. Tool calls and results render as compact transcript rows so send/ask/reply flows are easy to scan. Successful `list` results show only the session count by default in the TUI; press Ctrl+O (or the configured tool-expansion key) to show the full list. For common patterns like planner-worker delegation, the bundled `pi-intercom` skill provides copy-paste ready examples:
 
 ```typescript
-// List active sessions
+// List connected sessions in this repository and its worktrees
 intercom({ action: "list" })
 // → **Current session:**
 // → • executor (20d43841) — ~/projects/api (claude-sonnet-4) [self, idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:none]
@@ -80,6 +80,9 @@ intercom({ action: "list" })
 // → **Other sessions:**
 // → • research (6332faab) — ~/projects/api (claude-sonnet-4) [same cwd, thinking, state:busy, accepts_asks:false, pending_asks:1, last_intercom_activity:2m ago]
 // →   ↳ send defaults to steer; ask only if sender must stay alive for a required reply (default returns peer_idle); queue only for intentional delay; passive discouraged
+
+// Intentionally discover sessions in other projects
+intercom({ action: "list", scope: "all" })
 
 // Send live guidance without blocking this long-lived session; send defaults to steer
 intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null. Send the finding back." })
@@ -311,6 +314,7 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `action` | string | `"list"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
+| `scope` | string | Optional for list/status: `"project"` (default) shows this Git repository and its worktrees; `"all"` includes sessions in other projects. |
 | `to` | string | Target session name or ID (for send/ask, or to disambiguate reply) |
 | `message` | string | Message text (for send/ask/reply) |
 | `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
@@ -338,7 +342,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 ### intercom actions
 
-**`list`** — Returns the current session plus other active intercom-connected sessions with name, safe target, working directory, model, live status, and peer health tags: `state` (`idle`, `busy`, or `unknown`), `accepts_asks`, `pending_asks`, `last_intercom_activity`, and `last_seen`. Peer rows include live delivery guidance for `ask`, `send`, `queue`, `steer`, and the discouraged passive path; the self row says self-target delivery is unavailable and points to peer targets / `pending` / `reply`. Status is derived automatically from Pi lifecycle events: `idle`, `thinking`, or `tool:<name>`. If multiple sessions have the same name, use the displayed target exactly as shown, for example `to: "ca7bfec2"`. The target may be longer than eight characters when needed to avoid collisions.
+**`list`** — Returns the current session plus other intercom-connected sessions in the current Git repository and its worktrees by default. Pass `scope:"all"` to intentionally include sessions in other projects. Hidden sessions remain connected and directly targetable by an exact known target. Rows include name, safe target, working directory, model, live status, and peer health tags: `state` (`idle`, `busy`, or `unknown`), `accepts_asks`, `pending_asks`, `last_intercom_activity`, and `last_seen`. Peer rows include live delivery guidance for `ask`, `send`, `queue`, `steer`, and the discouraged passive path; the self row says self-target delivery is unavailable and points to peer targets / `pending` / `reply`. Status is derived automatically from Pi lifecycle events: `idle`, `thinking`, or `tool:<name>`. If multiple sessions have the same name, use the displayed target exactly as shown, for example `to: "ca7bfec2"`. The target may be longer than eight characters when needed to avoid collisions.
 
 **`send`** — Sends a non-blocking, default-steered message to the specified session and returns broker acceptance, not a later response. It wakes idle recipients or reaches busy recipients at the next tool boundary. Use `delivery:"queue"` only when delay is intentional, and `delivery:"passive"`/`passive:true` only for human-visible breadcrumbs. `queueMode:"replace"` with a `threadId` replaces older undelivered intercom-staged messages for that thread after a short coalescing window; once a message is handed to Pi's native queue it cannot be keyed-replaced. Set `confirmSend: true` in config if you want a confirmation dialog for non-reply sends. Replies that include `replyTo` skip confirmation.
 
@@ -348,7 +352,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`pending`** — Lists unresolved inbound asks with sender, elapsed time, a labeled `replyTo` ID, and a copy-ready `intercom({ action: "reply", ... })` call. For `pi-subagents` supervisor asks, the preview expands the run id, agent, child intercom target, and question so the parent can reply without guessing. Useful when replying after the original triggered turn.
 
-**`status`** — Shows connection status, session ID, total active sessions, and the same live recipient capability rows as `list` so agents can choose `ask`, `queue`, `steer`, or avoid passive delivery without a second call.
+**`status`** — Shows connection status, session ID, and the same project-scoped recipient capability rows as `list`. Pass `scope:"all"` to include other projects.
 
 ## Keyboard Shortcuts
 

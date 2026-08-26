@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.34.13] - 2026-08-26
+
+### Changed
+- Scope intercom list/status discovery and the session overlay to the current Git repository and its worktrees by default, with explicit `scope: "all"` and `/intercom all` paths for intentional cross-project discovery.
+
 ## [0.34.12] - 2026-08-25
 
 ### Changed

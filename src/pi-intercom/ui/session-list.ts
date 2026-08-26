@@ -17,6 +17,7 @@ export class SessionListOverlay implements Component {
   private currentSession: SessionInfo;
   private sessions: SessionInfo[];
   private done: (result: SessionInfo | undefined) => void;
+  private hiddenSessionCount: number;
 
   constructor(
     tui: TUI,
@@ -25,6 +26,8 @@ export class SessionListOverlay implements Component {
     currentSession: SessionInfo,
     sessions: SessionInfo[],
     done: (result: SessionInfo | undefined) => void,
+    hiddenSessionCount = 0,
+    allSessions = [currentSession, ...sessions],
   ) {
     this.tui = tui;
     this.theme = theme;
@@ -32,7 +35,8 @@ export class SessionListOverlay implements Component {
     this.currentSession = currentSession;
     this.sessions = sessions;
     this.done = done;
-    this.allSessions = [currentSession, ...sessions];
+    this.hiddenSessionCount = hiddenSessionCount;
+    this.allSessions = allSessions;
     const items: SelectItem[] = sessions.map((session) => ({
       value: session.id,
       label: sessionTitle(session, this.allSessions, session.cwd === currentSession.cwd ? "same cwd" : undefined),
@@ -86,13 +90,22 @@ export class SessionListOverlay implements Component {
     ];
 
     if (this.sessions.length === 0) {
-      lines.push(
-        row(this.theme.fg("dim", " No other intercom-connected sessions")),
-        row(this.theme.fg("dim", " Start another session with: pi --name worker")),
-        row(this.theme.fg("dim", " Then run intercom({ action: \"list\" }) again")),
-      );
+      lines.push(...(this.hiddenSessionCount > 0
+        ? [
+            row(this.theme.fg("dim", " No other sessions in this project")),
+            row(this.theme.fg("dim", ` ${this.hiddenSessionCount} in other project${this.hiddenSessionCount === 1 ? "" : "s"} hidden`)),
+            row(this.theme.fg("dim", " Run /intercom all to show every connected session")),
+          ]
+        : [
+            row(this.theme.fg("dim", " No other intercom-connected sessions")),
+            row(this.theme.fg("dim", " Start another session with: pi --name worker")),
+            row(this.theme.fg("dim", " Then run intercom({ action: \"list\" }) again")),
+          ]));
     } else {
       lines.push(...this.selectList.render(contentWidth).map(row));
+      if (this.hiddenSessionCount > 0) {
+        lines.push(row(this.theme.fg("dim", ` ${this.hiddenSessionCount} other-project session${this.hiddenSessionCount === 1 ? "" : "s"} hidden · /intercom all`)));
+      }
     }
 
     lines.push(

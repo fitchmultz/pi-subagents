@@ -571,6 +571,54 @@ test("intercom tool empty list output gives local fork next steps", { concurrenc
   }
 });
 
+test("intercom list defaults to the current project and scope all reveals other projects", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const broker = await setupBroker();
+  const sameProject = new IntercomClient();
+  const unrelated = new IntercomClient();
+  const harness = createExtensionHarness("project-controller");
+
+  try {
+    await connectClient(sameProject, "same-project-peer", {
+      cwd: path.join(repoDir, "..", "linked-worktree"),
+      projectId: await resolveSessionProjectId(repoDir),
+    });
+    await connectClient(unrelated, "other-project-peer", {
+      cwd: path.join(tmpdir(), "unrelated-project"),
+      projectId: "b".repeat(64),
+    });
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+    await waitForSessionByName(sameProject, "project-controller");
+    const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
+
+    const projectResult = await intercomTool.execute("list-project", {
+      action: "list",
+    }, new AbortController().signal, undefined, harness.ctx);
+    const projectText = projectResult.content[0]?.text ?? "";
+    assert.match(projectText, /same-project-peer/);
+    assert.doesNotMatch(projectText, /other-project-peer/);
+    assert.match(projectText, /1 session in other projects hidden/);
+    assert.match(projectText, /intercom\(\{ action: "list", scope: "all" \}\)/);
+    assert.deepEqual(projectResult.details, { sessionCount: 2 });
+
+    const allResult = await intercomTool.execute("list-all", {
+      action: "list",
+      scope: "all",
+    }, new AbortController().signal, undefined, harness.ctx);
+    const allText = allResult.content[0]?.text ?? "";
+    assert.match(allText, /same-project-peer/);
+    assert.match(allText, /other-project-peer/);
+    assert.doesNotMatch(allText, /other projects hidden/);
+    assert.deepEqual(allResult.details, { sessionCount: 3 });
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await sameProject.disconnect().catch(() => undefined);
+    await unrelated.disconnect().catch(() => undefined);
+    await stopBroker(broker);
+  }
+});
+
 test("before_agent_start adds a bounded hint only for same-project peers", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const broker = await setupBroker();

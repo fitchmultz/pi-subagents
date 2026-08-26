@@ -14,7 +14,7 @@ import { InlineMessageComponent } from "./ui/inline-message.ts";
 import { loadConfig, type IntercomConfig } from "./config.ts";
 import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode } from "./types.ts";
 import { ReplyTracker } from "./reply-tracker.ts";
-import { formatPeerAwarenessHint, formatSessionTarget, formatTargetOptions, PEER_AWARENESS_HINT, resolveSessionProjectId, targetDisplayName, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
+import { filterProjectSessions, formatPeerAwarenessHint, formatSessionTarget, formatTargetOptions, PEER_AWARENESS_HINT, resolveSessionProjectId, targetDisplayName, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
 import { registerSubagentLiveEventHandlers } from "./subagent-live-events.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -63,6 +63,7 @@ type RequestedDelivery = MessageDelivery | "auto";
 type InboundDelivery = "trigger" | "followUp" | "steer" | "passive";
 
 type ContactSupervisorReason = "need_decision" | "progress_update" | "interview_request";
+type IntercomSessionScope = "project" | "all";
 
 interface SupervisorInterviewQuestion extends Record<string, unknown> {
   id: string;
@@ -490,18 +491,29 @@ function formatSessionListRow(session: SessionInfo, currentCwd: string, isSelf: 
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
   return `• ${name} (${target}) — ${session.cwd} (${session.model})${suffix}\n  ↳ ${sessionDeliveryGuidance(session, isSelf)}`;
 }
-function formatSessionListSections(sessions: SessionInfo[], currentSessionId: string): string {
-  const currentSession = sessions.find(s => s.id === currentSessionId);
+function sessionsForScope(sessions: SessionInfo[], currentSessionId: string, scope: IntercomSessionScope): SessionInfo[] {
+  return scope === "all" ? sessions : filterProjectSessions(sessions, currentSessionId);
+}
+
+function formatSessionListSections(allSessions: SessionInfo[], currentSessionId: string, scope: IntercomSessionScope = "project"): string {
+  const currentSession = allSessions.find(s => s.id === currentSessionId);
   if (!currentSession) {
     throw new Error("Current session is missing from intercom session list.");
   }
-  const duplicates = duplicateSessionNames(sessions);
+  const sessions = sessionsForScope(allSessions, currentSessionId, scope);
+  const hiddenSessionCount = allSessions.length - sessions.length;
+  const duplicates = duplicateSessionNames(allSessions);
   const otherSessions = sessions.filter(s => s.id !== currentSessionId);
-  const currentSection = `**Current session:**\n${formatSessionListRow(currentSession, currentSession.cwd, true, duplicates, sessions)}`;
+  const currentSection = `**Current session:**\n${formatSessionListRow(currentSession, currentSession.cwd, true, duplicates, allSessions)}`;
   const otherSection = otherSessions.length === 0
-    ? `**Other sessions:**\nNo other sessions connected. Start another intercom-enabled session with \`pi --name worker\`, then run \`intercom({ action: "list" })\` again. If you are dogfooding this local fork without installing it, start the peer with \`${localForkStartCommand()}\`.`
-    : `**Other sessions:**\n${otherSessions.map(s => formatSessionListRow(s, currentSession.cwd, false, duplicates, sessions)).join("\n")}`;
-  return `${currentSection}\n\n${otherSection}`;
+    ? `**Other sessions:**\n${hiddenSessionCount > 0
+      ? "No other sessions connected in this project."
+      : `No other sessions connected. Start another intercom-enabled session with \`pi --name worker\`, then run \`intercom({ action: "list" })\` again. If you are dogfooding this local fork without installing it, start the peer with \`${localForkStartCommand()}\`.`}`
+    : `**Other sessions:**\n${otherSessions.map(s => formatSessionListRow(s, currentSession.cwd, false, duplicates, allSessions)).join("\n")}`;
+  const scopeHint = hiddenSessionCount > 0
+    ? `\n\n${hiddenSessionCount} session${hiddenSessionCount === 1 ? "" : "s"} in other projects hidden. Use \`intercom({ action: "list", scope: "all" })\` to show every connected session.`
+    : "";
+  return `${currentSection}\n\n${otherSection}${scopeHint}`;
 }
 function previewText(value: unknown, maxLength = 72): string | undefined {
   if (typeof value !== "string") {
@@ -549,6 +561,7 @@ interface ContactSupervisorToolParams {
 
 interface IntercomToolParams {
   action: "list" | "send" | "ask" | "reply" | "pending" | "status";
+  scope?: IntercomSessionScope;
   to?: string;
   message?: string;
   attachments?: Attachment[];
@@ -1859,7 +1872,8 @@ Use this to communicate findings, request help, or coordinate work with other se
 Non-blocking send defaults to steer for guidance, answers, corrections, or blockers that may affect active work. Use queue only when delay is intentional; use ask only when this process must remain alive waiting for the reply.
 
 Usage:
-  intercom({ action: "list" })                    → List active sessions
+  intercom({ action: "list" })                    → List sessions in this repository and its worktrees
+  intercom({ action: "list", scope: "all" })      → List connected sessions across every project
   intercom({ action: "send", to: "session-name", message: "..." })  → Send live coordination (defaults to steer)
   intercom({ action: "ask", to: "session-name", delivery: "steer", message: "..." })   → Blocking wait only when sender must stay alive
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
@@ -1868,6 +1882,7 @@ Usage:
     promptSnippet:
       "Coordinate with local Pi sessions. Non-blocking send defaults to steer for live agent guidance; queue only for intentional delay and ask only for a required blocking reply.",
     promptGuidelines: [
+      "Intercom list/status defaults to the current Git repository and its worktrees. Use scope='all' only when intentionally discovering sessions in other projects.",
       "Action='send' defaults to delivery='steer' for agent-to-agent guidance, answers, corrections, blockers, or other context that may affect active work.",
       "Use delivery='queue' only when delay is intentional, and passive only when the recipient model should not see the message now.",
       "Treat inbound steered messages as supplemental coordination within the active task: incorporate relevant context and continue; replace the task only when the message explicitly says so.",
@@ -1878,6 +1893,9 @@ Usage:
       action: StringEnum(["list", "send", "ask", "reply", "pending", "status"] as const, {
         description: "Action: 'list', 'send', 'ask', 'reply', 'pending', or 'status'",
       }),
+      scope: Type.Optional(StringEnum(["project", "all"] as const, {
+        description: "For list/status: 'project' (default) shows this Git repository and its worktrees; 'all' includes sessions in other projects.",
+      })),
       to: Type.Optional(Type.String({
         description: "Target session name or ID (for 'send', 'ask', or disambiguating 'reply')",
       })),
@@ -1922,7 +1940,14 @@ Usage:
 
       syncPresenceIdentity(ctx.sessionManager.getSessionId());
 
-      const { action, to, message, attachments, replyTo, delivery, queueMode, threadId, passive } = params;
+      const { action, scope = "project", to, message, attachments, replyTo, delivery, queueMode, threadId, passive } = params;
+      if (params.scope !== undefined && action !== "list" && action !== "status") {
+        return {
+          content: [{ type: "text", text: "'scope' is only valid for action='list' or action='status'" }],
+          isError: true,
+          details: { error: true },
+        };
+      }
       if (passive !== undefined && action !== "send") {
         return {
           content: [{ type: "text", text: "'passive' is only valid for action='send'" }],
@@ -1980,9 +2005,10 @@ Usage:
           try {
             const mySessionId = connectedClient.sessionId;
             if (!mySessionId) throw new Error("Current intercom session id is unavailable.");
-            const sessions = await connectedClient.listSessions();
+            const allSessions = await connectedClient.listSessions();
+            const sessions = sessionsForScope(allSessions, mySessionId, scope);
             return {
-              content: [{ type: "text", text: formatSessionListSections(sessions, mySessionId) }],
+              content: [{ type: "text", text: formatSessionListSections(allSessions, mySessionId, scope) }],
               isError: false,
               details: { sessionCount: sessions.length },
             };
@@ -2281,11 +2307,12 @@ Usage:
           try {
             const mySessionId = connectedClient.sessionId;
             if (!mySessionId) throw new Error("Current intercom session id is unavailable.");
-            const sessions = await connectedClient.listSessions();
+            const allSessions = await connectedClient.listSessions();
+            const sessions = sessionsForScope(allSessions, mySessionId, scope);
             return {
               content: [{
                 type: "text",
-                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nActive sessions: ${sessions.length}\n\n${formatSessionListSections(sessions, mySessionId)}`,
+                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nConnected sessions in scope: ${sessions.length}\n\n${formatSessionListSections(allSessions, mySessionId, scope)}`,
               }],
               isError: false,
             };
@@ -2352,7 +2379,7 @@ Usage:
     },
   } as never);
 
-  async function openIntercomOverlay(ctx: ExtensionContext): Promise<void> {
+  async function openIntercomOverlay(ctx: ExtensionContext, scope: IntercomSessionScope = "project"): Promise<void> {
     const overlayGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, overlayGeneration);
     if (!liveContext?.hasUI) return;
@@ -2370,9 +2397,12 @@ Usage:
 
     let currentSession: SessionInfo;
     let sessions: SessionInfo[];
+    let allSessions: SessionInfo[];
+    let hiddenSessionCount = 0;
     try {
       const mySessionId = overlayClient.sessionId;
-      const allSessions = await overlayClient.listSessions();
+      if (!mySessionId) throw new Error("Current intercom session id is unavailable.");
+      allSessions = await overlayClient.listSessions();
       if (!getLiveContext(ctx, overlayGeneration)) return;
       const foundCurrentSession = allSessions.find(s => s.id === mySessionId);
       if (!foundCurrentSession) {
@@ -2380,14 +2410,16 @@ Usage:
         return;
       }
       currentSession = foundCurrentSession;
-      sessions = allSessions.filter(s => s.id !== mySessionId);
+      const scopedSessions = sessionsForScope(allSessions, mySessionId, scope);
+      hiddenSessionCount = allSessions.length - scopedSessions.length;
+      sessions = scopedSessions.filter(s => s.id !== mySessionId);
     } catch (error) {
       notifyIfLive(ctx, `Failed to list sessions: ${getErrorMessage(error)}`, "error", overlayGeneration);
       return;
     }
 
     const selectedSession = await ctx.ui.custom<SessionInfo | undefined>(
-      (tui, theme, keybindings, done) => new SessionListOverlay(tui, theme, keybindings, currentSession, sessions, done),
+      (tui, theme, keybindings, done) => new SessionListOverlay(tui, theme, keybindings, currentSession, sessions, done, hiddenSessionCount, allSessions),
       { overlay: true }
     ).catch(() => undefined);
 
@@ -2401,7 +2433,7 @@ Usage:
     }
     if (!getLiveContext(ctx, overlayGeneration)) return;
 
-    const targetLabel = targetDisplayName(selectedSession, [...sessions, currentSession]);
+    const targetLabel = targetDisplayName(selectedSession, allSessions);
 
     const result = await ctx.ui.custom<ComposeResult>(
       (tui, theme, keybindings, done) => new ComposeOverlay(tui, theme, keybindings, selectedSession, targetLabel, overlayClient, done),
@@ -2420,8 +2452,15 @@ Usage:
   }
 
   pi.registerCommand("intercom", {
-    description: "Open session intercom overlay",
-    handler: async (_args, ctx) => openIntercomOverlay(ctx),
+    description: "Open project intercom overlay; pass 'all' to include other projects",
+    handler: async (args, ctx) => {
+      const requestedScope = args.trim();
+      if (requestedScope && requestedScope !== "all") {
+        ctx.ui.notify("Usage: /intercom [all]", "warning");
+        return;
+      }
+      await openIntercomOverlay(ctx, requestedScope === "all" ? "all" : "project");
+    },
   });
 
   pi.registerShortcut("alt+m", {
