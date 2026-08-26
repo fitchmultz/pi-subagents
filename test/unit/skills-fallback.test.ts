@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -55,6 +56,34 @@ describe("skills filesystem fallback", () => {
 	afterEach(() => {
 		clearSkillCache();
 		fs.rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	it("does not leak npm discovery warnings to stderr", () => {
+		const binDir = path.join(tempDir, "bin");
+		const fakeNpm = path.join(binDir, process.platform === "win32" ? "npm.cmd" : "npm");
+		fs.mkdirSync(binDir, { recursive: true });
+		fs.writeFileSync(fakeNpm, process.platform === "win32"
+			? `@echo synthetic npm warning 1>&2\r\n@echo ${tempDir}\r\n`
+			: `#!/bin/sh\nprintf 'synthetic npm warning\\n' >&2\nprintf '%s\\n' '${tempDir}'\n`);
+		fs.chmodSync(fakeNpm, 0o755);
+
+		const moduleUrl = new URL("../../src/agents/skills.ts", import.meta.url).href;
+		const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `
+			import { discoverAvailableSkills } from ${JSON.stringify(moduleUrl)};
+			discoverAvailableSkills(process.cwd());
+		`], {
+			cwd: tempDir,
+			encoding: "utf-8",
+			env: {
+				...process.env,
+				PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+				HOME: path.join(tempDir, "home"),
+				USERPROFILE: path.join(tempDir, "home"),
+			},
+		});
+
+		assert.equal(result.status, 0, result.stderr);
+		assert.doesNotMatch(result.stderr, /synthetic npm warning/);
 	});
 
 	it("discovers project skills from filesystem paths", () => {

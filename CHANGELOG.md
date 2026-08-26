@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.34.14] - 2026-08-26
+
+### Fixed
+- Suppress npm stderr while probing global packages so npm config warnings do not leak into the Pi TUI during skill discovery.
+
 ## [0.34.13] - 2026-08-26
 
 ### Changed
