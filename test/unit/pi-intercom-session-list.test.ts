@@ -50,6 +50,24 @@ test("session list delegates selection, scrolling, and truncation to SelectList"
   assert.equal(renderRequests, 10);
 });
 
+test("project-scoped session list explains how to reveal hidden projects", () => {
+  const overlay = new SessionListOverlay(
+    { requestRender: () => undefined } as never,
+    theme as never,
+    keybindings as never,
+    current,
+    [],
+    () => undefined,
+    3,
+  );
+
+  const lines = overlay.render(88);
+  assert.match(lines.join("\n"), /No other sessions in this project/);
+  assert.match(lines.join("\n"), /3 in other projects hidden/);
+  assert.match(lines.join("\n"), /\/intercom all/);
+  assertWidth(lines, 88);
+});
+
 test("empty session list keeps chrome and cancel behavior", () => {
   let cancelled = false;
   let renderRequests = 0;

@@ -12,7 +12,7 @@ Coordinate named Pi sessions on the same machine with the least context loss and
 ## Source of truth
 
 - A bounded ambient hint may report that same-project peers are connected. It is a constant count-free string and never sends a message; use `intercom({ action: "list" })` before choosing a target.
-- `intercom({ action: "list" })` is the source of truth for targetable sessions. It shows only intercom-connected sessions, not every Pi process, with live ask capability, busy/idle/unknown state, recent intercom activity, and delivery guidance. The current-session row is not targetable; choose a peer from Other sessions.
+- `intercom({ action: "list" })` is the source of truth for targetable sessions in the current Git repository and its worktrees. Use `intercom({ action: "list", scope: "all" })` only when intentionally discovering connected sessions in other projects. Both scopes show only intercom-connected sessions, not every Pi process, with live ask capability, busy/idle/unknown state, recent intercom activity, and delivery guidance. The current-session row is not targetable; choose a peer from Other sessions.
 - Tool call shapes and options live in the live `intercom` / `contact_supervisor` schemas, `docs/intercom.md`, and `src/pi-intercom/index.ts`. Read those when a parameter detail is needed; do not invent fields.
 - Pi CLI flags for local peer sessions are `--name`, `--extension`, and `--skill`.
 
@@ -36,7 +36,7 @@ Coordinate named Pi sessions on the same machine with the least context loss and
 ## Default workflow
 
 1. Decide whether a peer is actually needed. If not, keep working locally.
-2. Discover targets with `intercom({ action: "list" })` before sending.
+2. Discover targets with `intercom({ action: "list" })` before sending. This defaults to the current repository and its worktrees; use `scope: "all"` only for intentional cross-project coordination.
 3. Pick the displayed name or target ID exactly. If names collide, use the target shown by `list`. Never message the current session.
 4. Choose the lightest action:
 
@@ -91,7 +91,7 @@ Read `references/peer-sessions.md` before starting a new visible peer session. S
 
 ## Failure handling
 
-- No other sessions: do not invent a target. Start a peer only if the optional visible-peer rule holds.
+- No other project sessions: do not invent a target. Use `scope: "all"` only when cross-project coordination is intentional; otherwise start a peer only if the optional visible-peer rule holds.
 - `Session not found`: run `list`, choose the exact displayed target, then retry if still useful.
 - `Already waiting for a reply`: wait for the current ask, use `send` for non-blocking context, or continue local work.
 - Multiple pending asks: run `pending`, then use its copy-ready `reply` call or disambiguate with the displayed `to` or `replyTo` value.

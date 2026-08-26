@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { formatPeerAwarenessHint, formatSessionTarget, PEER_AWARENESS_HINT, resolveSessionProjectId, resolveSessionTarget, targetDisplayName } from "../../src/pi-intercom/session-targets.ts";
+import { filterProjectSessions, formatPeerAwarenessHint, formatSessionTarget, PEER_AWARENESS_HINT, resolveSessionProjectId, resolveSessionTarget, targetDisplayName } from "../../src/pi-intercom/session-targets.ts";
 
 const sessions = [
   { id: "abcdefgh-1111-2222-3333-444444444444", name: "worker" },
@@ -103,6 +103,18 @@ test("resolveSessionProjectId runs Git outside the project checkout", { skip: pr
     else process.env.PATH = previousPath;
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("filterProjectSessions includes the current checkout and linked worktrees only", () => {
+  const projectSessions = filterProjectSessions([
+    { id: "current", cwd: "/repo", projectId: "project-a" },
+    { id: "same-cwd", cwd: "/repo", projectId: "cwd-fallback" },
+    { id: "worktree", cwd: "/worktrees/feature", projectId: "project-a" },
+    { id: "unrelated", cwd: "/other", projectId: "project-b" },
+  ], "current");
+
+  assert.deepEqual(projectSessions.map((session) => session.id), ["current", "same-cwd", "worktree"]);
+  assert.deepEqual(filterProjectSessions(projectSessions, "missing"), []);
 });
 
 test("formatPeerAwarenessHint detects only same-project sessions without exposing peer metadata", () => {
