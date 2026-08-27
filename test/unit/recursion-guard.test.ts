@@ -27,8 +27,8 @@ afterEach(() => {
 });
 
 describe("DEFAULT_SUBAGENT_MAX_DEPTH", () => {
-	it("is 2", () => {
-		assert.equal(DEFAULT_SUBAGENT_MAX_DEPTH, 2);
+	it("allows parent-launched subagents but no nested delegation", () => {
+		assert.equal(DEFAULT_SUBAGENT_MAX_DEPTH, 1);
 	});
 });
 
@@ -59,8 +59,8 @@ describe("resolveCurrentMaxSubagentDepth", () => {
 
 	it("falls back to default when neither env nor config is valid", () => {
 		delete process.env.PI_SUBAGENT_MAX_DEPTH;
-		assert.equal(resolveCurrentMaxSubagentDepth(undefined), 2);
-		assert.equal(resolveCurrentMaxSubagentDepth(-1), 2);
+		assert.equal(resolveCurrentMaxSubagentDepth(undefined), 1);
+		assert.equal(resolveCurrentMaxSubagentDepth(-1), 1);
 	});
 });
 
@@ -146,13 +146,13 @@ describe("checkSubagentDepth", () => {
 		assert.equal(checkSubagentDepth().blocked, true);
 	});
 
-	it("defaults to depth=0, max=2 when env vars unset", () => {
+	it("allows the parent and blocks nested delegation by default", () => {
 		delete process.env.PI_SUBAGENT_DEPTH;
 		delete process.env.PI_SUBAGENT_MAX_DEPTH;
-		const result = checkSubagentDepth();
-		assert.equal(result.blocked, false);
-		assert.equal(result.depth, 0);
-		assert.equal(result.maxDepth, 2);
+		assert.deepEqual(checkSubagentDepth(), { blocked: false, depth: 0, maxDepth: 1 });
+
+		process.env.PI_SUBAGENT_DEPTH = "1";
+		assert.deepEqual(checkSubagentDepth(), { blocked: true, depth: 1, maxDepth: 1 });
 	});
 
 	it("blocks when depth is invalid", () => {
@@ -170,7 +170,7 @@ describe("getSubagentDepthEnv", () => {
 		delete process.env.PI_SUBAGENT_MAX_DEPTH;
 		const env = getSubagentDepthEnv();
 		assert.equal(env.PI_SUBAGENT_DEPTH, "1");
-		assert.equal(env.PI_SUBAGENT_MAX_DEPTH, "2");
+		assert.equal(env.PI_SUBAGENT_MAX_DEPTH, "1");
 	});
 
 	it("increments from depth=1", () => {
@@ -178,7 +178,7 @@ describe("getSubagentDepthEnv", () => {
 		delete process.env.PI_SUBAGENT_MAX_DEPTH;
 		const env = getSubagentDepthEnv();
 		assert.equal(env.PI_SUBAGENT_DEPTH, "2");
-		assert.equal(env.PI_SUBAGENT_MAX_DEPTH, "2");
+		assert.equal(env.PI_SUBAGENT_MAX_DEPTH, "1");
 	});
 
 	it("uses provided max depth override", () => {
@@ -209,6 +209,6 @@ describe("getSubagentDepthEnv", () => {
 		process.env.PI_SUBAGENT_DEPTH = "not-a-number";
 		delete process.env.PI_SUBAGENT_MAX_DEPTH;
 		const env = getSubagentDepthEnv();
-		assert.equal(env.PI_SUBAGENT_DEPTH, "2");
+		assert.equal(env.PI_SUBAGENT_DEPTH, "1");
 	});
 });
