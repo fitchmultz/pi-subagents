@@ -14,7 +14,7 @@ Parent-orchestrator skill for launching focused child Pi sessions. Parent owns o
 - Treat child output as evidence to inspect, not automatic truth.
 - Keep writes single-threaded unless writers are isolated with `worktree: true`.
 - Use fresh-context reviewers for adversarial review; use forked `oracle` for inherited-decision/drift review.
-- Do not let ordinary children launch subagents. Only a child explicitly configured with `allowSubagents: true` or the `subagent` tool may run bounded fanout assigned by the parent.
+- Do not let child subagents launch more subagents. Keep all delegation and fanout in the parent session.
 - A reviewer timeout is not sign-off. Foreground reviewer budgets are raised to a safe floor; planner/researcher budgets are raised only from local history. Rerun, resume, or split timed-out work.
 - Subagent execution defaults to async/background. Launch a small bounded fanout as separate single-agent runs so each completion wakes the parent, with at most one writer. Continue useful parent work while children run; if none remains, end the turn and wait for completion instead of polling. Use one `tasks` call for non-review fanout when all child results are required together, when shared concurrency/task limits are needed, or when multiple writers require `worktree: true`; the parent receives one aggregate completion. Check status only when the user asks or the run may be blocked or stale.
 - When an active Pi goal is incomplete and child evidence must arrive before the next goal step, set `async: false` and do not end the turn before that evidence arrives. Use `async: false` for any other deliberate foreground dependency; do not rely on omission.

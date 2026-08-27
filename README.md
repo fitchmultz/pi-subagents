@@ -227,7 +227,7 @@ Background runs are the default and keep working after control returns to you. C
 
 When a Codex-style Pi goal is active, set `async: false` for child evidence that must arrive before the next goal step. Ending the parent turn after launching async work can let goal prompting continue before the child evidence is available.
 
-They also show a compact async widget and send completion notifications. Parallel background runs show per-agent progress instead of fake chain steps. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. When a child is explicitly allowed to fan out with `allowSubagents: true` or `tools: subagent`, its nested runs appear under that parent child in the main status tree instead of being hidden inside the child process.
+They also show a compact async widget and send completion notifications. Parallel background runs show per-agent progress instead of fake chain steps. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. Nested child delegation is disabled by default; keep fanout in the parent session.
 
 You can also ask naturally:
 
@@ -259,7 +259,7 @@ Example prompt files for these patterns remain in `prompts/` for reference.
 
 Packaged `oracle` defaults to forked context; the other Fitch role profiles default to fresh context. Forked context is rejected when an affected agent's effective primary or fallback model uses the `anthropic/` provider, and explicit context/model overrides cannot bypass that restriction.
 
-Child-safety boundaries are enforced at runtime. Spawned child sessions do not receive the bundled `pi-subagents` skill, and forked child context filtering removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results. By default, children do not register the `subagent` tool and receive boundary instructions that they are not the parent orchestrator and must not propose or run subagents. The explicit exception is an agent configured with `allowSubagents: true` or whose resolved builtin `tools` includes `subagent`; that child gets a child-safe `subagent` tool for the fanout work the parent assigned, still bounded by `maxSubagentDepth`.
+Child-safety boundaries are enforced at runtime. Spawned child sessions do not receive the bundled `pi-subagents` skill, and forked child context filtering removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results. Children do not register the `subagent` tool by default and receive boundary instructions that they are not the parent orchestrator and must not propose or run subagents. The default depth limit allows parent-launched subagents but blocks those children from delegating again.
 
 ## Example prompts
 
@@ -507,13 +507,13 @@ systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false
 skills: safe-bash, chrome-devtools
-allowSubagents: true
+allowSubagents: false
 output: context.md
 defaultReads: context.md
 defaultProgress: true
 completionGuard: false
 interactive: true
-maxSubagentDepth: 1
+maxSubagentDepth: 0
 maxExecutionTimeMs: 600000
 maxTokens: 50000
 ---
@@ -527,7 +527,7 @@ Important fields:
 |-------|-------|
 | `package` | Optional package identifier. A file with `name: scout` and `package: code-analysis` registers as `code-analysis.scout`; serialization keeps `name` and `package` separate. |
 | `tools` | Builtin tool allowlist. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. Omit it to keep Pi's normal tool surface. |
-| `allowSubagents` | Exposes the child-safe `subagent` tool without requiring a static `tools` allowlist. Still bounded by `maxSubagentDepth`. |
+| `allowSubagents` | Opt-in child-safe nested delegation. Disabled in bundled profiles and still bounded by `maxSubagentDepth`. |
 | `extensions` | Omitted means normal extensions; empty means no extensions; comma-separated values allowlist specific extensions. |
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. |
 | `fallbackModels` | Ordered backup models for provider/model failures such as quota, usage limit, auth, timeout, or unavailable model. Foreground and async subagents first retry the same model once for recoverable transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, then fall back when appropriate. Ordinary task failures do not trigger retry or fallback. |
@@ -542,7 +542,7 @@ Important fields:
 | `defaultProgress` | Maintain `progress.md`. |
 | `completionGuard` | Set `false` only for non-implementation agents that may mention implementation words while using mutation-capable tools such as `bash`. |
 | `interactive` | Parsed for compatibility but not enforced in v1. |
-| `maxSubagentDepth` | Tightens nested delegation for this agent’s children. |
+| `maxSubagentDepth` | Tightens nested delegation for this agent’s children; use `0` to block delegation even if the tool is present. |
 | `maxExecutionTimeMs` | Stops each foreground or async child run for this agent after the given number of milliseconds. |
 | `maxTokens` | Stops each foreground or async child run for this agent when observed input plus output tokens reach the limit. Token enforcement is best-effort because usage is reported after model events arrive. |
 
@@ -553,12 +553,12 @@ If `tools` is omitted, `pi-subagents` does not pass `--tools`, so the child gets
 Examples:
 
 - `tools` omitted and `extensions` omitted: normal builtins and normal extensions.
-- `allowSubagents: true` with `tools` omitted: normal tools plus the child-safe `subagent` tool for explicitly assigned nested fanout.
+- `allowSubagents: true` with `tools` omitted: normal tools plus the child-safe `subagent` tool, but nested calls remain blocked unless the installation explicitly raises `maxSubagentDepth` above its default.
 - `tools: mcp:chrome-devtools`: normal builtins plus direct Chrome DevTools MCP tools.
 - `tools: read, bash, mcp:chrome-devtools`: only `read` and `bash` as builtins, plus direct Chrome DevTools MCP tools.
-- `tools: subagent, read`: a child-safe `subagent` tool is available inside that child so it can run explicitly assigned nested fanout.
+- `tools: subagent, read`: a child-safe `subagent` tool is available inside that child, but nested calls remain blocked unless the installation explicitly raises `maxSubagentDepth` above its default.
 
-Direct MCP tools require [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter). Subagents only receive direct MCP tools when `mcp:` entries are listed in their frontmatter; global `directTools: true` in `mcp.json` is not enough by itself. The generic `mcp` proxy tool can still be used for discovery when available. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. An `mcp:` entry named `subagent` does not authorize nested fanout; use `allowSubagents: true` or the builtin `subagent` tool name.
+Direct MCP tools require [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter). Subagents only receive direct MCP tools when `mcp:` entries are listed in their frontmatter; global `directTools: true` in `mcp.json` is not enough by itself. The generic `mcp` proxy tool can still be used for discovery when available. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. An `mcp:` entry named `subagent` does not authorize nested fanout; explicit opt-in requires `allowSubagents: true` or the builtin `subagent` tool name plus a global depth limit above the default.
 
 `extensions` controls child extension loading:
 
@@ -723,7 +723,7 @@ What the bundled skill covers:
 - **Delegation patterns**: when to launch which agent, whether to use single, parallel, chain, or async mode, and whether to use fresh or forked context
 - **Workflow recipes**: how to apply the example techniques directly with `subagent(...)` when the user describes the workflow in natural language. This includes parallel review, review-loop, parallel research, parallel context-build, parallel handoff-plan, gather-context-and-clarify, and parallel cleanup
 - **Role-agent prompting guidance**: compact contract prompts instead of long scripts, what to include in role-specific meta prompts, and retrieval budgets for researchers
-- **Safety boundaries**: child agents must not run subagents unless configured with `allowSubagents: true` or resolved builtin tools explicitly including `subagent`, must not invent intercom targets, and must escalate unapproved decisions
+- **Safety boundaries**: child agents must not launch more subagents, must not invent intercom targets, and must escalate unapproved decisions
 - **Intercom conventions**: when to ask vs send, and how parent-side result delivery works with `pi-intercom`
 - **Control and diagnostics**: attention signals, soft interrupts, status, and the `doctor` action
 
@@ -1014,7 +1014,7 @@ Controls project-trust flags for non-interactive child `pi` processes. This fork
 { "maxSubagentDepth": 1 }
 ```
 
-Controls nested delegation when no inherited `PI_SUBAGENT_MAX_DEPTH` is already in effect. Per-agent `maxSubagentDepth` can tighten the limit for that agent’s child runs, but cannot relax an inherited stricter limit. This applies even to children that explicitly declare `allowSubagents: true` or `tools: subagent`; at the cap, execution fanout is blocked instead of silently hiding nested work.
+Controls nested delegation when no inherited `PI_SUBAGENT_MAX_DEPTH` is already in effect. The default is `1`, which allows the main session to launch subagents and blocks those children from delegating again. Per-agent `maxSubagentDepth` can tighten the limit for that agent’s child runs, but cannot relax an inherited stricter limit.
 
 ### Agent resource limits
 
@@ -1164,9 +1164,7 @@ This is disabled by default. Session data may contain source code, paths, enviro
 
 ## Recursion guard
 
-Subagents can call `subagent` only when configured with `allowSubagents: true` or when their resolved builtin tools explicitly include `subagent`. That is meant for delegated fanout agents, not ordinary worker/reviewer children. A depth guard prevents unbounded nesting.
-
-By default, nesting is limited to two levels: main session → subagent → sub-subagent. Deeper calls are blocked with guidance to complete the current task directly. Nested runs appear in the parent status widget and `status` output as a tree, and `status`, `interrupt`, and `resume` can target a nested run by its id.
+Nested child delegation is disabled by default. The depth guard allows one level—main session → subagent—and blocks child subagents from launching more sessions. Keep fanout in the main parent session.
 
 Configure the limit with:
 
@@ -1175,9 +1173,7 @@ Configure the limit with:
 3. `maxSubagentDepth` in agent frontmatter, which can only tighten the inherited limit
 
 ```bash
-export PI_SUBAGENT_MAX_DEPTH=3
 export PI_SUBAGENT_MAX_DEPTH=1
-export PI_SUBAGENT_MAX_DEPTH=0
 ```
 
 `PI_SUBAGENT_DEPTH` is internal and propagated automatically. Do not set it manually; invalid values block nested subagents instead of resetting to zero.
