@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.34.15] - 2026-08-26
+## [0.34.15] - 2026-08-27
 
 ### Changed
 - Disable nested child delegation by default: the main session may launch subagents, but those children cannot launch more sessions; bundled orchestration guidance now keeps all fanout parent-owned.
