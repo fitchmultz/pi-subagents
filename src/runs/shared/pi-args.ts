@@ -8,6 +8,7 @@ import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./s
 import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
 import type { ChildProjectTrustPolicy, JsonSchemaObject } from "../../shared/types.ts";
 // Managed macOS environments can SIGKILL Node when one argv entry reaches ~930 UTF-8 bytes.
+// Measure the full entry (including the `Task: ` prefix), not just the task body.
 const TASK_ARG_LIMIT_BYTES = 900;
 // Resolve sibling extensions in both layouts: TypeScript sources (tests, jiti) and compiled dist output.
 const MODULE_EXTENSION = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
@@ -196,15 +197,16 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 		args.push(input.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptPath);
 	}
 
-	if (Buffer.byteLength(input.task) > TASK_ARG_LIMIT_BYTES) {
+	const taskArg = `Task: ${input.task}`;
+	if (Buffer.byteLength(taskArg) > TASK_ARG_LIMIT_BYTES) {
 		if (!tempDir) {
 			tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
 		}
 		const taskFilePath = path.join(tempDir, "task.md");
-		fs.writeFileSync(taskFilePath, `Task: ${input.task}`, { mode: 0o600 });
+		fs.writeFileSync(taskFilePath, taskArg, { mode: 0o600 });
 		args.push(`@${taskFilePath}`);
 	} else {
-		args.push(`Task: ${input.task}`);
+		args.push(taskArg);
 	}
 
 	const env: Record<string, string | undefined> = {};

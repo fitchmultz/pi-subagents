@@ -19,8 +19,10 @@ function expandedArg(arg) {
 	if (!arg.startsWith("@")) return arg;
 	try {
 		return `${arg}\n${fs.readFileSync(arg.slice(1), "utf-8")}`;
-	} catch {
-		return arg;
+	} catch (err) {
+		// Real pi exits 1 on an unreadable @file; mirror it so tests can't pass on missing fixtures.
+		console.error(`mock-pi: cannot read ${arg}: ${err.message}`);
+		process.exit(1);
 	}
 }
 

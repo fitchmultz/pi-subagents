@@ -159,7 +159,7 @@ describe("buildPiArgs session wiring", () => {
 });
 
 describe("buildPiArgs task wiring", () => {
-	it("keeps task arguments below 900 UTF-8 bytes and materializes larger tasks", () => {
+	it("keeps task argv entries at or below 900 UTF-8 bytes (prefix included) and materializes larger tasks", () => {
 		const build = (task: string) => buildPiArgs({
 			baseArgs: ["-p"],
 			task,
@@ -168,12 +168,13 @@ describe("buildPiArgs task wiring", () => {
 			inheritSkills: false,
 		});
 
-		const inlineTask = "a".repeat(900);
+		// "Task: " prefix is 6 bytes and rides in the same argv entry.
+		const inlineTask = "a".repeat(894);
 		const inline = build(inlineTask);
 		assert.equal(inline.args.at(-1), `Task: ${inlineTask}`);
 		assert.equal(inline.tempDir, undefined);
 
-		for (const task of ["a".repeat(901), "🙂".repeat(226)]) {
+		for (const task of ["a".repeat(895), "🙂".repeat(226)]) {
 			const materialized = build(task);
 			try {
 				const taskArg = materialized.args.at(-1) ?? "";
@@ -188,7 +189,7 @@ describe("buildPiArgs task wiring", () => {
 	it("keeps a task-named system prompt separate from a materialized task", () => {
 		const result = buildPiArgs({
 			baseArgs: ["-p"],
-			task: "a".repeat(901),
+			task: "a".repeat(895),
 			sessionEnabled: false,
 			inheritProjectContext: false,
 			inheritSkills: false,
@@ -201,7 +202,7 @@ describe("buildPiArgs task wiring", () => {
 			const taskPath = result.args.at(-1)?.slice(1);
 			assert.notEqual(promptPath, taskPath);
 			assert.equal(fs.readFileSync(promptPath, "utf8"), "system prompt");
-			assert.equal(fs.readFileSync(taskPath!, "utf8"), `Task: ${"a".repeat(901)}`);
+			assert.equal(fs.readFileSync(taskPath!, "utf8"), `Task: ${"a".repeat(895)}`);
 		} finally {
 			if (result.tempDir) fs.rmSync(result.tempDir, { recursive: true, force: true });
 		}
