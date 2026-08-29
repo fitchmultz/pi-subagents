@@ -109,7 +109,8 @@ describe("intercom result delivery cutover", () => {
 			await new Promise((resolve) => setTimeout(resolve, 50));
 		}
 		assert.ok(callFile, `expected mock pi call at index ${index}`);
-		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
+		const call = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8"));
+		return (call.expandedArgs ?? call.args) as string[];
 	}
 
 	function makeExecutor(options: { agents?: ReturnType<typeof makeAgent>[]; acknowledgeResults?: boolean; acknowledgeLive?: boolean; health?: Array<Record<string, unknown>>; identity?: string } = {}) {

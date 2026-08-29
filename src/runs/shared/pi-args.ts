@@ -7,7 +7,8 @@ import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
 import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
 import type { ChildProjectTrustPolicy, JsonSchemaObject } from "../../shared/types.ts";
-const TASK_ARG_LIMIT = 8000;
+// Managed macOS environments can SIGKILL Node when one argv entry reaches ~930 UTF-8 bytes.
+const TASK_ARG_LIMIT_BYTES = 900;
 // Resolve sibling extensions in both layouts: TypeScript sources (tests, jiti) and compiled dist output.
 const MODULE_EXTENSION = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
 const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), `subagent-prompt-runtime${MODULE_EXTENSION}`);
@@ -190,12 +191,12 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	if (input.systemPrompt !== undefined && input.systemPrompt !== null) {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
 		const stem = (input.promptFileStem ?? "prompt").replace(/[^\w.-]/g, "_");
-		const promptPath = path.join(tempDir, `${stem}.md`);
+		const promptPath = path.join(tempDir, `system-${stem}.md`);
 		fs.writeFileSync(promptPath, input.systemPrompt, { mode: 0o600 });
 		args.push(input.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptPath);
 	}
 
-	if (input.task.length > TASK_ARG_LIMIT) {
+	if (Buffer.byteLength(input.task) > TASK_ARG_LIMIT_BYTES) {
 		if (!tempDir) {
 			tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
 		}
