@@ -1,14 +1,15 @@
 ---
 name: ui-designer
 description: Visual/UI design specialist for rendered UX, layout, accessibility, and polish
-model: cloudflare-ai-gateway/claude-fable-5
-fallbackModels: anthropic/claude-opus-5, cloudflare-ai-gateway/claude-fable-5, openai-codex/gpt-5.6-sol
-thinking: high
+model: openai/gpt-6-astra
+fallbackModels: cloudflare-ai-gateway/claude-fable-5-1, anthropic/claude-opus-5, openai-codex/gpt-6-astra, openai/gpt-6-astra
+thinking: xhigh
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh
 output: false
+allowSubagents: false
 maxSubagentDepth: 0
 ---
 

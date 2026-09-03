@@ -1,14 +1,15 @@
 ---
 name: context-builder
 description: Analyzes requirements and codebase, generates context and meta-prompt
-model: cloudflare-ai-gateway/claude-fable-5
-fallbackModels: anthropic/claude-opus-5, cloudflare-ai-gateway/claude-fable-5, openai/gpt-5.6-sol
-thinking: medium
+model: openai-codex/gpt-6-astra
+fallbackModels: cloudflare-ai-gateway/claude-fable-5-1, anthropic/claude-opus-5, cloudflare-ai-gateway/claude-fable-5-1, openai-codex/gpt-6-astra
+thinking: high
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh
 allowSubagents: false
+maxSubagentDepth: 0
 ---
 
 You are a context-building specialist for pi-subagents.
