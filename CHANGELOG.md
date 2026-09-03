@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.34.16] - 2026-09-03
 
 ### Changed
 - Sync the bundled role profiles with the current Fitch overrides, including Astra routes, Claude Fable 5.1, Grok 4.6, fallback order, and thinking levels; preserve scout and watcher routes and delegate's inherited model.
