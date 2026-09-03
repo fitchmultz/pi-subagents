@@ -171,7 +171,7 @@ The extension ships with builtin agents you can use immediately.
 | `debugger` | Root-cause diagnosis with reproduction and repair evidence. |
 | `fixer` | A bounded set of already-decided fixes without replanning. |
 | `reviewer` | General implementation review against the task and evidence. |
-| `reviewer-gpt` | A strict final maintainability and correctness gate. |
+| `reviewer-gpt` | Evidence-backed maintainability and correctness review. |
 | `reviewer-claude` | An independent cross-model review of assumptions and product risk. |
 | `reviewer-security` | Security and data-safety review for trust-boundary changes. |
 | `reviewer-ponytail` | An over-engineering and slop review that never trades away intended behavior. |
@@ -180,7 +180,7 @@ The extension ships with builtin agents you can use immediately.
 | `oracle` | A forked second opinion that protects the current decision contract. |
 | `delegate` | Lightweight generic delegation that stays close to the parent session. |
 
-Use the narrowest role that fits the task. Keep implementation to one writer and launch reviewers separately.
+Use the narrowest role that fits the task. Keep implementation to one writer and launch reviewers separately. Every bundled profile sets `allowSubagents: false` and `maxSubagentDepth: 0`; the parent session owns all delegation.
 
 ## Changing a builtin agent's model
 
@@ -188,12 +188,15 @@ The bundled Fitch role profiles pin explicit primary and fallback routes. `deleg
 
 | Primary route | Agents |
 |---------------|--------|
-| `cloudflare-ai-gateway/claude-fable-5` | `context-builder`, `debugger`, `fixer`, `planner`, `reviewer`, `reviewer-claude`, `ui-designer`, `writer` |
-| `cloudflare-ai-gateway/gpt-5.6-sol` | `oracle`, `researcher`, `reviewer-gpt`, `scout`, `watcher`, `worker` |
-| `fireworks/accounts/fireworks/routers/kimi-k3-fast` | `reviewer-ponytail`, `reviewer-security` |
+| `openai-codex/gpt-6-astra` | `context-builder`, `oracle`, `planner`, `researcher`, `worker` |
+| `openai/gpt-6-astra` | `debugger`, `fixer`, `reviewer`, `reviewer-gpt`, `reviewer-ponytail`, `ui-designer` |
+| `anthropic/claude-fable-5-1` | `reviewer-claude` |
+| `cloudflare-ai-gateway/claude-fable-5-1` | `writer` |
+| `xai/grok-4.6` | `reviewer-security` |
+| `cloudflare-ai-gateway/gpt-5.6-sol` | `scout`, `watcher` |
 | Current Pi model | `delegate` |
 
-The six gateway Sol profiles fall back to direct `openai/gpt-5.6-sol` first, then retain their previous fallback routes. Override a role if those routes are unavailable in your Pi setup; you do not need to copy the bundled agent file.
+Each role keeps its own ordered fallback list and thinking level. Models must be present in Pi's catalog and available to the selected provider account; API-key access through `openai` does not imply ChatGPT access through `openai-codex`. Refresh the catalog with `pi update --models` or add custom entries in `~/.pi/agent/models.json`. Override a role when its routes are unavailable; you do not need to copy the bundled agent file.
 
 For one run, put the override in the command:
 
@@ -446,7 +449,7 @@ Agent locations, lowest to highest priority:
 
 Project discovery also reads legacy `.agents/**/*.md` files. Nested subdirectories are discovered recursively. `.chain.md` files do not define agents. If both `.agents/` and `.pi/agents/` define the same parsed runtime agent name, `.pi/agents/` wins. Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions.
 
-Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. The Fitch role profiles pin provider models and fallback routes; direct OpenAI primaries use gateway Sol with direct OpenAI first in the fallback list. `delegate` inherits the current Pi model. `oracle` is the only packaged fork-default role. The other Fitch profiles default to fresh context and use Pi's normal tool surface.
+Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. The Fitch role profiles pin provider models, fallback routes, and thinking levels. `delegate` inherits the current Pi model. `oracle` is the only packaged fork-default role. The other Fitch profiles default to fresh context and use Pi's normal tool surface.
 
 ### Builtin overrides
 

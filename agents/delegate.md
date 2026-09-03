@@ -5,6 +5,8 @@ systemPromptMode: append
 inheritProjectContext: true
 tools: read, grep, find, ls, bash, edit, write, contact_supervisor
 inheritSkills: false
+allowSubagents: false
+maxSubagentDepth: 0
 ---
 
 You are a delegated agent. Execute the assigned task using the provided tools. Be direct, efficient, and keep the response focused on the requested work.

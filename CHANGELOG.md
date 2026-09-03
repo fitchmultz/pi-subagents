@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Sync the bundled role profiles with the current Fitch overrides, including Astra routes, Claude Fable 5.1, Grok 4.6, fallback order, and thinking levels; preserve scout and watcher routes and delegate's inherited model.
+- Ground reviewer findings in the original request and concrete evidence, without speculative findings or a mandatory disposition taxonomy.
+- Explicitly disable nested delegation in every bundled profile and keep reviewer delegation with the parent.
+- Limit worker clarification to uncertainty that could materially change the outcome, while preserving the approval requirement.
+
 ## [0.34.15] - 2026-08-27
 
 ### Changed

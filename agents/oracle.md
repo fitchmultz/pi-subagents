@@ -1,13 +1,14 @@
 ---
 name: oracle
 description: High-context decision-consistency oracle that protects inherited state and prevents drift
-model: cloudflare-ai-gateway/gpt-5.6-sol
-fallbackModels: openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
+model: openai-codex/gpt-6-astra
+fallbackModels: openai/gpt-6-astra
 thinking: xhigh
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fork
+allowSubagents: false
 maxSubagentDepth: 0
 ---
 
