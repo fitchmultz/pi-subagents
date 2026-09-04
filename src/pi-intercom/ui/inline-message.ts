@@ -9,6 +9,8 @@ export class InlineMessageComponent implements Component {
   private theme: Theme;
   private replyCommand?: string;
   private bodyText?: string;
+  private cachedWidth?: number;
+  private cachedLines?: string[];
 
   constructor(from: SessionInfo, message: Message, theme: Theme, replyCommand?: string, bodyText?: string) {
     this.from = from;
@@ -18,13 +20,20 @@ export class InlineMessageComponent implements Component {
     this.bodyText = bodyText;
   }
 
-  invalidate(): void {}
+  invalidate(): void {
+    this.cachedWidth = undefined;
+    this.cachedLines = undefined;
+  }
 
   render(width: number): string[] {
+    if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+
     const lines: string[] = [];
     const borderChar = "─";
     if (width < 3) {
-      return [truncateToWidth(`From ${this.from.name || this.from.id.slice(0, 8)}`, width)];
+      this.cachedWidth = width;
+      this.cachedLines = [truncateToWidth(`From ${this.from.name || this.from.id.slice(0, 8)}`, width)];
+      return this.cachedLines;
     }
     const bodyWidth = Math.max(1, width - 2);
 
@@ -71,6 +80,8 @@ export class InlineMessageComponent implements Component {
 
     lines.push(this.theme.fg("accent", `╰${borderChar.repeat(bodyWidth)}╯`));
 
+    this.cachedWidth = width;
+    this.cachedLines = lines;
     return lines;
   }
 }
