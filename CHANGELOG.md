@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.34.17] - 2026-09-04
+
+### Fixed
+- Reuse rendered inline intercom messages at unchanged terminal widths instead of rewrapping and recoloring every frame; refresh on resize and theme changes without shortening messages.
+
 ## [0.34.16] - 2026-09-03
 
 ### Changed
