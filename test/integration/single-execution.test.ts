@@ -9,6 +9,7 @@ import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { discoverAgents } from "../../src/agents/agents.ts";
 import { runSync } from "../../src/runs/foreground/execution.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import {
@@ -151,15 +152,15 @@ describe("single sync execution", () => {
 		removeTempDir(tempDir);
 	});
 
-	function readLastCall(): { args: string[]; cwd?: string; env?: Record<string, string | null> } {
+	function readLastCall(): { args: string[]; expandedArgs?: string[]; cwd?: string; env?: Record<string, string | null> } {
 		const callFile = fs.readdirSync(mockPi.dir)
 			.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
 			.sort()
 			.at(-1);
 		assert.ok(callFile, "expected a recorded mock pi call");
-		const payload = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")) as { args?: string[]; cwd?: string; env?: Record<string, string | null> };
+		const payload = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")) as { args?: string[]; expandedArgs?: string[]; cwd?: string; env?: Record<string, string | null> };
 		assert.ok(Array.isArray(payload.args), "expected recorded args");
-		return { args: payload.args, cwd: payload.cwd, env: payload.env };
+		return { args: payload.args, expandedArgs: payload.expandedArgs, cwd: payload.cwd, env: payload.env };
 	}
 
 	function readCallArgs(): string[] {
@@ -193,6 +194,32 @@ describe("single sync execution", () => {
 
 		const output = getFinalOutput(result.messages);
 		assert.equal(output, "Hello from mock agent");
+	});
+
+	it("launches discovered long and task-named agents with separate prompt files", async () => {
+		const agentDir = path.join(tempDir, ".pi", "agents");
+		fs.mkdirSync(agentDir, { recursive: true });
+		const task = "Review the current code without editing. ".repeat(30);
+		for (const name of ["a".repeat(246), "task"]) {
+			fs.writeFileSync(path.join(agentDir, "probe.md"), `---\nname: ${name}\ndescription: filename boundary\nsystemPromptMode: replace\n---\nRead-only reviewer.`);
+			const { agents } = discoverAgents(tempDir, "project");
+			assert.ok(agents.some((agent) => agent.name === name));
+			mockPi.reset();
+			mockPi.onCall({ output: "Review complete." });
+
+			const result = await runSync(tempDir, agents, name, task, { sessionFile: path.join(tempDir, "session.jsonl") });
+
+			assert.equal(result.exitCode, 0, result.error);
+			assert.equal(result.finalOutput, "Review complete.");
+			assert.equal(result.artifactPaths, undefined);
+			assert.equal(mockPi.callCount(), 1);
+			const call = readLastCall();
+			const taskArg = call.args.at(-1)!;
+			assert.ok(taskArg.startsWith("@"));
+			assert.ok(call.args.includes("--system-prompt"));
+			assert.notEqual(call.args[call.args.indexOf("--system-prompt") + 1], taskArg.slice(1));
+			assert.equal(call.expandedArgs?.at(-1), `${taskArg}\nTask: ${task}`);
+		}
 	});
 
 	it("fails implementation runs that complete without mutation attempts", async () => {

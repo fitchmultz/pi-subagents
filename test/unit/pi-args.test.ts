@@ -158,6 +158,56 @@ describe("buildPiArgs session wiring", () => {
 	});
 });
 
+describe("buildPiArgs task wiring", () => {
+	it("keeps task argv entries at or below 900 UTF-8 bytes (prefix included) and materializes larger tasks", () => {
+		const build = (task: string) => buildPiArgs({
+			baseArgs: ["-p"],
+			task,
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+		});
+
+		// "Task: " prefix is 6 bytes and rides in the same argv entry.
+		const inlineTask = "a".repeat(894);
+		const inline = build(inlineTask);
+		assert.equal(inline.args.at(-1), `Task: ${inlineTask}`);
+		assert.equal(inline.tempDir, undefined);
+
+		for (const task of ["a".repeat(895), "🙂".repeat(226)]) {
+			const materialized = build(task);
+			try {
+				const taskArg = materialized.args.at(-1) ?? "";
+				assert.ok(taskArg.startsWith("@"));
+				assert.equal(fs.readFileSync(taskArg.slice(1), "utf8"), `Task: ${task}`);
+			} finally {
+				if (materialized.tempDir) fs.rmSync(materialized.tempDir, { recursive: true, force: true });
+			}
+		}
+	});
+
+	it("keeps the system prompt separate from a materialized task", () => {
+		const result = buildPiArgs({
+			baseArgs: ["-p"],
+			task: "a".repeat(895),
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			systemPrompt: "system prompt",
+			systemPromptMode: "replace",
+		});
+		try {
+			const promptPath = result.args[result.args.indexOf("--system-prompt") + 1];
+			const taskPath = result.args.at(-1)?.slice(1);
+			assert.notEqual(promptPath, taskPath);
+			assert.equal(fs.readFileSync(promptPath, "utf8"), "system prompt");
+			assert.equal(fs.readFileSync(taskPath!, "utf8"), `Task: ${"a".repeat(895)}`);
+		} finally {
+			if (result.tempDir) fs.rmSync(result.tempDir, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("buildPiArgs project trust wiring", () => {
 	it("does not emit trust flags unless a project trust policy is supplied", () => {
 		const { args } = buildPiArgs({

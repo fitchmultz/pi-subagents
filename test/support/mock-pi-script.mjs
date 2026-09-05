@@ -15,11 +15,22 @@ function listPendingFiles(dir) {
 		.sort();
 }
 
+function expandedArg(arg) {
+	if (!arg.startsWith("@")) return arg;
+	try {
+		return `${arg}\n${fs.readFileSync(arg.slice(1), "utf-8")}`;
+	} catch (err) {
+		// Real pi exits 1 on an unreadable @file; mirror it so tests can't pass on missing fixtures.
+		console.error(`mock-pi: cannot read ${arg}: ${err.message}`);
+		process.exit(1);
+	}
+}
+
 function responseMatchesArgs(response, args) {
 	const match = response?.matchArgsIncludes;
 	if (match === undefined) return true;
 	const needles = Array.isArray(match) ? match : [match];
-	const haystack = args.join("\n");
+	const haystack = args.map(expandedArg).join("\n");
 	return needles.every((needle) => typeof needle === "string" && haystack.includes(needle));
 }
 
@@ -74,17 +85,7 @@ function defaultAssistantMessage(output) {
 }
 
 function taskRequestsAcceptance(args) {
-	for (const arg of args) {
-		if (typeof arg !== "string") continue;
-		if (arg.includes("## Acceptance Contract")) return true;
-		if (!arg.startsWith("@")) continue;
-		try {
-			if (fs.readFileSync(arg.slice(1), "utf-8").includes("## Acceptance Contract")) return true;
-		} catch {
-			// Ignore unreadable temp prompt references in the mock harness.
-		}
-	}
-	return false;
+	return args.some((arg) => expandedArg(arg).includes("## Acceptance Contract"));
 }
 
 function defaultAcceptanceReport() {
@@ -204,7 +205,7 @@ async function main() {
 	const jsonMode = isJsonMode(args);
 	const response = claimNextResponse(queueDir, args) ?? defaultResponse();
 	writeSessionFile(args);
-	const callRecord = { args, cwd: process.cwd() };
+	const callRecord = { args, expandedArgs: args.map(expandedArg), cwd: process.cwd() };
 	if (Array.isArray(response.echoEnv) && response.echoEnv.length > 0) {
 		callRecord.env = Object.fromEntries(response.echoEnv.map((key) => [key, process.env[key] ?? null]));
 	}

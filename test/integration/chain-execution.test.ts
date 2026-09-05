@@ -153,7 +153,8 @@ describe("chain execution — sequential", () => {
 			.sort();
 		const callFile = callFiles[index];
 		assert.ok(callFile, `expected call ${index}`);
-		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
+		const call = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8"));
+		return (call.expandedArgs ?? call.args) as string[];
 	}
 
 	function acceptanceReport(overrides: Record<string, unknown> = {}): string {
@@ -1130,7 +1131,8 @@ describe("chain execution — parallel steps", () => {
 			.sort();
 		const callFile = callFiles[index];
 		assert.ok(callFile, `expected call ${index}`);
-		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
+		const call = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8"));
+		return (call.expandedArgs ?? call.args) as string[];
 	}
 
 	function git(cwd: string, args: string[]): string {

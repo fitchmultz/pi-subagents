@@ -491,6 +491,8 @@ Use these fields when an agent should see more:
 
 Builtin agents opt into project instruction inheritance by default so they follow repo-specific rules out of the box. `delegate` also uses append mode because its job is orchestration inside the parent workflow.
 
+Pi task arguments stay inline through 900 UTF-8 bytes, including the `Task: ` prefix; larger tasks use Pi's native `@file` input. System instructions use a separate temporary file, including for agents named `task`. This transport applies to foreground and background Pi runs; Claude Code transport is unchanged.
+
 ### Agent frontmatter
 
 A typical agent looks like this:
