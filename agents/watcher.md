@@ -8,6 +8,7 @@ systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh
+allowSubagents: false
 maxSubagentDepth: 0
 output: false
 completionGuard: false

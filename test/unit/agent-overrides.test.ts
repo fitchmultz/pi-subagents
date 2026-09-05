@@ -40,7 +40,7 @@ describe("builtin agent overrides", () => {
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("moves only direct OpenAI primaries behind gateway Sol", () => {
+	it("matches the bundled role model and thinking defaults", () => {
 		const builtins = discoverAgentsAll(tempProject).builtin;
 		assert.deepEqual(
 			builtins.map((agent) => agent.name).sort(),
@@ -50,22 +50,22 @@ describe("builtin agent overrides", () => {
 			],
 		);
 		const expectedRoutes = {
-			"context-builder": { model: "cloudflare-ai-gateway/claude-fable-5", fallbackModels: ["anthropic/claude-opus-5", "cloudflare-ai-gateway/claude-fable-5", "openai/gpt-5.6-sol"], thinking: "medium" },
-			debugger: { model: "cloudflare-ai-gateway/claude-fable-5", fallbackModels: ["anthropic/claude-opus-5", "openai/gpt-5.6-sol", "openai-codex/gpt-5.6-sol"], thinking: "high" },
-			fixer: { model: "cloudflare-ai-gateway/claude-fable-5", fallbackModels: ["anthropic/claude-opus-5", "openai/gpt-5.6-sol", "openai-codex/gpt-5.6-sol"], thinking: "high" },
-			oracle: { model: "cloudflare-ai-gateway/gpt-5.6-sol", fallbackModels: ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-sol"], thinking: "xhigh" },
-			planner: { model: "cloudflare-ai-gateway/claude-fable-5", fallbackModels: ["anthropic/claude-opus-5", "cloudflare-ai-gateway/claude-fable-5", "openai/gpt-5.6-sol"], thinking: "high" },
-			researcher: { model: "cloudflare-ai-gateway/gpt-5.6-sol", fallbackModels: ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-sol"], thinking: "xhigh" },
-			reviewer: { model: "cloudflare-ai-gateway/claude-fable-5", fallbackModels: ["anthropic/claude-opus-5", "openai/gpt-5.6-sol", "cloudflare-ai-gateway/claude-fable-5"], thinking: "high" },
-			"reviewer-claude": { model: "cloudflare-ai-gateway/claude-fable-5", fallbackModels: ["anthropic/claude-opus-5", "cloudflare-ai-gateway/claude-fable-5"], thinking: "high" },
-			"reviewer-gpt": { model: "cloudflare-ai-gateway/gpt-5.6-sol", fallbackModels: ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-sol"], thinking: "xhigh" },
-			"reviewer-ponytail": { model: "fireworks/accounts/fireworks/routers/kimi-k3-fast", fallbackModels: ["anthropic/claude-fable-5"], thinking: "max" },
-			"reviewer-security": { model: "fireworks/accounts/fireworks/routers/kimi-k3-fast", fallbackModels: ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-sol"], thinking: "max" },
+			"context-builder": { model: "openai-codex/gpt-6-astra", fallbackModels: ["cloudflare-ai-gateway/claude-fable-5-1", "anthropic/claude-opus-5", "cloudflare-ai-gateway/claude-fable-5-1", "openai-codex/gpt-6-astra"], thinking: "high" },
+			debugger: { model: "openai/gpt-6-astra", fallbackModels: ["cloudflare-ai-gateway/claude-fable-5-1", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra", "openai/gpt-6-astra"], thinking: "xhigh" },
+			fixer: { model: "openai/gpt-6-astra", fallbackModels: ["cloudflare-ai-gateway/claude-fable-5-1", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra", "openai/gpt-6-astra"], thinking: "xhigh" },
+			oracle: { model: "openai-codex/gpt-6-astra", fallbackModels: ["openai/gpt-6-astra"], thinking: "xhigh" },
+			planner: { model: "openai-codex/gpt-6-astra", fallbackModels: ["cloudflare-ai-gateway/claude-fable-5-1", "anthropic/claude-opus-5", "cloudflare-ai-gateway/claude-fable-5-1", "openai-codex/gpt-6-astra"], thinking: "max" },
+			researcher: { model: "openai-codex/gpt-6-astra", fallbackModels: ["openai/gpt-6-astra"], thinking: "xhigh" },
+			reviewer: { model: "openai/gpt-6-astra", fallbackModels: ["cloudflare-ai-gateway/claude-fable-5-1", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra", "openai/gpt-6-astra"], thinking: "xhigh" },
+			"reviewer-claude": { model: "anthropic/claude-fable-5-1", fallbackModels: ["anthropic/claude-opus-5", "cloudflare-ai-gateway/claude-fable-5-1"], thinking: "high" },
+			"reviewer-gpt": { model: "openai/gpt-6-astra", fallbackModels: ["openai/gpt-6-astra"], thinking: "xhigh" },
+			"reviewer-ponytail": { model: "openai/gpt-6-astra", fallbackModels: ["cloudflare-ai-gateway/claude-fable-5-1", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra", "openai/gpt-6-astra"], thinking: "xhigh" },
+			"reviewer-security": { model: "xai/grok-4.6", fallbackModels: ["openai/gpt-6-astra", "openai-codex/gpt-6-astra"], thinking: "max" },
 			scout: { model: "cloudflare-ai-gateway/gpt-5.6-sol", fallbackModels: ["openai/gpt-5.6-sol", "openai-codex/gpt-5.6-sol"], thinking: "high" },
-			"ui-designer": { model: "cloudflare-ai-gateway/claude-fable-5", fallbackModels: ["anthropic/claude-opus-5", "cloudflare-ai-gateway/claude-fable-5", "openai-codex/gpt-5.6-sol"], thinking: "high" },
+			"ui-designer": { model: "openai/gpt-6-astra", fallbackModels: ["cloudflare-ai-gateway/claude-fable-5-1", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra", "openai/gpt-6-astra"], thinking: "xhigh" },
 			watcher: { model: "cloudflare-ai-gateway/gpt-5.6-sol", fallbackModels: ["openai/gpt-5.6-sol", "fireworks/accounts/fireworks/routers/kimi-k3-fast"], thinking: "high" },
-			worker: { model: "cloudflare-ai-gateway/gpt-5.6-sol", fallbackModels: ["openai/gpt-5.6-sol", "cloudflare-ai-gateway/claude-opus-5", "openai-codex/gpt-5.6-sol"], thinking: "xhigh" },
-			writer: { model: "cloudflare-ai-gateway/claude-fable-5", fallbackModels: ["anthropic/claude-fable-5", "cloudflare-ai-gateway/claude-opus-5"], thinking: "high" },
+			worker: { model: "openai-codex/gpt-6-astra", fallbackModels: ["cloudflare-ai-gateway/claude-opus-5", "openai/gpt-6-astra"], thinking: "xhigh" },
+			writer: { model: "cloudflare-ai-gateway/claude-fable-5-1", fallbackModels: ["anthropic/claude-fable-5-1", "cloudflare-ai-gateway/claude-opus-5"], thinking: "high" },
 		};
 		for (const [name, expected] of Object.entries(expectedRoutes)) {
 			const agent = builtins.find((candidate) => candidate.name === name);
@@ -87,18 +87,15 @@ describe("builtin agent overrides", () => {
 		const effectiveWatcher = applyIntercomBridgeToAgent(watcher!, resolveIntercomBridge("main"));
 		assert.match(effectiveWatcher.systemPrompt, /concise material update/);
 		for (const agent of builtins) {
+			assert.equal(agent.allowSubagents, false, `${agent.name} must not delegate to nested subagents`);
+			assert.equal(agent.maxSubagentDepth, 0, `${agent.name} must block child delegation`);
+			assert.ok(!agent.tools?.includes("subagent"), `${agent.name} must not expose nested delegation`);
 			const effectivePrompt = applyIntercomBridgeToAgent(agent, resolveIntercomBridge("main")).systemPrompt;
 			assert.doesNotMatch(effectivePrompt, /plan[- ]changing|changes? the plan/i, `${agent.name} progress guidance drift`);
 		}
 		const delegate = builtins.find((agent) => agent.name === "delegate");
 		assert.equal(delegate?.model, undefined);
 		assert.equal(delegate?.fallbackModels, undefined);
-	});
-
-	it("never uses openai-codex routes as primaries", () => {
-		for (const agent of discoverAgentsAll(tempProject).builtin) {
-			assert.doesNotMatch(agent.model ?? "", /^openai-codex\//, `${agent.name} must not use the Codex billing pool as primary`);
-		}
 	});
 
 	it("applies user settings overrides to builtin agents", () => {
