@@ -47,7 +47,6 @@ interface BuildPiArgsInput {
 	systemPrompt?: string | null;
 	mcpDirectTools?: string[];
 	cwd?: string;
-	promptFileStem?: string;
 	intercomSessionName?: string;
 	orchestratorIntercomTarget?: string;
 	runId?: string;
@@ -191,8 +190,7 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	let tempDir: string | undefined;
 	if (input.systemPrompt !== undefined && input.systemPrompt !== null) {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
-		const stem = (input.promptFileStem ?? "prompt").replace(/[^\w.-]/g, "_");
-		const promptPath = path.join(tempDir, `system-${stem}.md`);
+		const promptPath = path.join(tempDir, "system.md");
 		fs.writeFileSync(promptPath, input.systemPrompt, { mode: 0o600 });
 		args.push(input.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptPath);
 	}

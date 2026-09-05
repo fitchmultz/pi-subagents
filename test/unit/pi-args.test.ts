@@ -186,7 +186,7 @@ describe("buildPiArgs task wiring", () => {
 		}
 	});
 
-	it("keeps a task-named system prompt separate from a materialized task", () => {
+	it("keeps the system prompt separate from a materialized task", () => {
 		const result = buildPiArgs({
 			baseArgs: ["-p"],
 			task: "a".repeat(895),
@@ -195,7 +195,6 @@ describe("buildPiArgs task wiring", () => {
 			inheritSkills: false,
 			systemPrompt: "system prompt",
 			systemPromptMode: "replace",
-			promptFileStem: "task",
 		});
 		try {
 			const promptPath = result.args[result.args.indexOf("--system-prompt") + 1];

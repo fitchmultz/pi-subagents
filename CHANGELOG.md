@@ -3,7 +3,7 @@
 ## [0.34.18] - 2026-09-05
 
 ### Fixed
-- Pass Pi task arguments larger than 900 UTF-8 bytes through native `@file` input, counting the complete `Task: ` prefix, and keep system-prompt filenames separate so an agent named `task` cannot overwrite its system instructions. Thanks to @tribble for [#54](https://github.com/fitchmultz/pi-subagents/pull/54).
+- Pass Pi task arguments larger than 900 UTF-8 bytes through native `@file` input, counting the complete `Task: ` prefix, and keep system instructions in a separate `system.md` within each unique temporary directory, avoiding task collisions and filename limits for long agent names. Thanks to @tribble for [#54](https://github.com/fitchmultz/pi-subagents/pull/54).
 
 ## [0.34.17] - 2026-09-04
 

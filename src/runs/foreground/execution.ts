@@ -303,7 +303,6 @@ async function runSingleAttempt(
 				systemPrompt: shared.systemPrompt,
 				mcpDirectTools: agent.mcpDirectTools,
 				cwd: options.cwd ?? runtimeCwd,
-				promptFileStem: agent.name,
 				intercomSessionName: options.intercomSessionName,
 				orchestratorIntercomTarget: options.orchestratorIntercomTarget,
 				runId: options.runId,
