@@ -41,7 +41,7 @@ function completionTargetsCurrentSession(run: Pick<AsyncStatus, "sessionId" | "c
 	if (!state) return true;
 	if (run.sessionId) return run.sessionId === state.currentSessionId;
 	if (run.cwd) return Boolean(state.baseCwd) && run.cwd === state.baseCwd;
-	return true;
+	return false;
 }
 
 function nestedCompletionTargetsCurrentSession(rootRunId: string, asyncDirRoot: string, state: SubagentState | undefined): boolean {
@@ -168,13 +168,12 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 		}
 		try {
 			const runs = listAsyncRuns(asyncDirRoot, {
-				states: ["queued", "running"],
 				resultsDir,
 				kill: deps.kill,
 				now: deps.now,
 			}).filter((run) => completionTargetsCurrentSession(run, deps.state));
-			const text = formatAsyncRunList(runs);
-			const reminder = runs.some((run) => completionTargetsCurrentSession(run, deps.state));
+			const text = formatAsyncRunList(runs, "Async runs");
+			const reminder = runs.some((run) => run.state === "running" || run.state === "queued");
 			return {
 				content: [{ type: "text", text: reminder ? `${text}\n${ASYNC_COMPLETION_REMINDER}` : text }],
 				details: {
@@ -182,7 +181,8 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 					managementControls: runs.map((run) => {
 						const running = run.steps.find((step) => step.status === "running");
 						const target = running ? resolveSubagentIntercomTarget(run.id, running.agent, running.index) : undefined;
-						return buildManagementControl({ state: normalizedState(run.state), runId: run.id, index: running?.index, intercomTarget: target, canNudge: Boolean(running), canResume: Boolean(running), canInterrupt: run.state === "running" });
+						const resumable = run.steps.find((step) => hasExistingSessionFile(step.sessionFile));
+						return buildManagementControl({ state: normalizedState(run.state), runId: run.id, index: running?.index ?? resumable?.index, intercomTarget: target, canNudge: Boolean(running), canResume: Boolean(running || resumable || (run.steps.length <= 1 && hasExistingSessionFile(run.sessionFile))), canInterrupt: run.state === "running" });
 					}),
 				},
 			};
@@ -291,6 +291,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				`Started: ${started}`,
 				`Updated: ${updated}`,
 				`Dir: ${asyncDir}`,
+				`Status: subagent({ action: "status", id: "${status.runId}" })`,
 				outputPath ? `Output: ${outputPath}` : undefined,
 				reconciliation.message ? `Diagnosis: ${reconciliation.message}` : undefined,
 				reconciliation.resultPath && fs.existsSync(reconciliation.resultPath) ? `Result: ${reconciliation.resultPath}` : undefined,
@@ -348,7 +349,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			const data = readAsyncResultFile(resultPath);
 			const status = data.terminalState;
 			const runId = data.runId ?? data.id ?? resolvedId;
-			const lines = [`Run: ${runId}`, `State: ${status}`, `Result: ${resultPath}`];
+			const lines = [`Run: ${runId}`, `State: ${status}`, `Result: ${resultPath}`, `Status: subagent({ action: "status", id: "${runId}" })`];
 			const children = Array.isArray(data.results) ? data.results : data.agent ? [{ agent: data.agent, sessionFile: data.sessionFile }] : [];
 			lines.push(formatResumeGuidance(runId, children, data.sessionFile));
 			if (data.summary) lines.push("", data.summary);

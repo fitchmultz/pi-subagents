@@ -10,30 +10,22 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 	process.exit(0);
 }
 
-function commandName(base) {
-	return process.platform === "win32" ? `${base}.cmd` : base;
-}
-
 function isolatedEnv(home) {
 	const env = { ...process.env };
 	for (const key of Object.keys(env)) if (key.startsWith("PI_SUBAGENT_")) delete env[key];
 	return {
 		...env,
 		HOME: home,
-		USERPROFILE: home,
-		APPDATA: join(home, "AppData", "Roaming"),
-		LOCALAPPDATA: join(home, "AppData", "Local"),
 		XDG_CONFIG_HOME: join(home, ".config"),
 		XDG_CACHE_HOME: join(home, ".cache"),
 		PI_CODING_AGENT_DIR: join(home, ".pi", "agent"),
 		PI_OFFLINE: "1",
 		PATH: process.env.PATH ?? "",
-		Path: process.env.Path ?? process.env.PATH ?? "",
 	};
 }
 
 function runPi(args, env) {
-	const result = spawnSync(commandName("pi"), args, {
+	const result = spawnSync("pi", args, {
 		cwd: process.cwd(),
 		env,
 		encoding: "utf-8",

@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.35.0] - 2026-09-06
+
+### Added
+- Compact `delegate` and `agent_runs` tools for ordinary delegation, owned-run discovery, inspection, nudges, continuation, and stopping without loading the advanced workflow schema.
+- Durable supervisor questions and immutable answers, recoverable by the owning saved session after reload or child exit, with launch-time acceptance, output paths, and structured schemas preserved on revival.
+- Credential-free Linux validation on the supported Node floor and current Node, plus stronger real-Pi tool, settlement, and model-identity checks.
+
+### Fixed
+- Use one run identity across foreground, background, and clarify-to-background paths; retain completed owned work across cwd changes and keep late nudges from restarting it.
+- Share child-process lifecycle handling, wait for native Pi settlement, stop descendant processes on cancellation, and distinguish explicit supervisor-question detachment from interruption.
+- Keep the full foreground operation alive through supervisor questions during initial execution or finalization; release only the parent wait and retain real completion/control state.
+- Make the final substantive acceptance output authoritative across results, artifacts, usage, and chain handoffs; preserve unchanged report files and retain the initial answer for audit. Include criterion-local and cumulative whole-task evidence in finalization prompts.
+- Preserve acceptance through background clarification, pass native context-file suppression, inherit the parent model for fresh delegate runs, and align static/dynamic chain cwd and output behavior.
+- Capture binary worktree patches outside the source checkout, recognize `apply_edits` mutation evidence, and avoid treating shell descriptor redirection as a file path.
+- Keep deferred material updates until delivered or superseded, distinguish busy-peer refusal from successful delivery, and expose unconsumed intercom messages.
+
+### Changed
+- Completion mutation checks are explicitly opt-in with `completionGuard: true`; task prose no longer determines whether a valid answer must edit files.
+- Support macOS and Linux only; remove Windows-specific runtime branches and old package promotional branding while retaining required license notices.
+
 ## [0.34.18] - 2026-09-05
 
 ### Fixed
@@ -243,7 +263,7 @@
 - Raised the default subagent no-activity needs-attention threshold from 1 minute to 10 minutes so long test/build commands do not trigger early nudge reminders.
 - Added `subagent({ action: "nudge" })` as a first-class live child nudge that routes through `pi-intercom` with `delivery:"steer"` when the child is registered, and updated status/control hints to show both the subagent nudge and direct blocking intercom ask paths.
 - Control nudge hints now use live intercom steering because they request a child reply and should reach active children promptly.
-- Kept this personal fork private with no legacy `npx` installer, made GitHub `pi install` the canonical install/refresh workflow, and retained local path installs for development.
+- Kept the package private with no legacy `npx` installer, made GitHub `pi install` the canonical install/refresh workflow, and retained local path installs for development.
 - Bundled the 14 pi-fitch-kit agent profiles as defaults, retained the extension's lightweight `delegate`, and removed pi-fitch-kit from the canonical local validation gate.
 - Added a per-suite local watchdog to `scripts/run-tests.mjs`, with timeout diagnostics and `PI_TEST_TIMEOUT_MS` / `--timeout-ms` overrides for slow debug runs.
 - Added an opt-in `npm run smoke:real-pi` command that installs this checkout in an isolated temporary Pi home, loads both bundled extension entries, and verifies `pi list`; live model subagent prompts remain gated behind `-- --llm`.
@@ -273,7 +293,7 @@
 - Removed active-long-running control notices and their thresholds; control notifications now only fire for needs-attention states.
 - Return the last non-empty text part from the latest assistant message so multi-part assistant outputs prefer the final answer over progress text.
 - Keep path-resolution tests hermetic by using a temporary fake home and Pi agent directory instead of touching the real `~/.agents` tree.
-- Updated per-agent context documentation to describe the fork's fixed behavior rather than upstream whole-invocation fork promotion.
+- Updated per-agent context documentation to describe per-agent behavior rather than whole-invocation fork promotion.
 - Retry the same model once for foreground and async subagents after recoverable child transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, before falling back to alternate models.
 - Default child Pi 0.79+ project-trust handling to `--approve` for subagent runs so trusted parent sessions do not lose project-local inputs in non-interactive child processes; explicit parent/configured `--no-approve` remains honored.
 - Treat normal `output` files as runtime-owned handoff scratch: capture their contents into the parent result, then remove the file so `review.md`, `context.md`, and similar subagent outputs do not pollute the working tree.
@@ -354,7 +374,7 @@
 ## [0.24.1] - 2026-05-10
 
 ### Changed
-- Migrated Pi package imports and package metadata to the `@earendil-works/*` scope, switched async TypeScript execution discovery to upstream `jiti`, and hardened forked-session creation to use the public `SessionManager.open()` path.
+- Migrated Pi package imports and package metadata to the `@earendil-works/*` scope, switched async TypeScript execution discovery to Pi's `jiti`, and hardened forked-session creation to use the public `SessionManager.open()` path.
 
 ## [0.24.0] - 2026-05-03
 
@@ -619,7 +639,7 @@
 - Foreground subagent runs now make deeper live detail easier to discover. Running cards show an explicit `Ctrl+O` hint, lightweight live-state signals like recent activity, current-tool durations, and artifact output paths when available. Common array-heavy tool previews such as `web_search.queries` and `fetch_content.urls` are now summarized more clearly instead of collapsing into opaque fallback text.
 
 ### Changed
-- Forked delegated runs now use stronger prompt-side guidance for `pi-intercom` coordination instead of runtime policing. The default fork preamble and intercom bridge instructions now explicitly treat inherited fork history as reference-only context, tell children not to continue the parent conversation in normal assistant text, and steer upstream questions or handoffs through `intercom` when needed.
+- Forked delegated runs now use stronger prompt-side guidance for `pi-intercom` coordination instead of runtime policing. The default fork preamble and intercom bridge instructions now explicitly treat inherited fork history as reference-only context, tell children not to continue the parent conversation in normal assistant text, and steer supervisor questions or handoffs through `intercom` when needed.
 - Documented an opt-in custom agent pattern for forked chat-back workflows so users can make that coordination contract explicit without changing builtin agents.
 - Slash-run status text and `/subagents-status` summary output now use the same more explicit observability language, including clearer live-detail hints and surfaced output/session paths in the async status overlay.
 - Builtin agent defaults now prefer `openai-codex` models for `planner`, `scout`, `researcher`, `context-builder`, and `worker`.
@@ -1340,7 +1360,7 @@
 
 ## [0.1.0] - 2026-01-03
 
-Initial release forked from async-subagent example.
+Initial release.
 
 ### Added
 - Output truncation with configurable byte/line limits

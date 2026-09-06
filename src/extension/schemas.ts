@@ -237,6 +237,33 @@ const ControlOverrides = Type.Object({
 	})),
 }, { additionalProperties: false });
 
+export const DelegateParams = Type.Object({
+	agent: TaskItem.properties.agent,
+	task: TaskItem.properties.task,
+	cwd: TaskItem.properties.cwd,
+	model: TaskItem.properties.model,
+	context: Type.Optional(Type.Enum(["fresh", "fork"] as const, { type: "string", description: "Override the profile's context policy." })),
+	async: Type.Optional(Type.Boolean({ description: "Background by default; false waits for the result." })),
+	worktree: Type.Optional(Type.Boolean({ description: "Isolate this writer in a Git worktree; return its patch. Requires a clean checkout." })),
+	output: TaskItem.properties.output,
+	acceptance: TaskItem.properties.acceptance,
+}, { additionalProperties: false });
+
+export const AgentRunsParams = Type.Object({
+	action: Type.Enum(["list", "inspect", "nudge", "stop", "continue", "profiles", "questions", "answer"] as const, { type: "string" }),
+	id: Type.Optional(Type.String({ minLength: 1, description: "Run ID or unambiguous prefix." })),
+	questionId: Type.Optional(Type.String({ minLength: 1, description: "Durable supervisor question ID for answer." })),
+	index: Type.Optional(Type.Integer({ minimum: 0, description: "Child index for a multi-child run." })),
+	message: Type.Optional(Type.String({ minLength: 1, description: "Guidance for nudge, follow-up for continue, or an answer (continue/answer may start a saved child)." })),
+}, {
+	additionalProperties: false,
+	allOf: [
+		{ if: { properties: { action: { enum: ["inspect", "nudge", "stop", "continue", "answer"] } } }, then: requiredObject("id") },
+		{ if: { properties: { action: { enum: ["nudge", "continue", "answer"] } } }, then: requiredObject("message") },
+		{ if: { properties: { action: { enum: ["answer"] } } }, then: requiredObject("questionId") },
+	],
+});
+
 export const SubagentParams = Type.Object({
 	agent: Type.Optional(Type.String({ minLength: 1, description: "Agent name (SINGLE mode) or target for management get/update/delete" })),
 	task: Type.Optional(Type.String({ minLength: 1, description: "Task (SINGLE mode, optional for self-contained agents)" })),
@@ -246,16 +273,17 @@ export const SubagentParams = Type.Object({
 		description: "Management/control action. Omit for execution mode. nudge sends a live intercom nudge to a running child."
 	})),
 	id: Type.Optional(Type.String({
-		description: "Run id or prefix for status/interrupt/extend/resume/nudge actions."
+		description: "Run id or prefix for status/interrupt/extend/resume/nudge/questions/answer actions."
 	})),
 	runId: Type.Optional(Type.String({
 		description: "Target run ID; prefer id. Defaults to the most recently active controllable run for interrupt/extend/nudge."
 	})),
+	questionId: Type.Optional(Type.String({ minLength: 1, description: "Durable supervisor question ID for answer." })),
 	dir: Type.Optional(Type.String({
 		description: "Async run directory for status/resume."
 	})),
 	index: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based child index for actions that target a specific child." })),
-	message: Type.Optional(Type.String({ description: "Follow-up message for resume, or nudge text. Use index to pick a child in multi-child runs." })),
+	message: Type.Optional(Type.String({ description: "Follow-up message for resume, nudge text, or answer to a durable question. Use index to pick a child in multi-child runs." })),
 	extendMs: Type.Optional(Type.Integer({ minimum: 1, description: "Additional ms for extend; defaults to timeoutMs/maxRuntimeMs." })),
 	// Chain identifier for management (can't reuse 'chain' — that's the execution array)
 	chainName: Type.Optional(Type.String({
@@ -312,6 +340,7 @@ export const SubagentParams = Type.Object({
 }, {
 	additionalProperties: false,
 	allOf: [
+		{ if: { ...requiredObject("action"), properties: { action: { enum: ["answer"] } } }, then: { allOf: [requiredObject("questionId", "message"), { anyOf: [requiredObject("id"), requiredObject("runId")] }] } },
 		{ not: { anyOf: [
 			requiredObject("agent", "tasks"),
 			requiredObject("agent", "chain"),

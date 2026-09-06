@@ -1,5 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
+import { addAbortListener } from "node:events";
 import * as path from "node:path";
+import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
 import type {
 	AcceptanceEvidenceKind,
 	AcceptanceLedger,
@@ -100,7 +102,7 @@ function trimOutput(value: string, truncated = false): string | undefined {
 		: trimmed;
 }
 
-function runVerifyCommand(command: AcceptanceVerifyCommand, defaultCwd: string): Promise<AcceptanceVerifyResult> {
+function runVerifyCommand(command: AcceptanceVerifyCommand, defaultCwd: string, signal?: AbortSignal): Promise<AcceptanceVerifyResult> {
 	return new Promise((resolve) => {
 		const startedAt = Date.now();
 		const cwd = command.cwd ? path.resolve(defaultCwd, command.cwd) : defaultCwd;
@@ -109,17 +111,22 @@ function runVerifyCommand(command: AcceptanceVerifyCommand, defaultCwd: string):
 		let stdoutTruncated = false;
 		let stderrTruncated = false;
 		let timedOut = false;
+		let cancelled = false;
 		const child = spawn(command.command, {
 			cwd,
 			env: { ...process.env, ...(command.env ?? {}) },
 			shell: true,
 			stdio: ["ignore", "pipe", "pipe"],
-			windowsHide: true,
+			detached: true,
+		});
+		const lifecycle = attachChildProcessLifecycle(child);
+		const abortListener = signal && addAbortListener(signal, () => {
+			cancelled = true;
+			lifecycle.terminate();
 		});
 		const timeout = setTimeout(() => {
 			timedOut = true;
-			child.kill("SIGTERM");
-			setTimeout(() => child.kill("SIGKILL"), 1000).unref?.();
+			lifecycle.terminate();
 		}, command.timeoutMs ?? 120_000);
 		timeout.unref?.();
 		child.stdout.on("data", (chunk: Buffer) => {
@@ -132,23 +139,27 @@ function runVerifyCommand(command: AcceptanceVerifyCommand, defaultCwd: string):
 			stderr = next.value;
 			stderrTruncated ||= next.truncated;
 		});
-		child.on("close", (exitCode) => {
+		const cleanup = () => {
 			clearTimeout(timeout);
+			abortListener?.[Symbol.dispose]();
+		};
+		child.on("close", (exitCode) => {
+			cleanup();
 			const durationMs = Date.now() - startedAt;
-			const passed = exitCode === 0 && !timedOut;
+			const passed = exitCode === 0 && !timedOut && !cancelled;
 			resolve({
 				id: command.id,
 				command: command.command,
 				cwd,
 				exitCode,
-				status: timedOut ? "timed-out" : passed ? "passed" : command.allowFailure ? "allowed-failure" : "failed",
+				status: cancelled ? "failed" : timedOut ? "timed-out" : passed ? "passed" : command.allowFailure ? "allowed-failure" : "failed",
 				stdout: trimOutput(stdout, stdoutTruncated),
-				stderr: trimOutput(stderr, stderrTruncated),
+				stderr: cancelled ? "Verification cancelled." : trimOutput(stderr, stderrTruncated),
 				durationMs,
 			});
 		});
 		child.on("error", (error) => {
-			clearTimeout(timeout);
+			cleanup();
 			resolve({
 				id: command.id,
 				command: command.command,
@@ -168,6 +179,7 @@ export async function evaluateAcceptance(input: {
 	output: string;
 	cwd: string;
 	report?: AcceptanceReport;
+	signal?: AbortSignal;
 }): Promise<AcceptanceLedger> {
 	const acceptance = input.acceptance;
 	const ledger: AcceptanceLedger = {
@@ -203,7 +215,14 @@ export async function evaluateAcceptance(input: {
 
 	if (acceptance.verify.length > 0) {
 		ledger.verifyRuns = [];
-		for (const command of acceptance.verify) ledger.verifyRuns.push(await runVerifyCommand(command, input.cwd));
+		for (const command of acceptance.verify) {
+			if (input.signal?.aborted) {
+				ledger.runtimeChecks.push({ id: "cancelled", status: "failed", message: "Acceptance verification cancelled." });
+				ledger.status = "rejected";
+				return ledger;
+			}
+			ledger.verifyRuns.push(await runVerifyCommand(command, input.cwd, input.signal));
+		}
 		if (ledger.verifyRuns.some((run) => run.status === "failed" || run.status === "timed-out")) {
 			ledger.status = "rejected";
 			return ledger;

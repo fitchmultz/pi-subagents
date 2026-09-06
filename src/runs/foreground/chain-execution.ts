@@ -64,7 +64,7 @@ import {
 	resolveChildMaxSubagentDepth,
 } from "../../shared/types.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
-import { validateFileOnlyOutputMode } from "../shared/single-output.ts";
+import { findDuplicateOutputPath, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
 import { ChainOutputValidationError, outputEntryFromResult, resolveOutputReferences, validateChainOutputBindings } from "../shared/chain-outputs.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
@@ -177,6 +177,13 @@ function ensureParallelProgressFile(
 }
 
 async function runParallelChainTasks(input: ParallelChainRunInput): Promise<SingleResult[]> {
+	const duplicateOutputError = findDuplicateOutputPath(input.step.parallel.map((task, index) => ({
+		agent: task.agent,
+		outputPath: resolveSingleOutputPath(input.parallelBehaviors[index]?.output, input.chainDir),
+	})));
+	if (duplicateOutputError) {
+		return input.step.parallel.map((task) => ({ agent: task.agent, task: task.task ?? "", exitCode: 1, error: duplicateOutputError, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 } }));
+	}
 	const concurrency = input.step.concurrency ?? MAX_CONCURRENCY;
 	const failFast = input.step.failFast ?? false;
 	let aborted = false;
@@ -261,6 +268,17 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 			const timeoutAt = input.foregroundControl?.timeoutAt ?? input.timeoutAt;
 			const runIntercomTarget = input.childIntercomTarget?.(task.agent, input.globalTaskIndex + taskIndex);
 			let unregisterTimeoutExtension: (() => void) | undefined;
+			const cleanupChild = () => {
+				unregisterTimeoutExtension?.();
+				activeChildren.delete(globalIndex);
+				if (input.foregroundControl?.currentIndex === globalIndex) {
+					const next = activeChildren.entries().next().value as [number, { agent: string }] | undefined;
+					input.foregroundControl.currentIndex = next?.[0];
+					input.foregroundControl.currentAgent = next?.[1].agent;
+					input.foregroundControl.updatedAt = Date.now();
+				}
+				if (input.foregroundControl && activeChildren.size === 0) input.foregroundControl.interrupt = undefined;
+			};
 			const result = await runSync(input.ctx.cwd, input.agents, task.agent, taskStr, {
 				cwd: taskCwd,
 				signal: input.signal,
@@ -269,6 +287,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				...(input.timeoutMs !== undefined && timeoutAt !== undefined && input.timeoutExtensionRegistry ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { unregisterTimeoutExtension = input.timeoutExtensionRegistry?.register(String(input.globalTaskIndex + taskIndex), extend); } } : {}),
 				allowIntercomDetach: taskAgentConfig?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 				onDetachedComplete: (result) => input.onDetachedComplete?.(result, globalIndex),
+				onRunSettled: cleanupChild,
 				intercomEvents: input.intercomEvents,
 				runId: input.runId,
 				index: input.globalTaskIndex + taskIndex,
@@ -337,16 +356,6 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 						});
 					}
 					: undefined,
-			}).finally(() => {
-				unregisterTimeoutExtension?.();
-				activeChildren.delete(globalIndex);
-				if (input.foregroundControl?.currentIndex === globalIndex) {
-					const next = activeChildren.entries().next().value as [number, { agent: string }] | undefined;
-					input.foregroundControl.currentIndex = next?.[0];
-					input.foregroundControl.currentAgent = next?.[1].agent;
-					input.foregroundControl.updatedAt = Date.now();
-				}
-				if (input.foregroundControl && activeChildren.size === 0) input.foregroundControl.interrupt = undefined;
 			});
 
 			if (result.interrupted && failFastController.signal.aborted && !interruptController.signal.aborted) {
@@ -701,7 +710,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					originalTask,
 					ctx,
 					intercomEvents,
-					cwd,
+					cwd: parallelCwd,
 					runId,
 					globalTaskIndex,
 					sessionDirForIndex,
@@ -1143,6 +1152,13 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				...(params.timeoutMs !== undefined && stepTimeoutAt !== undefined && timeoutExtensionRegistry ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { unregisterTimeoutExtension = timeoutExtensionRegistry.register(String(childIndex), extend); } } : {}),
 				allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 				onDetachedComplete: (result) => onDetachedComplete?.(result, childIndex),
+				onRunSettled: () => {
+					unregisterTimeoutExtension?.();
+					if (foregroundControl?.currentIndex === childIndex) {
+						foregroundControl.interrupt = undefined;
+						foregroundControl.updatedAt = Date.now();
+					}
+				},
 				intercomEvents,
 				runId,
 				index: childIndex,
@@ -1211,12 +1227,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 						});
 					}
 					: undefined,
-			}).finally(() => {
-				unregisterTimeoutExtension?.();
-				if (foregroundControl?.currentIndex === childIndex) {
-					foregroundControl.interrupt = undefined;
-					foregroundControl.updatedAt = Date.now();
-				}
 			});
 			recordRun(seqStep.agent, cleanTask, r.exitCode, r.progressSummary?.durationMs ?? 0);
 

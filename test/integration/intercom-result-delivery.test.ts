@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createSupervisorQuestion, questionProcessAlive, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import { createNestedRoute, projectNestedEvents, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import {
@@ -173,7 +176,7 @@ describe("intercom result delivery cutover", () => {
 
 		const result = await executor.execute(
 			"single-intercom",
-			{ agent: "worker", task: "Implement feature" },
+			{ agent: "worker", task: "Report findings" },
 			new AbortController().signal,
 			undefined,
 			makeMinimalCtx(tempDir),
@@ -185,13 +188,21 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(payload.mode, "single");
 		assert.equal(payload.children?.length, 1);
 		assert.equal(payload.children?.[0]?.agent, "worker");
-		assert.match(payload.children?.[0]?.intercomTarget ?? "", /^subagent-worker-[a-f0-9]+-1$/);
+		assert.equal(payload.children?.[0]?.intercomTarget, `subagent-worker-${result.details.runId}-1`);
 		assert.match(String(payload.message ?? ""), /Intercom targets below identify child sessions used while they were running/);
-		assert.match(String(payload.message ?? ""), /Run intercom target: subagent-worker-[a-f0-9]+-1/);
+		assert.match(String(payload.message ?? ""), /Run intercom target: subagent-worker-[a-f0-9-]+-1/);
 		assert.match(result.content[0]?.text ?? "", /Delivered single subagent result via intercom\./);
 		assert.doesNotMatch(result.content[0]?.text ?? "", /Full child output from worker/);
 		assert.equal(result.details?.results?.[0]?.finalOutput, undefined);
 		assert.match(String(payload.message ?? ""), /Full child output from worker/);
+		const nudge = await executor.execute("late-foreground", { action: "nudge", id: result.details.runId }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		assert.equal(nudge.isError, undefined);
+		assert.match(nudge.content[0]?.text ?? "", /already completed.*No child was restarted/);
+		assert.match(nudge.content[0]?.text ?? "", /Full child output from worker/);
+		assert.ok(result.details.results[0]?.artifactPaths?.outputPath);
+		assert.ok(nudge.content[0]?.text?.includes(result.details.results[0]!.artifactPaths!.outputPath));
+		assert.equal(events.emitted.filter((entry) => entry.channel === "subagent:result-intercom").length, 1);
+		assert.equal(fs.readdirSync(mockPi.dir).filter((name) => /^call-.*\.json$/.test(name)).length, 1, "late nudge must not launch another child");
 	});
 
 	it("keeps child failure visible when intercom delivery succeeds", async () => {
@@ -253,9 +264,9 @@ describe("intercom result delivery cutover", () => {
 		const payload = intercomEvents[0]!.payload as { children?: Array<{ agent?: string; intercomTarget?: string }>; message?: string; mode?: string };
 		assert.equal(payload.mode, "parallel");
 		assert.deepEqual((payload.children ?? []).map((child) => child.agent).sort(), ["a", "b"]);
-		assert.equal((payload.children ?? []).every((child) => /^subagent-[ab]-[a-f0-9]+-[12]$/.test(child.intercomTarget ?? "")), true);
+		assert.equal((payload.children ?? []).every((child) => /^subagent-[ab]-[a-f0-9-]+-[12]$/.test(child.intercomTarget ?? "")), true);
 		assert.match(String(payload.message ?? ""), /Intercom targets below identify child sessions used while they were running/);
-		assert.match(String(payload.message ?? ""), /Run intercom target: subagent-a-[a-f0-9]+-1/);
+		assert.match(String(payload.message ?? ""), /Run intercom target: subagent-a-[a-f0-9-]+-1/);
 		assert.match(String(payload.message ?? ""), /1\. a — completed/);
 		assert.match(String(payload.message ?? ""), /2\. b — completed/);
 		assert.match(result.content[0]?.text ?? "", /Delivered parallel subagent results via intercom\./);
@@ -284,7 +295,7 @@ describe("intercom result delivery cutover", () => {
 		const payload = intercomEvents[0]!.payload as { children?: Array<{ agent?: string; intercomTarget?: string }>; message?: string; mode?: string };
 		assert.equal(payload.mode, "chain");
 		assert.deepEqual((payload.children ?? []).map((child) => child.agent).sort(), ["a", "b", "c"]);
-		assert.equal((payload.children ?? []).every((child) => /^subagent-[abc]-[a-f0-9]+-[123]$/.test(child.intercomTarget ?? "")), true);
+		assert.equal((payload.children ?? []).every((child) => /^subagent-[abc]-[a-f0-9-]+-[123]$/.test(child.intercomTarget ?? "")), true);
 		assert.match(String(payload.message ?? ""), /1\. a — completed/);
 		assert.match(String(payload.message ?? ""), /2\. b — completed/);
 		assert.match(String(payload.message ?? ""), /3\. c — completed/);
@@ -458,7 +469,7 @@ describe("intercom result delivery cutover", () => {
 
 	it("detached completion enforces maxOutput even when artifacts are disabled", async () => {
 		mockPi.onCall({ steps: [
-			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching before a long result" })] },
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "detaching before a long result" })] },
 			{ delay: 300, jsonl: [events.assistantMessage("first line\nsecond line\nsecret tail that must not be delivered")] },
 		] });
 		const { executor, events: bus } = makeExecutor();
@@ -485,7 +496,7 @@ describe("intercom result delivery cutover", () => {
 
 	it("detached completion does not double-emit while the placeholder acceptance check settles", async () => {
 		mockPi.onCall({ steps: [
-			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching during acceptance" })] },
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "detaching during acceptance" })] },
 			{ delay: 300, jsonl: [events.assistantMessage("completed once")] },
 		] });
 		const { executor, events: bus } = makeExecutor();
@@ -514,7 +525,7 @@ describe("intercom result delivery cutover", () => {
 
 	it("detached finalization ignores stale update callbacks after the caller returns", async () => {
 		mockPi.onCall({ steps: [
-			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching before finalization" })] },
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "detaching before finalization" })] },
 			{ delay: 300, jsonl: [events.assistantMessage("child output")] },
 		] });
 		const { executor, events: bus } = makeExecutor();
@@ -611,7 +622,7 @@ describe("intercom result delivery cutover", () => {
 		}
 	});
 
-	it("nudge action rejects completed work with exact resume and status targets", async () => {
+	it("nudge action returns completed work with evidence and exact resume and status targets", async () => {
 		const runId = `nudge-complete-${Date.now()}`;
 		const asyncDir = path.join(ASYNC_DIR, runId);
 		const sessionFile = path.join(tempDir, `${runId}.jsonl`);
@@ -619,17 +630,81 @@ describe("intercom result delivery cutover", () => {
 			fs.mkdirSync(asyncDir, { recursive: true });
 			fs.writeFileSync(sessionFile, "", "utf-8");
 			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId, mode: "single", state: "complete", startedAt: 100, lastUpdate: 200,
+				runId, mode: "single", state: "complete", startedAt: 100, lastUpdate: 200, outputFile: "output-0.log",
 				steps: [{ agent: "worker", status: "complete", sessionFile }],
 			}, null, 2), "utf-8");
-			const { executor } = makeExecutor();
+			fs.writeFileSync(path.join(asyncDir, "output-0.log"), "Verified completed outcome", "utf-8");
+			const { executor, events } = makeExecutor();
 			const result = await executor.execute("nudge-complete", { action: "nudge", id: runId }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
 			const text = result.content[0]?.text ?? "";
-			assert.equal(result.isError, true);
+			assert.equal(result.isError, undefined);
+			assert.match(text, /Nudge not sent: run is already completed/);
+			assert.match(text, /Verified completed outcome/);
+			assert.ok(text.includes(path.join(asyncDir, "output-0.log")));
+			assert.equal(events.emitted.length, 0, "no child launch or intercom delivery");
 			assert.match(text, new RegExp(`action: "resume", id: "${runId}"`));
 			assert.match(text, new RegExp(`action: "status", id: "${runId}"`));
 			assert.equal(result.details?.managementControl?.state, "completed");
 			assert.equal(result.details?.managementControl?.capabilities.includes("nudge"), false);
+		} finally {
+			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
+	it("nudge completion race returns terminal evidence without a saved session or another launch", async () => {
+		const runId = `nudge-race-${Date.now()}`;
+		const asyncDir = path.join(ASYNC_DIR, runId);
+		try {
+			fs.mkdirSync(asyncDir, { recursive: true });
+			const writeStatus = (state: string) => fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+				runId, mode: "single", state, startedAt: 100, lastUpdate: 200, outputFile: "output-0.log",
+				steps: [{ agent: "worker", status: state }],
+			}));
+			writeStatus("running");
+			const { executor, events } = makeExecutor();
+			events.on("subagent:live-intercom", (payload) => {
+				writeStatus("failed");
+				fs.writeFileSync(path.join(asyncDir, "output-0.log"), "Check failed: useful diagnosis");
+				events.emit("subagent:live-intercom-delivery", { requestId: (payload as { requestId: string }).requestId, delivered: false, reason: "Session not found" });
+			});
+			const result = await executor.execute("nudge-race", { action: "nudge", id: runId }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+			assert.equal(result.isError, undefined);
+			assert.equal(result.details.managementControl?.state, "failed");
+			assert.match(result.content[0]?.text ?? "", /already failed/);
+			assert.match(result.content[0]?.text ?? "", /Check failed: useful diagnosis/);
+			assert.equal(result.details.managementControl?.capabilities.includes("resume"), false);
+			const late = await executor.execute("nudge-after-race", { action: "nudge", id: runId }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+			assert.equal(late.isError, undefined, "terminal inspection must not require a resumable child");
+			assert.equal(events.emitted.filter((event) => event.channel === "subagent:live-intercom").length, 1);
+			assert.equal(fs.readdirSync(mockPi.dir).filter((name) => /^call-.*\.json$/.test(name)).length, 0);
+		} finally {
+			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
+	it("status lists completed foreground and owned async runs even while another foreground run is active", async () => {
+		mockPi.onCall({ output: "Saved foreground evidence" });
+		const { executor, state, events } = makeExecutor();
+		const ctx = makeMinimalCtx(tempDir);
+		ctx.sessionManager.getSessionId = () => `owned-parent-${path.basename(tempDir)}`;
+		const completed = await executor.execute("completed-foreground", { agent: "worker", task: "Report status" }, new AbortController().signal, undefined, ctx);
+		state.foregroundControls.set("another-live-run", { runId: "another-live-run", mode: "single", currentAgent: "worker", startedAt: 100, updatedAt: 100 });
+		const runId = `owned-recent-${Date.now()}`;
+		const asyncDir = path.join(ASYNC_DIR, runId);
+		try {
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId, sessionId: state.currentSessionId, cwd: path.join(tempDir, "other-worktree"), mode: "single", state: "complete", startedAt: 100, lastUpdate: 200, steps: [{ agent: "worker", status: "complete" }] }));
+			const emitted = events.emitted.length;
+			const status = await executor.execute("discover-owned", { action: "status" }, new AbortController().signal, undefined, ctx);
+			const text = status.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+			assert.equal(status.isError, undefined);
+			assert.match(text, /another-live-run/);
+			assert.match(text, /Saved foreground evidence/);
+			assert.ok(text.includes(completed.details.runId!));
+			assert.ok(text.includes(runId));
+			assert.equal(status.details.managementControls?.length, 3);
+			assert.equal(status.details.managementControl?.runId, "another-live-run", "keep the existing primary control field");
+			assert.ok(events.emitted.slice(emitted).every((event) => event.channel === "subagent:intercom-health-request"), "discovery only reads health; it does not redeliver or adopt runs");
 		} finally {
 			fs.rmSync(asyncDir, { recursive: true, force: true });
 		}
@@ -864,6 +939,128 @@ describe("intercom result delivery cutover", () => {
 		}
 	});
 
+	for (const asyncMode of [false, true]) it(`questions preserve launch-time acceptance through ${asyncMode ? "background" : "foreground"} child death and answer revival`, async () => {
+		mockPi.onCall({ delay: 60_000, output: "unfinished" });
+		mockPi.onCall({ output: "Answered with original acceptance", structuredOutput: { answer: "stable" } });
+		mockPi.onCall({ output: "Final validation" });
+		const ctx = makeMinimalCtx(tempDir);
+		const parentSession = path.join(tempDir, "supervisor.jsonl");
+		fs.writeFileSync(parentSession, "");
+		ctx.sessionManager.getSessionFile = () => parentSession;
+		const { executor } = makeExecutor();
+		const outputPath = path.join(tempDir, "required-report.md");
+		const outputSchema = { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] };
+		const running = executor.execute("launch-contract", { agent: "worker", task: "Wait for a decision", async: asyncMode, output: outputPath, outputSchema, outputMode: "file-only", acceptance: { criteria: ["Keep the original contract"], verify: [{ id: "must-fail", command: "exit 23" }], maxFinalizationTurns: 1 } }, undefined, undefined, ctx);
+		const args = await readMockCallArgs(0);
+		const callFile = fs.readdirSync(mockPi.dir).find((name) => /^call-.*\.json$/.test(name))!;
+		const pid = Number(callFile.match(/^call-\d+-(\d+)-/)![1]);
+		const sessionFile = args[args.indexOf("--session") + 1]!;
+		const runId = path.basename(path.dirname(path.dirname(sessionFile)));
+		assert.ok(runId, sessionFile);
+		const question = createSupervisorQuestion({ runId, ownerTarget: "orchestrator", agent: "worker", index: 0, childSessionId: "contract-child", childTarget: "contract-child", sessionFile, cwd: tempDir, pid, reason: "need_decision", message: "Which API?" });
+		try {
+			assert.equal(question.effectiveAcceptance?.verify[0]?.command, "exit 23");
+			assert.equal(question.ownerSessionId, ctx.sessionManager.getSessionId());
+			assert.equal(question.output, outputPath);
+			assert.deepEqual(question.outputSchema, outputSchema);
+		} finally {
+			process.kill(pid, "SIGTERM");
+			await waitFor(() => !questionProcessAlive(question));
+			await running;
+		}
+		const { executor: reloaded } = makeExecutor();
+		const answer = await reloaded.execute("answer-contract", { action: "answer", id: runId, questionId: question.questionId, message: "Use stable." }, undefined, undefined, ctx);
+		assert.equal(answer.isError, undefined, answer.content[0]?.text);
+		const resultPath = path.join(RESULTS_DIR, `${answer.details.asyncId}.json`);
+		await waitFor(() => fs.existsSync(resultPath), 10_000);
+		const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+		assert.equal(result.success, false);
+		assert.equal(result.results[0].acceptance.effectiveAcceptance.criteria[0].must, "Keep the original contract");
+		assert.equal(result.results[0].acceptance.verifyRuns[0].exitCode, 23);
+		assert.deepEqual(result.results[0].structuredOutput, { answer: "stable" });
+		assert.equal(fs.readFileSync(outputPath, "utf8"), "Answered with original acceptance");
+	});
+
+	for (const registered of [false, true]) it(`continue recovers a pre-launch answer claim and refuses an uncertain launch (${registered ? "registered" : "missing"} original run)`, async () => {
+		const ctx = makeMinimalCtx(tempDir);
+		const runId = `claim-recovery-${Date.now()}`;
+		const sessionFile = path.join(tempDir, "claim-session.jsonl");
+		fs.writeFileSync(sessionFile, "");
+		saveQuestionOwner(runId, ctx.sessionManager.getSessionId());
+		const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+		assert.ok(child.pid);
+		const question = createSupervisorQuestion({ runId, ownerTarget: "orchestrator", agent: "worker", index: 0, childSessionId: "claim-child", childTarget: "claim-child", sessionFile, cwd: tempDir, pid: child.pid, reason: "need_decision", message: "Which API?" });
+		const exited = once(child, "exit");
+		child.kill();
+		await exited;
+		const moduleUrl = new URL("../../src/runs/shared/supervisor-questions.ts", import.meta.url).href;
+		const claimed = spawnSync(process.execPath, ["--input-type=module", "-e", `const q = await import(${JSON.stringify(moduleUrl)}); q.saveQuestionAnswer(${JSON.stringify(question)}, "Stable API"); q.claimQuestionRevival(${JSON.stringify(question)});`]);
+		assert.equal(claimed.status, 0, claimed.stderr.toString());
+		// executeAsyncSingle can create an empty run directory before a launch exists.
+		const continuationDir = path.join(ASYNC_DIR, `answer-${question.questionId}`);
+		fs.mkdirSync(continuationDir, { recursive: true });
+		if (registered) {
+			fs.mkdirSync(path.join(ASYNC_DIR, runId), { recursive: true });
+			fs.writeFileSync(path.join(ASYNC_DIR, runId, "status.json"), JSON.stringify({ runId, mode: "single", state: "failed", startedAt: 1, lastUpdate: 2, cwd: tempDir, sessionFile, steps: [{ agent: "worker", status: "failed", sessionFile }] }));
+		}
+		const { executor } = makeExecutor();
+		const repeat = await executor.execute("claim-repeat", { action: "answer", id: runId, questionId: question.questionId, message: "Stable API" }, undefined, undefined, ctx);
+		assert.equal(fs.readdirSync(mockPi.dir).some((name) => name.startsWith("call-")), false);
+		fs.writeFileSync(path.join(continuationDir, "status.json"), JSON.stringify({ runId: `answer-${question.questionId}`, state: "running" }));
+		const uncertain = await executor.execute("uncertain-continue", { action: "resume", id: runId, message: "Continue with the saved answer." }, undefined, undefined, ctx);
+		assert.equal(uncertain.isError, true, "uncertain continuation must not launch again");
+		assert.match(uncertain.content[0]?.text ?? "", /may already have launched/);
+		assert.equal(mockPi.callCount(), 0);
+		fs.rmSync(path.join(continuationDir, "status.json"));
+		const continued = await executor.execute("claim-continue", { action: "resume", id: runId, message: "Continue with the saved answer." }, undefined, undefined, ctx);
+		assert.equal(continued.isError, undefined, continued.content[0]?.text);
+		assert.match(repeat.content[0]?.text ?? "", /action: "continue"/);
+		await waitFor(() => fs.existsSync(path.join(RESULTS_DIR, `${continued.details.asyncId}.json`)), 10_000);
+		assert.ok((await readMockCallArgs(0)).some((arg) => arg.includes("Stable API")));
+	});
+
+	it("durable question survives a fresh supervisor and child exit, then answers via one saved-session revival", async () => {
+		mockPi.onCall({ output: "continued with the saved answer" });
+		const ctx = makeMinimalCtx(tempDir);
+		const runId = `question-revive-${Date.now()}`;
+		const sessionFile = path.join(tempDir, "question-child.jsonl");
+		fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "saved-question-child", cwd: tempDir })}\n`);
+		const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+		assert.ok(child.pid);
+		saveQuestionOwner(runId, ctx.sessionManager.getSessionId());
+		const question = createSupervisorQuestion({ runId, ownerTarget: "orchestrator", agent: "worker", index: 0, childSessionId: "saved-question-child", childTarget: `subagent-worker-${runId}-1`, sessionFile, cwd: tempDir, pid: child.pid, reason: "need_decision", message: "Which API should I use?" });
+		const exited = once(child, "exit");
+		child.kill();
+		await exited;
+		const { executor } = makeExecutor();
+		const listed = await executor.execute("after-reload", { action: "status" }, undefined, undefined, ctx);
+		assert.equal(listed.details.questions?.find((entry) => entry.questionId === question.questionId)?.state, "awaiting_input");
+		const inspected = await executor.execute("inspect-question", { action: "status", id: runId }, undefined, undefined, ctx);
+		assert.equal(inspected.isError, false);
+		assert.match(JSON.stringify(inspected.content), /awaiting_input/);
+		const answerParams = { action: "answer", id: runId, questionId: question.questionId, message: "Use the stable API." };
+		const first = await executor.execute("answer-question", answerParams, undefined, undefined, ctx);
+		assert.equal(first.isError, undefined, first.content[0]?.text);
+		const revivedId = first.details.asyncId!;
+		assert.ok(revivedId);
+		const { executor: reloaded } = makeExecutor();
+		const repeated = await reloaded.execute("repeat-answer", answerParams, undefined, undefined, ctx);
+		assert.match(repeated.content[0]?.text ?? "", /already answered; no new work/);
+		assert.equal(repeated.details.questions?.[0]?.delivery?.runId, revivedId);
+		await waitFor(() => fs.existsSync(path.join(RESULTS_DIR, `${revivedId}.json`)), 10_000);
+		const args = await readMockCallArgs(0);
+		assert.equal(args[args.indexOf("--session") + 1], sessionFile);
+		assert.ok(args.some((arg) => arg.includes(question.questionId) && arg.includes("Use the stable API.")));
+		assert.equal(fs.readdirSync(mockPi.dir).filter((name) => /^call-.*\.json$/.test(name)).length, 1);
+		const cancelledQuestion = createSupervisorQuestion({ ...question, message: "Another decision?" });
+		const stopped = await reloaded.execute("stop-exited-question", { action: "interrupt", id: runId }, undefined, undefined, ctx);
+		assert.equal(stopped.isError, undefined);
+		assert.equal(stopped.details.questions?.[0]?.state, "cancelled");
+		const cancelledAnswer = await reloaded.execute("answer-stopped", { ...answerParams, questionId: cancelledQuestion.questionId }, undefined, undefined, ctx);
+		assert.equal(cancelledAnswer.isError, true);
+		assert.match(cancelledAnswer.content[0]?.text ?? "", /cancelled/);
+	});
+
 	it("resume action revives completed async runs with no-poll handoff guidance", async () => {
 		mockPi.onCall({ output: "revived answer" });
 		const runId = `resume-revive-${Date.now()}`;
@@ -962,13 +1159,15 @@ describe("intercom result delivery cutover", () => {
 			undefined,
 			makeMinimalCtx(tempDir),
 		);
-		assert.equal(nudge.isError, true);
+		assert.equal(nudge.isError, undefined);
+		assert.match(nudge.content[0]?.text ?? "", /already failed/);
+		assert.match(nudge.content[0]?.text ?? "", /Detached child timed out/);
 		assert.match(nudge.content[0]?.text ?? "", /action: "resume", id: "remembered-status-run", index: 0/);
 		assert.match(nudge.content[0]?.text ?? "", /action: "status", id: "remembered-status-run"/);
 		assert.equal(nudge.details?.managementControl?.capabilities.includes("nudge"), false);
 	});
 
-	it("status action refreshes detached foreground children that completed after supervisor reply", async () => {
+	it("status never infers detached completion from an earlier assistant answer",  async () => {
 		const session = path.join(tempDir, "remembered-detached-complete.jsonl");
 		fs.writeFileSync(session, [
 			JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "contact_supervisor", arguments: { reason: "need_decision", message: "Pick one" } }] } }),
@@ -993,8 +1192,11 @@ describe("intercom result delivery cutover", () => {
 
 		assert.equal(result.isError, undefined);
 		const text = result.content[0]?.text ?? "";
-		assert.match(text, /1\. a completed, session: .*final: UPDATED_DETACH_SMOKE_DONE reply=alpha/);
-		assert.match(text, /Revive: subagent\(\{ action: "resume", id: "detached-complete-run", message: "\.\.\." \}\)/);
+		assert.match(text, /1\. a detached, session:/);
+		assert.doesNotMatch(text, /final: UPDATED_DETACH_SMOKE_DONE/);
+		assert.equal(result.details.managementControl?.state, "unknown");
+		assert.match(text, /Completion unconfirmed/);
+		assert.match(text, /action: "questions"/);
 	});
 
 	it("status action accepts latest alias for remembered foreground runs", async () => {
@@ -1330,14 +1532,14 @@ describe("intercom result delivery cutover", () => {
 		}
 	});
 
-	it("resume action rejects detached foreground children that may still be live", async () => {
+	it("resume steers a live detached foreground child without starting another process",  async () => {
 		mockPi.onCall({
 			steps: [
 				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
 				{ delay: 1000, jsonl: [events.assistantMessage("after reply")] },
 			],
 		});
-		const { executor, events: bus } = makeExecutor({ agents: [makeAgent("a", { systemPrompt: "Intercom orchestration channel:" })] });
+		const { executor, events: bus } = makeExecutor({ acknowledgeLive: true, agents: [makeAgent("a", { systemPrompt: "Intercom orchestration channel:" })] });
 		let detachEmitted = false;
 		const original = await executor.execute(
 			"foreground-detached-original",
@@ -1363,10 +1565,10 @@ describe("intercom result delivery cutover", () => {
 			makeMinimalCtx(tempDir),
 		);
 
-		assert.equal(resumed.isError, true);
-		assert.match(resumed.content[0]?.text ?? "", /detached for intercom coordination/);
-		assert.match(resumed.content[0]?.text ?? "", /Reply to the supervisor request first/);
-		assert.doesNotMatch(resumed.content[0]?.text ?? "", /revive only/);
+		assert.equal(resumed.isError, undefined);
+		assert.match(resumed.content[0]?.text ?? "", /Nudge delivered to live subagent/);
+		assert.equal(mockPi.callCount(), 1);
+		await waitFor(() => bus.emitted.some((event) => event.channel === "subagent:result-intercom" && (event.payload as { runId?: string }).runId === runId));
 	});
 
 	it("resume action keeps exact foreground validation errors over async prefix matches", async () => {

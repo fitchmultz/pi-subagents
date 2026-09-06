@@ -26,8 +26,7 @@ export function shortSessionId(sessionId: string): string {
 }
 
 function normalizedPath(value: string): string {
-  const resolved = path.resolve(value);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  return path.resolve(value);
 }
 
 function resolveGitCommonDirectory(cwd: string): Promise<string | undefined> {
@@ -42,7 +41,6 @@ function resolveGitCommonDirectory(cwd: string): Promise<string | undefined> {
       env,
       maxBuffer: 4096,
       timeout: 500,
-      windowsHide: true,
     }, (error, stdout) => {
       const gitDirectory = error ? "" : stdout.trim();
       resolve(gitDirectory && !/[\0\r\n]/.test(gitDirectory)

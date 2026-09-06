@@ -217,6 +217,7 @@ export function acceptanceSelfReviewConfig(acceptance: ResolvedAcceptanceConfig)
 
 export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig): string {
 	if (acceptance.level === "none") return "";
+	const evidence = [...new Set([...acceptance.evidence, ...acceptance.criteria.flatMap((criterion) => criterion.evidence)])];
 	const lines = [
 		"",
 		"## Acceptance Contract",
@@ -224,16 +225,16 @@ export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig): st
 		"After the initial response, the runtime will continue this same session for a bounded self-review/repair loop before accepting the run.",
 		"",
 		"Criteria:",
-		...(acceptance.criteria.length ? acceptance.criteria.map((criterion) => `- ${criterion.id}: ${criterion.must}`) : ["- No explicit criteria were configured; satisfy the requested task and the required evidence/checks below."]),
+		...(acceptance.criteria.length ? acceptance.criteria.map((criterion) => `- ${criterion.id}: ${criterion.must}${criterion.evidence.length ? ` (evidence: ${criterion.evidence.join(", ")})` : ""}`) : ["- No explicit criteria were configured; satisfy the requested task and the required evidence/checks below."]),
 		"",
-		`Required evidence: ${acceptance.evidence.join(", ") || "none explicitly requested"}`,
+		`Required evidence: ${evidence.join(", ") || "none explicitly requested"}`,
 	];
-	if (acceptance.evidence.length > 0) {
+	if (evidence.length > 0) {
 		lines.push(
 			"",
 			"Structured evidence must be present in the `acceptance-report` JSON fields. Markdown sections in your visible answer do not satisfy required evidence by themselves. If you already described evidence in prose, copy or summarize it into the matching JSON field.",
 			"Evidence field mapping:",
-			...formatEvidenceReportFieldMapping(acceptance.evidence),
+			...formatEvidenceReportFieldMapping(evidence),
 		);
 	}
 	if (acceptance.verify.length > 0) {

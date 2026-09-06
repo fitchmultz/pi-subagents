@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
 import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
@@ -128,7 +127,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 		if (forkModelPolicyError) return buildRequestedModeError(params, forkModelPolicyError);
 
 		if (result.runInBackground) {
-			const id = randomUUID();
+			const id = runId;
 			const output = outputUsesAgentDefault
 				? materializeAgentDefaultOutputPath({ output: effectiveOutput, artifactsDir, runId: id, agent: params.agent!, index: 0 })
 				: effectiveOutput;
@@ -155,6 +154,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 				output,
 				outputMode: effectiveOutputMode,
 				outputSchema: params.outputSchema,
+				acceptance: params.acceptance,
 				modelOverride,
 				maxSubagentDepth,
 				worktreeSetupHook: deps.config.worktreeSetupHook,
@@ -277,7 +277,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 		projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 		projectTrusted: ctx.isProjectTrusted(),
 	});
-	if (foregroundControl?.currentIndex === 0) {
+	if (foregroundControl?.currentIndex === 0 && !r.detached) {
 		foregroundControl.interrupt = undefined;
 		foregroundControl.activeChildren?.delete(0);
 		foregroundControl.extendTimeout = undefined;

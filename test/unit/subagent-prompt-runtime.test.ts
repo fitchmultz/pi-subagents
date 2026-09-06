@@ -12,7 +12,6 @@ import registerSubagentPromptRuntime, {
 	rewriteSubagentPrompt,
 	stripInheritedSkills,
 	stripParentOnlySubagentMessages,
-	stripProjectContext,
 	stripSubagentOrchestrationSkill,
 } from "../../src/runs/shared/subagent-prompt-runtime.ts";
 
@@ -84,11 +83,10 @@ describe("subagent prompt runtime", () => {
 		}
 	});
 
-	it("strips only the project context block", () => {
-		const rewritten = stripProjectContext(BASE_PROMPT);
-		assert.ok(!rewritten.includes("# Project Context"));
-		assert.ok(rewritten.includes("The following skills provide specialized instructions for specific tasks."));
-		assert.ok(rewritten.includes("Current date: 2026-04-16"));
+	it("leaves selected context intact; native CLI disables inherited context discovery", () => {
+		const rewritten = rewriteSubagentPrompt(BASE_PROMPT, { inheritProjectContext: false, inheritSkills: true });
+		assert.ok(rewritten.includes("# Project Context"));
+		assert.ok(rewritten.includes("Project rules"));
 	});
 
 	it("strips only the inherited skills block", () => {
@@ -98,12 +96,12 @@ describe("subagent prompt runtime", () => {
 		assert.ok(rewritten.includes("Current date: 2026-04-16"));
 	});
 
-	it("can strip both inherited sections together", () => {
+	it("strips inherited skills without reparsing selected project context", () => {
 		const rewritten = rewriteSubagentPrompt(BASE_PROMPT, {
 			inheritProjectContext: false,
 			inheritSkills: false,
 		});
-		assert.ok(!rewritten.includes("# Project Context"));
+		assert.ok(rewritten.includes("# Project Context"));
 		assert.ok(!rewritten.includes("<available_skills>"));
 		assert.ok(rewritten.includes("Current working directory: /repo"));
 	});
@@ -155,7 +153,7 @@ describe("subagent prompt runtime", () => {
 		});
 		assert.ok(rewritten.includes("<skill name=\"explicit\">"));
 		assert.ok(!rewritten.includes("<available_skills>"));
-		assert.ok(!rewritten.includes("# Project Context"));
+		assert.ok(rewritten.includes("# Project Context"));
 	});
 
 	it("strips the subagent orchestration skill even when inherited skills remain", () => {
@@ -254,7 +252,7 @@ describe("subagent prompt runtime", () => {
 
 		const rewritten = await beforeAgentStart?.({ systemPrompt: BASE_PROMPT });
 		assert.ok(rewritten);
-		assert.ok(!rewritten.systemPrompt.includes("# Project Context"));
+		assert.ok(rewritten.systemPrompt.includes("# Project Context"));
 		assert.ok(!rewritten.systemPrompt.includes("<available_skills>"));
 		assert.ok(rewritten.systemPrompt.includes("Current date: 2026-04-16"));
 	});

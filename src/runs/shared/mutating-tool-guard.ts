@@ -39,7 +39,7 @@ export function resolveCurrentPath(toolName: string | undefined, args: Record<st
 	if (toolName === "bash") {
 		const command = typeof args.command === "string" ? args.command : undefined;
 		if (!command) return undefined;
-		const redirect = command.match(/(?:>|>>|tee\s+)(\S+)/);
+		const redirect = command.match(/(?:>>?|tee\s+)\s*([^&>\s][^\s;&|]*)/);
 		if (redirect?.[1]) return redirect[1];
 	}
 	return undefined;
@@ -79,7 +79,7 @@ export function isMutatingBashCommand(command: string): boolean {
 
 export function isMutatingTool(toolName: string | undefined, args: Record<string, unknown> | undefined): boolean {
 	if (!toolName) return false;
-	if (toolName === "edit" || toolName === "write") return true;
+	if (toolName === "edit" || toolName === "write" || toolName === "apply_edits") return true;
 	if (toolName !== "bash") return false;
 	const command = typeof args?.command === "string" ? args.command : "";
 	if (!command.trim()) return false;

@@ -84,7 +84,7 @@ test("resolveSessionProjectId ignores inherited Git repository overrides", async
   }
 });
 
-test("resolveSessionProjectId runs Git outside the project checkout", { skip: process.platform === "win32" }, async () => {
+test("resolveSessionProjectId runs Git outside the project checkout", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "pi-intercom-git-cwd-"));
   const previousPath = process.env.PATH;
   try {

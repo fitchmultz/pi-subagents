@@ -75,6 +75,7 @@ export interface SubagentParamsLike {
 	action?: string;
 	id?: string;
 	runId?: string;
+	questionId?: string;
 	dir?: string;
 	index?: number;
 	agent?: string;
@@ -207,6 +208,7 @@ export function normalizeSubagentParamsLike(params: RawSubagentParamsLike): Suba
 		action: stringValue(params, "action"),
 		id: stringValue(params, "id"),
 		runId: stringValue(params, "runId"),
+		questionId: stringValue(params, "questionId"),
 		dir: stringValue(params, "dir"),
 		index: numberValue(params, "index"),
 		agent: stringValue(params, "agent"),

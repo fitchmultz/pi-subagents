@@ -40,7 +40,7 @@ npm run smoke:real-pi
 `ci` runs typechecking, package and install smokes, and the full subagent/intercom test suite. `smoke:real-pi` installs the single checkout into an isolated temporary Pi home, verifies `pi list`, and loads both bundled extension entries. For live model-backed status/list checks, run:
 
 ```bash
-PI_REAL_SMOKE_MODEL=openai-codex/gpt-5.6-sol npm run smoke:real-pi -- --llm
+PI_REAL_SMOKE_MODEL=openai/gpt-6-astra node scripts/real-pi-smoke.mjs --llm
 ```
 
 The `--llm` mode copies local `auth.json` and `models.json` into the isolated Pi agent dir. Set `PI_REAL_SMOKE_AUTH_AGENT_DIR` if your auth files are not in `~/.pi/agent`.
@@ -79,7 +79,7 @@ intercom({ action: "list" })
 // →   ↳ self target unavailable; choose a peer from Other sessions; use pending/reply for inbound asks
 // → **Other sessions:**
 // → • research (6332faab) — ~/projects/api (claude-sonnet-4) [same cwd, thinking, state:busy, accepts_asks:false, pending_asks:1, last_intercom_activity:2m ago]
-// →   ↳ send defaults to steer; ask only if sender must stay alive for a required reply (default returns peer_idle); queue only for intentional delay; passive discouraged
+// →   ↳ send defaults to steer; ask only if sender must stay alive for a required reply (default sends without waiting when peer is busy); queue only for intentional delay; passive discouraged
 
 // Intentionally discover sessions in other projects
 intercom({ action: "list", scope: "all" })
@@ -205,7 +205,7 @@ Use `ask` only when the sender process must remain alive and cannot safely conti
 
 `send` is the default for agent-to-agent coordination and uses steer when `delivery` is omitted. It wakes idle recipients or reaches busy recipients at the next tool boundary, then returns after broker acceptance. Use explicit queue only when delay is intentional, and passive only for human-visible breadcrumbs. If you want approval before non-reply sends, set `confirmSend: true`.
 
-`ask` sends and waits up to `askTimeoutMs` (default 2 minutes). Reserve `ask` plus steer for a sender process that must remain alive and cannot safely continue without the answer. Long-lived peers should use `send` plus steer and end their turn instead. A default ask to a peer publishing `accepts_asks:false` returns promptly with `reason:"peer_idle"`; an explicit steer ask keeps waiting.
+`ask` sends and waits up to `askTimeoutMs` (default 2 minutes). Reserve `ask` plus steer for a sender process that must remain alive and cannot safely continue without the answer. Long-lived peers should use `send` plus steer and end their turn instead. A default ask to a peer publishing `accepts_asks:false` returns promptly with `reason:"peer_busy"`; an explicit steer ask keeps waiting.
 
 `reply` answers an inbound ask using its exact sender and message automatically. Otherwise, answer ordinary coordination with `send` plus steer. If multiple asks are pending, use `pending` and disambiguate with `to`.
 
@@ -226,19 +226,35 @@ When this package spawns a Pi-backed delegated child, it supplies bridge metadat
 
 If any are missing, the session falls back to the regular `intercom` tool. A subagent status line may mention an intercom target before the child is actually registered with pi-intercom; treat `intercom({ action: "list" })` as the source of truth. If the advertised target is absent from `list`, use normal subagent controls (`status`, `resume`, `nudge`, result artifacts) instead of sending to that target; the child may be Claude Code-backed or already exited and have no child-side `contact_supervisor`.
 
-When both bundled extension entries are enabled, parent sessions can use `subagent({ action: "nudge", id: "<run-id>", message: "..." })` to send a non-blocking steered nudge to a live child. `subagent status` may also show the direct blocking `intercom({ action: "ask", to: "...", delivery: "steer", message: "..." })` path; use that exception only when the parent process must remain alive and cannot safely continue without the reply. `pi-intercom` remains the source of truth for connected sessions and only delivers to registered local peers.
+When both bundled extension entries are enabled, parent sessions can use `subagent({ action: "nudge", id: "<run-id>", message: "..." })` to send a non-blocking steered nudge to a live child. If the run has already finished, nudge returns its terminal outcome and evidence without restarting it. Unqualified `subagent({ action: "status" })` includes this parent's active and remembered foreground runs plus its persisted async runs across working directories, including completed results. `subagent status` may also show the direct blocking `intercom({ action: "ask", to: "...", delivery: "steer", message: "..." })` path; use that exception only when the parent process must remain alive and cannot safely continue without the reply. `pi-intercom` remains the source of truth for connected sessions and only delivers to registered local peers.
 
 ### Three Reasons
 
 | Reason | Behavior | Use When |
 |--------|----------|----------|
-| `need_decision` | Sends a steered ask and keeps the child alive until the supervisor replies (`askTimeoutMs`, default 2 minutes) | The ephemeral child cannot safely continue without one decision, approval, or product/API/scope clarification |
-| `interview_request` | Sends a steered structured ask and keeps the child alive until the supervisor replies | The ephemeral child cannot safely continue until it receives multiple structured answers |
+| `need_decision` | Persists the question, steers the supervisor, and waits without the ordinary ask timeout | The ephemeral child cannot safely continue without one decision, approval, or product/API/scope clarification |
+| `interview_request` | Persists structured questions and waits without the ordinary ask timeout | The ephemeral child cannot safely continue until it receives multiple structured answers |
 | `progress_update` | Non-blocking, deferred/coalesced update to the supervisor | A concise material update may intentionally wait behind active supervisor work |
 
 Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally through `pi-subagents`.
 
 Intercom delivery is for live coordination and grouped completion notices. Durable subagent output still lives in `pi-subagents` result details and artifact/output paths (`savedOutputPath`, `artifactPaths`, or explicit workspace `output` files). If a grouped intercom notice says output was delivered, use it as a notification; use the artifact or explicit output path as the source of truth for long reports.
+
+### Recovering a supervisor question
+
+`need_decision` and `interview_request` save the question before notification. Supervisor or broker disconnection does not end the wait. Resume the same saved supervisor session and use:
+
+```typescript
+agent_runs({ action: "questions" })
+agent_runs({ action: "answer", id: "<run-id>", questionId: "<question-id>", message: "Use the stable API." })
+agent_runs({ action: "stop", id: "<run-id>" })
+```
+
+The full `subagent` tool also accepts `questions` and `answer`; its stop action is `interrupt`. Questions expose `awaiting_input`, `answer_pending`, `answered`, or `cancelled` independently of run completion. Ownership follows the saved supervisor session, not its cwd or display name. The live intercom reply path saves the same answer; a nudge does not resolve a question.
+
+A live waiter consumes the durable answer. If it exited, answering revives its saved Pi session with the original acceptance contract and a new run ID. Identical repeated answers do not launch duplicate work; conflicting answers leave the original intact. `stop` cancels the question and aborts any live waiter. An interrupted pre-launch revival can be recovered with the exact `continue` call shown in the answer receipt; ambiguous launch evidence is not silently retried.
+
+Question records live under the user-scoped `pi-subagents` temporary root, outside the extension checkout. Pending records are not age-cleaned, but manual or OS deletion of that root removes recovery data. Ordinary peer asks still use `askTimeoutMs` and are not durable supervisor questions.
 
 ### Example: Blocked Subagent Asks for Guidance
 
@@ -274,7 +290,7 @@ contact_supervisor({
   reason: "progress_update",
   message: "Discovered the bug is in the retry wrapper, not the API client. Fixing the wrapper will also close issue #42."
 })
-// → Progress update sent to supervisor planner
+// → Progress update accepted for supervisor planner. Delivery is deferred and coalesced; this does not confirm the supervisor has read it.
 ```
 
 ### What the Supervisor Sees
@@ -334,11 +350,11 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 | `message` | string | The decision request, optional interview note, or progress update |
 | `interview` | object | Required for `interview_request`: `{ title?, description?, questions: [...] }` |
 
-**`need_decision`** — Use only when the ephemeral child cannot safely continue without one decision, approval, or product/API/scope clarification. It sends a formatted steered ask to the supervisor and keeps the child alive until the reply arrives (`askTimeoutMs`, default 2 minutes). The reply comes back as the tool result. Includes run metadata in the message so the supervisor knows which subagent is asking.
+**`need_decision`** — Use only when the ephemeral child cannot safely continue without one decision, approval, or product/API/scope clarification. It sends a formatted steered ask to the supervisor and keeps the child alive until the reply arrives, without the ordinary intercom ask timeout. The reply comes back as the tool result. Includes run metadata in the message so the supervisor knows which subagent is asking.
 
 **`interview_request`** — Use only when the ephemeral child cannot safely continue until it receives multiple structured answers. It sends a formatted, steered agent-readable interview to the supervisor and keeps the child alive until the reply arrives. Questions use a local pi-interview-like shape: `{ id, type, question, options?, context? }` where `type` is `single`, `multi`, `text`, `image`, or `info`. `info` questions are context-only and do not need responses. The supervisor reply should be JSON with `{ "responses": [{ "id": "...", "value": ... }] }`. Parsed JSON replies are returned in `details.structuredReply`.
 
-**`progress_update`** — Sends a non-blocking update through intentionally deferred, replace-mode delivery. Returns immediately after broker acceptance. Use only for a concise material update that may wait behind active supervisor work.
+**`progress_update`** — Sends a non-blocking update through intentionally deferred, replace-mode delivery. Returns immediately after broker acceptance, not supervisor consumption. The recipient retains the latest queued milestone until delivered or superseded; waiting more than a minute does not discard it. Use only for a concise material update that may wait behind active supervisor work.
 
 ### intercom actions
 
@@ -346,13 +362,13 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`send`** — Sends a non-blocking, default-steered message to the specified session and returns broker acceptance, not a later response. It wakes idle recipients or reaches busy recipients at the next tool boundary. Use `delivery:"queue"` only when delay is intentional, and `delivery:"passive"`/`passive:true` only for human-visible breadcrumbs. `queueMode:"replace"` with a `threadId` replaces older undelivered intercom-staged messages for that thread after a short coalescing window; once a message is handed to Pi's native queue it cannot be keyed-replaced. Set `confirmSend: true` in config if you want a confirmation dialog for non-reply sends. Replies that include `replyTo` skip confirmation.
 
-**`ask`** — Sends a message and waits for the recipient to reply (`askTimeoutMs`, default 2 minutes). Reserve it for a sender process that must remain alive and cannot safely continue without the answer; use `delivery:"steer"` so a busy recipient sees it at the next tool boundary. If the target publishes `accepts_asks:false`, a default blocking ask returns promptly with `reason:"peer_idle"`, while an explicit steer ask still waits. Only one pending waiting ask is allowed per session. Passive delivery is rejected.
+**`ask`** — Sends a message and waits for the recipient to reply (`askTimeoutMs`, default 2 minutes). Reserve it for a sender process that must remain alive and cannot safely continue without the answer; use `delivery:"steer"` so a busy recipient sees it at the next tool boundary. If the target publishes `accepts_asks:false`, a default blocking ask returns promptly with `reason:"peer_busy"`, while an explicit steer ask still waits. Only one pending waiting ask is allowed per session. Passive delivery is rejected.
 
 **`reply`** — Replies to the current intercom-triggered message if there is one. Otherwise it falls back to the single unresolved inbound ask. If multiple asks are pending, pass `to` or inspect them with `pending` first. Under the hood this is still a normal `send` with the exact `replyTo` value.
 
 **`pending`** — Lists unresolved inbound asks with sender, elapsed time, a labeled `replyTo` ID, and a copy-ready `intercom({ action: "reply", ... })` call. For `pi-subagents` supervisor asks, the preview expands the run id, agent, child intercom target, and question so the parent can reply without guessing. Useful when replying after the original triggered turn.
 
-**`status`** — Shows connection status, session ID, and the same project-scoped recipient capability rows as `list`. Pass `scope:"all"` to include other projects.
+**`status`** — Shows connection status, session ID, and the same project-scoped recipient capability rows as `list`. Also shows inbound messages still queued for delivery or handed to Pi but not yet consumed. Pass `scope:"all"` to include other projects.
 
 ## Keyboard Shortcuts
 
@@ -385,7 +401,7 @@ Create `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/config.json`:
 | `brokerArgs` | `[]` | Arguments passed to `brokerCommand` before the broker script path. The built-in default runs the bundled TypeScript broker directly with Node. |
 | `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
 | `replyHint` | true | Include reply instructions in incoming asks |
-| `askTimeoutMs` | `120000` | Reply wait timeout for `ask` and blocking supervisor requests |
+| `askTimeoutMs` | `120000` | Reply wait timeout for ordinary peer `ask`; durable supervisor questions do not expire |
 | `sendTimeoutMs` | `8000` | Broker delivery-ack timeout for sends/asks |
 | `listTimeoutMs` | `5000` | Session-list response timeout |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
@@ -424,26 +440,25 @@ graph TB
         B5[UI overlays]
     end
 
-    A1 <-->|Local Socket/Pipe| B1
+    A1 <-->|Unix Socket| B1
     B1 --- B2
-    B2 <-->|Local Socket/Pipe| B3
+    B2 <-->|Unix Socket| B3
 ```
 
 The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first intercom session needs it and exits after 5 seconds when the last connected session disconnects. Clients now reconnect automatically if the broker disappears and later comes back.
 
-Messages use length-prefixed JSON over a local socket/pipe transport (4-byte length + JSON payload) to handle fragmentation properly. The protocol includes request correlation for session listing, explicit delivery failures, and validation for malformed or out-of-order messages. Session registration carries user-facing identity plus live health fields; process ID, start time, and the redundant activity timestamp are no longer part of the protocol.
+Messages use length-prefixed JSON over a local Unix socket transport (4-byte length + JSON payload) to handle fragmentation properly. The protocol includes request correlation for session listing, explicit delivery failures, and validation for malformed or out-of-order messages. Session registration carries user-facing identity plus live health fields; process ID, start time, and the redundant activity timestamp are no longer part of the protocol.
 
 Async extension work (startup, inbound flushes, reconnects, overlays, and relays) no-ops if the session shuts down or reloads before it settles.
 
 Runtime files:
-- Unix domain socket — short temp path named `pi-intercom-<hash>.sock` on macOS/Linux, keyed by `PI_CODING_AGENT_DIR` or `~/.pi/agent`; Windows uses a named pipe instead
-- `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/broker-launch.vbs` — Windows helper script used to launch the broker without a console window
+- Unix domain socket — private short temp path `pi-intercom-<hash>/broker.sock` on macOS/Linux, keyed by user ID and `PI_CODING_AGENT_DIR` or `~/.pi/agent`
 - `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/broker.pid` — Broker process ID
 - `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/config.json` — User configuration
 
 ## Design Decisions
 
-**Local IPC instead of TCP.** Same-machine only by design. `pi-intercom` uses Unix sockets on macOS/Linux and a named pipe on Windows, which keeps setup simple and avoids port management.
+**Local IPC instead of TCP.** Same-machine only by design. `pi-intercom` uses Unix sockets on macOS/Linux, which keeps setup simple and avoids port management.
 
 **Auto-spawn with file lock.** The broker starts on first connection and exits after 5 seconds idle. There is no daemon to manage. A spawn lock file, keyed by PID and timestamp, prevents duplicate brokers when multiple sessions start at once.
 
@@ -474,7 +489,7 @@ pi-subagents/
 │   │   ├── broker.ts         # Broker process
 │   │   ├── client.ts         # IntercomClient class
 │   │   ├── framing.ts        # Length-prefixed JSON protocol
-│   │   ├── paths.ts          # Platform-specific socket/pipe paths
+│   │   ├── paths.ts          # Platform-specific Unix socket paths
 │   │   └── spawn.ts          # Auto-spawn logic with lock file
 │   └── ui/
 │       ├── session-list.ts   # Session selection overlay
@@ -486,7 +501,7 @@ pi-subagents/
 
 ## Limitations
 
-- **Same machine only** — Uses local sockets/pipes, no network support
+- **Same machine only** — Uses local Unix sockets, no network support
 - **No dedicated intercom log** — Messages are kept in Pi session history, but there is no separate intercom transcript or inbox
 - **No attachments UI** — `file`, `snippet`, and `context` attachments are supported in the protocol, but not in the compose overlay
 - **Only connected sessions appear** — The list shows Pi sessions that have loaded `pi-intercom` and successfully registered with the broker, not every open Pi process on the machine

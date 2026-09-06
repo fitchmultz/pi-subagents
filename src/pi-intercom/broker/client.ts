@@ -67,7 +67,7 @@ function connectSocket(socketPath: string, timeoutMs = 500): Promise<net.Socket>
 
 async function connectBrokerSocket(): Promise<net.Socket> {
   const preferred = getBrokerSocketPath();
-  const legacy = process.platform === "win32" ? preferred : getLegacyBrokerSocketPath();
+  const legacy = getLegacyBrokerSocketPath();
   const candidates = [preferred, ...(legacy !== preferred ? [legacy] : [])];
   let lastError: Error | undefined;
   for (const candidate of candidates) {

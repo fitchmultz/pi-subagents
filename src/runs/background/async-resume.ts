@@ -281,7 +281,7 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 	};
 }
 
-export function buildRevivedAsyncTask(target: AsyncResumeTarget, message: string): string {
+export function buildRevivedAsyncTask(target: Pick<AsyncResumeTarget, "runId" | "agent" | "sessionFile">, message: string): string {
 	return [
 		"You are reviving a previous subagent conversation.",
 		"",

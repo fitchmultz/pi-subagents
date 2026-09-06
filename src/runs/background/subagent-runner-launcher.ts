@@ -11,7 +11,6 @@ function run(runnerPath: string, configPath: string): Promise<{ code: number; st
 	return new Promise((resolve) => {
 		const child = spawn(process.execPath, [runnerPath, configPath], {
 			stdio: ["ignore", "inherit", "pipe"],
-			windowsHide: true,
 		});
 		let stderr = "";
 		child.stderr.on("data", (chunk: Buffer) => {

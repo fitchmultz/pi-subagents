@@ -65,7 +65,7 @@ describe("resolveTempRootDir", () => {
 });
 
 describe("temp-root write boundaries", () => {
-	it("refuses foreground artifact writes through a symlinked configured root", { skip: process.platform === "win32" }, () => {
+	it("refuses foreground artifact writes through a symlinked configured root", () => {
 		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "pi-temp-root-boundary-"));
 		const target = path.join(scratch, "target");
 		const configuredRoot = path.join(scratch, "pi-subagents-unsafe");
@@ -86,7 +86,7 @@ describe("temp-root write boundaries", () => {
 		}
 	});
 
-	it("refuses cleanup through symlinked temp subdirectories", { skip: process.platform === "win32" }, () => {
+	it("refuses cleanup through symlinked temp subdirectories", () => {
 		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "pi-temp-cleanup-boundary-"));
 		const configuredRoot = path.join(scratch, "pi-subagents-cleanup");
 		const target = path.join(scratch, "target");

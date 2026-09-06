@@ -9,6 +9,7 @@ interface MockPiResponse {
 	stderr?: string;
 	exitCode?: number;
 	delay?: number;
+	waitForCalls?: number;
 	ignoreSignals?: boolean;
 	keepAliveAfterFinalMessageMs?: number;
 	spawnSignalResistantDescendantPidFile?: string;
@@ -63,14 +64,11 @@ export function createMockPi(): MockPi {
 	ensureDir(binDir);
 
 	const shellScriptPath = path.join(binDir, "pi");
-	const cmdScriptPath = path.join(binDir, "pi.cmd");
 	writeExecutable(shellScriptPath, `#!/bin/sh\nexec "${process.execPath}" "${SCRIPT_PATH}" "$@"\n`);
-	writeExecutable(cmdScriptPath, `@echo off\r\n"${process.execPath}" "${SCRIPT_PATH}" %*\r\n`);
 
 	let installed = false;
 	let nextSequence = 0;
 	let originalPath: string | undefined;
-	let originalArgv1: string | undefined;
 	let originalQueueEnv: string | undefined;
 
 	return {
@@ -84,10 +82,6 @@ export function createMockPi(): MockPi {
 			originalQueueEnv = process.env.MOCK_PI_QUEUE_DIR;
 			process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
 			process.env.MOCK_PI_QUEUE_DIR = queueDir;
-			if (process.platform === "win32") {
-				originalArgv1 = process.argv[1];
-				process.argv[1] = SCRIPT_PATH;
-			}
 		},
 		uninstall() {
 			if (!installed) return;
@@ -96,10 +90,6 @@ export function createMockPi(): MockPi {
 			else process.env.PATH = originalPath;
 			if (originalQueueEnv === undefined) delete process.env.MOCK_PI_QUEUE_DIR;
 			else process.env.MOCK_PI_QUEUE_DIR = originalQueueEnv;
-			if (process.platform === "win32") {
-				if (originalArgv1 === undefined) delete process.argv[1];
-				else process.argv[1] = originalArgv1;
-			}
 			try {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			} catch {}

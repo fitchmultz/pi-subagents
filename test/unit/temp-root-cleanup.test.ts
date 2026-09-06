@@ -8,6 +8,7 @@ const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-temp-root-
 process.env.PI_SUBAGENT_TEMP_ROOT = TEST_ROOT;
 const { ASYNC_DIR, TEMP_ROOT_DIR } = await import("../../src/shared/types.ts");
 const { cleanupOldRunStorage } = await import("../../src/shared/temp-root.ts");
+const { QUESTIONS_DIR, createSupervisorQuestion, saveQuestionOwner } = await import("../../src/runs/shared/supervisor-questions.ts");
 after(() => fs.rmSync(TEST_ROOT, { recursive: true, force: true }));
 
 const NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
@@ -29,6 +30,18 @@ function makeRun(id: string, state: string, old: boolean): void {
 }
 
 describe("cleanupOldRunStorage nested events", () => {
+	it("retains an unanswered question and its exited run beyond normal retention", () => {
+		const runId = "test-question-retention";
+		makeRun(runId, "failed", true);
+		saveQuestionOwner(runId, "owner");
+		createSupervisorQuestion({ runId, ownerTarget: "owner", agent: "worker", index: 0, childSessionId: "child", childTarget: "child", sessionFile: path.join(TEST_ROOT, "session.jsonl"), cwd: TEST_ROOT, pid: process.pid, reason: "need_decision", message: "Which path?" });
+		const questionRunDir = path.join(QUESTIONS_DIR, runId);
+		fs.utimesSync(questionRunDir, OLD, OLD);
+		cleanupOldRunStorage();
+		assert.equal(fs.existsSync(questionRunDir), true);
+		assert.equal(fs.existsSync(path.join(ASYNC_DIR, runId)), true);
+	});
+
 	it("removes stale routes whose root run is gone", () => {
 		const route = makeRoute("test-cleanup-gone", true);
 		cleanupOldRunStorage();
@@ -78,7 +91,7 @@ describe("cleanupOldRunStorage nested events", () => {
 		assert.equal(fs.existsSync(dir), false);
 	});
 
-	it("fails closed when route metadata cannot be read", { skip: process.platform === "win32" }, () => {
+	it("fails closed when route metadata cannot be read", () => {
 		const route = makeRoute("test-cleanup-eacces", true);
 		const routeFile = path.join(route, "route.json");
 		fs.chmodSync(routeFile, 0o000);

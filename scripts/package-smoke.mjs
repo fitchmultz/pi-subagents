@@ -20,12 +20,8 @@ function fail(message) {
 	process.exit(1);
 }
 
-function commandName(base) {
-	return process.platform === "win32" ? `${base}.cmd` : base;
-}
-
 function run(command, args, cwd = process.cwd()) {
-	const result = spawnSync(commandName(command), args, {
+	const result = spawnSync(command, args, {
 		cwd,
 		encoding: "utf-8",
 		stdio: ["ignore", "pipe", "pipe"],

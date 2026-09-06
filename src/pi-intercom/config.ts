@@ -18,7 +18,7 @@ export interface IntercomConfig {
   /** Show reply hint in incoming messages (default: true) */
   replyHint: boolean;
 
-  /** How long `ask`/supervisor ask waits for a reply before giving up, in ms (default: 120000 = 2 minutes). */
+  /** How long ordinary intercom `ask` waits for a reply before giving up, in ms (default: 120000 = 2 minutes). */
   askTimeoutMs: number;
 
   /** How long the client waits for the broker to acknowledge message delivery, in ms (default: 8000). */

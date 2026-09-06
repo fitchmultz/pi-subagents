@@ -410,6 +410,7 @@ export interface SingleResult {
 	artifactPaths?: ArtifactPaths;
 	truncation?: TruncationResult;
 	finalOutput?: string;
+	initialOutput?: string;
 	outputMode?: OutputMode;
 	savedOutputPath?: string;
 	outputReference?: SavedOutputReference;
@@ -452,6 +453,7 @@ export interface Details {
 	intercomTargets?: string[];
 	managementControl?: ManagementControl;
 	managementControls?: ManagementControl[];
+	questions?: import("../runs/shared/supervisor-questions.ts").SupervisorQuestionView[];
 	intercomDelivery?: {
 		delivered: boolean;
 		to: string;
@@ -505,6 +507,7 @@ export type AsyncResultTerminalState = "complete" | "failed" | "paused";
 
 export interface AsyncResultChild {
 	agent?: string;
+	exitCode?: number | null;
 	output?: string;
 	error?: string;
 	success?: boolean;
@@ -876,6 +879,7 @@ export interface RunSyncOptions {
 	registerTimeoutExtension?: (extend: TimeoutExtensionCallback) => void;
 	allowIntercomDetach?: boolean;
 	onDetachedComplete?: (result: SingleResult) => void | Promise<void>;
+	onRunSettled?: () => void;
 	intercomEvents?: IntercomEventBus;
 	onUpdate?: (r: SubagentExecutionResult) => void;
 	onControlEvent?: (event: ControlEvent) => void;
@@ -991,7 +995,7 @@ export function resolveTempScopeId(options?: {
 		// Fall through to home-directory-based scoping.
 	}
 
-	const homedir = env.USERPROFILE ?? env.HOME;
+	const homedir = env.HOME;
 	if (homedir) return `home-${sanitizeTempScopeSegment(homedir)}`;
 
 	const resolveHomedir = options && Object.hasOwn(options, "homedir")
@@ -1036,7 +1040,7 @@ export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
 export const POLL_INTERVAL_MS = 1000;
 export const MAX_WIDGET_JOBS = 4;
 export const DEFAULT_SUBAGENT_MAX_DEPTH = 1;
-export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "doctor"] as const;
+export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "questions", "answer", "doctor"] as const;
 
 export const DEFAULT_FORK_PREAMBLE =
 	"You are a delegated subagent running from a fork of the parent session. " +

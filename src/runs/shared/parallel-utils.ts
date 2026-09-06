@@ -23,9 +23,9 @@ export interface RunnerSubagentStep {
 	inheritSkills: boolean;
 	skills?: string[];
 	outputPath?: string;
+	output?: string | false;
 	outputMode?: "inline" | "file-only";
 	outputPathFromAgentDefault?: boolean;
-	defaultOutputSource?: string;
 	sessionFile?: string;
 	maxSubagentDepth?: number;
 	maxExecutionTimeMs?: number;
@@ -41,6 +41,7 @@ export interface RunnerSubagentStep {
 
 export interface ParallelStepGroup {
 	parallel: RunnerSubagentStep[];
+	cwd?: string;
 	concurrency?: number;
 	failFast?: boolean;
 	worktree?: boolean;

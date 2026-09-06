@@ -38,12 +38,10 @@ class IntercomBroker {
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true });
     this.socketPath = prepareBrokerSocketPath();
-    if (process.platform !== "win32") {
-      try {
-        unlinkSync(this.socketPath);
-      } catch {
-        // A clean startup has no stale socket to remove.
-      }
+    try {
+      unlinkSync(this.socketPath);
+    } catch {
+      // A clean startup has no stale socket to remove.
     }
     this.server = net.createServer(this.handleConnection.bind(this));
     this.server.on("error", (error) => {
@@ -54,7 +52,7 @@ class IntercomBroker {
 
   start(): void {
     this.server.listen(this.socketPath, () => {
-      if (process.platform !== "win32") chmodSync(this.socketPath, 0o600);
+      chmodSync(this.socketPath, 0o600);
       writeFileSync(PID_PATH, String(process.pid), { mode: 0o600 });
       console.log(`Intercom broker started (pid: ${process.pid})`);
     });
@@ -391,12 +389,10 @@ class IntercomBroker {
       session.socket.end();
     }
     this.sessions.clear();
-    if (process.platform !== "win32") {
-      try {
-        unlinkSync(this.socketPath);
-      } catch {
-        // The socket may already be gone if shutdown started after a disconnect.
-      }
+    try {
+      unlinkSync(this.socketPath);
+    } catch {
+      // The socket may already be gone if shutdown started after a disconnect.
     }
     try {
       unlinkSync(PID_PATH);

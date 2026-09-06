@@ -47,9 +47,10 @@ import {
 	formatResourceLimitExceeded,
 } from "../../shared/utils.ts";
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
-import { evaluateCompletionMutationGuard, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
+import { hasCompletedMutationToolCall, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
-import { attachPostExitStdioGuard, isChildTreeAlive, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
+import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
+import { saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
@@ -93,6 +94,7 @@ import {
 	createFinalizationTurn,
 	evaluateAcceptance,
 	formatAcceptanceFinalizationPrompt,
+	resolveFinalizationOutput,
 	formatAcceptancePrompt,
 	resolveEffectiveAcceptance,
 	shouldRunAcceptanceFinalization,
@@ -246,12 +248,14 @@ function snapshotResult(result: SingleResult, progress: AgentProgress): SingleRe
 	};
 }
 
+type AttemptOptions = RunSyncOptions & { onIntercomDetach?: (result: SingleResult) => void };
+
 async function runSingleAttempt(
 	runtimeCwd: string,
 	agent: AgentConfig,
 	task: string,
 	model: string | undefined,
-	options: RunSyncOptions,
+	options: AttemptOptions,
 	shared: {
 		sessionEnabled: boolean;
 		systemPrompt: string;
@@ -260,10 +264,14 @@ async function runSingleAttempt(
 		artifactPaths?: ArtifactPaths;
 		attemptNotes: string[];
 		outputSnapshot?: SingleOutputSnapshot;
+		previousOutput?: string;
 		originalTask?: string;
 		completionPolicy: CompletionPolicy;
 	},
 ): Promise<SingleResult> {
+	if (options.signal?.aborted) {
+		return { agent: agent.name, task, exitCode: 1, messages: [], usage: emptyUsage(), error: "Subagent cancelled." };
+	}
 	const modelArg = applyThinkingSuffix(model, agent.thinking);
 	let args: string[];
 	let sharedEnv: Record<string, string | undefined>;
@@ -393,98 +401,41 @@ async function runSingleAttempt(
 			cwd: options.cwd ?? runtimeCwd,
 			env: spawnEnv,
 			stdio: ["ignore", "pipe", "pipe"],
-			detached: process.platform !== "win32",
-			windowsHide: true,
+			detached: true,
 		});
 		let buf = "";
 		let processClosed = false;
 		let settled = false;
 		let detached = false;
-		let intercomStarted = false;
+		const blockingIntercomCalls = new Set<string>();
+		const lifecycle = attachChildProcessLifecycle(proc);
 		let assistantError: string | undefined;
 		let timedOut = false;
 		let resourceLimited = false;
 		let timeoutTimer: NodeJS.Timeout | undefined;
-		let timeoutEscalationTimer: NodeJS.Timeout | undefined;
 		let resourceLimitTimer: NodeJS.Timeout | undefined;
-		let resourceLimitEscalationTimer: NodeJS.Timeout | undefined;
 		let removeAbortListener: (() => void) | undefined;
 		let removeInterruptListener: (() => void) | undefined;
 		let activityTimer: NodeJS.Timeout | undefined;
 		let unsubscribeIntercomDetach: (() => void) | undefined;
-		let promiseResolved = false;
-		const resolveOuter = (code: number) => {
-			if (promiseResolved) return;
-			promiseResolved = true;
-			resolve(code);
-		};
 
 		const detachForIntercom = () => {
 			detached = true;
-			result.detached = true;
-			result.detachedReason = "intercom coordination";
-			progress.status = "detached";
-			progress.activityState = undefined;
-			progress.durationMs = Date.now() - startTime;
-			result.progressSummary = {
-				toolCount: progress.toolCount,
-				tokens: progress.tokens,
-				durationMs: progress.durationMs,
-			};
 			unsubscribeIntercomDetach?.();
-			resolveOuter(-2);
+			options.onIntercomDetach?.({
+				...snapshotResult(result, { ...snapshotProgress(progress), status: "detached" }),
+				detached: true,
+				detachedReason: "intercom coordination",
+				sessionFile: options.sessionFile,
+				finalOutput: "Detached for intercom coordination.",
+				progressSummary: { toolCount: progress.toolCount, tokens: progress.tokens, durationMs: Date.now() - startTime },
+			});
 		};
 
-		// If the child emits a terminal assistant stop but never exits,
-		// give it a short grace period to flush naturally, then clean it up.
-		const FINAL_STOP_GRACE_MS = 1000;
-		const HARD_KILL_MS = 3000;
-		let childExited = false;
-		let terminationRequested = false;
-		let forcedTerminationSignal = false;
 		let cleanTerminalAssistantStopReceived = false;
-		let finalDrainTimer: NodeJS.Timeout | undefined;
-		let finalHardKillTimer: NodeJS.Timeout | undefined;
-		const forceTerminate = (signal: NodeJS.Signals, graceMs = HARD_KILL_MS) => {
-			terminationRequested = true;
-			trySignalChildTree(proc, signal);
-			const timer = setTimeout(() => {
-				if (!settled && !childExited && isChildTreeAlive(proc)) trySignalChildTree(proc, "SIGKILL");
-			}, graceMs);
-			timer.unref?.();
-		};
-		const clearFinalDrainTimers = () => {
-			if (finalDrainTimer) {
-				clearTimeout(finalDrainTimer);
-				finalDrainTimer = undefined;
-			}
-			if (finalHardKillTimer) {
-				clearTimeout(finalHardKillTimer);
-				finalHardKillTimer = undefined;
-			}
-		};
-		const startFinalDrain = () => {
-			if (childExited || finalDrainTimer || settled || processClosed) return;
-			terminationRequested = true;
-			finalDrainTimer = setTimeout(() => {
-				if (settled || processClosed || childExited) return;
-				const termSent = trySignalChildTree(proc, "SIGTERM");
-				if (!termSent) return;
-				forcedTerminationSignal = true;
-				if (!cleanTerminalAssistantStopReceived && !assistantError) {
-					result.error = result.error ?? `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
-				}
-				finalHardKillTimer = setTimeout(() => {
-					finalHardKillTimer = undefined;
-					if (!settled && !childExited && isChildTreeAlive(proc)) forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
-				}, HARD_KILL_MS);
-				finalHardKillTimer.unref?.();
-			}, FINAL_STOP_GRACE_MS);
-			finalDrainTimer.unref?.();
-		};
 
 		unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
-			if (!options.allowIntercomDetach || detached || processClosed || !intercomStarted) return;
+			if (!options.allowIntercomDetach || detached || processClosed || lifecycle.stopping || blockingIntercomCalls.size === 0) return;
 			if (!payload || typeof payload !== "object") return;
 			const requestId = (payload as { requestId?: unknown }).requestId;
 			if (typeof requestId !== "string" || requestId.length === 0) return;
@@ -495,8 +446,6 @@ async function runSingleAttempt(
 		const finish = (code: number) => {
 			if (settled) return;
 			settled = true;
-			clearFinalDrainTimers();
-			clearStdioGuard();
 			if (timeoutTimer) {
 				clearTimeout(timeoutTimer);
 				timeoutTimer = undefined;
@@ -512,7 +461,7 @@ async function runSingleAttempt(
 			unsubscribeIntercomDetach?.();
 			removeAbortListener?.();
 			removeInterruptListener?.();
-			resolveOuter(code);
+			resolve(code);
 		};
 
 		const drainPendingControlEvents = (): ControlEvent[] | undefined => {
@@ -581,12 +530,7 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
-			terminationRequested = true;
-			trySignalChildTree(proc, "SIGINT");
-			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!settled && !childExited) forceTerminate("SIGTERM");
-			}, 1000);
-			resourceLimitEscalationTimer.unref?.();
+			lifecycle.terminate();
 		};
 
 		const triggerResourceLimit = (kind: "maxExecutionTimeMs" | "maxTokens", limit: number, observed?: number) => {
@@ -601,16 +545,11 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
-			terminationRequested = true;
-			trySignalChildTree(proc, "SIGINT");
-			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!settled && !childExited) forceTerminate("SIGTERM");
-			}, 1000);
-			resourceLimitEscalationTimer.unref?.();
+			lifecycle.terminate();
 		};
 
 		const emitUpdateSnapshot = (text: string) => {
-			if (!options.onUpdate || processClosed || result.detached) return;
+			if (!options.onUpdate || processClosed) return;
 			const progressSnapshot = snapshotProgress(progress);
 			const resultSnapshot = snapshotResult(result, progressSnapshot);
 			const controlEvents = drainPendingControlEvents();
@@ -641,6 +580,8 @@ async function runSingleAttempt(
 				return;
 			}
 			if (!evt || typeof evt !== "object") return;
+			lifecycle.observeEvent(claudeCodeInvocation && evt.type === "result" ? "agent_settled" : evt.type);
+			if (evt.type === "agent_settled") blockingIntercomCalls.clear();
 			if (claudeCodeInvocation && evt.type === "result") {
 				const resultEvent = evt as ClaudeCodeResultEvent;
 				if (options.structuredOutput && resultEvent.structured_output !== undefined) {
@@ -681,8 +622,9 @@ async function runSingleAttempt(
 				const toolArgs = evt.args && typeof evt.args === "object" && !Array.isArray(evt.args)
 					? evt.args as Record<string, unknown>
 					: {};
-				if (options.allowIntercomDetach && (evt.toolName === "intercom" || evt.toolName === "contact_supervisor")) {
-					intercomStarted = true;
+				if ((evt.toolName === "intercom" && toolArgs.action === "ask")
+					|| (evt.toolName === "contact_supervisor" && (toolArgs.reason === "need_decision" || toolArgs.reason === "interview_request"))) {
+					blockingIntercomCalls.add(evt.toolCallId ?? evt.toolName);
 				}
 				progress.toolCount++;
 				progress.currentTool = evt.toolName;
@@ -694,6 +636,7 @@ async function runSingleAttempt(
 			}
 
 			if (evt.type === "tool_execution_end") {
+				blockingIntercomCalls.delete(evt.toolCallId ?? evt.toolName ?? "");
 				if (progress.currentTool) {
 					progress.recentTools.push({
 						tool: progress.currentTool,
@@ -739,15 +682,11 @@ async function runSingleAttempt(
 					if (evt.message.errorMessage) assistantError = evt.message.errorMessage;
 					const assistantText = extractTextFromContent(evt.message.content);
 					appendRecentOutput(progress, assistantText.split("\n").slice(-10));
-					// Final assistant message: start the exit drain window.
 					const stopReason = (evt.message as { stopReason?: string }).stopReason;
 					const hasToolCall = Array.isArray(evt.message.content)
 						&& evt.message.content.some((part) => (part as { type?: string }).type === "toolCall");
-					if (stopReason === "stop" && !hasToolCall) {
-						if (!evt.message.errorMessage && assistantText.trim()) assistantError = undefined;
-						cleanTerminalAssistantStopReceived ||= !evt.message.errorMessage;
-						startFinalDrain();
-					}
+					cleanTerminalAssistantStopReceived = stopReason === "stop" && !hasToolCall && !evt.message.errorMessage;
+					if (cleanTerminalAssistantStopReceived && assistantText.trim()) assistantError = undefined;
 				} else if (evt.message.role === "toolResult") {
 					const resultText = extractTextFromContent(evt.message.content);
 					appendRecentOutput(progress, resultText.split("\n").slice(-10));
@@ -793,7 +732,6 @@ async function runSingleAttempt(
 
 		let stderrBuf = "";
 
-		const clearStdioGuard = attachPostExitStdioGuard(proc, { idleMs: 2000, hardMs: 8000 });
 		proc.stdout.on("data", (d) => {
 			buf += d.toString();
 			const lines = buf.split("\n");
@@ -803,65 +741,19 @@ async function runSingleAttempt(
 		proc.stderr.on("data", (d) => {
 			stderrBuf += d.toString();
 		});
-		proc.on("exit", () => {
-			childExited = true;
-			if (terminationRequested && isChildTreeAlive(proc)) {
-				forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
-			}
-		});
 		proc.on("close", (code, signal) => {
-			clearFinalDrainTimers();
-			clearStdioGuard();
 			cleanupTempDir(tempDir);
 			processClosed = true;
 			if (buf.trim()) processLine(buf);
 			if (!result.error && assistantError) result.error = assistantError;
-			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !result.error;
+			const forcedDrainAfterFinalSuccess = lifecycle.settledCleanup && cleanTerminalAssistantStopReceived && !result.error;
 			if (code !== 0 && stderrBuf.trim() && !result.error && !forcedDrainAfterFinalSuccess) {
 				result.error = stderrBuf.trim();
 			}
-			const finalCode = forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (code ?? 1) : (code ?? 0);
-			if (detached) {
-				result.exitCode = finalCode;
-				let finalized: SingleResult;
-				try {
-					finalized = finalizeCompletedAttempt();
-				} catch (error) {
-					result.exitCode = 1;
-					result.error = `Detached completion finalization failed: ${error instanceof Error ? error.message : String(error)}`;
-					result.finalOutput = result.error;
-					progress.status = "failed";
-					progress.error = result.error;
-					finalized = result;
-				}
-				const completed = { ...finalized };
-				delete completed.detached;
-				delete completed.detachedReason;
-				artifactOutputByResult.set(completed, artifactOutputByResult.get(finalized) ?? finalized.finalOutput ?? "");
-				acceptanceOutputByResult.set(completed, acceptanceOutputByResult.get(finalized) ?? finalized.finalOutput ?? "");
-				void finalizeDetachedCompletion(completed).then(
-					(completedResult) => {
-						try { options.onDetachedComplete?.(completedResult); } catch (error) {
-							console.error("Failed to deliver detached foreground completion:", error);
-						}
-					},
-					(error) => {
-						completed.exitCode = 1;
-						completed.error = `Detached completion finalization failed: ${error instanceof Error ? error.message : String(error)}`;
-						completed.finalOutput = completed.error;
-						try { options.onDetachedComplete?.(completed); } catch (deliveryError) {
-							console.error("Failed to deliver detached foreground completion:", deliveryError);
-						}
-					},
-				);
-				finish(-2);
-				return;
-			}
+			const finalCode = forcedDrainAfterFinalSuccess ? 0 : lifecycle.stopping || signal ? (code ?? 1) : (code ?? 0);
 			finish(finalCode);
 		});
 		proc.on("error", (error) => {
-			clearFinalDrainTimers();
-			clearStdioGuard();
 			cleanupTempDir(tempDir);
 			if (!result.error) {
 				result.error = error instanceof Error ? error.message : String(error);
@@ -872,11 +764,10 @@ async function runSingleAttempt(
 		if (options.signal) {
 			const kill = () => {
 				if (processClosed) return;
-				if (options.allowIntercomDetach && intercomStarted && !detached) {
-					detachForIntercom();
-					return;
-				}
-				forceTerminate("SIGTERM");
+				interruptedByControl = false;
+				result.interrupted = false;
+				result.error = "Subagent cancelled.";
+				lifecycle.terminate();
 			};
 			if (options.signal.aborted) kill();
 			else {
@@ -898,12 +789,7 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
-			terminationRequested = true;
-			trySignalChildTree(proc, "SIGINT");
-			timeoutEscalationTimer = setTimeout(() => {
-				if (!settled && !childExited) forceTerminate("SIGTERM");
-			}, 1000);
-			timeoutEscalationTimer.unref?.();
+			lifecycle.terminate();
 		};
 		const scheduleTimeout = () => {
 			if (timeoutTimer) {
@@ -939,7 +825,7 @@ async function runSingleAttempt(
 
 		if (options.interruptSignal) {
 			const interrupt = () => {
-				if (processClosed || settled || timedOut || resourceLimited) return;
+				if (options.signal?.aborted || processClosed || settled || timedOut || resourceLimited) return;
 				interruptedByControl = true;
 				progress.status = "running";
 				progress.durationMs = Date.now() - startTime;
@@ -947,11 +833,7 @@ async function runSingleAttempt(
 				result.finalOutput = "Interrupted. Waiting for explicit next action.";
 				progress.activityState = undefined;
 				fireUpdate();
-				terminationRequested = true;
-				trySignalChildTree(proc, "SIGINT");
-				setTimeout(() => {
-					if (!settled && !childExited) forceTerminate("SIGTERM");
-				}, 1000).unref?.();
+				lifecycle.terminate();
 			};
 			if (options.interruptSignal.aborted) interrupt();
 			else {
@@ -1011,11 +893,6 @@ async function runSingleAttempt(
 		};
 		return result;
 	}
-	if (result.detached) {
-		result.exitCode = 0;
-		result.finalOutput = "Detached for intercom coordination.";
-		return snapshotResult(result, snapshotProgress(progress));
-	}
 
 	return finalizeCompletedAttempt();
 
@@ -1070,20 +947,15 @@ async function runSingleAttempt(
 	};
 
 	const acceptanceOutput = getFinalOutput(result.messages ?? []);
-	let fullOutput = stripAcceptanceReport(acceptanceOutput);
-	const completionGuard = result.exitCode === 0 && !result.error && shared.completionPolicy === "mutation-guard"
-		? evaluateCompletionMutationGuard({
-			agent: agent.name,
-			task: shared.originalTask ?? task,
-			messages: result.messages ?? [],
-			tools: agent.tools,
-			mcpDirectTools: agent.mcpDirectTools,
-		})
-		: undefined;
-	const completionGuardTriggered = completionGuard?.triggered === true && !observedCompletedMutation;
+	let fullOutput = shared.previousOutput === undefined
+		? stripAcceptanceReport(acceptanceOutput)
+		: resolveFinalizationOutput(acceptanceOutput, shared.previousOutput);
+	const completionGuardTriggered = result.exitCode === 0 && !result.error
+		&& shared.completionPolicy === "mutation-guard"
+		&& !observedCompletedMutation && !hasCompletedMutationToolCall(result.messages ?? []);
 	if (completionGuardTriggered) {
 		result.exitCode = 1;
-		result.error = "Subagent completed without making edits for an implementation task.\nIt appears to have returned planning or scratchpad output instead of applying changes.";
+		result.error = "Subagent completed without making edits required by completionGuard: true.\nUse an acceptance contract when a valid no-op is allowed.";
 		progress.status = "failed";
 		progress.error = result.error;
 		emitControlEvent(buildControlEvent({
@@ -1093,7 +965,7 @@ async function runSingleAttempt(
 			agent: agent.name,
 			index: options.index,
 			ts: Date.now(),
-			message: `${agent.name} completed without making edits for an implementation task`,
+			message: `${agent.name} completed without making edits required by completionGuard: true`,
 			reason: "completion_guard",
 		}));
 	}
@@ -1109,16 +981,7 @@ async function runSingleAttempt(
 			progress.error = result.error;
 		}
 		if (resolvedOutput.savedPath) {
-			// Explicit caller output paths persist in the workspace; only agent-default
-			// materialized files (and never file-only outputs) are consumed after capture.
-			const cleanup = (options.persistOutputFile || options.outputMode === "file-only")
-				? undefined
-				: cleanupSingleOutputFile(resolvedOutput.savedPath, resolvedOutput.fullOutput, shared.outputSnapshot);
-			result.outputCleanup = cleanup;
-			result.outputReference = cleanup
-				? formatConsumedOutputReference(resolvedOutput.savedPath, fullOutput, cleanup)
-				: formatSavedOutputReference(resolvedOutput.savedPath, fullOutput);
-			if (cleanup && cleanup.action !== "skipped") result.savedOutputPath = undefined;
+			result.outputReference = formatSavedOutputReference(resolvedOutput.savedPath, fullOutput);
 		}
 	}
 	artifactOutputByResult.set(result, fullOutput);
@@ -1128,87 +991,67 @@ async function runSingleAttempt(
 		? result.outputReference.message
 		: fullOutput;
 	result.controlEvents = allControlEvents.length ? allControlEvents : undefined;
-	if (options.onUpdate && !result.detached) {
-		const finalText = result.finalOutput || result.error || "(no output)";
-		const progressSnapshot = snapshotProgress(progress);
-		const resultSnapshot = snapshotResult(result, progressSnapshot);
-		options.onUpdate({
-			content: [{ type: "text", text: finalText }],
-			details: {
-				mode: "single",
-				results: [resultSnapshot],
-				progress: [progressSnapshot],
-				controlEvents: allControlEvents.length ? allControlEvents : undefined,
-			},
-		});
-	}
 	return result;
 	}
+}
 
-	async function finalizeDetachedCompletion(completed: SingleResult): Promise<SingleResult> {
-		const acceptance = resolveEffectiveAcceptance({ explicit: options.acceptance });
-		const output = acceptanceOutputByResult.get(completed) ?? completed.finalOutput ?? "";
-		const initialAcceptance = await evaluateAcceptance({
-			acceptance: shouldRunAcceptanceFinalization(acceptance) ? acceptanceSelfReviewConfig(acceptance) : acceptance,
-			governing: acceptance,
-			output,
-			cwd: options.cwd ?? runtimeCwd,
-		});
-		completed.acceptance = initialAcceptance;
-		if (shouldRunAcceptanceFinalization(acceptance) && completed.exitCode === 0 && !completed.interrupted) {
-			completed.acceptance = await runAcceptanceFinalizationLoop({
-				runtimeCwd,
-				agent,
-				result: completed,
-				initialLedger: initialAcceptance,
-				initialOutput: output,
-				acceptance,
-				options,
-				systemPrompt: shared.systemPrompt,
-				resolvedSkillNames: shared.resolvedSkillNames,
-				skillsWarning: shared.skillsWarning,
-			});
-		}
-		const failure = acceptanceFailureMessage(completed.acceptance);
-		stripAcceptanceReportsFromMessages(completed.messages ?? []);
-		if (failure && completed.acceptance.explicit && completed.exitCode === 0 && !completed.interrupted) {
-			completed.exitCode = 1;
-			completed.error = completed.error ? `${completed.error}\n${failure}` : failure;
-			if (completed.progress) {
-				completed.progress.status = "failed";
-				completed.progress.error = completed.error;
-			}
-		}
-		const lastAttempt = completed.modelAttempts?.[completed.modelAttempts.length - 1];
-		if (lastAttempt) {
-			lastAttempt.success = completed.exitCode === 0 && !completed.error;
-			lastAttempt.exitCode = completed.exitCode;
-			lastAttempt.error = completed.error;
-			lastAttempt.usage = { ...completed.usage };
-		}
-		if (completed.artifactPaths) {
-			writeArtifact(completed.artifactPaths.outputPath, artifactOutputByResult.get(completed) ?? completed.finalOutput ?? "");
-			writeMetadata(completed.artifactPaths.metadataPath, {
-				runId: options.runId,
-				agent: completed.agent,
-				task: completed.task,
-				exitCode: completed.exitCode,
-				usage: completed.usage,
-				model: completed.model,
-				attemptedModels: completed.attemptedModels,
-				modelAttempts: completed.modelAttempts,
-				durationMs: completed.progressSummary?.durationMs,
-				toolCount: completed.progressSummary?.toolCount,
-				error: completed.error,
-				skills: completed.skills,
-				skillsWarning: completed.skillsWarning,
-				timestamp: Date.now(),
-			});
-		}
-		const truncation = truncateOutput(completed.finalOutput ?? "", { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput }, completed.artifactPaths?.outputPath);
-		completed.truncation = truncation.truncated ? truncation : undefined;
-		return completed;
+function publishFinalResult(result: SingleResult, options: RunSyncOptions): void {
+	const fullOutput = artifactOutputByResult.get(result) ?? result.finalOutput ?? "";
+	if (result.savedOutputPath && result.exitCode === 0) {
+		const cleanup = options.persistOutputFile || options.outputMode === "file-only"
+			? undefined
+			: cleanupSingleOutputFile(result.savedOutputPath, fullOutput, undefined);
+		result.outputCleanup = cleanup;
+		result.outputReference = cleanup
+			? formatConsumedOutputReference(result.savedOutputPath, fullOutput, cleanup)
+			: formatSavedOutputReference(result.savedOutputPath, fullOutput);
+		if (cleanup && cleanup.action !== "skipped") result.savedOutputPath = undefined;
+		if (options.outputMode === "file-only") result.finalOutput = result.outputReference.message;
 	}
+	if (result.progress) {
+		result.progress.status = result.interrupted ? "paused" : result.exitCode === 0 ? "completed" : "failed";
+		result.progress.error = result.error;
+		result.progress.tokens = result.usage.input + result.usage.output;
+		result.progress.turnCount = result.usage.turns;
+		result.progress.toolCount = result.progressSummary?.toolCount ?? result.progress.toolCount;
+		result.progress.durationMs = result.progressSummary?.durationMs ?? result.progress.durationMs;
+	}
+	if (result.artifactPaths) {
+		writeArtifact(result.artifactPaths.outputPath, fullOutput);
+		writeMetadata(result.artifactPaths.metadataPath, {
+			runId: options.runId,
+			agent: result.agent,
+			task: result.task,
+			exitCode: result.exitCode,
+			interrupted: result.interrupted,
+			timedOut: result.timedOut,
+			resourceLimitExceeded: result.resourceLimitExceeded,
+			usage: result.usage,
+			model: result.model,
+			attemptedModels: result.attemptedModels,
+			modelAttempts: result.modelAttempts,
+			durationMs: result.progressSummary?.durationMs,
+			toolCount: result.progressSummary?.toolCount,
+			error: result.error,
+			skills: result.skills,
+			skillsWarning: result.skillsWarning,
+			acceptance: result.acceptance,
+			initialOutput: result.initialOutput,
+			timestamp: Date.now(),
+		});
+	}
+	const truncation = truncateOutput(result.finalOutput ?? "", { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput }, result.artifactPaths?.outputPath);
+	result.truncation = truncation.truncated ? truncation : undefined;
+	const progress = result.progress ? snapshotProgress(result.progress) : undefined;
+	options.onUpdate?.({
+		content: [{ type: "text", text: result.finalOutput || result.error || "(no output)" }],
+		details: {
+			mode: "single",
+			results: [progress ? snapshotResult(result, progress) : { ...result }],
+			progress: progress ? [progress] : undefined,
+			controlEvents: result.controlEvents,
+		},
+	});
 }
 
 async function runAcceptanceFinalizationLoop(input: {
@@ -1218,11 +1061,12 @@ async function runAcceptanceFinalizationLoop(input: {
 	initialLedger: AcceptanceLedger;
 	initialOutput: string;
 	acceptance: ResolvedAcceptanceConfig;
-	options: RunSyncOptions;
+	options: AttemptOptions;
 	systemPrompt: string;
 	resolvedSkillNames?: string[];
 	skillsWarning?: string;
 }): Promise<AcceptanceLedger> {
+	input.result.initialOutput = artifactOutputByResult.get(input.result) ?? input.result.finalOutput ?? "";
 	const sessionFile = input.result.sessionFile ?? input.options.sessionFile;
 	const maxTurns = input.acceptance.finalization.maxTurns;
 	const turns: AcceptanceFinalizationTurn[] = [];
@@ -1244,12 +1088,9 @@ async function runAcceptanceFinalizationLoop(input: {
 			maxTurns,
 			...(previousFailure ? { previousFailure } : {}),
 		});
-		const finalizationOptions: RunSyncOptions = { ...input.options, sessionFile, outputMode: "inline" };
+		const finalizationOptions: AttemptOptions = { ...input.options, sessionFile, outputMode: "inline" };
 		delete finalizationOptions.sessionDir;
-		delete finalizationOptions.outputPath;
 		delete finalizationOptions.structuredOutput;
-		delete finalizationOptions.onUpdate;
-		finalizationOptions.allowIntercomDetach = false;
 		const finalizationResult = await runSingleAttempt(
 			input.runtimeCwd,
 			input.agent,
@@ -1264,8 +1105,18 @@ async function runAcceptanceFinalizationLoop(input: {
 				attemptNotes: [],
 				originalTask: prompt,
 				completionPolicy: "acceptance-contract",
+				// An existing handoff file remains authoritative during review.
+				outputSnapshot: undefined,
+				previousOutput: artifactOutputByResult.get(input.result) ?? input.result.finalOutput,
 			},
 		);
+		(input.result.modelAttempts ??= []).push({
+			model: finalizationResult.model ?? input.result.model ?? "default",
+			success: finalizationResult.exitCode === 0 && !finalizationResult.error,
+			exitCode: finalizationResult.exitCode,
+			error: finalizationResult.error,
+			usage: { ...finalizationResult.usage },
+		});
 		sumUsage(input.result.usage, finalizationResult.usage);
 		input.result.progressSummary = {
 			toolCount: (input.result.progressSummary?.toolCount ?? 0) + (finalizationResult.progressSummary?.toolCount ?? 0),
@@ -1276,16 +1127,28 @@ async function runAcceptanceFinalizationLoop(input: {
 			input.result.controlEvents = [...(input.result.controlEvents ?? []), ...finalizationResult.controlEvents];
 		}
 		const rawOutput = acceptanceOutputByResult.get(finalizationResult) ?? getFinalOutput(finalizationResult.messages ?? []) ?? finalizationResult.finalOutput ?? "";
+		input.result.messages = [...(input.result.messages ?? []), ...(finalizationResult.messages ?? [])];
 		if (finalizationResult.exitCode !== 0 || finalizationResult.error || finalizationResult.detached || finalizationResult.interrupted) {
+			input.result.interrupted = finalizationResult.interrupted;
+			input.result.timedOut = finalizationResult.timedOut;
+			input.result.resourceLimitExceeded = finalizationResult.resourceLimitExceeded;
+			input.result.exitCode = finalizationResult.exitCode;
+			input.result.error = finalizationResult.error;
 			const message = finalizationResult.error ?? "Acceptance finalization turn did not complete successfully.";
 			turns.push(createFinalizationProcessFailureTurn({ turn, prompt, rawOutput, message }));
 			return buildFinalizationProcessFailureLedger({ initialLedger: input.initialLedger, turns, maxTurns, message });
 		}
+		input.result.finalOutput = finalizationResult.finalOutput;
+		input.result.savedOutputPath = finalizationResult.savedOutputPath;
+		input.result.outputReference = finalizationResult.outputReference;
+		input.result.outputSaveError = finalizationResult.outputSaveError;
+		artifactOutputByResult.set(input.result, artifactOutputByResult.get(finalizationResult) ?? finalizationResult.finalOutput ?? "");
 		const selfReviewLedger = await evaluateAcceptance({
 			acceptance: selfReviewAcceptance,
 			governing: input.acceptance,
 			output: rawOutput,
 			cwd: input.options.cwd ?? input.runtimeCwd,
+			signal: AbortSignal.any([input.options.signal, input.options.interruptSignal].filter((signal) => signal !== undefined)),
 		});
 		authoritativeLedger = selfReviewLedger;
 		turns.push(createFinalizationTurn({ turn, prompt, rawOutput, ledger: selfReviewLedger }));
@@ -1297,6 +1160,7 @@ async function runAcceptanceFinalizationLoop(input: {
 					acceptance: input.acceptance,
 					output: rawOutput,
 					cwd: input.options.cwd ?? input.runtimeCwd,
+					signal: AbortSignal.any([input.options.signal, input.options.interruptSignal].filter((signal) => signal !== undefined)),
 				});
 			return attachFinalizationToLedger({ initialLedger: input.initialLedger, authoritativeLedger, turns, status: "completed", maxTurns });
 		}
@@ -1314,6 +1178,37 @@ export async function runSync(
 	agentName: string,
 	task: string,
 	options: RunSyncOptions,
+): Promise<SingleResult> {
+	let detached = false;
+	const question = Promise.withResolvers<SingleResult>();
+	const completion = runToCompletion(runtimeCwd, agents, agentName, task, {
+		...options,
+		onUpdate: (update) => { if (!detached) options.onUpdate?.(update); },
+		onIntercomDetach: (result) => {
+			if (detached) return;
+			detached = true;
+			question.resolve(result);
+		},
+	}).catch((error): SingleResult => {
+		if (!detached) throw error;
+		return { agent: agentName, task, exitCode: 1, usage: emptyUsage(), sessionFile: options.sessionFile, error: `Detached run failed: ${error instanceof Error ? error.message : String(error)}` };
+	}).finally(() => options.onRunSettled?.()).then(async (result) => {
+		if (detached) {
+			try { await options.onDetachedComplete?.(result); } catch (error) {
+				console.error("Failed to deliver detached foreground completion:", error);
+			}
+		}
+		return result;
+	});
+	return Promise.race([completion, question.promise]);
+}
+
+async function runToCompletion(
+	runtimeCwd: string,
+	agents: AgentConfig[],
+	agentName: string,
+	task: string,
+	options: AttemptOptions,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) {
@@ -1340,7 +1235,7 @@ export async function runSync(
 	}
 	const timeoutAt = options.timeoutAt ?? (options.timeoutMs !== undefined ? Date.now() + options.timeoutMs : undefined);
 	if (timeoutAt !== undefined && Date.now() >= timeoutAt) return createTimedOutResult(agentName, task, options);
-	const effectiveOptions: RunSyncOptions = {
+	const effectiveOptions: AttemptOptions = {
 		...options,
 		timeoutAt,
 		maxExecutionTimeMs: options.maxExecutionTimeMs ?? agent.maxExecutionTimeMs,
@@ -1349,6 +1244,7 @@ export async function runSync(
 
 	const shareEnabled = effectiveOptions.share === true;
 	const effectiveAcceptance = resolveEffectiveAcceptance({ explicit: options.acceptance });
+	if (effectiveOptions.runId) saveQuestionContract(effectiveOptions.runId, effectiveOptions.index ?? 0, { effectiveAcceptance, output: effectiveOptions.outputPath ?? false, outputMode: effectiveOptions.outputMode, outputSchema: effectiveOptions.structuredOutput?.schema });
 	if (shouldRunAcceptanceFinalization(effectiveAcceptance) && !options.sessionFile) {
 		const sessionDir = options.sessionDir ?? mkdtempSync(path.join(os.tmpdir(), "pi-subagent-finalization-"));
 		options.sessionFile = path.join(sessionDir, "session.jsonl");
@@ -1416,12 +1312,8 @@ export async function runSync(
 				outputSnapshot,
 				originalTask: task,
 				completionPolicy: resolveCompletionPolicy({
-					agent: agent.name,
-					task,
-					completionGuardEnabled: agent.completionGuard !== false,
+					completionGuardEnabled: agent.completionGuard === true,
 					usesAcceptanceContract: effectiveAcceptance.explicit,
-					tools: agent.tools,
-					mcpDirectTools: agent.mcpDirectTools,
 				}),
 			});
 			lastResult = result;
@@ -1440,7 +1332,7 @@ export async function runSync(
 			if (attemptSucceeded) {
 				break modelLoop;
 			}
-			if (result.timedOut || result.resourceLimitExceeded || result.interrupted) {
+			if (options.signal?.aborted || result.timedOut || result.resourceLimitExceeded || result.interrupted) {
 				break modelLoop;
 			}
 			if (sameModelRetries < MAX_SAME_MODEL_RECOVERY_RETRIES && isRecoverableSameModelFailure(result.error, result.exitCode)) {
@@ -1481,34 +1373,7 @@ export async function runSync(
 		}
 	}
 
-	if (artifactPathsResult) {
-		result.artifactPaths = artifactPathsResult;
-		writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(result) ?? result.finalOutput ?? "");
-		writeMetadata(artifactPathsResult.metadataPath, {
-			runId: options.runId,
-			agent: agentName,
-			task,
-			exitCode: result.exitCode,
-			usage: result.usage,
-			model: result.model,
-			attemptedModels: result.attemptedModels,
-			modelAttempts: result.modelAttempts,
-			durationMs: result.progressSummary?.durationMs,
-			toolCount: result.progressSummary?.toolCount,
-			error: result.error,
-			skills: result.skills,
-			skillsWarning: result.skillsWarning,
-			timestamp: Date.now(),
-		});
-
-		const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
-		const truncationResult = truncateOutput(result.finalOutput ?? "", config, artifactPathsResult.outputPath);
-		if (truncationResult.truncated) result.truncation = truncationResult;
-	} else {
-		const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
-		const truncationResult = truncateOutput(result.finalOutput ?? "", config);
-		if (truncationResult.truncated) result.truncation = truncationResult;
-	}
+	result.artifactPaths = artifactPathsResult;
 
 	if (options.sessionFile && (existsSync(options.sessionFile) || result.messages?.length)) {
 		result.sessionFile = options.sessionFile;
@@ -1526,9 +1391,10 @@ export async function runSync(
 		governing: effectiveAcceptance,
 		output: initialAcceptanceOutput,
 		cwd: options.cwd ?? runtimeCwd,
+		signal: AbortSignal.any([options.signal, options.interruptSignal].filter((signal) => signal !== undefined)),
 	});
 	result.acceptance = initialAcceptance;
-	if (shouldRunAcceptanceFinalization(effectiveAcceptance) && result.exitCode === 0 && !result.detached && !result.interrupted) {
+	if (shouldRunAcceptanceFinalization(effectiveAcceptance) && result.exitCode === 0 && !result.interrupted) {
 		result.acceptance = await runAcceptanceFinalizationLoop({
 			runtimeCwd,
 			agent,
@@ -1536,7 +1402,7 @@ export async function runSync(
 			initialLedger: initialAcceptance,
 			initialOutput: initialAcceptanceOutput,
 			acceptance: effectiveAcceptance,
-			options,
+			options: effectiveOptions,
 			systemPrompt,
 			resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
 			...(missingSkills.length > 0 ? { skillsWarning: `Skills not found: ${missingSkills.join(", ")}` } : {}),
@@ -1544,7 +1410,7 @@ export async function runSync(
 	}
 	const acceptanceFailure = acceptanceFailureMessage(result.acceptance);
 	stripAcceptanceReportsFromMessages(result.messages ?? []);
-	if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.detached && !result.interrupted) {
+	if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.interrupted) {
 		result.exitCode = 1;
 		result.error = result.error ? `${result.error}\n${acceptanceFailure}` : acceptanceFailure;
 		if (result.progress) {
@@ -1553,5 +1419,6 @@ export async function runSync(
 		}
 	}
 
+	publishFinalResult(result, effectiveOptions);
 	return result;
 }

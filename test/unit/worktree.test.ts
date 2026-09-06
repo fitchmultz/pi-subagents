@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import {
 	cleanupWorktrees,
 	createWorktrees,
@@ -49,11 +50,48 @@ function createHookScript(_repoDir: string, fileName: string, source: string): s
 	return hookPath;
 }
 
-const hookScriptSkip = process.platform === "win32"
-	? "Hook script execution differs on Windows CI environments."
-	: undefined;
-
 describe("worktree", () => {
+	it("binary patches reconstruct the complete edited tree after cleanup", () => {
+		const repoDir = createRepo("pi-worktree-binary-");
+		let setup: WorktreeSetup | undefined;
+		try {
+			fs.writeFileSync(path.join(repoDir, "modify.bin"), Buffer.from([0, 1, 2, 3]));
+			fs.writeFileSync(path.join(repoDir, "delete.bin"), Buffer.from([0, 4, 5, 6]));
+			git(repoDir, ["add", "-A"]);
+			git(repoDir, ["commit", "-m", "binary baseline"]);
+			setup = createWorktrees(repoDir, "binary-roundtrip", 1);
+			const worktree = setup.worktrees[0]!;
+			fs.writeFileSync(path.join(worktree.path, "modify.bin"), Buffer.from([0, 7, 8, 9]));
+			fs.writeFileSync(path.join(worktree.path, "add.bin"), Buffer.from([0, 10, 11, 12]));
+			fs.unlinkSync(path.join(worktree.path, "delete.bin"));
+			fs.appendFileSync(path.join(worktree.path, "tracked.txt"), "edited\n");
+			fs.chmodSync(path.join(worktree.path, "tracked.txt"), 0o755);
+			const [diff] = diffWorktrees(setup, ["worker"], path.join(repoDir, "patches"));
+			assert.equal(diff.captureError, undefined);
+			const expectedTree = git(worktree.path, ["write-tree"]);
+			cleanupWorktrees(setup);
+			setup = undefined;
+			assert.equal(fs.existsSync(worktree.path), false);
+			git(repoDir, ["apply", "--index", diff.patchPath]);
+			assert.equal(git(repoDir, ["write-tree"]), expectedTree);
+		} finally {
+			if (setup) cleanupWorktrees(setup);
+			cleanupRepo(repoDir);
+		}
+	});
+
+	it("creates worktrees inside the existing private temp root", () => {
+		const repoDir = createRepo("pi-worktree-root-");
+		let setup: WorktreeSetup | undefined;
+		try {
+			setup = createWorktrees(repoDir, "private-root", 1);
+			assert.equal(path.dirname(setup.worktrees[0]!.path), path.join(TEMP_ROOT_DIR, "worktrees"));
+		} finally {
+			if (setup) cleanupWorktrees(setup);
+			cleanupRepo(repoDir);
+		}
+	});
+
 	it("createWorktrees returns expected structure", () => {
 		const repoDir = createRepo("pi-worktree-structure-");
 		let setup: WorktreeSetup | undefined;
@@ -105,7 +143,7 @@ describe("worktree", () => {
 		try {
 			assert.equal(
 				resolveExpectedWorktreeAgentCwd(nestedDir, "preview", 2),
-				path.join(os.tmpdir(), "pi-worktree-preview-2", "packages", "app"),
+				path.join(TEMP_ROOT_DIR, "worktrees", "pi-worktree-preview-2", "packages", "app"),
 			);
 		} finally {
 			cleanupRepo(repoDir);
@@ -256,6 +294,7 @@ describe("worktree", () => {
 			const worktreePath = setup.worktrees[0]!.path;
 			cleanupWorktrees(setup);
 			assert.equal(fs.existsSync(worktreePath), true, "cleanup should preserve worktrees after diff capture failure");
+			assert.equal(fs.readFileSync(path.join(worktreePath, "tracked.txt"), "utf8"), "modified\n");
 		} finally {
 			if (setup) {
 				setup.preserveOnCleanup = false;
@@ -288,9 +327,7 @@ describe("worktree", () => {
 		}
 	});
 
-	it("createWorktrees creates node_modules symlink when node_modules exists", {
-		skip: process.platform === "win32" ? "Symlink behavior differs on Windows CI environments." : undefined,
-	}, () => {
+	it("createWorktrees creates node_modules symlink when node_modules exists", () => {
 		const repoDir = createRepo("pi-worktree-node-modules-");
 		const nodeModulesDir = path.join(repoDir, "node_modules");
 		fs.mkdirSync(nodeModulesDir, { recursive: true });
@@ -311,9 +348,7 @@ describe("worktree", () => {
 		}
 	});
 
-	it("diffWorktrees preserves a tracked node_modules symlink", {
-		skip: process.platform === "win32" ? "Symlink behavior differs on Windows CI environments." : undefined,
-	}, () => {
+	it("diffWorktrees preserves a tracked node_modules symlink", () => {
 		const repoDir = createRepo("pi-worktree-tracked-node-modules-");
 		const vendorDir = path.join(repoDir, "vendor-modules");
 		fs.mkdirSync(vendorDir, { recursive: true });
@@ -340,7 +375,7 @@ describe("worktree", () => {
 		}
 	});
 
-	it("runs a repo-relative worktree setup hook and records synthetic paths", { skip: hookScriptSkip }, () => {
+	it("runs a repo-relative worktree setup hook and records synthetic paths", () => {
 		const repoDir = createRepo("pi-worktree-hook-relative-");
 		const hookPath = createHookScript(repoDir, "setup-hook.mjs", `
 import * as fs from "node:fs";
@@ -363,7 +398,7 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [".venv"] }));
 		}
 	});
 
-	it("runs an absolute worktree setup hook path", { skip: hookScriptSkip }, () => {
+	it("runs an absolute worktree setup hook path", () => {
 		const repoDir = createRepo("pi-worktree-hook-absolute-");
 		const hookPath = createHookScript(repoDir, "setup-hook.mjs", `
 import * as fs from "node:fs";
@@ -395,7 +430,7 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [] }));
 		}
 	});
 
-	it("rejects tracked synthetic paths from hook output", { skip: hookScriptSkip }, () => {
+	it("rejects tracked synthetic paths from hook output", () => {
 		const repoDir = createRepo("pi-worktree-hook-tracked-");
 		const hookPath = createHookScript(repoDir, "tracked-hook.mjs", `
 import * as fs from "node:fs";
@@ -413,7 +448,7 @@ process.stdout.write(JSON.stringify({ syntheticPaths: ["tracked.txt"] }));
 		}
 	});
 
-	it("rejects absolute synthetic paths from hook output", { skip: hookScriptSkip }, () => {
+	it("rejects absolute synthetic paths from hook output", () => {
 		const repoDir = createRepo("pi-worktree-hook-absolute-synthetic-");
 		const hookPath = createHookScript(repoDir, "absolute-path-hook.mjs", `
 import * as fs from "node:fs";
@@ -431,7 +466,7 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [payload.worktreePath + "/
 		}
 	});
 
-	it("excludes hook-created synthetic files from captured patch output", { skip: hookScriptSkip }, () => {
+	it("excludes hook-created synthetic files from captured patch output", () => {
 		const repoDir = createRepo("pi-worktree-hook-diff-");
 		const hookPath = createHookScript(repoDir, "setup-copy-hook.mjs", `
 import * as fs from "node:fs";
@@ -457,7 +492,7 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [".env.local"] }));
 		}
 	});
 
-	it("cleans up created worktrees when a later hook setup fails", { skip: hookScriptSkip }, () => {
+	it("cleans up created worktrees when a later hook setup fails", () => {
 		const repoDir = createRepo("pi-worktree-hook-cleanup-");
 		const runId = `hook-cleanup-${Date.now().toString(36)}`;
 		const hookPath = createHookScript(repoDir, "flaky-hook.mjs", `
@@ -481,7 +516,7 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [] }));
 		}
 	});
 
-	it("fails when the hook exceeds the configured timeout", { skip: hookScriptSkip }, () => {
+	it("fails when the hook exceeds the configured timeout", () => {
 		const repoDir = createRepo("pi-worktree-hook-timeout-");
 		const hookPath = createHookScript(repoDir, "slow-hook.mjs", `
 import * as fs from "node:fs";

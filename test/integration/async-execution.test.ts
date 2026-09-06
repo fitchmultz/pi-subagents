@@ -505,7 +505,7 @@ describe("async execution utilities", () => {
 		});
 		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.[0]?.status === "running" && typeof status.pid === "number", 10_000);
 		await waitForMockPiCalls(mockPi, 1, 10_000);
-		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
+		process.kill(runningStatus.pid!, "SIGUSR2");
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
@@ -842,7 +842,7 @@ describe("async execution utilities", () => {
 		});
 		await waitForMockPiCalls(mockPi, 2, 10_000);
 		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && typeof status.pid === "number", 10_000);
-		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
+		process.kill(runningStatus.pid!, "SIGUSR2");
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
@@ -1117,12 +1117,12 @@ describe("async execution utilities", () => {
 		assert.equal(payload.success, true);
 		assert.equal(fs.existsSync(path.join(tempDir, "review.md")), false);
 		assert.ok(reviewTexts.every((text) => text.includes("Output file consumed:")));
-		assert.ok(reviewTexts.some((text) => /[^/\\]+_reviewer_d1-0_review\.md/.test(text)));
-		assert.ok(reviewTexts.some((text) => /[^/\\]+_reviewer_d1-1_review\.md/.test(text)));
+		assert.ok(reviewTexts.some((text) => /parallel-1[/\\]0-reviewer[/\\]review\.md/.test(text)));
+		assert.ok(reviewTexts.some((text) => /parallel-1[/\\]1-reviewer[/\\]review\.md/.test(text)));
 		const firstReviewTask = readMockPiArgs(mockPi, 1).at(-1) ?? "";
 		const secondReviewTask = readMockPiArgs(mockPi, 2).at(-1) ?? "";
-		assert.match(firstReviewTask, /requested-outputs/);
-		assert.match(secondReviewTask, /requested-outputs/);
+		assert.match(firstReviewTask, /parallel-1/);
+		assert.match(secondReviewTask, /parallel-1/);
 		assert.notEqual(firstReviewTask.match(/Write your findings to: (.*review\.md)/)?.[1], secondReviewTask.match(/Write your findings to: (.*review\.md)/)?.[1]);
 	});
 
@@ -1159,13 +1159,13 @@ describe("async execution utilities", () => {
 		assert.ok(dynamicOutputPaths.every((outputPath): outputPath is string => Boolean(outputPath)), "expected dynamic reviewers to save outputs");
 		const allOutputPaths = [...dynamicOutputPaths, finalOutputPath];
 		assert.equal(new Set(allOutputPaths).size, 3);
-		assert.ok(dynamicOutputPaths.some((outputPath) => /_reviewer_d1-0_review\.md$/.test(outputPath)));
-		assert.ok(dynamicOutputPaths.some((outputPath) => /_reviewer_d1-1_review\.md$/.test(outputPath)));
-		assert.match(finalOutputPath, /_reviewer_2_review\.md$/);
+		assert.ok(dynamicOutputPaths.some((outputPath) => /parallel-1[/\\]0-reviewer[/\\]review\.md$/.test(outputPath)));
+		assert.ok(dynamicOutputPaths.some((outputPath) => /parallel-1[/\\]1-reviewer[/\\]review\.md$/.test(outputPath)));
+		assert.ok(finalOutputPath.endsWith(path.join(id, "review.md")));
 		assert.deepEqual(allOutputPaths.map((outputPath) => fs.readFileSync(outputPath, "utf-8")).sort(), ["final-review", "review-a", "review-b"]);
 	});
 
-	it("async dynamic fanout rejects duplicate explicit output paths before starting children", async () => {
+	it("async dynamic fanout rejects duplicate absolute output paths before starting children", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		const id = `itest-ae-${process.pid}-dynamic-duplicate-output-${Date.now().toString(36)}`;
 		const result = executeAsyncChain!(id, {
@@ -1173,7 +1173,7 @@ describe("async execution utilities", () => {
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
 				{
 					expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
-					parallel: { agent: "reviewer", task: "Review {target.path}", output: "same.md" },
+					parallel: { agent: "reviewer", task: "Review {target.path}", output: path.join(tempDir, "same.md") },
 					collect: { as: "reviews" },
 					concurrency: 2,
 				},
@@ -1245,7 +1245,7 @@ describe("async execution utilities", () => {
 		});
 		await waitForMockPiCalls(mockPi, 3, 10_000);
 		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.filter((step) => step.status === "running").length === 2 && typeof status.pid === "number", 10_000);
-		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
+		process.kill(runningStatus.pid!, "SIGUSR2");
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
@@ -1429,7 +1429,7 @@ describe("async execution utilities", () => {
 				await new Promise((resolve) => setTimeout(resolve, 100));
 			}
 
-			const worktreeCwd = path.join(os.tmpdir(), `pi-worktree-${asyncId}-s0-0`);
+			const worktreeCwd = path.join(TEMP_ROOT_DIR, "worktrees", `pi-worktree-${asyncId}-s0-0`);
 			const callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"));
 			assert.ok(callFile, "expected a recorded mock pi call");
 			const args = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
@@ -1853,7 +1853,7 @@ describe("async execution utilities", () => {
 		assert.equal(output.match(/stuck repeating the same failed subagent call/g)?.length, 1);
 	});
 
-	it("background implementation runs fail when no mutation attempt occurred", async () => {
+	it("background runs enforce explicitly required mutation evidence", async () => {
 		mockPi.onCall({ output: "I’ll do that now and report back after implementing." });
 
 		const id = `itest-ae-${process.pid}-no-mutation-${Date.now().toString(36)}`;
@@ -1863,7 +1863,7 @@ describe("async execution utilities", () => {
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Implement the approved fixes",
-			agentConfig: makeAgent("worker"),
+			agentConfig: makeAgent("worker", { completionGuard: true }),
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 			shareEnabled: false,
 			sessionRoot,
@@ -1910,7 +1910,7 @@ describe("async execution utilities", () => {
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Implement the approved fixes",
-			agentConfig: makeAgent("worker"),
+			agentConfig: makeAgent("worker", { completionGuard: true }),
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 			shareEnabled: false,
 			sessionRoot,
@@ -1925,7 +1925,7 @@ describe("async execution utilities", () => {
 		assert.equal(payload.results[0].output, "Applied edit");
 	});
 
-	it("background bash-enabled non-implementation agents can opt out of the completion guard", async () => {
+	it("background bash-enabled advisory agents do not require edits by default", async () => {
 		mockPi.onCall({ output: "cold start test after patch" });
 
 		const id = `itest-ae-${process.pid}-completion-guard-optout-${Date.now().toString(36)}`;
@@ -1934,7 +1934,7 @@ describe("async execution utilities", () => {
 		executeAsyncSingle(id, {
 			agent: "test-runner",
 			task: "Run cold start test after patch",
-			agentConfig: makeAgent("test-runner", { tools: ["read", "grep", "bash", "ls"], completionGuard: false }),
+			agentConfig: makeAgent("test-runner", { tools: ["read", "grep", "bash", "ls"] }),
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 			shareEnabled: false,
 			sessionRoot,
@@ -2308,7 +2308,7 @@ describe("async execution utilities", () => {
 
 		const elapsed = Date.now() - start;
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
-		assert.ok(elapsed < 4000, `should clean up async child shortly after terminal stop, took ${elapsed}ms`);
+		assert.ok(elapsed < 4000, `should clean up async child shortly after final settlement, took ${elapsed}ms`);
 		assert.equal(payload.success, true);
 		assert.equal(payload.exitCode, 0);
 		assert.equal(payload.results[0].success, true);
@@ -2369,7 +2369,7 @@ describe("async execution utilities", () => {
 
 		const elapsed = Date.now() - start;
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
-		assert.ok(elapsed < 4000, `should clean up async child shortly after empty terminal stop, took ${elapsed}ms`);
+		assert.ok(elapsed < 4000, `should clean up async child shortly after empty final settlement, took ${elapsed}ms`);
 		assert.equal(payload.success, true);
 		assert.equal(payload.exitCode, 0);
 		assert.equal(payload.results[0].success, true);
@@ -2436,7 +2436,7 @@ describe("async execution utilities", () => {
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Implement the approved fixes",
-			agentConfig: makeAgent("worker"),
+			agentConfig: makeAgent("worker", { completionGuard: true }),
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),

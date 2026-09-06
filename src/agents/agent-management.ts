@@ -451,7 +451,7 @@ function formatAgentDetail(agent: AgentConfig): string {
 	if (agent.maxSubagentDepth !== undefined) lines.push(`Max subagent depth: ${agent.maxSubagentDepth}`);
 	if (agent.maxExecutionTimeMs !== undefined) lines.push(`Max execution time: ${agent.maxExecutionTimeMs}ms`);
 	if (agent.maxTokens !== undefined) lines.push(`Max tokens: ${agent.maxTokens}`);
-	if (agent.completionGuard === false) lines.push("Completion guard: false");
+	if (agent.completionGuard !== undefined) lines.push(`Completion guard: ${agent.completionGuard}`);
 	if (agent.systemPrompt.trim()) lines.push("", "System Prompt:", agent.systemPrompt);
 	return lines.join("\n");
 }

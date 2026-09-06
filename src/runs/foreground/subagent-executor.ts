@@ -6,7 +6,7 @@ import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { handleManagementAction } from "../../agents/agent-management.ts";
 import { buildDoctorReport } from "../../extension/doctor.ts";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.ts";
-import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { providerQualifiedModelId, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { getArtifactsDir } from "../../shared/artifacts.ts";
 import {
@@ -30,6 +30,8 @@ import { inspectSubagentStatus } from "../background/run-status.ts";
 import { buildManagementControl } from "../../shared/status-format.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
 import { queryLiveIntercomHealth } from "../../intercom/live-intercom.ts";
+import { saveQuestionOwner } from "../shared/supervisor-questions.ts";
+import { cancelSupervisorInput, controlSupervisorQuestion, projectSupervisorQuestions } from "./question-control.ts";
 import {
 	type AgentScope,
 } from "../../agents/agents.ts";
@@ -100,6 +102,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
+			if (params.action === "questions" || params.action === "answer") {
+				return controlSupervisorQuestion({ params, requestCwd, ctx, deps });
+			}
 			if (params.action === "doctor") {
 				let currentSessionFile: string | null = null;
 				let currentSessionId = deps.state.currentSessionId;
@@ -152,7 +157,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						const message = error instanceof Error ? error.message : String(error);
 						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
 					}
-				} else {
+				} else if (deps.allowMutatingManagementActions === false) {
 					const foreground = getForegroundControl(deps.state, undefined);
 					if (foreground) {
 						const target = foregroundIntercomTarget(foreground);
@@ -173,6 +178,29 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					} catch (error) {
 						const message = error instanceof Error ? error.message : String(error);
 						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
+					}
+				}
+				if (!targetRunId && !params.dir && deps.allowMutatingManagementActions !== false) {
+					const current = getForegroundControl(deps.state, undefined);
+					const target = current ? foregroundIntercomTarget(current) : undefined;
+					const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
+					const foreground = [
+						...[...deps.state.foregroundControls.values()].map((control) => foregroundStatusResult(control, control === current ? health : undefined)),
+						...[...(deps.state.foregroundRuns?.values() ?? [])]
+							.filter((run) => !deps.state.foregroundControls.has(run.runId))
+							.sort((a, b) => b.updatedAt - a.updatedAt)
+							.map(rememberedForegroundStatusResult),
+					];
+					if (foreground.length) {
+						inspected = {
+							...inspected,
+							content: [...foreground.flatMap((result) => result.content), ...inspected.content],
+							details: {
+								...inspected.details,
+								managementControl: foreground.find((result) => result.details.managementControl?.runId === current?.runId)?.details.managementControl,
+								managementControls: [...foreground.flatMap((result) => result.details.managementControl ? [result.details.managementControl] : []), ...(inspected.details.managementControls ?? [])],
+							},
+						};
 					}
 				}
 				return inspected;
@@ -289,7 +317,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const effectiveCwd = effectiveParams.cwd ?? ctx.cwd;
 		const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
 		deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
-		const discoveredAgents = deps.discoverAgents(effectiveCwd, scope, { projectTrusted: ctx.isProjectTrusted() }).agents;
+		const inheritedModel = providerQualifiedModelId(ctx.model?.provider, ctx.model?.id);
+		const discoveredAgents = deps.discoverAgents(effectiveCwd, scope, { projectTrusted: ctx.isProjectTrusted() }).agents
+			.map((agent) => agent.model || !inheritedModel ? agent : { ...agent, model: inheritedModel });
 		const invocationAgentNames = collectInvocationAgentNames(effectiveParams);
 		const invocationContext: SubagentParamsLike["context"] = invocationUsesForkContext(
 			effectiveParams.context,
@@ -301,7 +331,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const fallbackTarget = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
 		const orchestratorTarget = resolveOrchestratorIntercomTarget(deps.pi.events, fallbackTarget);
 		const intercomBridge = resolveIntercomBridge(orchestratorTarget);
-		const runId = randomUUID().slice(0, 8);
+		const runId = randomUUID();
 		const agentNameAtIndex = buildFlatAgentNameResolver(effectiveParams);
 		const resolveContextForAgent = (agentName: string | undefined) =>
 			resolveAgentContext(effectiveParams.context, agentName, discoveredAgents);
@@ -401,6 +431,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			? (r: SubagentExecutionResult) => onUpdate(withForkContext(r, invocationContext))
 			: undefined;
 
+		saveQuestionOwner(runId, ctx.sessionManager.getSessionId());
 		const execData: ExecutionContextData = {
 			params: effectiveParams,
 			effectiveCwd,
@@ -446,7 +477,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			deps.state.lastForegroundControlId = runId;
 		}
 		let deferForegroundCleanup = false;
-		let detachedNestedSettled = false;
+		let detachedSettled = false;
 		const cleanupForegroundControl = () => {
 			if (!foregroundControl) return;
 			clearPendingForegroundControlNotices(deps.state, runId);
@@ -513,27 +544,21 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 		};
 
-		if (inheritedNestedRoute && nestedParentAddress) {
-			execData.onDetachedResultsSettled = (mode, results, totalSteps) => {
-				detachedNestedSettled = true;
-				deferForegroundCleanup = false;
-				const failure = results.find((result) => result.exitCode !== 0);
-				writeNestedForegroundEvent("subagent.nested.completed", {
-					content: [{ type: "text", text: failure?.error ?? "Detached nested run completed." }],
-					isError: Boolean(failure),
-					details: {
-						mode,
-						results,
-						...(totalSteps !== undefined ? { totalSteps } : {}),
-					},
-				});
-				cleanupForegroundControl();
-			};
-		}
+		execData.onDetachedResultsSettled = (mode, results, totalSteps) => {
+			detachedSettled = true;
+			deferForegroundCleanup = false;
+			const failure = results.find((result) => result.exitCode !== 0);
+			writeNestedForegroundEvent("subagent.nested.completed", {
+				content: [{ type: "text", text: failure?.error ?? "Detached run completed." }],
+				isError: Boolean(failure),
+				details: { mode, results, ...(totalSteps !== undefined ? { totalSteps } : {}) },
+			});
+			cleanupForegroundControl();
+		};
 
 		const completeNestedForeground = (result: SubagentExecutionResult): void => {
-			if (inheritedNestedRoute && nestedParentAddress && result.details?.results.some((child) => child.detached)) {
-				deferForegroundCleanup = !detachedNestedSettled;
+			if (result.details?.results.some((child) => child.detached)) {
+				deferForegroundCleanup = !detachedSettled;
 				return;
 			}
 			writeNestedForegroundEvent("subagent.nested.completed", result);
@@ -577,5 +602,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		}, invocationContext);
 	};
 
-	return { execute };
+	return { execute: async (...args) => {
+		const result = await execute(...args);
+		if (args[1].action === "interrupt") return cancelSupervisorInput(result, args[1], args[4].sessionManager.getSessionId());
+		return args[1].action === "status" ? projectSupervisorQuestions(result, args[1], args[4].sessionManager.getSessionId()) : result;
+	} };
 }

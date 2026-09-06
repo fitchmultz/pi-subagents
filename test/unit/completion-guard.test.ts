@@ -4,23 +4,15 @@ import assert from "node:assert/strict";
 import type { Message } from "@earendil-works/pi-ai";
 
 import {
-	evaluateCompletionMutationGuard,
-	expectsImplementationMutation,
 	hasCompletedMutationToolCall,
 	resolveCompletionPolicy,
 } from "../../src/runs/shared/completion-guard.ts";
+import { resolveCurrentPath } from "../../src/runs/shared/mutating-tool-guard.ts";
 
 function assistantToolCall(name: string, args: Record<string, unknown> = {}, id?: string): Message {
 	return {
 		role: "assistant",
 		content: [{ type: "toolCall", name, arguments: args, ...(id ? { id } : {}) }],
-	} as unknown as Message;
-}
-
-function assistantText(text: string): Message {
-	return {
-		role: "assistant",
-		content: [{ type: "text", text }],
 	} as unknown as Message;
 }
 
@@ -34,143 +26,27 @@ function toolResult(text: string, isError = false, toolCallId?: string, toolName
 	} as unknown as Message;
 }
 
-test("completion policy selects exactly one completion authority", () => {
-	assert.equal(resolveCompletionPolicy({
-		agent: "worker",
-		task: "Implement the approved fix",
-		completionGuardEnabled: true,
-		usesAcceptanceContract: true,
-	}), "acceptance-contract");
-	assert.equal(resolveCompletionPolicy({
-		agent: "worker",
-		task: "Implement the approved fix",
-		completionGuardEnabled: true,
-		usesAcceptanceContract: false,
-	}), "mutation-guard");
-	assert.equal(resolveCompletionPolicy({
-		agent: "worker",
-		task: "Implement the approved fix",
-		completionGuardEnabled: false,
-		usesAcceptanceContract: false,
-	}), "none");
-	assert.equal(resolveCompletionPolicy({
-		agent: "worker",
-		task: "Investigate why this failed",
-		completionGuardEnabled: true,
-		usesAcceptanceContract: false,
-	}), "none");
-	assert.equal(resolveCompletionPolicy({
-		agent: "worker",
-		task: "Implement the approved fix",
-		completionGuardEnabled: true,
-		usesAcceptanceContract: false,
-		tools: ["read", "grep", "find", "ls"],
-	}), "none");
-});
-
-test("implementation task with no mutation triggers the completion guard", () => {
-	const result = evaluateCompletionMutationGuard({
-		agent: "worker",
-		task: "Implement the approved fix",
-		messages: [assistantText("Plan: update the files...")],
-	});
-
-	assert.deepEqual(result, {
-		expectedMutation: true,
-		completedMutation: false,
-		triggered: true,
-	});
-});
-
-test("declared read-only builtin tools suppress implementation-word false positives", () => {
-	const result = evaluateCompletionMutationGuard({
-		agent: "architect",
-		task: "Produce a proposal that implements the approved fix",
-		messages: [assistantText("Proposal only")],
-		tools: ["read", "grep", "find", "ls"],
-	});
-
-	assert.deepEqual(result, {
-		expectedMutation: false,
-		completedMutation: false,
-		triggered: false,
-	});
-});
-
-test("omitted, empty, bash, unknown, write, and MCP tool capabilities stay conservative", () => {
-	const base = {
-		agent: "architect",
-		task: "Implement the approved source fix",
-		messages: [assistantText("Validation only")],
-	};
-
-	assert.equal(evaluateCompletionMutationGuard(base).triggered, true);
-	assert.equal(evaluateCompletionMutationGuard({ ...base, tools: [] }).triggered, true);
-	assert.equal(evaluateCompletionMutationGuard({ ...base, tools: ["read", "bash", "ls"] }).triggered, true);
-	assert.equal(evaluateCompletionMutationGuard({ ...base, tools: ["read", "custom_lookup"] }).triggered, true);
-	assert.equal(evaluateCompletionMutationGuard({ ...base, tools: ["read", "write"] }).triggered, true);
-	assert.equal(evaluateCompletionMutationGuard({ ...base, tools: ["read", "grep"], mcpDirectTools: ["github/search"] }).triggered, true);
-});
-
-test("worker with mutating-capable tools still triggers when no mutation is observed", () => {
-	const result = evaluateCompletionMutationGuard({
-		agent: "worker",
-		task: "Fix the test implementation",
-		messages: [assistantText("I will edit it next")],
-		tools: ["read", "edit"],
-	});
-
-	assert.deepEqual(result, {
-		expectedMutation: true,
-		completedMutation: false,
-		triggered: true,
-	});
-});
-
-test("review-only, research, and framework output instructions do not expect mutation", () => {
-	assert.equal(expectsImplementationMutation("worker", "Review only: return findings, do not edit"), false);
-	assert.equal(expectsImplementationMutation("worker", "Do not edit files. Tell me how to fix the bug."), false);
-	assert.equal(expectsImplementationMutation("worker", "Review the diff and suggest fixes only. Do not edit files."), false);
-	assert.equal(expectsImplementationMutation("worker", "Implement this. Do not edit files outside this repo. Do not edit files."), false);
-	assert.equal(expectsImplementationMutation("worker", "Investigate why this failed"), false);
-	assert.equal(expectsImplementationMutation("researcher", "Research the API behavior"), false);
-	assert.equal(expectsImplementationMutation("researcher", "Research this and patch the bug"), false);
-	assert.equal(expectsImplementationMutation("reviewer", "Review this and fix any real issues"), false);
-	assert.equal(expectsImplementationMutation("reviewer", "Review this and fix any real issues; regardless of findings, apply changes directly"), true);
-	assert.equal(expectsImplementationMutation("worker", "[Write to: /tmp/result.md]\n\nSummarize findings"), false);
-	assert.equal(expectsImplementationMutation("worker", "Write report"), false);
-	assert.equal(expectsImplementationMutation("worker", "Create a report"), false);
-	assert.equal(expectsImplementationMutation("worker", "Create a summary"), false);
-	assert.equal(expectsImplementationMutation("worker", "Add a report"), false);
-	assert.equal(expectsImplementationMutation("worker", "Update a summary"), false);
-	assert.equal(expectsImplementationMutation("worker", "Write to {chain_dir}"), false);
-	assert.equal(
-		expectsImplementationMutation("worker", "Do async work\nUpdate progress at: /tmp/progress.md\nWrite your findings to: /tmp/out.md"),
-		false,
-	);
-});
-
-test("worker implementation verbs win over investigative wording", () => {
-	assert.equal(expectsImplementationMutation("worker", "Investigate why the worker did not edit files and fix it"), true);
-	assert.equal(expectsImplementationMutation("worker", "Research the current code path and patch the bug"), true);
-	assert.equal(expectsImplementationMutation("worker", "Fix the bug where no edits were made"), true);
-	assert.equal(expectsImplementationMutation("worker", "Implement the fix and return findings."), true);
-});
-
-test("worker edit intent covers common docs, config, and source tasks", () => {
-	assert.equal(expectsImplementationMutation("worker", "Update README to mention the native tool"), true);
-	assert.equal(expectsImplementationMutation("worker", "Remove share functionality and all Vercel references"), true);
-	assert.equal(expectsImplementationMutation("worker", "Replace the registered command with a render tool"), true);
-	assert.equal(expectsImplementationMutation("worker", "Create completion-guard.ts"), true);
-	assert.equal(expectsImplementationMutation("worker", "Add tests for the completion guard"), true);
-	assert.equal(expectsImplementationMutation("worker", "Implement the approved fixes. Do not edit files outside this repo."), true);
-	assert.equal(expectsImplementationMutation("worker", "Implement the fix. Do not edit unrelated files."), true);
+test("only an explicit completion guard requires mutation; acceptance takes precedence", () => {
+	assert.equal(resolveCompletionPolicy({ completionGuardEnabled: true, usesAcceptanceContract: true }), "acceptance-contract");
+	assert.equal(resolveCompletionPolicy({ completionGuardEnabled: true, usesAcceptanceContract: false }), "mutation-guard");
+	assert.equal(resolveCompletionPolicy({ completionGuardEnabled: false, usesAcceptanceContract: false }), "none");
 });
 
 test("edit and write tool calls require successful tool results to count as completed mutation", () => {
 	assert.equal(hasCompletedMutationToolCall([assistantToolCall("edit", { path: "a.ts" })]), false);
 	assert.equal(hasCompletedMutationToolCall([assistantToolCall("edit", { path: "a.ts" }), toolResult("edited a.ts")]), true);
 	assert.equal(hasCompletedMutationToolCall([assistantToolCall("write", { path: "a.ts" }), toolResult("permission denied", true)]), false);
+});
+
+test("native apply_edits counts only after a successful result", () => {
+	const call = assistantToolCall("apply_edits", { path: "a.ts", rewrite: "updated" });
+	assert.equal(hasCompletedMutationToolCall([call, toolResult("updated a.ts")]), true);
+	assert.equal(hasCompletedMutationToolCall([call, toolResult("anchor missing", true)]), false);
+});
+
+test("bash activity paths ignore file descriptors and tolerate redirect whitespace", () => {
+	assert.equal(resolveCurrentPath("bash", { command: "npm test > /tmp/check.log 2>&1" }), "/tmp/check.log");
+	assert.equal(resolveCurrentPath("bash", { command: "npm test 2>&1" }), undefined);
 });
 
 test("successful mutating tool results count even when output mentions failure words", () => {
@@ -219,24 +95,4 @@ test("completed mutation matching uses toolCallId when parallel tool results fin
 		toolResult("file contents", false, "read-1", "read"),
 		toolResult("edited a.ts", false, "edit-1", "edit"),
 	]), true);
-});
-
-test("implementation task with only a mutating tool start still triggers", () => {
-	const result = evaluateCompletionMutationGuard({
-		agent: "worker",
-		task: "Fix the failing test",
-		messages: [assistantToolCall("edit", { path: "test.ts" })],
-	});
-
-	assert.equal(result.triggered, true);
-});
-
-test("implementation task with completed mutation does not trigger", () => {
-	const result = evaluateCompletionMutationGuard({
-		agent: "worker",
-		task: "Fix the failing test",
-		messages: [assistantToolCall("edit", { path: "test.ts" }), toolResult("edited test.ts")],
-	});
-
-	assert.equal(result.triggered, false);
 });

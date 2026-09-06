@@ -44,7 +44,7 @@ describe("async run status inspection", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-empty-"));
 		try {
 			const result = inspectSubagentStatus({}, { asyncDirRoot: path.join(root, "runs"), resultsDir: path.join(root, "results") });
-			assert.match(textContent(result), /No active async runs/);
+			assert.match(textContent(result), /No async runs/);
 			assert.doesNotMatch(textContent(result), /polling status/);
 		} finally {
 			rmrf(root);
@@ -88,6 +88,42 @@ describe("async run status inspection", () => {
 				assert.match(foreign, /State: running/);
 				assert.doesNotMatch(foreign, /polling status/);
 			}
+		} finally {
+			rmrf(root);
+		}
+	});
+
+	it("rediscovers this parent's completed runs across working directories without adopting another session's work", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-recent-"));
+		try {
+			const asyncDirRoot = path.join(root, "runs");
+			const resultsDir = path.join(root, "results");
+			const sessionFile = path.join(root, "child.jsonl");
+			fs.writeFileSync(sessionFile, "");
+			for (const run of [
+				{ runId: "owned-complete", sessionId: "parent", cwd: path.join(root, "worktree-a"), state: "complete" },
+				{ runId: "owned-failed", sessionId: "parent", cwd: path.join(root, "worktree-b"), state: "failed" },
+				{ runId: "foreign-complete", sessionId: "someone-else", cwd: root, state: "complete" },
+				{ runId: "unknown-owner", state: "complete" },
+			]) {
+				const asyncDir = path.join(asyncDirRoot, run.runId);
+				fs.mkdirSync(asyncDir, { recursive: true });
+				fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ ...run, mode: "single", startedAt: 100, lastUpdate: 200, outputFile: "output-0.log", steps: [{ agent: "worker", status: run.state, sessionFile }] }));
+				fs.writeFileSync(path.join(asyncDir, "output-0.log"), `${run.runId} outcome evidence`);
+			}
+			const state = statusState(root, "parent");
+			const result = inspectSubagentStatus({}, { asyncDirRoot, resultsDir, state });
+			assert.match(textContent(result), /owned-complete/);
+			assert.match(textContent(result), /owned-failed/);
+			assert.doesNotMatch(textContent(result), /foreign-complete|unknown-owner|polling status/);
+			assert.match(textContent(result), /action: "status", id: "owned-complete"/);
+			assert.match(textContent(result), /output-0.log/);
+			assert.deepEqual(result.details.managementControls?.map((control) => control.state), ["failed", "completed"]);
+			assert.ok(result.details.managementControls?.every((control) => control.capabilities.includes("resume")));
+			assert.equal(state.asyncJobs.size, 0, "discovery does not start tracking or automatically deliver completed runs");
+			const exact = inspectSubagentStatus({ id: "foreign-complete" }, { asyncDirRoot, resultsDir, state });
+			assert.match(textContent(exact), /foreign-complete outcome evidence/);
+			assert.doesNotMatch(textContent(exact), /polling status/);
 		} finally {
 			rmrf(root);
 		}

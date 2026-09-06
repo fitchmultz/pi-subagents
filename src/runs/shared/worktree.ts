@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { TEMP_ROOT_DIR } from "../../shared/types.ts";
+import { ensureTempRoot } from "../../shared/temp-root.ts";
 
 export interface WorktreeSetup {
 	cwd: string;
@@ -157,7 +159,7 @@ function buildWorktreeBranch(runId: string, index: number): string {
 }
 
 function buildWorktreePath(runId: string, index: number): string {
-	return path.join(os.tmpdir(), `pi-worktree-${runId}-${index}`);
+	return path.join(TEMP_ROOT_DIR, "worktrees", `pi-worktree-${runId}-${index}`);
 }
 
 function resolveRepoCwdRelative(cwd: string): string {
@@ -327,6 +329,7 @@ function createSingleWorktree(
 ): WorktreeInfo {
 	const branch = buildWorktreeBranch(runId, index);
 	const worktreePath = buildWorktreePath(runId, index);
+	ensureTempRoot();
 	const add = runGit(toplevel, ["worktree", "add", worktreePath, "-b", branch, "HEAD"]);
 	if (add.status !== 0) {
 		const message = add.stderr.trim() || add.stdout.trim() || `failed to create worktree ${worktreePath}`;
@@ -453,7 +456,7 @@ function captureWorktreeDiff(
 	removeSyntheticPathsBeforeDiff(worktree);
 	runGitChecked(worktree.path, ["add", "-A"]);
 	const diffStat = runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit]).trim();
-	const patch = runGitChecked(worktree.path, ["diff", "--cached", setup.baseCommit]);
+	const patch = runGitChecked(worktree.path, ["diff", "--cached", "--binary", setup.baseCommit]);
 	const numstat = runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit]);
 	fs.writeFileSync(patchPath, patch, "utf-8");
 

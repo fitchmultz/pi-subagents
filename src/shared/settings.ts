@@ -46,7 +46,6 @@ export interface SequentialStep {
 	output?: string | false;
 	outputMode?: OutputMode;
 	outputFromAgentDefault?: boolean;
-	defaultOutputSource?: string;
 	reads?: string[] | false;
 	progress?: boolean;
 	skill?: string | string[] | false;
@@ -364,26 +363,7 @@ export function resolveParallelBehaviors(
 			throw new Error(`Unknown agent: ${task.agent}`);
 		}
 
-		// Build subdirectory path for this parallel task
-		const subdir = path.join(`parallel-${stepIndex}`, `${taskIndex}-${task.agent}`);
-
-		// Output: task override > agent default (namespaced) > false
-		// Absolute paths pass through unchanged; relative paths get namespaced under subdir
-		let output: string | false = false;
-		const taskOutput = normalizeOutputOverride(task.output);
-		const configOutput = normalizeOutputOverride(config.output);
-		if (taskOutput !== undefined) {
-			if (taskOutput === false) {
-				output = false;
-			} else if (path.isAbsolute(taskOutput)) {
-				output = taskOutput; // Absolute path: use as-is
-			} else {
-				output = path.join(subdir, taskOutput); // Relative: namespace under subdir
-			}
-		} else if (configOutput) {
-			// Agent defaults are always relative, so namespace them
-			output = path.join(subdir, configOutput);
-		}
+		const output = namespaceParallelOutput(normalizeOutputOverride(task.output) ?? normalizeOutputOverride(config.output) ?? false, task.agent, stepIndex, taskIndex);
 
 		// Reads: task override > agent default > false
 		const reads =
@@ -415,6 +395,10 @@ export function resolveParallelBehaviors(
 		const model = task.model ?? config.model;
 		return { output, outputMode, reads, progress, skills, model };
 	});
+}
+
+export function namespaceParallelOutput(output: string | false | undefined, agent: string, stepIndex: number, taskIndex: number): string | false {
+	return output ? path.isAbsolute(output) ? output : path.join(`parallel-${stepIndex}`, `${taskIndex}-${agent}`, output) : false;
 }
 
 /**
