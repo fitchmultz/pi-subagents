@@ -91,6 +91,8 @@ function runNodeTest(label, imports, files, timeoutMs, concurrency) {
   const tempRoot = mkdtempSync(join(tmpdir(), "pi-subagents-test-"));
   const env = sanitizedEnv();
   env.PI_SUBAGENT_TEMP_ROOT = tempRoot;
+  env.HOME = tempRoot;
+  delete env.PI_CODING_AGENT_DIR;
   let result;
   try {
     result = spawnSync(process.execPath, args, {

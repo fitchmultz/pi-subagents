@@ -9,6 +9,7 @@ export function buildManagementControl(input: {
 	canResume?: boolean;
 	canNudge?: boolean;
 	canInterrupt?: boolean;
+	canReview?: boolean;
 	unavailableActions?: Partial<Record<ManagementAction, string>>;
 	revivedFromRunId?: string;
 }): ManagementControl {
@@ -19,6 +20,7 @@ export function buildManagementControl(input: {
 		if (input.canInterrupt) capabilities.push("interrupt");
 	} else if (input.canResume) capabilities.push("resume");
 	if (input.state === "live" && input.canExtend) capabilities.push("extend");
+	if (input.canReview) capabilities.push("review");
 	return {
 		state: input.state,
 		runId: input.runId,

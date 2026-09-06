@@ -10,8 +10,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { applyThinkingSuffix } from "../shared/pi-args.ts";
 import { findDuplicateOutputPath, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
-import { buildChainInstructions, createChainDir, isDynamicParallelStep, isParallelStep, resolveParallelBehaviors, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
-import type { RunnerStep } from "../shared/parallel-utils.ts";
+import { buildChainInstructions, createChainDir, isDynamicParallelStep, isParallelStep, resolveChainTemplates, resolveParallelBehaviors, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
+import type { RunnerStep, RunnerSubagentStep } from "../shared/parallel-utils.ts";
 import { resolvePiPackageRoot } from "../shared/pi-spawn.ts";
 import { buildSkillInjection, normalizeSkillInput, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
@@ -30,8 +30,10 @@ import {
 	type MaxOutputConfig,
 	type NestedRouteInfo,
 	type ResolvedControlConfig,
+	type SavedLaunchConfig,
 	type SubagentRunMode,
 	ASYNC_DIR,
+	DEFAULT_MAX_OUTPUT,
 	RESULTS_DIR,
 	RUNNER_ERROR_LOG_FILE,
 	SUBAGENT_ASYNC_STARTED_EVENT,
@@ -132,6 +134,7 @@ interface AsyncSingleParams {
 	outputMode?: "inline" | "file-only";
 	outputSchema?: JsonSchemaObject;
 	modelOverride?: string;
+	savedLaunch?: SavedLaunchConfig;
 	availableModels?: AvailableModelInfo[];
 	maxSubagentDepth: number;
 	worktreeSetupHook?: string;
@@ -143,6 +146,19 @@ interface AsyncSingleParams {
 	acceptance?: AcceptanceInput;
 	progress?: boolean;
 	projectTrust?: ChildProjectTrustPolicy;
+}
+
+function withSavedLaunch(step: RunnerSubagentStep, agent: AgentConfig, params: AsyncChainParams | AsyncSingleParams): RunnerSubagentStep {
+	return { ...step, launch: {
+		agent, model: step.model, thinking: step.thinking, modelCandidates: step.modelCandidates ?? [],
+		artifacts: params.artifactsDir !== undefined, artifactsDir: params.artifactsDir, share: params.shareEnabled,
+		systemPrompt: step.systemPrompt ?? "", skills: step.skills ?? [], cwd: step.cwd ?? params.ctx.cwd,
+		context: agent.defaultContext ?? "fresh", output: step.outputPath ?? false, outputMode: step.outputMode ?? "inline",
+		outputSchema: step.structuredOutputSchema, effectiveAcceptance: step.effectiveAcceptance,
+		maxOutput: { ...DEFAULT_MAX_OUTPUT, ...params.maxOutput }, maxSubagentDepth: step.maxSubagentDepth,
+		maxExecutionTimeMs: step.maxExecutionTimeMs, maxTokens: step.maxTokens,
+		controlConfig: params.controlConfig, projectTrust: params.projectTrust, projectTrusted: params.ctx.projectTrusted,
+	} };
 }
 
 interface AsyncExecutionResult {
@@ -260,6 +276,7 @@ export function executeAsyncChain(
 		throw error;
 	}
 	const workflowGraph = buildWorkflowGraphSnapshot({ runId: id, mode: resultMode, steps: chain });
+	const templates = resolveChainTemplates(chain);
 
 	for (const s of chain) {
 		const stepAgents = isParallelStep(s)
@@ -334,14 +351,12 @@ export function executeAsyncChain(
 		const outputPath = resolveSingleOutputPath(output, ctx.cwd, instructionCwd);
 		const validationError = validateFileOnlyOutputMode(behavior.outputMode, outputPath, `Async step (${s.agent})`);
 		if (validationError) throw new AsyncStartValidationError(validationError);
-		let taskTemplate = s.task ?? "{previous}";
-		taskTemplate = taskTemplate.replace(/\{task\}/g, originalTask ?? "");
-		taskTemplate = taskTemplate.replace(/\{chain_dir\}/g, chainDir);
+		const taskTemplate = s.task ?? "{previous}";
 		const task = injectSingleOutputInstruction(`${readInstructions.prefix}${taskTemplate}${progressInstructions.suffix}`, outputPath);
 
 		const primaryModel = resolveModelCandidate(behavior.model ?? a.model, availableModels, ctx.currentModelProvider);
 		const model = applyThinkingSuffix(primaryModel, a.thinking);
-		return {
+		return withSavedLaunch({
 			agent: s.agent,
 			task,
 			phase: s.phase,
@@ -375,7 +390,7 @@ export function executeAsyncChain(
 			effectiveAcceptance: resolveEffectiveAcceptance({ explicit: s.acceptance }),
 			...(s.outputSchema ? { structuredOutputSchema: s.outputSchema } : {}),
 			...(s.outputSchema ? { structuredOutput: createStructuredOutputRuntime(s.outputSchema, path.join(asyncDir, "structured-output")) } : {}),
-		};
+		}, a, params);
 	};
 
 	let flatStepIndex = 0;
@@ -423,7 +438,7 @@ export function executeAsyncChain(
 							throw new AsyncStartValidationError(`Failed to initialize progress in '${progressCwd}': ${error instanceof Error ? error.message : String(error)}`);
 						}
 					}
-					return buildSeqStep({ ...t, cwd: resolveChildCwd(groupCwd, t.cwd) }, nextSessionFile(), behaviorCwd, taskProgressPrecreated, parallelBehaviors[taskIndex]);
+					return buildSeqStep({ ...t, task: (templates[stepIndex] as string[])[taskIndex], cwd: resolveChildCwd(groupCwd, t.cwd) }, nextSessionFile(), behaviorCwd, taskProgressPrecreated, parallelBehaviors[taskIndex]);
 				});
 				const duplicateOutputError = findDuplicateOutputPath(parallelSteps);
 				if (duplicateOutputError) throw new AsyncStartValidationError(duplicateOutputError);
@@ -446,7 +461,7 @@ export function executeAsyncChain(
 				const maxItems = s.expand.maxItems ?? params.dynamicFanoutMaxItems ?? 0;
 				return {
 					expand: s.expand,
-					parallel: buildSeqStep(s.parallel as SequentialStep, undefined, undefined, progressPrecreated, behavior),
+					parallel: buildSeqStep({ ...s.parallel, task: templates[stepIndex] as string }, undefined, undefined, progressPrecreated, behavior),
 					collect: s.collect,
 					concurrency: s.concurrency,
 					failFast: s.failFast,
@@ -455,7 +470,7 @@ export function executeAsyncChain(
 					sessionFiles: takeDynamicSessionFiles(maxItems),
 				};
 			}
-			return buildSeqStep(s as SequentialStep, nextSessionFile());
+			return buildSeqStep({ ...s, task: templates[stepIndex] as string }, nextSessionFile());
 		});
 	} catch (error) {
 		if (error instanceof UnavailableSubagentSkillError || error instanceof AsyncStartValidationError) return formatAsyncStartError(resultMode, error.message);
@@ -479,6 +494,7 @@ export function executeAsyncChain(
 				id,
 				steps,
 				chainDir,
+				originalTask,
 				resultPath: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : path.join(RESULTS_DIR, `${id}.json`),
 				cwd: runnerCwd,
 				placeholder: "{previous}",
@@ -643,9 +659,11 @@ export function executeAsyncSingle(
 	const runnerCwd = resolveChildCwd(ctx.cwd, cwd);
 	const skillNames = params.skills ?? agentConfig.skills ?? [];
 	const availableModels = params.availableModels;
-	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, runnerCwd, ctx.cwd, { projectTrusted: ctx.projectTrusted ?? true });
+	const { resolved: resolvedSkills, missing: missingSkills } = params.savedLaunch && params.skills === undefined
+		? { resolved: [], missing: [] }
+		: resolveSkillsWithFallback(skillNames, runnerCwd, ctx.cwd, { projectTrusted: ctx.projectTrusted ?? true });
 	if (missingSkills.includes("pi-subagents")) return formatAsyncStartError("single", UNAVAILABLE_SUBAGENT_SKILL_ERROR);
-	let systemPrompt = agentConfig.systemPrompt?.trim() ?? "";
+	let systemPrompt = params.savedLaunch && params.skills === undefined ? params.savedLaunch.systemPrompt : agentConfig.systemPrompt?.trim() ?? "";
 	if (resolvedSkills.length > 0) {
 		const injection = buildSkillInjection(resolvedSkills);
 		systemPrompt = systemPrompt ? `${systemPrompt}\n\n${injection}` : injection;
@@ -688,7 +706,7 @@ export function executeAsyncSingle(
 	}
 	taskWithOutputInstruction = injectSingleOutputInstruction(taskWithOutputInstruction, outputPath);
 	const model = applyThinkingSuffix(
-		resolveModelCandidate(params.modelOverride ?? agentConfig.model, availableModels, ctx.currentModelProvider),
+		resolveModelCandidate(params.modelOverride ?? params.savedLaunch?.model ?? agentConfig.model, availableModels, ctx.currentModelProvider),
 		agentConfig.thinking,
 	);
 	let spawnResult: { pid?: number; error?: string } = {};
@@ -697,13 +715,13 @@ export function executeAsyncSingle(
 			{
 				id,
 				steps: [
-					{
+					withSavedLaunch({
 						agent,
 						task: taskWithOutputInstruction,
 						cwd: runnerCwd,
 						model,
 						thinking: resolveEffectiveThinking(model, agentConfig.thinking),
-						modelCandidates: buildModelCandidates(params.modelOverride ?? agentConfig.model, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider)
+						modelCandidates: buildModelCandidates(params.modelOverride ?? params.savedLaunch?.model ?? agentConfig.model, params.savedLaunch?.modelCandidates ?? agentConfig.fallbackModels, availableModels, ctx.currentModelProvider)
 							.map((candidate) => applyThinkingSuffix(candidate, agentConfig.thinking))
 							.filter((candidate): candidate is string => typeof candidate === "string"),
 						tools: agentConfig.tools,
@@ -715,7 +733,7 @@ export function executeAsyncSingle(
 						systemPromptMode: agentConfig.systemPromptMode,
 						inheritProjectContext: agentConfig.inheritProjectContext,
 						inheritSkills: agentConfig.inheritSkills,
-						skills: resolvedSkills.map((r) => r.name),
+						skills: params.savedLaunch && params.skills === undefined ? params.savedLaunch.skills : resolvedSkills.map((r) => r.name),
 						outputPath,
 						outputMode,
 						...(outputUsesAgentDefault && outputPath ? { outputPathFromAgentDefault: true } : {}),
@@ -726,7 +744,7 @@ export function executeAsyncSingle(
 						maxExecutionTimeMs: agentConfig.maxExecutionTimeMs,
 						maxTokens: agentConfig.maxTokens,
 						effectiveAcceptance: resolveEffectiveAcceptance({ explicit: params.acceptance }),
-					},
+					}, agentConfig, params),
 				],
 				resultPath: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : path.join(RESULTS_DIR, `${id}.json`),
 				cwd: runnerCwd,

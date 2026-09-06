@@ -4,13 +4,19 @@
 
 ## Installation
 
-Install from GitHub:
+Full durable-runtime support requires a corrected native [`fitchmultz/pi` build containing `acf4c2d98ec44de2108f16a47bf59de5193341a7`](https://github.com/fitchmultz/pi/commit/acf4c2d98ec44de2108f16a47bf59de5193341a7), including custom steering/follow-up queue reporting and the code-update restart notice. Stock Pi 0.84.x and stock 0.85.1 both fail that queue contract. The corrected fork also reports 0.85.1, so `pi --version` alone does not prove support. [Native PR #9](https://github.com/fitchmultz/pi/pull/9) contains these core fixes. This package does not install the corrected native build.
+
+With that native build available, install from GitHub:
 
 ```bash
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-That is the only required step. This package is not published to npm and does not provide an `npx` installer. Use `pi update --extensions` to refresh it. Local checkout installs remain available for development:
+This package is not published to npm and does not provide an `npx` installer. Use `pi update --extension git:github.com/fitchmultz/pi-subagents` to refresh only this package. Before updating an in-use Pi checkout or extension, checkpoint work and **fully quit every Pi session using that installation**. Run rebuilds and updates from a separate terminal, then start fresh Pi processes. `/reload` can refresh supported settings, skills, and prompts, but cannot reliably activate changed JavaScript. Resume the **same saved parent session**, for example with `pi --session /path/to/parent.jsonl`, to retain run ownership, questions, and pending intercom delivery. A new or forked parent does not adopt them.
+
+To restart the bundled broker too, close every Pi session using the same agent directory and wait at least five seconds before reopening Pi.
+
+Local checkout installs remain available for development:
 
 ```bash
 npm install   # builds dist/, which the pi manifest loads
@@ -21,34 +27,54 @@ Local path installs do not run npm for you, and the manifest points at compiled 
 
 Supported platforms: **macOS and Linux**. Termux on Android is unverified; Windows is not supported.
 
-Pi 0.84.0 or later is required. Pi core packages remain optional wildcard peers, as recommended for Pi packages, while this repository validates against exact Pi 0.84.0 development dependencies.
+Pi core packages remain optional wildcard peers. Development dependencies are pinned to Pi 0.85.1 for compilation and package checks; those pins do not supply the native fixes above.
 
 ## Local validation
 
-Run the local completion gate before treating changes as complete:
+Use a built checkout of the required native Pi revision for the completion gate:
 
 ```bash
+npm ci
+export PI_INTERCOM_TEST_SDK=/absolute/path/to/pi/packages/coding-agent
+export PI_OWNERSHIP_TEST_PACKAGE_ROOT="$PI_INTERCOM_TEST_SDK"
+ln -sf "$PI_INTERCOM_TEST_SDK/dist/bundle/cli.js" node_modules/.bin/pi
 npm run ci
 ```
 
+Both SDK overrides point at the built `packages/coding-agent` directory, not the monorepo root. The CLI link changes only this checkout's `node_modules/.bin/pi`; repeat it after `npm ci`, which restores the stock development CLI.
+
 That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
-For a credential-free Linux gate against committed `HEAD` (Docker required):
+For a credential-free Linux gate against committed `HEAD`, Docker and `PI_LINUX_PI_ARCHIVE` are required. Supply an absolute path to a `.tar.gz` containing one top-level `pi/`: the required native checkout, its Linux `node_modules` (including workspace dependencies), and all built `dist/` output. It must include `pi/packages/coding-agent/dist/index.js` and `pi/packages/coding-agent/dist/bundle/cli.js`.
+
+Prepare that checkout in a clean Linux build environment matching the image's CPU architecture and Node version. Install locked dependencies and complete Pi's workspace build, including its generated model data, before archiving. Do not copy host `node_modules`, Pi user state, `auth.json`, secret `.env` files, or credential-bearing npm/Git configuration. From the Linux build environment:
 
 ```bash
-bash scripts/linux-smoke.sh
-PI_LINUX_IMAGE=node:22.19.0-bookworm bash scripts/linux-smoke.sh # Node support floor
+tar -czf /absolute/path/native-pi-linux-node24.tar.gz -C /clean/linux-build pi
 ```
 
-The container runs as an unprivileged user, installs locked dependencies, and runs the same `npm run ci` gate. No host home, source mount, credentials, or model calls are passed into it.
+Run with a matching archive for each image:
+
+```bash
+PI_LINUX_PI_ARCHIVE=/absolute/path/native-pi-linux-node24.tar.gz \
+  bash scripts/linux-smoke.sh
+PI_LINUX_IMAGE=node:22.19.0-bookworm \
+PI_LINUX_PI_ARCHIVE=/absolute/path/native-pi-linux-node22.tar.gz \
+  bash scripts/linux-smoke.sh # Node support floor
+```
+
+The archive is mounted read-only and extracted to `/native-pi`. The unprivileged `node` user installs locked package dependencies in `/workspace`, points the private CLI link and both SDK overrides at the supplied build, and runs the full, unchanged `npm run ci` gate. No host home, source mount, credentials, or model calls are passed into it. The gate does not patch Pi/Jiti or skip native cases.
 
 ## Real Pi smoke
 
-The default local gate stays mock-heavy and deterministic. When you need to verify the actual local file-path Pi package boundary, run the opt-in real smoke:
+The default local gate includes real SDK reload/reopen and native child-session ownership checks with a controlled CLI and no model calls. Other execution tests stay mock-heavy and deterministic. When you need to verify the actual local file-path Pi package boundary, run the opt-in real smoke:
 
 ```bash
-npm run smoke:real-pi
+export PATH="$PWD/node_modules/.bin:$PATH" # corrected checkout-only CLI link from above
+node scripts/real-pi-smoke.mjs
 ```
+
+Use direct `node` invocation with the corrected `pi` first on `PATH`. npm scripts prepend `node_modules/.bin` and may select the stock development CLI if its link has not been changed after dependency installation.
 
 It installs this checkout into an isolated temporary Pi home, runs `pi list`, and loads the bundled subagent and intercom extensions. It does not install pi-fitch-kit, publish to npm, or use GitHub Actions.
 
@@ -66,7 +92,7 @@ For a broader live gate, add `--llm-full`:
 PI_REAL_SMOKE_MODEL=openai/gpt-6-astra node scripts/real-pi-smoke.mjs --llm-full
 ```
 
-That also verifies real parallel, chain, file output, and acceptance flows. It checks actual tool calls and native settlement, and audits saved parent/child model identities. Use `--keep-temp` to preserve evidence; copied credentials are still removed. Direct `node` invocation uses the active `pi` on your PATH; npm scripts may select the pinned development CLI instead.
+That also verifies real parallel, chain, file output, and acceptance flows. It checks actual tool calls and native settlement, and audits saved parent/child model identities. The smoke stops its own processes before removing copied credentials or artifacts, including on timeout or handled cancellation. Use `--keep-temp` to preserve noncredential evidence.
 
 ## Local test watchdog
 
@@ -89,9 +115,20 @@ agent_runs({ action: "list" })
 agent_runs({ action: "inspect", id: "<run-id>" })
 agent_runs({ action: "nudge", id: "<run-id>", message: "Keep the public API unchanged." })
 agent_runs({ action: "continue", id: "<run-id>", message: "Now check the edge case." })
+agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "Checked the result." })
 ```
 
-`delegate` uses the same execution and acceptance paths as `subagent`; `worktree: true` runs one isolated writer through the existing worktree path. `agent_runs` lists owned work, including recent results, across working directories. A nudge never restarts completed work; `continue` explicitly revives its saved session. Use `load_subagent` for parallel groups, chains, detailed overrides, and profile administration. Existing `subagent` calls remain supported.
+`delegate` uses the same execution and acceptance paths as `subagent`; `worktree: true` runs one isolated writer through the existing worktree path. `agent_runs` keeps the saved parent's work discoverable across working directories, reloads, and restarts. A nudge never restarts completed work; `continue` explicitly revives its saved session. Use `load_subagent` for parallel groups, chains, detailed overrides, and profile administration. Existing `subagent` calls remain supported.
+
+### Owned runs, review, and continuation
+
+`agent_runs({ action: "list" })` puts unanswered questions first, then failures, interrupted or unconfirmed work, completed-but-unreviewed results, and other runs. It returns 20 runs by default. Use `offset` and `limit` (1–100) to page; `details.runList.nextOffset` points to the next page. Paging never discards history or disables exact-ID lookup. `inspect` exposes the result, saved launch configuration and profile source, parent review, notification receipt, and root/predecessor/continuation history.
+
+`review` records `decision: "accepted"` or `"needs_changes"`, with an optional `message`. Review a finished result, not a live run. The decision is separate from execution status, runtime acceptance checks, and delivery. It does not run checks, launch another child, or mark a follow-up accepted. Use `continue` explicitly when more work is needed; inspect and late nudges do not restart anything.
+
+Continuation and exited-question revival reuse the resolved provider/model, thinking level, profile, selected skill injection, tool/extension and context policies, output settings, limits, and acceptance contract. Changed profile defaults are not substituted. `agent_runs` accepts explicit `model`, `cwd`, `output`, and `acceptance` overrides on `continue`/`answer`; `agent` explicitly selects a current profile. Detailed overrides remain available through `subagent({ action: "resume", ... })`. Launch overrides apply when starting a continuation, not when delivering a follow-up or answer to a still-live child. A missing worktree can be replaced with an explicit `cwd`; a missing child session cannot be invented. If the same saved child already has a live continuation, another `continue` sends it the follow-up instead of starting a second process.
+
+Old receipts recover their handles and available results from saved parent/child sessions and existing metadata. When an old run has no saved profile snapshot, continuation asks for an explicit `agent` choice rather than guessing its original configuration. Resuming the same saved parent restores its ownership; a new or forked parent does not automatically adopt that work. Explicit legacy async-ID inspection remains available without adopting the inspected run.
 
 You do not need to create agents, write config, or learn slash commands. After installing, ask Pi for delegation in plain language:
 
@@ -339,7 +376,7 @@ Resume the **same saved supervisor session**, even from another cwd, to recover 
 
 Answers are saved once. Repeating the same answer does not start duplicate work; conflicting answers are rejected without replacing the original. A live child reads the saved answer; an exited child resumes from its saved session in a new run, retaining the original acceptance contract. An answer receipt is not execution completion. `stop` cancels outstanding questions and aborts a live waiter even after the foreground registry was lost.
 
-If an answer launch was interrupted before a continuation existed, the reply gives an explicit `continue` recovery call. It refuses to restart when launch evidence is uncertain; inspect the advertised continuation first. Questions and answers live in the user-scoped temporary runtime directory and survive process/broker restarts, not deletion of that directory. Pending questions are excluded from normal age-based cleanup.
+If an answer launch was interrupted before a continuation existed, the reply gives an explicit `continue` recovery call. It refuses to restart when launch evidence is uncertain; inspect the advertised continuation first. Questions, answers, launch contracts, and results live under `${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions/subagent-runs/<run-id>/`, separate from temporary logs. Ownership and review use native parent `subagent-run` entries; pending intercom delivery is journaled in that same saved Pi session. Temporary cleanup does not erase these records, but deleting saved sessions or metadata removes their recovery data. Pending questions are not age-cleaned.
 
 After 10 minutes of no observed child activity by default, needs-attention notices can show up in the parent session with useful next actions, such as checking status, interrupting the run, or nudging the child. When the child is registered, prefer `subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })` for live guidance, answers, corrections, or blockers. It sends a non-blocking steer that supplements the child's active task unless the message explicitly replaces it. Use the status-shown blocking intercom ask only when the parent must remain alive waiting for a reply.
 
@@ -904,8 +941,10 @@ Agent definitions are not loaded into context by default. Management actions let
 |-------|------|---------|-------------|
 | `agent` | string | - | Agent name for single mode, or target for management actions. |
 | `task` | string | - | Task string for single mode. |
-| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `extend`, `resume`, `nudge`, `questions`, `answer`, or `doctor`. |
+| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `extend`, `resume`, `nudge`, `questions`, `answer`, `review`, or `doctor`. |
 | `questionId` | string | - | Required with `id` and `message` for `action: "answer"`. |
+| `decision` | `accepted \| needs_changes` | - | Parent review outcome for `action: "review"`; optional `message` adds a note. |
+| `offset` / `limit` | integer | 0 / 20 | Page the attention-first `status` list; limit is 1–100. Exact-ID lookup is unbounded. |
 | `chainName` | string | - | Chain name for management actions. |
 | `config` | object/string | - | Agent or chain config for create/update. |
 | `output` | `string \| false` | agent default | Override single-agent output handoff file. Explicit caller paths persist at their resolved cwd/workspace path; agent-default relative paths are materialized under run artifacts. |
@@ -954,14 +993,16 @@ subagent({ action: "resume", id: "<run-id>", message: "follow-up question" })
 subagent({ action: "resume", id: "<run-id>", index: 1, message: "follow-up for child 2" })
 subagent({ action: "resume", id: "<nested-run-id>", message: "follow-up for a nested child" })
 subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })
+subagent({ action: "review", id: "<run-id>", decision: "needs_changes", message: "One edge case remains." })
+subagent({ action: "status", offset: 20, limit: 20 })
 subagent({ action: "doctor" })
 ```
 
-`status` resolves exact foreground ids, top-level async ids, and nested run ids before falling back to prefix matching. If a foreground run has already completed or timed out in the current session, `status` can still show the remembered foreground children and revive command by id or with `id: "latest"` / `id: "last"`. Nested status shows the root/parent path, nested children, session/artifact paths when known, and nested control commands. Inside child-safe fanout mode, bare `status` requires an id when no local foreground run is active, so children cannot enumerate unrelated top-level async runs. Bare `interrupt` still targets only the visible top-level run; interrupting a nested run requires its explicit nested id.
+`status` resolves exact foreground ids, top-level async ids, and nested run ids before falling back to prefix matching. Completed, failed, and interrupted owned runs remain inspectable after reload or restart of the same saved parent. `id: "latest"` / `id: "last"` selects the latest owned run; exact IDs are retained regardless of list size. Nested status shows the root/parent path, nested children, session/artifact paths when known, and nested control commands. Inside child-safe fanout mode, bare `status` requires an id when no local foreground run is active, so children cannot enumerate unrelated top-level async runs. Bare `interrupt` still targets only the visible top-level run; interrupting a nested run requires its explicit nested id.
 
 `extend` targets an active foreground run with an existing timeout and adds more milliseconds to the current child deadline. It is useful when progress or a needs-attention notice shows useful work still happening and throwing away the child session would waste context. It cannot revive an already-timed-out run; use `resume` after timeout.
 
-`resume` sends the follow-up directly when a foreground or async child is still reachable over intercom. After completion, it revives the child by starting a new async child from the stored child session file. Multi-child async runs and remembered foreground single, parallel, or chain runs can be revived by passing `index` to choose the child. Nested runs can be resumed by nested id when their live route or persisted nested session metadata is available. Timed-out or transient-error foreground children also use this revive path when their `.jsonl` session file was persisted. Revived children inherit the original explicit acceptance contract; an `acceptance` object supplied on the resume call overrides it. Revive starts a new child process from the old session context; it does not restart the same OS process, and it requires the chosen child to have a persisted `.jsonl` session file.
+`resume` sends the follow-up directly when a foreground or async child is still reachable over intercom. After completion, it revives the child by starting a new async child from the stored child session file. Multi-child async runs and remembered foreground single, parallel, or chain runs can be revived by passing `index` to choose the child. Nested runs can be resumed by nested id when their live route or persisted nested session metadata is available. Timed-out or transient-error foreground children also use this revive path when their `.jsonl` session file was persisted. Revived children reuse their saved effective launch configuration, including the original explicit acceptance contract. Explicit resume overrides replace the corresponding choices. `agent` opts into a current profile; old runs without a profile snapshot require that choice. Revive starts a new child process from the old session context; it does not restart the same OS process, and it requires the chosen child to have a persisted `.jsonl` session file.
 
 `nudge` sends a short non-blocking steered intercom message to a live foreground or async child. Use it for guidance, answers, corrections, or blockers that may affect active work. The child treats it as supplemental coordination and continues its current task unless the message explicitly replaces it. It requires the bundled intercom extension and a registered child target. Use the `Ask:` command shown by `status` only when the parent must remain alive waiting for a reply.
 
@@ -1112,6 +1153,10 @@ Metadata records timing, usage, exit code, final model, attempted models, fallba
 
 Session files are stored under a per-run session directory. With `context: "fork"`, each child starts with `--session <branched-session-file>` produced from the parent’s current leaf. That is a real session fork, not an injected summary.
 
+Native parent `subagent-run` custom entries store ownership, continuation links, and parent review without adding them to model context. They are restored from the full saved session, not only its current context window. The existing per-run question/contract files and finalized result metadata live at `$PI_CODING_AGENT_DIR/sessions/subagent-runs/<run-id>/` (default `~/.pi/agent/sessions/subagent-runs/`): `question-owner.json`, `contracts/<index>.json`, `questions/`, and foreground or background result/status snapshots. Temporary-log cleanup does not remove these records. No separate task service or database is used.
+
+The saved configuration retains profile choices and selected skill text, not copies of installed extensions or inherited project files. Those resources remain live. Debug artifacts and caller-owned output files can still be removed independently; inspection reports missing session/artifact paths, and a saved conversation alone never proves successful execution.
+
 Async completions notify only the originating session. The result watcher emits `subagent:async-complete`, and the extension consumes that event to render completion notifications.
 
 Async runs write:
@@ -1145,7 +1190,7 @@ If you are coming from Codex Goals, `acceptance` is the subagent equivalent for 
 }
 ```
 
-When `acceptance` is present, the initial child prompt includes a standardized acceptance section and asks for a fenced `acceptance-report` JSON block. After the child’s initial completion, the runtime continues the same persisted child session with an acceptance finalization prompt. The child can repair omissions in that same session, then must return the final `acceptance-report`. Missing or malformed finalization reports reject the run when the loop limit is reached.
+When `acceptance` is present, the initial child prompt includes a standardized acceptance section and asks for a fenced `acceptance-report` JSON block. After the child’s initial completion, the runtime continues the same persisted child session with an acceptance finalization prompt. The child can repair omissions in that same session, then must return the final `acceptance-report`. Missing or malformed finalization reports reject the run when the loop limit is reached. The final answer replaces the initial answer and must stand alone with every requested handoff detail, including paths, identifiers, findings, and cumulative evidence—not only a statement that the work was rechecked.
 
 Public acceptance config is evidence-driven. There is no public `level` field and no `acceptance: "checked"` shorthand. Runtime provenance is derived from what actually happened:
 
@@ -1186,7 +1231,7 @@ subagent({
 
 Foreground runs show compact live progress for single, chain, and parallel modes: current tool, recent output, token counts, duration, activity freshness, current-tool duration, and chain graph metadata when available.
 
-Press `Ctrl+O` to expand the full streaming view with complete output per step. The background async widget stays at one line per run until then.
+Delegation receipts, completed responses, and completion messages show compact summaries by default. Press `Ctrl+O` to expand their full responses and details, or the full streaming view with output per step. The background async widget stays at one line per run until then. Collapsing these views does not shorten the content sent to the model.
 
 Sequential chains show a flow line like `done scout → running planner`. Chains with parallel steps show per-step cards instead. Chain status uses `label` and `phase` metadata when present, while falling back to agent names for older chains.
 
@@ -1229,6 +1274,7 @@ Intercom delivery events:
 - `subagent:result-intercom`
 - `subagent:live-intercom`
 - `subagent:intercom-health-request`
+- `subagent:supervisor-question-resolved` — `{ questionId }` after a durable answer or explicit cancellation; clears pending-ask presence without starting a turn.
 
 The result watcher emits `subagent:async-complete`; `src/extension/index.ts` registers the notification handler that consumes it. Control/attention events are surfaced as visible parent notices and persisted for async runs. A terminal completion-guard notice stays visible and actionable but leaves the automatic parent wakeup to the matching completion result, avoiding two triggered turns. In async parallel groups that completion result arrives only after every sibling task finishes, so the automatic reaction to a mid-group guard notice is bounded by the longest-running sibling; the notice itself is still shown immediately. With `pi-intercom`, needs-attention notices, live nudges, best-effort child health, and grouped parent-side subagent result deliveries can reach the orchestrator over intercom.
 
@@ -1265,6 +1311,7 @@ The main runtime files are:
 | `src/runs/background/subagent-runner.ts` | Detached async runner. |
 | `src/runs/background/async-execution.ts` | Background launch support. |
 | `src/runs/background/async-status.ts` | Status discovery and formatting for async runs. |
+| `src/runs/shared/run-records.ts` | Native parent ownership, saved launch/result recovery, attention-first lists, and lineage/review views. |
 | `src/runs/foreground/chain-execution.ts` / `src/agents/chain-serializer.ts` | Chain orchestration and `.chain.md` parsing. |
 | `src/shared/settings.ts` | Chain behavior, instructions, and config helpers. |
 | `src/runs/shared/worktree.ts` | Git worktree isolation. |

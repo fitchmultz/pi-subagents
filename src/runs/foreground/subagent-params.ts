@@ -76,6 +76,9 @@ export interface SubagentParamsLike {
 	id?: string;
 	runId?: string;
 	questionId?: string;
+	decision?: "accepted" | "needs_changes";
+	offset?: number;
+	limit?: number;
 	dir?: string;
 	index?: number;
 	agent?: string;
@@ -209,6 +212,9 @@ export function normalizeSubagentParamsLike(params: RawSubagentParamsLike): Suba
 		id: stringValue(params, "id"),
 		runId: stringValue(params, "runId"),
 		questionId: stringValue(params, "questionId"),
+		decision: params.decision === "accepted" || params.decision === "needs_changes" ? params.decision : undefined,
+		offset: numberValue(params, "offset"),
+		limit: numberValue(params, "limit"),
 		dir: stringValue(params, "dir"),
 		index: numberValue(params, "index"),
 		agent: stringValue(params, "agent"),
@@ -266,6 +272,7 @@ export interface ExecutorDeps {
 	expandTilde: (p: string) => string;
 	discoverAgents: (cwd: string, scope: AgentScope, options?: AgentDiscoveryOptions) => { agents: AgentConfig[] };
 	allowMutatingManagementActions?: boolean;
+	ensureSessionState?: (ctx: ExtensionContext) => void;
 }
 
 export interface ExecutionContextData {

@@ -243,20 +243,6 @@ describe("buildChainInstructions", () => {
 		}
 	});
 
-	it("includes previous output in suffix when not in template", () => {
-		const behavior = { reads: undefined, output: false, outputMode: "inline", progress: false, skills: undefined };
-		const dir = createTempDir("chain-test-");
-		try {
-			const { suffix } = buildChainInstructions(behavior, dir, false, "Previous step output here");
-			assert.ok(
-				suffix.includes("Previous step output here"),
-				"should include previous output",
-			);
-		} finally {
-			removeTempDir(dir);
-		}
-	});
-
 	it("returns empty prefix/suffix when no behavior configured", () => {
 		const behavior = { reads: undefined, output: false, outputMode: "inline", progress: false, skills: undefined };
 		const dir = createTempDir("chain-test-");

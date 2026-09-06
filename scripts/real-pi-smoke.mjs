@@ -1,10 +1,15 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import process from "node:process";
+import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
+import { attachChildProcessLifecycle, isChildTreeAlive, trySignalChildTree } from "../src/shared/post-exit-stdio-guard.ts";
+import { getBrokerSocketPath } from "../src/pi-intercom/broker/paths.ts";
 
+const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 120_000;
 const authAgentDir = process.env.PI_REAL_SMOKE_AUTH_AGENT_DIR
 	?? (process.env.HOME ? join(process.env.HOME, ".pi", "agent") : undefined);
@@ -80,38 +85,143 @@ function isolatedEnv(root, agentDir) {
 		XDG_CONFIG_HOME: join(home, ".config"),
 		XDG_CACHE_HOME: join(home, ".cache"),
 		PI_CODING_AGENT_DIR: agentDir,
+		PI_SUBAGENT_TEMP_ROOT: join(root, "pi-subagents-runtime"),
 		PI_OFFLINE: "1",
 		PATH: process.env.PATH ?? "",
 	};
 }
 
-function run(label, command, args, { cwd, env, timeoutMs, input }) {
-	const result = spawnSync(command, args, {
-		cwd,
-		env,
-		encoding: "utf-8",
-		input,
-		stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-		timeout: timeoutMs,
-		maxBuffer: 16 * 1024 * 1024,
-		killSignal: "SIGTERM",
+function run(label, command, args, options) {
+	const { cwd, env, timeoutMs, input, signal, processes } = options;
+	signal.throwIfAborted();
+	return new Promise((resolve, reject) => {
+		let discovery;
+		let discoveryError;
+		const finish = async (error, output) => {
+			clearTimeout(timer);
+			clearInterval(watcher);
+			signal.removeEventListener("abort", cancel);
+			await discovery;
+			if (error) reject(error);
+			else resolve(output);
+		};
+		const child = execFile(command, args, { cwd, env, encoding: "utf8", detached: true, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+			const output = `${stdout ?? ""}${stderr ?? ""}`;
+			void finish(error ? new Error(`${label} failed with ${error.code ?? "spawn error"}\nCommand: ${command} ${args.join(" ")}\n${output}`) : undefined, output);
+		});
+		attachChildProcessLifecycle(child);
+		if (child.pid) {
+			const entry = { child };
+			processes.set(child.pid, entry);
+			child.once("close", () => { entry.exited = !isChildTreeAlive(child); });
+		}
+		// Remember detached startup children while their parent is still alive, even if startup fails.
+		const watcher = setInterval(() => {
+			discovery ??= collectOwnedProcesses(options).catch((error) => {
+				if (error.message !== discoveryError) console.error(`[real-pi-smoke] process discovery: ${error.message}`);
+				discoveryError = error.message;
+			}).finally(() => { discovery = undefined; });
+		}, 100);
+		// Reject without killing the parent first: finally owns cleanup of it AND its detached workers.
+		const timer = setTimeout(() => { void finish(new Error(`${label} timed out after ${timeoutMs}ms\nCommand: ${command} ${args.join(" ")}`)); }, timeoutMs);
+		const cancel = () => { void finish(signal.reason); };
+		signal.addEventListener("abort", cancel, { once: true });
+		child.stdin.on("error", () => {}); // A command may exit without reading its RPC input.
+		child.stdin.end(input);
 	});
-	const output = result.error ? result.error.message : `${result.stdout ?? ""}${result.stderr ?? ""}`;
-	if (result.error?.code === "ETIMEDOUT") {
-		throw new Error(`${label} timed out after ${timeoutMs}ms\nCommand: ${command} ${args.join(" ")}\n${output}`);
+}
+
+function* filesIn(dir) {
+	if (!existsSync(dir)) return;
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		const file = join(dir, entry.name);
+		if (entry.isDirectory()) yield* filesIn(file);
+		else if (entry.isFile()) yield file;
 	}
-	if (result.error || result.status !== 0) {
-		throw new Error(`${label} failed with ${result.status ?? "spawn error"}\nCommand: ${command} ${args.join(" ")}\n${output}`);
+}
+
+function processRef(pid) {
+	if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) throw new Error("Invalid smoke-owned process ID");
+	return { pid, kill: (signal) => process.kill(pid, signal) };
+}
+
+async function collectOwnedProcesses({ root, env, processes }) {
+	const remember = (pid, broker = false) => {
+		if (pid === undefined) return;
+		if (!processes.has(pid)) processes.set(pid, { child: processRef(pid) });
+		if (broker) processes.get(pid).broker = true;
+	};
+	// Only this attempt's private run files, never the user's shared runtime or process argv.
+	for (const dir of [env.PI_SUBAGENT_TEMP_ROOT, join(env.PI_CODING_AGENT_DIR, "sessions", "subagent-runs")]) {
+		for (const file of filesIn(dir)) {
+			if (basename(file) === "status.json" || (basename(dirname(file)) === "contracts" && file.endsWith(".json"))) {
+				remember(JSON.parse(readFileSync(file, "utf8")).pid);
+			}
+		}
 	}
-	return output;
+	// The parent records the detached launcher PID; status.json records its runner, not the launcher.
+	for (const file of filesIn(join(root, "sessions"))) {
+		if (!file.endsWith(".jsonl")) continue;
+		const lines = readFileSync(file, "utf8").split("\n").slice(0, -1); // An active append may have a partial final line.
+		const header = lines[0] ? JSON.parse(lines[0]) : undefined;
+		for (const line of lines) {
+			if (!line.trim()) continue;
+			const entry = JSON.parse(line);
+			if (entry.type === "custom" && entry.customType === "subagent-run" && entry.data?.ownerSessionId === header?.id) remember(entry.data.pid);
+		}
+	}
+	const brokerPid = join(env.PI_CODING_AGENT_DIR, "intercom", "broker.pid");
+	if (existsSync(brokerPid)) remember(Number(readFileSync(brokerPid, "utf8").trim()), true);
+	// Startup can precede PID-file publication. Query only direct children of known owned PIDs,
+	// including new Map entries (grandchildren), before signalling their parents. No argv/global scan.
+	for (const entry of processes.values()) {
+		if (!entry.exited) entry.exited = !isChildTreeAlive(entry.child);
+		if (entry.exited) continue;
+		const { child } = entry;
+		try {
+			const { stdout } = await execFileAsync("pgrep", ["-P", String(child.pid)], { env, encoding: "utf8", timeout: 1000 });
+			for (const pid of stdout.trim().split(/\s+/).filter(Boolean)) remember(Number(pid));
+		} catch (error) {
+			if (error.code !== 1) throw error; // pgrep's exit 1 means no matching children.
+		}
+	}
+}
+
+async function stopOwnedProcesses(options) {
+	let lastError;
+	while (true) {
+		let collected = false;
+		try {
+			await collectOwnedProcesses(options);
+			collected = true;
+		} catch (error) {
+			// Keep the controller alive and credentials in place if ownership cannot yet be read.
+			if (error.message !== lastError) console.error(`[real-pi-smoke] waiting for owned-process cleanup: ${error.message}`);
+			lastError = error.message;
+		}
+		const alive = [...options.processes.values()].filter((entry) => {
+			if (!entry.exited) entry.exited = !isChildTreeAlive(entry.child);
+			return !entry.exited;
+		});
+		if (collected && alive.length === 0) return;
+		const workers = alive.filter((entry) => !entry.broker);
+		// Stop the broker last, so exiting workers cannot restart it during cleanup.
+		for (const entry of workers.length ? workers : alive) {
+			if (!entry.stoppedAt) {
+				entry.stoppedAt = Date.now();
+				trySignalChildTree(entry.child, "SIGTERM");
+			} else if (Date.now() - entry.stoppedAt >= 3000) trySignalChildTree(entry.child, "SIGKILL");
+		}
+		await delay(50);
+	}
 }
 
 function runPi(label, args, options) {
 	return run(label, "pi", args, options);
 }
 
-function verifyBundledResources(options) {
-	const output = runPi("pi load bundled resources", ["--mode", "rpc", "--no-session", "--offline", "--approve"], {
+async function verifyBundledResources(options) {
+	const output = await runPi("pi load bundled resources", ["--mode", "rpc", "--no-session", "--offline", "--approve"], {
 		...options,
 		input: `${JSON.stringify({ id: "commands", type: "get_commands" })}\n`,
 	});
@@ -132,12 +242,12 @@ function verifyBundledResources(options) {
 	}
 }
 
-function runLivePrompt(label, prompt, options, expectedTool) {
+async function runLivePrompt(label, prompt, options, expectedTool) {
 	const args = ["--print", "--mode", "json", "--session-dir", join(options.root, "sessions"), "--approve"];
 	if (process.env.PI_REAL_SMOKE_PROVIDER) args.push("--provider", process.env.PI_REAL_SMOKE_PROVIDER);
 	if (process.env.PI_REAL_SMOKE_MODEL) args.push("--model", process.env.PI_REAL_SMOKE_MODEL, "--models", process.env.PI_REAL_SMOKE_MODEL);
 	args.push(prompt);
-	const output = runPi(label, args, options);
+	const output = await runPi(label, args, options);
 	writeFileSync(join(options.root, `${label.replace(/ /g, "-")}.jsonl`), output);
 	const events = output.split("\n").flatMap((line) => {
 		try { return [JSON.parse(line)]; } catch { return []; }
@@ -186,33 +296,28 @@ function requireOutput(label, output, pattern) {
 	console.log(`[real-pi-smoke] ${label} output evidence:\n${compact}`);
 }
 
-function asyncRunDir(runId) {
-	const scope = typeof process.getuid === "function" ? `uid-${process.getuid()}` : `user-${process.env.USERNAME || process.env.USER || process.env.LOGNAME || "unknown"}`;
-	return join(tmpdir(), `pi-subagents-${scope}`, "async-subagent-runs", runId);
-}
-
-async function waitForAsyncCompletion(runId, pattern, timeoutMs, keepArtifacts = false) {
-	const dir = asyncRunDir(runId);
+async function waitForAsyncCompletion(runId, pattern, { env, timeoutMs, signal }) {
+	const dir = join(env.PI_SUBAGENT_TEMP_ROOT, "async-subagent-runs", runId);
 	const deadline = Date.now() + timeoutMs;
 	let lastState = "missing";
 	let lastOutput = "";
 	while (Date.now() < deadline) {
+		signal.throwIfAborted();
 		const statusPath = join(dir, "status.json");
 		const outputPath = join(dir, "output-0.log");
 		if (existsSync(outputPath)) lastOutput = readFileSync(outputPath, "utf8");
 		if (existsSync(statusPath)) {
 			const status = JSON.parse(readFileSync(statusPath, "utf8"));
 			lastState = String(status.state ?? "unknown");
-			if (lastState === "complete") {
+			if (lastState === "complete" && status.pid && !isChildTreeAlive(processRef(status.pid))) {
 				if (!pattern.test(lastOutput)) throw new Error(`async run ${runId} completed without ${pattern}.\nOutput:\n${lastOutput}`);
 				const compact = lastOutput.trim().split(/\r?\n/).slice(-8).join("\n");
 				console.log(`[real-pi-smoke] async run ${runId} completed:\n${compact}`);
-				if (!keepArtifacts) rmSync(dir, { recursive: true, force: true });
 				return;
 			}
 			if (lastState === "failed" || lastState === "paused") throw new Error(`async run ${runId} ended ${lastState}.\nOutput:\n${lastOutput}`);
 		}
-		await new Promise((resolve) => setTimeout(resolve, 500));
+		await delay(500, undefined, { signal });
 	}
 	throw new Error(`async run ${runId} did not complete after ${timeoutMs}ms (last state: ${lastState}).\nOutput:\n${lastOutput}`);
 }
@@ -246,14 +351,17 @@ extensions:
 Follow the task exactly and return its requested text without using tools.
 `, "utf-8");
 	const env = isolatedEnv(root, agentDir);
-	const runOptions = { cwd: projectRoot, env, timeoutMs: options.timeoutMs, root };
+	const cancellation = new AbortController();
+	const cancel = (signal) => cancellation.abort(new Error(`Cancelled by ${signal}`));
+	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, cancel);
+	const runOptions = { cwd: projectRoot, env, timeoutMs: options.timeoutMs, root, signal: cancellation.signal, processes: new Map() };
 
 	try {
-		runPi("pi install pi-subagents", ["install", repoRoot, "--approve"], runOptions);
-		const list = runPi("pi list", ["list", "--approve"], runOptions);
+		await runPi("pi install pi-subagents", ["install", repoRoot, "--approve"], runOptions);
+		const list = await runPi("pi list", ["list", "--approve"], runOptions);
 		if (!list.includes(repoRoot)) throw new Error(`pi list did not include ${repoRoot}:\n${list}`);
-		verifyBundledResources(runOptions);
-		console.log(`[real-pi-smoke] active Pi ${runPi("pi version", ["--version"], runOptions).trim()}`);
+		await verifyBundledResources(runOptions);
+		console.log(`[real-pi-smoke] active Pi ${(await runPi("pi version", ["--version"], runOptions)).trim()}`);
 
 		if (options.llm) {
 			const copiedAuthFiles = copyLiveAuth(agentDir);
@@ -263,16 +371,16 @@ Follow the task exactly and return its requested text without using tools.
 			const listPrompt = "Use the agent_runs tool with action profiles. Reply exactly with 'real-pi-smoke list ok' if reviewer, scout, oracle, and watcher are available.";
 			const foregroundPrompt = `Use the delegate tool to run real-smoke with task 'Reply exactly: real-pi-smoke foreground ok', async false and output false.${childModelInstruction} If the tool returns an output artifact path instead of inline output, read that file. Then reply exactly 'real-pi-smoke foreground ok' only if the child result contains it.`;
 			const asyncPrompt = `Use the delegate tool to run real-smoke with task 'Reply exactly: real-pi-smoke async ok', output false.${childModelInstruction} Set async true so it launches in the background. Do not call status and do not wait for completion. Reply with 'real-pi-smoke async launched ok' and quote the exact tool result line beginning 'Async:' including the run id.`;
-			requireOutput("real Pi intercom prompt", runLivePrompt("real Pi intercom prompt", intercomPrompt, runOptions, "intercom"), /real-pi-smoke intercom ok/);
-			requireOutput("real Pi subagent list prompt", runLivePrompt("real Pi subagent list prompt", listPrompt, runOptions, "agent_runs"), /real-pi-smoke list ok/);
-			requireOutput("real Pi foreground subagent prompt", runLivePrompt("real Pi foreground subagent prompt", foregroundPrompt, runOptions, "delegate"), /real-pi-smoke foreground ok/);
-			const asyncOutput = runLivePrompt("real Pi async subagent prompt", asyncPrompt, runOptions, "delegate");
+			requireOutput("real Pi intercom prompt", await runLivePrompt("real Pi intercom prompt", intercomPrompt, runOptions, "intercom"), /real-pi-smoke intercom ok/);
+			requireOutput("real Pi subagent list prompt", await runLivePrompt("real Pi subagent list prompt", listPrompt, runOptions, "agent_runs"), /real-pi-smoke list ok/);
+			requireOutput("real Pi foreground subagent prompt", await runLivePrompt("real Pi foreground subagent prompt", foregroundPrompt, runOptions, "delegate"), /real-pi-smoke foreground ok/);
+			const asyncOutput = await runLivePrompt("real Pi async subagent prompt", asyncPrompt, runOptions, "delegate");
 			requireOutput("real Pi async subagent prompt", asyncOutput, /real-pi-smoke async (?:launched )?ok/i);
 			const asyncRunId = asyncOutput.match(/Async(?: parallel)?:\s+(?:\S+|\[[^\]]+\])\s+\[([0-9a-f-]{36})\]/i)?.[1]
 				?? asyncOutput.match(/\[([0-9a-f-]{36})\]/i)?.[1]
 				?? asyncOutput.match(/\b([0-9a-f]{8}-[0-9a-f-]{27})\b/i)?.[1];
 			if (!asyncRunId) throw new Error(`Could not parse async run id from output:\n${asyncOutput}`);
-			await waitForAsyncCompletion(asyncRunId, /^real-pi-smoke async ok$/m, options.timeoutMs, options.keepTemp);
+			await waitForAsyncCompletion(asyncRunId, /^real-pi-smoke async ok$/m, runOptions);
 
 			if (options.llmFull) {
 				const outputPath = join(root, "live-output-smoke.txt");
@@ -280,11 +388,11 @@ Follow the task exactly and return its requested text without using tools.
 				const chainPrompt = `Use the subagent tool chain mode with two delegate steps and async false.${childModelInstruction} Step 1 task: 'Reply exactly: real-pi-smoke chain step1 ok'. Step 2 task: 'Previous output is {previous}. Reply exactly: real-pi-smoke chain step2 ok'. Reply exactly 'real-pi-smoke chain ok' only if step 2 ran after step 1.`;
 				const outputPrompt = `Use the subagent tool to run delegate with task 'Write exactly real-pi-smoke output ok plus newline to the requested output path, then reply exactly wrote output smoke'. Set async false, output to ${JSON.stringify(outputPath)}, and outputMode to file-only.${childModelInstruction} Reply exactly 'real-pi-smoke output ok' only after the tool returns.`;
 				const acceptancePrompt = `Use the subagent tool to run delegate with task 'Final answer exactly: real-pi-smoke acceptance ok evidence=manual-notes'. Set async false. Include acceptance criteria requiring the final answer to contain real-pi-smoke acceptance ok and evidence manual-notes, with maxFinalizationTurns 2.${childModelInstruction} Reply exactly 'real-pi-smoke acceptance ok' only if the child completed.`;
-				requireOutput("real Pi parallel subagent prompt", runLivePrompt("real Pi parallel subagent prompt", parallelPrompt, runOptions, "subagent"), /real-pi-smoke parallel ok/);
-				requireOutput("real Pi chain subagent prompt", runLivePrompt("real Pi chain subagent prompt", chainPrompt, runOptions, "subagent"), /real-pi-smoke chain ok/);
-				requireOutput("real Pi output subagent prompt", runLivePrompt("real Pi output subagent prompt", outputPrompt, runOptions, "subagent"), /real-pi-smoke output ok/);
+				requireOutput("real Pi parallel subagent prompt", await runLivePrompt("real Pi parallel subagent prompt", parallelPrompt, runOptions, "subagent"), /real-pi-smoke parallel ok/);
+				requireOutput("real Pi chain subagent prompt", await runLivePrompt("real Pi chain subagent prompt", chainPrompt, runOptions, "subagent"), /real-pi-smoke chain ok/);
+				requireOutput("real Pi output subagent prompt", await runLivePrompt("real Pi output subagent prompt", outputPrompt, runOptions, "subagent"), /real-pi-smoke output ok/);
 				if (!existsSync(outputPath) || !/real-pi-smoke output ok/.test(readFileSync(outputPath, "utf8"))) throw new Error(`output smoke file missing expected content: ${outputPath}`);
-				requireOutput("real Pi acceptance subagent prompt", runLivePrompt("real Pi acceptance subagent prompt", acceptancePrompt, runOptions, "subagent"), /real-pi-smoke acceptance ok/);
+				requireOutput("real Pi acceptance subagent prompt", await runLivePrompt("real Pi acceptance subagent prompt", acceptancePrompt, runOptions, "subagent"), /real-pi-smoke acceptance ok/);
 			}
 			auditSavedModels(join(root, "sessions"), process.env.PI_REAL_SMOKE_MODEL);
 		}
@@ -292,9 +400,12 @@ Follow the task exactly and return its requested text without using tools.
 		console.log(`[real-pi-smoke] installed the single pi-subagents package, loaded bundled intercom, and verified pi list in ${agentDir}`);
 		if (!options.llm) console.log("[real-pi-smoke] live model subagent prompts skipped; pass --llm to exercise foreground/async paths.");
 	} finally {
+		await stopOwnedProcesses(runOptions);
+		rmSync(dirname(getBrokerSocketPath(agentDir)), { recursive: true, force: true });
 		for (const name of ["auth.json", "models.json"]) rmSync(join(agentDir, name), { force: true });
 		if (options.keepTemp) console.log(`[real-pi-smoke] kept temp root ${root}`);
 		else rmSync(root, { recursive: true, force: true });
+		for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.off(signal, cancel);
 	}
 }
 

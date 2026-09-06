@@ -197,7 +197,7 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		const actionSchema = SubagentParams?.properties?.action;
 		assert.ok(actionSchema, "action schema should exist");
 		assert.equal(actionSchema.type, "string");
-		assert.deepEqual(actionSchema.enum, ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "questions", "answer", "doctor"]);
+		assert.deepEqual(actionSchema.enum, ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "questions", "answer", "review", "doctor"]);
 		const description = String(actionSchema.description ?? "");
 		assert.match(description, /Management\/control action/);
 		assert.match(description, /Omit for execution mode/);
@@ -409,6 +409,23 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.equal(chainReadsSchema?.type, undefined);
 		assert.equal(hasAnyOfArrayWithStringItems(chainReadsSchema), true);
 		assert.equal(hasAnyOfType(chainReadsSchema, "boolean"), true);
+	});
+
+	it("aligns parent review, paging, and explicit continuation overrides in compact and legacy schemas", { skip: !CompileSchema ? "typebox compiler not available" : undefined }, () => {
+		const compact = CompileSchema!(schemas.AgentRunsParams);
+		const legacy = CompileSchema!(schemas.SubagentParams);
+		for (const schema of [compact, legacy]) {
+			assert.equal(schema.Check({ action: "review", id: "run", decision: "accepted" }), true);
+			assert.equal(schema.Check({ action: "review", id: "run", decision: "needs_changes", message: "Edge case remains" }), true);
+			assert.equal(schema.Check({ action: "review", id: "run" }), false);
+			assert.equal(schema.Check({ action: "review", decision: "accepted" }), false);
+		}
+		assert.equal(compact.Check({ action: "list", offset: 20, limit: 20 }), true);
+		assert.equal(legacy.Check({ action: "status", offset: 20, limit: 20 }), true);
+		assert.equal(compact.Check({ action: "list", limit: 0 }), false);
+		assert.equal(legacy.Check({ action: "review", id: "run", decision: "accepted", limit: 20 }), false);
+		assert.equal(compact.Check({ action: "continue", id: "run", message: "Continue", model: "openai/gpt-6-astra:high", cwd: "/repo" }), true);
+		assert.equal(legacy.Check({ action: "resume", id: "run", message: "Continue", model: "openai/gpt-6-astra:high", output: false }), true);
 	});
 
 	it("validates representative flexible field values with TypeBox compiler", { skip: !CompileSchema ? "typebox compiler not available" : undefined }, () => {

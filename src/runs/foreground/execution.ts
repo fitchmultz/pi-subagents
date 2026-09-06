@@ -15,13 +15,10 @@ import {
 	writeMetadata,
 } from "../../shared/artifacts.ts";
 import {
-	type AcceptanceFinalizationTurn,
-	type AcceptanceLedger,
 	type AgentProgress,
 	type ArtifactPaths,
 	type ControlEvent,
 	type ModelAttempt,
-	type ResolvedAcceptanceConfig,
 	type RunSyncOptions,
 	type SingleResult,
 	type Usage,
@@ -50,7 +47,8 @@ import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/ski
 import { hasCompletedMutationToolCall, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
-import { saveQuestionContract } from "../shared/supervisor-questions.ts";
+import { refreshQuestionLaunch, saveQuestionContract } from "../shared/supervisor-questions.ts";
+import { saveForegroundLaunch } from "../shared/run-records.ts";
 import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
@@ -66,10 +64,8 @@ import { readStructuredOutput } from "../shared/structured-output.ts";
 import { captureSingleOutputSnapshot, cleanupSingleOutputFile, formatConsumedOutputReference, formatSavedOutputReference, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	buildModelCandidates,
-	formatModelAttemptNote,
-	formatModelRecoveryAttemptNote,
-	isRecoverableSameModelFailure,
-	isRetryableModelFailure,
+	runModelAttempts,
+	sumAttemptUsage,
 } from "../shared/model-fallback.ts";
 import {
 	createMutatingFailureState,
@@ -86,14 +82,8 @@ import {
 	recordToolStartForSubagentLoopGuard,
 } from "../shared/subagent-tool-loop-guard.ts";
 import {
-	acceptanceFailureMessage,
-	acceptanceSelfReviewConfig,
-	attachFinalizationToLedger,
-	buildFinalizationProcessFailureLedger,
-	createFinalizationProcessFailureTurn,
-	createFinalizationTurn,
-	evaluateAcceptance,
-	formatAcceptanceFinalizationPrompt,
+	evaluateRunAcceptance,
+	resolveExecutionOutcome,
 	resolveFinalizationOutput,
 	formatAcceptancePrompt,
 	resolveEffectiveAcceptance,
@@ -108,15 +98,6 @@ function emptyUsage(): Usage {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 }
 
-function sumUsage(target: Usage, source: Usage): void {
-	target.input += source.input;
-	target.output += source.output;
-	target.cacheRead += source.cacheRead;
-	target.cacheWrite += source.cacheWrite;
-	target.cost += source.cost;
-	target.turns += source.turns;
-}
-
 function appendRecentOutput(progress: AgentProgress, lines: string[]): void {
 	if (lines.length === 0) return;
 	progress.recentOutput.push(...lines.filter((line) => line.trim()));
@@ -126,7 +107,6 @@ function appendRecentOutput(progress: AgentProgress, lines: string[]): void {
 }
 
 const FOREGROUND_TIMEOUT_EXIT_CODE = 124;
-const MAX_SAME_MODEL_RECOVERY_RETRIES = 1;
 
 function formatForegroundTimeoutMessage(timeoutMs: number | undefined): string {
 	return timeoutMs ? `Timed out after ${timeoutMs}ms.` : "Timed out.";
@@ -249,6 +229,7 @@ function snapshotResult(result: SingleResult, progress: AgentProgress): SingleRe
 }
 
 type AttemptOptions = RunSyncOptions & { onIntercomDetach?: (result: SingleResult) => void };
+type AttemptResult = SingleResult & { terminalFailure?: boolean };
 
 async function runSingleAttempt(
 	runtimeCwd: string,
@@ -268,9 +249,11 @@ async function runSingleAttempt(
 		originalTask?: string;
 		completionPolicy: CompletionPolicy;
 	},
-): Promise<SingleResult> {
-	if (options.signal?.aborted) {
-		return { agent: agent.name, task, exitCode: 1, messages: [], usage: emptyUsage(), error: "Subagent cancelled." };
+): Promise<AttemptResult> {
+	if (options.signal?.aborted || options.interruptSignal?.aborted) {
+		const outcome = resolveExecutionOutcome({ result: { exitCode: 1 }, signal: options.signal, interruptSignal: options.interruptSignal });
+		return { agent: agent.name, task, ...outcome, exitCode: outcome.exitCode ?? 1, messages: [], usage: emptyUsage(),
+			finalOutput: outcome.error ?? "Interrupted. Waiting for explicit next action." };
 	}
 	const modelArg = applyThinkingSuffix(model, agent.thinking);
 	let args: string[];
@@ -337,6 +320,7 @@ async function runSingleAttempt(
 			usage: emptyUsage(),
 			model: modelArg,
 			error: message,
+			terminalFailure: true,
 			finalOutput: message,
 			artifactPaths: shared.artifactPaths,
 			skills: shared.resolvedSkillNames,
@@ -344,7 +328,7 @@ async function runSingleAttempt(
 		};
 	}
 
-	const result: SingleResult = {
+	const result: AttemptResult = {
 		agent: agent.name,
 		task: shared.originalTask ?? task,
 		exitCode: 0,
@@ -403,6 +387,7 @@ async function runSingleAttempt(
 			stdio: ["ignore", "pipe", "pipe"],
 			detached: true,
 		});
+		if (proc.pid && options.runId) saveQuestionContract(options.runId, options.index ?? 0, { pid: proc.pid, sessionFile: options.sessionFile, updatedAt: Date.now() });
 		let buf = "";
 		let processClosed = false;
 		let settled = false;
@@ -523,6 +508,7 @@ async function runSingleAttempt(
 		const failForToolLoop = (message: string) => {
 			if (processClosed || settled || timedOut || resourceLimited) return;
 			resourceLimited = true;
+			result.terminalFailure = true;
 			result.error = message;
 			result.finalOutput = message;
 			progress.status = "failed";
@@ -896,13 +882,14 @@ async function runSingleAttempt(
 
 	return finalizeCompletedAttempt();
 
-	function finalizeCompletedAttempt(): SingleResult {
+	function finalizeCompletedAttempt(): AttemptResult {
 	if (result.error && result.exitCode === 0) {
 		result.exitCode = 1;
 	}
 	if (result.exitCode === 0 && !result.error) {
 		const errInfo = detectSubagentError(result.messages ?? []);
 		if (errInfo.hasError) {
+			result.terminalFailure = true;
 			result.exitCode = errInfo.exitCode ?? 1;
 			result.error = errInfo.details
 				? `${errInfo.errorType} failed (exit ${errInfo.exitCode}): ${errInfo.details}`
@@ -918,6 +905,7 @@ async function runSingleAttempt(
 		result.structuredOutputSchemaPath = options.structuredOutput.schemaPath;
 		result.structuredOutputPath = options.structuredOutput.outputPath;
 		if (structured.error) {
+			result.terminalFailure = true;
 			result.exitCode = 1;
 			result.error = structured.error;
 		} else {
@@ -954,6 +942,7 @@ async function runSingleAttempt(
 		&& shared.completionPolicy === "mutation-guard"
 		&& !observedCompletedMutation && !hasCompletedMutationToolCall(result.messages ?? []);
 	if (completionGuardTriggered) {
+		result.terminalFailure = true;
 		result.exitCode = 1;
 		result.error = "Subagent completed without making edits required by completionGuard: true.\nUse an acceptance contract when a valid no-op is allowed.";
 		progress.status = "failed";
@@ -975,6 +964,7 @@ async function runSingleAttempt(
 		result.savedOutputPath = resolvedOutput.savedPath;
 		result.outputSaveError = resolvedOutput.saveError;
 		if (resolvedOutput.saveError) {
+			result.terminalFailure = true;
 			result.exitCode = 1;
 			result.error = `Failed to save output file '${options.outputPath}': ${resolvedOutput.saveError}`;
 			progress.status = "failed";
@@ -997,7 +987,7 @@ async function runSingleAttempt(
 
 function publishFinalResult(result: SingleResult, options: RunSyncOptions): void {
 	const fullOutput = artifactOutputByResult.get(result) ?? result.finalOutput ?? "";
-	if (result.savedOutputPath && result.exitCode === 0) {
+	if (result.savedOutputPath && result.exitCode === 0 && !result.interrupted) {
 		const cleanup = options.persistOutputFile || options.outputMode === "file-only"
 			? undefined
 			: cleanupSingleOutputFile(result.savedOutputPath, fullOutput, undefined);
@@ -1052,121 +1042,6 @@ function publishFinalResult(result: SingleResult, options: RunSyncOptions): void
 			controlEvents: result.controlEvents,
 		},
 	});
-}
-
-async function runAcceptanceFinalizationLoop(input: {
-	runtimeCwd: string;
-	agent: AgentConfig;
-	result: SingleResult;
-	initialLedger: AcceptanceLedger;
-	initialOutput: string;
-	acceptance: ResolvedAcceptanceConfig;
-	options: AttemptOptions;
-	systemPrompt: string;
-	resolvedSkillNames?: string[];
-	skillsWarning?: string;
-}): Promise<AcceptanceLedger> {
-	input.result.initialOutput = artifactOutputByResult.get(input.result) ?? input.result.finalOutput ?? "";
-	const sessionFile = input.result.sessionFile ?? input.options.sessionFile;
-	const maxTurns = input.acceptance.finalization.maxTurns;
-	const turns: AcceptanceFinalizationTurn[] = [];
-	if (!sessionFile) {
-		const message = "Acceptance finalization requires a session file for same-session continuation.";
-		turns.push(createFinalizationProcessFailureTurn({ turn: 1, prompt: "", message }));
-		return buildFinalizationProcessFailureLedger({ initialLedger: input.initialLedger, turns, maxTurns, message });
-	}
-
-	const selfReviewAcceptance = acceptanceSelfReviewConfig(input.acceptance);
-	let previousFailure = acceptanceFailureMessage(input.initialLedger);
-	let authoritativeLedger = input.initialLedger;
-	for (let turn = 1; turn <= maxTurns; turn++) {
-		const prompt = formatAcceptanceFinalizationPrompt({
-			acceptance: input.acceptance,
-			initialOutput: input.initialOutput,
-			initialLedger: input.initialLedger,
-			turn,
-			maxTurns,
-			...(previousFailure ? { previousFailure } : {}),
-		});
-		const finalizationOptions: AttemptOptions = { ...input.options, sessionFile, outputMode: "inline" };
-		delete finalizationOptions.sessionDir;
-		delete finalizationOptions.structuredOutput;
-		const finalizationResult = await runSingleAttempt(
-			input.runtimeCwd,
-			input.agent,
-			prompt,
-			input.result.model,
-			finalizationOptions,
-			{
-				sessionEnabled: true,
-				systemPrompt: input.systemPrompt,
-				resolvedSkillNames: input.resolvedSkillNames,
-				skillsWarning: input.skillsWarning,
-				attemptNotes: [],
-				originalTask: prompt,
-				completionPolicy: "acceptance-contract",
-				// An existing handoff file remains authoritative during review.
-				outputSnapshot: undefined,
-				previousOutput: artifactOutputByResult.get(input.result) ?? input.result.finalOutput,
-			},
-		);
-		(input.result.modelAttempts ??= []).push({
-			model: finalizationResult.model ?? input.result.model ?? "default",
-			success: finalizationResult.exitCode === 0 && !finalizationResult.error,
-			exitCode: finalizationResult.exitCode,
-			error: finalizationResult.error,
-			usage: { ...finalizationResult.usage },
-		});
-		sumUsage(input.result.usage, finalizationResult.usage);
-		input.result.progressSummary = {
-			toolCount: (input.result.progressSummary?.toolCount ?? 0) + (finalizationResult.progressSummary?.toolCount ?? 0),
-			tokens: input.result.usage.input + input.result.usage.output,
-			durationMs: (input.result.progressSummary?.durationMs ?? 0) + (finalizationResult.progressSummary?.durationMs ?? 0),
-		};
-		if (finalizationResult.controlEvents?.length) {
-			input.result.controlEvents = [...(input.result.controlEvents ?? []), ...finalizationResult.controlEvents];
-		}
-		const rawOutput = acceptanceOutputByResult.get(finalizationResult) ?? getFinalOutput(finalizationResult.messages ?? []) ?? finalizationResult.finalOutput ?? "";
-		input.result.messages = [...(input.result.messages ?? []), ...(finalizationResult.messages ?? [])];
-		if (finalizationResult.exitCode !== 0 || finalizationResult.error || finalizationResult.detached || finalizationResult.interrupted) {
-			input.result.interrupted = finalizationResult.interrupted;
-			input.result.timedOut = finalizationResult.timedOut;
-			input.result.resourceLimitExceeded = finalizationResult.resourceLimitExceeded;
-			input.result.exitCode = finalizationResult.exitCode;
-			input.result.error = finalizationResult.error;
-			const message = finalizationResult.error ?? "Acceptance finalization turn did not complete successfully.";
-			turns.push(createFinalizationProcessFailureTurn({ turn, prompt, rawOutput, message }));
-			return buildFinalizationProcessFailureLedger({ initialLedger: input.initialLedger, turns, maxTurns, message });
-		}
-		input.result.finalOutput = finalizationResult.finalOutput;
-		input.result.savedOutputPath = finalizationResult.savedOutputPath;
-		input.result.outputReference = finalizationResult.outputReference;
-		input.result.outputSaveError = finalizationResult.outputSaveError;
-		artifactOutputByResult.set(input.result, artifactOutputByResult.get(finalizationResult) ?? finalizationResult.finalOutput ?? "");
-		const selfReviewLedger = await evaluateAcceptance({
-			acceptance: selfReviewAcceptance,
-			governing: input.acceptance,
-			output: rawOutput,
-			cwd: input.options.cwd ?? input.runtimeCwd,
-			signal: AbortSignal.any([input.options.signal, input.options.interruptSignal].filter((signal) => signal !== undefined)),
-		});
-		authoritativeLedger = selfReviewLedger;
-		turns.push(createFinalizationTurn({ turn, prompt, rawOutput, ledger: selfReviewLedger }));
-		const failure = acceptanceFailureMessage(selfReviewLedger);
-		if (!failure) {
-			authoritativeLedger = input.acceptance === selfReviewAcceptance
-				? selfReviewLedger
-				: await evaluateAcceptance({
-					acceptance: input.acceptance,
-					output: rawOutput,
-					cwd: input.options.cwd ?? input.runtimeCwd,
-					signal: AbortSignal.any([input.options.signal, input.options.interruptSignal].filter((signal) => signal !== undefined)),
-				});
-			return attachFinalizationToLedger({ initialLedger: input.initialLedger, authoritativeLedger, turns, status: "completed", maxTurns });
-		}
-		previousFailure = failure;
-	}
-	return attachFinalizationToLedger({ initialLedger: input.initialLedger, authoritativeLedger, turns, status: "failed", maxTurns });
 }
 
 /**
@@ -1242,6 +1117,14 @@ async function runToCompletion(
 		maxTokens: options.maxTokens ?? agent.maxTokens,
 	};
 
+	if (options.registerTimeoutExtension) {
+		effectiveOptions.registerTimeoutExtension = (extend) => options.registerTimeoutExtension?.((additionalMs) => {
+			const result = extend(additionalMs);
+			if (result.ok) effectiveOptions.timeoutAt = result.timeoutAt;
+			return result;
+		});
+	}
+
 	const shareEnabled = effectiveOptions.share === true;
 	const effectiveAcceptance = resolveEffectiveAcceptance({ explicit: options.acceptance });
 	if (effectiveOptions.runId) saveQuestionContract(effectiveOptions.runId, effectiveOptions.index ?? 0, { effectiveAcceptance, output: effectiveOptions.outputPath ?? false, outputMode: effectiveOptions.outputMode, outputSchema: effectiveOptions.structuredOutput?.schema });
@@ -1279,10 +1162,7 @@ async function runToCompletion(
 		options.availableModels,
 		options.preferredModelProvider,
 	);
-	const attemptedModels: string[] = [];
-	const modelAttempts: ModelAttempt[] = [];
-	const aggregateUsage = emptyUsage();
-	const attemptNotes: string[] = [];
+	saveForegroundLaunch(agent, systemPrompt, resolvedSkills.map((skill) => skill.name), candidates, effectiveOptions, runtimeCwd);
 	let totalToolCount = 0;
 	let totalDurationMs = 0;
 
@@ -1293,69 +1173,29 @@ async function runToCompletion(
 		writeArtifact(artifactPathsResult.inputPath, `# Task for ${agentName}\n\n${taskWithAcceptance}`);
 	}
 
-	let lastResult: SingleResult | undefined;
-	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
-	modelLoop:
-	for (let i = 0; i < modelsToTry.length; i++) {
-		const candidate = modelsToTry[i];
-		let sameModelRetries = 0;
-		while (true) {
-			if (candidate) attemptedModels.push(candidate);
-			const outputSnapshot = captureSingleOutputSnapshot(effectiveOptions.outputPath);
-			const result = await runSingleAttempt(runtimeCwd, agent, taskWithAcceptance, candidate, effectiveOptions, {
+	const { result, modelAttempts, attemptedModels, notes: attemptNotes, usage: aggregateUsage } = await runModelAttempts({
+		candidates,
+		signal: AbortSignal.any([options.signal, options.interruptSignal].filter((signal) => signal !== undefined)),
+		runAttempt: async (candidate, notes) => {
+			const attempt = await runSingleAttempt(runtimeCwd, agent, taskWithAcceptance, candidate, effectiveOptions, {
 				sessionEnabled,
 				systemPrompt,
 				resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
 				skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
 				artifactPaths: artifactPathsResult,
-				attemptNotes,
-				outputSnapshot,
+				attemptNotes: notes,
+				outputSnapshot: captureSingleOutputSnapshot(effectiveOptions.outputPath),
 				originalTask: task,
 				completionPolicy: resolveCompletionPolicy({
 					completionGuardEnabled: agent.completionGuard === true,
 					usesAcceptanceContract: effectiveAcceptance.explicit,
 				}),
 			});
-			lastResult = result;
-			sumUsage(aggregateUsage, result.usage);
-			totalToolCount += result.progressSummary?.toolCount ?? 0;
-			totalDurationMs += result.progressSummary?.durationMs ?? 0;
-			const attemptSucceeded = result.exitCode === 0 && !result.error;
-			const attempt: ModelAttempt = {
-				model: candidate ?? result.model ?? agent.model ?? "default",
-				success: attemptSucceeded,
-				exitCode: result.exitCode,
-				error: result.error,
-				usage: { ...result.usage },
-			};
-			modelAttempts.push(attempt);
-			if (attemptSucceeded) {
-				break modelLoop;
-			}
-			if (options.signal?.aborted || result.timedOut || result.resourceLimitExceeded || result.interrupted) {
-				break modelLoop;
-			}
-			if (sameModelRetries < MAX_SAME_MODEL_RECOVERY_RETRIES && isRecoverableSameModelFailure(result.error, result.exitCode)) {
-				sameModelRetries++;
-				attemptNotes.push(formatModelRecoveryAttemptNote(attempt, sameModelRetries, MAX_SAME_MODEL_RECOVERY_RETRIES));
-				continue;
-			}
-			if (!isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
-				break modelLoop;
-			}
-			attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));
-			break;
-		}
-	}
-
-	const result = lastResult ?? {
-		agent: agentName,
-		task,
-		exitCode: 1,
-		messages: [],
-		usage: emptyUsage(),
-		error: "Subagent did not produce a result.",
-	} satisfies SingleResult;
+			totalToolCount += attempt.progressSummary?.toolCount ?? 0;
+			totalDurationMs += attempt.progressSummary?.durationMs ?? 0;
+			return attempt;
+		},
+	});
 
 	result.usage = aggregateUsage;
 	result.attemptedModels = attemptedModels.length > 0 ? attemptedModels : undefined;
@@ -1382,43 +1222,60 @@ async function runToCompletion(
 		if (sessionFile) result.sessionFile = sessionFile;
 	}
 
-	const initialAcceptanceOutput = acceptanceOutputByResult.get(result) ?? result.finalOutput ?? "";
-	const acceptanceForInitialReport = shouldRunAcceptanceFinalization(effectiveAcceptance)
-		? acceptanceSelfReviewConfig(effectiveAcceptance)
-		: effectiveAcceptance;
-	const initialAcceptance = await evaluateAcceptance({
-		acceptance: acceptanceForInitialReport,
-		governing: effectiveAcceptance,
-		output: initialAcceptanceOutput,
+	const initialOutput = artifactOutputByResult.get(result) ?? result.finalOutput ?? "";
+	result.acceptance = await evaluateRunAcceptance({
+		acceptance: effectiveAcceptance,
+		initial: result,
+		initialOutput: acceptanceOutputByResult.get(result) ?? result.finalOutput ?? "",
+		sessionFile: result.sessionFile ?? effectiveOptions.sessionFile,
 		cwd: options.cwd ?? runtimeCwd,
 		signal: AbortSignal.any([options.signal, options.interruptSignal].filter((signal) => signal !== undefined)),
+		runTurn: async (prompt, _turn, sessionFile) => {
+			const finalizationOptions: AttemptOptions = { ...effectiveOptions, sessionFile, outputMode: "inline" };
+			delete finalizationOptions.sessionDir;
+			delete finalizationOptions.structuredOutput;
+			const reviewed = await runSingleAttempt(runtimeCwd, agent, prompt, result.model, finalizationOptions, {
+				sessionEnabled: true,
+				systemPrompt,
+				resolvedSkillNames: result.skills,
+				skillsWarning: result.skillsWarning,
+				attemptNotes: [],
+				originalTask: prompt,
+				completionPolicy: "acceptance-contract",
+				previousOutput: artifactOutputByResult.get(result) ?? result.finalOutput,
+			});
+			modelAttempts.push({ model: reviewed.model ?? result.model ?? "default", success: reviewed.exitCode === 0 && !reviewed.error && !reviewed.interrupted,
+				exitCode: reviewed.exitCode, error: reviewed.error, usage: { ...reviewed.usage } });
+			result.usage = sumAttemptUsage(modelAttempts);
+			result.progressSummary = {
+				toolCount: (result.progressSummary?.toolCount ?? 0) + (reviewed.progressSummary?.toolCount ?? 0),
+				tokens: result.usage.input + result.usage.output,
+				durationMs: (result.progressSummary?.durationMs ?? 0) + (reviewed.progressSummary?.durationMs ?? 0),
+			};
+			if (reviewed.controlEvents?.length) result.controlEvents = [...(result.controlEvents ?? []), ...reviewed.controlEvents];
+			result.messages = [...(result.messages ?? []), ...(reviewed.messages ?? [])];
+			const output = acceptanceOutputByResult.get(reviewed) ?? getFinalOutput(reviewed.messages ?? []) ?? reviewed.finalOutput ?? "";
+			if (reviewed.exitCode !== 0 || reviewed.error || reviewed.detached || reviewed.interrupted) {
+				result.interrupted = reviewed.interrupted;
+				result.timedOut = reviewed.timedOut;
+				result.resourceLimitExceeded = reviewed.resourceLimitExceeded;
+				result.exitCode = reviewed.exitCode;
+				result.error = reviewed.error;
+				return { output, error: reviewed.error ?? "Acceptance finalization turn did not complete successfully." };
+			}
+			result.finalOutput = reviewed.finalOutput;
+			result.savedOutputPath = reviewed.savedOutputPath;
+			result.outputReference = reviewed.outputReference;
+			result.outputSaveError = reviewed.outputSaveError;
+			artifactOutputByResult.set(result, artifactOutputByResult.get(reviewed) ?? reviewed.finalOutput ?? "");
+			return { output };
+		},
 	});
-	result.acceptance = initialAcceptance;
-	if (shouldRunAcceptanceFinalization(effectiveAcceptance) && result.exitCode === 0 && !result.interrupted) {
-		result.acceptance = await runAcceptanceFinalizationLoop({
-			runtimeCwd,
-			agent,
-			result,
-			initialLedger: initialAcceptance,
-			initialOutput: initialAcceptanceOutput,
-			acceptance: effectiveAcceptance,
-			options: effectiveOptions,
-			systemPrompt,
-			resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
-			...(missingSkills.length > 0 ? { skillsWarning: `Skills not found: ${missingSkills.join(", ")}` } : {}),
-		});
-	}
-	const acceptanceFailure = acceptanceFailureMessage(result.acceptance);
+	if (result.acceptance.finalization) result.initialOutput = initialOutput;
+	Object.assign(result, resolveExecutionOutcome({ result, acceptance: result.acceptance, signal: options.signal, interruptSignal: options.interruptSignal }));
 	stripAcceptanceReportsFromMessages(result.messages ?? []);
-	if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.interrupted) {
-		result.exitCode = 1;
-		result.error = result.error ? `${result.error}\n${acceptanceFailure}` : acceptanceFailure;
-		if (result.progress) {
-			result.progress.status = "failed";
-			result.progress.error = result.error;
-		}
-	}
-
+	delete result.terminalFailure;
+	refreshQuestionLaunch(effectiveOptions.runId, effectiveOptions.index ?? 0, result.sessionFile);
 	publishFinalResult(result, effectiveOptions);
 	return result;
 }

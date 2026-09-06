@@ -15,7 +15,6 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
@@ -28,6 +27,8 @@ import { renderWidget, renderSubagentResult } from "../tui/render.ts";
 import { AgentRunsParams, DelegateParams, SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
+import { OWNED_RUN_ENTRY, rememberOwnedRun, restoreOwnedRuns } from "../runs/shared/run-records.ts";
+import { getRunMetadataDir, saveAsyncRunResult } from "../runs/shared/supervisor-questions.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { applyForceTopLevelAsyncOverride } from "../runs/background/top-level-async.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
@@ -39,6 +40,7 @@ import { SUBAGENT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
 import { loadConfig } from "./config.ts";
+import { registerToolResultAdapter } from "./tool-result.ts";
 import {
 	type Details,
 	type SubagentExecutionResult,
@@ -112,12 +114,6 @@ function isSlashResultError(result: SubagentExecutionResult): boolean {
 
 function isStaleExtensionContextError(error: unknown): boolean {
 	return error instanceof Error && error.message.includes("Extension context no longer active");
-}
-
-function toRegisteredToolResult(result: SubagentExecutionResult): AgentToolResult<Details> {
-	if (!result.isError) return result;
-	const text = result.content.map((part) => part.type === "text" ? part.text : "").filter(Boolean).join("\n").trim();
-	throw new Error(text || "subagent failed");
 }
 
 function rebuildSlashResultContainer(
@@ -224,7 +220,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	}
 	try {
 		ensureTempRoot();
-		cleanupOldRunStorage();
 	} catch (error) {
 		console.error(`[pi-subagents] temp storage setup failed: ${error instanceof Error ? error.message : String(error)}`);
 		return;
@@ -250,6 +245,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		currentSessionId: null,
 		asyncJobs: new Map(),
 		foregroundRuns: new Map(),
+		ownedRuns: new Map(),
+		persistOwnedRun: (run) => pi.appendEntry(OWNED_RUN_ENTRY, run),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
@@ -292,6 +289,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		getSubagentSessionRoot,
 		expandTilde,
 		discoverAgents,
+		ensureSessionState: (ctx) => {
+			if (state.currentSessionId !== resolveCurrentSessionId(ctx.sessionManager)) resetSessionState(ctx);
+		},
 	});
 
 	pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
@@ -321,13 +321,17 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		for (const line of previewLines.length > 0 ? previewLines : ["(no output)"]) {
 			text += `\n  ${theme.fg("dim", `⎿  ${line}`)}`;
 		}
-		if (!options.expanded && trimmedPreview.includes("\n")) {
+		if (!options.expanded) {
 			text += `\n  ${theme.fg("dim", "Ctrl+O full notification")}`;
 		}
 		if (details.sessionLabel && details.sessionValue) {
 			text += `\n  ${theme.fg("muted", `${details.sessionLabel}: ${shortenPath(details.sessionValue)}`)}`;
 		}
-		return new Text(text, 0, 0);
+		if (options.expanded) return new Text(text, 0, 0);
+		return {
+			render: (width) => text.split("\n").map((line) => truncateToWidth(line, width)),
+			invalidate() {},
+		};
 	});
 
 	pi.registerMessageRenderer<SubagentControlMessageDetails>(SUBAGENT_CONTROL_MESSAGE_TYPE, (message, _options, theme) => {
@@ -390,6 +394,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}, 0);
 	}
 
+	const toRegisteredToolResult = registerToolResultAdapter(pi, [SUBAGENT_TOOL_NAME, "delegate", "agent_runs"]);
 	pi.registerTool({
 		name: "delegate",
 		label: "Delegate",
@@ -408,11 +413,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "agent_runs",
 		label: "Agent Runs",
-		description: "List your delegated runs across working directories, inspect results, list durable questions, answer a question, nudge live work, stop a run, or continue a saved specialist. Nudge never restarts completed work; continue or answering an exited child may launch a saved session. profiles lists available agents. Do not poll for completion: background results arrive automatically.",
+		description: "List your delegated runs across working directories (attention first, 20 per page), inspect saved results/configuration/continuations, answer durable questions, nudge live work, stop, continue a saved specialist, or record parent review. History survives reload; review/inspect/nudge never restart finished work. Continue or answering an exited child may launch a saved session with its original effective configuration. profiles lists agents. Background results arrive automatically.",
 		parameters: AgentRunsParams,
 		async execute(id, params, signal, onUpdate, ctx) {
-			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list", questions: "questions", answer: "answer" };
-			return toRegisteredToolResult(await executor.execute(id, { ...params, action: actions[params.action] }, signal, onUpdate, ctx));
+			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list", questions: "questions", answer: "answer", review: "review" };
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike({ ...params, action: actions[params.action] }), signal, onUpdate, ctx));
 		},
 		renderResult: renderSubagentResult,
 	});
@@ -484,9 +489,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			);
 		},
 
-		renderResult(result, options, theme) {
-			return renderSubagentResult(result, options, theme);
-		},
+		renderResult: renderSubagentResult,
 
 	};
 
@@ -533,8 +536,20 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		});
 	};
 	const eventUnsubscribes = [
-		pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, handleStarted),
-		pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete),
+		pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (data) => {
+			handleStarted(data);
+			const started = data as import("../shared/types.ts").AsyncStartedEvent;
+			const run = started.id ? state.ownedRuns?.get(started.id) : undefined;
+			if (run) rememberOwnedRun(state, { ...run, source: "async", asyncDir: started.asyncDir, pid: started.pid });
+		}),
+		pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (data) => {
+			handleComplete(data);
+			const result = data as import("../shared/types.ts").AsyncResultFile & { intercomResultDelivered?: boolean };
+			const run = state.ownedRuns?.get(result.runId ?? result.id ?? "");
+			if (!run || result.sessionId !== state.currentSessionId) return;
+			if (!fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))) saveAsyncRunResult(run.runId, result);
+			rememberOwnedRun(state, { ...run, delivery: { notifiedAt: Date.now(), intercomDelivered: result.intercomResultDelivered === true } });
+		}),
 		pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler),
 	];
 	globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
@@ -562,15 +577,12 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}
 	};
 
-	const resetSessionState = (ctx: ExtensionContext) => {
+	function resetSessionState(ctx: ExtensionContext) {
 		ensureAccessibleDir(RESULTS_DIR);
 		ensureAccessibleDir(ASYNC_DIR);
-		cleanupOldChainDirs();
-		cleanupAllArtifactDirs(ARTIFACT_CLEANUP_DAYS);
 		state.baseCwd = ctx.cwd;
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		state.lastUiContext = ctx;
-		cleanupSessionArtifacts(ctx);
 		clearPendingForegroundControlNotices(state);
 		resetJobs();
 		try {
@@ -579,10 +591,15 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			console.error("Failed to restore active async jobs:", error);
 			resetJobs(ctx);
 		}
+		restoreOwnedRuns(state, ctx);
+		cleanupOldRunStorage();
+		cleanupOldChainDirs();
+		cleanupAllArtifactDirs(ARTIFACT_CLEANUP_DAYS);
+		cleanupSessionArtifacts(ctx);
 		restoreSlashFinalSnapshots(ctx.sessionManager.getEntries());
 		startResultWatcher();
 		primeExistingResults();
-	};
+	}
 
 	pi.on("session_start", (_event, ctx) => {
 		resetSessionState(ctx);

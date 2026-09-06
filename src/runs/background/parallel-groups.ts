@@ -10,7 +10,7 @@ function isValidParallelGroup(group: unknown, stepCount: number, chainStepCount:
 		&& Number.isInteger(count)
 		&& Number.isInteger(stepIndex)
 		&& start >= 0
-		&& count > 0
+		&& count >= 0
 		&& stepIndex >= 0
 		&& stepIndex < chainStepCount
 		&& start + count <= stepCount;

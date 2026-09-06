@@ -13,7 +13,7 @@ import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
 import { loadConfig, type IntercomConfig } from "./config.ts";
 import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode } from "./types.ts";
-import { ReplyTracker } from "./reply-tracker.ts";
+import { isDurableSupervisorQuestion, ReplyTracker } from "./reply-tracker.ts";
 import { filterProjectSessions, formatPeerAwarenessHint, formatSessionTarget, formatTargetOptions, PEER_AWARENESS_HINT, resolveSessionProjectId, targetDisplayName, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
 import { registerSubagentLiveEventHandlers } from "./subagent-live-events.ts";
 import { cancelSupervisorQuestion, createSupervisorQuestion, readQuestionState, recordQuestionDelivery, saveQuestionAnswer, type SupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
@@ -23,6 +23,8 @@ const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
 const SUBAGENT_INTERCOM_IDENTITY_REQUEST_EVENT = "subagent:intercom-identity-request";
 const SUBAGENT_INTERCOM_IDENTITY_RESPONSE_EVENT = "subagent:intercom-identity-response";
+const SUBAGENT_SUPERVISOR_QUESTION_RESOLVED_EVENT = "subagent:supervisor-question-resolved";
+const INBOUND_CHECKPOINT_TYPE = "intercom_delivery";
 const INTERCOM_DETACH_REQUEST_EVENT = "pi-intercom:detach-request";
 const INTERCOM_DETACH_RESPONSE_EVENT = "pi-intercom:detach-response";
 const INTERCOM_DETACH_RESPONSE_TIMEOUT_MS = 500;
@@ -57,7 +59,12 @@ interface InboundMessageEntry {
 
 interface PendingInboundMessage extends InboundMessageEntry {
   flushDelivery: "auto" | "passive" | "steer";
+  stage: "queued" | "native";
+  receivedAt: number;
 }
+
+type InboundCheckpoint = { entry: PendingInboundMessage }
+  | { messageId: string; stage: PendingInboundMessage["stage"] | "discarded" };
 
 type RequestedDelivery = MessageDelivery | "auto";
 type InboundDelivery = "trigger" | "followUp" | "steer" | "passive";
@@ -642,9 +649,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let lastIntercomActivity = 0;
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker(config.askTimeoutMs);
-  const pendingIdleMessages: PendingInboundMessage[] = [];
-  const outstandingInbound = new Map<string, InboundMessageEntry>();
-  const maxPendingIdleMessages = 100;
+  const pendingInbound = new Map<string, PendingInboundMessage>();
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   let replyWaiter: {
     from: string;
@@ -915,14 +920,73 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return Boolean(resolvedTo && activeClient?.sessionId && resolvedTo === activeClient.sessionId)
       || targets.has(to.trim().toLowerCase());
   }
+  function checkpointInbound(update: InboundCheckpoint): void {
+    if (currentSessionId) pi.appendEntry(INBOUND_CHECKPOINT_TYPE, { sessionId: currentSessionId, ...update });
+  }
+  function keepInbound(entry: PendingInboundMessage): void {
+    if (entry.stage === "queued" && entry.message.queueMode === "replace" && entry.message.threadId) {
+      for (const pending of pendingInbound.values()) {
+        if (pending.stage === "queued" && pending.from.id === entry.from.id && pending.message.threadId === entry.message.threadId) {
+          pendingInbound.delete(pending.message.id);
+          replyTracker.markReplied(pending.message.id);
+        }
+      }
+    }
+    pendingInbound.set(entry.message.id, entry);
+  }
+  function setInboundStage(entry: PendingInboundMessage, stage: PendingInboundMessage["stage"]): void {
+    if (entry.stage === stage) return;
+    pendingInbound.set(entry.message.id, { ...entry, stage });
+    checkpointInbound({ messageId: entry.message.id, stage });
+  }
+  function rememberInbound(entry: InboundMessageEntry, stage: PendingInboundMessage["stage"], flushDelivery: PendingInboundMessage["flushDelivery"]): void {
+    const pending = pendingInbound.get(entry.message.id);
+    if (pending) {
+      setInboundStage(pending, stage);
+      return;
+    }
+    const saved = { ...entry, stage, flushDelivery, receivedAt: Date.now() };
+    keepInbound(saved);
+    checkpointInbound({ entry: saved });
+  }
+  function queuedInbound(): PendingInboundMessage[] {
+    return [...pendingInbound.values()].filter((entry) => entry.stage === "queued");
+  }
+  function restoreInbound(ctx: ExtensionContext): void {
+    const consumed = new Set<string>();
+    for (const item of ctx.sessionManager.getEntries()) {
+      if (item.type === "custom_message") {
+        const id = inboundIdFromCustomMessage(item);
+        if (id) {
+          consumed.add(id);
+          pendingInbound.delete(id);
+        }
+      } else if (item.type === "custom" && item.customType === INBOUND_CHECKPOINT_TYPE) {
+        const data = item.data as (InboundCheckpoint & { sessionId: string }) | undefined;
+        // Forks inherit entries, but pending delivery belongs to the saved session UUID.
+        if (data?.sessionId !== currentSessionId) continue;
+        if ("entry" in data) {
+          if (!consumed.has(data.entry.message.id)) keepInbound({ ...data.entry });
+        } else if (data.stage === "discarded") {
+          pendingInbound.delete(data.messageId);
+        } else {
+          const pending = pendingInbound.get(data.messageId);
+          if (pending) pendingInbound.set(data.messageId, { ...pending, stage: data.stage });
+        }
+      }
+    }
+    for (const entry of pendingInbound.values()) {
+      replyTracker.recordIncomingMessage(entry.from, entry.message, entry.receivedAt);
+    }
+  }
   function sendIncomingMessage(entry: InboundMessageEntry, delivery: InboundDelivery, generation = runtimeGeneration): void {
     if (runtimeStarted && !getLiveContext(runtimeContext, generation)) {
       return;
     }
+    if ("stage" in entry && pendingInbound.get(entry.message.id) !== entry) return;
+    rememberInbound(entry, "native", delivery === "passive" ? "passive" : "auto");
     if (delivery !== "passive") {
       replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
-      outstandingInbound.set(entry.message.id, entry);
-      while (outstandingInbound.size > maxPendingIdleMessages) outstandingInbound.delete(outstandingInbound.keys().next().value!);
     }
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
     const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
@@ -930,7 +994,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       ? { triggerTurn: true }
       : delivery === "followUp" || delivery === "steer"
         ? { deliverAs: delivery }
-        : undefined;
+        : { triggerTurn: false };
     pi.sendMessage(
       {
         customType: "intercom_message",
@@ -940,6 +1004,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       },
       options
     );
+    if (delivery === "passive" && runtimeContext) reconcileConsumedInbound(runtimeContext);
   }
   function isBlockingSubagentSupervisorMessage(entry: InboundMessageEntry): boolean {
     if (!entry.message.expectsReply) return false;
@@ -988,94 +1053,42 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     inboundFlushTimer.unref?.();
   }
   function flushIdleMessages(generation = runtimeGeneration): void {
-    if (pendingIdleMessages.length === 0) {
-      return;
-    }
+    const entries = queuedInbound();
+    if (entries.length === 0) return;
     const ctx = getLiveContext(runtimeContext, generation);
-    if (!ctx) {
-      return;
-    }
+    if (!ctx) return;
 
     if (!isRecipientIdle(ctx)) {
-      if (!ctx.hasUI && pendingIdleMessages.some((entry) => entry.flushDelivery === "steer")) {
-        if (activeTools.size > 0) {
-          scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
-          return;
-        }
-        const entries = pendingIdleMessages.splice(0, pendingIdleMessages.length);
+      if (!ctx.hasUI && activeTools.size === 0) {
         for (const entry of entries) {
-          if (entry.flushDelivery === "steer") {
-            sendIncomingMessage(entry, "trigger", generation);
-          } else {
-            pendingIdleMessages.push(entry);
-          }
+          if (entry.flushDelivery === "steer") sendIncomingMessage(entry, "trigger", generation);
         }
-        if (pendingIdleMessages.length > 0) scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
-        return;
       }
-      scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
+      if (queuedInbound().length > 0) scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
       return;
     }
-
-    const entries = pendingIdleMessages.splice(0, pendingIdleMessages.length);
-    if (entries.length === 0) return;
     sendTriggerFirst(entries, generation);
   }
-  function rejectInboundQueueOverload(entry: InboundMessageEntry): void {
-    const activeClient = client;
-    const message = "Recipient queue is full; this message was not queued. Retry after the recipient becomes idle.";
-    if (!activeClient?.isConnected()) {
-      console.error(`${message} Sender: ${entry.from.name || entry.from.id}`);
-      return;
-    }
-    void activeClient.send(entry.from.id, {
-      text: entry.message.expectsReply ? `${RECIPIENT_TURN_FAILED_PREFIX} ${message}` : message,
-      ...(entry.message.expectsReply ? {
-        replyTo: entry.message.id,
-        attachments: [{ type: "context", name: RECIPIENT_TURN_FAILED_ATTACHMENT, content: message }],
-      } : {}),
-    }).then((result) => {
-      if (result.delivered && entry.message.expectsReply) {
-        replyTracker.markReplied(entry.message.id);
-        syncPresenceStatus();
-      }
-    }).catch(() => {
-      // Best effort: the sender may disconnect after receiving the rejection.
-    });
-  }
-
   function queueIdleMessage(entry: InboundMessageEntry, flushDelivery: PendingInboundMessage["flushDelivery"] = "auto", delayMs = INBOUND_FLUSH_DELAY_MS): void {
-    let replacedPendingAsk = false;
-    if (entry.message.queueMode === "replace" && entry.message.threadId) {
-      for (let index = pendingIdleMessages.length - 1; index >= 0; index -= 1) {
-        const pending = pendingIdleMessages[index];
-        if (pending?.from.id === entry.from.id && pending.message.threadId === entry.message.threadId) {
-          pendingIdleMessages.splice(index, 1);
-          if (pending.message.expectsReply) {
-            replyTracker.markReplied(pending.message.id);
-            replacedPendingAsk = true;
-          }
-        }
-      }
-    }
-    if (replacedPendingAsk) {
-      syncPresenceStatus();
-    }
-    if (pendingIdleMessages.length >= maxPendingIdleMessages) {
-      rejectInboundQueueOverload(entry);
-      return;
-    }
-    pendingIdleMessages.push({ ...entry, flushDelivery });
+    rememberInbound(entry, "queued", flushDelivery);
+    syncPresenceStatus();
     scheduleInboundFlush(delayMs);
   }
-  function redeliverUnconsumedInbound(): void {
-    if (outstandingInbound.size === 0) return;
-    // Pi drains steer/follow-up queues before agent_settled. Leftovers here were
-    // dropped by abort, not left sitting in those queues.
-    const leftover = [...outstandingInbound.values()]
-      .map((entry) => ({ ...entry, flushDelivery: "auto" as const }));
-    outstandingInbound.clear();
-    sendTriggerFirst(leftover);
+  function reconcileConsumedInbound(ctx: ExtensionContext): void {
+    if (pendingInbound.size === 0) return;
+    // Idle custom-message appends emit SDK events, not extension message_end.
+    // Full session entries retain that receipt even after compaction.
+    for (const entry of ctx.sessionManager.getEntries()) {
+      if (entry.type !== "custom_message") continue;
+      const inboundId = inboundIdFromCustomMessage(entry);
+      if (inboundId) pendingInbound.delete(inboundId);
+    }
+  }
+  function redeliverUnconsumedInbound(ctx: ExtensionContext): void {
+    reconcileConsumedInbound(ctx);
+    // Abort can leave native custom messages queued; only recover cleared ones.
+    if (pendingInbound.size === 0 || ctx.hasPendingMessages()) return;
+    sendTriggerFirst([...pendingInbound.values()].filter((entry) => entry.stage === "native"));
   }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
@@ -1122,8 +1135,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       }
       if (!isRecipientIdle(activeContext)) {
         if (isBlockingSubagentSupervisorMessage(entry)) {
+          const willDeliver = activeContext.hasUI || delivery !== "auto";
+          if (willDeliver) rememberInbound(entry, "queued", "auto");
           await requestSubagentDetachForBlockingSupervisorMessage(entry);
-          if (!getLiveContext(liveContext, messageGeneration)) {
+          if (!getLiveContext(liveContext, messageGeneration) || (willDeliver && pendingInbound.get(message.id)?.stage !== "queued")) {
             return;
           }
         }
@@ -1184,10 +1199,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       }
       rejectReplyWaiterForPeer(sessionId);
       replyTracker.expireSender(sessionId);
-      for (let index = pendingIdleMessages.length - 1; index >= 0; index -= 1) {
-        const pending = pendingIdleMessages[index];
-        if (pending?.from.id === sessionId && pending.message.expectsReply) {
-          pendingIdleMessages.splice(index, 1);
+      for (const pending of queuedInbound()) {
+        if (pending.from.id === sessionId && pending.message.expectsReply && !isDurableSupervisorQuestion(pending.message)) {
+          pendingInbound.delete(pending.message.id);
+          checkpointInbound({ messageId: pending.message.id, stage: "discarded" });
         }
       }
     });
@@ -1431,6 +1446,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           return () => !runtimeStarted || Boolean(getLiveContext(runtimeContext, generation));
         },
       }),
+      pi.events.on(SUBAGENT_SUPERVISOR_QUESTION_RESOLVED_EVENT, (payload) => {
+        const questionId = payload && typeof payload === "object" ? (payload as { questionId?: unknown }).questionId : undefined;
+        if (typeof questionId !== "string") return;
+        replyTracker.markReplied(questionId);
+        if (pendingInbound.delete(questionId)) checkpointInbound({ messageId: questionId, stage: "discarded" });
+        syncPresenceStatus();
+      }),
       pi.events.on(SUBAGENT_INTERCOM_IDENTITY_REQUEST_EVENT, (payload) => {
         const requestId = payload && typeof payload === "object" ? (payload as { requestId?: unknown }).requestId : undefined;
         if (typeof requestId === "string" && client?.isConnected() && client.sessionId) {
@@ -1456,7 +1478,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   }
   let eventUnsubscribes = registerSubagentEventBridges();
   let eventBridgesActive = true;
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
     if (!eventBridgesActive) {
       eventUnsubscribes = registerSubagentEventBridges();
       eventBridgesActive = true;
@@ -1476,8 +1498,15 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     agentRunning = false;
     lastIntercomActivity = 0;
     activeTools.clear();
-    outstandingInbound.clear();
+    pendingInbound.clear();
+    restoreInbound(ctx);
+    // A fresh runtime has no inherited native queues. Reload keeps those queues
+    // and in-flight prompts, so only its intercom-staged entries are flushed here.
+    if (event.reason !== "reload" && !ctx.signal && !ctx.hasPendingMessages()) {
+      for (const entry of [...pendingInbound.values()]) setInboundStage(entry, "queued");
+    }
     scheduleStartupConnection(ctx, runtimeGeneration);
+    if (queuedInbound().length > 0) scheduleInboundFlush();
   });
 
   pi.on("session_shutdown", async () => {
@@ -1496,8 +1525,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     clearReconnectTimer();
     rejectReplyWaiter(new Error("Session shutting down"));
     replyTracker.reset();
-    pendingIdleMessages.length = 0;
-    outstandingInbound.clear();
+    pendingInbound.clear();
     clearInboundFlushTimer();
     agentRunning = false;
     activeTools.clear();
@@ -1518,7 +1546,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   pi.on("message_end", (event) => {
     const message = (event as { message?: unknown }).message;
     const inboundId = inboundIdFromCustomMessage(message);
-    if (inboundId) outstandingInbound.delete(inboundId);
+    if (inboundId) pendingInbound.delete(inboundId);
     const activeClient = client;
     const context = replyTracker.currentTurn();
     const errorMessage = getAssistantErrorMessage(message);
@@ -1565,15 +1593,16 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     syncPresenceStatus();
     flushIdleMessages();
   });
-  pi.on("agent_settled", () => {
-    if (!getLiveContext()) {
+  pi.on("agent_settled", (_event, ctx) => {
+    // A rejected concurrent prompt may settle while the original run is active.
+    if (!getLiveContext(ctx) || ctx.signal) {
       return;
     }
     agentRunning = false;
     activeTools.clear();
     replyTracker.endAgent();
     syncPresenceStatus();
-    redeliverUnconsumedInbound();
+    redeliverUnconsumedInbound(ctx);
     scheduleInboundFlush(0);
   });
   pi.on("turn_start", (_event, ctx) => {
@@ -1632,10 +1661,11 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return { systemPrompt: `${event.systemPrompt}\n\n${hint}` };
   });
 
-  pi.registerMessageRenderer("intercom_message", (message, _options, theme) => {
+  pi.registerMessageRenderer("intercom_message", (message, options, theme) => {
     const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string } | undefined;
     if (!details) return undefined;
-    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText);
+    const expanded = options.expanded || details.from.id !== "subagent-result" || details.from.status === "needs_attention" || details.message.expectsReply === true || Boolean(details.replyCommand);
+    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, expanded);
   });
 
   async function requestSupervisorDecision(reason: "need_decision" | "interview_request", message: string | undefined, interview: SupervisorInterviewRequest | undefined, signal: AbortSignal | undefined, ctx: ExtensionContext) {
@@ -2321,10 +2351,11 @@ Usage:
             if (!mySessionId) throw new Error("Current intercom session id is unavailable.");
             const allSessions = await connectedClient.listSessions();
             const sessions = sessionsForScope(allSessions, mySessionId, scope);
-            const pending = [
-              ...pendingIdleMessages.map((entry) => ({ entry, state: "queued; not yet delivered to model" })),
-              ...[...outstandingInbound.values()].map((entry) => ({ entry, state: "delivered to model queue; not yet consumed" })),
-            ];
+            reconcileConsumedInbound(ctx);
+            const pending = [...pendingInbound.values()].map((entry) => ({
+              entry,
+              state: entry.stage === "queued" ? "queued; not yet delivered to model" : "delivered to model queue; not yet consumed",
+            }));
             const pendingText = pending.length
               ? `\n\nPending inbound messages: ${pending.length}\n${pending.map(({ entry, state }) => `- ${entry.from.name || entry.from.id} [${entry.message.id}] (${state})\n${entry.bodyText}`).join("\n\n")}`
               : "\n\nPending inbound messages: 0";

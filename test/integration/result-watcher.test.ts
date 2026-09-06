@@ -7,6 +7,7 @@ import { createResultWatcher } from "../../src/runs/background/result-watcher.ts
 import { reconcileAsyncRun } from "../../src/runs/background/stale-run-reconciler.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import type { SubagentState } from "../../src/shared/types.ts";
+import { createEventBus } from "../support/helpers.ts";
 
 function errno(code: string): NodeJS.ErrnoException {
 	const error = new Error(code) as NodeJS.ErrnoException;
@@ -77,7 +78,50 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("preserves cwd ownership when repairing and delivering a stale legacy run", async () => {
+	it("resolves the current intercom identity only after the saved parent ownership gate", async () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-restarted-owner-"));
+		const events = createEventBus();
+		const deliveries: Array<{ to: string; requestId: string }> = [];
+		const completions: unknown[] = [];
+		let identityRequests = 0;
+		events.on("subagent:intercom-identity-request", (payload) => {
+			identityRequests++;
+			events.emit("subagent:intercom-identity-response", { requestId: (payload as { requestId: string }).requestId, sessionId: "current-owner-runtime" });
+		});
+		events.on("subagent:result-intercom", (payload) => {
+			const delivery = payload as { to: string; requestId: string };
+			deliveries.push(delivery);
+			events.emit("subagent:result-intercom-delivery", { requestId: delivery.requestId, delivered: true });
+		});
+		events.on("subagent:async-complete", (payload) => completions.push(payload));
+		const state = createState();
+		state.currentSessionId = "different-parent";
+		state.ownedRuns = new Map([["restarted-owner", { runId: "restarted-owner", ownerSessionId: "saved-parent", source: "async", mode: "single", cwd: "/repo", task: "Saved work", startedAt: 100, rootRunId: "restarted-owner", children: [] }]]);
+		const watcher = createResultWatcher({ events }, state, resultsDir, 60_000);
+		const resultPath = path.join(resultsDir, "restarted-owner.json");
+		try {
+			fs.writeFileSync(resultPath, JSON.stringify({ id: "restarted-owner", sessionId: "saved-parent", cwd: "/repo", success: true, summary: "Saved child evidence", intercomTarget: "previous-owner-runtime" }));
+			watcher.primeExistingResults();
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.equal(fs.existsSync(resultPath), true);
+			assert.equal(identityRequests, 0, "matching cwd or a copied run cannot bypass an explicit different owner");
+			assert.deepEqual(deliveries, []);
+			assert.deepEqual(completions, []);
+
+			state.currentSessionId = "saved-parent";
+			watcher.primeExistingResults();
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.deepEqual(deliveries.map((delivery) => delivery.to), ["current-owner-runtime"]);
+			assert.equal(identityRequests, 1);
+			assert.equal(completions.length, 1);
+			assert.equal(fs.existsSync(resultPath), false);
+		} finally {
+			watcher.stopResultWatcher();
+			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
+	it("requires saved ownership rather than matching cwd when delivering a stale legacy run", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-stale-legacy-"));
 		const resultsDir = path.join(root, "results");
 		const asyncDir = path.join(root, "runs", "legacy-stale");
@@ -125,6 +169,10 @@ describe("result watcher", () => {
 			try {
 				currentWatcher.primeExistingResults();
 				await new Promise((resolve) => setTimeout(resolve, 100));
+				assert.equal(emitted.length, 0, "same cwd is not an ownership receipt");
+				currentState.ownedRuns = new Map([["legacy-stale", { runId: "legacy-stale", ownerSessionId: "parent", source: "async", mode: "single", cwd: "/repo-current", task: "Recovered work", startedAt: 100, rootRunId: "legacy-stale", children: [] }]]);
+				currentWatcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 100));
 			} finally {
 				currentWatcher.stopResultWatcher();
 			}
@@ -148,12 +196,13 @@ describe("result watcher", () => {
 				},
 			};
 			const state = createState();
+			state.currentSessionId = "parent";
 			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
 			try {
-				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", cwd: "/repo", success: false, summary: "old" }), "utf-8");
+				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", sessionId: "parent", cwd: "/repo", success: false, summary: "old" }), "utf-8");
 				watcher.primeExistingResults();
 				await new Promise((resolve) => setTimeout(resolve, 100));
-				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", cwd: "/repo", success: true, summary: "corrected" }), "utf-8");
+				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", sessionId: "parent", cwd: "/repo", success: true, summary: "corrected" }), "utf-8");
 				watcher.primeExistingResults();
 				await new Promise((resolve) => setTimeout(resolve, 100));
 			} finally {
@@ -895,8 +944,10 @@ describe("result watcher", () => {
 				},
 			};
 			const resultPath = path.join(resultsDir, "async-race.json");
-			fs.writeFileSync(resultPath, JSON.stringify({ id: "async-race", cwd: "/repo", success: true, summary: "done", intercomTarget: "parent" }), "utf-8");
-			const watcher = createResultWatcher(pi, createState(), resultsDir, 60_000);
+			fs.writeFileSync(resultPath, JSON.stringify({ id: "async-race", sessionId: "parent", cwd: "/repo", success: true, summary: "done", intercomTarget: "parent" }), "utf-8");
+			const state = createState();
+			state.currentSessionId = "parent";
+			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
 			const originalError = console.error;
 			console.error = () => {};
 			try {
@@ -916,7 +967,7 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("logs one unacknowledged grouped async intercom delivery before completing", async () => {
+	it("keeps an unacknowledged grouped async delivery quiet and emits one fallback completion", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
 		try {
 			const emitted: Array<{ event: string; data: unknown }> = [];
@@ -952,9 +1003,8 @@ describe("result watcher", () => {
 				watcher.primeExistingResults();
 				const deadline = Date.now() + 1000;
 				while (true) {
-					const sawWarning = logged.some((entry) => /Subagent async grouped result intercom delivery was not acknowledged/.test(String(entry[0] ?? "")));
 					const sawCompletion = emitted.some((entry) => entry.event === "subagent:async-complete");
-					if ((sawWarning && sawCompletion) || Date.now() > deadline) break;
+					if (sawCompletion || Date.now() > deadline) break;
 					await new Promise((resolve) => setTimeout(resolve, 25));
 				}
 			} finally {
@@ -965,7 +1015,9 @@ describe("result watcher", () => {
 			assert.equal(emitted.filter((entry) => entry.event === "subagent:result-intercom").length, 1);
 			const completion = emitted.find((entry) => entry.event === "subagent:async-complete")?.data as { intercomResultDelivered?: boolean } | undefined;
 			assert.equal(completion?.intercomResultDelivered, false);
-			assert.equal(logged.some((entry) => /Subagent async grouped result intercom delivery was not acknowledged/.test(String(entry[0] ?? ""))), true);
+			assert.equal(emitted.filter((entry) => entry.event === "subagent:async-complete").length, 1);
+			assert.equal(fs.existsSync(path.join(resultsDir, "async-2.json")), false);
+			assert.deepEqual(logged, [], "ordinary fallback must not write over the editor");
 		} finally {
 			fs.rmSync(resultsDir, { recursive: true, force: true });
 		}

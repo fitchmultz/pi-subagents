@@ -1,6 +1,6 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { keyText, type Theme } from "@earendil-works/pi-coding-agent";
 import type { SessionInfo, Message } from "../types.ts";
 
 export class InlineMessageComponent implements Component {
@@ -9,15 +9,17 @@ export class InlineMessageComponent implements Component {
   private theme: Theme;
   private replyCommand?: string;
   private bodyText?: string;
+  private expanded: boolean;
   private cachedWidth?: number;
   private cachedLines?: string[];
 
-  constructor(from: SessionInfo, message: Message, theme: Theme, replyCommand?: string, bodyText?: string) {
+  constructor(from: SessionInfo, message: Message, theme: Theme, replyCommand?: string, bodyText?: string, expanded = true) {
     this.from = from;
     this.message = message;
     this.theme = theme;
     this.replyCommand = replyCommand;
     this.bodyText = bodyText;
+    this.expanded = expanded;
   }
 
   invalidate(): void {
@@ -43,7 +45,10 @@ export class InlineMessageComponent implements Component {
     const headerPadding = Math.max(0, bodyWidth - visibleWidth(headerText));
     lines.push(this.theme.fg("accent", `╭${headerText}${borderChar.repeat(headerPadding)}╮`));
 
-    const contentLines = wrapTextWithAnsi(this.bodyText || this.message.content.text, bodyWidth);
+    const body = this.bodyText || this.message.content.text;
+    // Grouped subagent results start with run, mode, status and child counts after the title.
+    const contentLines = this.expanded ? wrapTextWithAnsi(body, bodyWidth) : body.split("\n").slice(2, 6);
+    if (!this.expanded) contentLines.push(this.theme.fg("dim", `${keyText("app.tools.expand")} full response`));
     for (const line of contentLines) {
       const text = truncateToWidth(line, bodyWidth, "");
       const padding = Math.max(0, bodyWidth - visibleWidth(text));

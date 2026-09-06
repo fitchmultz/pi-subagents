@@ -1,5 +1,5 @@
 import type { DynamicCollectSpec, DynamicExpandSpec } from "../../shared/settings.ts";
-import type { JsonSchemaObject, ResolvedAcceptanceConfig } from "../../shared/types.ts";
+import type { JsonSchemaObject, ResolvedAcceptanceConfig, SavedLaunchConfig } from "../../shared/types.ts";
 
 export interface RunnerSubagentStep {
 	agent: string;
@@ -37,6 +37,7 @@ export interface RunnerSubagentStep {
 	};
 	structuredOutputSchema?: JsonSchemaObject;
 	effectiveAcceptance?: ResolvedAcceptanceConfig;
+	launch?: SavedLaunchConfig;
 }
 
 export interface ParallelStepGroup {
@@ -127,7 +128,7 @@ export function aggregateParallelOutputs(
 			const hasOutput = Boolean(r.output?.trim());
 			const status =
 				r.exitCode === -1
-					? "SKIPPED"
+					? `SKIPPED${r.error ? `: ${r.error}` : ""}`
 					: r.exitCode !== 0 && r.exitCode !== null
 						? `FAILED (exit code ${r.exitCode})${r.error ? `: ${r.error}` : ""}`
 						: r.error
@@ -141,6 +142,12 @@ export function aggregateParallelOutputs(
 			return `${header}\n${body}`;
 		})
 		.join("\n\n");
+}
+
+export const FAIL_FAST_REASON = "subagent-fail-fast";
+
+export function isFailFastAbort(signal: AbortSignal | undefined): boolean {
+	return signal?.aborted === true && signal.reason === FAIL_FAST_REASON;
 }
 
 export const MAX_PARALLEL_CONCURRENCY = 4;

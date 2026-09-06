@@ -1,6 +1,6 @@
 {
   "name": "pi-subagents",
-  "version": "0.35.0",
+  "version": "0.36.0",
   "description": "Pi extension for subagent orchestration and local session coordination",
   "license": "MIT",
   "type": "module",
@@ -82,10 +82,10 @@
     "typebox": "^1.1.39"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "0.84.0",
-    "@earendil-works/pi-ai": "0.84.0",
-    "@earendil-works/pi-coding-agent": "0.84.0",
-    "@earendil-works/pi-tui": "0.84.0",
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
     "@types/node": "^24.13.2",
     "typescript": "^6.0.3"
   },

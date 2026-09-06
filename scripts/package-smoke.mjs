@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
 
@@ -20,9 +20,10 @@ function fail(message) {
 	process.exit(1);
 }
 
-function run(command, args, cwd = process.cwd()) {
+function run(command, args, cwd = process.cwd(), env = process.env) {
 	const result = spawnSync(command, args, {
 		cwd,
+		env,
 		encoding: "utf-8",
 		stdio: ["ignore", "pipe", "pipe"],
 	});
@@ -120,6 +121,7 @@ try {
 	cpSync(installedRoot, gitPackageRoot, { recursive: true });
 	run("npm", ["install", "--ignore-scripts", "--omit=dev"], gitPackageRoot);
 	await import(pathToFileURL(join(gitPackageRoot, "dist", "runs", "shared", "acceptance-contract.js")).href);
+	await import(pathToFileURL(join(gitPackageRoot, "dist", "runs", "shared", "supervisor-questions.js")).href);
 	const brokerSpawn = await import(pathToFileURL(join(gitPackageRoot, "dist", "pi-intercom", "broker", "spawn.js")).href);
 	const brokerCwd = brokerSpawn.getBrokerSpawnOptions().cwd;
 	if (realpathSync(brokerCwd) !== realpathSync(gitPackageRoot)) throw new Error(`packed broker resolved ${brokerCwd} instead of ${gitPackageRoot}`);
@@ -138,10 +140,50 @@ try {
 	for (const extensionPath of childExtensionPaths) {
 		if (!existsSync(extensionPath)) throw new Error(`dist buildPiArgs emitted a missing --extension path: ${extensionPath}`);
 	}
+
+	const home = join(productionRoot, "native-home");
+	const asyncDir = join(home, "run");
+	mkdirSync(asyncDir, { recursive: true });
+	const sessionFile = join(home, "child.jsonl");
+	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "packed-native-probe", cwd: home, timestamp: new Date().toISOString() })}\n`);
+	const marker = join(home, "native-started.json");
+	const observer = join(home, "observe.ts");
+	writeFileSync(observer, `import { writeFileSync, writeSync } from "node:fs";
+export default function (pi) {
+	pi.on("session_start", (_event, ctx) => {
+		pi.appendEntry("package-probe", { nativeSession: true });
+		writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ sessionFile: ctx.sessionManager.getSessionFile() }));
+		const message = { role: "assistant", provider: "openai", model: "gpt-6-astra", stopReason: "stop", content: [{ type: "text", text: "PACKED_NATIVE_COMPLETE" }], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+		// Pi redirects extension stdout to stderr; this fixture emits controlled wire records.
+		writeSync(1, JSON.stringify({ type: "message_end", message }) + "\\n" + JSON.stringify({ type: "agent_settled" }) + "\\n");
+		process.exit(0);
+	});
+}`);
+	const nativeEnv = { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_OFFLINE: "1" };
+	for (const key of Object.keys(nativeEnv)) if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key)) delete nativeEnv[key];
+	nativeEnv.PI_SUBAGENT_TEMP_ROOT = join(home, "pi-subagents-runtime");
+	const nativePi = await import(new URL("../dist/runs/shared/pi-spawn.js", import.meta.url));
+	const piPackageRoot = nativePi.resolvePiPackageRoot() ?? nativePi.resolveInstalledPiPackageRoot();
+	if (!piPackageRoot) throw new Error("Native Pi is required for the packed detached-run check");
+	const bin = join(home, "bin");
+	mkdirSync(bin);
+	writeFileSync(join(bin, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${join(piPackageRoot, "dist/cli.js")}" "$@"\n`, { mode: 0o755 });
+	// A wrapper-only PATH also covers managed installs whose shim is not a symlink.
+	nativeEnv.PATH = `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`;
+	delete nativeEnv.PI_PACKAGE_DIR;
+	const configPath = join(home, "config.json");
+	const resultPath = join(home, "result.json");
+	writeFileSync(configPath, JSON.stringify({ id: "packed-native", cwd: home, asyncDir, resultPath, piPackageRoot, placeholder: "{previous}", resultMode: "single", sessionDir: home, steps: [{ agent: "probe", task: "Controlled package startup check; no model call", sessionFile, extensions: [observer], inheritProjectContext: false, inheritSkills: false }] }));
+	run(process.execPath, [join(gitPackageRoot, "dist/runs/background/subagent-runner-launcher.js"), join(gitPackageRoot, "dist/runs/background/subagent-runner.js"), configPath], home, nativeEnv);
+	const result = JSON.parse(readFileSync(resultPath, "utf8"));
+	if (result.success !== true || result.results?.[0]?.output !== "PACKED_NATIVE_COMPLETE") throw new Error(`Packed detached runner did not complete its controlled native Pi child: ${JSON.stringify({ nativeStarted: existsSync(marker), children: result.results?.map(({ exitCode, error, output }) => ({ exitCode, error, output })) })}`);
+	if (JSON.parse(readFileSync(marker, "utf8")).sessionFile !== sessionFile) throw new Error("Packed child did not bind the requested native Pi session");
+	console.log("[package-smoke] packed detached Node runner completed a controlled native Pi startup (no model call)");
 } catch (error) {
 	productionImportError = error;
 } finally {
-	rmSync(productionRoot, { recursive: true, force: true });
+	if (productionImportError) console.error(`[package-smoke] failure evidence: ${productionRoot}`);
+	else rmSync(productionRoot, { recursive: true, force: true });
 }
 if (productionImportError) {
 	fail(`packed production install could not load runtime paths: ${productionImportError instanceof Error ? productionImportError.message : String(productionImportError)}`);

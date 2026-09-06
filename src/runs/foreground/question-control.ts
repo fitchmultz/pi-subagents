@@ -1,8 +1,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
-import type { SubagentExecutionResult } from "../../shared/types.ts";
+import type { IntercomEventBus, SubagentExecutionResult } from "../../shared/types.ts";
 import { cancelSupervisorQuestion, claimQuestionRevival, formatSupervisorQuestions, listSupervisorQuestions, questionProcessAlive, questionRecoveryHint, readQuestionState, recordQuestionDelivery, releaseQuestionRevival, saveQuestionAnswer, type SupervisorQuestionView } from "../shared/supervisor-questions.ts";
-import { reviveSavedSubagent } from "./foreground-control.ts";
+import { liveLaunchOverrideNotice, reviveSavedSubagent } from "./foreground-control.ts";
 import type { ExecutorDeps, SubagentParamsLike } from "./subagent-params.ts";
 
 function questionResult(questions: SupervisorQuestionView[], text = formatSupervisorQuestions(questions)): SubagentExecutionResult {
@@ -23,13 +23,16 @@ export function projectSupervisorQuestions(result: SubagentExecutionResult, para
 	};
 }
 
-export function cancelSupervisorInput(result: SubagentExecutionResult, params: SubagentParamsLike, ownerSessionId: string): SubagentExecutionResult {
+export function cancelSupervisorInput(result: SubagentExecutionResult, params: SubagentParamsLike, ownerSessionId: string, events?: IntercomEventBus): SubagentExecutionResult {
 	if (result.isError && !result.content.some((item) => item.type === "text" && /No interrupt-capable run|No running async run/.test(item.text))) return result;
 	const id = result.details.managementControl?.runId ?? params.id ?? params.runId;
 	if (!id) return result;
 	const questions = listSupervisorQuestions(ownerSessionId, id).filter((question) => question.state === "awaiting_input" || question.state === "answer_pending");
 	if (!questions.length) return result;
-	for (const question of questions) cancelSupervisorQuestion(question);
+	for (const question of questions) {
+		cancelSupervisorQuestion(question);
+		events?.emit("subagent:supervisor-question-resolved", { questionId: question.questionId });
+	}
 	const cancelled = questions.map((question) => readQuestionState(question));
 	return result.isError ? questionResult(cancelled, `Cancelled ${questions.length} pending supervisor question(s). Any live waiter will abort its agent; cancellation is requested, not proof of process exit.`)
 		: { ...result, details: { ...result.details, questions: cancelled } };
@@ -48,7 +51,8 @@ export function controlSupervisorQuestion(input: { params: SubagentParamsLike; r
 		const question = questions.find((entry) => entry.questionId === params.questionId);
 		if (!question) throw new Error("Question not found in this session's runs. Resume the owning supervisor session to answer it.");
 		const answer = saveQuestionAnswer(question, params.message ?? "");
-		if (!question.delivery && questionProcessAlive(question)) return questionResult([readQuestionState(question)], `Answer saved for question ${question.questionId}. The live child will read it from the durable waiter; delivery is pending, not execution completion.`);
+		input.deps.pi.events.emit("subagent:supervisor-question-resolved", { questionId: question.questionId });
+		if (!question.delivery && questionProcessAlive(question)) return questionResult([readQuestionState(question)], [`Answer saved for question ${question.questionId}. The live child will read it from the durable waiter; delivery is pending, not execution completion.`, liveLaunchOverrideNotice(params)].filter(Boolean).join("\n"));
 		const delivery = readQuestionState(question).delivery;
 		if (delivery) return questionResult([readQuestionState(question)], `Question ${question.questionId} was already answered; no new work started. Delivery: ${delivery.kind}, run: ${delivery.runId}.`);
 		const claim = claimQuestionRevival(question);

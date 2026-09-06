@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { formatAsyncRunList, listAsyncRuns } from "../../src/runs/background/async-status.ts";
+import { asyncStatusToSummary, formatAsyncRunList, listAsyncRuns } from "../../src/runs/background/async-status.ts";
 
 function createAsyncDir(root: string, id: string, status: Record<string, unknown>): string {
 	const dir = path.join(root, id);
@@ -53,20 +53,26 @@ describe("async status helpers", () => {
 		}
 	});
 
-	it("rejects logical chain counts that exceed persisted step rows", () => {
+	it("keeps positive logical chain counts independent from executable step rows", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-status-empty-fanout-"));
 		try {
-			createAsyncDir(root, "run-empty", {
+			const status = {
 				runId: "run-empty",
-				mode: "chain",
-				state: "complete",
+				mode: "chain" as const,
+				state: "complete" as const,
 				startedAt: 100,
 				lastUpdate: 200,
 				chainStepCount: 2,
 				currentStep: 0,
-				steps: [{ agent: "producer", status: "complete" }],
-			});
-			assert.throws(() => listAsyncRuns(root), /chainStepCount must be a positive count no greater than steps\.length/);
+				steps: [{ agent: "producer", status: "complete" as const }],
+			};
+			const dir = createAsyncDir(root, "run-empty", status);
+			const [summary] = listAsyncRuns(root);
+			assert.equal(summary?.chainStepCount, 2);
+			assert.equal(summary?.steps.length, 1);
+			for (const chainStepCount of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN]) {
+				assert.throws(() => asyncStatusToSummary(dir, { ...status, chainStepCount }), /chainStepCount/);
+			}
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

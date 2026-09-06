@@ -3,8 +3,10 @@ import type {
 	AcceptanceLedger,
 	ResolvedAcceptanceConfig,
 } from "../../shared/types.ts";
-import { acceptanceFailureMessage } from "./acceptance-evaluation.ts";
-import { formatEvidenceReportFieldMapping } from "./acceptance-contract.ts";
+import { acceptanceFailureMessage, evaluateAcceptance } from "./acceptance-evaluation.ts";
+import { acceptanceSelfReviewConfig, formatEvidenceReportFieldMapping, shouldRunAcceptanceFinalization } from "./acceptance-contract.ts";
+import type { AttemptOutcome } from "./model-fallback.ts";
+import { isFailFastAbort } from "./parallel-utils.ts";
 import { parseAcceptanceReport, stripAcceptanceReport } from "./acceptance-reports.ts";
 
 export function resolveFinalizationOutput(rawOutput: string, previousOutput: string): string {
@@ -12,6 +14,69 @@ export function resolveFinalizationOutput(rawOutput: string, previousOutput: str
 	if (prose.trim()) return prose;
 	const report = parseAcceptanceReport(rawOutput).report;
 	return report?.diffSummary?.trim() || report?.notes?.trim() || previousOutput;
+}
+
+type ExecutionOutcome = Pick<AttemptOutcome, "exitCode" | "error" | "interrupted" | "timedOut" | "resourceLimitExceeded">;
+
+export function resolveExecutionOutcome(input: {
+	result: ExecutionOutcome;
+	acceptance?: AcceptanceLedger;
+	signal?: AbortSignal;
+	interruptSignal?: AbortSignal;
+}): ExecutionOutcome {
+	const { result } = input;
+	if (input.signal?.aborted) return { ...result, exitCode: 1, interrupted: false, error: "Subagent cancelled." };
+	if (isFailFastAbort(input.interruptSignal)) return { ...result, exitCode: -1, interrupted: false, error: "Interrupted due to fail-fast" };
+	if (result.timedOut || result.resourceLimitExceeded) return { ...result, exitCode: result.timedOut ? 124 : 1, interrupted: result.interrupted === undefined ? undefined : false };
+	if (input.interruptSignal?.aborted || result.interrupted) return { ...result, exitCode: 0, interrupted: true, error: undefined };
+	const failure = input.acceptance?.explicit ? acceptanceFailureMessage(input.acceptance) : undefined;
+	if (failure && result.exitCode === 0) return { ...result, exitCode: 1, error: result.error ? `${result.error}\n${failure}` : failure };
+	return result;
+}
+
+export async function evaluateRunAcceptance(input: {
+	acceptance: ResolvedAcceptanceConfig;
+	initial: ExecutionOutcome;
+	initialOutput: string;
+	sessionFile?: string;
+	cwd: string;
+	signal?: AbortSignal;
+	runTurn: (prompt: string, turn: number, sessionFile: string) => Promise<{ output: string; error?: string }>;
+}): Promise<AcceptanceLedger> {
+	const review = shouldRunAcceptanceFinalization(input.acceptance);
+	const selfReview = review ? acceptanceSelfReviewConfig(input.acceptance) : input.acceptance;
+	const initialLedger = await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: input.initialOutput, cwd: input.cwd, signal: input.signal });
+	if (!review || input.initial.exitCode !== 0 || input.initial.error || input.initial.interrupted || input.signal?.aborted) return initialLedger;
+
+	const maxTurns = input.acceptance.finalization.maxTurns;
+	const turns: AcceptanceFinalizationTurn[] = [];
+	if (!input.sessionFile) {
+		const message = "Acceptance finalization requires a session file for same-session continuation.";
+		turns.push(createFinalizationProcessFailureTurn({ turn: 1, prompt: "", message }));
+		return buildFinalizationProcessFailureLedger({ initialLedger, turns, maxTurns, message });
+	}
+	let previousFailure = acceptanceFailureMessage(initialLedger);
+	let authoritativeLedger = initialLedger;
+	for (let turn = 1; turn <= maxTurns; turn++) {
+		const prompt = formatAcceptanceFinalizationPrompt({ acceptance: input.acceptance, initialOutput: input.initialOutput, initialLedger, turn, maxTurns, previousFailure });
+		const result = input.signal?.aborted
+			? { output: "", error: "Acceptance finalization cancelled." }
+			: await input.runTurn(prompt, turn, input.sessionFile);
+		if (result.error) {
+			turns.push(createFinalizationProcessFailureTurn({ turn, prompt, rawOutput: result.output, message: result.error }));
+			return buildFinalizationProcessFailureLedger({ initialLedger, turns, maxTurns, message: result.error });
+		}
+		authoritativeLedger = await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: result.output, cwd: input.cwd, signal: input.signal });
+		turns.push(createFinalizationTurn({ turn, prompt, rawOutput: result.output, ledger: authoritativeLedger }));
+		const failure = acceptanceFailureMessage(authoritativeLedger);
+		if (!failure && !input.signal?.aborted) {
+			if (selfReview !== input.acceptance) authoritativeLedger = await evaluateAcceptance({ acceptance: input.acceptance, output: result.output, cwd: input.cwd, signal: input.signal });
+			return attachFinalizationToLedger({ initialLedger, authoritativeLedger, turns, status: input.signal?.aborted ? "failed" : "completed", maxTurns });
+		}
+		if (input.signal?.aborted) break;
+		previousFailure = failure;
+	}
+	return attachFinalizationToLedger({ initialLedger, authoritativeLedger, turns, status: "failed", maxTurns });
 }
 
 const INITIAL_OUTPUT_LIMIT = 8_000;
@@ -79,7 +144,7 @@ export function formatAcceptanceFinalizationPrompt(input: {
 	}
 	lines.push(
 		"",
-		"Now do the self-check. Return a concise final answer describing the current result, including any repairs or remaining blockers, before the acceptance report. Finish with exactly one fenced JSON block tagged `acceptance-report`.",
+		"Now do the self-check. Return a standalone final answer with the current result and every requested handoff detail (including paths, identifiers, findings, and evidence). This answer replaces the initial answer; do not replace useful details with only a statement that you rechecked them. Include repairs or remaining blockers, then finish with exactly one fenced JSON block tagged `acceptance-report`.",
 		"```acceptance-report",
 		JSON.stringify({
 			criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "specific proof from the final state" }],

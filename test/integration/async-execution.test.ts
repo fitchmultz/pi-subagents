@@ -442,7 +442,8 @@ describe("async execution utilities", () => {
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
 		assert.ok(Date.now() - startedAt < 2_000, `async failFast took ${Date.now() - startedAt}ms`);
-		assert.equal(payload.results[1]?.interrupted, true);
+		assert.ok(!payload.results[1]?.interrupted, "fail-fast must not be reported as a user pause");
+		assert.equal(payload.results[1]?.exitCode, -1);
 		assert.equal(payload.state, "failed");
 		assert.equal(payload.exitCode, 1);
 		assert.doesNotMatch(payload.summary, /Paused after interrupt/);
@@ -1218,7 +1219,9 @@ describe("async execution utilities", () => {
 		assert.equal(payload.state, "complete");
 		assert.deepEqual(payload.outputs?.reviews?.structured, []);
 		assert.equal(status.state, "complete");
-		assert.deepEqual(status.steps?.map((step) => step.status), ["complete", "complete"]);
+		assert.deepEqual(status.steps?.map((step) => step.status), ["complete"]);
+		assert.deepEqual(status.parallelGroups, [{ start: 1, count: 0, stepIndex: 1 }]);
+		assert.equal(payload.workflowGraph?.nodes?.[1]?.status, "completed");
 		assert.equal((status as AsyncStatusPayload & { chainStepCount?: number }).chainStepCount, 2);
 		assert.equal(mockPi.callCount(), 1);
 	});
@@ -1356,6 +1359,10 @@ describe("async execution utilities", () => {
 		assert.ok(Array.isArray(payload.results.at(-1)?.structuredOutput), "failed collect result should preserve ordered collection details");
 		assert.equal(payload.workflowGraph?.nodes?.[1]?.status, "failed");
 		assert.match(payload.workflowGraph?.nodes?.[1]?.error ?? "", /Collected output validation failed/);
+		const completed = fs.readFileSync(path.join(ASYNC_DIR, id, "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
+			.find((event) => event.type === "subagent.dynamic.completed");
+		assert.equal(completed.success, false);
+		assert.equal(completed.state, "failed");
 	});
 
 	it("top-level async parallel resolves reads and output against each task cwd", async () => {

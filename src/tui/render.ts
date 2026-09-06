@@ -3,8 +3,8 @@
  */
 
 import * as path from "node:path";
-import { getMarkdownTheme, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { getMarkdownTheme, keyText, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Container, Markdown, Spacer, Text, TruncatedText, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import {
 	type AgentProgress,
 	type AsyncJobState,
@@ -502,10 +502,10 @@ function buildAsyncChainStepSpans(total: number, stepCount: number, parallelGrou
 }
 
 function isDoneResult(result: Details["results"][number]): boolean {
+	if (result.interrupted || result.detached || result.timedOut) return false;
 	const status = result.progress?.status;
 	if (status === "completed") return true;
 	if (status === "running" || status === "pending") return false;
-	if (result.interrupted || result.detached || result.timedOut) return false;
 	return result.exitCode === 0;
 }
 
@@ -621,25 +621,13 @@ function buildMultiProgressLabel(details: Pick<Details, "mode" | "results" | "pr
 		let paused = 0;
 		for (let index = groupStart; index < groupEnd; index++) {
 			const progressEntry = details.progress?.find((progress) => progress.index === index);
-			const resultEntry = details.results.find((result) => result.progress?.index === index);
-			if (progressEntry?.status === "running") {
-				running++;
-				continue;
-			}
-			if (progressEntry?.status === "completed") {
-				succeeded++;
-				continue;
-			}
-			if (progressEntry?.status === "failed" || progressEntry?.status === "timed-out") {
-				failed++;
-				continue;
-			}
-			if (progressEntry?.status === "detached") {
-				paused++;
-				continue;
-			}
-			if (resultEntry && isDoneResult(resultEntry)) succeeded++;
+			const resultEntry = details.results.find((result, position) => (result.progress?.index ?? position) === index);
+			const status = progressEntry?.status ?? resultEntry?.progress?.status;
+			if (status === "running") running++;
+			else if (status === "failed" || status === "timed-out" || resultEntry?.timedOut) failed++;
+			else if (status === "paused" || status === "detached" || resultEntry?.interrupted || resultEntry?.detached) paused++;
 			else if (resultEntry && resultEntry.exitCode !== 0) failed++;
+			else if (status === "completed" || (resultEntry && isDoneResult(resultEntry))) succeeded++;
 		}
 		const totalSteps = details.totalSteps ?? details.chainAgents?.length ?? 1;
 		const groupParts = [`${succeeded}/${groupSize} succeeded`];
@@ -1030,10 +1018,11 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 	ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(jobs, () => ctx.ui.getToolsExpanded()));
 }
 
-function renderSingleCompact(d: Details, r: Details["results"][number], theme: Theme): Component {
+function renderSingleCompact(d: Details, r: Details["results"][number], theme: Theme, isError = false): Component {
 	const output = r.truncation?.text || getSingleResultOutput(r);
+	const statusOutput = output || (d.intercomDelivery?.delivered ? d.intercomDelivery.summary : "");
 	const progress = r.progress || r.progressSummary;
-	const isRunning = r.progress?.status === "running";
+	const isRunning = !isError && r.progress?.status === "running";
 	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 	const stats = statJoin(theme, [
 		r.usage?.turns ? `⟳ ${r.usage.turns}` : "",
@@ -1042,7 +1031,7 @@ function renderSingleCompact(d: Details, r: Details["results"][number], theme: T
 	const c = new Container();
 	const width = getTermWidth() - 4;
 	const modelDisplay = modelThinkingBadge(theme, r.model);
-	c.addChild(new Text(truncLine(`${resultGlyph(r, output, theme, isRunning)} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`, width), 0, 0));
+	c.addChild(new TruncatedText(`${isError ? theme.fg("error", "✗") : resultGlyph(r, statusOutput, theme, isRunning)} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`));
 
 	if (isRunning && r.progress) {
 		const progressSnapshotNow = snapshotNowForProgress(r.progress);
@@ -1055,22 +1044,23 @@ function renderSingleCompact(d: Details, r: Details["results"][number], theme: T
 		return c;
 	}
 
-	c.addChild(new Text(truncLine(theme.fg("dim", `  ⎿  ${resultStatusLine(r, output)}`), width), 0, 0));
+	c.addChild(new TruncatedText(theme.fg("dim", `  ⎿  ${resultStatusLine(r, statusOutput)}`)));
 	const preview = firstOutputLine(output);
 	if (preview && r.exitCode === 0 && !hasEmptyTextOutputWithoutOutputTarget(r.task, output)) {
-		c.addChild(new Text(truncLine(theme.fg("dim", `     ${preview}`), width), 0, 0));
+		c.addChild(new TruncatedText(theme.fg("dim", `     ${preview}`)));
 	}
-	if (r.sessionFile) c.addChild(new Text(truncLine(theme.fg("dim", `  session: ${shortenPath(r.sessionFile)}`), width), 0, 0));
-	if (r.artifactPaths) c.addChild(new Text(truncLine(theme.fg("dim", `  output: ${shortenPath(r.artifactPaths.outputPath)}`), width), 0, 0));
-	if (r.truncation?.artifactPath) c.addChild(new Text(truncLine(theme.fg("dim", `  full output: ${shortenPath(r.truncation.artifactPath)}`), width), 0, 0));
+	if (r.sessionFile) c.addChild(new TruncatedText(theme.fg("dim", `  session: ${shortenPath(r.sessionFile)}`)));
+	if (r.artifactPaths) c.addChild(new TruncatedText(theme.fg("dim", `  output: ${shortenPath(r.artifactPaths.outputPath)}`)));
+	if (r.truncation?.artifactPath) c.addChild(new TruncatedText(theme.fg("dim", `  full output: ${shortenPath(r.truncation.artifactPath)}`)));
+	c.addChild(new TruncatedText(theme.fg("dim", `  ${keyText("app.tools.expand")} ${d.intercomDelivery?.delivered ? "receipt details" : "full response"}`)));
 	return c;
 }
 
-function renderMultiCompact(d: Details, theme: Theme): Component {
-	const hasRunning = d.progress?.some((p) => p.status === "running")
+function renderMultiCompact(d: Details, theme: Theme, isError = false): Component {
+	const hasRunning = !isError && (d.progress?.some((p) => p.status === "running")
 		|| d.results.some((r) => r.progress?.status === "running")
-		|| workflowGraphHasStatus(d, ["running"]);
-	const failed = d.results.some((r) => r.exitCode !== 0 && r.progress?.status !== "running")
+		|| workflowGraphHasStatus(d, ["running"]));
+	const failed = isError || d.results.some((r) => r.exitCode !== 0 && r.progress?.status !== "running")
 		|| workflowGraphHasStatus(d, ["failed", "timed-out"]);
 	const paused = d.results.some((r) => (r.interrupted || r.detached) && r.progress?.status !== "running")
 		|| workflowGraphHasStatus(d, ["paused", "detached"]);
@@ -1101,7 +1091,7 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 	const c = new Container();
 	const width = getTermWidth() - 4;
-	c.addChild(new Text(truncLine(`${glyph} ${theme.fg("toolTitle", theme.bold(d.mode))}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`, width), 0, 0));
+	c.addChild(new TruncatedText(`${glyph} ${theme.fg("toolTitle", theme.bold(d.mode))}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`));
 
 	const useResultsDirectly = multiLabel.hasParallelInChain || !d.chainAgents?.length;
 	const displayStart = multiLabel.showActiveGroupOnly ? multiLabel.groupStartIndex : 0;
@@ -1121,8 +1111,8 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 		if (entry.kind === "placeholder") {
 			const glyph = widgetStepGlyph(entry.status as AsyncJobStep["status"], theme);
 			const statusLabel = widgetStepStatus(entry.status as AsyncJobStep["status"], theme);
-			c.addChild(new Text(truncLine(`  ${glyph} ${entry.stepLabel}: ${themeBold(theme, entry.agentName)} ${theme.fg("dim", "·")} ${statusLabel}`, width), 0, 0));
-			if (entry.error) c.addChild(new Text(truncLine(theme.fg("error", `    ⎿  Error: ${entry.error}`), width), 0, 0));
+			c.addChild(new TruncatedText(`  ${glyph} ${entry.stepLabel}: ${themeBold(theme, entry.agentName)} ${theme.fg("dim", "·")} ${statusLabel}`));
+			if (entry.error) c.addChild(new TruncatedText(theme.fg("error", `    ⎿  Error: ${entry.error}`)));
 			continue;
 		}
 		const i = entry.resultIndex;
@@ -1131,10 +1121,10 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 		const agentName = entry.agentName;
 		if (!r) {
 			const pendingLabel = chainEntries ? resultRowLabel(d, multiLabel, i, rowNumber) : `${itemTitle} ${rowNumber}`;
-			c.addChild(new Text(truncLine(theme.fg("dim", `  ◦ ${pendingLabel}: ${agentName} · pending`), width), 0, 0));
+			c.addChild(new TruncatedText(theme.fg("dim", `  ◦ ${pendingLabel}: ${agentName} · pending`)));
 			continue;
 		}
-		const output = getSingleResultOutput(r);
+		const output = getSingleResultOutput(r) || (d.intercomDelivery?.delivered ? d.intercomDelivery.summary : "");
 		const progressFromArray = d.progress?.find((p) => p.index === i) || d.progress?.find((p) => p.agent === r.agent && p.status === "running");
 		const rProg = r.progress || progressFromArray || r.progressSummary;
 		const rRunning = rProg && "status" in rProg && rProg.status === "running";
@@ -1145,21 +1135,22 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 		const pendingLabel = rPending ? ` ${theme.fg("dim", "· pending")}` : "";
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);
 		const line = `${glyph} ${stepLabel}: ${themeBold(theme, agentName)}${modelStat(theme, r.model)}${stepStats ? ` ${theme.fg("dim", "·")} ${stepStats}` : ""}${pendingLabel}`;
-		c.addChild(new Text(truncLine(`  ${line}`, width), 0, 0));
+		c.addChild(new TruncatedText(`  ${line}`));
 		if (rRunning && rProg && "status" in rProg) {
 			const activity = compactCurrentActivity(rProg);
 			c.addChild(new Text(truncLine(theme.fg("dim", `    ⎿  ${activity}`), width), 0, 0));
 			showLiveDetailHint = true;
 		} else if (!rPending && (r.exitCode !== 0 || r.interrupted || r.detached || r.timedOut || hasEmptyTextOutputWithoutOutputTarget(r.task, output))) {
-			c.addChild(new Text(truncLine(theme.fg(r.exitCode !== 0 ? "error" : "dim", `    ⎿  ${resultStatusLine(r, output)}`), width), 0, 0));
+			c.addChild(new TruncatedText(theme.fg(r.exitCode !== 0 ? "error" : "dim", `    ⎿  ${resultStatusLine(r, output)}`)));
 		}
 		const outputTarget = extractOutputTarget(r.task);
-		if (outputTarget) c.addChild(new Text(truncLine(theme.fg("dim", `    output: ${outputTarget}`), width), 0, 0));
-		if (r.artifactPaths) c.addChild(new Text(truncLine(theme.fg("dim", `    output: ${shortenPath(r.artifactPaths.outputPath)}`), width), 0, 0));
+		if (outputTarget) c.addChild(new TruncatedText(theme.fg("dim", `    output: ${outputTarget}`)));
+		if (r.artifactPaths) c.addChild(new TruncatedText(theme.fg("dim", `    output: ${shortenPath(r.artifactPaths.outputPath)}`)));
 	}
 	if (renderEntries.length > visibleEntries.length) c.addChild(new Text(theme.fg("dim", `  +${renderEntries.length - visibleEntries.length} more · Ctrl+O expands`), 0, 0));
 	if (showLiveDetailHint) c.addChild(new Text(theme.fg("accent", "  Press Ctrl+O for live detail"), 0, 0));
-	if (d.artifacts) c.addChild(new Text(truncLine(theme.fg("dim", `  artifacts: ${shortenPath(d.artifacts.dir)}`), width), 0, 0));
+	if (d.artifacts) c.addChild(new TruncatedText(theme.fg("dim", `  artifacts: ${shortenPath(d.artifacts.dir)}`)));
+	if (!hasRunning) c.addChild(new TruncatedText(theme.fg("dim", `  ${keyText("app.tools.expand")} ${d.intercomDelivery?.delivered ? "receipt details" : "full response"}`)));
 	return c;
 }
 
@@ -1170,13 +1161,22 @@ export function renderSubagentResult(
 	result: SubagentExecutionResult,
 	options: { expanded: boolean },
 	theme: Theme,
+	context?: { isError: boolean },
 ): Component {
+	const isError = context?.isError ?? result.isError;
 	const d = result.details;
 	if (!d || !d.results.length) {
 		const t = result.content[0];
 		const text = t?.type === "text" ? t.text : "(no output)";
 		const contextPrefix = d?.context === "fork" ? `${theme.fg("warning", "[fork]")} ` : "";
 		if (options.expanded) return new Text(`${contextPrefix}${text}`, 0, 0);
+		if (d?.asyncId && d.mode !== "management" && !isError) {
+			const headline = d.managementControl?.revivedFromRunId ? "Revived async" : firstOutputLine(text).replace(` [${d.asyncId}]`, "");
+			const c = new Container();
+			c.addChild(new TruncatedText(`${contextPrefix}[${d.asyncId.slice(0, 8)}] ${headline}`));
+			c.addChild(new TruncatedText(theme.fg("dim", `${keyText("app.tools.expand")} details`)));
+			return c;
+		}
 		const maxCompactLines = 12;
 		const lines = text.replace(/\n+$/, "").split("\n");
 		if (lines.length === 1) return new Text(truncLine(`${contextPrefix}${lines[0]}`, getTermWidth() - 4), 0, 0);
@@ -1186,19 +1186,27 @@ export function renderSubagentResult(
 	}
 
 	const expanded = options.expanded;
+	const hasWorkflowFailure = workflowGraphHasStatus(d, ["failed", "timed-out"]);
+	const hasWorkflowPause = d.results.some((r) => r.interrupted || r.detached)
+		|| workflowGraphHasStatus(d, ["paused", "detached"]);
+	const receiptText = expanded && (isError || hasWorkflowFailure || hasWorkflowPause || d.intercomDelivery?.delivered)
+		? result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")
+		: undefined;
 	const mdTheme = getMarkdownTheme();
 
 	if (d.mode === "single" && d.results.length === 1) {
 		const r = d.results[0];
-		if (!expanded) return renderSingleCompact(d, r, theme);
-		const isRunning = r.progress?.status === "running";
+		if (!expanded) return renderSingleCompact(d, r, theme, isError);
+		const isRunning = !isError && r.progress?.status === "running";
 		const icon = isRunning
 			? theme.fg("warning", "running")
-			: r.detached
-				? theme.fg("warning", "detached")
-				: r.exitCode === 0
-					? theme.fg("success", "ok")
-					: theme.fg("error", "failed");
+			: isError || r.timedOut
+				? theme.fg("error", "failed")
+				: r.detached || r.interrupted
+					? theme.fg("warning", r.detached ? "detached" : "paused")
+					: r.exitCode === 0
+						? theme.fg("success", "ok")
+						: theme.fg("error", "failed");
 		const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 		const output = r.truncation?.text || getSingleResultOutput(r);
 
@@ -1213,6 +1221,7 @@ export function renderSubagentResult(
 		const toolCallLines = getToolCallLines(r, expanded);
 		const c = new Container();
 		c.addChild(new Text(fit(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${contextBadge}${progressInfo}`), 0, 0));
+		if ((isError || hasWorkflowFailure || hasWorkflowPause) && d.runId) c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
 		c.addChild(new Spacer(1));
 		const taskMaxLen = Math.max(20, w - 8);
 		const taskPreview = expanded || r.task.length <= taskMaxLen
@@ -1261,7 +1270,9 @@ export function renderSubagentResult(
 			if (toolCallLines.length) c.addChild(new Spacer(1));
 		}
 
+		if (r.error && !output.includes(r.error)) c.addChild(new Text(theme.fg("error", r.error), 0, 0));
 		if (output) c.addChild(new Markdown(output, 0, 0, mdTheme));
+		if (receiptText) c.addChild(new Text(receiptText, 0, 0));
 		c.addChild(new Spacer(1));
 		if (r.skills?.length) {
 			c.addChild(new Text(fit(theme.fg("dim", `Skills: ${r.skills.join(", ")}`)), 0, 0));
@@ -1284,30 +1295,28 @@ export function renderSubagentResult(
 		return c;
 	}
 
-	if (!expanded) return renderMultiCompact(d, theme);
+	if (!expanded) return renderMultiCompact(d, theme, isError);
 
-	const hasRunning = d.progress?.some((p) => p.status === "running") 
+	const hasRunning = !isError && (d.progress?.some((p) => p.status === "running")
 		|| d.results.some((r) => r.progress?.status === "running")
-		|| workflowGraphHasStatus(d, ["running"]);
-	const ok = d.results.filter((r) => r.progress?.status === "completed" || (r.exitCode === 0 && r.progress?.status !== "running")).length;
-	const hasEmptyWithoutTarget = d.results.some((r) =>
+		|| workflowGraphHasStatus(d, ["running"]));
+	const hasFailure = isError || hasWorkflowFailure || d.results.some((r) =>
+		(r.exitCode !== 0 || r.timedOut) && !r.interrupted && !r.detached && r.progress?.status !== "running",
+	);
+	const hasEmptyWithoutTarget = !d.intercomDelivery?.delivered && d.results.some((r) =>
 		r.exitCode === 0
 		&& r.progress?.status !== "running"
 		&& hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
 	);
-	const hasWorkflowFailure = workflowGraphHasStatus(d, ["failed", "timed-out"]);
-	const hasWorkflowPause = workflowGraphHasStatus(d, ["paused", "detached"]);
 	const icon = hasRunning
 		? theme.fg("warning", "running")
-		: hasEmptyWithoutTarget
-			? theme.fg("warning", "warning")
-			: hasWorkflowFailure
-				? theme.fg("error", "failed")
-				: hasWorkflowPause
-					? theme.fg("warning", "paused")
-					: ok === d.results.length
-						? theme.fg("success", "ok")
-						: theme.fg("error", "failed");
+		: hasFailure
+			? theme.fg("error", "failed")
+			: hasWorkflowPause
+				? theme.fg("warning", "paused")
+				: hasEmptyWithoutTarget
+					? theme.fg("warning", "warning")
+					: theme.fg("success", "ok");
 
 	const totalSummary =
 		d.progressSummary ||
@@ -1335,6 +1344,7 @@ export function renderSubagentResult(
 	const modeLabel = d.mode;
 	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 	const multiLabel = buildMultiProgressLabel(d, hasRunning);
+	if (!hasRunning) multiLabel.showActiveGroupOnly = false;
 	const itemTitle = multiLabel.itemTitle;
 	
 	const chainVis = d.chainAgents?.length && !multiLabel.hasParallelInChain
@@ -1343,7 +1353,7 @@ export function renderSubagentResult(
 					const result = d.results[i];
 					const isFailed = result && result.exitCode !== 0 && result.progress?.status !== "running";
 					const isComplete = result && result.exitCode === 0 && result.progress?.status !== "running";
-					const isEmptyWithoutTarget = Boolean(result)
+					const isEmptyWithoutTarget = !d.intercomDelivery?.delivered && Boolean(result)
 						&& Boolean(isComplete)
 						&& hasEmptyTextOutputWithoutOutputTarget(result.task, getSingleResultOutput(result));
 					const isCurrent = i === (d.currentStepIndex ?? d.results.length);
@@ -1371,9 +1381,11 @@ export function renderSubagentResult(
 			0,
 		),
 	);
+	if ((isError || hasWorkflowFailure || hasWorkflowPause) && d.runId) c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
 	if (chainVis) {
 		c.addChild(new Text(fit(`  ${chainVis}`), 0, 0));
 	}
+	if (receiptText) c.addChild(new Text(receiptText, 0, 0));
 
 	const useResultsDirectly = multiLabel.hasParallelInChain || !d.chainAgents?.length;
 	const displayStart = multiLabel.showActiveGroupOnly ? multiLabel.groupStartIndex : 0;
@@ -1416,14 +1428,16 @@ export function renderSubagentResult(
 		const rRunning = rProg?.status === "running";
 		const stepNumber = typeof rProg?.index === "number" ? rProg.index + 1 : i + 1;
 
-		const resultOutput = getSingleResultOutput(r);
+		const resultOutput = r.truncation?.text || getSingleResultOutput(r);
 		const statusIcon = rRunning
 			? theme.fg("warning", "running")
-			: r.exitCode !== 0
-				? theme.fg("error", "failed")
-				: hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
-					? theme.fg("warning", "warning")
-					: theme.fg("success", "done");
+			: r.detached || r.interrupted
+				? theme.fg("warning", r.detached ? "detached" : "paused")
+				: r.exitCode !== 0
+					? theme.fg("error", "failed")
+					: !d.intercomDelivery?.delivered && hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
+						? theme.fg("warning", "warning")
+						: theme.fg("success", "done");
 		const stats = rProg ? ` | ${rProg.toolCount} tools, ${formatDuration(rProg.durationMs)}` : "";
 		const modelDisplay = modelThinkingBadge(theme, r.model);
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);
@@ -1495,6 +1509,8 @@ export function renderSubagentResult(
 				c.addChild(new Text(fit(theme.fg("muted", `      ${line}`)), 0, 0));
 			}
 			if (toolCallLines.length) c.addChild(new Spacer(1));
+			if (r.error && !resultOutput.includes(r.error)) c.addChild(new Text(theme.fg("error", r.error), 0, 0));
+			if (resultOutput) c.addChild(new Markdown(resultOutput, 0, 0, mdTheme));
 		}
 
 		c.addChild(new Spacer(1));

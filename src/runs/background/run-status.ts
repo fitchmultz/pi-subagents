@@ -40,7 +40,6 @@ function hasExistingSessionFile(value: unknown): value is string {
 function completionTargetsCurrentSession(run: Pick<AsyncStatus, "sessionId" | "cwd">, state: SubagentState | undefined): boolean {
 	if (!state) return true;
 	if (run.sessionId) return run.sessionId === state.currentSessionId;
-	if (run.cwd) return Boolean(state.baseCwd) && run.cwd === state.baseCwd;
 	return false;
 }
 

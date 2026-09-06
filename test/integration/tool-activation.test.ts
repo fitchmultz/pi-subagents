@@ -134,13 +134,21 @@ describe("subagent lazy activation with SDK tool filters", () => {
 				for (const tool of [compact, compatible]) {
 					const listed = await tool.execute("questions", { action: "questions", id: runId }, new AbortController().signal);
 					assert.equal(listed.details.questions[0].state, "answer_pending");
-					await assert.rejects(tool.execute("conflict", { ...params, message: "Use another path." }, new AbortController().signal), /different saved answer/);
-					await assert.rejects(tool.execute("missing", { ...params, questionId: undefined }, new AbortController().signal), /questionId/);
-					await assert.rejects(tool.execute("blank", { ...params, message: " " }, new AbortController().signal), /non-empty message/);
+					const conflict = await tool.execute("conflict", { ...params, message: "Use another path." }, new AbortController().signal);
+					assert.equal("isError" in conflict && conflict.isError, true);
+					assert.match(JSON.stringify(conflict.content), /different saved answer/);
+					const missing = await tool.execute("missing", { ...params, questionId: undefined }, new AbortController().signal);
+					assert.equal("isError" in missing && missing.isError, true);
+					assert.match(JSON.stringify(missing.content), /questionId/);
+					const blank = await tool.execute("blank", { ...params, message: " " }, new AbortController().signal);
+					assert.equal("isError" in blank && blank.isError, true);
+					assert.match(JSON.stringify(blank.content), /non-empty message/);
 				}
 				saveQuestionOwner(`${runId}-other`, "other-supervisor");
 				const other = createSupervisorQuestion({ ...question, runId: `${runId}-other` });
-				await assert.rejects(compact.execute("wrong-owner", { ...params, id: other.runId, questionId: other.questionId }, new AbortController().signal), /owning supervisor session/);
+				const wrongOwner = await compact.execute("wrong-owner", { ...params, id: other.runId, questionId: other.questionId }, new AbortController().signal);
+				assert.equal("isError" in wrongOwner && wrongOwner.isError, true);
+				assert.match(JSON.stringify(wrongOwner.content), /owning supervisor session/);
 			} finally {
 				fs.rmSync(path.join(QUESTIONS_DIR, runId), { recursive: true, force: true });
 				fs.rmSync(path.join(QUESTIONS_DIR, `${runId}-other`), { recursive: true, force: true });

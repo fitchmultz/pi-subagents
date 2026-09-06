@@ -122,7 +122,7 @@ describe("subagent extension child mode", () => {
 					requestRender() {},
 					theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } },
 				},
-				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; }, getSessionDir() { return process.cwd(); } },
+				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; }, getSessionDir() { return process.cwd(); }, getEntries() { return []; }, getHeader() { return null; } },
 				modelRegistry: { getAvailable() { return []; } },
 			};
 			await registeredTool.execute("already-collapsed", { action: "list" }, new AbortController().signal, undefined, ctx);
@@ -243,18 +243,14 @@ describe("subagent extension child mode", () => {
 				mode: "json",
 				hasUI: false,
 				isProjectTrusted() { return true; },
-				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; }, getSessionDir() { return process.cwd(); } },
+				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; }, getSessionDir() { return process.cwd(); }, getEntries() { return []; }, getHeader() { return null; } },
 				modelRegistry: { getAvailable() { return []; } },
 			};
 			const list = await registeredTool.execute("list-check", { action: "list" }, new AbortController().signal, undefined, ctx);
 			if (list.isError) throw new Error("list should be allowed: " + JSON.stringify(list.content));
-			let createError;
-			try {
-				await registeredTool.execute("create-check", { action: "create", config: { name: "x" } }, new AbortController().signal, undefined, ctx);
-			} catch (error) {
-				createError = error;
-			}
-			const text = createError instanceof Error ? createError.message : "";
+			const createResult = await registeredTool.execute("create-check", { action: "create", config: { name: "x" } }, new AbortController().signal, undefined, ctx);
+			if (createResult.isError !== true) throw new Error("create must remain a tool error");
+			const text = createResult.content.map((part) => part.type === "text" ? part.text : "").join("\n");
 			if (!text.includes("not available from child-safe subagent fanout mode")) throw new Error("unexpected create error: " + text);
 		`;
 

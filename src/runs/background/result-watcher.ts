@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { buildCompletionKey, markSeenWithTtl } from "./completion-dedupe.ts";
 import { createFileCoalescer } from "../../shared/file-coalescer.ts";
+import { resolveOrchestratorIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
 	type IntercomEventBus,
@@ -89,10 +90,8 @@ export function createResultWatcher(
 		if (!fsApi.existsSync(resultPath)) return;
 		try {
 			const data = fsApi === fs ? readAsyncResultFile(resultPath) : parseAsyncResultFileContent(fsApi.readFileSync(resultPath, "utf-8"), resultPath);
-			if (data.sessionId && data.sessionId !== state.currentSessionId) return;
-			if (!data.sessionId && data.cwd && (!state.baseCwd || data.cwd !== state.baseCwd)) return;
-
 			const runId = data.runId ?? data.id ?? file.replace(/\.json$/i, "");
+			if (data.sessionId ? data.sessionId !== state.currentSessionId : !state.ownedRuns?.has(runId)) return;
 			const hasExplicitNestedChildren = data.nestedChildren !== undefined;
 			let nestedChildren = compactNestedResultChildren(sanitizeNestedResultChildren(data.nestedChildren, resultPath, "nestedChildren"));
 			if (!nestedChildren?.length && !hasExplicitNestedChildren) {
@@ -147,7 +146,8 @@ export function createResultWatcher(
 			processingCompletionKeys.add(completionKey);
 			claimedCompletionKey = completionKey;
 
-			const intercomTarget = data.intercomTarget?.trim();
+			// Saved ownership is stable; the owner's live intercom identity can change on restart.
+			const intercomTarget = resolveOrchestratorIntercomTarget(pi.events, data.intercomTarget?.trim() ?? "");
 			let intercomResultDelivered = false;
 			if (intercomTarget) {
 				const mode = data.mode === "single" || data.mode === "parallel" || data.mode === "chain"
@@ -158,14 +158,13 @@ export function createResultWatcher(
 					runId,
 					mode,
 					source: "async",
+					status: resolveSubagentResultStatus({ state: data.terminalState }),
+					error: data.workflowGraph?.nodes.find((node) => node.error)?.error,
 					children: normalizedChildren,
 					asyncId: data.id,
 					asyncDir: data.asyncDir,
 				});
 				intercomResultDelivered = await deliverSubagentResultIntercomEvent(pi.events, payload);
-				if (!intercomResultDelivered) {
-					console.error(`Subagent async grouped result intercom delivery was not acknowledged for '${resultPath}'.`);
-				}
 			}
 
 			const { terminalState: _terminalState, ...eventData } = data;
