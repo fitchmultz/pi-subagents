@@ -350,6 +350,127 @@ async function runJourney() {
 	}
 	evidence.coldParent = { parentFile, runs: coldRuns, total: (await invoke("agent_runs", { action: "list" })).details.runList.total };
 }
+async function runWorkflowOutcomes() {
+	acknowledgeResults = true;
+	const notifications = [], completions = [];
+	bus.on("subagent:result-intercom", (message) => notifications.push(message));
+	bus.on("subagent:async-complete", (message) => completions.push(message));
+	await open(parentFile);
+	// The native slash bridge calls the same owning executor and retains error details
+	// that the registered tool boundary otherwise converts into a thrown Error.
+	const execute = (params) => new Promise((resolve) => {
+		const requestId = randomUUID();
+		const unsubscribe = bus.on("subagent:slash:response", (message) => {
+			if (message.requestId !== requestId) return;
+			unsubscribe(); resolve(message.result);
+		});
+		bus.emit("subagent:slash:request", { requestId, params });
+	});
+	const verify = (name, run) => {
+		try { check(name, run); } catch (error) { evidence.failures.push(`${name}: ${error.stack ?? error}`); }
+	};
+	const response = (text, value) => `WORKFLOW_RESPONSE:${JSON.stringify({ text, ...(value === undefined ? {} : { value }) })}`;
+	const producer = (items) => ({ agent: "probe", task: response("WORKFLOW_TARGETS", { items }), as: "targets", output: false, outputSchema: { type: "object" } });
+	const fanout = {
+		expand: { from: { output: "targets", path: "/items" }, key: "/path", maxItems: 1, onEmpty: "skip" },
+		parallel: { agent: "probe", task: response("REVIEWED {item.path}", { ok: "{item.path}" }), output: false, outputSchema: { type: "object" } },
+		collect: { as: "reviews" },
+	};
+	const rejectedCollection = { ...fanout, collect: { as: "reviews", outputSchema: { type: "object" } } };
+	const consumer = { agent: "probe", task: `Use {outputs.reviews}\n${response("EMPTY_COLLECTION_CONSUMED")}`, output: false };
+	const cases = [
+		{ name: "collection-rejected", chain: [producer([{ path: "src/a.ts" }]), rejectedCollection], expected: ["WORKFLOW_TARGETS", "REVIEWED src/a.ts"], error: /Collected output validation failed/ },
+		{ name: "empty-fanout", chain: [producer([]), fanout, consumer], expected: ["WORKFLOW_TARGETS", "EMPTY_COLLECTION_CONSUMED"] },
+		{ name: "expansion-rejected", chain: [producer([{ path: "src/a.ts" }, { path: "src/b.ts" }]), fanout, consumer], expected: ["WORKFLOW_TARGETS"], error: /exceeding maxItems 1/ },
+		{ name: "empty-collection-rejected", chain: [producer([]), rejectedCollection, consumer], expected: ["WORKFLOW_TARGETS"], error: /Collected output validation failed/ },
+		{ name: "before-launch-rejected", chain: [{ agent: "probe", task: "Never start first", as: "duplicate", output: false }, { agent: "probe", task: "Never start second", as: "duplicate", output: false }], expected: [], error: /Duplicate chain output name/ },
+	];
+	evidence.workflows = [];
+	for (const background of [false, true]) for (const scenario of cases) {
+		const name = `${background ? "background" : "foreground"}-${scenario.name}`;
+		const beforeCalls = calls().length;
+		const result = await execute({ chain: scenario.chain, task: name, async: background, context: "fresh", artifacts: false });
+		const id = result.details.runId;
+		assert.ok(id, `${name}: native owning executor must return its run handle`);
+		const terminal = result.details.asyncId ? await completed(id) : result.details;
+		if (result.details.asyncId) await wait(() => completions.some((message) => message.runId === id), `${name} acknowledged completion`);
+		const childCalls = calls().slice(beforeCalls);
+		const emitted = notifications.filter((message) => message.runId === id);
+		const receipt = { name, runId: id, result, terminal, childCalls, notifications: emitted, inspections: [] };
+		evidence.workflows.push({ name, runId: id, calls: childCalls.length, notifications: emitted.map((message) => message.status) });
+		verify(`${name}: only required child processes execute`, () => {
+			assert.equal(childCalls.length, scenario.expected.length);
+			if (!scenario.error) assert.match(childCalls[1].task, /Use \[\]/);
+		});
+		verify(`${name}: collection publication follows workflow validation`, () => {
+			if (scenario.error) {
+				assert.equal(terminal.outputs?.reviews, undefined);
+				if (result.details.asyncId) assert.equal(terminal.success, false);
+				else assert.equal(result.isError, true);
+			} else {
+				assert.deepEqual(terminal.outputs.reviews.structured, []);
+				assert.equal(terminal.workflowGraph.nodes[1].status, "completed");
+				assert.deepEqual(terminal.workflowGraph.nodes[1].children, []);
+			}
+		});
+		verify(`${name}: acknowledged grouped delivery reports the workflow outcome and reason`, () => {
+			assert.equal(emitted.length, scenario.expected.length ? 1 : 0);
+			if (!emitted.length) return;
+			const notification = emitted[0];
+			assert.equal(notification.status, scenario.error ? "failed" : "completed");
+			assert.deepEqual(notification.children.filter((child) => child.status === "completed").map((child) => child.summary), scenario.expected);
+			if (scenario.error) assert.match(notification.message, scenario.error);
+			if (!background) {
+				assert.equal(result.details.intercomDelivery.delivered, true);
+				assert.equal(result.details.intercomDelivery.status, notification.status);
+				if (scenario.error) assert.match(result.content.map((part) => part.text).join("\n"), scenario.error);
+			}
+		});
+		for (const checkpoint of ["before reload", "after reload", "after reopen"]) {
+			if (checkpoint === "after reload") await session.reload();
+			if (checkpoint === "after reopen") { await close(); await open(parentFile); }
+			const inspection = await inspect(id);
+			const run = inspection.details.run;
+			const list = (await invoke("agent_runs", { action: "list", limit: 100 })).details.runs.find((entry) => entry.runId === id);
+			receipt.inspections.push({ checkpoint, inspection, list });
+			verify(`${name}: inspect/list outcome and attention ${checkpoint}`, () => {
+				const expected = scenario.error ? "failed" : "completed";
+				assert.equal(run.state, expected);
+				assert.equal(inspection.details.managementControl.state, expected);
+				assert.equal(list.state, expected);
+				assert.deepEqual(run.attention, [scenario.error ? "failed" : "unreviewed"]);
+				assert.deepEqual(list.attention, run.attention);
+				assert.equal(run.review, undefined);
+			});
+			verify(`${name}: successful native child evidence is retained ${checkpoint}`, () => {
+				const successful = run.children.filter((child) => child.state === "completed");
+				assert.deepEqual(successful.map((child) => child.result.finalOutput), scenario.expected);
+				assert.deepEqual(successful.map((child) => child.index), scenario.expected.map((_, index) => index));
+				assert.deepEqual(successful.map((child) => child.sessionFile), childCalls.map((call) => call.sessionFile));
+				for (const child of successful) {
+					assert.equal(child.result.exitCode, 0);
+					const messages = sdk.SessionManager.open(child.sessionFile).getEntries().filter((entry) => entry.type === "message").map((entry) => entry.message);
+					assert.ok(messages.some((message) => message.role === "assistant" && message.content.some((part) => part.type === "text" && part.text === child.result.finalOutput)));
+					if (child.result.structuredOutput !== undefined) assert.ok(messages.some((message) => message.role === "toolResult" && message.toolName === "structured_output" && message.isError === false));
+				}
+			});
+			verify(`${name}: terminal views exclude unexpanded declared children ${checkpoint}`, () => {
+				// Background failures also retain the runner's explicit diagnostic result.
+				const expectedCount = background && result.details.asyncId ? terminal.results.length : scenario.expected.length;
+				assert.equal(run.children.length, expectedCount);
+				assert.ok(run.children.every((child) => child.state !== "unknown"));
+				if (scenario.error && !background) assert.match(run.diagnosis, scenario.error);
+			});
+		}
+		verify(`${name}: reload does not relaunch children or redeliver completion`, () => {
+			assert.equal(calls().length, beforeCalls + childCalls.length);
+			assert.equal(notifications.filter((message) => message.runId === id).length, emitted.length);
+		});
+		fs.writeFileSync(path.join(root, `${name}.json`), JSON.stringify(receipt, null, 2));
+	}
+	if (evidence.failures.length) process.exitCode = 1;
+}
+
 async function runColdParent() {
 	const prior = JSON.parse(fs.readFileSync(path.join(root, "evidence.json"), "utf8"));
 	assert.notEqual(process.pid, prior.parentPid, "cold recovery must run in a new parent OS process");
@@ -382,6 +503,7 @@ async function runColdParent() {
 }
 try {
 	if (coldParent) await runColdParent();
+	else if (phase === "workflow-outcomes") await runWorkflowOutcomes();
 	else await runJourney();
 	assert.equal(evidence.nativeProviderRequests, 0);
 } catch (error) {
@@ -389,6 +511,6 @@ try {
 	process.exitCode = 1;
 } finally {
 	await close();
-	fs.writeFileSync(path.join(root, coldParent ? "cold-evidence.json" : "evidence.json"), JSON.stringify(evidence, null, 2));
+	fs.writeFileSync(path.join(root, coldParent ? "cold-evidence.json" : phase === "workflow-outcomes" ? "workflow-evidence.json" : "evidence.json"), JSON.stringify(evidence, null, 2));
 	console.log(JSON.stringify(evidence, null, 2));
 }

@@ -55,6 +55,22 @@ describe("result intercom formatter", () => {
 		assert.match(payload.message, /Session: \/tmp\/a-session\.jsonl/);
 	});
 
+	it("keeps a workflow failure or pause separate from successful child evidence", () => {
+		for (const status of ["failed", "paused"] as const) {
+			const error = status === "failed" ? "Collected output validation failed: root: Expected object" : undefined;
+			const children = [{ agent: "producer", status: "completed" as const, summary: "targets" }, { agent: "reviewer", status: "completed" as const, summary: "reviewed" }];
+			const payload = buildSubagentResultIntercomPayload({ to: "parent", runId: "workflow", mode: "chain", source: "async", status, error, children });
+			assert.equal(payload.status, status);
+			assert.deepEqual(payload.children.map((child) => child.status), ["completed", "completed"]);
+			assert.equal(payload.summary, "2 completed");
+			assert.match(payload.message, new RegExp(`Status: ${status}`));
+			if (error) {
+				assert.ok(payload.message.includes(error));
+				assert.ok(formatSubagentResultReceipt({ mode: "chain", runId: "workflow", payload }).includes(error));
+			}
+		}
+	});
+
 	it("tells nested orchestrators not to relaunch completed foreground calls", () => {
 		const payload = buildSubagentResultIntercomPayload({
 			to: "orchestrator",

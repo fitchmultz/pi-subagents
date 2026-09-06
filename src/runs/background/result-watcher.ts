@@ -156,6 +156,8 @@ export function createResultWatcher(
 					runId,
 					mode,
 					source: "async",
+					status: resolveSubagentResultStatus({ state: data.terminalState }),
+					error: data.workflowGraph?.nodes.find((node) => node.error)?.error,
 					children: normalizedChildren,
 					asyncId: data.id,
 					asyncDir: data.asyncDir,

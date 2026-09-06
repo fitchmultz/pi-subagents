@@ -31,6 +31,7 @@ import { buildManagementControl } from "../../shared/status-format.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
 import { queryLiveIntercomHealth } from "../../intercom/live-intercom.ts";
 import { saveQuestionOwner } from "../shared/supervisor-questions.ts";
+import { workflowChildSucceeded } from "../shared/workflow-policy.ts";
 import { ownedRunList, ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun, saveForegroundRun } from "../shared/run-records.ts";
 import { cancelSupervisorInput, controlSupervisorQuestion, projectSupervisorQuestions } from "./question-control.ts";
 import {
@@ -584,7 +585,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 
 		const completeNestedForeground = (result: SubagentExecutionResult): void => {
 			result.details.runId ??= runId;
-			if (result.isError && result.details.results.length === 0) {
+			if (result.isError && result.details.results.every(workflowChildSucceeded)) {
 				const owned = deps.state.ownedRuns?.get(runId);
 				if (owned) rememberOwnedRun(deps.state, { ...owned, error: result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") });
 			}
@@ -592,7 +593,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				const owned = deps.state.ownedRuns?.get(runId);
 				if (owned) rememberOwnedRun(deps.state, { ...owned, source: "async", asyncDir: result.details.asyncDir, pid: deps.state.asyncJobs.get(runId)?.pid });
 			} else if (!deps.state.foregroundRuns?.has(runId)) {
-				saveForegroundRun({ runId, mode: foregroundMode, cwd: effectiveCwd, results: result.details.results });
+				saveForegroundRun({ runId, mode: foregroundMode, cwd: effectiveCwd, results: result.details.results, error: deps.state.ownedRuns?.get(runId)?.error });
 			}
 			if (result.details.intercomDelivery?.delivered) {
 				const owned = deps.state.ownedRuns?.get(runId);

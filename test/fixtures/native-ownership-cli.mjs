@@ -39,6 +39,21 @@ if (task.includes("CREATE_QUESTION")) {
 	createSupervisorQuestion({ runId: process.env.PI_SUBAGENT_RUN_ID, ownerTarget: "probe-parent", agent: "probe", index: Number(process.env.PI_SUBAGENT_CHILD_INDEX), childSessionId: session.getSessionId(), childTarget: "probe-child", sessionFile: file, cwd: process.cwd(), pid: process.pid, reason: "need_decision", message: "Choose a stable answer." });
 }
 let output = task.includes("RECALL_TOKEN") ? (previous.includes("FIRST_SESSION_TOKEN") ? "RECALLED FIRST_SESSION_TOKEN" : "TOKEN_MISSING") : "FIRST_SESSION_TOKEN";
+const workflowResponse = task.match(/WORKFLOW_RESPONSE:([^\n]+)/)?.[1];
+if (workflowResponse) {
+	const response = JSON.parse(workflowResponse);
+	output = response.text;
+	if (Object.hasOwn(response, "value")) {
+		const { default: register } = await import(pathToFileURL(path.join(process.env.OWNERSHIP_REPO, "dist/runs/shared/subagent-prompt-runtime.js")).href);
+		let tool;
+		register({ on() {}, registerTool(value) { if (value.name === "structured_output") tool = value; } });
+		if (!tool) throw new Error("The workflow child requires the real structured_output tool.");
+		const id = randomUUID();
+		session.appendMessage({ ...assistant(output, "toolUse"), content: [{ type: "toolCall", id, name: tool.name, arguments: { value: response.value } }] });
+		const result = await tool.execute(id, { value: response.value });
+		session.appendMessage({ role: "toolResult", toolCallId: id, toolName: tool.name, ...result, isError: false, timestamp: Date.now() });
+	}
+}
 if (task.includes("Supervisor answer to question")) output = "ANSWER_RECEIVED";
 const failed = task.includes("PERMANENT_FAILURE");
 if (failed) output = "Controlled permanent failure";

@@ -7,6 +7,7 @@ import { resolveConfiguredChildProjectTrustPolicy } from "../shared/pi-args.ts";
 import { wrapChainTasksForAgentContext } from "../../shared/agent-context-policy.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { compactForegroundDetails } from "../../shared/utils.ts";
+import { workflowChildSucceeded } from "../shared/workflow-policy.ts";
 import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
 import { appendWorktreeSummary, extractWorktreeSummary } from "../shared/worktree.ts";
 import { type SubagentExecutionResult, resolveCurrentMaxSubagentDepth } from "../../shared/types.ts";
@@ -124,10 +125,12 @@ export async function runChainPath(data: ExecutionContextData, deps: ExecutorDep
 		});
 	}
 
+	const error = chainResult.isError && chainResult.details.results.every(workflowChildSucceeded)
+		? chainResult.content.map((part) => part.text).join("\n") : undefined;
 	const chainDetails = chainResult.details ? compactForegroundDetails({ ...chainResult.details, runId }) : undefined;
 	if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 	if (chainDetails) {
-		rememberForegroundRun(deps.state, { runId, mode: "chain", cwd: effectiveCwd, results: chainDetails.results });
+		rememberForegroundRun(deps.state, { runId, mode: "chain", cwd: effectiveCwd, results: chainDetails.results, error });
 		detachedCompletions.setResults(chainDetails.results, foregroundControl?.nestedChildren);
 	}
 	const intercomReceipt = chainDetails && !chainDetails.results.some((result) => result.interrupted || result.detached || result.timedOut)
@@ -137,6 +140,7 @@ export async function runChainPath(data: ExecutionContextData, deps: ExecutorDep
 			runId,
 			mode: "chain",
 			details: chainDetails,
+			error,
 			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
 		})
 		: null;

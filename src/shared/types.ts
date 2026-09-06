@@ -172,6 +172,7 @@ export interface SubagentResultIntercomPayload {
 	mode: SubagentRunMode;
 	status: SubagentResultStatus;
 	summary: string;
+	error?: string;
 	source: "foreground" | "async";
 	children: SubagentResultIntercomChild[];
 	asyncId?: string;
@@ -830,6 +831,7 @@ export interface ForegroundResumeRun {
 	mode: SubagentRunMode;
 	cwd: string;
 	updatedAt: number;
+	error?: string;
 	children: ForegroundResumeChild[];
 }
 

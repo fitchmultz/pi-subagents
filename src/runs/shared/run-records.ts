@@ -37,9 +37,10 @@ export function resolveOwnedRun(state: SubagentState, requested: string): OwnedR
 	return matches[0];
 }
 
-export function saveForegroundRun(input: { runId: string; mode: ForegroundResumeRun["mode"]; cwd: string; results: SingleResult[] }): ForegroundResumeRun {
+export function saveForegroundRun(input: { runId: string; mode: ForegroundResumeRun["mode"]; cwd: string; results: SingleResult[]; error?: string }): ForegroundResumeRun {
 	const run: ForegroundResumeRun = {
 		runId: input.runId, mode: input.mode, cwd: input.cwd, updatedAt: Date.now(),
+		...(input.error ? { error: input.error } : {}),
 		children: input.results.map((result, index) => ({
 			agent: result.agent, index,
 			status: resolveSubagentResultStatus(result),
@@ -224,7 +225,9 @@ export function ownedRunView(run: OwnedRun, state: SubagentState): OwnedRunView 
 		const contract = readQuestionContract(run.runId, index);
 		if (contract) contracts.set(index, contract);
 	}
-	const indices = new Set([...run.children.map((child) => child.index), ...contracts.keys(), ...(foreground?.children.map((child) => child.index) ?? []), ...(status?.steps?.map((_, index) => index) ?? []), ...(result?.results?.map((_, index) => index) ?? [])]);
+	// Terminal snapshots contain materialized children; declared slots can include an empty fanout or unstarted downstream steps.
+	const terminalIndices = result?.results?.map((_, index) => index) ?? foreground?.children.map((child) => child.index);
+	const indices = new Set(terminalIndices ?? [...run.children.map((child) => child.index), ...contracts.keys(), ...(status?.steps?.map((_, index) => index) ?? [])]);
 	const children: OwnedRunView["children"] = [...indices].sort((a, b) => a - b).map((index) => {
 		const declared = run.children.find((child) => child.index === index);
 		const contract = contracts.get(index);
@@ -246,7 +249,8 @@ export function ownedRunView(run: OwnedRun, state: SubagentState): OwnedRunView 
 		};
 	});
 	const live = state.foregroundControls.has(run.runId) || children.some((child) => child.state === "live") || (!result && (!status || status.state === "running" || status.state === "queued") && processAlive(status?.pid ?? run.pid));
-	const executionState: ManagementRunState = run.error ? "failed" : result ? normalizedState(result.terminalState)
+	const error = foreground?.error ?? run.error;
+	const executionState: ManagementRunState = error ? "failed" : result ? normalizedState(result.terminalState)
 		: live ? "live"
 		: children.some((child) => child.state === "failed") ? "failed"
 		: children.some((child) => child.state === "paused") ? "paused"
@@ -265,7 +269,7 @@ export function ownedRunView(run: OwnedRun, state: SubagentState): OwnedRunView 
 		updatedAt: result?.timestamp ?? status?.lastUpdate ?? foreground?.updatedAt ?? run.startedAt,
 		continuations: [...(state.ownedRuns?.values() ?? [])].filter((candidate) => candidate.rootRunId === run.rootRunId && candidate.predecessorRunId).sort((a, b) => a.startedAt - b.startedAt).map((candidate) => ({ runId: candidate.runId, predecessorRunId: candidate.predecessorRunId!, predecessorIndex: candidate.predecessorIndex })),
 		...(result ? { resultPath } : foreground ? { resultPath: path.join(root, "foreground.json") } : {}),
-		...(run.error ? { diagnosis: run.error } : executionState === "unknown" ? { diagnosis: "Completion is unconfirmed. Saved sessions are context, not proof of successful execution." } : {}),
+		...(error ? { diagnosis: error } : executionState === "unknown" ? { diagnosis: "Completion is unconfirmed. Saved sessions are context, not proof of successful execution." } : {}),
 	};
 }
 

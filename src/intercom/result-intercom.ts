@@ -57,8 +57,9 @@ function formatStatusCounts(counts: Record<SubagentResultStatus, number>): strin
 	return parts.length ? parts.join(", ") : "0 results";
 }
 
-function resolveGroupedStatus(children: SubagentResultIntercomChild[]): SubagentResultStatus {
+function resolveGroupedStatus(children: SubagentResultIntercomChild[], workflowStatus?: SubagentResultStatus): SubagentResultStatus {
 	const counts = countStatuses(children);
+	if (workflowStatus) counts[workflowStatus] += 1;
 	if (counts.failed > 0) return "failed";
 	if (counts["timed-out"] > 0) return "timed-out";
 	if (counts.paused > 0) return "paused";
@@ -177,6 +178,8 @@ interface GroupedResultIntercomMessageInput {
 	mode: SubagentRunMode;
 	source: "foreground" | "async";
 	children: SubagentResultIntercomChild[];
+	status?: SubagentResultStatus;
+	error?: string;
 	asyncId?: string;
 	asyncDir?: string;
 	chainSteps?: number;
@@ -203,6 +206,7 @@ function formatSubagentResultIntercomMessage(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	status: SubagentResultStatus;
+	error?: string;
 	source: "foreground" | "async";
 	children: SubagentResultIntercomChild[];
 	asyncId?: string;
@@ -217,6 +221,7 @@ function formatSubagentResultIntercomMessage(input: {
 		`Mode: ${input.mode}`,
 		`Status: ${input.status}`,
 		`Children: ${formatStatusCounts(counts)}`,
+		...(input.error ? [`Workflow error: ${input.error}`] : []),
 	];
 	if (input.source === "foreground" && input.status === "completed") {
 		lines.push("This completes the matching subagent call. Continue the parent task without relaunching the same call.");
@@ -256,7 +261,7 @@ export function buildSubagentResultIntercomPayload(input: GroupedResultIntercomM
 		summary: child.summary.trim() || "(no output)",
 		children: compactNestedResultChildren(child.children),
 	}));
-	const status = resolveGroupedStatus(children);
+	const status = resolveGroupedStatus(children, input.status);
 	const summary = formatStatusCounts(countStatuses(children));
 	const firstChild = children[0];
 	const payload: SubagentResultIntercomPayload = {
@@ -265,6 +270,7 @@ export function buildSubagentResultIntercomPayload(input: GroupedResultIntercomM
 		mode: input.mode,
 		status,
 		summary,
+		...(input.error ? { error: input.error } : {}),
 		source: input.source,
 		children,
 		...(input.asyncId ? { asyncId: input.asyncId } : {}),
@@ -363,6 +369,7 @@ export function formatSubagentResultReceipt(input: {
 		`Run: ${input.runId}`,
 		`Child outcome: ${input.payload.status}`,
 		`Children: ${formatStatusCounts(counts)}`,
+		...(input.payload.error ? [`Workflow error: ${input.payload.error}`] : []),
 	];
 
 	const artifacts = input.payload.children.filter((child) => typeof child.artifactPath === "string");

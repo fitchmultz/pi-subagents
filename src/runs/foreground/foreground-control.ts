@@ -176,7 +176,7 @@ export function extendForegroundTimeoutResult(control: ForegroundControlState, a
 	};
 }
 
-export function rememberForegroundRun(state: SubagentState, input: { runId: string; mode: "single" | "parallel" | "chain"; cwd: string; results: SingleResult[] }): void {
+export function rememberForegroundRun(state: SubagentState, input: Parameters<typeof saveForegroundRun>[0]): void {
 	(state.foregroundRuns ??= new Map()).set(input.runId, saveForegroundRun(input));
 }
 
@@ -221,12 +221,13 @@ function rememberedForegroundState(children: ReturnType<typeof foregroundResultC
 
 export function rememberedForegroundStatusResult(run: ForegroundResumeRun): SubagentExecutionResult {
 	const children = foregroundResultChildren(run);
-	const state = rememberedForegroundState(children);
+	const state = run.error ? "failed" : rememberedForegroundState(children);
 	const resumable = children.find(({ child }) => child.sessionFile && child.status !== "detached")?.child;
 	const lines = [
 		`Run: ${run.runId}`,
 		"State: remembered foreground",
 		`Outcome: ${state}`,
+		...(run.error ? [`Error: ${run.error}`] : []),
 		`Mode: ${run.mode}`,
 		`Updated: ${new Date(run.updatedAt).toISOString()}`,
 		`Cwd: ${run.cwd}`,
@@ -248,7 +249,6 @@ function resolveForegroundResumeTarget(params: SubagentParamsLike, state: Subage
 	const requested = (params.id ?? params.runId)?.trim();
 	const run = resolveRememberedForegroundRun(requested, state);
 	if (!run) return undefined;
-	foregroundResultChildren(run);
 	if (run.children.length > 1 && params.index === undefined) throw new Error(`Foreground run '${run.runId}' has ${run.children.length} children. Provide index to choose one.`);
 	const index = params.index ?? 0;
 	if (!Number.isInteger(index)) throw new Error(`Foreground run '${run.runId}' index must be an integer.`);
@@ -960,6 +960,7 @@ async function emitForegroundResultIntercom(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	results: SingleResult[];
+	error?: string;
 	chainSteps?: number;
 	nestedChildren?: NestedRunSummary[];
 }): Promise<ReturnType<typeof buildSubagentResultIntercomPayload> | null> {
@@ -983,6 +984,7 @@ async function emitForegroundResultIntercom(input: {
 		runId: input.runId,
 		mode: input.mode,
 		source: "foreground",
+		...(input.error ? { status: "failed", error: input.error } : {}),
 		children: attachNestedChildrenToResultChildren(input.runId, children, input.nestedChildren),
 		...(typeof input.chainSteps === "number" ? { chainSteps: input.chainSteps } : {}),
 	});
@@ -1086,6 +1088,7 @@ export async function maybeBuildForegroundIntercomReceipt(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	details: Details;
+	error?: string;
 	nestedChildren?: NestedRunSummary[];
 }): Promise<{ text: string; details: Details; status: ReturnType<typeof buildSubagentResultIntercomPayload>["status"] } | null> {
 	const payload = await emitForegroundResultIntercom({
@@ -1094,6 +1097,7 @@ export async function maybeBuildForegroundIntercomReceipt(input: {
 		runId: input.runId,
 		mode: input.mode,
 		results: input.details.results,
+		error: input.error,
 		...(typeof input.details.totalSteps === "number" ? { chainSteps: input.details.totalSteps } : {}),
 		...(input.nestedChildren?.length ? { nestedChildren: input.nestedChildren } : {}),
 	});
