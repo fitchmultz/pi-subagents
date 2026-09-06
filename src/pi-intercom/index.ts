@@ -16,6 +16,7 @@ import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode } fro
 import { ReplyTracker } from "./reply-tracker.ts";
 import { filterProjectSessions, formatPeerAwarenessHint, formatSessionTarget, formatTargetOptions, PEER_AWARENESS_HINT, resolveSessionProjectId, targetDisplayName, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
 import { registerSubagentLiveEventHandlers } from "./subagent-live-events.ts";
+import { cancelSupervisorQuestion, createSupervisorQuestion, readQuestionState, recordQuestionDelivery, saveQuestionAnswer, type SupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -648,10 +649,11 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let replyWaiter: {
     from: string;
     replyTo: string;
+    question?: SupervisorQuestion;
     resolve: (message: Message) => void;
     reject: (error: Error) => void;
   } | null = null;
-  function waitForReply(from: string, replyTo: string, signal?: AbortSignal): Promise<Message> {
+  function waitForReply(from: string, replyTo: string, signal?: AbortSignal, question?: SupervisorQuestion): Promise<Message> {
     if (replyWaiter) {
       return Promise.reject(new Error("Already waiting for a reply"));
     }
@@ -659,28 +661,49 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return Promise.reject(new Error("Cancelled"));
     }
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      const timeout = question ? undefined : setTimeout(() => {
         rejectReplyWaiter(new Error(`No reply from "${from}" within ${Math.max(1, Math.round(config.askTimeoutMs / 60000))} minute(s)`));
       }, config.askTimeoutMs);
-      timeout.unref?.();
+      timeout?.unref?.();
+      const poll = question ? setInterval(() => {
+        try {
+          const saved = readQuestionState(question);
+          if (saved.state === "cancelled") return rejectReplyWaiter(new Error("Cancelled"));
+          if (saved.answer) replyWaiter?.resolve({ id: replyTo, replyTo, timestamp: saved.answer.answeredAt, content: { text: saved.answer.message } });
+        } catch (error) {
+          rejectReplyWaiter(toError(error));
+        }
+      }, 250) : undefined;
       const cleanup = () => {
         clearTimeout(timeout);
+        clearInterval(poll);
         signal?.removeEventListener("abort", onAbort);
         if (replyWaiter?.replyTo === replyTo) {
           replyWaiter = null;
         }
       };
       const onAbort = () => {
-        cleanup();
-        reject(new Error("Cancelled"));
+        try {
+          if (question) cancelSupervisorQuestion(question);
+        } finally {
+          cleanup();
+          reject(new Error("Cancelled"));
+        }
       };
       signal?.addEventListener("abort", onAbort, { once: true });
       replyWaiter = {
         from,
         replyTo,
+        question,
         resolve: (message) => {
-          cleanup();
-          resolve(message);
+          try {
+            if (question) saveQuestionAnswer(question, message.content.text);
+            cleanup();
+            resolve(message);
+          } catch (error) {
+            cleanup();
+            reject(toError(error));
+          }
         },
         reject: (error) => {
           cleanup();
@@ -689,11 +712,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       };
     });
   }
+  function currentReplyWaiter() { return replyWaiter; }
   function rejectReplyWaiter(error: Error): void {
     replyWaiter?.reject(error);
   }
   function rejectReplyWaiterForPeer(sessionId: string): void {
-    if (replyWaiter?.from === sessionId) {
+    if (replyWaiter?.from === sessionId && !replyWaiter.question) {
       rejectReplyWaiter(new Error(`Reply peer disconnected before answering: ${sessionId}`));
     }
   }
@@ -1164,7 +1188,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (client !== nextClient) {
         return;
       }
-      rejectReplyWaiter(new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }));
+      if (!replyWaiter?.question) rejectReplyWaiter(new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }));
       client = null;
       if (!disposed) {
         clearReconnectTimer();
@@ -1607,6 +1631,59 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText);
   });
 
+  async function requestSupervisorDecision(reason: "need_decision" | "interview_request", message: string | undefined, interview: SupervisorInterviewRequest | undefined, signal: AbortSignal | undefined, ctx: ExtensionContext) {
+    if (replyWaiter) throw new Error("Already waiting for a reply");
+    if (signal?.aborted) throw new Error("Cancelled");
+    const metadata = childOrchestratorMetadata!;
+    const body = interview ? formatSupervisorInterviewRequest(interview, message) : message!;
+    const question = createSupervisorQuestion({
+      runId: metadata.runId,
+      ownerTarget: metadata.orchestratorTarget,
+      agent: metadata.agent,
+      index: Number(metadata.index),
+      childSessionId: ctx.sessionManager.getSessionId(),
+      childTarget: metadata.sessionName ?? buildPresenceIdentity(pi, ctx.sessionManager.getSessionId()).name,
+      sessionFile: ctx.sessionManager.getSessionFile() ?? "",
+      cwd: ctx.cwd,
+      pid: process.pid,
+      reason,
+      message: body,
+      ...(interview ? { interview } : {}),
+    });
+    const requestText = formatChildOrchestratorMessage(interview ? "interview" : "ask", metadata, [
+      `Question ID: ${question.questionId}`,
+      `Answer after reconnect/reload: agent_runs({ action: "answer", id: "${question.runId}", questionId: "${question.questionId}", message: "..." })`,
+      body,
+    ].join("\n"));
+    const replyPromise = waitForReply(metadata.orchestratorTarget, question.questionId, signal, question);
+    // Persistence is the delivery path; intercom only wakes the supervisor. Going offline does not end the wait.
+    void (async () => {
+      try {
+        const connectedClient = await ensureConnected("tool");
+        if (currentReplyWaiter()?.replyTo !== question.questionId) return;
+        const to = await resolveSessionTarget(connectedClient, metadata.orchestratorTarget) ?? metadata.orchestratorTarget;
+        const waiter = currentReplyWaiter();
+        if (waiter?.replyTo !== question.questionId) return;
+        waiter.from = to;
+        const sent = await connectedClient.send(to, { text: requestText, messageId: question.questionId, expectsReply: true, delivery: "steer" });
+        pi.appendEntry("intercom_sent", { to, messageId: question.questionId, message: { text: requestText, reason }, accepted: sent.accepted, timestamp: Date.now() });
+      } catch (error) {
+        if (getLiveContext()) pi.appendEntry("intercom_question_notification_error", { questionId: question.questionId, error: getErrorMessage(error) });
+      }
+    })();
+    const replyMessage = await replyPromise;
+    const replyText = replyMessage.content.text;
+    const replyAttachments = replyMessage.content.attachments?.length ? formatAttachments(replyMessage.content.attachments) : "";
+    const structuredReply = interview ? parseStructuredSupervisorReply(replyText, interview) : undefined;
+    pi.appendEntry("intercom_received", { from: metadata.orchestratorTarget, questionId: question.questionId, message: { text: replyText, attachments: replyMessage.content.attachments }, messageId: replyMessage.id, timestamp: replyMessage.timestamp });
+    recordQuestionDelivery(question, { kind: "live", runId: question.runId, deliveredAt: Date.now() });
+    return {
+      content: [{ type: "text" as const, text: `**Reply from supervisor:**\n${replyText}${replyAttachments}` }],
+      isError: false,
+      details: { questionId: question.questionId, ...(structuredReply?.value ? { structuredReply: structuredReply.value } : structuredReply?.error ? { structuredReplyParseError: structuredReply.error } : {}) },
+    };
+  }
+
   if (childOrchestratorMetadata) {
     pi.registerTool({
       name: "contact_supervisor",
@@ -1666,6 +1743,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           };
         }
         const supervisorInterview = interviewValidation?.ok === true ? interviewValidation.interview : undefined;
+        if (reason !== "progress_update") {
+          return await requestSupervisorDecision(reason, params.message, supervisorInterview, signal, ctx);
+        }
 
         let connectedClient: IntercomClient;
         try {
@@ -1714,102 +1794,39 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           };
         }
 
-        if (reason === "progress_update") {
-          const message = params.message as string;
-          try {
-            const result = await connectedClient.send(sendTo, {
-              text: formatChildOrchestratorMessage("update", metadata, message),
-              delivery: "queue",
-              queueMode: "replace",
-              threadId: `subagent-progress:${metadata.runId}:${metadata.agent}:${metadata.index}`,
-            });
-            if (!result.accepted) {
-              const errorText = result.reason ?? "Session may not exist or has disconnected.";
-              return {
-                content: [{ type: "text", text: `Message to "${metadata.orchestratorTarget}" was not delivered: ${errorText}` }],
-                isError: true,
-                details: { messageId: result.id, accepted: result.accepted, delivered: false, reason: result.reason },
-              };
-            }
-            markIntercomActivity();
-            syncPresenceStatus();
-            pi.appendEntry("intercom_sent", {
-              to: metadata.orchestratorTarget,
-              message: { text: message, reason },
-              messageId: result.id,
-              timestamp: Date.now(),
-              subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
-            });
+        const message = params.message as string;
+        try {
+          const result = await connectedClient.send(sendTo, {
+            text: formatChildOrchestratorMessage("update", metadata, message),
+            delivery: "queue",
+            queueMode: "replace",
+            threadId: `subagent-progress:${metadata.runId}:${metadata.agent}:${metadata.index}`,
+          });
+          if (!result.accepted) {
+            const errorText = result.reason ?? "Session may not exist or has disconnected.";
             return {
-              content: [{ type: "text", text: `Progress update accepted for supervisor ${metadata.orchestratorTarget}. Delivery is deferred and coalesced; this does not confirm the supervisor has read it.` }],
-              isError: false,
-              details: { messageId: result.id, accepted: result.accepted, delivered: result.delivered, queued: result.queued === true },
-            };
-          } catch (error) {
-            return {
-              content: [{ type: "text", text: `Failed to send progress update: ${getErrorMessage(error)}` }],
+              content: [{ type: "text", text: `Message to "${metadata.orchestratorTarget}" was not delivered: ${errorText}` }],
               isError: true,
-              details: { error: true },
+              details: { messageId: result.id, accepted: result.accepted, delivered: false, reason: result.reason },
             };
           }
-        }
-
-        if (replyWaiter) {
-          return {
-            content: [{ type: "text", text: "Already waiting for a reply" }],
-            isError: true,
-            details: { error: true },
-          };
-        }
-
-        const questionId = randomUUID();
-        const requestText = reason === "interview_request"
-          ? formatChildOrchestratorMessage("interview", metadata, formatSupervisorInterviewRequest(supervisorInterview!, typeof params.message === "string" ? params.message : undefined))
-          : formatChildOrchestratorMessage("ask", metadata, params.message as string);
-        try {
-          const replyMessage = await sendAskTransaction(connectedClient, sendTo, questionId, { text: requestText, delivery: "steer" }, signal, (sendResult) => {
-            pi.appendEntry("intercom_sent", {
-              to: metadata.orchestratorTarget,
-              message: {
-                text: reason === "interview_request" ? requestText : params.message,
-                reason,
-                ...(reason === "interview_request" ? { interview: supervisorInterview } : {}),
-              },
-              messageId: sendResult.id,
-              timestamp: Date.now(),
-              subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
-            });
-          });
-          const replyText = replyMessage.content.text;
-          const replyAttachments = replyMessage.content.attachments?.length
-            ? formatAttachments(replyMessage.content.attachments)
-            : "";
-          const structuredReply = reason === "interview_request" ? parseStructuredSupervisorReply(replyText, supervisorInterview!) : undefined;
-          pi.appendEntry("intercom_received", {
-            from: metadata.orchestratorTarget,
-            message: { text: replyText, attachments: replyMessage.content.attachments },
-            messageId: replyMessage.id,
-            timestamp: replyMessage.timestamp,
+          markIntercomActivity();
+          syncPresenceStatus();
+          pi.appendEntry("intercom_sent", {
+            to: metadata.orchestratorTarget,
+            message: { text: message, reason },
+            messageId: result.id,
+            timestamp: Date.now(),
             subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
           });
           return {
-            content: [{ type: "text", text: `**Reply from supervisor:**\n${replyText}${replyAttachments}` }],
+            content: [{ type: "text", text: `Progress update accepted for supervisor ${metadata.orchestratorTarget}. Delivery is deferred and coalesced; this does not confirm the supervisor has read it.` }],
             isError: false,
-            ...(structuredReply
-              ? { details: structuredReply.value !== undefined ? { structuredReply: structuredReply.value } : { structuredReplyParseError: structuredReply.error } }
-              : {}),
+            details: { messageId: result.id, accepted: result.accepted, delivered: result.delivered, queued: result.queued === true },
           };
         } catch (error) {
-          if (error instanceof AskDeliveryError) {
-            return {
-              content: [{ type: "text", text: `Message to "${metadata.orchestratorTarget}" was not delivered: ${error.message}` }],
-              isError: true,
-              details: { error: true },
-            };
-          }
-          const errorMessage = getErrorMessage(error);
           return {
-            content: [{ type: "text", text: errorMessage === "Cancelled" ? "Cancelled" : `Failed: ${errorMessage}` }],
+            content: [{ type: "text", text: `Failed to send progress update: ${getErrorMessage(error)}` }],
             isError: true,
             details: { error: true },
           };

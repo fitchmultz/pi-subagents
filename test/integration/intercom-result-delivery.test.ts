@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createSupervisorQuestion, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import { createNestedRoute, projectNestedEvents, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import {
@@ -934,6 +937,48 @@ describe("intercom result delivery cutover", () => {
 			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
 			fs.rmSync(asyncDir, { recursive: true, force: true });
 		}
+	});
+
+	it("durable question survives a fresh supervisor and child exit, then answers via one saved-session revival", async () => {
+		mockPi.onCall({ output: "continued with the saved answer" });
+		const ctx = makeMinimalCtx(tempDir);
+		const runId = `question-revive-${Date.now()}`;
+		const sessionFile = path.join(tempDir, "question-child.jsonl");
+		fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "saved-question-child", cwd: tempDir })}\n`);
+		const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+		assert.ok(child.pid);
+		saveQuestionOwner(runId, ctx.sessionManager.getSessionId());
+		const question = createSupervisorQuestion({ runId, ownerTarget: "orchestrator", agent: "worker", index: 0, childSessionId: "saved-question-child", childTarget: `subagent-worker-${runId}-1`, sessionFile, cwd: tempDir, pid: child.pid, reason: "need_decision", message: "Which API should I use?" });
+		const exited = once(child, "exit");
+		child.kill();
+		await exited;
+		const { executor } = makeExecutor();
+		const listed = await executor.execute("after-reload", { action: "status" }, undefined, undefined, ctx);
+		assert.equal(listed.details.questions?.find((entry) => entry.questionId === question.questionId)?.state, "awaiting_input");
+		const inspected = await executor.execute("inspect-question", { action: "status", id: runId }, undefined, undefined, ctx);
+		assert.equal(inspected.isError, false);
+		assert.match(JSON.stringify(inspected.content), /awaiting_input/);
+		const answerParams = { action: "answer", id: runId, questionId: question.questionId, message: "Use the stable API." };
+		const first = await executor.execute("answer-question", answerParams, undefined, undefined, ctx);
+		assert.equal(first.isError, undefined, first.content[0]?.text);
+		const revivedId = first.details.asyncId!;
+		assert.ok(revivedId);
+		const { executor: reloaded } = makeExecutor();
+		const repeated = await reloaded.execute("repeat-answer", answerParams, undefined, undefined, ctx);
+		assert.match(repeated.content[0]?.text ?? "", /already answered; no new work/);
+		assert.equal(repeated.details.questions?.[0]?.delivery?.runId, revivedId);
+		await waitFor(() => fs.existsSync(path.join(RESULTS_DIR, `${revivedId}.json`)), 10_000);
+		const args = await readMockCallArgs(0);
+		assert.equal(args[args.indexOf("--session") + 1], sessionFile);
+		assert.ok(args.some((arg) => arg.includes(question.questionId) && arg.includes("Use the stable API.")));
+		assert.equal(fs.readdirSync(mockPi.dir).filter((name) => /^call-.*\.json$/.test(name)).length, 1);
+		const cancelledQuestion = createSupervisorQuestion({ ...question, message: "Another decision?" });
+		const stopped = await reloaded.execute("stop-exited-question", { action: "interrupt", id: runId }, undefined, undefined, ctx);
+		assert.equal(stopped.isError, undefined);
+		assert.equal(stopped.details.questions?.[0]?.state, "cancelled");
+		const cancelledAnswer = await reloaded.execute("answer-stopped", { ...answerParams, questionId: cancelledQuestion.questionId }, undefined, undefined, ctx);
+		assert.equal(cancelledAnswer.isError, true);
+		assert.match(cancelledAnswer.content[0]?.text ?? "", /cancelled/);
 	});
 
 	it("resume action revives completed async runs with no-poll handoff guidance", async () => {

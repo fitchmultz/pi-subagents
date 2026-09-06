@@ -30,6 +30,8 @@ import { inspectSubagentStatus } from "../background/run-status.ts";
 import { buildManagementControl } from "../../shared/status-format.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
 import { queryLiveIntercomHealth } from "../../intercom/live-intercom.ts";
+import { saveQuestionOwner } from "../shared/supervisor-questions.ts";
+import { cancelSupervisorInput, controlSupervisorQuestion, projectSupervisorQuestions } from "./question-control.ts";
 import {
 	type AgentScope,
 } from "../../agents/agents.ts";
@@ -100,6 +102,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
+			if (params.action === "questions" || params.action === "answer") {
+				return controlSupervisorQuestion({ params, requestCwd, ctx, deps });
+			}
 			if (params.action === "doctor") {
 				let currentSessionFile: string | null = null;
 				let currentSessionId = deps.state.currentSessionId;
@@ -426,6 +431,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			? (r: SubagentExecutionResult) => onUpdate(withForkContext(r, invocationContext))
 			: undefined;
 
+		saveQuestionOwner(runId, deps.state.currentSessionId);
 		const execData: ExecutionContextData = {
 			params: effectiveParams,
 			effectiveCwd,
@@ -602,5 +608,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		}, invocationContext);
 	};
 
-	return { execute };
+	return { execute: async (...args) => {
+		const result = await execute(...args);
+		if (args[1].action === "interrupt") return cancelSupervisorInput(result, args[1], args[4].sessionManager.getSessionId());
+		return args[1].action === "status" ? projectSupervisorQuestions(result, args[1], args[4].sessionManager.getSessionId()) : result;
+	} };
 }

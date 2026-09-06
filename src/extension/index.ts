@@ -408,10 +408,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "agent_runs",
 		label: "Agent Runs",
-		description: "List your delegated runs across working directories, inspect results, nudge live work, stop a run, or continue a saved specialist. Nudge never restarts completed work; continue may launch a new process. profiles lists available agents. Do not poll for completion: background results arrive automatically.",
+		description: "List your delegated runs across working directories, inspect results, list durable questions, answer a question, nudge live work, stop a run, or continue a saved specialist. Nudge never restarts completed work; continue or answering an exited child may launch a saved session. profiles lists available agents. Do not poll for completion: background results arrive automatically.",
 		parameters: AgentRunsParams,
 		async execute(id, params, signal, onUpdate, ctx) {
-			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list" };
+			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list", questions: "questions", answer: "answer" };
 			return toRegisteredToolResult(await executor.execute(id, { ...params, action: actions[params.action] }, signal, onUpdate, ctx));
 		},
 		renderResult: renderSubagentResult,

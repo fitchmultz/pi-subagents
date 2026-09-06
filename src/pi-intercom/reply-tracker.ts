@@ -203,7 +203,8 @@ export class ReplyTracker {
 
   private pruneExpired(now: number): void {
     for (const [messageId, context] of this.pendingAsks) {
-      if (now - context.receivedAt > this.askTimeoutMs) this.removeContext(messageId);
+      const durableQuestion = context.message.content.text.includes(`Question ID: ${messageId}`);
+      if (!durableQuestion && now - context.receivedAt > this.askTimeoutMs) this.removeContext(messageId);
     }
   }
 }

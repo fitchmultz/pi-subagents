@@ -8,6 +8,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import net from "node:net";
 import type { Readable } from "node:stream";
 import { ReplyTracker } from "../../src/pi-intercom/reply-tracker.ts";
+import { listSupervisorQuestions, readQuestionState, saveQuestionAnswer, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
 import { resolveSessionProjectId } from "../../src/pi-intercom/session-targets.ts";
 import { ComposeOverlay } from "../../src/pi-intercom/ui/compose.ts";
 import type { Message, SessionInfo } from "../../src/pi-intercom/types.ts";
@@ -179,7 +180,10 @@ async function withChildOrchestratorEnv<T>(metadata: {
     delete process.env[key];
   }
   if (metadata.orchestratorTarget !== undefined) process.env.PI_SUBAGENT_ORCHESTRATOR_TARGET = metadata.orchestratorTarget;
-  if (metadata.runId !== undefined) process.env.PI_SUBAGENT_RUN_ID = metadata.runId;
+  if (metadata.runId !== undefined) {
+    process.env.PI_SUBAGENT_RUN_ID = metadata.runId;
+    saveQuestionOwner(metadata.runId, "supervisor-session-test");
+  }
   if (metadata.agent !== undefined) process.env.PI_SUBAGENT_CHILD_AGENT = metadata.agent;
   if (metadata.index !== undefined) process.env.PI_SUBAGENT_CHILD_INDEX = metadata.index;
   if (metadata.sessionName !== undefined) process.env.PI_SUBAGENT_INTERCOM_SESSION_NAME = metadata.sessionName;
@@ -294,10 +298,12 @@ function createExtensionHarness(sessionName = "child-worker", options: {
     },
     appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
   };
+  const sessionFile = path.join(sharedHomeDir, `${sessionName}.jsonl`);
+  writeFileSync(sessionFile, JSON.stringify({ type: "session", version: 3, id: "session-child-test", cwd: repoDir }) + "\n");
   const ctx = {
     cwd: repoDir,
     model: { id: "child-model" },
-    sessionManager: { getSessionId: () => "session-child-test" },
+    sessionManager: { getSessionId: () => "session-child-test", getSessionFile: () => sessionFile },
     isIdle: options.isIdle ?? (() => true),
     hasUI: options.hasUI ?? false,
     abort: options.abort ?? (() => undefined),
@@ -3259,7 +3265,7 @@ test("child supervisor tool resolves target and includes run metadata", { concur
   }
 });
 
-test("contact supervisor rejects promptly when the supervisor disconnects before replying", { concurrency: false }, async () => {
+test("contact supervisor survives supervisor disconnect and the ordinary ask timeout", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { orchestrator, cleanup } = await setupClients();
 
@@ -3270,21 +3276,27 @@ test("contact supervisor rejects promptly when the supervisor disconnects before
       agent: "worker",
       index: "0",
     }, async () => {
+      const configPath = path.join(sharedAgentDir, "intercom", "config.json");
+      mkdirSync(path.dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify({ askTimeoutMs: 1000 }));
       const harness = createExtensionHarness("subagent-disconnect-worker");
       piIntercomExtension(harness.pi as never);
+      rmSync(configPath);
       await harness.emitLifecycle("session_start");
       const supervisorTool = harness.tools.find((tool) => tool.name === "contact_supervisor")!;
       const askReceived = once(orchestrator, "message") as Promise<[SessionInfo, Message]>;
       const resultPromise = supervisorTool.execute("ask-disconnect", { reason: "need_decision", message: "Which path?" }, new AbortController().signal, undefined, harness.ctx);
-      await askReceived;
+      const [, request] = await askReceived;
+      const question = listSupervisorQuestions("supervisor-session-test", "78f659a3").find((item) => item.questionId === request.id)!;
+      assert.ok(question, "question must already be on disk when notification arrives");
+      assert.equal(question.state, "awaiting_input");
       await orchestrator.disconnect();
-
-      const result = await Promise.race([
-        resultPromise,
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("supervisor wait did not reject promptly")), 1000)),
-      ]);
-      assert.equal(result.isError, true);
-      assert.match(result.content[0]?.text ?? "", /Reply peer disconnected before answering/);
+      assert.equal(await Promise.race([resultPromise.then(() => "settled"), new Promise((resolve) => setTimeout(() => resolve("waiting"), 1150))]), "waiting");
+      saveQuestionAnswer(question, "Keep the existing API.");
+      const result = await resultPromise;
+      assert.equal(result.isError, false);
+      assert.match(result.content[0]?.text ?? "", /Keep the existing API/);
+      assert.equal(readQuestionState(question).state, "answered");
       await harness.emitLifecycle("session_shutdown");
     });
   } finally {
@@ -3367,14 +3379,14 @@ test("child supervisor tool preserves delivery failure reasons", { concurrency: 
       assert.match(updateResult.content[0]?.text ?? "", /Session not found/);
       assert.equal(updateResult.details?.reason, "Session not found");
 
-      const askResult = await supervisorTool.execute("ask-1", { reason: "need_decision", message: "Which path?" }, new AbortController().signal, undefined, harness.ctx);
-      assert.equal(askResult.isError, true);
-      assert.match(askResult.content[0]?.text ?? "", /Session not found/);
-
-      const secondAskResult = await supervisorTool.execute("ask-2", { reason: "need_decision", message: "Still blocked." }, new AbortController().signal, undefined, harness.ctx);
-      assert.equal(secondAskResult.isError, true);
-      assert.match(secondAskResult.content[0]?.text ?? "", /Session not found/);
-      assert.doesNotMatch(secondAskResult.content[0]?.text ?? "", /Already waiting/);
+      const controller = new AbortController();
+      const askResult = supervisorTool.execute("ask-1", { reason: "need_decision", message: "Which path?" }, controller.signal, undefined, harness.ctx);
+      assert.equal(await Promise.race([askResult.then(() => "settled"), new Promise((resolve) => setTimeout(() => resolve("waiting"), 100))]), "waiting");
+      const question = listSupervisorQuestions("supervisor-session-test", "78f659a3").findLast((item) => item.state === "awaiting_input")!;
+      assert.ok(question);
+      controller.abort();
+      assert.match((await askResult).content[0]?.text ?? "", /Cancelled/);
+      assert.equal(readQuestionState(question).state, "cancelled");
       await harness.emitLifecycle("session_shutdown");
     });
   } finally {

@@ -453,6 +453,7 @@ export interface Details {
 	intercomTargets?: string[];
 	managementControl?: ManagementControl;
 	managementControls?: ManagementControl[];
+	questions?: import("../runs/shared/supervisor-questions.ts").SupervisorQuestionView[];
 	intercomDelivery?: {
 		delivered: boolean;
 		to: string;
@@ -1038,7 +1039,7 @@ export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
 export const POLL_INTERVAL_MS = 1000;
 export const MAX_WIDGET_JOBS = 4;
 export const DEFAULT_SUBAGENT_MAX_DEPTH = 1;
-export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "doctor"] as const;
+export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "questions", "answer", "doctor"] as const;
 
 export const DEFAULT_FORK_PREAMBLE =
 	"You are a delegated subagent running from a fork of the parent session. " +

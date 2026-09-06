@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { isSafeNestedPathId } from "../runs/shared/nested-path.ts";
 import { ASYNC_DIR, RESULTS_DIR, TEMP_ROOT_DIR } from "./types.ts";
+import { listRunQuestions, QUESTIONS_DIR } from "../runs/shared/supervisor-questions.ts";
 
 const MAX_RUN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -88,9 +89,14 @@ function nestedRouteActive(routeRoot: string, now: number): boolean {
 	return activeStatus(path.join(ASYNC_DIR, metadata.rootRunId, "status.json"));
 }
 
+function pendingQuestion(runDir: string): boolean {
+	return listRunQuestions(runDir).some((question) => question.state === "awaiting_input" || question.state === "answer_pending");
+}
+
 export function cleanupOldRunStorage(now = Date.now()): void {
 	for (const [dir, keepActive] of [
-		[ASYNC_DIR, (entryPath: string) => activeStatus(path.join(entryPath, "status.json"))],
+		[ASYNC_DIR, (entryPath: string) => activeStatus(path.join(entryPath, "status.json")) || pendingQuestion(path.join(QUESTIONS_DIR, path.basename(entryPath)))],
+		[QUESTIONS_DIR, pendingQuestion],
 		[RESULTS_DIR, undefined],
 		[path.join(TEMP_ROOT_DIR, "nested-subagent-runs"), undefined],
 		[path.join(TEMP_ROOT_DIR, "nested-subagent-events"), (entryPath: string) => nestedRouteActive(entryPath, now)],

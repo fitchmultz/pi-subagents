@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import { saveQuestionOwner } from "../shared/supervisor-questions.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -763,6 +764,20 @@ export async function resumeAsyncRun(input: {
 		};
 	}
 
+	return reviveSavedSubagent(input, target);
+}
+
+export function reviveSavedSubagent(input: {
+	params: SubagentParamsLike;
+	requestCwd: string;
+	ctx: ExtensionContext;
+	deps: ExecutorDeps;
+}, target: Pick<ResumeSourceTarget, "runId" | "agent" | "index" | "cwd" | "sessionFile" | "effectiveAcceptance"> & { source: string }, runId = randomUUID().slice(0, 8)): SubagentExecutionResult {
+	const followUp = (input.params.message ?? input.params.task ?? "").trim();
+	const parentSessionFile = input.ctx.sessionManager.getSessionFile() ?? null;
+	if (!target.sessionFile || path.extname(target.sessionFile) !== ".jsonl" || !fs.existsSync(target.sessionFile)) {
+		return { content: [{ type: "text", text: "Saved child session file is unavailable; the answer has not been delivered." }], isError: true, details: { mode: "management", results: [] } };
+	}
 	const { blocked, depth, maxDepth } = checkSubagentDepth(input.deps.config.maxSubagentDepth);
 	if (blocked) {
 		return {
@@ -789,7 +804,7 @@ export async function resumeAsyncRun(input: {
 		};
 	}
 
-	const runId = randomUUID().slice(0, 8);
+	saveQuestionOwner(runId, input.deps.state.currentSessionId);
 	const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const result = executeAsyncSingle(runId, {
 		agent: target.agent,
