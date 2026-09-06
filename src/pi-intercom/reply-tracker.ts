@@ -34,7 +34,9 @@ function pendingSenderOptions(contexts: IntercomContext[], allContexts: Intercom
     .join(", ");
 }
 
-const MAX_PENDING_ASKS = 100;
+export function isDurableSupervisorQuestion(message: Message): boolean {
+  return message.content.text.includes(`Question ID: ${message.id}`);
+}
 
 export class ReplyTracker {
   private readonly pendingAsks = new Map<string, IntercomContext>();
@@ -52,7 +54,6 @@ export class ReplyTracker {
     if (message.expectsReply) {
       this.pruneExpired(receivedAt);
       this.pendingAsks.set(message.id, context);
-      while (this.pendingAsks.size > MAX_PENDING_ASKS) this.removeContext(this.pendingAsks.keys().next().value!);
     }
     return context;
   }
@@ -61,10 +62,6 @@ export class ReplyTracker {
     if (!context.message.expectsReply) return;
     if (this.hasTurnContext(context.message.id)) return;
     this.pendingTurnContexts.push(context);
-    while (this.pendingTurnContexts.length > MAX_PENDING_ASKS) {
-      const dropped = this.pendingTurnContexts.shift();
-      if (dropped) this.removeContext(dropped.message.id);
-    }
   }
 
   beginTurn(now = Date.now()): void {
@@ -96,25 +93,26 @@ export class ReplyTracker {
   }
 
   expireSender(sessionId: string): number {
+    const expires = (context: IntercomContext) => context.from.id === sessionId && !isDurableSupervisorQuestion(context.message);
     let expired = 0;
     for (const [messageId, context] of this.pendingAsks) {
-      if (context.from.id === sessionId) {
+      if (expires(context)) {
         this.pendingAsks.delete(messageId);
         expired += 1;
       }
     }
     const beforeQueued = this.pendingTurnContexts.length;
     for (let index = this.pendingTurnContexts.length - 1; index >= 0; index -= 1) {
-      if (this.pendingTurnContexts[index]?.from.id === sessionId) {
+      if (expires(this.pendingTurnContexts[index]!)) {
         this.pendingTurnContexts.splice(index, 1);
       }
     }
     expired += beforeQueued - this.pendingTurnContexts.length;
-    if (this.currentTurnContext?.from.id === sessionId) {
+    if (this.currentTurnContext && expires(this.currentTurnContext)) {
       this.currentTurnContext = null;
       expired += 1;
     }
-    if (this.activeAgentContext?.from.id === sessionId) {
+    if (this.activeAgentContext && expires(this.activeAgentContext)) {
       this.activeAgentContext = null;
       expired += 1;
     }
@@ -203,8 +201,7 @@ export class ReplyTracker {
 
   private pruneExpired(now: number): void {
     for (const [messageId, context] of this.pendingAsks) {
-      const durableQuestion = context.message.content.text.includes(`Question ID: ${messageId}`);
-      if (!durableQuestion && now - context.receivedAt > this.askTimeoutMs) this.removeContext(messageId);
+      if (!isDurableSupervisorQuestion(context.message) && now - context.receivedAt > this.askTimeoutMs) this.removeContext(messageId);
     }
   }
 }

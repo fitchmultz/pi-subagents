@@ -12,8 +12,6 @@ const INTERCOM_DIR = join(getPiAgentDir(), "intercom");
 const PID_PATH = join(INTERCOM_DIR, "broker.pid");
 
 const REPLACE_DELIVERY_DELAY_MS = 1500;
-const MAX_PENDING_REPLACE_DELIVERIES_PER_SENDER = 100;
-const MAX_PENDING_REPLACE_DELIVERIES = 1000;
 
 interface ConnectedSession {
   socket: net.Socket;
@@ -302,22 +300,7 @@ class IntercomBroker {
     }
     const key = this.replaceKey(fromId, toId, message.threadId ?? "");
     const existing = this.pendingReplaceDeliveries.get(key);
-    if (existing) {
-      clearTimeout(existing.timer);
-    } else {
-      let senderPending = 0;
-      for (const pending of this.pendingReplaceDeliveries.values()) {
-        if (pending.fromId === fromId) senderPending++;
-      }
-      if (senderPending >= MAX_PENDING_REPLACE_DELIVERIES_PER_SENDER || this.pendingReplaceDeliveries.size >= MAX_PENDING_REPLACE_DELIVERIES) {
-        writeMessage(senderSocket, {
-          type: "delivery_failed",
-          messageId: message.id,
-          reason: "Replace-mode delivery queue is full; retry after pending updates are delivered.",
-        });
-        return;
-      }
-    }
+    if (existing) clearTimeout(existing.timer);
     writeMessage(senderSocket, {
       type: "delivery_queued",
       messageId: message.id,

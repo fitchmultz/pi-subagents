@@ -164,7 +164,7 @@ test("reply removes pending ask after successful reply", () => {
   assert.deepEqual(tracker.listPending(1001), []);
 });
 
-test("reply bounds pending asks and queued turn contexts together", () => {
+test("reply preserves every pending ask and queued turn context beyond 100 messages", () => {
   const tracker = new ReplyTracker();
   const sender = createSession("sender-id", "sender");
   for (let index = 1; index <= 150; index++) {
@@ -172,10 +172,10 @@ test("reply bounds pending asks and queued turn contexts together", () => {
     tracker.queueTurnContext(context);
   }
 
-  assert.equal(tracker.listPending(151).length, 100);
-  assert.equal(tracker.listPending(151)[0]?.message.id, "ask-51");
+  assert.equal(tracker.listPending(151).length, 150);
+  assert.equal(tracker.listPending(151)[0]?.message.id, "ask-1");
   const queued: string[] = [];
-  for (let index = 0; index < 100; index++) {
+  for (let index = 0; index < 150; index++) {
     tracker.beginTurn(151);
     const current = tracker.currentTurn();
     assert.ok(current);
@@ -184,7 +184,7 @@ test("reply bounds pending asks and queued turn contexts together", () => {
   }
   tracker.beginTurn(151);
   assert.equal(tracker.currentTurn(), null);
-  assert.equal(queued[0], "ask-51");
+  assert.equal(queued[0], "ask-1");
   assert.equal(queued.at(-1), "ask-150");
 });
 
@@ -195,6 +195,21 @@ test("reply expires pending and queued contexts together", () => {
   tracker.beginTurn(1011);
   assert.equal(tracker.currentTurn(), null);
   assert.deepEqual(tracker.listPending(1011), []);
+});
+
+test("durable supervisor asks keep pending and active reply context after sender disconnect or timeout", () => {
+  const tracker = new ReplyTracker(10);
+  const sender = createSession("child-id", "child");
+  const message = createMessage("durable-question", "Subagent needs a supervisor decision.\nQuestion ID: durable-question\nContinue?");
+  tracker.queueTurnContext(tracker.recordIncomingMessage(sender, message, 1000));
+  tracker.beginTurn(1001);
+  tracker.expireSender(sender.id);
+  assert.equal(tracker.listPending(5000)[0]?.message.id, message.id);
+  assert.equal(tracker.currentTurn()?.message.id, message.id);
+  tracker.endAgent();
+  assert.equal(tracker.resolveReplyTarget({}, 5001).message.id, message.id);
+  tracker.markReplied(message.id);
+  assert.deepEqual(tracker.listPending(5002), []);
 });
 
 test("reply expires pending and active asks when sender disconnects", () => {

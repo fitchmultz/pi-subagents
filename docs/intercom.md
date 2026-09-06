@@ -28,7 +28,9 @@ Each Pi session with the bundled intercom extension loaded connects to a tiny lo
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-That one package includes both extension entries and both skills. For local development, install the checkout with `pi install /absolute/path/to/pi-subagents`. Use Pi 0.84.0 or later, then reload existing sessions.
+That one package includes both extension entries and both skills. For local development, install the checkout with `pi install /absolute/path/to/pi-subagents`, then fully exit and restart Pi to load the changed code. `/reload` alone is not a reliable code-update boundary on the current Pi build.
+
+Reliable abort recovery requires Pi's custom steering/follow-up queue reporting fix (Pi fork commit `7679cb7b5` or a build containing it). Unpatched Pi 0.84.x and 0.85.1 report only pending user text, so their version numbers alone do not establish support for this recovery behavior.
 
 ## Development
 
@@ -37,7 +39,13 @@ npm run ci
 npm run smoke:real-pi
 ```
 
-`ci` runs typechecking, package and install smokes, and the full subagent/intercom test suite. `smoke:real-pi` installs the single checkout into an isolated temporary Pi home, verifies `pi list`, and loads both bundled extension entries. For live model-backed status/list checks, run:
+`ci` runs typechecking, package and install smokes, and the full subagent/intercom test suite. The native intercom regression uses real SDK sessions, a controlled provider, and private runtime directories without credentials or model-service calls. To check against a separately built Pi checkout, set `PI_INTERCOM_TEST_SDK` to its `packages/coding-agent` directory:
+
+```bash
+PI_INTERCOM_TEST_SDK=/path/to/pi/packages/coding-agent node --test test/integration/pi-intercom-native-replay.test.ts
+```
+
+`smoke:real-pi` installs the single checkout into an isolated temporary Pi home, verifies `pi list`, and loads both bundled extension entries. For live model-backed status/list checks, run:
 
 ```bash
 PI_REAL_SMOKE_MODEL=openai/gpt-6-astra node scripts/real-pi-smoke.mjs --llm
@@ -49,7 +57,7 @@ Pi-intercom automatically gives ordinary agents a bounded presence hint when ano
 
 A session becomes intercom-connected when all of these are true:
 - the bundled intercom extension is enabled through `pi config`
-- the session has started or reloaded after the extension was installed
+- the session has been restarted after the extension was installed or updated
 - the local broker is running or can be auto-started
 
 The session list only shows intercom-connected sessions, not every open Pi process on the machine. Reconnecting the same Pi session reuses a stable broker identity, so transient broker or extension restarts do not create a second logical sender.
@@ -120,7 +128,13 @@ Found the issue — UserService.validate() doesn't check for null input.
 See auth.ts:142-156.
 ```
 
-The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients do not need raw sender or `replyTo` IDs. `send` and `reply` default to steer: they wake an idle recipient or reach a busy recipient at the next tool boundary. If the recipient hits Esc before consuming a steered or follow-up message, it is re-delivered after the turn settles. Past 100 unconsumed leftovers in one turn, only the newest are re-delivered. An omitted `ask` still honors recipient availability; use explicit steer only when the sender must remain alive for a busy recipient's reply. The recipient should incorporate relevant context and continue its active task unless the message explicitly replaces it. Use `delivery:"queue"` only when delay is intentional; `queueMode:"replace"` keeps only the latest undelivered thread update. The bounded recipient queue rejects overload explicitly instead of silently dropping an already accepted message. Attachment content is included in the agent-visible body and stored in Pi session history. Only passive `send` renders without waking the recipient model.
+The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients do not need raw sender or `replyTo` IDs. `send` and `reply` default to steer: they wake an idle recipient or reach a busy recipient at the next tool boundary.
+
+If Esc clears a steered or follow-up message before native handoff, it is re-delivered after the actual agent run settles. Messages already in Pi's session history are not reinserted, even after compaction or reload; messages still in Pi's native queues remain there for its next continuation or prompt. A rejected overlapping prompt does not start receiver retries while the original run is active.
+
+An omitted `ask` still honors recipient availability; use explicit steer only when the sender must remain alive for a busy recipient's reply. The recipient should incorporate relevant context and continue its active task unless the message explicitly replaces it. Use `delivery:"queue"` only when delay is intentional; `queueMode:"replace"` keeps only the latest undelivered thread update.
+
+Pending delivery is checkpointed in the saved Pi session before native handoff. Reloading or resuming that same session restores undelivered messages and the latest unsuperseded milestones; a fork or new session does not adopt them. Accepted pending messages have no fixed-count backlog cap or age-based expiry. Ordinary peer asks still use the configured reply timeout. Attachment content is included in the agent-visible body and stored in Pi session history. Only passive `send` renders without waking the recipient model.
 
 ## Workflow: Planner-Worker Coordination
 
@@ -250,11 +264,11 @@ agent_runs({ action: "answer", id: "<run-id>", questionId: "<question-id>", mess
 agent_runs({ action: "stop", id: "<run-id>" })
 ```
 
-The full `subagent` tool also accepts `questions` and `answer`; its stop action is `interrupt`. Questions expose `awaiting_input`, `answer_pending`, `answered`, or `cancelled` independently of run completion. Ownership follows the saved supervisor session, not its cwd or display name. The live intercom reply path saves the same answer; a nudge does not resolve a question.
+The full `subagent` tool also accepts `questions` and `answer`; its stop action is `interrupt`. Questions expose `awaiting_input`, `answer_pending`, `answered`, or `cancelled` independently of run completion. Ownership follows the saved supervisor session, not its cwd or display name. The live intercom reply path saves the same answer. Saving an answer or cancelling through run controls also clears the matching live intercom pending ask; a nudge does not resolve a question.
 
 A live waiter consumes the durable answer. If it exited, answering revives its saved Pi session with the original acceptance contract and a new run ID. Identical repeated answers do not launch duplicate work; conflicting answers leave the original intact. `stop` cancels the question and aborts any live waiter. An interrupted pre-launch revival can be recovered with the exact `continue` call shown in the answer receipt; ambiguous launch evidence is not silently retried.
 
-Question records live under the user-scoped `pi-subagents` temporary root, outside the extension checkout. Pending records are not age-cleaned, but manual or OS deletion of that root removes recovery data. Ordinary peer asks still use `askTimeoutMs` and are not durable supervisor questions.
+Question records and saved run metadata live under `${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions/subagent-runs`, separate from disposable temporary files. Pending records are not age-cleaned. Legacy temporary records are recovered for the same saved owner session; deleting the saved records removes that recovery data. Ordinary peer asks still use `askTimeoutMs` and are not durable supervisor questions.
 
 ### Example: Blocked Subagent Asks for Guidance
 
@@ -449,7 +463,7 @@ The broker is a standalone TypeScript process that manages session registration 
 
 Messages use length-prefixed JSON over a local Unix socket transport (4-byte length + JSON payload) to handle fragmentation properly. The protocol includes request correlation for session listing, explicit delivery failures, and validation for malformed or out-of-order messages. Session registration carries user-facing identity plus live health fields; process ID, start time, and the redundant activity timestamp are no longer part of the protocol.
 
-Async extension work (startup, inbound flushes, reconnects, overlays, and relays) no-ops if the session shuts down or reloads before it settles.
+Async extension work (startup, inbound flushes, reconnects, overlays, and relays) no-ops if its session shuts down or reloads before it settles. Undelivered receiver messages remain in native session metadata, bound to the exact saved session UUID. Native message entries are the delivery receipt, including messages that have left the active context after compaction. Each body is checkpointed once; later handoff metadata stores only the message ID and state.
 
 Runtime files:
 - Unix domain socket — private short temp path `pi-intercom-<hash>/broker.sock` on macOS/Linux, keyed by user ID and `PI_CODING_AGENT_DIR` or `~/.pi/agent`
