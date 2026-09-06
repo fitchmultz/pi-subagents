@@ -65,6 +65,7 @@ import { captureSingleOutputSnapshot, cleanupSingleOutputFile, formatConsumedOut
 import {
 	buildModelCandidates,
 	runModelAttempts,
+	sumAttemptUsage,
 } from "../shared/model-fallback.ts";
 import {
 	createMutatingFailureState,
@@ -95,15 +96,6 @@ const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
 
 function emptyUsage(): Usage {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
-}
-
-function sumUsage(target: Usage, source: Usage): void {
-	target.input += source.input;
-	target.output += source.output;
-	target.cacheRead += source.cacheRead;
-	target.cacheWrite += source.cacheWrite;
-	target.cost += source.cost;
-	target.turns += source.turns;
 }
 
 function appendRecentOutput(progress: AgentProgress, lines: string[]): void {
@@ -1255,7 +1247,7 @@ async function runToCompletion(
 			});
 			modelAttempts.push({ model: reviewed.model ?? result.model ?? "default", success: reviewed.exitCode === 0 && !reviewed.error && !reviewed.interrupted,
 				exitCode: reviewed.exitCode, error: reviewed.error, usage: { ...reviewed.usage } });
-			sumUsage(result.usage, reviewed.usage);
+			result.usage = sumAttemptUsage(modelAttempts);
 			result.progressSummary = {
 				toolCount: (result.progressSummary?.toolCount ?? 0) + (reviewed.progressSummary?.toolCount ?? 0),
 				tokens: result.usage.input + result.usage.output,

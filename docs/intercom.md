@@ -28,7 +28,7 @@ Each Pi session with the bundled intercom extension loaded connects to a tiny lo
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-That one package includes both extension entries and both skills. For local development, build the checkout before `pi install /absolute/path/to/pi-subagents`. After Pi or extension code updates, fully exit and restart Pi, then resume the same saved parent session to retain ownership and pending coordination. `/reload` refreshes supported settings, skills, and prompts but is not a reliable code-update boundary.
+That one package includes both extension entries and both skills. For local development, build the checkout before `pi install /absolute/path/to/pi-subagents`. Before rebuilding or updating an in-use Pi checkout or extension, checkpoint work and fully quit every Pi session using that installation. Update from a separate terminal, then restart Pi and resume the same saved parent session to retain ownership and pending coordination. `/reload` refreshes supported settings, skills, and prompts but is not a reliable code-update boundary.
 
 To restart the shared broker too, close every Pi session using the same agent directory and wait at least five seconds before reopening Pi.
 

@@ -300,7 +300,6 @@ export function buildChainInstructions(
 	behavior: ResolvedStepBehavior,
 	chainDir: string,
 	isFirstProgressAgent: boolean,
-	previousSummary?: string,
 ): { prefix: string; suffix: string } {
 	const prefixParts: string[] = [];
 	const suffixParts: string[] = [];
@@ -325,11 +324,6 @@ export function buildChainInstructions(
 		} else {
 			suffixParts.push(`Update progress at: ${progressPath}`);
 		}
-	}
-
-	// Include previous step's summary in suffix if available
-	if (previousSummary && previousSummary.trim()) {
-		suffixParts.push(`Previous step output:\n${previousSummary.trim()}`);
 	}
 
 	const prefix = prefixParts.length > 0 

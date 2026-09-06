@@ -665,9 +665,6 @@ function writeRunLog(
 
 /** Context for running a single step */
 interface SingleStepContext {
-	previousOutput: string;
-	outputs?: ChainOutputMap;
-	placeholder: string;
 	cwd: string;
 	sessionEnabled: boolean;
 	sessionDir?: string;
@@ -1507,8 +1504,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.started", ts: taskStartTime, runId: id, stepIndex: fi, agent: task.agent }));
 
 		const singleResult = await runSingleStep({ ...task, task: renderTask(task.task, input.item) }, {
-			previousOutput, placeholder, cwd: input.taskCwd, sessionEnabled,
-			outputs,
+			cwd: input.taskCwd, sessionEnabled,
 			sessionDir: input.sessionDir,
 			artifactsDir, id,
 			flatIndex: fi, flatStepCount: input.flatStepCount,
@@ -1951,8 +1947,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}));
 
 			const singleResult = await runSingleStep({ ...seqStep, task: renderTask(seqStep.task) }, {
-				previousOutput, placeholder, cwd, sessionEnabled,
-				outputs,
+				cwd, sessionEnabled,
 				sessionDir: config.sessionDir,
 				artifactsDir, id,
 				flatIndex, flatStepCount: flatSteps.length,
