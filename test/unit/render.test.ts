@@ -8,7 +8,10 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import registerSubagentExtension from "../../src/extension/index.ts";
 import { formatAsyncStartedMessage } from "../../src/runs/background/async-execution.ts";
 import { buildSubagentResultIntercomPayload, formatSubagentResultReceipt, stripDetailsOutputsForIntercomReceipt } from "../../src/intercom/result-intercom.ts";
-import type { SubagentExecutionResult } from "../../src/shared/types.ts";
+import { buildWorkflowGraphSnapshot } from "../../src/runs/shared/workflow-graph.ts";
+import type { ChainStep } from "../../src/shared/settings.ts";
+import type { SingleResult, SubagentExecutionResult } from "../../src/shared/types.ts";
+import { compactForegroundDetails } from "../../src/shared/utils.ts";
 import { renderSubagentResult } from "../../src/tui/render.ts";
 
 const { loadExtensionFromFactory } = await import(new URL("./core/extensions/loader.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
@@ -20,10 +23,10 @@ const { KeybindingsManager } = await import(new URL("./core/keybindings.js", imp
 const { setKeybindings } = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
 setKeybindings(new KeybindingsManager());
 
-function nativeTool(name: string, result: SubagentExecutionResult): ToolExecutionComponent {
+function nativeTool(name: string, result: SubagentExecutionResult, args: Record<string, unknown> = { agent: "worker" }): ToolExecutionComponent {
 	const tool = extension.tools.get(name)?.definition;
 	assert.ok(tool, `${name} must use its registered renderer`);
-	const component = new ToolExecutionComponent(name, "render-test", { agent: "worker" }, {}, tool, { requestRender() {} } as never, process.cwd());
+	const component = new ToolExecutionComponent(name, "render-test", args, {}, tool, { requestRender() {} } as never, process.cwd());
 	component.updateResult({ ...result, isError: result.isError ?? false });
 	return component;
 }
@@ -153,6 +156,86 @@ test("native foreground and slash responses stay compact and expand every child 
 			}
 			assert.deepEqual(receipt, original);
 		});
+	}
+});
+
+test("native stopped chain expansion includes the prefix before the retained parallel group", async (t) => {
+	const slashRenderer = extension.messageRenderers.get("subagent-slash-result");
+	assert.ok(slashRenderer);
+	for (const metadata of ["labels", "static", "dynamic"] as const) {
+		for (const status of ["paused", "detached", "failed", "running"] as const) {
+			const steps: ChainStep[] = [
+				{ agent: "scout", task: "Find review targets" },
+				metadata === "dynamic"
+					? { expand: { from: { output: "targets", path: "/items" } }, parallel: { agent: "reviewer" }, collect: { as: "reviews" } }
+					: { parallel: [{ agent: "reviewer" }, { agent: "reviewer" }] },
+				{ agent: "writer", task: "Write after the reviews" },
+			];
+			const results: SingleResult[] = ["scout", "reviewer", "reviewer"].map((agent, index) => ({
+				...result(agent, `Response ${index}: ${"café 中文 👩🏽‍💻 detailed findings. ".repeat(12)}\n\nEnd of response ${index}.`),
+				exitCode: index === 2 && status === "failed" ? 1 : 0,
+				interrupted: index === 2 && status === "paused",
+				detached: index === 2 && status === "detached",
+				error: index === 2 && status !== "running" ? `Stop detail: ${"retained error context. ".repeat(12)}\nLast error detail.` : undefined,
+				progress: {
+					index, agent, task: `${agent} task`, status: index === 2 ? status : "completed",
+					toolCount: 1, tokens: 10, durationMs: 1000, recentTools: [], recentOutput: [],
+				},
+			}));
+			const receipt: SubagentExecutionResult = {
+				content: [{ type: "text", text: `Chain ${status} at step 2 (reviewer).` }],
+				isError: status === "failed",
+				details: compactForegroundDetails({
+					mode: "chain", runId: `stopped-${metadata}-${status}`, results,
+					chainAgents: ["scout", metadata === "dynamic" ? "expand:reviewer" : "[reviewer+reviewer]", "writer"],
+					totalSteps: 3, currentStepIndex: 1, progress: results.map((entry) => entry.progress!),
+					workflowGraph: metadata === "labels" ? undefined : buildWorkflowGraphSnapshot({
+						runId: `stopped-${metadata}-${status}`, mode: "chain", steps, results,
+						currentStepIndex: 1, currentFlatIndex: 2, stepStatuses: results.map((entry) => entry.progress!),
+						dynamicChildren: { 1: [
+							{ agent: "reviewer", flatIndex: 1, itemKey: "a" },
+							{ agent: "reviewer", flatIndex: 2, itemKey: "b" },
+						] },
+					}),
+				}),
+			};
+			for (const surface of ["tool", "slash"] as const) {
+				await t.test(`${metadata} ${status} ${surface}`, () => {
+					const original = structuredClone(receipt);
+					const component = surface === "tool"
+						? nativeTool("subagent", receipt, { chain: steps, async: false })
+						: new CustomMessageComponent({
+							role: "custom", customType: "subagent-slash-result", display: true, timestamp: 0,
+							content: receipt.content, details: { requestId: `stopped-${metadata}-${status}`, result: receipt },
+						}, slashRenderer);
+					for (const width of [120, 40, 80]) {
+						const collapsed = renderedText(component, width);
+						assert.ok(component.render(width).length <= 10, "stopped chains stay compact at every width");
+						assert.match(collapsed, /Agent 1\/2: reviewer/);
+						assert.doesNotMatch(collapsed, /scout|End of response/);
+						if (status !== "running") assert.match(collapsed, /ctrl\+o/i);
+						component.setExpanded(true);
+						const expanded = unwrap(renderedText(component, width));
+						if (status === "running") {
+							assert.ok(!expanded.includes("Step1:scout"), "live expansion still focuses the active group");
+							assert.ok(expanded.includes(unwrap(results[1]!.finalOutput!)), "the completed group sibling remains visible");
+						} else {
+							if (status === "paused" || status === "detached") {
+								assert.ok(expanded.includes(`${status}Agent2/2:reviewer`), `${status} children must not be labelled done after stopping with exit code 0`);
+							}
+							for (const entry of results) {
+								assert.ok(expanded.includes(unwrap(entry.finalOutput!)), `${surface} ${metadata} ${status}: expanded chain must include every response, including the completed prefix`);
+								if (entry.error) assert.ok(expanded.includes(unwrap(entry.error)), "full child errors remain available");
+							}
+							assert.ok(expanded.includes("Step3:writer"), "the unstarted suffix remains pending, not lost");
+						}
+						component.setExpanded(false);
+						assert.equal(renderedText(component, width), collapsed, "native collapse restores the compact group");
+					}
+					assert.deepEqual(receipt, original, "native display changes never edit model content or retained chain metadata");
+				});
+			}
+		}
 	}
 });
 

@@ -1350,6 +1350,7 @@ export function renderSubagentResult(
 	const modeLabel = d.mode;
 	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 	const multiLabel = buildMultiProgressLabel(d, hasRunning);
+	if (!hasRunning) multiLabel.showActiveGroupOnly = false;
 	const itemTitle = multiLabel.itemTitle;
 	
 	const chainVis = d.chainAgents?.length && !multiLabel.hasParallelInChain
@@ -1435,11 +1436,13 @@ export function renderSubagentResult(
 		const resultOutput = r.truncation?.text || getSingleResultOutput(r);
 		const statusIcon = rRunning
 			? theme.fg("warning", "running")
-			: r.exitCode !== 0
-				? theme.fg("error", "failed")
-				: !d.intercomDelivery?.delivered && hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
-					? theme.fg("warning", "warning")
-					: theme.fg("success", "done");
+			: r.detached || r.interrupted
+				? theme.fg("warning", r.detached ? "detached" : "paused")
+				: r.exitCode !== 0
+					? theme.fg("error", "failed")
+					: !d.intercomDelivery?.delivered && hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
+						? theme.fg("warning", "warning")
+						: theme.fg("success", "done");
 		const stats = rProg ? ` | ${rProg.toolCount} tools, ${formatDuration(rProg.durationMs)}` : "";
 		const modelDisplay = modelThinkingBadge(theme, r.model);
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);
