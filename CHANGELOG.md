@@ -21,9 +21,10 @@
 - Continue with the actual saved provider/model, thinking, profile and output/acceptance choices instead of rediscovering changed defaults. Recover older native receipts where possible and require an explicit profile choice when the original profile was not saved.
 - Emit durable question-resolution events after answers and cancellation so the intercom presence consumer can clear pending asks without another model turn.
 - Report out-of-range owned-run pages as showing none instead of an inverted range.
+- Retain recorded usage and available artifact paths when inspecting saved background results.
 
 ### Changed
-- Require a corrected native `fitchmultz/pi` build containing `acf4c2d98ec44de2108f16a47bf59de5193341a7` for full durable-runtime support. Stock Pi 0.84.x and 0.85.1 do not satisfy the custom-queue contract; the unchanged 0.85.1 development pins are not proof of the fix.
+- Require a corrected native `fitchmultz/pi` build containing `acf4c2d98ec44de2108f16a47bf59de5193341a7` for full durable-runtime support. Stock Pi 0.84.x and 0.85.1 do not satisfy the custom-queue contract; the 0.85.1 development pins are not proof of the fix.
 - Require a full Pi process restart after code updates, then resume the same saved parent to retain ownership and pending coordination; do not rely on `/reload` to activate changed code.
 - Run the full Linux gate against a supplied credential-free, prebuilt native Pi archive, with no dependency patches or skipped native cases.
 

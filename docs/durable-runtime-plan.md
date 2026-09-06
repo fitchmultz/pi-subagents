@@ -25,12 +25,12 @@ Run the package checks on macOS and supported Linux Node versions, native Pi's r
 
 ## Dependency decision
 
-Full support requires native `fitchmultz/pi` commit [`acf4c2d98ec44de2108f16a47bf59de5193341a7`](https://github.com/fitchmultz/pi/commit/acf4c2d98ec44de2108f16a47bf59de5193341a7), which includes the custom-queue reporting fix (`7679cb7b5`) and the restart notice/tests. Stock Pi 0.84.x and 0.85.1 both fail the custom-queue contract. The corrected build also reports 0.85.1; development pins and version output do not identify the fix. [Native PR #9](https://github.com/fitchmultz/pi/pull/9) is open with CI passed as of 2026-09-06, not merged.
+Full support requires native `fitchmultz/pi` commit [`acf4c2d98ec44de2108f16a47bf59de5193341a7`](https://github.com/fitchmultz/pi/commit/acf4c2d98ec44de2108f16a47bf59de5193341a7), which includes the custom-queue reporting fix (`7679cb7b5`) and the restart notice/tests. Stock Pi 0.84.x and 0.85.1 both fail the custom-queue contract. The corrected build also reports 0.85.1; development pins and version output do not identify the fix. [Native PR #9](https://github.com/fitchmultz/pi/pull/9) contains these core fixes.
 
 Jiti's disabled module cache still uses native cached JavaScript for some extension imports. An isolated dependency patch demonstrated correct reloads, but Mitch chose full process restarts rather than maintaining a Jiti fork. The native change makes that boundary explicit and tests that a fresh process loads updated schemas. The upstream defect is tracked in [Jiti #418](https://github.com/unjs/jiti/issues/418); [PR #462](https://github.com/unjs/jiti/pull/462) remains unmerged. No Pi/Jiti dependency patch belongs in this package.
 
 ## Delivery boundary
 
-The 0.36.0 repository preparation does not install, deploy, or activate either update. Final release readiness still requires parent review, the full macOS/Linux package gates against the corrected native build, and isolated model-backed smoke tests. The Linux gate takes a credential-free prebuilt native archive and keeps every package test; see [local validation](../README.md#local-validation) for the archive shape and both SDK overrides.
+Release requires parent review, the full macOS/Linux package gates against the corrected native build, and isolated model-backed smoke tests. The Linux gate takes a credential-free prebuilt native archive and keeps every package test; see [local validation](../README.md#local-validation) for the archive shape and both SDK overrides.
 
 Keep installed code and active sessions untouched until both updates are approved for delivery. After updating both, fully exit Pi and restart it, then resume the same saved parent session before testing active tools. A new or forked parent must not adopt the original parent's runs or pending intercom delivery.

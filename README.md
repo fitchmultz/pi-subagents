@@ -4,7 +4,7 @@
 
 ## Installation
 
-Full durable-runtime support requires a corrected native [`fitchmultz/pi` build containing `acf4c2d98ec44de2108f16a47bf59de5193341a7`](https://github.com/fitchmultz/pi/commit/acf4c2d98ec44de2108f16a47bf59de5193341a7), including custom steering/follow-up queue reporting and the code-update restart notice. Stock Pi 0.84.x and stock 0.85.1 both fail that queue contract. The corrected fork also reports 0.85.1, so `pi --version` alone does not prove support. [Native PR #9](https://github.com/fitchmultz/pi/pull/9) is open, with CI passed, as of 2026-09-06; it is not merged. This package does not install the corrected native build.
+Full durable-runtime support requires a corrected native [`fitchmultz/pi` build containing `acf4c2d98ec44de2108f16a47bf59de5193341a7`](https://github.com/fitchmultz/pi/commit/acf4c2d98ec44de2108f16a47bf59de5193341a7), including custom steering/follow-up queue reporting and the code-update restart notice. Stock Pi 0.84.x and stock 0.85.1 both fail that queue contract. The corrected fork also reports 0.85.1, so `pi --version` alone does not prove support. [Native PR #9](https://github.com/fitchmultz/pi/pull/9) contains these core fixes. This package does not install the corrected native build.
 
 With that native build available, install from GitHub:
 
