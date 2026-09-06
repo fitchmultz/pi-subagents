@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Validate committed HEAD without passing host credentials or mounting the checkout.
-git -C "$(dirname "$0")/.." archive HEAD | docker run --rm -i \
+git -C "$(dirname "$0")/.." archive HEAD | docker run --rm --init -i \
   "${PI_LINUX_IMAGE:-node:24-bookworm}" bash -c '
 set -euo pipefail
 mkdir /workspace
