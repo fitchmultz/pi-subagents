@@ -185,9 +185,9 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(payload.mode, "single");
 		assert.equal(payload.children?.length, 1);
 		assert.equal(payload.children?.[0]?.agent, "worker");
-		assert.match(payload.children?.[0]?.intercomTarget ?? "", /^subagent-worker-[a-f0-9]+-1$/);
+		assert.equal(payload.children?.[0]?.intercomTarget, `subagent-worker-${result.details.runId}-1`);
 		assert.match(String(payload.message ?? ""), /Intercom targets below identify child sessions used while they were running/);
-		assert.match(String(payload.message ?? ""), /Run intercom target: subagent-worker-[a-f0-9]+-1/);
+		assert.match(String(payload.message ?? ""), /Run intercom target: subagent-worker-[a-f0-9-]+-1/);
 		assert.match(result.content[0]?.text ?? "", /Delivered single subagent result via intercom\./);
 		assert.doesNotMatch(result.content[0]?.text ?? "", /Full child output from worker/);
 		assert.equal(result.details?.results?.[0]?.finalOutput, undefined);
@@ -261,9 +261,9 @@ describe("intercom result delivery cutover", () => {
 		const payload = intercomEvents[0]!.payload as { children?: Array<{ agent?: string; intercomTarget?: string }>; message?: string; mode?: string };
 		assert.equal(payload.mode, "parallel");
 		assert.deepEqual((payload.children ?? []).map((child) => child.agent).sort(), ["a", "b"]);
-		assert.equal((payload.children ?? []).every((child) => /^subagent-[ab]-[a-f0-9]+-[12]$/.test(child.intercomTarget ?? "")), true);
+		assert.equal((payload.children ?? []).every((child) => /^subagent-[ab]-[a-f0-9-]+-[12]$/.test(child.intercomTarget ?? "")), true);
 		assert.match(String(payload.message ?? ""), /Intercom targets below identify child sessions used while they were running/);
-		assert.match(String(payload.message ?? ""), /Run intercom target: subagent-a-[a-f0-9]+-1/);
+		assert.match(String(payload.message ?? ""), /Run intercom target: subagent-a-[a-f0-9-]+-1/);
 		assert.match(String(payload.message ?? ""), /1\. a — completed/);
 		assert.match(String(payload.message ?? ""), /2\. b — completed/);
 		assert.match(result.content[0]?.text ?? "", /Delivered parallel subagent results via intercom\./);
@@ -292,7 +292,7 @@ describe("intercom result delivery cutover", () => {
 		const payload = intercomEvents[0]!.payload as { children?: Array<{ agent?: string; intercomTarget?: string }>; message?: string; mode?: string };
 		assert.equal(payload.mode, "chain");
 		assert.deepEqual((payload.children ?? []).map((child) => child.agent).sort(), ["a", "b", "c"]);
-		assert.equal((payload.children ?? []).every((child) => /^subagent-[abc]-[a-f0-9]+-[123]$/.test(child.intercomTarget ?? "")), true);
+		assert.equal((payload.children ?? []).every((child) => /^subagent-[abc]-[a-f0-9-]+-[123]$/.test(child.intercomTarget ?? "")), true);
 		assert.match(String(payload.message ?? ""), /1\. a — completed/);
 		assert.match(String(payload.message ?? ""), /2\. b — completed/);
 		assert.match(String(payload.message ?? ""), /3\. c — completed/);
