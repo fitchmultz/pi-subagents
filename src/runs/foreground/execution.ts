@@ -1231,7 +1231,6 @@ async function runToCompletion(
 		cwd: options.cwd ?? runtimeCwd,
 		signal: AbortSignal.any([options.signal, options.interruptSignal].filter((signal) => signal !== undefined)),
 		runTurn: async (prompt, _turn, sessionFile) => {
-			result.initialOutput = initialOutput;
 			const finalizationOptions: AttemptOptions = { ...effectiveOptions, sessionFile, outputMode: "inline" };
 			delete finalizationOptions.sessionDir;
 			delete finalizationOptions.structuredOutput;
