@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
 import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
@@ -128,7 +127,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 		if (forkModelPolicyError) return buildRequestedModeError(params, forkModelPolicyError);
 
 		if (result.runInBackground) {
-			const id = randomUUID();
+			const id = runId;
 			const output = outputUsesAgentDefault
 				? materializeAgentDefaultOutputPath({ output: effectiveOutput, artifactsDir, runId: id, agent: params.agent!, index: 0 })
 				: effectiveOutput;

@@ -326,7 +326,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const fallbackTarget = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
 		const orchestratorTarget = resolveOrchestratorIntercomTarget(deps.pi.events, fallbackTarget);
 		const intercomBridge = resolveIntercomBridge(orchestratorTarget);
-		const runId = randomUUID().slice(0, 8);
+		const runId = randomUUID();
 		const agentNameAtIndex = buildFlatAgentNameResolver(effectiveParams);
 		const resolveContextForAgent = (agentName: string | undefined) =>
 			resolveAgentContext(effectiveParams.context, agentName, discoveredAgents);

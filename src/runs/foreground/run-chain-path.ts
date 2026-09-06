@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { toModelInfo } from "../../shared/model-info.ts";
 import { executeChain } from "./chain-execution.ts";
 import { type ChainStep } from "../../shared/settings.ts";
@@ -90,7 +89,7 @@ export async function runChainPath(data: ExecutionContextData, deps: ExecutorDep
 	});
 
 	if (chainResult.requestedAsync) {
-		const id = randomUUID();
+		const id = runId;
 		const asyncCtx = {
 			pi: deps.pi,
 			cwd: ctx.cwd,

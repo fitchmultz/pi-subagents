@@ -268,6 +268,7 @@ describe("result contracts", () => {
 				await waitForResult(id);
 			}
 			const args = calls()[0].args;
+			if (background) assert.equal(path.basename(path.dirname(path.dirname(args[args.indexOf("--session") + 1]))), result.details.asyncId);
 			assert.equal(args[args.indexOf("--model") + 1], "parent-provider/specific-model");
 			assert.ok(args.includes("--no-context-files"));
 		});
@@ -281,6 +282,7 @@ describe("result contracts", () => {
 		assert.ok(!result.isError, result.content[0]?.text);
 		id = result.details.asyncId;
 		const completed = await waitForResult(id);
+		assert.equal(path.basename(path.dirname(path.dirname(completed.results[0].sessionFile))), id);
 		assert.equal(completed.results[0].acceptance.status, "checked");
 		assert.equal(completed.results[0].acceptance.finalization.turns.length, 1);
 		assert.equal(mock.callCount(), 2);

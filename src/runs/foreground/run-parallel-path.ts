@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AgentConfig } from "../../agents/agents.ts";
@@ -414,7 +413,7 @@ export async function runParallelPath(data: ExecutionContextData, deps: Executor
 		if (forkModelPolicyError) return buildParallelModeError(forkModelPolicyError);
 
 		if (result.runInBackground) {
-			const id = randomUUID();
+			const id = runId;
 			const asyncCtx = {
 				pi: deps.pi,
 				cwd: ctx.cwd,

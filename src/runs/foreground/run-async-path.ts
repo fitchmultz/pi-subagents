@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { resolveStepBehavior, type ChainStep } from "../../shared/settings.ts";
@@ -73,7 +72,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 			if (worktreeTaskCwdError) return buildParallelModeError(worktreeTaskCwdError);
 		}
 	}
-	const id = randomUUID();
+	const id = data.runId;
 	const asyncCtx = {
 		pi: deps.pi,
 		cwd: ctx.cwd,

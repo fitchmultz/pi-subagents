@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
@@ -10,7 +10,7 @@ const authAgentDir = process.env.PI_REAL_SMOKE_AUTH_AGENT_DIR
 	?? (process.env.HOME ? join(process.env.HOME, ".pi", "agent") : undefined);
 
 function usage() {
-	console.log(`Usage: node scripts/real-pi-smoke.mjs [--llm] [--llm-full] [--keep-temp] [--timeout-ms <ms>]\n\nRuns an opt-in real Pi package smoke for this checkout. It uses an isolated\ntemporary Pi home, installs the single pi-subagents package with bundled intercom, verifies pi list,\nand loads both extension entries. It does not install pi-fitch-kit, publish anything,\nor create GitHub Actions.\n\nOptions:\n  --llm             Also run live model-backed list, foreground, and async-completion smoke prompts\n  --llm-full        Also run broader live parallel, chain, output, and acceptance prompts\n  --keep-temp       Keep the isolated temporary home for debugging\n  --timeout-ms <ms> Per-command timeout in milliseconds (default: ${DEFAULT_TIMEOUT_MS})\n  -h, --help        Show this help\n\nEnvironment:\n  PI_REAL_SMOKE_AUTH_AGENT_DIR     Source Pi agent dir for auth.json/models.json during --llm (default: ~/.pi/agent)\n  PI_REAL_SMOKE_MODEL              Model passed to live --llm smoke prompts, e.g. openai-codex/gpt-5.6-sol\n  PI_REAL_SMOKE_PROVIDER           Provider passed to live --llm smoke prompts\n\nExit codes:\n  0  real Pi smoke passed\n  1  install/list/live smoke failed\n  2  invalid arguments`);
+	console.log(`Usage: node scripts/real-pi-smoke.mjs [--llm] [--llm-full] [--keep-temp] [--timeout-ms <ms>]\n\nRuns an opt-in real Pi package smoke for this checkout. It uses an isolated\ntemporary Pi home, installs the single pi-subagents package with bundled intercom, verifies pi list,\nand loads both extension entries. It does not install pi-fitch-kit, publish anything,\nor create GitHub Actions.\n\nOptions:\n  --llm             Also run live model-backed list, foreground, and async-completion smoke prompts\n  --llm-full        Also run broader live parallel, chain, output, and acceptance prompts\n  --keep-temp       Keep the isolated temporary home for debugging\n  --timeout-ms <ms> Per-command timeout in milliseconds (default: ${DEFAULT_TIMEOUT_MS})\n  -h, --help        Show this help\n\nEnvironment:\n  PI_REAL_SMOKE_AUTH_AGENT_DIR     Source Pi agent dir for auth.json/models.json during --llm (default: ~/.pi/agent)\n  PI_REAL_SMOKE_MODEL              Model passed to live --llm smoke prompts, e.g. openai/gpt-6-astra\n  PI_REAL_SMOKE_PROVIDER           Provider passed to live --llm smoke prompts\n\nExit codes:\n  0  real Pi smoke passed\n  1  install/list/live smoke failed\n  2  invalid arguments`);
 }
 
 function parsePositiveInteger(value, source) {
@@ -93,6 +93,7 @@ function run(label, command, args, { cwd, env, timeoutMs, input }) {
 		input,
 		stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 		timeout: timeoutMs,
+		maxBuffer: 16 * 1024 * 1024,
 		killSignal: "SIGTERM",
 	});
 	const output = result.error ? result.error.message : `${result.stdout ?? ""}${result.stderr ?? ""}`;
@@ -131,12 +132,50 @@ function verifyBundledResources(options) {
 	}
 }
 
-function runLivePrompt(label, prompt, options) {
-	const args = ["--print", "--mode", "text", "--session-dir", join(options.root, "sessions"), "--approve"];
+function runLivePrompt(label, prompt, options, expectedTool) {
+	const args = ["--print", "--mode", "json", "--session-dir", join(options.root, "sessions"), "--approve"];
 	if (process.env.PI_REAL_SMOKE_PROVIDER) args.push("--provider", process.env.PI_REAL_SMOKE_PROVIDER);
-	if (process.env.PI_REAL_SMOKE_MODEL) args.push("--model", process.env.PI_REAL_SMOKE_MODEL);
+	if (process.env.PI_REAL_SMOKE_MODEL) args.push("--model", process.env.PI_REAL_SMOKE_MODEL, "--models", process.env.PI_REAL_SMOKE_MODEL);
 	args.push(prompt);
-	return runPi(label, args, options);
+	const output = runPi(label, args, options);
+	writeFileSync(join(options.root, `${label.replace(/ /g, "-")}.jsonl`), output);
+	const events = output.split("\n").flatMap((line) => {
+		try { return [JSON.parse(line)]; } catch { return []; }
+	});
+	if (!events.some((event) => event.type === "tool_execution_start" && event.toolName === expectedTool)) {
+		throw new Error(`${label} never invoked ${expectedTool}; a matching final sentence is not execution evidence.`);
+	}
+	const errors = events.filter((event) => event.type === "tool_execution_end" && event.isError);
+	if (errors.length) throw new Error(`${label} had ${errors.length} failed tool call(s); inspect its saved wire log.`);
+	if (!events.some((event) => event.type === "agent_settled")) throw new Error(`${label} did not reach agent_settled.`);
+	return events.filter((event) => event.type === "message_end" && event.message?.role === "assistant")
+		.flatMap((event) => event.message.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n");
+}
+
+function auditSavedModels(dir, expectedModel) {
+	const models = new Set();
+	let responses = 0;
+	const visit = (directory) => {
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			const file = join(directory, entry.name);
+			if (entry.isDirectory()) visit(file);
+			else if (entry.name.endsWith(".jsonl")) {
+				for (const line of readFileSync(file, "utf8").split("\n")) {
+					if (!line.trim()) continue;
+					const entry = JSON.parse(line);
+					if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+					responses++;
+					models.add(`${entry.message.provider}/${entry.message.model}`);
+				}
+			}
+		}
+	};
+	visit(dir);
+	if (!responses) throw new Error("No saved assistant messages found for model audit.");
+	if (expectedModel?.includes("/") && [...models].some((model) => model !== expectedModel)) {
+		throw new Error(`Unexpected model in saved parent/child sessions: ${[...models].join(", ")}`);
+	}
+	console.log(`[real-pi-smoke] audited ${responses} saved parent/child responses: ${[...models].join(", ")}`);
 }
 
 function requireOutput(label, output, pattern) {
@@ -214,19 +253,20 @@ Follow the task exactly and return its requested text without using tools.
 		const list = runPi("pi list", ["list", "--approve"], runOptions);
 		if (!list.includes(repoRoot)) throw new Error(`pi list did not include ${repoRoot}:\n${list}`);
 		verifyBundledResources(runOptions);
+		console.log(`[real-pi-smoke] active Pi ${runPi("pi version", ["--version"], runOptions).trim()}`);
 
 		if (options.llm) {
 			const copiedAuthFiles = copyLiveAuth(agentDir);
 			if (copiedAuthFiles.length > 0) console.log(`[real-pi-smoke] copied ${copiedAuthFiles.join(" and ")} into isolated Pi agent dir for live provider auth`);
 			const childModelInstruction = process.env.PI_REAL_SMOKE_MODEL ? ` Pass model override '${process.env.PI_REAL_SMOKE_MODEL}' to every subagent run.` : "";
 			const intercomPrompt = "Call the intercom tool with action status. Reply exactly with 'real-pi-smoke intercom ok' if the tool output includes 'Connected: Yes'.";
-			const listPrompt = "Use the subagent tool with action list. Reply exactly with 'real-pi-smoke list ok' if reviewer, scout, oracle, and watcher are available.";
-			const foregroundPrompt = `Use the subagent tool to run real-smoke with task 'Reply exactly: real-pi-smoke foreground ok', async false, output false, and progress false.${childModelInstruction} If the tool returns an output artifact path instead of inline output, read that file. Then reply exactly 'real-pi-smoke foreground ok' only if the child result contains it.`;
-			const asyncPrompt = `Use the subagent tool to run real-smoke with task 'Reply exactly: real-pi-smoke async ok', output false, and progress false.${childModelInstruction} Set async true so it launches in the background. Do not call status and do not wait for completion. Reply with 'real-pi-smoke async launched ok' and quote the exact tool result line beginning 'Async:' including the run id.`;
-			requireOutput("real Pi intercom prompt", runLivePrompt("real Pi intercom prompt", intercomPrompt, runOptions), /real-pi-smoke intercom ok/);
-			requireOutput("real Pi subagent list prompt", runLivePrompt("real Pi subagent list prompt", listPrompt, runOptions), /real-pi-smoke list ok/);
-			requireOutput("real Pi foreground subagent prompt", runLivePrompt("real Pi foreground subagent prompt", foregroundPrompt, runOptions), /real-pi-smoke foreground ok/);
-			const asyncOutput = runLivePrompt("real Pi async subagent prompt", asyncPrompt, runOptions);
+			const listPrompt = "Use the agent_runs tool with action profiles. Reply exactly with 'real-pi-smoke list ok' if reviewer, scout, oracle, and watcher are available.";
+			const foregroundPrompt = `Use the delegate tool to run real-smoke with task 'Reply exactly: real-pi-smoke foreground ok', async false and output false.${childModelInstruction} If the tool returns an output artifact path instead of inline output, read that file. Then reply exactly 'real-pi-smoke foreground ok' only if the child result contains it.`;
+			const asyncPrompt = `Use the delegate tool to run real-smoke with task 'Reply exactly: real-pi-smoke async ok', output false.${childModelInstruction} Set async true so it launches in the background. Do not call status and do not wait for completion. Reply with 'real-pi-smoke async launched ok' and quote the exact tool result line beginning 'Async:' including the run id.`;
+			requireOutput("real Pi intercom prompt", runLivePrompt("real Pi intercom prompt", intercomPrompt, runOptions, "intercom"), /real-pi-smoke intercom ok/);
+			requireOutput("real Pi subagent list prompt", runLivePrompt("real Pi subagent list prompt", listPrompt, runOptions, "agent_runs"), /real-pi-smoke list ok/);
+			requireOutput("real Pi foreground subagent prompt", runLivePrompt("real Pi foreground subagent prompt", foregroundPrompt, runOptions, "delegate"), /real-pi-smoke foreground ok/);
+			const asyncOutput = runLivePrompt("real Pi async subagent prompt", asyncPrompt, runOptions, "delegate");
 			requireOutput("real Pi async subagent prompt", asyncOutput, /real-pi-smoke async (?:launched )?ok/i);
 			const asyncRunId = asyncOutput.match(/Async(?: parallel)?:\s+(?:\S+|\[[^\]]+\])\s+\[([0-9a-f-]{36})\]/i)?.[1]
 				?? asyncOutput.match(/\[([0-9a-f-]{36})\]/i)?.[1]
@@ -240,17 +280,19 @@ Follow the task exactly and return its requested text without using tools.
 				const chainPrompt = `Use the subagent tool chain mode with two delegate steps and async false.${childModelInstruction} Step 1 task: 'Reply exactly: real-pi-smoke chain step1 ok'. Step 2 task: 'Previous output is {previous}. Reply exactly: real-pi-smoke chain step2 ok'. Reply exactly 'real-pi-smoke chain ok' only if step 2 ran after step 1.`;
 				const outputPrompt = `Use the subagent tool to run delegate with task 'Write exactly real-pi-smoke output ok plus newline to the requested output path, then reply exactly wrote output smoke'. Set async false, output to ${JSON.stringify(outputPath)}, and outputMode to file-only.${childModelInstruction} Reply exactly 'real-pi-smoke output ok' only after the tool returns.`;
 				const acceptancePrompt = `Use the subagent tool to run delegate with task 'Final answer exactly: real-pi-smoke acceptance ok evidence=manual-notes'. Set async false. Include acceptance criteria requiring the final answer to contain real-pi-smoke acceptance ok and evidence manual-notes, with maxFinalizationTurns 2.${childModelInstruction} Reply exactly 'real-pi-smoke acceptance ok' only if the child completed.`;
-				requireOutput("real Pi parallel subagent prompt", runLivePrompt("real Pi parallel subagent prompt", parallelPrompt, runOptions), /real-pi-smoke parallel ok/);
-				requireOutput("real Pi chain subagent prompt", runLivePrompt("real Pi chain subagent prompt", chainPrompt, runOptions), /real-pi-smoke chain ok/);
-				requireOutput("real Pi output subagent prompt", runLivePrompt("real Pi output subagent prompt", outputPrompt, runOptions), /real-pi-smoke output ok/);
+				requireOutput("real Pi parallel subagent prompt", runLivePrompt("real Pi parallel subagent prompt", parallelPrompt, runOptions, "subagent"), /real-pi-smoke parallel ok/);
+				requireOutput("real Pi chain subagent prompt", runLivePrompt("real Pi chain subagent prompt", chainPrompt, runOptions, "subagent"), /real-pi-smoke chain ok/);
+				requireOutput("real Pi output subagent prompt", runLivePrompt("real Pi output subagent prompt", outputPrompt, runOptions, "subagent"), /real-pi-smoke output ok/);
 				if (!existsSync(outputPath) || !/real-pi-smoke output ok/.test(readFileSync(outputPath, "utf8"))) throw new Error(`output smoke file missing expected content: ${outputPath}`);
-				requireOutput("real Pi acceptance subagent prompt", runLivePrompt("real Pi acceptance subagent prompt", acceptancePrompt, runOptions), /real-pi-smoke acceptance ok/);
+				requireOutput("real Pi acceptance subagent prompt", runLivePrompt("real Pi acceptance subagent prompt", acceptancePrompt, runOptions, "subagent"), /real-pi-smoke acceptance ok/);
 			}
+			auditSavedModels(join(root, "sessions"), process.env.PI_REAL_SMOKE_MODEL);
 		}
 
 		console.log(`[real-pi-smoke] installed the single pi-subagents package, loaded bundled intercom, and verified pi list in ${agentDir}`);
 		if (!options.llm) console.log("[real-pi-smoke] live model subagent prompts skipped; pass --llm to exercise foreground/async paths.");
 	} finally {
+		for (const name of ["auth.json", "models.json"]) rmSync(join(agentDir, name), { force: true });
 		if (options.keepTemp) console.log(`[real-pi-smoke] kept temp root ${root}`);
 		else rmSync(root, { recursive: true, force: true });
 	}
