@@ -1,6 +1,6 @@
 import { toModelInfo } from "../../shared/model-info.ts";
 import { executeChain } from "./chain-execution.ts";
-import { type ChainStep } from "../../shared/settings.ts";
+import { isDynamicParallelStep, type ChainStep } from "../../shared/settings.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { executeAsyncChain } from "../background/async-execution.ts";
 import { resolveConfiguredChildProjectTrustPolicy } from "../shared/pi-args.ts";
@@ -130,7 +130,17 @@ export async function runChainPath(data: ExecutionContextData, deps: ExecutorDep
 	const chainDetails = chainResult.details ? compactForegroundDetails({ ...chainResult.details, runId }) : undefined;
 	if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 	if (chainDetails) {
-		rememberForegroundRun(deps.state, { runId, mode: "chain", cwd: effectiveCwd, results: chainDetails.results, error });
+		const stepIndex = chainDetails.currentStepIndex;
+		const unfinished: string[] = [];
+		if (stepIndex !== undefined && chainDetails.results.some((result) => result.detached)) {
+			const step = chain[stepIndex];
+			if (step && isDynamicParallelStep(step) && !chainDetails.outputs?.[step.collect.as]) {
+				unfinished.push(`collection "${step.collect.as}" was not validated or published`);
+			}
+			if (stepIndex + 1 < chain.length) unfinished.push(`downstream work from step ${stepIndex + 2} has not run`);
+		}
+		const pausedReason = unfinished.length ? `Chain stopped after detachment at step ${stepIndex! + 1}: ${unfinished.join("; ")}.` : undefined;
+		rememberForegroundRun(deps.state, { runId, mode: "chain", cwd: effectiveCwd, results: chainDetails.results, error, pausedReason });
 		detachedCompletions.setResults(chainDetails.results, foregroundControl?.nestedChildren);
 	}
 	const intercomReceipt = chainDetails && !chainDetails.results.some((result) => result.interrupted || result.detached || result.timedOut)

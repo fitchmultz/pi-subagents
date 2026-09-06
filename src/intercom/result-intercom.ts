@@ -221,7 +221,7 @@ function formatSubagentResultIntercomMessage(input: {
 		`Mode: ${input.mode}`,
 		`Status: ${input.status}`,
 		`Children: ${formatStatusCounts(counts)}`,
-		...(input.error ? [`Workflow error: ${input.error}`] : []),
+		...(input.error ? [`Workflow ${input.status === "paused" ? "paused" : "error"}: ${input.error}`] : []),
 	];
 	if (input.source === "foreground" && input.status === "completed") {
 		lines.push("This completes the matching subagent call. Continue the parent task without relaunching the same call.");
@@ -369,7 +369,7 @@ export function formatSubagentResultReceipt(input: {
 		`Run: ${input.runId}`,
 		`Child outcome: ${input.payload.status}`,
 		`Children: ${formatStatusCounts(counts)}`,
-		...(input.payload.error ? [`Workflow error: ${input.payload.error}`] : []),
+		...(input.payload.error ? [`Workflow ${input.payload.status === "paused" ? "paused" : "error"}: ${input.payload.error}`] : []),
 	];
 
 	const artifacts = input.payload.children.filter((child) => typeof child.artifactPath === "string");

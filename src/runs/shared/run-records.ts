@@ -38,10 +38,11 @@ export function resolveOwnedRun(state: SubagentState, requested: string): OwnedR
 	return matches[0];
 }
 
-export function saveForegroundRun(input: { runId: string; mode: ForegroundResumeRun["mode"]; cwd: string; results: SingleResult[]; error?: string }): ForegroundResumeRun {
+export function saveForegroundRun(input: { runId: string; mode: ForegroundResumeRun["mode"]; cwd: string; results: SingleResult[]; error?: string; pausedReason?: string }): ForegroundResumeRun {
 	const run: ForegroundResumeRun = {
 		runId: input.runId, mode: input.mode, cwd: input.cwd, updatedAt: Date.now(),
 		...(input.error ? { error: input.error } : {}),
+		...(input.pausedReason ? { pausedReason: input.pausedReason } : {}),
 		children: input.results.map((result, index) => ({
 			agent: result.agent, index,
 			status: resolveSubagentResultStatus(result),
@@ -255,7 +256,7 @@ export function ownedRunView(run: OwnedRun, state: SubagentState): OwnedRunView 
 		: live ? "live"
 		: children.some((child) => child.state === "failed") ? "failed"
 		: children.some((child) => child.state === "paused") ? "paused"
-		: children.length && children.every((child) => child.state === "completed") ? "completed"
+		: children.length && children.every((child) => child.state === "completed") ? (foreground?.pausedReason ? "paused" : "completed")
 		: status && !["running", "queued"].includes(status.state) ? normalizedState(status.state) : "unknown";
 	const questions = listSupervisorQuestions(run.ownerSessionId, run.runId).filter((question) => question.state === "awaiting_input" || question.state === "answer_pending");
 	const attention = [
@@ -270,7 +271,7 @@ export function ownedRunView(run: OwnedRun, state: SubagentState): OwnedRunView 
 		updatedAt: result?.timestamp ?? status?.lastUpdate ?? foreground?.updatedAt ?? run.startedAt,
 		continuations: [...(state.ownedRuns?.values() ?? [])].filter((candidate) => candidate.rootRunId === run.rootRunId && candidate.predecessorRunId).sort((a, b) => a.startedAt - b.startedAt).map((candidate) => ({ runId: candidate.runId, predecessorRunId: candidate.predecessorRunId!, predecessorIndex: candidate.predecessorIndex })),
 		...(result ? { resultPath } : foreground ? { resultPath: path.join(root, "foreground.json") } : {}),
-		...(error ? { diagnosis: error } : executionState === "unknown" ? { diagnosis: "Completion is unconfirmed. Saved sessions are context, not proof of successful execution." } : {}),
+		...(error ? { diagnosis: error } : executionState === "paused" && foreground?.pausedReason ? { diagnosis: foreground.pausedReason } : executionState === "unknown" ? { diagnosis: "Completion is unconfirmed. Saved sessions are context, not proof of successful execution." } : {}),
 	};
 }
 

@@ -138,7 +138,14 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 							if (shape === "static-chain") assert.equal(terminal.outputs.evidence.text, "SUCCESSFUL_SIBLING_EVIDENCE");
 							if (shape === "dynamic-chain") assert.equal(terminal.outputs.collected, undefined, "stopped collections must not publish");
 							const saved = inspection.details.run!;
-							assert.equal(saved.state, aggregateFailed ? "failed" : detaching ? "completed" : "paused");
+							const expectedState = aggregateFailed ? "failed" : detaching && shape === "parallel" ? "completed" : "paused";
+							assert.equal(saved.state, expectedState);
+							if (detaching) {
+								const notification = notifications.find((entry) => entry.runId === runId);
+								assert.equal(notification.status, expectedState);
+								assert.match(notification.message, /SUCCESSFUL_SIBLING_EVIDENCE/);
+								assert.equal(notification.children[waitIndex].status, "completed");
+							}
 							assert.equal(saved.children[prefixCount].state, "completed");
 							assert.equal(saved.children[prefixCount].result?.finalOutput, "SUCCESSFUL_SIBLING_EVIDENCE");
 							if (failed) assert.equal(saved.children[prefixCount + 1].state, "failed");

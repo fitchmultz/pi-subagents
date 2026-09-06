@@ -221,13 +221,14 @@ function rememberedForegroundState(children: ReturnType<typeof foregroundResultC
 
 export function rememberedForegroundStatusResult(run: ForegroundResumeRun): SubagentExecutionResult {
 	const children = foregroundResultChildren(run);
-	const state = run.error ? "failed" : rememberedForegroundState(children);
+	const childState = rememberedForegroundState(children);
+	const state = run.error ? "failed" : childState === "completed" && run.pausedReason ? "paused" : childState;
 	const resumable = children.find(({ child }) => child.sessionFile && child.status !== "detached")?.child;
 	const lines = [
 		`Run: ${run.runId}`,
 		"State: remembered foreground",
 		`Outcome: ${state}`,
-		...(run.error ? [`Error: ${run.error}`] : []),
+		...(run.error ? [`Error: ${run.error}`] : state === "paused" && run.pausedReason ? [run.pausedReason] : []),
 		`Mode: ${run.mode}`,
 		`Updated: ${new Date(run.updatedAt).toISOString()}`,
 		`Cwd: ${run.cwd}`,
@@ -961,6 +962,7 @@ async function emitForegroundResultIntercom(input: {
 	mode: SubagentRunMode;
 	results: SingleResult[];
 	error?: string;
+	pausedReason?: string;
 	chainSteps?: number;
 	nestedChildren?: NestedRunSummary[];
 }): Promise<ReturnType<typeof buildSubagentResultIntercomPayload> | null> {
@@ -984,7 +986,7 @@ async function emitForegroundResultIntercom(input: {
 		runId: input.runId,
 		mode: input.mode,
 		source: "foreground",
-		...(input.error ? { status: "failed", error: input.error } : {}),
+		...(input.error ? { status: "failed", error: input.error } : input.pausedReason ? { status: "paused", error: input.pausedReason } : {}),
 		children: attachNestedChildrenToResultChildren(input.runId, children, input.nestedChildren),
 		...(typeof input.chainSteps === "number" ? { chainSteps: input.chainSteps } : {}),
 	});
@@ -1031,8 +1033,8 @@ export function createDetachedCompletionGroup(input: {
 				target.truncation = undefined;
 			}
 		}
+		const remembered = input.state.foregroundRuns?.get(input.runId);
 		try {
-			const remembered = input.state.foregroundRuns?.get(input.runId);
 			if (remembered) rememberForegroundRun(input.state, { ...remembered, results });
 			input.onResultsSettled?.(results);
 		} catch (error) {
@@ -1048,6 +1050,8 @@ export function createDetachedCompletionGroup(input: {
 			runId: input.runId,
 			mode: input.mode,
 			results,
+			error: remembered?.error,
+			pausedReason: remembered?.pausedReason,
 			...(input.chainSteps !== undefined ? { chainSteps: input.chainSteps } : {}),
 			...(nestedChildren?.length ? { nestedChildren } : {}),
 		}).then((payload) => {

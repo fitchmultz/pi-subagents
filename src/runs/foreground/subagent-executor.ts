@@ -516,16 +516,17 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			if (!inheritedNestedRoute || !nestedParentAddress) return;
 			const now = Date.now();
 			const details = result?.details;
+			const pausedReason = deps.state.foregroundRuns?.get(runId)?.pausedReason;
 			const state = type === "subagent.nested.started"
 				? "running"
 				: result?.isError || details?.results.some((child) => child.exitCode !== 0)
 					? "failed"
-					: details?.results.some((child) => child.interrupted)
+					: pausedReason || details?.results.some((child) => child.interrupted)
 						? "paused"
 						: "complete";
 			const errorText = result?.isError
 				? result.content.find((item) => item.type === "text")?.text
-				: undefined;
+				: pausedReason;
 			const agentsForSummary = hasTasks && effectiveParams.tasks
 				? effectiveParams.tasks.map((task) => task.agent)
 				: hasChain && effectiveParams.chain
@@ -576,7 +577,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			deferForegroundCleanup = false;
 			const failure = results.find((result) => result.exitCode !== 0);
 			writeNestedForegroundEvent("subagent.nested.completed", {
-				content: [{ type: "text", text: failure?.error ?? "Detached run completed." }],
+				content: [{ type: "text", text: failure?.error ?? deps.state.foregroundRuns?.get(runId)?.pausedReason ?? "Detached run completed." }],
 				isError: Boolean(failure),
 				details: { mode, results, ...(totalSteps !== undefined ? { totalSteps } : {}) },
 			});

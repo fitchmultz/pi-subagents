@@ -832,6 +832,8 @@ export interface ForegroundResumeRun {
 	cwd: string;
 	updatedAt: number;
 	error?: string;
+	/** Logical work left after detachment, independent of child success. */
+	pausedReason?: string;
 	children: ForegroundResumeChild[];
 }
 
