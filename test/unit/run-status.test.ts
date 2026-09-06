@@ -78,7 +78,7 @@ describe("async run status inspection", () => {
 
 			const active = textContent(inspectSubagentStatus({}, { asyncDirRoot: asyncRoot, resultsDir, state, kill: () => true, now: () => 200 }));
 			assert.match(active, /run-current/);
-			assert.match(active, /run-legacy-current/);
+			assert.doesNotMatch(active, /run-legacy-current/, "same cwd alone does not establish parent ownership");
 			assert.doesNotMatch(active, /run-foreign/);
 			assert.doesNotMatch(active, /run-legacy-foreign/);
 			assert.match(active, /polling status again/);

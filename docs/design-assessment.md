@@ -306,6 +306,8 @@ The implementation was subsequently authorized. Keep the assessment above as the
 
 **Everyday API:** `delegate` and `agent_runs` adapt the existing executor. Advanced workflows and definition management remain available behind `load_subagent`; existing callers are not replaced. One isolated writer reuses the existing one-task worktree path instead of introducing a second workspace manager.
 
+**Durable ownership:** native parent `subagent-run` custom entries retain run identity, root/predecessor links, and explicit parent review. The existing question/contract store and finalized result/status snapshots now live under persistent Pi session storage, outside temporary-log retention. Same-parent reload/restart restores exact handles without a 50-result cutoff. Continuation uses the saved effective launch; older receipts recover known evidence but require an explicit current-profile choice when no original profile snapshot exists. The attention-first list pages display, not ownership. Inspect, review, and late nudges do not launch work.
+
 **Completion authority:** task prose and tool capability no longer imply a required edit. `completionGuard: true` explicitly requests mutation evidence; an acceptance contract takes precedence and can describe a valid no-op. Passing an attestation check remains distinct from executing verification commands.
 
 **Platforms and trust:** macOS/Linux are supported; Windows runtime branches are removed. Termux remains unverified. Local intercom remains trusted same-user IPC, without project ACLs or a new authorization service.

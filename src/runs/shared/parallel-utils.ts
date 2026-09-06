@@ -1,5 +1,5 @@
 import type { DynamicCollectSpec, DynamicExpandSpec } from "../../shared/settings.ts";
-import type { JsonSchemaObject, ResolvedAcceptanceConfig } from "../../shared/types.ts";
+import type { JsonSchemaObject, ResolvedAcceptanceConfig, SavedLaunchConfig } from "../../shared/types.ts";
 
 export interface RunnerSubagentStep {
 	agent: string;
@@ -37,6 +37,7 @@ export interface RunnerSubagentStep {
 	};
 	structuredOutputSchema?: JsonSchemaObject;
 	effectiveAcceptance?: ResolvedAcceptanceConfig;
+	launch?: SavedLaunchConfig;
 }
 
 export interface ParallelStepGroup {

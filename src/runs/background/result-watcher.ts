@@ -89,10 +89,8 @@ export function createResultWatcher(
 		if (!fsApi.existsSync(resultPath)) return;
 		try {
 			const data = fsApi === fs ? readAsyncResultFile(resultPath) : parseAsyncResultFileContent(fsApi.readFileSync(resultPath, "utf-8"), resultPath);
-			if (data.sessionId && data.sessionId !== state.currentSessionId) return;
-			if (!data.sessionId && data.cwd && (!state.baseCwd || data.cwd !== state.baseCwd)) return;
-
 			const runId = data.runId ?? data.id ?? file.replace(/\.json$/i, "");
+			if (data.sessionId ? data.sessionId !== state.currentSessionId : !state.ownedRuns?.has(runId)) return;
 			const hasExplicitNestedChildren = data.nestedChildren !== undefined;
 			let nestedChildren = compactNestedResultChildren(sanitizeNestedResultChildren(data.nestedChildren, resultPath, "nestedChildren"));
 			if (!nestedChildren?.length && !hasExplicitNestedChildren) {

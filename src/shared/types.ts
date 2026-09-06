@@ -423,7 +423,75 @@ export interface SingleResult {
 }
 
 export type ManagementRunState = "live" | "completed" | "paused" | "failed" | "unknown";
-export type ManagementAction = "status" | "nudge" | "resume" | "interrupt" | "extend";
+export type ManagementAction = "status" | "nudge" | "resume" | "interrupt" | "extend" | "review";
+
+export interface SavedLaunchConfig {
+	agent: import("../agents/agents.ts").AgentConfig;
+	model?: string;
+	thinking?: string;
+	modelCandidates: string[];
+	artifacts: boolean;
+	artifactsDir?: string;
+	share: boolean;
+	systemPrompt: string;
+	skills: string[];
+	cwd: string;
+	context: "fresh" | "fork";
+	output: string | false;
+	outputMode: OutputMode;
+	outputSchema?: JsonSchemaObject;
+	effectiveAcceptance?: ResolvedAcceptanceConfig;
+	maxOutput?: MaxOutputConfig;
+	maxSubagentDepth?: number;
+	maxExecutionTimeMs?: number;
+	maxTokens?: number;
+	controlConfig?: ResolvedControlConfig;
+	projectTrust?: ChildProjectTrustPolicy;
+	projectTrusted?: boolean;
+}
+
+export interface ParentRunReview {
+	decision: "accepted" | "needs_changes";
+	message?: string;
+	reviewedAt: number;
+}
+
+export interface OwnedRun {
+	runId: string;
+	ownerSessionId: string;
+	source: "foreground" | "async";
+	mode: SubagentRunMode;
+	cwd: string;
+	task: string;
+	startedAt: number;
+	rootRunId: string;
+	predecessorRunId?: string;
+	predecessorIndex?: number;
+	asyncDir?: string;
+	pid?: number;
+	children: Array<{ agent: string; index: number; sessionFile?: string }>;
+	review?: ParentRunReview;
+	delivery?: { notifiedAt: number; intercomDelivered: boolean };
+	legacy?: boolean;
+	error?: string;
+}
+
+export interface OwnedRunView extends OwnedRun {
+	state: ManagementRunState;
+	updatedAt: number;
+	attention: string[];
+	children: Array<OwnedRun["children"][number] & {
+		state: ManagementRunState;
+		result?: SingleResult;
+		launch?: SavedLaunchConfig;
+		configuration: "saved" | "legacy-partial";
+		missingSession?: boolean;
+	}>;
+	continuations: Array<{ runId: string; predecessorRunId: string; predecessorIndex?: number }>;
+	resultPath?: string;
+	canInterrupt: boolean;
+	diagnosis?: string;
+}
 
 export interface ManagementControl {
 	state: ManagementRunState;
@@ -454,6 +522,9 @@ export interface Details {
 	managementControl?: ManagementControl;
 	managementControls?: ManagementControl[];
 	questions?: import("../runs/shared/supervisor-questions.ts").SupervisorQuestionView[];
+	run?: OwnedRunView;
+	runs?: Array<Pick<OwnedRunView, "runId" | "source" | "mode" | "cwd" | "task" | "state" | "updatedAt" | "attention" | "review" | "rootRunId" | "predecessorRunId"> & { summary?: string }>;
+	runList?: { total: number; offset: number; limit: number; nextOffset?: number };
 	intercomDelivery?: {
 		delivered: boolean;
 		to: string;
@@ -751,6 +822,7 @@ export interface ForegroundResumeChild {
 	summary?: string;
 	artifactPath?: string;
 	effectiveAcceptance?: ResolvedAcceptanceConfig;
+	result?: SingleResult;
 }
 
 export interface ForegroundResumeRun {
@@ -802,6 +874,8 @@ export interface SubagentState {
 	currentSessionId: string | null;
 	asyncJobs: Map<string, AsyncJobState>;
 	foregroundRuns?: Map<string, ForegroundResumeRun>;
+	ownedRuns?: Map<string, OwnedRun>;
+	persistOwnedRun?: (run: OwnedRun) => void;
 	foregroundControls: Map<string, ForegroundControlState>;
 	lastForegroundControlId: string | null;
 	pendingForegroundControlNotices?: Map<string, ReturnType<typeof setTimeout>>;
@@ -1040,7 +1114,7 @@ export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
 export const POLL_INTERVAL_MS = 1000;
 export const MAX_WIDGET_JOBS = 4;
 export const DEFAULT_SUBAGENT_MAX_DEPTH = 1;
-export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "questions", "answer", "doctor"] as const;
+export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "questions", "answer", "review", "doctor"] as const;
 
 export const DEFAULT_FORK_PREAMBLE =
 	"You are a delegated subagent running from a fork of the parent session. " +

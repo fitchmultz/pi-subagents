@@ -77,7 +77,7 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("preserves cwd ownership when repairing and delivering a stale legacy run", async () => {
+	it("requires saved ownership rather than matching cwd when delivering a stale legacy run", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-stale-legacy-"));
 		const resultsDir = path.join(root, "results");
 		const asyncDir = path.join(root, "runs", "legacy-stale");
@@ -125,6 +125,10 @@ describe("result watcher", () => {
 			try {
 				currentWatcher.primeExistingResults();
 				await new Promise((resolve) => setTimeout(resolve, 100));
+				assert.equal(emitted.length, 0, "same cwd is not an ownership receipt");
+				currentState.ownedRuns = new Map([["legacy-stale", { runId: "legacy-stale", ownerSessionId: "parent", source: "async", mode: "single", cwd: "/repo-current", task: "Recovered work", startedAt: 100, rootRunId: "legacy-stale", children: [] }]]);
+				currentWatcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 100));
 			} finally {
 				currentWatcher.stopResultWatcher();
 			}
@@ -148,12 +152,13 @@ describe("result watcher", () => {
 				},
 			};
 			const state = createState();
+			state.currentSessionId = "parent";
 			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
 			try {
-				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", cwd: "/repo", success: false, summary: "old" }), "utf-8");
+				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", sessionId: "parent", cwd: "/repo", success: false, summary: "old" }), "utf-8");
 				watcher.primeExistingResults();
 				await new Promise((resolve) => setTimeout(resolve, 100));
-				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", cwd: "/repo", success: true, summary: "corrected" }), "utf-8");
+				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", sessionId: "parent", cwd: "/repo", success: true, summary: "corrected" }), "utf-8");
 				watcher.primeExistingResults();
 				await new Promise((resolve) => setTimeout(resolve, 100));
 			} finally {
@@ -895,8 +900,10 @@ describe("result watcher", () => {
 				},
 			};
 			const resultPath = path.join(resultsDir, "async-race.json");
-			fs.writeFileSync(resultPath, JSON.stringify({ id: "async-race", cwd: "/repo", success: true, summary: "done", intercomTarget: "parent" }), "utf-8");
-			const watcher = createResultWatcher(pi, createState(), resultsDir, 60_000);
+			fs.writeFileSync(resultPath, JSON.stringify({ id: "async-race", sessionId: "parent", cwd: "/repo", success: true, summary: "done", intercomTarget: "parent" }), "utf-8");
+			const state = createState();
+			state.currentSessionId = "parent";
+			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
 			const originalError = console.error;
 			console.error = () => {};
 			try {

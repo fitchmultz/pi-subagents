@@ -18,7 +18,17 @@ export function findPiPackageRootFromEntry(entryPoint: string): string | undefin
 }
 
 export function resolveInstalledPiPackageRoot(): string | undefined {
-	return findPiPackageRootFromEntry(fileURLToPath(import.meta.resolve(PI_CODING_AGENT_PACKAGE)));
+	try {
+		return findPiPackageRootFromEntry(fileURLToPath(import.meta.resolve(PI_CODING_AGENT_PACKAGE)));
+	} catch {
+		for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+			try {
+				const root = findPiPackageRootFromEntry(fs.realpathSync(path.join(dir, "pi")));
+				if (root) return root;
+			} catch { /* PATH entries can disappear or be wrappers rather than Pi. */ }
+		}
+		return undefined;
+	}
 }
 
 export function resolvePiPackageRoot(): string | undefined {

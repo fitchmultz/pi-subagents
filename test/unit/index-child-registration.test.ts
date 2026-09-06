@@ -122,7 +122,7 @@ describe("subagent extension child mode", () => {
 					requestRender() {},
 					theme: { fg(_name, text) { return text; }, bg(_name, text) { return text; }, bold(text) { return text; } },
 				},
-				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; }, getSessionDir() { return process.cwd(); } },
+				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; }, getSessionDir() { return process.cwd(); }, getEntries() { return []; }, getHeader() { return null; } },
 				modelRegistry: { getAvailable() { return []; } },
 			};
 			await registeredTool.execute("already-collapsed", { action: "list" }, new AbortController().signal, undefined, ctx);
@@ -243,7 +243,7 @@ describe("subagent extension child mode", () => {
 				mode: "json",
 				hasUI: false,
 				isProjectTrusted() { return true; },
-				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; }, getSessionDir() { return process.cwd(); } },
+				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; }, getSessionDir() { return process.cwd(); }, getEntries() { return []; }, getHeader() { return null; } },
 				modelRegistry: { getAvailable() { return []; } },
 			};
 			const list = await registeredTool.execute("list-check", { action: "list" }, new AbortController().signal, undefined, ctx);

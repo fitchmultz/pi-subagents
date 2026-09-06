@@ -7,10 +7,11 @@ const RETRY_WINDOW_MS = 30_000;
 const RETRY_DELAY_MS = 500;
 const MAX_STDERR_LENGTH = 64 * 1024;
 
-function run(runnerPath: string, configPath: string): Promise<{ code: number; stderr: string }> {
+function run(runnerPath: string, configPath: string, piPackageRoot?: string): Promise<{ code: number; stderr: string }> {
 	return new Promise((resolve) => {
 		const child = spawn(process.execPath, [runnerPath, configPath], {
 			stdio: ["ignore", "inherit", "pipe"],
+			env: piPackageRoot ? { ...process.env, PI_PACKAGE_DIR: process.env.PI_PACKAGE_DIR ?? piPackageRoot } : process.env,
 		});
 		let stderr = "";
 		child.stderr.on("data", (chunk: Buffer) => {
@@ -30,8 +31,10 @@ const [runnerPath, configPath] = process.argv.slice(2);
 if (!runnerPath || !configPath) throw new Error("Usage: subagent-runner-launcher <runner> <config>");
 
 let statusPath: string | undefined;
+let piPackageRoot: string | undefined;
 try {
-	const config = JSON.parse(fs.readFileSync(configPath, "utf-8")) as { asyncDir?: unknown };
+	const config = JSON.parse(fs.readFileSync(configPath, "utf-8")) as { asyncDir?: unknown; piPackageRoot?: unknown };
+	if (typeof config.piPackageRoot === "string") piPackageRoot = config.piPackageRoot;
 	if (typeof config.asyncDir === "string") statusPath = path.join(config.asyncDir, "status.json");
 } catch {}
 
@@ -39,7 +42,7 @@ try {
 const deadline = Date.now() + RETRY_WINDOW_MS;
 let announcedRetry = false;
 while (true) {
-	const result = await run(runnerPath, configPath);
+	const result = await run(runnerPath, configPath, piPackageRoot);
 	const failedBeforeStartup = !statusPath || !fs.existsSync(statusPath);
 	if (result.code === 0 || !failedBeforeStartup || !result.stderr.includes("ERR_MODULE_NOT_FOUND") || Date.now() >= deadline) {
 		process.exitCode = result.code;

@@ -29,9 +29,11 @@ agent_runs({ action: "profiles" })
 delegate({ agent: "worker", task: "Implement the approved fix", worktree: true })
 agent_runs({ action: "list" })
 agent_runs({ action: "inspect", id: "<run-id>" })
+agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "Checked the evidence." })
+agent_runs({ action: "list", offset: 20, limit: 20 })
 ```
 
-These share the full executor, including acceptance and isolated single-writer worktrees. Use `load_subagent` and `subagent(...)` for parallel groups, chains, detailed overrides, and profile administration.
+These share the full executor, including acceptance and isolated single-writer worktrees. The list prioritizes pending questions, failures/interrupted or unconfirmed work, and completed-but-unreviewed results. `offset`/`limit` page the display (default 20, maximum 100), never the retained history. `review` records `accepted` or `needs_changes` separately from execution, validation, and notification; it never launches a repair or reviewer. Use `continue` explicitly for more work. Use `load_subagent` and `subagent(...)` for parallel groups, chains, detailed overrides, and profile administration.
 Humans often use the slash-command layer instead:
 
 - `/run` — launch a single agent
@@ -339,7 +341,7 @@ const run = subagent({
 // Continue local inspection; completion will wake the parent.
 ```
 
-Inspect async runs with `subagent({ action: "status", id: "..." })` or `subagent({ action: "status" })` for active runs. Use status for diagnostics, not as a wait loop; healthy runs deliver completion automatically. After a foreground run completes or times out, `status` can still show the remembered foreground children and revive command by id, or with `subagent({ action: "status", id: "latest" })` / `id: "last"` for the latest remembered foreground run in the current session. If a delegated fanout child launches nested runs, the parent status view shows them as a tree and you can target a nested run directly with its nested id.
+Inspect async runs with `subagent({ action: "status", id: "..." })` or `subagent({ action: "status" })` for active runs. Use status for diagnostics, not as a wait loop; healthy runs deliver completion automatically. Foreground and background handles remain inspectable and continuable after native reload/restart of the same saved parent. `subagent({ action: "status", id: "latest" })` / `id: "last"` selects the latest owned run. `inspect` shows saved effective configuration and profile provenance, result references, review state, and the root/predecessor/continuation history. If a delegated fanout child launches nested runs, the parent status view shows them as a tree and you can target a nested run directly with its nested id.
 
 Use `extend` when an active foreground child has an explicit timeout and is still doing useful work:
 
@@ -362,7 +364,10 @@ Resume behavior:
 - If a live foreground or async child needs a prompt but not a blocking reply, `nudge` sends a steered intercom message through the same bridge.
 - If an async child has completed, `resume` revives it by starting a new async child from the persisted child session file.
 - Multi-child async runs require `index` unless only one running child is selectable.
-- Completed foreground single, parallel, and chain runs can also be revived by `index` while their run metadata remains in extension state.
+- Completed foreground single, parallel, and chain runs can also be revived by `index`; ownership and results are restored from persistent session records, not only extension memory.
+- Continuation preserves the resolved provider/model, thinking, profile, selected skill injection, tool/extension/context policies, output, limits, and acceptance. Use explicit overrides to change them; `agent` chooses a current profile. Old receipts without a profile snapshot require that explicit choice rather than silently rediscovering defaults.
+- `agent_runs` supports `model`, `cwd`, `output`, and `acceptance` overrides on `continue`/`answer`. Use legacy `resume` for detailed output/skill/control overrides. A deleted worktree needs an explicit replacement `cwd`; a missing native child session cannot be revived.
+- If another continuation of the same saved child is already live, `continue` forwards to it rather than duplicating its process. A new continuation has its own review outcome.
 - Timed-out or transient-error foreground children can be revived the same way when their `.jsonl` session file was persisted.
 - Nested runs can be resumed by nested id when a live route or persisted nested session metadata is available.
 - Revive starts a new child process from the old session context; it does not restart the same OS process.
@@ -496,7 +501,7 @@ agent_runs({ action: "answer", id: "<run-id>", questionId: "<question-id>", mess
 agent_runs({ action: "stop", id: "<run-id>" })
 ```
 
-A live waiter reads the saved answer; an exited child is revived from its saved session with its original acceptance contract. Identical repeated answers do not duplicate work, and conflicting answers retain the original. A nudge is guidance, not an answer. `awaiting_input` and `answer_pending` are not execution completion. Stop cancels pending questions and aborts live waiters even after reload. Question recovery depends on keeping the user-scoped temporary runtime data. An interrupted pre-launch answer receipt gives an explicit `continue` recovery call; it never silently retries an uncertain launch.
+A live waiter reads the saved answer; an exited child is revived from its saved session with its original effective launch configuration and acceptance contract. Identical repeated answers do not duplicate work, and conflicting answers retain the original. A nudge is guidance, not an answer. `awaiting_input` and `answer_pending` are not execution completion. Stop cancels pending questions and aborts live waiters even after reload. Questions, contracts, and results live in persistent Pi session storage and survive temporary-log cleanup. Native parent custom entries retain ownership and review across reload, restart, and context-window changes. New or forked parent sessions do not automatically adopt another parent's runs. An interrupted pre-launch answer receipt gives an explicit `continue` recovery call; it never silently retries an uncertain launch.
 
 Do not use `contact_supervisor` just to resolve review-only/no-project-edit versus progress-writing or output-artifact instructions. The child must not modify project/source files, but returning findings through its normal response or configured output artifact is allowed unless the parent explicitly set `output: false`.
 

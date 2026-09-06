@@ -16,6 +16,7 @@ import {
 	SUBAGENT_PARENT_RUN_ID_ENV,
 } from "../../src/runs/shared/pi-args.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import { rememberOwnedRun } from "../../src/runs/shared/run-records.ts";
 import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, RESULTS_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
@@ -689,11 +690,13 @@ describe("intercom result delivery cutover", () => {
 		ctx.sessionManager.getSessionId = () => `owned-parent-${path.basename(tempDir)}`;
 		const completed = await executor.execute("completed-foreground", { agent: "worker", task: "Report status" }, new AbortController().signal, undefined, ctx);
 		state.foregroundControls.set("another-live-run", { runId: "another-live-run", mode: "single", currentAgent: "worker", startedAt: 100, updatedAt: 100 });
+		rememberOwnedRun(state, { runId: "another-live-run", ownerSessionId: ctx.sessionManager.getSessionId(), source: "foreground", mode: "single", cwd: tempDir, task: "Active work", startedAt: 100, rootRunId: "another-live-run", children: [{ agent: "worker", index: 0 }] });
 		const runId = `owned-recent-${Date.now()}`;
 		const asyncDir = path.join(ASYNC_DIR, runId);
 		try {
 			fs.mkdirSync(asyncDir, { recursive: true });
 			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId, sessionId: state.currentSessionId, cwd: path.join(tempDir, "other-worktree"), mode: "single", state: "complete", startedAt: 100, lastUpdate: 200, steps: [{ agent: "worker", status: "complete" }] }));
+			rememberOwnedRun(state, { runId, ownerSessionId: ctx.sessionManager.getSessionId(), source: "async", mode: "single", cwd: path.join(tempDir, "other-worktree"), task: "Background work", startedAt: 100, rootRunId: runId, asyncDir, children: [{ agent: "worker", index: 0 }] });
 			const emitted = events.emitted.length;
 			const status = await executor.execute("discover-owned", { action: "status" }, new AbortController().signal, undefined, ctx);
 			const text = status.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
@@ -837,7 +840,7 @@ describe("intercom result delivery cutover", () => {
 
 			const result = await executor.execute(
 				"resume-revive-multi",
-				{ action: "resume", id: runId, index: 1, message: "What did b find?" },
+				{ action: "resume", id: runId, index: 1, agent: "b", message: "What did b find?" },
 				new AbortController().signal,
 				undefined,
 				makeMinimalCtx(tempDir),
@@ -913,7 +916,7 @@ describe("intercom result delivery cutover", () => {
 
 			const result = await executor.execute(
 				"nested-resume-inherits-acceptance",
-				{ action: "resume", id: nestedRunId, message: "Finish the nested work" },
+				{ action: "resume", id: nestedRunId, agent: "worker", message: "Finish the nested work" },
 				new AbortController().signal,
 				undefined,
 				testCtx,
@@ -1012,7 +1015,7 @@ describe("intercom result delivery cutover", () => {
 		assert.match(uncertain.content[0]?.text ?? "", /may already have launched/);
 		assert.equal(mockPi.callCount(), 0);
 		fs.rmSync(path.join(continuationDir, "status.json"));
-		const continued = await executor.execute("claim-continue", { action: "resume", id: runId, message: "Continue with the saved answer." }, undefined, undefined, ctx);
+		const continued = await executor.execute("claim-continue", { action: "resume", id: runId, agent: "worker", message: "Continue with the saved answer." }, undefined, undefined, ctx);
 		assert.equal(continued.isError, undefined, continued.content[0]?.text);
 		assert.match(repeat.content[0]?.text ?? "", /action: "continue"/);
 		await waitFor(() => fs.existsSync(path.join(RESULTS_DIR, `${continued.details.asyncId}.json`)), 10_000);
@@ -1038,7 +1041,7 @@ describe("intercom result delivery cutover", () => {
 		const inspected = await executor.execute("inspect-question", { action: "status", id: runId }, undefined, undefined, ctx);
 		assert.equal(inspected.isError, false);
 		assert.match(JSON.stringify(inspected.content), /awaiting_input/);
-		const answerParams = { action: "answer", id: runId, questionId: question.questionId, message: "Use the stable API." };
+		const answerParams = { action: "answer", id: runId, agent: "worker", questionId: question.questionId, message: "Use the stable API." };
 		const first = await executor.execute("answer-question", answerParams, undefined, undefined, ctx);
 		assert.equal(first.isError, undefined, first.content[0]?.text);
 		const revivedId = first.details.asyncId!;
@@ -1083,7 +1086,7 @@ describe("intercom result delivery cutover", () => {
 
 			const result = await executor.execute(
 				"resume-revive",
-				{ action: "resume", id: runId, message: "What changed?", acceptance: { criteria: ["Resume override contract"] } },
+				{ action: "resume", id: runId, agent: "worker", message: "What changed?", acceptance: { criteria: ["Resume override contract"] } },
 				new AbortController().signal,
 				undefined,
 				makeMinimalCtx(tempDir),
@@ -1434,7 +1437,7 @@ describe("intercom result delivery cutover", () => {
 
 			const result = await executor.execute(
 				"resume-override-stored",
-				{ action: "resume", id: runId, message: "Redo with new contract", acceptance: { criteria: ["Override resume contract"] } },
+				{ action: "resume", id: runId, agent: "worker", message: "Redo with new contract", acceptance: { criteria: ["Override resume contract"] } },
 				new AbortController().signal,
 				undefined,
 				makeMinimalCtx(tempDir),
@@ -1507,7 +1510,7 @@ describe("intercom result delivery cutover", () => {
 
 			const result = await executor.execute(
 				"resume-malformed-acceptance",
-				{ action: "resume", id: runId, message: "Continue the work" },
+				{ action: "resume", id: runId, agent: "worker", message: "Continue the work" },
 				new AbortController().signal,
 				undefined,
 				makeMinimalCtx(tempDir),

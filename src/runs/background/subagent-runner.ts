@@ -63,7 +63,7 @@ import { completeWorkflowStep, runParallelTasks, workflowChildSucceeded, type Pa
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { runModelAttempts, sumAttemptUsage } from "../shared/model-fallback.ts";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
-import { saveQuestionContract } from "../shared/supervisor-questions.ts";
+import { refreshQuestionLaunch, saveAsyncRunResult, saveRunStatus, saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
 import { hasCompletedMutationToolCall, resolveCompletionPolicy } from "../shared/completion-guard.ts";
 import {
@@ -314,6 +314,7 @@ function runPiStreaming(
 			detached: true,
 		});
 		const lifecycle = attachChildProcessLifecycle(child);
+		if (child.pid && childEventContext) saveQuestionContract(childEventContext.runId, childEventContext.stepIndex, { pid: child.pid, sessionFile, updatedAt: Date.now() });
 		let stderr = "";
 		let stdoutBuf = "";
 		let stderrBuf = "";
@@ -692,7 +693,7 @@ async function runSingleStep(
 	ctx: SingleStepContext,
 ): Promise<RunSingleStepResult> {
 	if (ctx.signal?.aborted) return { agent: step.agent, output: "", exitCode: 1, error: "Subagent cancelled." };
-	saveQuestionContract(ctx.id, ctx.flatIndex, { effectiveAcceptance: step.effectiveAcceptance, output: step.outputPath ?? false, outputMode: step.outputMode, outputSchema: step.structuredOutputSchema ?? step.structuredOutput?.schema });
+	saveQuestionContract(ctx.id, ctx.flatIndex, { effectiveAcceptance: step.effectiveAcceptance, output: step.outputPath ?? false, outputMode: step.outputMode, outputSchema: step.structuredOutputSchema ?? step.structuredOutput?.schema, launch: step.launch ? { ...step.launch, cwd: step.cwd ?? ctx.cwd, output: step.outputPath ?? false, outputMode: step.outputMode ?? "inline", outputSchema: step.structuredOutputSchema ?? step.structuredOutput?.schema, model: step.model, thinking: step.thinking } : undefined, sessionFile: step.sessionFile });
 	const interruptController = new AbortController();
 	ctx.registerInterrupt?.(() => interruptController.abort());
 	const interruptSignal = AbortSignal.any([ctx.interruptSignal, interruptController.signal].filter((signal) => signal !== undefined));
@@ -1115,6 +1116,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 	fs.mkdirSync(asyncDir, { recursive: true });
 	writeAtomicJson(statusPath, statusPayload);
+	saveRunStatus(id, statusPayload);
 	const emitNestedSelfEvent = (type: "subagent.nested.updated" | "subagent.nested.completed"): void => {
 		if (!config.nestedRoute || !config.nestedSelf) return;
 		try {
@@ -1175,6 +1177,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		}
 		refreshWorkflowGraph();
 		writeAtomicJson(statusPath, statusPayload);
+		saveRunStatus(id, statusPayload);
 		emitNestedSelfEvent(statusPayload.state === "running" || statusPayload.state === "queued" ? "subagent.nested.updated" : "subagent.nested.completed");
 	};
 	const scheduleStatusWrite = (): void => {
@@ -2250,6 +2253,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			...(taskIndex !== undefined && { taskIndex }),
 			...(totalTasks !== undefined && { totalTasks }),
 		};
+		for (const [index, result] of results.entries()) refreshQuestionLaunch(id, index, result.sessionFile);
+		saveAsyncRunResult(id, { ...resultData, results });
 		writeAtomicJson(resultPath, resultData);
 	} catch (err) {
 		console.error(`Failed to write result file ${resultPath}:`, err);

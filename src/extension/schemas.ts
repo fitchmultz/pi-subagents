@@ -250,22 +250,34 @@ export const DelegateParams = Type.Object({
 }, { additionalProperties: false });
 
 export const AgentRunsParams = Type.Object({
-	action: Type.Enum(["list", "inspect", "nudge", "stop", "continue", "profiles", "questions", "answer"] as const, { type: "string" }),
+	action: Type.Enum(["list", "inspect", "nudge", "stop", "continue", "profiles", "questions", "answer", "review"] as const, { type: "string" }),
 	id: Type.Optional(Type.String({ minLength: 1, description: "Run ID or unambiguous prefix." })),
 	questionId: Type.Optional(Type.String({ minLength: 1, description: "Durable supervisor question ID for answer." })),
 	index: Type.Optional(Type.Integer({ minimum: 0, description: "Child index for a multi-child run." })),
-	message: Type.Optional(Type.String({ minLength: 1, description: "Guidance for nudge, follow-up for continue, or an answer (continue/answer may start a saved child)." })),
+	message: Type.Optional(Type.String({ minLength: 1, description: "Guidance, follow-up, answer, or optional parent review note. Only continue/answer can start a saved child." })),
+	decision: Type.Optional(Type.Enum(["accepted", "needs_changes"] as const, { type: "string", description: "Parent review outcome; separate from execution and runtime acceptance checks." })),
+	offset: Type.Optional(Type.Integer({ minimum: 0, description: "List offset; history is retained regardless of page size." })),
+	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "Runs per list page (default 20)." })),
+	agent: Type.Optional(Type.String({ minLength: 1, description: "Continue/answer: explicitly replace the saved profile with this current profile. Required only for old runs without a saved profile." })),
+	model: TaskItem.properties.model,
+	cwd: TaskItem.properties.cwd,
+	output: TaskItem.properties.output,
+	acceptance: TaskItem.properties.acceptance,
 }, {
 	additionalProperties: false,
 	allOf: [
-		{ if: { properties: { action: { enum: ["inspect", "nudge", "stop", "continue", "answer"] } } }, then: requiredObject("id") },
+		{ if: { properties: { action: { enum: ["inspect", "nudge", "stop", "continue", "answer", "review"] } } }, then: requiredObject("id") },
 		{ if: { properties: { action: { enum: ["nudge", "continue", "answer"] } } }, then: requiredObject("message") },
 		{ if: { properties: { action: { enum: ["answer"] } } }, then: requiredObject("questionId") },
+		{ if: { properties: { action: { enum: ["review"] } } }, then: requiredObject("decision") },
+		{ if: { anyOf: [requiredObject("agent"), requiredObject("model"), requiredObject("cwd"), requiredObject("output"), requiredObject("acceptance")] }, then: { properties: { action: { enum: ["continue", "answer"] } } } },
+		{ if: { anyOf: [requiredObject("offset"), requiredObject("limit")] }, then: { properties: { action: { enum: ["list"] } } } },
+		{ if: requiredObject("decision"), then: { properties: { action: { enum: ["review"] } } } },
 	],
 });
 
 export const SubagentParams = Type.Object({
-	agent: Type.Optional(Type.String({ minLength: 1, description: "Agent name (SINGLE mode) or target for management get/update/delete" })),
+	agent: Type.Optional(Type.String({ minLength: 1, description: "Agent name for single mode/definition management; on resume/answer, explicitly select a current profile instead of the saved profile." })),
 	task: Type.Optional(Type.String({ minLength: 1, description: "Task (SINGLE mode, optional for self-contained agents)" })),
 	// Management action (when present, tool operates in management mode)
 	action: Type.Optional(Type.Enum([...SUBAGENT_ACTIONS] as const, {
@@ -273,12 +285,15 @@ export const SubagentParams = Type.Object({
 		description: "Management/control action. Omit for execution mode. nudge sends a live intercom nudge to a running child."
 	})),
 	id: Type.Optional(Type.String({
-		description: "Run id or prefix for status/interrupt/extend/resume/nudge/questions/answer actions."
+		description: "Run id or prefix for status/interrupt/extend/resume/nudge/questions/answer/review actions."
 	})),
 	runId: Type.Optional(Type.String({
 		description: "Target run ID; prefer id. Defaults to the most recently active controllable run for interrupt/extend/nudge."
 	})),
 	questionId: Type.Optional(Type.String({ minLength: 1, description: "Durable supervisor question ID for answer." })),
+	decision: Type.Optional(Type.Enum(["accepted", "needs_changes"] as const, { type: "string", description: "Parent review decision. Does not launch work or change runtime acceptance." })),
+	offset: Type.Optional(Type.Integer({ minimum: 0, description: "Status list offset." })),
+	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "Status list page size (default 20)." })),
 	dir: Type.Optional(Type.String({
 		description: "Async run directory for status/resume."
 	})),
@@ -341,21 +356,24 @@ export const SubagentParams = Type.Object({
 	additionalProperties: false,
 	allOf: [
 		{ if: { ...requiredObject("action"), properties: { action: { enum: ["answer"] } } }, then: { allOf: [requiredObject("questionId", "message"), { anyOf: [requiredObject("id"), requiredObject("runId")] }] } },
+		{ if: { ...requiredObject("action"), properties: { action: { enum: ["review"] } } }, then: { allOf: [requiredObject("decision"), { anyOf: [requiredObject("id"), requiredObject("runId")] }] } },
 		{ not: { anyOf: [
 			requiredObject("agent", "tasks"),
 			requiredObject("agent", "chain"),
 			requiredObject("tasks", "chain"),
 		] } },
+		{ if: requiredObject("decision"), then: { ...requiredObject("action"), properties: { action: { enum: ["review"] } } } },
+		{ if: { anyOf: [requiredObject("offset"), requiredObject("limit")] }, then: { ...requiredObject("action"), properties: { action: { enum: ["status"] } } } },
 		{ if: requiredObject("worktree"), then: requiredObject("tasks") },
 		{ if: requiredObject("concurrency"), then: requiredObject("tasks") },
 		{ if: requiredObject("chainDir"), then: requiredObject("chain") },
 		{ if: { anyOf: [
 			requiredObject("output"), requiredObject("outputMode"), requiredObject("skill"), requiredObject("model"),
 			requiredObject("outputSchema"), requiredObject("progress"),
-		] }, then: requiredObject("agent") },
+		] }, then: { anyOf: [requiredObject("agent"), { ...requiredObject("action"), properties: { action: { enum: ["resume", "answer"] } } }] } },
 		{ if: requiredObject("acceptance"), then: { anyOf: [
 			requiredObject("agent"),
-			{ ...requiredObject("action"), properties: { action: { enum: ["resume"] } } },
+			{ ...requiredObject("action"), properties: { action: { enum: ["resume", "answer"] } } },
 		] } },
 	],
 });

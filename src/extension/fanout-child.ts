@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "../agents/agents.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, writeAsyncInterruptRequest } from "../runs/foreground/subagent-executor.ts";
@@ -12,6 +12,7 @@ import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
 import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
 import { type Details, type SubagentState } from "../shared/types.ts";
+import { OWNED_RUN_ENTRY, restoreOwnedRuns } from "../runs/shared/run-records.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
@@ -208,6 +209,13 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 
 	const config = loadConfig();
 	const state = createChildSafeState();
+	state.persistOwnedRun = (run) => pi.appendEntry(OWNED_RUN_ENTRY, run);
+	const ensureSessionState = (ctx: ExtensionContext) => {
+		if (state.currentSessionId === ctx.sessionManager.getSessionId()) return;
+		state.currentSessionId = ctx.sessionManager.getSessionId();
+		state.foregroundRuns?.clear();
+		restoreOwnedRuns(state, ctx);
+	};
 	const executor = createSubagentExecutor({
 		pi,
 		state,
@@ -219,6 +227,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		expandTilde,
 		discoverAgents,
 		allowMutatingManagementActions: false,
+		ensureSessionState,
 	});
 
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {

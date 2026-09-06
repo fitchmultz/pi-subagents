@@ -47,7 +47,8 @@ import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/ski
 import { hasCompletedMutationToolCall, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
-import { saveQuestionContract } from "../shared/supervisor-questions.ts";
+import { refreshQuestionLaunch, saveQuestionContract } from "../shared/supervisor-questions.ts";
+import { saveForegroundLaunch } from "../shared/run-records.ts";
 import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
@@ -394,6 +395,7 @@ async function runSingleAttempt(
 			stdio: ["ignore", "pipe", "pipe"],
 			detached: true,
 		});
+		if (proc.pid && options.runId) saveQuestionContract(options.runId, options.index ?? 0, { pid: proc.pid, sessionFile: options.sessionFile, updatedAt: Date.now() });
 		let buf = "";
 		let processClosed = false;
 		let settled = false;
@@ -1168,6 +1170,7 @@ async function runToCompletion(
 		options.availableModels,
 		options.preferredModelProvider,
 	);
+	saveForegroundLaunch(agent, systemPrompt, resolvedSkills.map((skill) => skill.name), candidates, effectiveOptions, runtimeCwd);
 	let totalToolCount = 0;
 	let totalDurationMs = 0;
 
@@ -1281,6 +1284,7 @@ async function runToCompletion(
 	Object.assign(result, resolveExecutionOutcome({ result, acceptance: result.acceptance, signal: options.signal, interruptSignal: options.interruptSignal }));
 	stripAcceptanceReportsFromMessages(result.messages ?? []);
 	delete result.terminalFailure;
+	refreshQuestionLaunch(effectiveOptions.runId, effectiveOptions.index ?? 0, result.sessionFile);
 	publishFinalResult(result, effectiveOptions);
 	return result;
 }

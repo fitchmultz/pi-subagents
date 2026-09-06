@@ -31,6 +31,7 @@ import { buildManagementControl } from "../../shared/status-format.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
 import { queryLiveIntercomHealth } from "../../intercom/live-intercom.ts";
 import { saveQuestionOwner } from "../shared/supervisor-questions.ts";
+import { ownedRunList, ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun, saveForegroundRun } from "../shared/run-records.ts";
 import { cancelSupervisorInput, controlSupervisorQuestion, projectSupervisorQuestions } from "./question-control.ts";
 import {
 	type AgentScope,
@@ -95,6 +96,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		onUpdate: ((r: SubagentExecutionResult) => void) | undefined,
 		ctx: ExtensionContext,
 	): Promise<SubagentExecutionResult> => {
+		deps.ensureSessionState?.(ctx);
 		deps.state.baseCwd = ctx.cwd;
 		deps.state.foregroundRuns ??= new Map();
 		deps.state.foregroundControls ??= new Map();
@@ -102,6 +104,19 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
+			if (params.action === "review") {
+				try {
+					if (!(params.id ?? params.runId) || (params.decision !== "accepted" && params.decision !== "needs_changes")) throw new Error("action='review' requires id and decision ('accepted' or 'needs_changes').");
+					const run = resolveOwnedRun(deps.state, (params.id ?? params.runId)!);
+					if (!run) throw new Error("Run not found in this parent session.");
+					if (ownedRunView(run, deps.state).state === "live") throw new Error("The run is still live. Use nudge for guidance, or stop it before reviewing its result.");
+					const reviewed = { ...run, review: { decision: params.decision, ...(params.message ? { message: params.message } : {}), reviewedAt: Date.now() } };
+					rememberOwnedRun(deps.state, reviewed);
+					return ownedRunStatusResult(reviewed, deps.state);
+				} catch (error) {
+					return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
+				}
+			}
 			if (params.action === "questions" || params.action === "answer") {
 				return controlSupervisorQuestion({ params, requestCwd, ctx, deps });
 			}
@@ -141,6 +156,11 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 			if (params.action === "status") {
 				const targetRunId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
+				if (!targetRunId && !params.dir && deps.state.ownedRuns && deps.allowMutatingManagementActions !== false) {
+					try { return ownedRunList(deps.state, params); } catch (error) {
+						return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
+					}
+				}
 				if (targetRunId) {
 					try {
 						const nestedScope = nestedResolutionScopeForExecutor(deps);
@@ -337,7 +357,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			resolveAgentContext(effectiveParams.context, agentName, discoveredAgents);
 		const resolveContextForIndex = (index?: number) =>
 			resolveContextForAgent(agentNameAtIndex(index ?? 0));
-		const agents = discoveredAgents.map((agent) => applyIntercomBridgeToAgent(agent, intercomBridge));
+		const agents = discoveredAgents.map((agent) => applyIntercomBridgeToAgent({ ...agent, defaultContext: resolveContextForAgent(agent.name) }, intercomBridge));
 		const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
 		const nestedParentAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
 		const nestedRoute = inheritedNestedRoute ?? createNestedRoute(runId);
@@ -432,6 +452,12 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			: undefined;
 
 		saveQuestionOwner(runId, ctx.sessionManager.getSessionId());
+		rememberOwnedRun(deps.state, {
+			runId, ownerSessionId: ctx.sessionManager.getSessionId(), rootRunId: runId,
+			source: effectiveAsync ? "async" : "foreground", mode: hasChain ? "chain" : hasTasks ? "parallel" : "single",
+			cwd: effectiveCwd, task: effectiveParams.task ?? effectiveParams.tasks?.map((task) => task.task).join("\n") ?? "Delegated workflow",
+			startedAt: Date.now(), children: invocationAgentNames.map((agent, index) => ({ agent, index })),
+		});
 		const execData: ExecutionContextData = {
 			params: effectiveParams,
 			effectiveCwd,
@@ -557,6 +583,21 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		};
 
 		const completeNestedForeground = (result: SubagentExecutionResult): void => {
+			result.details.runId ??= runId;
+			if (result.isError && result.details.results.length === 0) {
+				const owned = deps.state.ownedRuns?.get(runId);
+				if (owned) rememberOwnedRun(deps.state, { ...owned, error: result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") });
+			}
+			if (result.details.asyncId) {
+				const owned = deps.state.ownedRuns?.get(runId);
+				if (owned) rememberOwnedRun(deps.state, { ...owned, source: "async", asyncDir: result.details.asyncDir, pid: deps.state.asyncJobs.get(runId)?.pid });
+			} else if (!deps.state.foregroundRuns?.has(runId)) {
+				saveForegroundRun({ runId, mode: foregroundMode, cwd: effectiveCwd, results: result.details.results });
+			}
+			if (result.details.intercomDelivery?.delivered) {
+				const owned = deps.state.ownedRuns?.get(runId);
+				if (owned) rememberOwnedRun(deps.state, { ...owned, delivery: { notifiedAt: Date.now(), intercomDelivered: true } });
+			}
 			if (result.details?.results.some((child) => child.detached)) {
 				deferForegroundCleanup = !detachedSettled;
 				return;
@@ -567,7 +608,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		let nestedForegroundStarted = false;
 		try {
 			const asyncResult = runAsyncPath(execData, deps);
-			if (asyncResult) return withForkContext(asyncResult, invocationContext);
+			if (asyncResult) {
+				completeNestedForeground(asyncResult);
+				return withForkContext(asyncResult, invocationContext);
+			}
 			if (foregroundControl) {
 				writeNestedForegroundEvent("subagent.nested.started");
 				nestedForegroundStarted = true;
@@ -589,6 +633,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 		} catch (error) {
 			const errorResult = toExecutionErrorResult(effectiveParams, error, invocationContext);
+			completeNestedForeground(errorResult);
 			if (nestedForegroundStarted) writeNestedForegroundEvent("subagent.nested.completed", errorResult);
 			return errorResult;
 		} finally {
@@ -603,8 +648,26 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 	};
 
 	return { execute: async (...args) => {
-		const result = await execute(...args);
-		if (args[1].action === "interrupt") return cancelSupervisorInput(result, args[1], args[4].sessionManager.getSessionId());
-		return args[1].action === "status" ? projectSupervisorQuestions(result, args[1], args[4].sessionManager.getSessionId()) : result;
+		let result = await execute(...args);
+		if (args[1].action === "interrupt") return cancelSupervisorInput(result, args[1], args[4].sessionManager.getSessionId(), deps.pi.events);
+		if (args[1].action !== "status" || result.details.runList) return result;
+		const requested = args[1].id ?? args[1].runId;
+		if (requested && !args[1].dir) {
+			try {
+				const owned = resolveOwnedRun(deps.state, requested);
+				if (owned) {
+					const saved = ownedRunStatusResult(owned, deps.state);
+					const liveControl = result.details.managementControl?.state === "live" && saved.details.run?.state === "live";
+					result = {
+						...saved,
+						content: [...saved.content, ...(!result.isError && (owned.source === "async" || liveControl) ? result.content : [])],
+						details: { ...result.details, ...saved.details, managementControl: liveControl ? result.details.managementControl : saved.details.managementControl },
+					};
+				}
+			} catch (error) {
+				return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
+			}
+		}
+		return projectSupervisorQuestions(result, args[1], args[4].sessionManager.getSessionId());
 	} };
 }

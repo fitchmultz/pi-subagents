@@ -2,15 +2,22 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
-import { ASYNC_DIR, TEMP_ROOT_DIR, type AsyncStatus, type ResolvedAcceptanceConfig, type JsonSchemaObject, type OutputMode } from "../../shared/types.ts";
+import { buildSessionContext, parseSessionEntries } from "../../shared/native-session.ts";
+import { getAgentDir } from "../../shared/utils.ts";
+import { ASYNC_DIR, TEMP_ROOT_DIR, type AsyncStatus, type AsyncResultFile, type ResolvedAcceptanceConfig, type JsonSchemaObject, type OutputMode, type SavedLaunchConfig } from "../../shared/types.ts";
 
-export const QUESTIONS_DIR = path.join(TEMP_ROOT_DIR, "supervisor-questions");
+export const LEGACY_QUESTIONS_DIR = path.join(TEMP_ROOT_DIR, "supervisor-questions");
+export const QUESTIONS_DIR = path.join(getAgentDir(), "sessions", "subagent-runs");
 
 export interface SupervisorRunContract {
 	effectiveAcceptance?: ResolvedAcceptanceConfig;
 	output?: string | false;
 	outputMode?: OutputMode;
 	outputSchema?: JsonSchemaObject;
+	launch?: SavedLaunchConfig;
+	sessionFile?: string;
+	pid?: number;
+	updatedAt?: number;
 }
 
 export interface SupervisorQuestion extends SupervisorRunContract {
@@ -54,7 +61,19 @@ function safeId(value: string): string {
 	return value;
 }
 
-function readJson<T>(file: string): T | undefined {
+export function getRunMetadataDir(runId: string, root = QUESTIONS_DIR): string {
+	return path.join(root, safeId(runId));
+}
+
+export function saveAsyncRunResult(runId: string, result: AsyncResultFile): void {
+	writeAtomicJson(path.join(getRunMetadataDir(runId), "result.json"), result);
+}
+
+export function saveRunStatus(runId: string, status: AsyncStatus): void {
+	writeAtomicJson(path.join(getRunMetadataDir(runId), "status.json"), status);
+}
+
+export function readRunJson<T>(file: string): T | undefined {
 	try {
 		return JSON.parse(fs.readFileSync(file, "utf8")) as T;
 	} catch (error) {
@@ -88,21 +107,49 @@ export function saveQuestionOwner(runId: string, sessionId: string, root = QUEST
 
 export function saveQuestionContract(runId: string, index: number, contract: SupervisorRunContract, root = QUESTIONS_DIR): void {
 	if (!Number.isSafeInteger(index) || index < 0) throw new Error("Child index must be a non-negative integer.");
-	writeAtomicJson(path.join(root, safeId(runId), "contracts", `${index}.json`), contract);
+	writeAtomicJson(path.join(root, safeId(runId), "contracts", `${index}.json`), { ...readQuestionContract(runId, index, root), ...contract });
 }
 
 export function readQuestionContract(runId: string, index: number, root = QUESTIONS_DIR): SupervisorRunContract | undefined {
-	return readJson<SupervisorRunContract>(path.join(root, safeId(runId), "contracts", `${index}.json`));
+	return readRunJson<SupervisorRunContract>(path.join(root, safeId(runId), "contracts", `${index}.json`));
+}
+
+export function readNativeSessionConfiguration(sessionFile: string | undefined): { model?: string; thinking?: string } {
+	if (!sessionFile || !fs.existsSync(sessionFile)) return {};
+	const entries = parseSessionEntries(fs.readFileSync(sessionFile, "utf8"));
+	if (entries[0]?.type !== "session") return {};
+	const context = buildSessionContext(entries.filter((entry) => entry.type !== "session"));
+	return { ...(context.model ? { model: `${context.model.provider}/${context.model.modelId}` } : {}), ...(entries.some((entry) => entry.type === "thinking_level_change") ? { thinking: context.thinkingLevel } : {}) };
+}
+
+export function refreshQuestionLaunch(runId: string, index: number, sessionFile: string | undefined): void {
+	if (!runId) return;
+	const contract = readQuestionContract(runId, index);
+	if (!contract?.launch) return;
+	const native = readNativeSessionConfiguration(sessionFile);
+	saveQuestionContract(runId, index, { ...contract, sessionFile: sessionFile ?? contract.sessionFile, launch: { ...contract.launch, ...native } });
+}
+
+export function migrateSupervisorQuestions(ownerSessionId: string): void {
+	if (!fs.existsSync(LEGACY_QUESTIONS_DIR)) return;
+	for (const entry of fs.readdirSync(LEGACY_QUESTIONS_DIR, { withFileTypes: true })) {
+		if (!entry.isDirectory()) continue;
+		const source = getRunMetadataDir(entry.name, LEGACY_QUESTIONS_DIR);
+		const owner = readRunJson<{ sessionId?: string }>(path.join(source, "question-owner.json"));
+		if (owner?.sessionId !== ownerSessionId) continue;
+		fs.cpSync(source, getRunMetadataDir(entry.name), { recursive: true, force: false });
+	}
 }
 
 export function createSupervisorQuestion(input: Omit<SupervisorQuestion, "questionId" | "createdAt" | "ownerSessionId">, root = QUESTIONS_DIR): SupervisorQuestion {
 	const runDir = path.join(root, safeId(input.runId));
-	const status = root === QUESTIONS_DIR ? readJson<AsyncStatus>(path.join(ASYNC_DIR, safeId(input.runId), "status.json")) : undefined;
-	const owner = readJson<{ sessionId: string }>(path.join(runDir, "question-owner.json")) ?? status;
+	const status = root === QUESTIONS_DIR ? readRunJson<AsyncStatus>(path.join(ASYNC_DIR, safeId(input.runId), "status.json")) : undefined;
+	const owner = readRunJson<{ sessionId: string }>(path.join(runDir, "question-owner.json")) ?? status;
 	if (!owner?.sessionId) throw new Error(`Run ${input.runId} has no saved question owner; cannot create a recoverable supervisor question.`);
 	if (!input.sessionFile || path.extname(input.sessionFile) !== ".jsonl") throw new Error("Supervisor questions require a saved child session.");
 	if (!Number.isSafeInteger(input.index) || input.index < 0) throw new Error("Child index must be a non-negative integer.");
 	if (!input.message.trim()) throw new Error("Supervisor question must not be empty.");
+	if (root === QUESTIONS_DIR) refreshQuestionLaunch(input.runId, input.index, input.sessionFile);
 	const contract = readQuestionContract(input.runId, input.index, root)
 		?? { effectiveAcceptance: status?.steps?.[input.index]?.acceptance?.effectiveAcceptance };
 	const question = { ...input, ...contract, ownerSessionId: owner.sessionId, questionId: randomUUID(), createdAt: Date.now() };
@@ -110,12 +157,25 @@ export function createSupervisorQuestion(input: Omit<SupervisorQuestion, "questi
 	return question;
 }
 
+function questionStatePaths(question: SupervisorQuestion, file: string, root: string): string[] {
+	const current = path.join(questionDir(question, root), file);
+	const legacy = questionDir(question, LEGACY_QUESTIONS_DIR);
+	return root === QUESTIONS_DIR && fs.existsSync(path.join(legacy, "question.json")) ? [current, path.join(legacy, file)] : [current];
+}
+
+function writeQuestionStateOnce(question: SupervisorQuestion, file: string, value: object, root: string): boolean {
+	const [current, ...legacy] = questionStatePaths(question, file, root);
+	const written = writeOnce(current!, value);
+	for (const target of legacy) writeOnce(target, value);
+	return written;
+}
+
 export function readQuestionState(question: SupervisorQuestion, root = QUESTIONS_DIR): SupervisorQuestionView {
-	const dir = questionDir(question, root);
-	const answer = readJson<QuestionAnswer>(path.join(dir, "answer.json"));
-	const delivery = readJson<QuestionDelivery>(path.join(dir, "delivery.json"));
-	const cancelled = fs.existsSync(path.join(dir, "cancelled.json"));
-	const revival = readJson<SupervisorQuestionView["revival"]>(path.join(dir, "revival.json"));
+	const read = <T>(file: string): T | undefined => questionStatePaths(question, file, root).map((entry) => readRunJson<T>(entry)).find((entry) => entry !== undefined);
+	const answer = read<QuestionAnswer>("answer.json");
+	const delivery = read<QuestionDelivery>("delivery.json");
+	const cancelled = read("cancelled.json") !== undefined;
+	const revival = read<SupervisorQuestionView["revival"]>("revival.json");
 	return { ...question, state: delivery ? "answered" : cancelled ? "cancelled" : answer ? "answer_pending" : "awaiting_input", ...(answer ? { answer } : {}), ...(delivery ? { delivery } : {}), ...(revival ? { revival } : {}) };
 }
 
@@ -128,13 +188,14 @@ export function listRunQuestions(runDir: string): SupervisorQuestionView[] {
 		throw error;
 	}
 	return entries.filter((entry) => entry.isDirectory()).flatMap((entry) => {
-		const question = readJson<SupervisorQuestion>(path.join(runDir, "questions", entry.name, "question.json"));
+		const question = readRunJson<SupervisorQuestion>(path.join(runDir, "questions", entry.name, "question.json"));
 		return question ? [readQuestionState(question, path.dirname(runDir))] : [];
 	});
 }
 
 export function listSupervisorQuestions(ownerSessionId: string, runId?: string, root = QUESTIONS_DIR): SupervisorQuestionView[] {
 	if (runId !== undefined) safeId(runId);
+	if (root === QUESTIONS_DIR) migrateSupervisorQuestions(ownerSessionId);
 	if (!fs.existsSync(root)) return [];
 	const runs = fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory() && (!runId || entry.name.startsWith(runId)));
 	const questions = runs.flatMap((entry) => listRunQuestions(path.join(root, entry.name))).filter((question) => question.ownerSessionId === ownerSessionId);
@@ -144,21 +205,22 @@ export function listSupervisorQuestions(ownerSessionId: string, runId?: string, 
 
 export function saveQuestionAnswer(question: SupervisorQuestion, message: string, root = QUESTIONS_DIR): QuestionAnswer {
 	if (typeof message !== "string" || !message.trim()) throw new Error("action='answer' requires a non-empty message.");
-	if (readQuestionState(question, root).state === "cancelled") throw new Error(`Question ${question.questionId} was cancelled. Use continue for a new follow-up.`);
-	const answer = { message: message.trim(), answeredAt: Date.now() };
-	const file = path.join(questionDir(question, root), "answer.json");
-	if (writeOnce(file, answer)) return answer;
-	const existing = readJson<QuestionAnswer>(file)!;
+	const state = readQuestionState(question, root);
+	if (state.state === "cancelled") throw new Error(`Question ${question.questionId} was cancelled. Use continue for a new follow-up.`);
+	const answer = { message: message.trim(), answeredAt: state.answer?.answeredAt ?? Date.now() };
+	if (state.answer && state.answer.message !== answer.message) throw new Error(`Question ${question.questionId} already has a different saved answer. The original answer was retained.`);
+	if (writeQuestionStateOnce(question, "answer.json", answer, root)) return answer;
+	const existing = readQuestionState(question, root).answer!;
 	if (existing.message !== answer.message) throw new Error(`Question ${question.questionId} already has a different saved answer. The original answer was retained.`);
 	return existing;
 }
 
 export function recordQuestionDelivery(question: SupervisorQuestion, delivery: QuestionDelivery, root = QUESTIONS_DIR): void {
-	writeOnce(path.join(questionDir(question, root), "delivery.json"), delivery);
+	writeQuestionStateOnce(question, "delivery.json", delivery, root);
 }
 
 export function cancelSupervisorQuestion(question: SupervisorQuestion, root = QUESTIONS_DIR): void {
-	writeOnce(path.join(questionDir(question, root), "cancelled.json"), { cancelledAt: Date.now() });
+	writeQuestionStateOnce(question, "cancelled.json", { cancelledAt: Date.now() }, root);
 }
 
 export function questionProcessAlive(question: Pick<SupervisorQuestion, "pid">): boolean {
@@ -173,12 +235,12 @@ export function questionProcessAlive(question: Pick<SupervisorQuestion, "pid">):
 
 export function claimQuestionRevival(question: SupervisorQuestion, root = QUESTIONS_DIR): { claimed: boolean; runId: string } {
 	const runId = `answer-${question.questionId}`;
-	const file = path.join(questionDir(question, root), "revival.json");
-	return { claimed: writeOnce(file, { runId, pid: process.pid, startedAt: Date.now() }), runId };
+	if (readQuestionState(question, root).revival) return { claimed: false, runId };
+	return { claimed: writeQuestionStateOnce(question, "revival.json", { runId, pid: process.pid, startedAt: Date.now() }, root), runId };
 }
 
 export function releaseQuestionRevival(question: SupervisorQuestion, root = QUESTIONS_DIR): void {
-	fs.rmSync(path.join(questionDir(question, root), "revival.json"), { force: true });
+	for (const file of questionStatePaths(question, "revival.json", root)) fs.rmSync(file, { force: true });
 }
 
 export function questionRecoveryHint(question: SupervisorQuestion): string {

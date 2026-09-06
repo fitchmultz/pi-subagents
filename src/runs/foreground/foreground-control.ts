@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
-import { listSupervisorQuestions, questionProcessAlive, readQuestionContract, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
+import { listSupervisorQuestions, questionProcessAlive, readNativeSessionConfiguration, readQuestionContract, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AgentScope } from "../../agents/agents.ts";
-import { toModelInfo } from "../../shared/model-info.ts";
+import { splitKnownThinkingSuffix, toModelInfo } from "../../shared/model-info.ts";
+import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { executeAsyncSingle, formatAsyncStartedMessage } from "../background/async-execution.ts";
 import { resolveConfiguredChildProjectTrustPolicy } from "../shared/pi-args.ts";
@@ -30,6 +31,7 @@ import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { buildManagementControl, formatLiveIntercomActionLines } from "../../shared/status-format.ts";
 import { acceptanceInputFromResolved } from "../shared/acceptance.ts";
+import { ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun, saveForegroundRun } from "../shared/run-records.ts";
 import {
 	ASYNC_DIR,
 	getAsyncConfigPath,
@@ -175,27 +177,7 @@ export function extendForegroundTimeoutResult(control: ForegroundControlState, a
 }
 
 export function rememberForegroundRun(state: SubagentState, input: { runId: string; mode: "single" | "parallel" | "chain"; cwd: string; results: SingleResult[] }): void {
-	state.foregroundRuns ??= new Map();
-	state.foregroundRuns.set(input.runId, {
-		runId: input.runId,
-		mode: input.mode,
-		cwd: input.cwd,
-		updatedAt: Date.now(),
-		children: input.results.map((result, index) => ({
-			agent: result.agent,
-			index,
-			status: resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted, detached: result.detached, timedOut: result.timedOut }),
-			...(!result.detached ? { summary: compactStatusText(resultSummaryForIntercom(result)) } : {}),
-			...(result.artifactPaths?.outputPath ? { artifactPath: result.artifactPaths.outputPath } : {}),
-			...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
-			...(result.acceptance?.effectiveAcceptance ? { effectiveAcceptance: result.acceptance.effectiveAcceptance } : {}),
-		})),
-	});
-	while (state.foregroundRuns.size > 50) {
-		const oldest = [...state.foregroundRuns.values()].sort((left, right) => left.updatedAt - right.updatedAt)[0];
-		if (!oldest) break;
-		state.foregroundRuns.delete(oldest.runId);
-	}
+	(state.foregroundRuns ??= new Map()).set(input.runId, saveForegroundRun(input));
 }
 
 const LATEST_FOREGROUND_ALIASES = new Set(["last", "latest"]);
@@ -559,6 +541,13 @@ export async function interruptNestedRun(target: ResolvedSubagentRunId & { kind:
 
 const LIVE_ACCEPTANCE_OVERRIDE_NOTICE = "Acceptance override applies only to revive and was not applied to this live delivery.";
 
+export function liveLaunchOverrideNotice(params: SubagentParamsLike): string | undefined {
+	if (params.acceptance !== undefined) return LIVE_ACCEPTANCE_OVERRIDE_NOTICE;
+	return [params.agent, params.model, params.cwd, params.output, params.outputMode, params.outputSchema, params.skill, params.maxOutput, params.control, params.artifacts, params.share].some((value) => value !== undefined)
+		? "Launch overrides change a newly started continuation, not this live child. No launch settings were changed."
+		: undefined;
+}
+
 async function resumeLiveNestedRun(input: { target: ResolvedSubagentRunId & { kind: "nested" }; message: string; acceptanceOverrideSupplied: boolean; events: IntercomEventBus }): Promise<SubagentExecutionResult> {
 	const run = input.target.match.run;
 	const result = await sendNestedControlRequest(input.target, "resume", input.message);
@@ -579,6 +568,13 @@ async function resumeLiveNestedRun(input: { target: ResolvedSubagentRunId & { ki
 }
 
 function terminalNudgeResult(runId: string, deps: ExecutorDeps): SubagentExecutionResult | undefined {
+	const owned = resolveOwnedRun(deps.state, runId);
+	if (owned) {
+		const result = ownedRunStatusResult(owned, deps.state);
+		const state = result.details.run!.state;
+		if (state === "live") return undefined;
+		return { ...result, content: [{ type: "text", text: `Nudge not sent: ${state === "unknown" ? "completion is unconfirmed" : `run is already ${state}`}. No child was restarted.\n\n${result.content.map((part) => part.type === "text" ? part.text : "").join("\n")}` }] };
+	}
 	const remembered = deps.state.foregroundRuns?.get(runId);
 	if (!remembered && deps.state.foregroundControls.get(runId)?.currentAgent) return undefined;
 	const status = remembered
@@ -605,6 +601,18 @@ export async function nudgeSubagentRun(input: {
 	let resolvedRunId: string | undefined;
 
 	try {
+		const owned = requestedId ? resolveOwnedRun(input.deps.state, requestedId) : undefined;
+		if (owned) {
+			resolvedRunId = owned.runId;
+			const terminal = terminalNudgeResult(owned.runId, input.deps);
+			if (terminal) return terminal;
+			const view = ownedRunView(owned, input.deps.state);
+			const children = view.children.filter((child) => child.state === "live" && (input.params.index === undefined || input.params.index === child.index));
+			if (children.length !== 1) throw new Error(`Run '${owned.runId}' has ${children.length} matching live children. Provide index to choose one.`);
+			const child = children[0]!;
+			runId = owned.runId; agent = child.agent; index = child.index;
+			target = resolveSubagentIntercomTarget(runId, agent, index);
+		} else {
 		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
 		const remembered = !resolved && requestedId ? resolveRememberedForegroundRun(requestedId, input.deps.state) : undefined;
 		resolvedRunId = resolved?.id ?? remembered?.runId;
@@ -655,6 +663,7 @@ export async function nudgeSubagentRun(input: {
 			index = asyncTarget.index;
 			target = asyncTarget.intercomTarget;
 		}
+		}
 	} catch (error) {
 		const terminal = resolvedRunId ? terminalNudgeResult(resolvedRunId, input.deps) : undefined;
 		if (terminal) return terminal;
@@ -702,6 +711,38 @@ export async function resumeAsyncRun(input: {
 			? listSupervisorQuestions(input.ctx.sessionManager.getSessionId(), requestedId).filter((question) => question.state === "awaiting_input" || question.state === "answer_pending")
 			: [];
 		if (pendingQuestions.length) return continueQuestionSession(input, pendingQuestions);
+		const owned = requestedId && !input.params.dir ? resolveOwnedRun(input.deps.state, requestedId) : undefined;
+		if (owned) {
+			const view = ownedRunView(owned, input.deps.state);
+			if (view.children.length > 1 && input.params.index === undefined) throw new Error(`Run '${owned.runId}' has ${view.children.length} children. Provide index to choose one.`);
+			const child = view.children.find((entry) => entry.index === (input.params.index ?? 0));
+			if (!child) throw new Error(`Run '${owned.runId}' has no child at index ${input.params.index ?? 0}.`);
+			if (child.state === "live") {
+				const result = await nudgeSubagentRun({ params: { ...input.params, id: owned.runId, message: followUp }, deps: input.deps });
+				const notice = liveLaunchOverrideNotice(input.params);
+				if (notice) result.content.push({ type: "text", text: notice });
+				return result;
+			}
+			if (child.sessionFile) {
+				for (const candidate of input.deps.state.ownedRuns?.values() ?? []) {
+					if (candidate.runId === owned.runId) continue;
+					const active = ownedRunView(candidate, input.deps.state).children.find((entry) => entry.sessionFile === child.sessionFile && entry.state === "live");
+					if (active) {
+						const result = await nudgeSubagentRun({ params: { ...input.params, id: candidate.runId, index: active.index, message: followUp }, deps: input.deps });
+						const notice = liveLaunchOverrideNotice(input.params);
+						if (notice) result.content.push({ type: "text", text: notice });
+						return result;
+					}
+				}
+			}
+			const contract = readQuestionContract(owned.runId, child.index);
+			return reviveSavedSubagent(input, {
+				...contract, runId: owned.runId, agent: child.agent, index: child.index, source: owned.source,
+				cwd: child.launch?.cwd ?? owned.cwd, sessionFile: child.sessionFile,
+				effectiveAcceptance: contract?.effectiveAcceptance ?? child.result?.acceptance?.effectiveAcceptance,
+				model: child.result?.model,
+			});
+		}
 		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
 		if (resolved?.kind === "foreground") {
 			const result = await nudgeSubagentRun({ params: { ...input.params, message: followUp }, deps: input.deps });
@@ -783,11 +824,11 @@ export function reviveSavedSubagent(input: {
 	requestCwd: string;
 	ctx: ExtensionContext;
 	deps: ExecutorDeps;
-}, target: Pick<ResumeSourceTarget, "runId" | "agent" | "index" | "cwd" | "sessionFile" | "effectiveAcceptance"> & SupervisorRunContract & { source: string }, runId: string = randomUUID()): SubagentExecutionResult {
+}, target: Pick<ResumeSourceTarget, "runId" | "agent" | "index" | "cwd" | "sessionFile" | "effectiveAcceptance"> & SupervisorRunContract & { source: string; model?: string }, runId: string = randomUUID()): SubagentExecutionResult {
 	const followUp = (input.params.message ?? input.params.task ?? "").trim();
 	const parentSessionFile = input.ctx.sessionManager.getSessionFile() ?? null;
 	if (!target.sessionFile || path.extname(target.sessionFile) !== ".jsonl" || !fs.existsSync(target.sessionFile)) {
-		return { content: [{ type: "text", text: "Saved child session file is unavailable; the answer has not been delivered." }], isError: true, details: { mode: "management", results: [] } };
+		return { content: [{ type: "text", text: `Saved child session file is unavailable: ${target.sessionFile ?? "none"}. No child was started; any saved answer remains pending.` }], isError: true, details: { mode: "management", results: [] } };
 	}
 	const { blocked, depth, maxDepth } = checkSubagentDepth(input.deps.config.maxSubagentDepth);
 	if (blocked) {
@@ -799,27 +840,45 @@ export function reviveSavedSubagent(input: {
 	}
 
 	input.deps.state.currentSessionId = resolveCurrentSessionId(input.ctx.sessionManager);
-	const effectiveCwd = target.cwd ?? input.requestCwd;
+	const contract = readQuestionContract(target.runId, target.index) ?? target;
+	const savedLaunch = input.params.agent === undefined ? contract.launch : undefined;
+	const effectiveCwd = input.params.cwd ?? savedLaunch?.cwd ?? target.cwd ?? input.requestCwd;
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
-	const discoveredAgents = input.deps.discoverAgents(effectiveCwd, scope, { projectTrusted: input.ctx.isProjectTrusted() }).agents;
+	if (!savedLaunch && !input.params.agent) {
+		return { content: [{ type: "text", text: `Run '${target.runId}' predates saved launch configuration. Its session and known result remain available, but the original profile cannot be reconstructed safely. Continue with agent: '${target.agent}' to explicitly use that profile's current configuration; known model, output and acceptance are retained unless overridden.` }], isError: true, details: { mode: "management", results: [] } };
+	}
+	const discoveredAgents = savedLaunch ? [savedLaunch.agent] : input.deps.discoverAgents(effectiveCwd, scope, { projectTrusted: input.ctx.isProjectTrusted() }).agents;
 	const fallbackTarget = resolveIntercomSessionTarget(input.deps.pi.getSessionName(), input.ctx.sessionManager.getSessionId());
 	const orchestratorTarget = resolveOrchestratorIntercomTarget(input.deps.pi.events, fallbackTarget);
 	const intercomBridge = resolveIntercomBridge(orchestratorTarget);
 	const agents = discoveredAgents.map((agent) => applyIntercomBridgeToAgent(agent, intercomBridge));
-	const agentConfig = agents.find((agent) => agent.name === target.agent);
+	const selectedAgent = input.params.agent ?? target.agent;
+	const profile = agents.find((agent) => agent.name === selectedAgent);
+	const agentConfig = profile && savedLaunch ? { ...profile, thinking: savedLaunch.thinking ?? profile.thinking, maxExecutionTimeMs: savedLaunch.maxExecutionTimeMs, maxTokens: savedLaunch.maxTokens } : profile;
 	if (!agentConfig) {
 		return {
-			content: [{ type: "text", text: `Unknown agent for resume: ${target.agent}` }],
+			content: [{ type: "text", text: `Unknown agent for resume: ${selectedAgent}` }],
 			isError: true,
 			details: { mode: "management", results: [] },
 		};
 	}
 
 	saveQuestionOwner(runId, input.ctx.sessionManager.getSessionId());
-	const contract = readQuestionContract(target.runId, target.index) ?? target;
+	const prior = input.deps.state.ownedRuns?.get(target.runId);
+	rememberOwnedRun(input.deps.state, {
+		runId, ownerSessionId: input.ctx.sessionManager.getSessionId(), rootRunId: prior?.rootRunId ?? target.runId,
+		predecessorRunId: target.runId, predecessorIndex: target.index,
+		source: "async", mode: "single", cwd: effectiveCwd, task: followUp, startedAt: Date.now(),
+		children: [{ agent: selectedAgent, index: 0, sessionFile: target.sessionFile }],
+	});
+	const native = !savedLaunch ? readNativeSessionConfiguration(target.sessionFile) : {};
+	const model = input.params.model ?? savedLaunch?.model ?? target.model ?? native.model;
+	const thinking = savedLaunch?.thinking ?? native.thinking;
+	const modelOverride = model && thinking && !splitKnownThinkingSuffix(model).thinkingSuffix ? `${model}:${thinking}` : model;
+	const skill = normalizeSkillInput(input.params.skill);
 	const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const result = executeAsyncSingle(runId, {
-		agent: target.agent,
+		agent: selectedAgent,
 		task: buildRevivedAsyncTask(target, followUp),
 		agentConfig,
 		ctx: {
@@ -830,34 +889,39 @@ export function reviveSavedSubagent(input: {
 			projectTrusted: input.ctx.isProjectTrusted(),
 		},
 		cwd: effectiveCwd,
-		maxOutput: input.params.maxOutput,
-		artifactsDir: input.params.artifacts === false ? undefined : input.deps.tempArtifactsDir,
-		shareEnabled: input.params.share === true,
+		maxOutput: input.params.maxOutput ?? savedLaunch?.maxOutput,
+		artifactsDir: input.params.artifacts === false || (input.params.artifacts === undefined && savedLaunch?.artifacts === false) ? undefined : savedLaunch?.artifactsDir ?? input.deps.tempArtifactsDir,
+		shareEnabled: input.params.share ?? savedLaunch?.share ?? false,
 		sessionRoot: input.deps.getSubagentSessionRoot(parentSessionFile),
 		sessionFile: target.sessionFile,
-		maxSubagentDepth: resolveCurrentMaxSubagentDepth(input.deps.config.maxSubagentDepth),
+		maxSubagentDepth: savedLaunch?.maxSubagentDepth ?? resolveCurrentMaxSubagentDepth(input.deps.config.maxSubagentDepth),
 		worktreeSetupHook: input.deps.config.worktreeSetupHook,
 		worktreeSetupHookTimeoutMs: input.deps.config.worktreeSetupHookTimeoutMs,
-		controlConfig: resolveControlConfig(input.deps.config.control, input.params.control),
+		controlConfig: resolveControlConfig(savedLaunch?.controlConfig ?? input.deps.config.control, input.params.control),
 		controlIntercomTarget: intercomBridge.orchestratorTarget,
 		childIntercomTarget: (agent, index) => resolveSubagentIntercomTarget(runId, agent, index),
-		availableModels,
-		acceptance: input.params.acceptance ?? acceptanceInputFromResolved(contract.effectiveAcceptance),
-		output: input.params.output ?? contract.output,
-		outputMode: input.params.outputMode ?? contract.outputMode,
-		outputSchema: input.params.outputSchema ?? contract.outputSchema,
-		projectTrust: resolveConfiguredChildProjectTrustPolicy(input.deps.config.projectTrust),
+		availableModels, savedLaunch, modelOverride,
+		skills: skill === false ? [] : skill,
+		acceptance: input.params.acceptance ?? acceptanceInputFromResolved(contract.effectiveAcceptance ?? savedLaunch?.effectiveAcceptance),
+		output: input.params.output ?? savedLaunch?.output ?? contract.output,
+		outputMode: input.params.outputMode ?? savedLaunch?.outputMode ?? contract.outputMode,
+		outputSchema: input.params.outputSchema ?? savedLaunch?.outputSchema ?? contract.outputSchema,
+		projectTrust: savedLaunch?.projectTrust ?? resolveConfiguredChildProjectTrustPolicy(input.deps.config.projectTrust),
 	});
+	const owned = input.deps.state.ownedRuns?.get(runId);
+	if (owned) rememberOwnedRun(input.deps.state, { ...owned, asyncDir: result.details.asyncDir, pid: input.deps.state.asyncJobs.get(runId)?.pid, ...(result.isError ? { error: result.content.map((part) => part.text).join("\n") } : {}) });
 	if (result.isError) return result;
 
 	const revivedId = result.details.asyncId ?? runId;
-	const revivedTarget = resolveSubagentIntercomTarget(revivedId, target.agent, 0);
+	const revivedTarget = resolveSubagentIntercomTarget(revivedId, selectedAgent, 0);
 	const sourceLabel = target.source;
 	const lines = [
 		`Revived ${sourceLabel} subagent from ${target.runId}.`,
 		`Run mapping: ${target.runId} -> ${revivedId}`,
 		`Revived run: ${revivedId}`,
-		`Agent: ${target.agent}`,
+		`Agent: ${selectedAgent}`,
+		`Configuration: ${savedLaunch ? "saved effective launch" : "explicitly selected current profile"}${modelOverride ? `; model ${modelOverride}` : ""}`,
+		`Root: ${prior?.rootRunId ?? target.runId}`,
 		`Session: ${target.sessionFile}`,
 		result.details.asyncDir ? `Async dir: ${result.details.asyncDir}` : undefined,
 		revivedTarget ? `Intercom target: ${revivedTarget} (if registered)` : undefined,
@@ -966,6 +1030,8 @@ export function createDetachedCompletionGroup(input: {
 			}
 		}
 		try {
+			const remembered = input.state.foregroundRuns?.get(input.runId);
+			if (remembered) rememberForegroundRun(input.state, { ...remembered, results });
 			input.onResultsSettled?.(results);
 		} catch (error) {
 			console.error("Failed to finalize detached nested status:", error);
@@ -996,7 +1062,8 @@ export function createDetachedCompletionGroup(input: {
 			const child = remembered?.children[index];
 			if (child) {
 				child.status = resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted, timedOut: result.timedOut });
-				child.summary = compactStatusText(resultSummaryForIntercom(result));
+				child.summary = resultSummaryForIntercom(result);
+				child.result = result;
 				child.artifactPath = result.artifactPaths?.outputPath;
 				remembered!.updatedAt = Date.now();
 			}

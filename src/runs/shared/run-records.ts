@@ -1,0 +1,333 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, parseSessionEntries } from "../../shared/native-session.ts";
+import type { AgentConfig } from "../../agents/agents.ts";
+import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import { compactForegroundResult, getFinalOutput, getSingleResultOutput, readStatus } from "../../shared/utils.ts";
+import { resolveEffectiveThinking } from "../../shared/model-info.ts";
+import { resolveSubagentResultStatus } from "../../intercom/result-intercom.ts";
+import { buildManagementControl } from "../../shared/status-format.ts";
+import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import { readAsyncResultFile } from "../background/async-result-file.ts";
+import { applyThinkingSuffix } from "./pi-args.ts";
+import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
+import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
+import { getRunMetadataDir, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionContract, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
+import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, type AsyncResultChild, type AsyncResultFile, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type RunSyncOptions, type SingleResult, type SubagentExecutionResult, type SubagentState } from "../../shared/types.ts";
+
+export const OWNED_RUN_ENTRY = "subagent-run";
+
+export function rememberOwnedRun(state: SubagentState, run: OwnedRun): void {
+	const previous = state.ownedRuns?.get(run.runId);
+	(state.ownedRuns ??= new Map()).set(run.runId, run);
+	if (JSON.stringify(previous) !== JSON.stringify(run)) state.persistOwnedRun?.(run);
+}
+
+export function resolveOwnedRun(state: SubagentState, requested: string): OwnedRun | undefined {
+	const id = requested.trim();
+	getRunMetadataDir(id); // Same ID boundary as the question and result files.
+	const runs = [...(state.ownedRuns?.values() ?? [])];
+	if (id === "latest" || id === "last") return runs.sort((a, b) => b.startedAt - a.startedAt)[0];
+	const exact = state.ownedRuns?.get(id);
+	if (exact) return exact;
+	const matches = runs.filter((run) => run.runId.startsWith(id));
+	if (matches.length > 1) throw new Error(`Ambiguous owned run id prefix '${id}' matched: ${matches.map((run) => run.runId).join(", ")}. Provide a longer id.`);
+	return matches[0];
+}
+
+export function saveForegroundRun(input: { runId: string; mode: ForegroundResumeRun["mode"]; cwd: string; results: SingleResult[] }): ForegroundResumeRun {
+	const run: ForegroundResumeRun = {
+		runId: input.runId, mode: input.mode, cwd: input.cwd, updatedAt: Date.now(),
+		children: input.results.map((result, index) => ({
+			agent: result.agent, index,
+			status: resolveSubagentResultStatus(result),
+			...(!result.detached ? { summary: getSingleResultOutput(result) || result.error } : {}),
+			artifactPath: result.artifactPaths?.outputPath,
+			sessionFile: result.sessionFile,
+			effectiveAcceptance: result.acceptance?.effectiveAcceptance,
+			result: compactForegroundResult(result),
+		})),
+	};
+	writeAtomicJson(path.join(getRunMetadataDir(input.runId), "foreground.json"), run);
+	return run;
+}
+
+export function saveForegroundLaunch(agent: AgentConfig, systemPrompt: string, skills: string[], models: string[], options: RunSyncOptions, runtimeCwd: string): void {
+	if (!options.runId) return;
+	const model = applyThinkingSuffix(models[0], agent.thinking);
+	const contract = readQuestionContract(options.runId, options.index ?? 0);
+	saveQuestionContract(options.runId, options.index ?? 0, {
+		sessionFile: options.sessionFile,
+		launch: {
+			agent, systemPrompt, skills, model, thinking: resolveEffectiveThinking(model, agent.thinking),
+			artifacts: options.artifactsDir !== undefined, artifactsDir: options.artifactsDir, share: options.share === true,
+			modelCandidates: models.map((candidate) => applyThinkingSuffix(candidate, agent.thinking)!),
+			cwd: options.cwd ?? runtimeCwd, context: agent.defaultContext ?? "fresh",
+			output: options.outputPath ?? false, outputMode: options.outputMode ?? "inline", outputSchema: options.structuredOutput?.schema,
+			effectiveAcceptance: contract?.effectiveAcceptance,
+			maxOutput: { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput }, maxSubagentDepth: options.maxSubagentDepth,
+			maxExecutionTimeMs: options.maxExecutionTimeMs, maxTokens: options.maxTokens,
+			controlConfig: options.controlConfig, projectTrust: options.projectTrust, projectTrusted: options.projectTrusted,
+		},
+	});
+}
+
+function receiptDetails(entry: SessionEntry): Details | undefined {
+	if (entry.type === "message" && entry.message.role === "toolResult" && ["subagent", "delegate", "agent_runs"].includes(entry.message.toolName)) return entry.message.details as Details | undefined;
+	if (entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE) {
+		const details = entry.details as { result?: SubagentExecutionResult } | undefined;
+		return details?.result?.details;
+	}
+	return undefined;
+}
+
+function sessionFiles(root: string): string[] {
+	if (!fs.existsSync(root)) return [];
+	return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => entry.isDirectory()
+		? sessionFiles(path.join(root, entry.name))
+		: entry.name.endsWith(".jsonl") ? [path.join(root, entry.name)] : []);
+}
+
+function recoverOutput(sessionFile: string | undefined, outputFile: string | undefined, endedAt: number): string | undefined {
+	if (outputFile && fs.existsSync(outputFile)) return fs.readFileSync(outputFile, "utf8");
+	if (!sessionFile || !fs.existsSync(sessionFile)) return undefined;
+	const entries = parseSessionEntries(fs.readFileSync(sessionFile, "utf8"));
+	if (entries[0]?.type !== "session") return undefined;
+	return getFinalOutput(buildSessionContext(entries.filter((entry): entry is SessionEntry => entry.type !== "session" && Date.parse(entry.timestamp) <= endedAt)).messages.filter((message) => message.role === "assistant"));
+}
+
+function recoverAsyncResult(status: AsyncStatus, asyncDir: string): AsyncResultFile | undefined {
+	if (status.state === "running" || status.state === "queued") return undefined;
+	return {
+		id: status.runId, sessionId: status.sessionId, cwd: status.cwd, mode: status.mode, state: status.state, success: status.state === "complete",
+		timestamp: status.endedAt ?? status.lastUpdate, sessionFile: status.sessionFile,
+		results: status.steps?.map((step, index) => ({
+			agent: step.agent, model: step.model, sessionFile: step.sessionFile, acceptance: step.acceptance,
+			success: step.status === "complete" || step.status === "completed", interrupted: step.status === "paused", exitCode: step.exitCode, error: step.error,
+			output: recoverOutput(step.sessionFile, undefined, step.endedAt ?? status.endedAt ?? status.lastUpdate ?? Date.now()) || recoverOutput(undefined, path.join(asyncDir, `output-${index}.log`), 0),
+		})),
+	};
+}
+
+export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext): void {
+	const ownerSessionId = ctx.sessionManager.getSessionId();
+	const entries = ctx.sessionManager.getEntries();
+	state.ownedRuns = new Map();
+	migrateSupervisorQuestions(ownerSessionId);
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== OWNED_RUN_ENTRY) continue;
+		const run = entry.data as OwnedRun | undefined;
+		if (run?.ownerSessionId === ownerSessionId && run.runId && Array.isArray(run.children)) state.ownedRuns.set(run.runId, run);
+	}
+	// Forks copy old entries. Their old receipts are evidence, not ownership for the new parent.
+	const inheritedIds = new Set<string>();
+	const parentFile = ctx.sessionManager.getHeader()?.parentSession;
+	if (parentFile && fs.existsSync(parentFile)) {
+		for (const entry of parseSessionEntries(fs.readFileSync(parentFile, "utf8"))) if (entry.type !== "session") inheritedIds.add(entry.id);
+	}
+	const calls = new Map<string, SubagentParamsLike>();
+	for (const entry of entries) if (entry.type === "message" && entry.message.role === "assistant" && Array.isArray(entry.message.content)) {
+		for (const part of entry.message.content) if (part.type === "toolCall" && ["subagent", "delegate"].includes(part.name)) calls.set(part.id, part.arguments as SubagentParamsLike);
+	}
+	for (const entry of entries) {
+		if (inheritedIds.has(entry.id) || (parentFile && !fs.existsSync(parentFile))) continue;
+		const details = receiptDetails(entry);
+		const runId = details?.runId ?? details?.asyncId;
+		if (!runId || !details || !Array.isArray(details.results) || (details.mode !== "single" && details.mode !== "parallel" && details.mode !== "chain") || state.ownedRuns.has(runId)) continue;
+		const cwd = details.results.find((result) => result.sessionFile)?.sessionFile;
+		const request = entry.type === "message" && entry.message.role === "toolResult" ? calls.get(entry.message.toolCallId) : undefined;
+		const run: OwnedRun = {
+			runId, ownerSessionId, rootRunId: details.managementControl?.revivedFromRunId ?? runId,
+			predecessorRunId: details.managementControl?.revivedFromRunId,
+			source: details.asyncId ? "async" : "foreground", mode: details.mode,
+			cwd: request?.cwd ? path.resolve(ctx.cwd, request.cwd) : ctx.cwd, task: details.results[0]?.task ?? request?.task ?? "Recovered delegated run",
+			startedAt: Date.parse(entry.timestamp), asyncDir: details.asyncDir, legacy: true,
+			children: details.results.length ? details.results.map((result, index) => ({ agent: result.agent, index, sessionFile: result.sessionFile })) : collectInvocationAgentNames(request ?? {}).map((agent, index) => ({ agent, index })),
+		};
+		if (cwd && fs.existsSync(cwd)) {
+			const header = parseSessionEntries(fs.readFileSync(cwd, "utf8"))[0];
+			if (header?.type === "session" && header.cwd) run.cwd = header.cwd;
+		}
+		if (run.source === "foreground") saveForegroundRun({ ...run, results: details.results.map((result) => ({ ...result, finalOutput: result.finalOutput ?? recoverOutput(result.sessionFile, result.artifactPaths?.outputPath, Date.parse(entry.timestamp)) })) });
+		saveQuestionOwner(runId, ownerSessionId);
+		rememberOwnedRun(state, run);
+	}
+	// Pre-update background runs may have no parent tool receipt (for example slash launches).
+	for (const name of fs.existsSync(ASYNC_DIR) ? fs.readdirSync(ASYNC_DIR) : []) {
+		const asyncDir = path.join(ASYNC_DIR, name);
+		try {
+			const status = readStatus(asyncDir);
+			if (!status || status.sessionId !== ownerSessionId) continue;
+			saveRunStatus(status.runId, status);
+			const old = state.ownedRuns.get(status.runId);
+			rememberOwnedRun(state, {
+				...old, runId: status.runId, ownerSessionId, rootRunId: old?.rootRunId ?? status.runId,
+				source: "async", mode: status.mode, cwd: status.cwd ?? old?.cwd ?? ctx.cwd,
+				task: old?.task ?? "Recovered background run", startedAt: status.startedAt,
+				asyncDir, pid: status.pid, legacy: old?.legacy ?? true,
+				children: (status.steps ?? []).map((step, index) => ({ agent: step.agent, index, sessionFile: step.sessionFile ?? (status.steps?.length === 1 ? status.sessionFile : undefined) })),
+			});
+			const resultPath = path.join(RESULTS_DIR, `${status.runId}.json`);
+			if (!fs.existsSync(path.join(getRunMetadataDir(status.runId), "result.json"))) {
+				const recovered = fs.existsSync(resultPath) ? readAsyncResultFile(resultPath) : recoverAsyncResult(status, asyncDir);
+				if (recovered) saveAsyncRunResult(status.runId, recovered);
+			}
+		} catch (error) {
+			console.error(`Could not recover owned async metadata for '${name}':`, error);
+		}
+	}
+	for (const run of state.ownedRuns.values()) {
+		const stored = readRunJson<ForegroundResumeRun>(path.join(getRunMetadataDir(run.runId), "foreground.json"));
+		if (stored) (state.foregroundRuns ??= new Map()).set(run.runId, stored);
+		if (run.children.some((child) => child.sessionFile) || !run.legacy) continue;
+		const file = ctx.sessionManager.getSessionFile();
+		if (!file) continue;
+		const root = path.join(path.dirname(file), path.basename(file, ".jsonl"), run.runId);
+		const files = sessionFiles(root).sort();
+		if (files.length) rememberOwnedRun(state, { ...run, children: files.map((sessionFile, index) => ({ agent: run.children[index]?.agent ?? "unknown", index, sessionFile })) });
+	}
+}
+
+function normalizedState(value: string | undefined): ManagementRunState {
+	if (value === "running" || value === "queued") return "live";
+	if (value === "complete" || value === "completed") return "completed";
+	if (value === "failed" || value === "timed-out") return "failed";
+	if (value === "paused") return "paused";
+	return "unknown";
+}
+
+function processAlive(pid: number | undefined): boolean {
+	return Boolean(pid && Number.isSafeInteger(pid) && pid > 0 && questionProcessAlive({ pid }));
+}
+
+function asyncChildResult(child: AsyncResultChild, task: string): SingleResult {
+	return {
+		...child, agent: child.agent ?? "unknown", task, exitCode: child.exitCode ?? (child.success ? 0 : 1),
+		finalOutput: child.output, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+		artifactPaths: undefined,
+	};
+}
+
+export function ownedRunView(run: OwnedRun, state: SubagentState): OwnedRunView {
+	const root = getRunMetadataDir(run.runId);
+	const foreground = readRunJson<ForegroundResumeRun>(path.join(root, "foreground.json")) ?? state.foregroundRuns?.get(run.runId);
+	const resultPath = path.join(root, "result.json");
+	const result = fs.existsSync(resultPath) ? readAsyncResultFile(resultPath) : undefined;
+	const liveStatus = run.asyncDir ? readStatus(run.asyncDir) : null;
+	const status = liveStatus ?? readRunJson<AsyncStatus>(path.join(root, "status.json"));
+	const contracts = new Map<number, SupervisorRunContract>();
+	const contractDir = path.join(root, "contracts");
+	for (const name of fs.existsSync(contractDir) ? fs.readdirSync(contractDir) : []) {
+		if (!/^\d+\.json$/.test(name)) continue;
+		const index = Number(name.slice(0, -5));
+		const contract = readQuestionContract(run.runId, index);
+		if (contract) contracts.set(index, contract);
+	}
+	const indices = new Set([...run.children.map((child) => child.index), ...contracts.keys(), ...(foreground?.children.map((child) => child.index) ?? []), ...(status?.steps?.map((_, index) => index) ?? []), ...(result?.results?.map((_, index) => index) ?? [])]);
+	const children: OwnedRunView["children"] = [...indices].sort((a, b) => a - b).map((index) => {
+		const declared = run.children.find((child) => child.index === index);
+		const contract = contracts.get(index);
+		const fg = foreground?.children.find((child) => child.index === index);
+		const bg = result?.results?.[index];
+		const step = status?.steps?.[index];
+		const sessionFile = fg?.sessionFile ?? bg?.sessionFile ?? step?.sessionFile ?? contract?.sessionFile ?? declared?.sessionFile;
+		const control = state.foregroundControls.get(run.runId);
+		const live = control?.activeChildren?.has(index) || (control?.currentAgent !== undefined && control.currentAgent === (declared?.agent ?? fg?.agent) && (control.currentIndex ?? 0) === index) || processAlive(contract?.pid) || ((!step || step.status === "running" || step.status === "pending") && processAlive(status?.pid ?? run.pid));
+		const childState = bg ? normalizedState(resolveSubagentResultStatus({ success: bg.success, exitCode: bg.exitCode ?? undefined, interrupted: bg.interrupted, state: typeof bg.success !== "boolean" && bg.exitCode == null ? result?.terminalState : undefined }))
+			: fg && fg.status !== "detached" ? normalizedState(fg.status)
+			: live ? "live"
+			: step && !["running", "pending"].includes(step.status) ? normalizedState(step.status) : "unknown";
+		return {
+			agent: fg?.agent ?? bg?.agent ?? step?.agent ?? contract?.launch?.agent.name ?? declared?.agent ?? "unknown", index, sessionFile,
+			state: childState, result: fg?.result ?? (bg ? asyncChildResult(bg, run.task) : undefined),
+			launch: contract?.launch, configuration: contract?.launch ? "saved" : "legacy-partial",
+			...(sessionFile && !fs.existsSync(sessionFile) ? { missingSession: true } : {}),
+		};
+	});
+	const live = state.foregroundControls.has(run.runId) || children.some((child) => child.state === "live") || (!result && (!status || status.state === "running" || status.state === "queued") && processAlive(status?.pid ?? run.pid));
+	const executionState: ManagementRunState = run.error ? "failed" : result ? normalizedState(result.terminalState)
+		: live ? "live"
+		: children.some((child) => child.state === "failed") ? "failed"
+		: children.some((child) => child.state === "paused") ? "paused"
+		: children.length && children.every((child) => child.state === "completed") ? "completed"
+		: status && !["running", "queued"].includes(status.state) ? normalizedState(status.state) : "unknown";
+	const questions = listSupervisorQuestions(run.ownerSessionId, run.runId).filter((question) => question.state === "awaiting_input" || question.state === "answer_pending");
+	const attention = [
+		...(questions.length ? ["awaiting_input"] : []),
+		...(run.review?.decision === "needs_changes" ? ["needs_changes"] : []),
+		...(run.review?.decision !== "accepted" && ["failed", "paused", "unknown"].includes(executionState) ? [executionState] : []),
+		...(executionState === "completed" && !run.review ? ["unreviewed"] : []),
+	];
+	return {
+		...run, state: executionState, children, attention,
+		canInterrupt: questions.length > 0 || Boolean(state.foregroundControls.get(run.runId)?.interrupt) || (liveStatus?.state === "running" && state.asyncJobs.has(run.runId)),
+		updatedAt: result?.timestamp ?? status?.lastUpdate ?? foreground?.updatedAt ?? run.startedAt,
+		continuations: [...(state.ownedRuns?.values() ?? [])].filter((candidate) => candidate.rootRunId === run.rootRunId && candidate.predecessorRunId).sort((a, b) => a.startedAt - b.startedAt).map((candidate) => ({ runId: candidate.runId, predecessorRunId: candidate.predecessorRunId!, predecessorIndex: candidate.predecessorIndex })),
+		...(result ? { resultPath } : foreground ? { resultPath: path.join(root, "foreground.json") } : {}),
+		...(run.error ? { diagnosis: run.error } : executionState === "unknown" ? { diagnosis: "Completion is unconfirmed. Saved sessions are context, not proof of successful execution." } : {}),
+	};
+}
+
+function compact(value: string, max = 180): string {
+	const text = value.replace(/\s+/g, " ").trim();
+	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function ownedRunControl(view: OwnedRunView) {
+	const resumable = view.children.find((child) => child.state === "live" || (child.sessionFile && !child.missingSession));
+	const active = view.children.find((child) => child.state === "live");
+	return buildManagementControl({ state: view.state, runId: view.runId, index: resumable?.index, canReview: view.state !== "live", canResume: Boolean(resumable), canNudge: Boolean(active), canInterrupt: view.canInterrupt, intercomTarget: active ? resolveSubagentIntercomTarget(view.runId, active.agent, active.index) : undefined });
+}
+
+export function ownedRunStatusResult(run: OwnedRun, state: SubagentState): SubagentExecutionResult {
+	const view = ownedRunView(run, state);
+	const control = ownedRunControl(view);
+	const lines = [
+		`Run: ${run.runId}`, `State: ${view.state}`, `Mode: ${run.mode} (${run.source})`, `Task: ${run.task}`, `Cwd: ${run.cwd}`,
+		`Root: ${run.rootRunId}`, ...(run.predecessorRunId ? [`Predecessor: ${run.predecessorRunId} (child ${run.predecessorIndex ?? 0})`] : []),
+		`Parent review: ${run.review?.decision ?? "unreviewed"}${run.review?.message ? ` — ${run.review.message}` : ""}`,
+		`Notification: ${run.delivery ? `recorded ${new Date(run.delivery.notifiedAt).toISOString()}; intercom ${run.delivery.intercomDelivered ? "delivered" : "not confirmed"}` : "not recorded"}`,
+		...(view.attention.length ? [`Attention: ${view.attention.join(", ")}`] : []),
+		...(view.resultPath ? [`Result: ${view.resultPath}`] : []), ...(view.diagnosis ? [view.diagnosis] : []),
+	];
+	for (const child of view.children) {
+		lines.push(`Child ${child.index}: ${child.agent} | ${child.state}${child.result?.acceptance ? ` | validation: ${child.result.acceptance.status}` : ""}`);
+		if (child.sessionFile) lines.push(`  Session: ${child.sessionFile}${child.missingSession ? " (missing; continuation unavailable)" : ""}`);
+		const artifact = child.result?.artifactPaths?.outputPath;
+		if (artifact) lines.push(`  Artifact: ${artifact}${fs.existsSync(artifact) ? "" : " (missing)"}`);
+		if (child.launch) {
+			const launch = child.launch;
+			lines.push(`  Effective model: ${launch.model ?? "native default"}; thinking: ${launch.thinking ?? "native default"}`,
+				`  Profile: ${launch.agent.source} ${launch.agent.filePath}`,
+				`  Context: ${launch.context}; project context: ${launch.agent.inheritProjectContext}; skills inheritance: ${launch.agent.inheritSkills}`,
+				`  Profile tools: ${launch.agent.tools?.join(", ") ?? "native defaults"}; profile extensions: ${launch.agent.extensions?.join(", ") || (launch.agent.extensions ? "none" : "native discovery")}`,
+				`  Output: ${launch.output || "disabled"} (${launch.outputMode}); configuration: saved launch snapshot`);
+		} else lines.push("  Configuration: legacy-partial; original profile snapshot was not recorded.");
+		const output = child.result && getSingleResultOutput(child.result);
+		if (output) lines.push(`  Result: ${compact(output, 600)}`);
+		if (child.result?.error) lines.push(`  Error: ${child.result.error}`);
+	}
+	if (control.capabilities.includes("review")) lines.push(`Review: agent_runs({ action: "review", id: "${run.runId}", decision: "accepted" }) or decision: "needs_changes".`);
+	if (view.continuations.length) lines.push("Continuation history:", ...view.continuations.map((next) => `  ${next.predecessorRunId}:${next.predecessorIndex ?? 0} -> ${next.runId}`));
+	if (control.capabilities.includes("resume")) lines.push(`Continue: agent_runs({ action: "continue", id: "${run.runId}",${view.children.length > 1 ? ` index: ${control.nextActions.find((action) => action.action === "resume")?.index ?? 0},` : ""} message: "..." })`);
+	return {
+		content: [{ type: "text", text: lines.join("\n") }],
+		details: { mode: "management", results: [], run: view, managementControl: control },
+	};
+}
+
+export function ownedRunList(state: SubagentState, params: { offset?: number; limit?: number }): SubagentExecutionResult {
+	const offset = params.offset ?? 0, limit = params.limit ?? 20;
+	if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Run list requires offset >= 0 and limit from 1 to 100.");
+	const rank = (run: OwnedRunView) => run.attention.includes("awaiting_input") ? 0 : run.attention.some((reason) => reason !== "unreviewed") ? 1 : run.attention.length ? 2 : run.state === "live" ? 3 : 4;
+	const views = [...(state.ownedRuns?.values() ?? [])].map((run) => ownedRunView(run, state)).sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt || a.runId.localeCompare(b.runId));
+	const page = views.slice(offset, offset + limit);
+	const runs = page.map(({ runId, source, mode, cwd, task, state: runState, updatedAt, attention, review, rootRunId, predecessorRunId, children }) => ({ runId, source, mode, cwd, task, state: runState, updatedAt, attention, review, rootRunId, predecessorRunId, summary: compact(children.map((child) => child.result ? getSingleResultOutput(child.result) || child.result.error || "" : "").filter(Boolean).join(" | ")) }));
+	const controls = page.map(ownedRunControl);
+	const nextOffset = offset + page.length < views.length ? offset + page.length : undefined;
+	return {
+		content: [{ type: "text", text: views.length ? [`Owned runs: ${views.length} (showing ${offset + 1}–${offset + page.length}; attention first)`, ...runs.map((run) => `- ${run.runId} | ${run.state}${run.attention.length ? ` | ${run.attention.join(", ")}` : ""} | ${compact(run.task)}${run.summary ? ` | ${run.summary}` : ""} | ${run.cwd}`), ...(nextOffset !== undefined ? [`Next: agent_runs({ action: "list", offset: ${nextOffset}, limit: ${limit} })`] : [])].join("\n") : "No delegated runs owned by this session." }],
+		details: { mode: "management", results: [], runs, managementControls: controls, managementControl: controls.find((control) => control.state === "live"), runList: { total: views.length, offset, limit, ...(nextOffset !== undefined ? { nextOffset } : {}) } },
+	};
+}

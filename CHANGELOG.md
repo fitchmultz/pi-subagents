@@ -2,11 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+- Attention-first, paged owned-run lists and explicit parent review (`accepted` or `needs_changes`), separate from execution, acceptance checks, and notification.
+- Persistent root/predecessor/continuation history and inspectable effective launch configuration with profile provenance.
+
 ### Fixed
 - Share bounded parallel execution and workflow advancement across foreground and detached hosts. Preserve completed sibling outputs when a group fails or stops, stop queued work after interruption or detachment, and distinguish fail-fast from user pause before publishing child outcomes.
 - Require the requested workflow to finish before reporting completion, and publish dynamic collections only after every child and the collection schema succeed.
 - Align omitted task defaults, literal template substitution, previous-output handoffs, and dynamic child resource limits across both modes. Empty fanouts no longer consume child indices; preallocated fork sessions retain their associations across later expansions.
 - Keep foreground group interruption available as queued children start after earlier siblings finish, and keep out-of-order live child updates on their own graph nodes.
+- Preserve original foreground and background handles, results, questions, and launch contracts across native reload/restart and temporary-log cleanup; list bounds no longer discard exact-ID history.
+- Continue with the actual saved provider/model, thinking, profile and output/acceptance choices instead of rediscovering changed defaults. Recover older native receipts where possible and require an explicit profile choice when the original profile was not saved.
+- Emit durable question-resolution events after answers and cancellation so the intercom presence consumer can clear pending asks without another model turn.
 
 ## [0.35.0] - 2026-09-06
 
