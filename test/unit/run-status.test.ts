@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { inspectSubagentStatus } from "../../src/runs/background/run-status.ts";
+import { ownedRunList } from "../../src/runs/shared/run-records.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import { TEMP_ROOT_DIR, type SubagentState } from "../../src/shared/types.ts";
 
@@ -40,6 +41,15 @@ function statusState(baseCwd: string, currentSessionId: string): SubagentState {
 }
 
 describe("async run status inspection", () => {
+	it("keeps out-of-range owned-run pages empty without inverted display ranges", () => {
+		const state = statusState("/repo", "parent");
+		state.ownedRuns = new Map([["owned-empty-page", { runId: "owned-empty-page", ownerSessionId: "parent", source: "foreground", mode: "single", cwd: "/repo", task: "Saved work", startedAt: 100, rootRunId: "owned-empty-page", children: [] }]]);
+		const result = ownedRunList(state, { offset: 20, limit: 20 });
+		assert.deepEqual(result.details.runs, []);
+		assert.deepEqual(result.details.runList, { total: 1, offset: 20, limit: 20 });
+		assert.match(textContent(result), /Owned runs: 1 \(showing none; attention first\)/);
+	});
+
 	it("omits the completion reminder when no async runs are active", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-empty-"));
 		try {

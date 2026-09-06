@@ -327,7 +327,7 @@ export function ownedRunList(state: SubagentState, params: { offset?: number; li
 	const controls = page.map(ownedRunControl);
 	const nextOffset = offset + page.length < views.length ? offset + page.length : undefined;
 	return {
-		content: [{ type: "text", text: views.length ? [`Owned runs: ${views.length} (showing ${offset + 1}–${offset + page.length}; attention first)`, ...runs.map((run) => `- ${run.runId} | ${run.state}${run.attention.length ? ` | ${run.attention.join(", ")}` : ""} | ${compact(run.task)}${run.summary ? ` | ${run.summary}` : ""} | ${run.cwd}`), ...(nextOffset !== undefined ? [`Next: agent_runs({ action: "list", offset: ${nextOffset}, limit: ${limit} })`] : [])].join("\n") : "No delegated runs owned by this session." }],
+		content: [{ type: "text", text: views.length ? [`Owned runs: ${views.length} (showing ${page.length ? `${offset + 1}–${offset + page.length}` : "none"}; attention first)`, ...runs.map((run) => `- ${run.runId} | ${run.state}${run.attention.length ? ` | ${run.attention.join(", ")}` : ""} | ${compact(run.task)}${run.summary ? ` | ${run.summary}` : ""} | ${run.cwd}`), ...(nextOffset !== undefined ? [`Next: agent_runs({ action: "list", offset: ${nextOffset}, limit: ${limit} })`] : [])].join("\n") : "No delegated runs owned by this session." }],
 		details: { mode: "management", results: [], runs, managementControls: controls, managementControl: controls.find((control) => control.state === "live"), runList: { total: views.length, offset, limit, ...(nextOffset !== undefined ? { nextOffset } : {}) } },
 	};
 }
