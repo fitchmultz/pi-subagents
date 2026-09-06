@@ -152,7 +152,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						const message = error instanceof Error ? error.message : String(error);
 						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
 					}
-				} else {
+				} else if (deps.allowMutatingManagementActions === false) {
 					const foreground = getForegroundControl(deps.state, undefined);
 					if (foreground) {
 						const target = foregroundIntercomTarget(foreground);
@@ -173,6 +173,29 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					} catch (error) {
 						const message = error instanceof Error ? error.message : String(error);
 						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
+					}
+				}
+				if (!targetRunId && !params.dir && deps.allowMutatingManagementActions !== false) {
+					const current = getForegroundControl(deps.state, undefined);
+					const target = current ? foregroundIntercomTarget(current) : undefined;
+					const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
+					const foreground = [
+						...[...deps.state.foregroundControls.values()].map((control) => foregroundStatusResult(control, control === current ? health : undefined)),
+						...[...(deps.state.foregroundRuns?.values() ?? [])]
+							.filter((run) => !deps.state.foregroundControls.has(run.runId))
+							.sort((a, b) => b.updatedAt - a.updatedAt)
+							.map(rememberedForegroundStatusResult),
+					];
+					if (foreground.length) {
+						inspected = {
+							...inspected,
+							content: [...foreground.flatMap((result) => result.content), ...inspected.content],
+							details: {
+								...inspected.details,
+								managementControl: foreground.find((result) => result.details.managementControl?.runId === current?.runId)?.details.managementControl,
+								managementControls: [...foreground.flatMap((result) => result.details.managementControl ? [result.details.managementControl] : []), ...(inspected.details.managementControls ?? [])],
+							},
+						};
 					}
 				}
 				return inspected;

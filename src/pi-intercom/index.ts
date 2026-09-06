@@ -29,7 +29,6 @@ const INBOUND_FLUSH_DELAY_MS = 200;
 const INBOUND_IDLE_RETRY_MS = 500;
 const NON_UI_REPLACE_FLUSH_DELAY_MS = 1_600;
 const PEER_AWARENESS_LIST_TIMEOUT_MS = 75;
-const SUBAGENT_PROGRESS_UPDATE_MAX_AGE_MS = 60_000;
 const DEFAULT_UNNAMED_SESSION_ALIAS_PREFIX = "subagent-chat";
 const RECIPIENT_TURN_FAILED_PREFIX = "Recipient turn failed:";
 const RECIPIENT_TURN_FAILED_ATTACHMENT = "pi-intercom-recipient-turn-failure";
@@ -466,7 +465,7 @@ function sessionDeliveryGuidance(session: SessionInfo, isSelf: boolean): string 
   if (isSelf) return "self target unavailable; choose a peer from Other sessions; use pending/reply for inbound asks";
   const state = sessionBusyState(session);
   if (state === "idle") return "send defaults to steer and wakes; ask only if sender must stay alive for a required reply; queue only for intentional delay; passive discouraged";
-  if (session.acceptsAsks === false) return "send defaults to steer; ask only if sender must stay alive for a required reply (default returns peer_idle); queue only for intentional delay; passive discouraged";
+  if (session.acceptsAsks === false) return "send defaults to steer; ask only if sender must stay alive for a required reply (default sends without waiting when peer is busy); queue only for intentional delay; passive discouraged";
   if (state === "busy") return "send defaults to steer at the next tool boundary; ask only if sender must stay alive for a required reply; queue only for intentional delay; passive discouraged";
   return "state unknown; target is valid; send defaults to steer; ask only if sender must stay alive for a required reply; queue only for intentional delay; passive discouraged";
 }
@@ -825,7 +824,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const liveContext = getLiveContext();
     return liveContext ? isRecipientIdle(liveContext) : false;
   }
-  /** Build peer-health fields published via presence so askers can detect idle/non-accepting peers. */
+  /** Publish whether the recipient can accept a blocking ask. */
   function buildPresenceHealth(): { pendingAsks: number; acceptsAsks: boolean; lastIntercomActivity: number } {
     return {
       pendingAsks: replyTracker.listPending().length,
@@ -917,11 +916,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return text.startsWith("Subagent needs a supervisor decision.")
       || text.startsWith("Subagent requests a structured supervisor interview.");
   }
-  function isStaleSubagentProgressUpdate(entry: InboundMessageEntry, now = Date.now()): boolean {
-    if (entry.message.expectsReply) return false;
-    return entry.bodyText.trimStart().startsWith("Subagent progress update.")
-      && now - entry.message.timestamp > SUBAGENT_PROGRESS_UPDATE_MAX_AGE_MS;
-  }
   async function requestSubagentDetachForBlockingSupervisorMessage(entry: InboundMessageEntry): Promise<boolean> {
     if (!isBlockingSubagentSupervisorMessage(entry)) return false;
     const requestId = randomUUID();
@@ -977,11 +971,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
           return;
         }
-        const now = Date.now();
         const entries = pendingIdleMessages.splice(0, pendingIdleMessages.length);
         for (const entry of entries) {
           if (entry.flushDelivery === "steer") {
-            if (!isStaleSubagentProgressUpdate(entry, now)) sendIncomingMessage(entry, "trigger", generation);
+            sendIncomingMessage(entry, "trigger", generation);
           } else {
             pendingIdleMessages.push(entry);
           }
@@ -993,10 +986,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return;
     }
 
-    const now = Date.now();
-    const entries = pendingIdleMessages
-      .splice(0, pendingIdleMessages.length)
-      .filter((entry) => !isStaleSubagentProgressUpdate(entry, now));
+    const entries = pendingIdleMessages.splice(0, pendingIdleMessages.length);
     if (entries.length === 0) return;
     sendTriggerFirst(entries, generation);
   }
@@ -1051,9 +1041,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (outstandingInbound.size === 0) return;
     // Pi drains steer/follow-up queues before agent_settled. Leftovers here were
     // dropped by abort, not left sitting in those queues.
-    const now = Date.now();
     const leftover = [...outstandingInbound.values()]
-      .filter((entry) => !isStaleSubagentProgressUpdate(entry, now))
       .map((entry) => ({ ...entry, flushDelivery: "auto" as const }));
     outstandingInbound.clear();
     sendTriggerFirst(leftover);
@@ -1292,7 +1280,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return null;
     }
   }
-  /** A peer is considered idle/not-accepting only when it explicitly publishes acceptsAsks === false. */
+  /** Only an explicit refusal skips the default reply wait. */
   function peerDeclinesAsks(health: SessionInfo | null): boolean {
     return health?.acceptsAsks === false;
   }
@@ -1753,7 +1741,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
               subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
             });
             return {
-              content: [{ type: "text", text: result.queued ? `Progress update queued for supervisor ${metadata.orchestratorTarget}` : `Progress update sent to supervisor ${metadata.orchestratorTarget}` }],
+              content: [{ type: "text", text: `Progress update accepted for supervisor ${metadata.orchestratorTarget}. Delivery is deferred and coalesced; this does not confirm the supervisor has read it.` }],
               isError: false,
               details: { messageId: result.id, accepted: result.accepted, delivered: result.delivered, queued: result.queued === true },
             };
@@ -2145,7 +2133,7 @@ Usage:
               };
             }
             const peerHealth = await resolvePeerHealth(connectedClient, sendTo);
-            const peerIdle = peerDeclinesAsks(peerHealth) && deliveryMode === undefined;
+            const skipReplyWait = peerDeclinesAsks(peerHealth) && deliveryMode === undefined;
             if (_signal?.aborted) {
               return {
                 content: [{ type: "text", text: "Cancelled" }],
@@ -2169,16 +2157,16 @@ Usage:
               timestamp: Date.now(),
             });
             let replyMessage: Message;
-            if (peerIdle) {
+            if (skipReplyWait) {
               const sendResult = await connectedClient.send(sendTo, { ...sendOptions, messageId: questionId, expectsReply: true });
               if (!sendResult.accepted) throw new AskDeliveryError(sendResult);
               markIntercomActivity();
               syncPresenceStatus();
               recordSent(sendResult);
               return {
-                content: [{ type: "text", text: `Delivered ask to ${to}; peer reports it is not accepting asks right now (peer_idle).` }],
+                content: [{ type: "text", text: `${sendResult.delivered ? "Delivered" : "Queued"} ask to ${to}; peer is busy and not accepting blocking asks (peer_busy). Not waiting for a reply; delivery does not mean the question was consumed.` }],
                 isError: false,
-                details: { messageId: sendResult.id, delivered: true, replied: false, reason: "peer_idle", reasonCode: "recipient_not_accepting_asks", nextActions: [{ action: "send", guidance: "Use default-steered send for non-blocking live coordination; queue only when delay is intentional." }] },
+                details: { messageId: sendResult.id, accepted: sendResult.accepted, delivered: sendResult.delivered, queued: sendResult.queued === true, replied: false, reason: "peer_busy", reasonCode: "recipient_not_accepting_asks", nextActions: [{ action: "send", guidance: "Use default-steered send for non-blocking live coordination; queue only when delay is intentional." }] },
               };
             }
             replyMessage = await sendAskTransaction(connectedClient, sendTo, questionId, sendOptions, _signal, recordSent);
@@ -2309,10 +2297,17 @@ Usage:
             if (!mySessionId) throw new Error("Current intercom session id is unavailable.");
             const allSessions = await connectedClient.listSessions();
             const sessions = sessionsForScope(allSessions, mySessionId, scope);
+            const pending = [
+              ...pendingIdleMessages.map((entry) => ({ entry, state: "queued; not yet delivered to model" })),
+              ...[...outstandingInbound.values()].map((entry) => ({ entry, state: "delivered to model queue; not yet consumed" })),
+            ];
+            const pendingText = pending.length
+              ? `\n\nPending inbound messages: ${pending.length}\n${pending.map(({ entry, state }) => `- ${entry.from.name || entry.from.id} [${entry.message.id}] (${state})\n${entry.bodyText}`).join("\n\n")}`
+              : "\n\nPending inbound messages: 0";
             return {
               content: [{
                 type: "text",
-                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nConnected sessions in scope: ${sessions.length}\n\n${formatSessionListSections(allSessions, mySessionId, scope)}`,
+                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nConnected sessions in scope: ${sessions.length}\n\n${formatSessionListSections(allSessions, mySessionId, scope)}${pendingText}`,
               }],
               isError: false,
             };

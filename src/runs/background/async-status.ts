@@ -11,6 +11,7 @@ import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-
 
 interface AsyncRunStepSummary {
 	index: number;
+	sessionFile?: string;
 	agent: string;
 	label?: string;
 	phase?: string;
@@ -214,6 +215,7 @@ export function asyncStatusToSummary(asyncDir: string, status: AsyncStatus & { c
 		return {
 			index,
 			agent: step.agent,
+			...(step.sessionFile ? { sessionFile: step.sessionFile } : {}),
 			...(step.label ? { label: step.label } : {}),
 			...(step.phase ? { phase: step.phase } : {}),
 			...(step.outputName ? { outputName: step.outputName } : {}),
@@ -403,6 +405,7 @@ export function formatAsyncRunList(runs: AsyncRunSummary[], heading = "Active as
 	const lines = [`${heading}: ${runs.length}`, ""];
 	for (const run of runs) {
 		lines.push(`- ${formatRunHeader(run)}`);
+		lines.push(`  Status: subagent({ action: "status", id: "${run.id}" })`);
 		for (const step of run.steps) {
 			lines.push(`  ${formatStepLine(step)}`);
 			lines.push(...formatNestedRunStatusLines(step.children, { indent: "    ", maxLines: 12 }));

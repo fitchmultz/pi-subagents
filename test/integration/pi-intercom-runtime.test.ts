@@ -823,7 +823,7 @@ test("intercom list and status show recipient capability and delivery guidance",
     assert.match(listText, /pending_asks:2/);
     assert.match(listText, /last_intercom_activity:1m ago/);
     assert.match(listText, /ask only if sender must stay alive for a required reply/);
-    assert.match(listText, /default returns peer_idle/);
+    assert.match(listText, /default sends without waiting when peer is busy/);
     assert.match(listText, /passive discouraged/);
 
     const statusResult = await intercomTool.execute("tool-capability-status", {
@@ -1582,7 +1582,7 @@ test("sessions publish automatic lifecycle status", { concurrency: false }, asyn
   }
 });
 
-test("intercom ask returns delivered peer_idle when target publishes acceptsAsks false", { concurrency: false }, async () => {
+test("intercom ask reports a busy recipient and stops waiting without claiming consumption", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { planner, cleanup } = await setupClients();
   const peer = new IntercomClient();
@@ -1612,10 +1612,14 @@ test("intercom ask returns delivered peer_idle when target publishes acceptsAsks
 
     assert.equal(message.expectsReply, true);
     assert.equal(result.isError, false);
-    assert.match(result.content[0]?.text ?? "", /peer_idle/);
+    assert.match(result.content[0]?.text ?? "", /peer is busy.*peer_busy/);
+    assert.match(result.content[0]?.text ?? "", /Not waiting for a reply/);
+    assert.equal(result.details?.accepted, true);
+    assert.equal(result.details?.queued, false);
     assert.equal(result.details?.delivered, true);
     assert.equal(result.details?.replied, false);
-    assert.equal(result.details?.reason, "peer_idle");
+    assert.equal(result.details?.reason, "peer_busy");
+    assert.equal(result.details?.reasonCode, "recipient_not_accepting_asks");
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await peer.disconnect().catch(() => undefined);
@@ -2587,7 +2591,7 @@ test("busy passive delivery waits for idle without waking the model", { concurre
   }
 });
 
-test("stale queued subagent progress updates are dropped", { concurrency: false }, async () => {
+test("latest supervisor milestone survives two minutes busy, supersedes older progress, and remains visible until consumed", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { planner, cleanup } = await setupClients();
   let idle = false;
@@ -2601,33 +2605,45 @@ test("stale queued subagent progress updates are dropped", { concurrency: false 
     piIntercomExtension(harness.pi as never);
     await harness.emitLifecycle("session_start");
     const target = await waitForSessionByName(planner, "stale-progress-supervisor");
+    const intercom = harness.tools.find((tool) => tool.name === "intercom")!;
+    const status = () => intercom.execute("pending-progress", { action: "status" }, new AbortController().signal, undefined, harness.ctx);
 
     Date.now = () => realNow() - 120_000;
-    assert.equal((await planner.send(target.id, {
-      messageId: "stale-progress-update",
-      text: [
-        "Subagent progress update.",
-        "Run: old-run",
-        "Agent: scout",
-        "Child index: 0",
-        "",
-        "UPDATE: Starting read-only scout.",
-      ].join("\n"),
-      delivery: "queue",
-      queueMode: "replace",
-      threadId: "subagent-progress:old-run:scout:0",
-    })).delivered, true);
+    for (const text of ["Starting read-only scout.", "Found the root cause in the shared runner."]) {
+      assert.equal((await planner.send(target.id, {
+        text: `Subagent progress update.\nRun: old-run\nAgent: scout\nChild index: 0\n\nUPDATE: ${text}`,
+        delivery: "queue",
+        queueMode: "replace",
+        threadId: "subagent-progress:old-run:scout:0",
+      })).accepted, true);
+    }
     Date.now = realNow;
 
     await new Promise((resolve) => setTimeout(resolve, 250));
     assert.equal(harness.sentMessages.length, 0);
+    const queued = (await status()).content[0]?.text ?? "";
+    assert.match(queued, /queued; not yet delivered to model/);
+    assert.match(queued, /Found the root cause/);
+    assert.doesNotMatch(queued, /Starting read-only scout/);
+    // The child may exit before its supervisor becomes idle.
+    await planner.disconnect();
 
     idle = true;
     await harness.emitLifecycle("agent_end");
     await harness.emitLifecycle("agent_settled");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForSentMessages(harness, 1);
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /Found the root cause/);
+    assert.doesNotMatch(harness.sentMessages[0]?.message.content ?? "", /Starting read-only scout/);
+    assert.match((await status()).content[0]?.text ?? "", /delivered to model queue; not yet consumed/);
 
-    assert.equal(harness.sentMessages.length, 0);
+    // An aborted turn must not age out the still-unconsumed milestone either.
+    await harness.emitLifecycle("agent_settled");
+    assert.equal(harness.sentMessages.length, 2);
+    await ackSentIntercom(harness);
+    await harness.emitLifecycle("agent_settled");
+    assert.equal(harness.sentMessages.length, 2);
+    assert.match((await status()).content[0]?.text ?? "", /Pending inbound messages: 0/);
   } finally {
     Date.now = realNow;
     await harness.emitLifecycle("session_shutdown");

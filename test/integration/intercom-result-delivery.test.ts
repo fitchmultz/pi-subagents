@@ -173,7 +173,7 @@ describe("intercom result delivery cutover", () => {
 
 		const result = await executor.execute(
 			"single-intercom",
-			{ agent: "worker", task: "Implement feature" },
+			{ agent: "worker", task: "Report findings" },
 			new AbortController().signal,
 			undefined,
 			makeMinimalCtx(tempDir),
@@ -192,6 +192,14 @@ describe("intercom result delivery cutover", () => {
 		assert.doesNotMatch(result.content[0]?.text ?? "", /Full child output from worker/);
 		assert.equal(result.details?.results?.[0]?.finalOutput, undefined);
 		assert.match(String(payload.message ?? ""), /Full child output from worker/);
+		const nudge = await executor.execute("late-foreground", { action: "nudge", id: result.details.runId }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		assert.equal(nudge.isError, undefined);
+		assert.match(nudge.content[0]?.text ?? "", /already completed.*No child was restarted/);
+		assert.match(nudge.content[0]?.text ?? "", /Full child output from worker/);
+		assert.ok(result.details.results[0]?.artifactPaths?.outputPath);
+		assert.ok(nudge.content[0]?.text?.includes(result.details.results[0]!.artifactPaths!.outputPath));
+		assert.equal(events.emitted.filter((entry) => entry.channel === "subagent:result-intercom").length, 1);
+		assert.equal(fs.readdirSync(mockPi.dir).filter((name) => /^call-.*\.json$/.test(name)).length, 1, "late nudge must not launch another child");
 	});
 
 	it("keeps child failure visible when intercom delivery succeeds", async () => {
@@ -611,7 +619,7 @@ describe("intercom result delivery cutover", () => {
 		}
 	});
 
-	it("nudge action rejects completed work with exact resume and status targets", async () => {
+	it("nudge action returns completed work with evidence and exact resume and status targets", async () => {
 		const runId = `nudge-complete-${Date.now()}`;
 		const asyncDir = path.join(ASYNC_DIR, runId);
 		const sessionFile = path.join(tempDir, `${runId}.jsonl`);
@@ -619,17 +627,81 @@ describe("intercom result delivery cutover", () => {
 			fs.mkdirSync(asyncDir, { recursive: true });
 			fs.writeFileSync(sessionFile, "", "utf-8");
 			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId, mode: "single", state: "complete", startedAt: 100, lastUpdate: 200,
+				runId, mode: "single", state: "complete", startedAt: 100, lastUpdate: 200, outputFile: "output-0.log",
 				steps: [{ agent: "worker", status: "complete", sessionFile }],
 			}, null, 2), "utf-8");
-			const { executor } = makeExecutor();
+			fs.writeFileSync(path.join(asyncDir, "output-0.log"), "Verified completed outcome", "utf-8");
+			const { executor, events } = makeExecutor();
 			const result = await executor.execute("nudge-complete", { action: "nudge", id: runId }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
 			const text = result.content[0]?.text ?? "";
-			assert.equal(result.isError, true);
+			assert.equal(result.isError, undefined);
+			assert.match(text, /Nudge not sent: run is already completed/);
+			assert.match(text, /Verified completed outcome/);
+			assert.ok(text.includes(path.join(asyncDir, "output-0.log")));
+			assert.equal(events.emitted.length, 0, "no child launch or intercom delivery");
 			assert.match(text, new RegExp(`action: "resume", id: "${runId}"`));
 			assert.match(text, new RegExp(`action: "status", id: "${runId}"`));
 			assert.equal(result.details?.managementControl?.state, "completed");
 			assert.equal(result.details?.managementControl?.capabilities.includes("nudge"), false);
+		} finally {
+			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
+	it("nudge completion race returns terminal evidence without a saved session or another launch", async () => {
+		const runId = `nudge-race-${Date.now()}`;
+		const asyncDir = path.join(ASYNC_DIR, runId);
+		try {
+			fs.mkdirSync(asyncDir, { recursive: true });
+			const writeStatus = (state: string) => fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+				runId, mode: "single", state, startedAt: 100, lastUpdate: 200, outputFile: "output-0.log",
+				steps: [{ agent: "worker", status: state }],
+			}));
+			writeStatus("running");
+			const { executor, events } = makeExecutor();
+			events.on("subagent:live-intercom", (payload) => {
+				writeStatus("failed");
+				fs.writeFileSync(path.join(asyncDir, "output-0.log"), "Check failed: useful diagnosis");
+				events.emit("subagent:live-intercom-delivery", { requestId: (payload as { requestId: string }).requestId, delivered: false, reason: "Session not found" });
+			});
+			const result = await executor.execute("nudge-race", { action: "nudge", id: runId }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+			assert.equal(result.isError, undefined);
+			assert.equal(result.details.managementControl?.state, "failed");
+			assert.match(result.content[0]?.text ?? "", /already failed/);
+			assert.match(result.content[0]?.text ?? "", /Check failed: useful diagnosis/);
+			assert.equal(result.details.managementControl?.capabilities.includes("resume"), false);
+			const late = await executor.execute("nudge-after-race", { action: "nudge", id: runId }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+			assert.equal(late.isError, undefined, "terminal inspection must not require a resumable child");
+			assert.equal(events.emitted.filter((event) => event.channel === "subagent:live-intercom").length, 1);
+			assert.equal(fs.readdirSync(mockPi.dir).filter((name) => /^call-.*\.json$/.test(name)).length, 0);
+		} finally {
+			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
+	it("status lists completed foreground and owned async runs even while another foreground run is active", async () => {
+		mockPi.onCall({ output: "Saved foreground evidence" });
+		const { executor, state, events } = makeExecutor();
+		const ctx = makeMinimalCtx(tempDir);
+		ctx.sessionManager.getSessionId = () => `owned-parent-${path.basename(tempDir)}`;
+		const completed = await executor.execute("completed-foreground", { agent: "worker", task: "Report status" }, new AbortController().signal, undefined, ctx);
+		state.foregroundControls.set("another-live-run", { runId: "another-live-run", mode: "single", currentAgent: "worker", startedAt: 100, updatedAt: 100 });
+		const runId = `owned-recent-${Date.now()}`;
+		const asyncDir = path.join(ASYNC_DIR, runId);
+		try {
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId, sessionId: state.currentSessionId, cwd: path.join(tempDir, "other-worktree"), mode: "single", state: "complete", startedAt: 100, lastUpdate: 200, steps: [{ agent: "worker", status: "complete" }] }));
+			const emitted = events.emitted.length;
+			const status = await executor.execute("discover-owned", { action: "status" }, new AbortController().signal, undefined, ctx);
+			const text = status.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+			assert.equal(status.isError, undefined);
+			assert.match(text, /another-live-run/);
+			assert.match(text, /Saved foreground evidence/);
+			assert.ok(text.includes(completed.details.runId!));
+			assert.ok(text.includes(runId));
+			assert.equal(status.details.managementControls?.length, 3);
+			assert.equal(status.details.managementControl?.runId, "another-live-run", "keep the existing primary control field");
+			assert.ok(events.emitted.slice(emitted).every((event) => event.channel === "subagent:intercom-health-request"), "discovery only reads health; it does not redeliver or adopt runs");
 		} finally {
 			fs.rmSync(asyncDir, { recursive: true, force: true });
 		}
@@ -962,7 +1034,9 @@ describe("intercom result delivery cutover", () => {
 			undefined,
 			makeMinimalCtx(tempDir),
 		);
-		assert.equal(nudge.isError, true);
+		assert.equal(nudge.isError, undefined);
+		assert.match(nudge.content[0]?.text ?? "", /already failed/);
+		assert.match(nudge.content[0]?.text ?? "", /Detached child timed out/);
 		assert.match(nudge.content[0]?.text ?? "", /action: "resume", id: "remembered-status-run", index: 0/);
 		assert.match(nudge.content[0]?.text ?? "", /action: "status", id: "remembered-status-run"/);
 		assert.equal(nudge.details?.managementControl?.capabilities.includes("nudge"), false);

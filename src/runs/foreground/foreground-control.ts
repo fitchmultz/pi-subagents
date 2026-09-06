@@ -24,6 +24,7 @@ import {
 import { sendLiveSubagentMessage } from "../../intercom/live-intercom.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
 import { readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNestedAsyncDir, resolveNestedParentAddressFromEnv, updateForegroundNestedProjection, writeNestedControlRequest, type NestedRunResolutionScope } from "../shared/nested-events.ts";
+import { inspectSubagentStatus } from "../background/run-status.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { buildManagementControl, formatLiveIntercomActionLines } from "../../shared/status-format.ts";
@@ -181,6 +182,8 @@ export function rememberForegroundRun(state: SubagentState, input: { runId: stri
 			agent: result.agent,
 			index,
 			status: resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted, detached: result.detached, timedOut: result.timedOut }),
+			...(!result.detached ? { summary: compactStatusText(resultSummaryForIntercom(result)) } : {}),
+			...(result.artifactPaths?.outputPath ? { artifactPath: result.artifactPaths.outputPath } : {}),
 			...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
 			...(result.acceptance?.effectiveAcceptance ? { effectiveAcceptance: result.acceptance.effectiveAcceptance } : {}),
 		})),
@@ -267,12 +270,14 @@ export function rememberedForegroundStatusResult(run: ForegroundResumeRun): Suba
 	const lines = [
 		`Run: ${run.runId}`,
 		"State: remembered foreground",
+		`Outcome: ${state}`,
 		`Mode: ${run.mode}`,
 		`Updated: ${new Date(run.updatedAt).toISOString()}`,
 		`Cwd: ${run.cwd}`,
 		"Children:",
 		...children.map(({ child, finalOutput }) => `  ${child.index + 1}. ${child.agent} ${child.status}${child.sessionFile ? `, session: ${child.sessionFile}` : ""}${child.artifactPath ? `, artifact: ${child.artifactPath}` : ""}${finalOutput ? `, final: ${compactStatusText(finalOutput)}` : ""}`),
 		foregroundResumeGuidance(run),
+		`Status: subagent({ action: "status", id: "${run.runId}" })`,
 	];
 	return {
 		content: [{ type: "text", text: lines.join("\n") }],
@@ -599,6 +604,20 @@ async function resumeLiveNestedRun(input: { target: ResolvedSubagentRunId & { ki
 	return { content: [{ type: "text", text: `Nested run ${run.id} appears live but its owner route is not reachable. Wait for completion, then retry action='resume'.` }], isError: true, details: { mode: "management", results: [] } };
 }
 
+function terminalNudgeResult(runId: string, deps: ExecutorDeps): SubagentExecutionResult | undefined {
+	const remembered = deps.state.foregroundRuns?.get(runId);
+	if (!remembered && deps.state.foregroundControls.get(runId)?.currentAgent) return undefined;
+	const status = remembered
+		? rememberedForegroundStatusResult(remembered)
+		: inspectSubagentStatus({ id: runId }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
+	const state = status.details.managementControl?.state;
+	if (status.isError || !state || state === "live" || state === "unknown") return undefined;
+	return {
+		...status,
+		content: [{ type: "text", text: `Nudge not sent: run is already ${state}. No child was restarted.\n\n${status.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")}` }],
+	};
+}
+
 export async function nudgeSubagentRun(input: {
 	params: SubagentParamsLike;
 	deps: ExecutorDeps;
@@ -609,10 +628,14 @@ export async function nudgeSubagentRun(input: {
 	let agent: string;
 	let index: number;
 	let target: string;
+	let resolvedRunId: string | undefined;
 
 	try {
 		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
 		const remembered = !resolved && requestedId ? resolveRememberedForegroundRun(requestedId, input.deps.state) : undefined;
+		resolvedRunId = resolved?.id ?? remembered?.runId;
+		const terminal = resolvedRunId ? terminalNudgeResult(resolvedRunId, input.deps) : undefined;
+		if (terminal) return terminal;
 		if (resolved?.kind === "nested") {
 			const run = resolved.match.run;
 			const state = run.state === "running" || run.state === "queued" ? "live" : run.state === "complete" ? "completed" : run.state === "paused" || run.state === "failed" ? run.state : "unknown";
@@ -643,32 +666,15 @@ export async function nudgeSubagentRun(input: {
 			} else if (resolved?.kind === "foreground" || remembered) {
 				const rememberedRun = remembered ?? resolveRememberedForegroundRun(resolved?.id, input.deps.state);
 				if (!rememberedRun) throw new Error(`Foreground run '${resolved?.id}' has no live child to nudge.`);
-				const children = refreshDetachedForegroundChildren(rememberedRun);
-				const resumable = children.find(({ child }) => child.sessionFile && child.status !== "detached")?.child;
-				const indexPart = rememberedRun.children.length > 1 && resumable ? `, index: ${resumable.index}` : "";
-				const valid = resumable
-					? `subagent({ action: "resume", id: "${rememberedRun.runId}"${indexPart}, message: "..." }) or subagent({ action: "status", id: "${rememberedRun.runId}" })`
-					: `subagent({ action: "status", id: "${rememberedRun.runId}" })`;
-				return {
-					content: [{ type: "text", text: `Foreground run ${rememberedRun.runId} is not live. Valid actions: ${valid}.` }],
-					isError: true,
-					details: { mode: "management", results: [], managementControl: buildManagementControl({ state: rememberedForegroundState(children), runId: rememberedRun.runId, index: resumable?.index, canResume: Boolean(resumable), unavailableActions: { nudge: "Run is not live; revive it with resume when available or inspect it with status." } }) },
-				};
+				return rememberedForegroundStatusResult(rememberedRun);
 			} else {
 				throw new Error("No live foreground child found. Provide id for a running async child or inspect status first.");
 			}
 		} else {
 			const asyncTarget = resolveAsyncResumeTarget({ id: input.params.id, runId: input.params.runId, dir: input.params.dir, index: input.params.index });
 			if (asyncTarget.kind !== "live") {
-				const state = asyncTarget.state === "complete" ? "completed" : asyncTarget.state === "paused" || asyncTarget.state === "failed" ? asyncTarget.state : "unknown";
-				return {
-					content: [{ type: "text", text: `Run ${asyncTarget.runId} is not live. Valid actions: subagent({ action: "resume", id: "${asyncTarget.runId}"${input.params.index !== undefined ? `, index: ${input.params.index}` : ""}, message: "..." }) or subagent({ action: "status", id: "${asyncTarget.runId}" }).` }],
-					isError: true,
-					details: {
-						mode: "management", results: [],
-						managementControl: buildManagementControl({ state, runId: asyncTarget.runId, index: asyncTarget.index, canResume: true, unavailableActions: { nudge: "Run is not live; revive it with resume or inspect it with status." } }),
-					},
-				};
+				return terminalNudgeResult(asyncTarget.runId, input.deps)
+					?? inspectSubagentStatus({ id: asyncTarget.runId }, { state: input.deps.state });
 			}
 			runId = asyncTarget.runId;
 			agent = asyncTarget.agent;
@@ -676,6 +682,8 @@ export async function nudgeSubagentRun(input: {
 			target = asyncTarget.intercomTarget;
 		}
 	} catch (error) {
+		const terminal = resolvedRunId ? terminalNudgeResult(resolvedRunId, input.deps) : undefined;
+		if (terminal) return terminal;
 		const text = error instanceof Error ? error.message : String(error);
 		return { content: [{ type: "text", text }], isError: true, details: { mode: "management", results: [] } };
 	}
@@ -687,6 +695,8 @@ export async function nudgeSubagentRun(input: {
 		extra: { source: "subagent-nudge", runId, agent, index },
 	});
 	if (!result.delivered) {
+		const terminal = terminalNudgeResult(runId, input.deps);
+		if (terminal) return terminal;
 		return { content: [{ type: "text", text: [`Nudge was not delivered.`, `Run: ${runId}`, `Intercom target: ${target}`, result.reason ? `Reason: ${result.reason}` : undefined].filter((line): line is string => Boolean(line)).join("\n") }], isError: true, details: { mode: "management", results: [] } };
 	}
 	return {

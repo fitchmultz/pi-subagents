@@ -79,7 +79,7 @@ intercom({ action: "list" })
 // →   ↳ self target unavailable; choose a peer from Other sessions; use pending/reply for inbound asks
 // → **Other sessions:**
 // → • research (6332faab) — ~/projects/api (claude-sonnet-4) [same cwd, thinking, state:busy, accepts_asks:false, pending_asks:1, last_intercom_activity:2m ago]
-// →   ↳ send defaults to steer; ask only if sender must stay alive for a required reply (default returns peer_idle); queue only for intentional delay; passive discouraged
+// →   ↳ send defaults to steer; ask only if sender must stay alive for a required reply (default sends without waiting when peer is busy); queue only for intentional delay; passive discouraged
 
 // Intentionally discover sessions in other projects
 intercom({ action: "list", scope: "all" })
@@ -205,7 +205,7 @@ Use `ask` only when the sender process must remain alive and cannot safely conti
 
 `send` is the default for agent-to-agent coordination and uses steer when `delivery` is omitted. It wakes idle recipients or reaches busy recipients at the next tool boundary, then returns after broker acceptance. Use explicit queue only when delay is intentional, and passive only for human-visible breadcrumbs. If you want approval before non-reply sends, set `confirmSend: true`.
 
-`ask` sends and waits up to `askTimeoutMs` (default 2 minutes). Reserve `ask` plus steer for a sender process that must remain alive and cannot safely continue without the answer. Long-lived peers should use `send` plus steer and end their turn instead. A default ask to a peer publishing `accepts_asks:false` returns promptly with `reason:"peer_idle"`; an explicit steer ask keeps waiting.
+`ask` sends and waits up to `askTimeoutMs` (default 2 minutes). Reserve `ask` plus steer for a sender process that must remain alive and cannot safely continue without the answer. Long-lived peers should use `send` plus steer and end their turn instead. A default ask to a peer publishing `accepts_asks:false` returns promptly with `reason:"peer_busy"`; an explicit steer ask keeps waiting.
 
 `reply` answers an inbound ask using its exact sender and message automatically. Otherwise, answer ordinary coordination with `send` plus steer. If multiple asks are pending, use `pending` and disambiguate with `to`.
 
@@ -226,7 +226,7 @@ When this package spawns a Pi-backed delegated child, it supplies bridge metadat
 
 If any are missing, the session falls back to the regular `intercom` tool. A subagent status line may mention an intercom target before the child is actually registered with pi-intercom; treat `intercom({ action: "list" })` as the source of truth. If the advertised target is absent from `list`, use normal subagent controls (`status`, `resume`, `nudge`, result artifacts) instead of sending to that target; the child may be Claude Code-backed or already exited and have no child-side `contact_supervisor`.
 
-When both bundled extension entries are enabled, parent sessions can use `subagent({ action: "nudge", id: "<run-id>", message: "..." })` to send a non-blocking steered nudge to a live child. `subagent status` may also show the direct blocking `intercom({ action: "ask", to: "...", delivery: "steer", message: "..." })` path; use that exception only when the parent process must remain alive and cannot safely continue without the reply. `pi-intercom` remains the source of truth for connected sessions and only delivers to registered local peers.
+When both bundled extension entries are enabled, parent sessions can use `subagent({ action: "nudge", id: "<run-id>", message: "..." })` to send a non-blocking steered nudge to a live child. If the run has already finished, nudge returns its terminal outcome and evidence without restarting it. Unqualified `subagent({ action: "status" })` includes this parent's active and remembered foreground runs plus its persisted async runs across working directories, including completed results. `subagent status` may also show the direct blocking `intercom({ action: "ask", to: "...", delivery: "steer", message: "..." })` path; use that exception only when the parent process must remain alive and cannot safely continue without the reply. `pi-intercom` remains the source of truth for connected sessions and only delivers to registered local peers.
 
 ### Three Reasons
 
@@ -274,7 +274,7 @@ contact_supervisor({
   reason: "progress_update",
   message: "Discovered the bug is in the retry wrapper, not the API client. Fixing the wrapper will also close issue #42."
 })
-// → Progress update sent to supervisor planner
+// → Progress update accepted for supervisor planner. Delivery is deferred and coalesced; this does not confirm the supervisor has read it.
 ```
 
 ### What the Supervisor Sees
@@ -338,7 +338,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`interview_request`** — Use only when the ephemeral child cannot safely continue until it receives multiple structured answers. It sends a formatted, steered agent-readable interview to the supervisor and keeps the child alive until the reply arrives. Questions use a local pi-interview-like shape: `{ id, type, question, options?, context? }` where `type` is `single`, `multi`, `text`, `image`, or `info`. `info` questions are context-only and do not need responses. The supervisor reply should be JSON with `{ "responses": [{ "id": "...", "value": ... }] }`. Parsed JSON replies are returned in `details.structuredReply`.
 
-**`progress_update`** — Sends a non-blocking update through intentionally deferred, replace-mode delivery. Returns immediately after broker acceptance. Use only for a concise material update that may wait behind active supervisor work.
+**`progress_update`** — Sends a non-blocking update through intentionally deferred, replace-mode delivery. Returns immediately after broker acceptance, not supervisor consumption. The recipient retains the latest queued milestone until delivered or superseded; waiting more than a minute does not discard it. Use only for a concise material update that may wait behind active supervisor work.
 
 ### intercom actions
 
@@ -346,13 +346,13 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`send`** — Sends a non-blocking, default-steered message to the specified session and returns broker acceptance, not a later response. It wakes idle recipients or reaches busy recipients at the next tool boundary. Use `delivery:"queue"` only when delay is intentional, and `delivery:"passive"`/`passive:true` only for human-visible breadcrumbs. `queueMode:"replace"` with a `threadId` replaces older undelivered intercom-staged messages for that thread after a short coalescing window; once a message is handed to Pi's native queue it cannot be keyed-replaced. Set `confirmSend: true` in config if you want a confirmation dialog for non-reply sends. Replies that include `replyTo` skip confirmation.
 
-**`ask`** — Sends a message and waits for the recipient to reply (`askTimeoutMs`, default 2 minutes). Reserve it for a sender process that must remain alive and cannot safely continue without the answer; use `delivery:"steer"` so a busy recipient sees it at the next tool boundary. If the target publishes `accepts_asks:false`, a default blocking ask returns promptly with `reason:"peer_idle"`, while an explicit steer ask still waits. Only one pending waiting ask is allowed per session. Passive delivery is rejected.
+**`ask`** — Sends a message and waits for the recipient to reply (`askTimeoutMs`, default 2 minutes). Reserve it for a sender process that must remain alive and cannot safely continue without the answer; use `delivery:"steer"` so a busy recipient sees it at the next tool boundary. If the target publishes `accepts_asks:false`, a default blocking ask returns promptly with `reason:"peer_busy"`, while an explicit steer ask still waits. Only one pending waiting ask is allowed per session. Passive delivery is rejected.
 
 **`reply`** — Replies to the current intercom-triggered message if there is one. Otherwise it falls back to the single unresolved inbound ask. If multiple asks are pending, pass `to` or inspect them with `pending` first. Under the hood this is still a normal `send` with the exact `replyTo` value.
 
 **`pending`** — Lists unresolved inbound asks with sender, elapsed time, a labeled `replyTo` ID, and a copy-ready `intercom({ action: "reply", ... })` call. For `pi-subagents` supervisor asks, the preview expands the run id, agent, child intercom target, and question so the parent can reply without guessing. Useful when replying after the original triggered turn.
 
-**`status`** — Shows connection status, session ID, and the same project-scoped recipient capability rows as `list`. Pass `scope:"all"` to include other projects.
+**`status`** — Shows connection status, session ID, and the same project-scoped recipient capability rows as `list`. Also shows inbound messages still queued for delivery or handed to Pi but not yet consumed. Pass `scope:"all"` to include other projects.
 
 ## Keyboard Shortcuts
 
