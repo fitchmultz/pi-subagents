@@ -50,10 +50,6 @@ function createHookScript(_repoDir: string, fileName: string, source: string): s
 	return hookPath;
 }
 
-const hookScriptSkip = process.platform === "win32"
-	? "Hook script execution differs on Windows CI environments."
-	: undefined;
-
 describe("worktree", () => {
 	it("binary patches reconstruct the complete edited tree after cleanup", () => {
 		const repoDir = createRepo("pi-worktree-binary-");
@@ -331,9 +327,7 @@ describe("worktree", () => {
 		}
 	});
 
-	it("createWorktrees creates node_modules symlink when node_modules exists", {
-		skip: process.platform === "win32" ? "Symlink behavior differs on Windows CI environments." : undefined,
-	}, () => {
+	it("createWorktrees creates node_modules symlink when node_modules exists", () => {
 		const repoDir = createRepo("pi-worktree-node-modules-");
 		const nodeModulesDir = path.join(repoDir, "node_modules");
 		fs.mkdirSync(nodeModulesDir, { recursive: true });
@@ -354,9 +348,7 @@ describe("worktree", () => {
 		}
 	});
 
-	it("diffWorktrees preserves a tracked node_modules symlink", {
-		skip: process.platform === "win32" ? "Symlink behavior differs on Windows CI environments." : undefined,
-	}, () => {
+	it("diffWorktrees preserves a tracked node_modules symlink", () => {
 		const repoDir = createRepo("pi-worktree-tracked-node-modules-");
 		const vendorDir = path.join(repoDir, "vendor-modules");
 		fs.mkdirSync(vendorDir, { recursive: true });
@@ -383,7 +375,7 @@ describe("worktree", () => {
 		}
 	});
 
-	it("runs a repo-relative worktree setup hook and records synthetic paths", { skip: hookScriptSkip }, () => {
+	it("runs a repo-relative worktree setup hook and records synthetic paths", () => {
 		const repoDir = createRepo("pi-worktree-hook-relative-");
 		const hookPath = createHookScript(repoDir, "setup-hook.mjs", `
 import * as fs from "node:fs";
@@ -406,7 +398,7 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [".venv"] }));
 		}
 	});
 
-	it("runs an absolute worktree setup hook path", { skip: hookScriptSkip }, () => {
+	it("runs an absolute worktree setup hook path", () => {
 		const repoDir = createRepo("pi-worktree-hook-absolute-");
 		const hookPath = createHookScript(repoDir, "setup-hook.mjs", `
 import * as fs from "node:fs";
@@ -438,7 +430,7 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [] }));
 		}
 	});
 
-	it("rejects tracked synthetic paths from hook output", { skip: hookScriptSkip }, () => {
+	it("rejects tracked synthetic paths from hook output", () => {
 		const repoDir = createRepo("pi-worktree-hook-tracked-");
 		const hookPath = createHookScript(repoDir, "tracked-hook.mjs", `
 import * as fs from "node:fs";
@@ -456,7 +448,7 @@ process.stdout.write(JSON.stringify({ syntheticPaths: ["tracked.txt"] }));
 		}
 	});
 
-	it("rejects absolute synthetic paths from hook output", { skip: hookScriptSkip }, () => {
+	it("rejects absolute synthetic paths from hook output", () => {
 		const repoDir = createRepo("pi-worktree-hook-absolute-synthetic-");
 		const hookPath = createHookScript(repoDir, "absolute-path-hook.mjs", `
 import * as fs from "node:fs";
@@ -474,7 +466,7 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [payload.worktreePath + "/
 		}
 	});
 
-	it("excludes hook-created synthetic files from captured patch output", { skip: hookScriptSkip }, () => {
+	it("excludes hook-created synthetic files from captured patch output", () => {
 		const repoDir = createRepo("pi-worktree-hook-diff-");
 		const hookPath = createHookScript(repoDir, "setup-copy-hook.mjs", `
 import * as fs from "node:fs";
@@ -500,7 +492,7 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [".env.local"] }));
 		}
 	});
 
-	it("cleans up created worktrees when a later hook setup fails", { skip: hookScriptSkip }, () => {
+	it("cleans up created worktrees when a later hook setup fails", () => {
 		const repoDir = createRepo("pi-worktree-hook-cleanup-");
 		const runId = `hook-cleanup-${Date.now().toString(36)}`;
 		const hookPath = createHookScript(repoDir, "flaky-hook.mjs", `
@@ -524,7 +516,7 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [] }));
 		}
 	});
 
-	it("fails when the hook exceeds the configured timeout", { skip: hookScriptSkip }, () => {
+	it("fails when the hook exceeds the configured timeout", () => {
 		const repoDir = createRepo("pi-worktree-hook-timeout-");
 		const hookPath = createHookScript(repoDir, "slow-hook.mjs", `
 import * as fs from "node:fs";

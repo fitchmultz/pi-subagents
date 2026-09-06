@@ -125,7 +125,6 @@ interface SubagentRunConfig {
 	asyncDir: string;
 	sessionId?: string | null;
 	piPackageRoot?: string;
-	piArgv1?: string;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	controlConfig?: ResolvedControlConfig;
@@ -298,8 +297,6 @@ function runPiStreaming(
 	cwd: string,
 	outputFile: string,
 	env?: Record<string, string | undefined>,
-	piPackageRoot?: string,
-	piArgv1?: string,
 	maxSubagentDepth?: number,
 	childEventContext?: ChildEventContext,
 	interruptSignal?: AbortSignal,
@@ -686,8 +683,6 @@ interface SingleStepContext {
 	flatIndex: number;
 	flatStepCount: number;
 	outputFile: string;
-	piPackageRoot?: string;
-	piArgv1?: string;
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void;
 	signal?: AbortSignal;
 	childIntercomTarget?: string;
@@ -817,8 +812,6 @@ async function runSingleStep(
 			step.cwd ?? ctx.cwd,
 			ctx.outputFile,
 			env,
-			ctx.piPackageRoot,
-			ctx.piArgv1,
 			step.maxSubagentDepth,
 			{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
 			interruptController.signal,
@@ -1014,8 +1007,6 @@ async function runSingleStep(
 					step.cwd ?? ctx.cwd,
 					`${ctx.outputFile}.finalization-${turn}.log`,
 					env,
-					ctx.piPackageRoot,
-					ctx.piArgv1,
 					step.maxSubagentDepth,
 					{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
 					interruptController.signal,
@@ -1817,8 +1808,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			artifactsDir, id,
 			flatIndex: fi, flatStepCount: input.flatStepCount,
 			outputFile: path.join(asyncDir, `output-${fi}.log`),
-			piPackageRoot: config.piPackageRoot,
-			piArgv1: config.piArgv1,
 			childIntercomTarget: config.childIntercomTargets?.[fi],
 			orchestratorIntercomTarget: config.childIntercomTargets?.[fi] ? config.controlIntercomTarget : undefined,
 			nestedRoute: config.nestedRoute,
@@ -2337,8 +2326,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				artifactsDir, id,
 				flatIndex, flatStepCount: flatSteps.length,
 				outputFile: path.join(asyncDir, `output-${flatIndex}.log`),
-				piPackageRoot: config.piPackageRoot,
-				piArgv1: config.piArgv1,
 				childIntercomTarget: config.childIntercomTargets?.[flatIndex],
 				orchestratorIntercomTarget: config.childIntercomTargets?.[flatIndex] ? config.controlIntercomTarget : undefined,
 				nestedRoute: config.nestedRoute,
