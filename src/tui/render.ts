@@ -3,8 +3,8 @@
  */
 
 import * as path from "node:path";
-import { getMarkdownTheme, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { getMarkdownTheme, keyText, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Container, Markdown, Spacer, Text, TruncatedText, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import {
 	type AgentProgress,
 	type AsyncJobState,
@@ -1032,6 +1032,7 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 
 function renderSingleCompact(d: Details, r: Details["results"][number], theme: Theme): Component {
 	const output = r.truncation?.text || getSingleResultOutput(r);
+	const statusOutput = output || (d.intercomDelivery?.delivered ? d.intercomDelivery.summary : "");
 	const progress = r.progress || r.progressSummary;
 	const isRunning = r.progress?.status === "running";
 	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
@@ -1042,7 +1043,7 @@ function renderSingleCompact(d: Details, r: Details["results"][number], theme: T
 	const c = new Container();
 	const width = getTermWidth() - 4;
 	const modelDisplay = modelThinkingBadge(theme, r.model);
-	c.addChild(new Text(truncLine(`${resultGlyph(r, output, theme, isRunning)} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`, width), 0, 0));
+	c.addChild(new TruncatedText(`${resultGlyph(r, statusOutput, theme, isRunning)} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`));
 
 	if (isRunning && r.progress) {
 		const progressSnapshotNow = snapshotNowForProgress(r.progress);
@@ -1055,14 +1056,15 @@ function renderSingleCompact(d: Details, r: Details["results"][number], theme: T
 		return c;
 	}
 
-	c.addChild(new Text(truncLine(theme.fg("dim", `  ⎿  ${resultStatusLine(r, output)}`), width), 0, 0));
+	c.addChild(new TruncatedText(theme.fg("dim", `  ⎿  ${resultStatusLine(r, statusOutput)}`)));
 	const preview = firstOutputLine(output);
 	if (preview && r.exitCode === 0 && !hasEmptyTextOutputWithoutOutputTarget(r.task, output)) {
-		c.addChild(new Text(truncLine(theme.fg("dim", `     ${preview}`), width), 0, 0));
+		c.addChild(new TruncatedText(theme.fg("dim", `     ${preview}`)));
 	}
-	if (r.sessionFile) c.addChild(new Text(truncLine(theme.fg("dim", `  session: ${shortenPath(r.sessionFile)}`), width), 0, 0));
-	if (r.artifactPaths) c.addChild(new Text(truncLine(theme.fg("dim", `  output: ${shortenPath(r.artifactPaths.outputPath)}`), width), 0, 0));
-	if (r.truncation?.artifactPath) c.addChild(new Text(truncLine(theme.fg("dim", `  full output: ${shortenPath(r.truncation.artifactPath)}`), width), 0, 0));
+	if (r.sessionFile) c.addChild(new TruncatedText(theme.fg("dim", `  session: ${shortenPath(r.sessionFile)}`)));
+	if (r.artifactPaths) c.addChild(new TruncatedText(theme.fg("dim", `  output: ${shortenPath(r.artifactPaths.outputPath)}`)));
+	if (r.truncation?.artifactPath) c.addChild(new TruncatedText(theme.fg("dim", `  full output: ${shortenPath(r.truncation.artifactPath)}`)));
+	c.addChild(new TruncatedText(theme.fg("dim", `  ${keyText("app.tools.expand")} ${d.intercomDelivery?.delivered ? "receipt details" : "full response"}`)));
 	return c;
 }
 
@@ -1101,7 +1103,7 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 	const c = new Container();
 	const width = getTermWidth() - 4;
-	c.addChild(new Text(truncLine(`${glyph} ${theme.fg("toolTitle", theme.bold(d.mode))}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`, width), 0, 0));
+	c.addChild(new TruncatedText(`${glyph} ${theme.fg("toolTitle", theme.bold(d.mode))}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`));
 
 	const useResultsDirectly = multiLabel.hasParallelInChain || !d.chainAgents?.length;
 	const displayStart = multiLabel.showActiveGroupOnly ? multiLabel.groupStartIndex : 0;
@@ -1121,8 +1123,8 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 		if (entry.kind === "placeholder") {
 			const glyph = widgetStepGlyph(entry.status as AsyncJobStep["status"], theme);
 			const statusLabel = widgetStepStatus(entry.status as AsyncJobStep["status"], theme);
-			c.addChild(new Text(truncLine(`  ${glyph} ${entry.stepLabel}: ${themeBold(theme, entry.agentName)} ${theme.fg("dim", "·")} ${statusLabel}`, width), 0, 0));
-			if (entry.error) c.addChild(new Text(truncLine(theme.fg("error", `    ⎿  Error: ${entry.error}`), width), 0, 0));
+			c.addChild(new TruncatedText(`  ${glyph} ${entry.stepLabel}: ${themeBold(theme, entry.agentName)} ${theme.fg("dim", "·")} ${statusLabel}`));
+			if (entry.error) c.addChild(new TruncatedText(theme.fg("error", `    ⎿  Error: ${entry.error}`)));
 			continue;
 		}
 		const i = entry.resultIndex;
@@ -1131,10 +1133,10 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 		const agentName = entry.agentName;
 		if (!r) {
 			const pendingLabel = chainEntries ? resultRowLabel(d, multiLabel, i, rowNumber) : `${itemTitle} ${rowNumber}`;
-			c.addChild(new Text(truncLine(theme.fg("dim", `  ◦ ${pendingLabel}: ${agentName} · pending`), width), 0, 0));
+			c.addChild(new TruncatedText(theme.fg("dim", `  ◦ ${pendingLabel}: ${agentName} · pending`)));
 			continue;
 		}
-		const output = getSingleResultOutput(r);
+		const output = getSingleResultOutput(r) || (d.intercomDelivery?.delivered ? d.intercomDelivery.summary : "");
 		const progressFromArray = d.progress?.find((p) => p.index === i) || d.progress?.find((p) => p.agent === r.agent && p.status === "running");
 		const rProg = r.progress || progressFromArray || r.progressSummary;
 		const rRunning = rProg && "status" in rProg && rProg.status === "running";
@@ -1145,21 +1147,22 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 		const pendingLabel = rPending ? ` ${theme.fg("dim", "· pending")}` : "";
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);
 		const line = `${glyph} ${stepLabel}: ${themeBold(theme, agentName)}${modelStat(theme, r.model)}${stepStats ? ` ${theme.fg("dim", "·")} ${stepStats}` : ""}${pendingLabel}`;
-		c.addChild(new Text(truncLine(`  ${line}`, width), 0, 0));
+		c.addChild(new TruncatedText(`  ${line}`));
 		if (rRunning && rProg && "status" in rProg) {
 			const activity = compactCurrentActivity(rProg);
 			c.addChild(new Text(truncLine(theme.fg("dim", `    ⎿  ${activity}`), width), 0, 0));
 			showLiveDetailHint = true;
 		} else if (!rPending && (r.exitCode !== 0 || r.interrupted || r.detached || r.timedOut || hasEmptyTextOutputWithoutOutputTarget(r.task, output))) {
-			c.addChild(new Text(truncLine(theme.fg(r.exitCode !== 0 ? "error" : "dim", `    ⎿  ${resultStatusLine(r, output)}`), width), 0, 0));
+			c.addChild(new TruncatedText(theme.fg(r.exitCode !== 0 ? "error" : "dim", `    ⎿  ${resultStatusLine(r, output)}`)));
 		}
 		const outputTarget = extractOutputTarget(r.task);
-		if (outputTarget) c.addChild(new Text(truncLine(theme.fg("dim", `    output: ${outputTarget}`), width), 0, 0));
-		if (r.artifactPaths) c.addChild(new Text(truncLine(theme.fg("dim", `    output: ${shortenPath(r.artifactPaths.outputPath)}`), width), 0, 0));
+		if (outputTarget) c.addChild(new TruncatedText(theme.fg("dim", `    output: ${outputTarget}`)));
+		if (r.artifactPaths) c.addChild(new TruncatedText(theme.fg("dim", `    output: ${shortenPath(r.artifactPaths.outputPath)}`)));
 	}
 	if (renderEntries.length > visibleEntries.length) c.addChild(new Text(theme.fg("dim", `  +${renderEntries.length - visibleEntries.length} more · Ctrl+O expands`), 0, 0));
 	if (showLiveDetailHint) c.addChild(new Text(theme.fg("accent", "  Press Ctrl+O for live detail"), 0, 0));
-	if (d.artifacts) c.addChild(new Text(truncLine(theme.fg("dim", `  artifacts: ${shortenPath(d.artifacts.dir)}`), width), 0, 0));
+	if (d.artifacts) c.addChild(new TruncatedText(theme.fg("dim", `  artifacts: ${shortenPath(d.artifacts.dir)}`)));
+	if (!hasRunning) c.addChild(new TruncatedText(theme.fg("dim", `  ${keyText("app.tools.expand")} ${d.intercomDelivery?.delivered ? "receipt details" : "full response"}`)));
 	return c;
 }
 
@@ -1177,6 +1180,13 @@ export function renderSubagentResult(
 		const text = t?.type === "text" ? t.text : "(no output)";
 		const contextPrefix = d?.context === "fork" ? `${theme.fg("warning", "[fork]")} ` : "";
 		if (options.expanded) return new Text(`${contextPrefix}${text}`, 0, 0);
+		if (d?.asyncId && d.mode !== "management" && !result.isError) {
+			const headline = d.managementControl?.revivedFromRunId ? "Revived async" : firstOutputLine(text).replace(` [${d.asyncId}]`, "");
+			const c = new Container();
+			c.addChild(new TruncatedText(`${contextPrefix}[${d.asyncId.slice(0, 8)}] ${headline}`));
+			c.addChild(new TruncatedText(theme.fg("dim", `${keyText("app.tools.expand")} details`)));
+			return c;
+		}
 		const maxCompactLines = 12;
 		const lines = text.replace(/\n+$/, "").split("\n");
 		if (lines.length === 1) return new Text(truncLine(`${contextPrefix}${lines[0]}`, getTermWidth() - 4), 0, 0);
@@ -1186,6 +1196,9 @@ export function renderSubagentResult(
 	}
 
 	const expanded = options.expanded;
+	const receiptText = expanded && d.intercomDelivery?.delivered
+		? result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")
+		: undefined;
 	const mdTheme = getMarkdownTheme();
 
 	if (d.mode === "single" && d.results.length === 1) {
@@ -1261,7 +1274,9 @@ export function renderSubagentResult(
 			if (toolCallLines.length) c.addChild(new Spacer(1));
 		}
 
+		if (r.error && !output.includes(r.error)) c.addChild(new Text(theme.fg("error", r.error), 0, 0));
 		if (output) c.addChild(new Markdown(output, 0, 0, mdTheme));
+		if (receiptText) c.addChild(new Text(receiptText, 0, 0));
 		c.addChild(new Spacer(1));
 		if (r.skills?.length) {
 			c.addChild(new Text(fit(theme.fg("dim", `Skills: ${r.skills.join(", ")}`)), 0, 0));
@@ -1290,7 +1305,7 @@ export function renderSubagentResult(
 		|| d.results.some((r) => r.progress?.status === "running")
 		|| workflowGraphHasStatus(d, ["running"]);
 	const ok = d.results.filter((r) => r.progress?.status === "completed" || (r.exitCode === 0 && r.progress?.status !== "running")).length;
-	const hasEmptyWithoutTarget = d.results.some((r) =>
+	const hasEmptyWithoutTarget = !d.intercomDelivery?.delivered && d.results.some((r) =>
 		r.exitCode === 0
 		&& r.progress?.status !== "running"
 		&& hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
@@ -1343,7 +1358,7 @@ export function renderSubagentResult(
 					const result = d.results[i];
 					const isFailed = result && result.exitCode !== 0 && result.progress?.status !== "running";
 					const isComplete = result && result.exitCode === 0 && result.progress?.status !== "running";
-					const isEmptyWithoutTarget = Boolean(result)
+					const isEmptyWithoutTarget = !d.intercomDelivery?.delivered && Boolean(result)
 						&& Boolean(isComplete)
 						&& hasEmptyTextOutputWithoutOutputTarget(result.task, getSingleResultOutput(result));
 					const isCurrent = i === (d.currentStepIndex ?? d.results.length);
@@ -1374,6 +1389,7 @@ export function renderSubagentResult(
 	if (chainVis) {
 		c.addChild(new Text(fit(`  ${chainVis}`), 0, 0));
 	}
+	if (receiptText) c.addChild(new Text(receiptText, 0, 0));
 
 	const useResultsDirectly = multiLabel.hasParallelInChain || !d.chainAgents?.length;
 	const displayStart = multiLabel.showActiveGroupOnly ? multiLabel.groupStartIndex : 0;
@@ -1416,12 +1432,12 @@ export function renderSubagentResult(
 		const rRunning = rProg?.status === "running";
 		const stepNumber = typeof rProg?.index === "number" ? rProg.index + 1 : i + 1;
 
-		const resultOutput = getSingleResultOutput(r);
+		const resultOutput = r.truncation?.text || getSingleResultOutput(r);
 		const statusIcon = rRunning
 			? theme.fg("warning", "running")
 			: r.exitCode !== 0
 				? theme.fg("error", "failed")
-				: hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
+				: !d.intercomDelivery?.delivered && hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
 					? theme.fg("warning", "warning")
 					: theme.fg("success", "done");
 		const stats = rProg ? ` | ${rProg.toolCount} tools, ${formatDuration(rProg.durationMs)}` : "";
@@ -1495,6 +1511,8 @@ export function renderSubagentResult(
 				c.addChild(new Text(fit(theme.fg("muted", `      ${line}`)), 0, 0));
 			}
 			if (toolCallLines.length) c.addChild(new Spacer(1));
+			if (r.error && !resultOutput.includes(r.error)) c.addChild(new Text(theme.fg("error", r.error), 0, 0));
+			if (resultOutput) c.addChild(new Markdown(resultOutput, 0, 0, mdTheme));
 		}
 
 		c.addChild(new Spacer(1));

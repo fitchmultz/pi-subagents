@@ -1661,10 +1661,11 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return { systemPrompt: `${event.systemPrompt}\n\n${hint}` };
   });
 
-  pi.registerMessageRenderer("intercom_message", (message, _options, theme) => {
+  pi.registerMessageRenderer("intercom_message", (message, options, theme) => {
     const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string } | undefined;
     if (!details) return undefined;
-    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText);
+    const expanded = options.expanded || details.from.id !== "subagent-result" || details.from.status === "needs_attention" || details.message.expectsReply === true || Boolean(details.replyCommand);
+    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, expanded);
   });
 
   async function requestSupervisorDecision(reason: "need_decision" | "interview_request", message: string | undefined, interview: SupervisorInterviewRequest | undefined, signal: AbortSignal | undefined, ctx: ExtensionContext) {

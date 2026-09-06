@@ -327,13 +327,17 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		for (const line of previewLines.length > 0 ? previewLines : ["(no output)"]) {
 			text += `\n  ${theme.fg("dim", `⎿  ${line}`)}`;
 		}
-		if (!options.expanded && trimmedPreview.includes("\n")) {
+		if (!options.expanded) {
 			text += `\n  ${theme.fg("dim", "Ctrl+O full notification")}`;
 		}
 		if (details.sessionLabel && details.sessionValue) {
 			text += `\n  ${theme.fg("muted", `${details.sessionLabel}: ${shortenPath(details.sessionValue)}`)}`;
 		}
-		return new Text(text, 0, 0);
+		if (options.expanded) return new Text(text, 0, 0);
+		return {
+			render: (width) => text.split("\n").map((line) => truncateToWidth(line, width)),
+			invalidate() {},
+		};
 	});
 
 	pi.registerMessageRenderer<SubagentControlMessageDetails>(SUBAGENT_CONTROL_MESSAGE_TYPE, (message, _options, theme) => {
