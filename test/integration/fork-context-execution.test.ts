@@ -1154,7 +1154,7 @@ describe("fork context execution wiring", () => {
 		mockPi.reset();
 		mockPi.onCall({
 			steps: [
-				{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] },
+				{ jsonl: [events.toolStart("intercom", { action: "ask", to: "orchestrator" })] },
 				{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
 			],
 		});
@@ -1195,7 +1195,7 @@ describe("fork context execution wiring", () => {
 		mockPi.reset();
 		mockPi.onCall({
 			steps: [
-				{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] },
+				{ jsonl: [events.toolStart("intercom", { action: "ask", to: "orchestrator" })] },
 				{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
 			],
 		});

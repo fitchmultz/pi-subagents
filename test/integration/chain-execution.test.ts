@@ -1293,7 +1293,7 @@ describe("chain execution — parallel steps", () => {
 	it("detaches parallel chain children cleanly on intercom handoff", async () => {
 		mockPi.onCall({
 			steps: [
-				{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] },
+				{ jsonl: [events.toolStart("intercom", { action: "ask", to: "orchestrator" })] },
 				{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
 			],
 		});
@@ -1340,7 +1340,7 @@ describe("chain execution — parallel steps", () => {
 	it("keeps a detached parallel-chain worktree until its child exits", async () => {
 		initGitRepo(tempDir);
 		mockPi.onCall({ steps: [
-			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "Need input" })] },
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need input" })] },
 			{ delay: 500, jsonl: [events.assistantMessage("finished in chain worktree")] },
 		] });
 		const agents = [makeAgent("a", { systemPrompt: "Intercom orchestration channel:" })];
@@ -1378,7 +1378,7 @@ describe("chain execution — parallel steps", () => {
 
 	it("reports failed dynamic items while preserving a sibling detach", async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "a" }, { path: "b" }] } });
-		mockPi.onCall({ steps: [{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] }, { delay: 1000 }] });
+		mockPi.onCall({ steps: [{ jsonl: [events.toolStart("intercom", { action: "ask", to: "orchestrator" })] }, { delay: 1000 }] });
 		mockPi.onCall({ stderr: "Item b failed", exitCode: 1 });
 		const agents = [makeAgent("scout"), makeAgent("reviewer", { systemPrompt: "Intercom orchestration channel:" })];
 		const intercomEvents = createEventBus();
@@ -1470,7 +1470,7 @@ describe("chain execution — parallel steps", () => {
 	});
 
 	it("failFast interrupts running parallel siblings", async () => {
-		mockPi.onCall({ matchArgsIncludes: "mock/fail", exitCode: 1, stderr: "stop now" });
+		mockPi.onCall({ matchArgsIncludes: "mock/fail", waitForCalls: 2, exitCode: 1, stderr: "stop now" });
 		mockPi.onCall({ matchArgsIncludes: "mock/slow", delay: 5_000, output: "too slow" });
 		const startedAt = Date.now();
 		const result = await executeChain(makeChainParams([{

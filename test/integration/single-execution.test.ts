@@ -1355,7 +1355,7 @@ describe("single sync execution", () => {
 		const result = await runSync(tempDir, agents, "echo", "Task", {});
 		const elapsed = Date.now() - start;
 
-		assert.ok(elapsed < 4000, `should clean up shortly after terminal stop, took ${elapsed}ms`);
+		assert.ok(elapsed < 4000, `should clean up shortly after final settlement, took ${elapsed}ms`);
 		assert.equal(result.exitCode, 0);
 		assert.equal(result.error, undefined);
 		assert.equal(result.finalOutput, "done-before-drain");
@@ -1382,7 +1382,7 @@ describe("single sync execution", () => {
 		const result = await runSync(tempDir, agents, "echo", "Task", {});
 		const elapsed = Date.now() - start;
 
-		assert.ok(elapsed < 4000, `should clean up shortly after empty terminal stop, took ${elapsed}ms`);
+		assert.ok(elapsed < 4000, `should clean up shortly after empty final settlement, took ${elapsed}ms`);
 		assert.equal(result.exitCode, 0);
 		assert.equal(result.error, undefined);
 		assert.equal(result.finalOutput, "");
@@ -1684,8 +1684,8 @@ describe("single sync execution", () => {
 			const agents = makeAgentConfigs(["echo"]);
 
 			// Emit the detach request the moment we observe the coordination tool start
-			// in a progress update — this is the signal the parent has set
-			// `intercomStarted=true`. Using a fixed delay here races the mock's
+			// in a progress update — the parent now tracks a live blocking call.
+			// Using a fixed delay here races the mock's
 			// cold spawn and flakes under load.
 			let detachEmitted = false;
 			let completedResult: Awaited<ReturnType<typeof runSync>> | undefined;
@@ -1744,7 +1744,7 @@ describe("single sync execution", () => {
 		assert.equal(mockPi.callCount(), 1);
 		mockPi.onCall({
 			steps: [
-				{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] },
+				{ jsonl: [events.toolStart("intercom", { action: "ask", to: "orchestrator" })] },
 				{ delay: 500, jsonl: [events.assistantMessage("after intercom")] },
 			],
 		});

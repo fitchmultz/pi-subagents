@@ -213,6 +213,13 @@ async function main() {
 	const tempCallPath = path.join(queueDir, `.tmp-${path.basename(callPath)}`);
 	fs.writeFileSync(tempCallPath, JSON.stringify(callRecord), "utf-8");
 	fs.renameSync(tempCallPath, callPath);
+	if (response.waitForCalls) {
+		const deadline = Date.now() + 5000;
+		while (fs.readdirSync(queueDir).filter((name) => name.startsWith("call-")).length < response.waitForCalls) {
+			if (Date.now() >= deadline) fail("Timed out waiting for sibling mock calls.");
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	}
 
 	if (response.ignoreSignals === true) {
 		process.on("SIGINT", () => {});
@@ -247,17 +254,19 @@ async function main() {
 				else await writeStdout(`${output}\n`);
 			}
 		await maybeWriteStructuredOutput(response, jsonMode);
+	if (jsonMode) await writeJsonlLine({ type: "agent_settled" });
 
 	if (typeof response.stderr === "string" && response.stderr.length > 0) {
 		process.stderr.write(response.stderr);
 	}
 
-	if (typeof response.keepAliveAfterFinalMessageMs === "number" && response.keepAliveAfterFinalMessageMs > 0) {
-		await new Promise((resolve) => setTimeout(resolve, response.keepAliveAfterFinalMessageMs));
-	}
 	if (typeof response.spawnSignalResistantDescendantPidFile === "string") {
 		const descendant = spawn(process.execPath, ["-e", "process.on('SIGINT',()=>{});process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], { stdio: ["ignore", "inherit", "inherit"] });
 		fs.writeFileSync(response.spawnSignalResistantDescendantPidFile, String(descendant.pid), "utf-8");
+	}
+
+	if (typeof response.keepAliveAfterFinalMessageMs === "number" && response.keepAliveAfterFinalMessageMs > 0) {
+		await new Promise((resolve) => setTimeout(resolve, response.keepAliveAfterFinalMessageMs));
 	}
 
 	process.exit(typeof response.exitCode === "number" ? response.exitCode : 0);

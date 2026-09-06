@@ -203,7 +203,7 @@ describe("parallel agent execution", () => {
 	it("keeps a detached child's worktree until that child exits", async () => {
 		initGitRepo(tempDir);
 		mockPi.onCall({ steps: [
-			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "Need input" })] },
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need input" })] },
 			{ delay: 500, jsonl: [events.assistantMessage("finished in worktree")] },
 		] });
 		const bus = createEventBus();

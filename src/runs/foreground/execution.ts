@@ -49,7 +49,7 @@ import {
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { hasCompletedMutationToolCall, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
-import { attachPostExitStdioGuard, isChildTreeAlive, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
+import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
 import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
@@ -264,6 +264,9 @@ async function runSingleAttempt(
 		completionPolicy: CompletionPolicy;
 	},
 ): Promise<SingleResult> {
+	if (options.signal?.aborted) {
+		return { agent: agent.name, task, exitCode: 1, messages: [], usage: emptyUsage(), error: "Subagent cancelled." };
+	}
 	const modelArg = applyThinkingSuffix(model, agent.thinking);
 	let args: string[];
 	let sharedEnv: Record<string, string | undefined>;
@@ -394,19 +397,18 @@ async function runSingleAttempt(
 			env: spawnEnv,
 			stdio: ["ignore", "pipe", "pipe"],
 			detached: true,
-			});
+		});
 		let buf = "";
 		let processClosed = false;
 		let settled = false;
 		let detached = false;
-		let intercomStarted = false;
+		const blockingIntercomCalls = new Set<string>();
+		const lifecycle = attachChildProcessLifecycle(proc);
 		let assistantError: string | undefined;
 		let timedOut = false;
 		let resourceLimited = false;
 		let timeoutTimer: NodeJS.Timeout | undefined;
-		let timeoutEscalationTimer: NodeJS.Timeout | undefined;
 		let resourceLimitTimer: NodeJS.Timeout | undefined;
-		let resourceLimitEscalationTimer: NodeJS.Timeout | undefined;
 		let removeAbortListener: (() => void) | undefined;
 		let removeInterruptListener: (() => void) | undefined;
 		let activityTimer: NodeJS.Timeout | undefined;
@@ -434,56 +436,10 @@ async function runSingleAttempt(
 			resolveOuter(-2);
 		};
 
-		// If the child emits a terminal assistant stop but never exits,
-		// give it a short grace period to flush naturally, then clean it up.
-		const FINAL_STOP_GRACE_MS = 1000;
-		const HARD_KILL_MS = 3000;
-		let childExited = false;
-		let terminationRequested = false;
-		let forcedTerminationSignal = false;
 		let cleanTerminalAssistantStopReceived = false;
-		let finalDrainTimer: NodeJS.Timeout | undefined;
-		let finalHardKillTimer: NodeJS.Timeout | undefined;
-		const forceTerminate = (signal: NodeJS.Signals, graceMs = HARD_KILL_MS) => {
-			terminationRequested = true;
-			trySignalChildTree(proc, signal);
-			const timer = setTimeout(() => {
-				if (!settled && !childExited && isChildTreeAlive(proc)) trySignalChildTree(proc, "SIGKILL");
-			}, graceMs);
-			timer.unref?.();
-		};
-		const clearFinalDrainTimers = () => {
-			if (finalDrainTimer) {
-				clearTimeout(finalDrainTimer);
-				finalDrainTimer = undefined;
-			}
-			if (finalHardKillTimer) {
-				clearTimeout(finalHardKillTimer);
-				finalHardKillTimer = undefined;
-			}
-		};
-		const startFinalDrain = () => {
-			if (childExited || finalDrainTimer || settled || processClosed) return;
-			terminationRequested = true;
-			finalDrainTimer = setTimeout(() => {
-				if (settled || processClosed || childExited) return;
-				const termSent = trySignalChildTree(proc, "SIGTERM");
-				if (!termSent) return;
-				forcedTerminationSignal = true;
-				if (!cleanTerminalAssistantStopReceived && !assistantError) {
-					result.error = result.error ?? `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
-				}
-				finalHardKillTimer = setTimeout(() => {
-					finalHardKillTimer = undefined;
-					if (!settled && !childExited && isChildTreeAlive(proc)) forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
-				}, HARD_KILL_MS);
-				finalHardKillTimer.unref?.();
-			}, FINAL_STOP_GRACE_MS);
-			finalDrainTimer.unref?.();
-		};
 
 		unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
-			if (!options.allowIntercomDetach || detached || processClosed || !intercomStarted) return;
+			if (!options.allowIntercomDetach || detached || processClosed || lifecycle.stopping || blockingIntercomCalls.size === 0) return;
 			if (!payload || typeof payload !== "object") return;
 			const requestId = (payload as { requestId?: unknown }).requestId;
 			if (typeof requestId !== "string" || requestId.length === 0) return;
@@ -494,8 +450,6 @@ async function runSingleAttempt(
 		const finish = (code: number) => {
 			if (settled) return;
 			settled = true;
-			clearFinalDrainTimers();
-			clearStdioGuard();
 			if (timeoutTimer) {
 				clearTimeout(timeoutTimer);
 				timeoutTimer = undefined;
@@ -580,12 +534,7 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
-			terminationRequested = true;
-			trySignalChildTree(proc, "SIGINT");
-			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!settled && !childExited) forceTerminate("SIGTERM");
-			}, 1000);
-			resourceLimitEscalationTimer.unref?.();
+			lifecycle.terminate();
 		};
 
 		const triggerResourceLimit = (kind: "maxExecutionTimeMs" | "maxTokens", limit: number, observed?: number) => {
@@ -600,12 +549,7 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
-			terminationRequested = true;
-			trySignalChildTree(proc, "SIGINT");
-			resourceLimitEscalationTimer = setTimeout(() => {
-				if (!settled && !childExited) forceTerminate("SIGTERM");
-			}, 1000);
-			resourceLimitEscalationTimer.unref?.();
+			lifecycle.terminate();
 		};
 
 		const emitUpdateSnapshot = (text: string) => {
@@ -640,6 +584,8 @@ async function runSingleAttempt(
 				return;
 			}
 			if (!evt || typeof evt !== "object") return;
+			lifecycle.observeEvent(claudeCodeInvocation && evt.type === "result" ? "agent_settled" : evt.type);
+			if (evt.type === "agent_settled") blockingIntercomCalls.clear();
 			if (claudeCodeInvocation && evt.type === "result") {
 				const resultEvent = evt as ClaudeCodeResultEvent;
 				if (options.structuredOutput && resultEvent.structured_output !== undefined) {
@@ -680,8 +626,9 @@ async function runSingleAttempt(
 				const toolArgs = evt.args && typeof evt.args === "object" && !Array.isArray(evt.args)
 					? evt.args as Record<string, unknown>
 					: {};
-				if (options.allowIntercomDetach && (evt.toolName === "intercom" || evt.toolName === "contact_supervisor")) {
-					intercomStarted = true;
+				if ((evt.toolName === "intercom" && toolArgs.action === "ask")
+					|| (evt.toolName === "contact_supervisor" && (toolArgs.reason === "need_decision" || toolArgs.reason === "interview_request"))) {
+					blockingIntercomCalls.add(evt.toolCallId ?? evt.toolName);
 				}
 				progress.toolCount++;
 				progress.currentTool = evt.toolName;
@@ -693,6 +640,7 @@ async function runSingleAttempt(
 			}
 
 			if (evt.type === "tool_execution_end") {
+				blockingIntercomCalls.delete(evt.toolCallId ?? evt.toolName ?? "");
 				if (progress.currentTool) {
 					progress.recentTools.push({
 						tool: progress.currentTool,
@@ -738,15 +686,11 @@ async function runSingleAttempt(
 					if (evt.message.errorMessage) assistantError = evt.message.errorMessage;
 					const assistantText = extractTextFromContent(evt.message.content);
 					appendRecentOutput(progress, assistantText.split("\n").slice(-10));
-					// Final assistant message: start the exit drain window.
 					const stopReason = (evt.message as { stopReason?: string }).stopReason;
 					const hasToolCall = Array.isArray(evt.message.content)
 						&& evt.message.content.some((part) => (part as { type?: string }).type === "toolCall");
-					if (stopReason === "stop" && !hasToolCall) {
-						if (!evt.message.errorMessage && assistantText.trim()) assistantError = undefined;
-						cleanTerminalAssistantStopReceived ||= !evt.message.errorMessage;
-						startFinalDrain();
-					}
+					cleanTerminalAssistantStopReceived = stopReason === "stop" && !hasToolCall && !evt.message.errorMessage;
+					if (cleanTerminalAssistantStopReceived && assistantText.trim()) assistantError = undefined;
 				} else if (evt.message.role === "toolResult") {
 					const resultText = extractTextFromContent(evt.message.content);
 					appendRecentOutput(progress, resultText.split("\n").slice(-10));
@@ -792,7 +736,6 @@ async function runSingleAttempt(
 
 		let stderrBuf = "";
 
-		const clearStdioGuard = attachPostExitStdioGuard(proc, { idleMs: 2000, hardMs: 8000 });
 		proc.stdout.on("data", (d) => {
 			buf += d.toString();
 			const lines = buf.split("\n");
@@ -802,24 +745,16 @@ async function runSingleAttempt(
 		proc.stderr.on("data", (d) => {
 			stderrBuf += d.toString();
 		});
-		proc.on("exit", () => {
-			childExited = true;
-			if (terminationRequested && isChildTreeAlive(proc)) {
-				forcedTerminationSignal = trySignalChildTree(proc, "SIGKILL") || forcedTerminationSignal;
-			}
-		});
 		proc.on("close", (code, signal) => {
-			clearFinalDrainTimers();
-			clearStdioGuard();
 			cleanupTempDir(tempDir);
 			processClosed = true;
 			if (buf.trim()) processLine(buf);
 			if (!result.error && assistantError) result.error = assistantError;
-			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !result.error;
+			const forcedDrainAfterFinalSuccess = lifecycle.settledCleanup && cleanTerminalAssistantStopReceived && !result.error;
 			if (code !== 0 && stderrBuf.trim() && !result.error && !forcedDrainAfterFinalSuccess) {
 				result.error = stderrBuf.trim();
 			}
-			const finalCode = forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (code ?? 1) : (code ?? 0);
+			const finalCode = forcedDrainAfterFinalSuccess ? 0 : lifecycle.stopping || signal ? (code ?? 1) : (code ?? 0);
 			if (detached) {
 				result.exitCode = finalCode;
 				let finalized: SingleResult;
@@ -859,8 +794,6 @@ async function runSingleAttempt(
 			finish(finalCode);
 		});
 		proc.on("error", (error) => {
-			clearFinalDrainTimers();
-			clearStdioGuard();
 			cleanupTempDir(tempDir);
 			if (!result.error) {
 				result.error = error instanceof Error ? error.message : String(error);
@@ -871,11 +804,10 @@ async function runSingleAttempt(
 		if (options.signal) {
 			const kill = () => {
 				if (processClosed) return;
-				if (options.allowIntercomDetach && intercomStarted && !detached) {
-					detachForIntercom();
-					return;
-				}
-				forceTerminate("SIGTERM");
+				interruptedByControl = false;
+				result.interrupted = false;
+				result.error = "Subagent cancelled.";
+				lifecycle.terminate();
 			};
 			if (options.signal.aborted) kill();
 			else {
@@ -897,12 +829,7 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [message]);
 			progress.activityState = undefined;
 			fireUpdate();
-			terminationRequested = true;
-			trySignalChildTree(proc, "SIGINT");
-			timeoutEscalationTimer = setTimeout(() => {
-				if (!settled && !childExited) forceTerminate("SIGTERM");
-			}, 1000);
-			timeoutEscalationTimer.unref?.();
+			lifecycle.terminate();
 		};
 		const scheduleTimeout = () => {
 			if (timeoutTimer) {
@@ -938,7 +865,7 @@ async function runSingleAttempt(
 
 		if (options.interruptSignal) {
 			const interrupt = () => {
-				if (processClosed || settled || timedOut || resourceLimited) return;
+				if (options.signal?.aborted || processClosed || settled || timedOut || resourceLimited) return;
 				interruptedByControl = true;
 				progress.status = "running";
 				progress.durationMs = Date.now() - startTime;
@@ -946,11 +873,7 @@ async function runSingleAttempt(
 				result.finalOutput = "Interrupted. Waiting for explicit next action.";
 				progress.activityState = undefined;
 				fireUpdate();
-				terminationRequested = true;
-				trySignalChildTree(proc, "SIGINT");
-				setTimeout(() => {
-					if (!settled && !childExited) forceTerminate("SIGTERM");
-				}, 1000).unref?.();
+				lifecycle.terminate();
 			};
 			if (options.interruptSignal.aborted) interrupt();
 			else {
@@ -1145,6 +1068,7 @@ async function runSingleAttempt(
 			governing: acceptance,
 			output,
 			cwd: options.cwd ?? runtimeCwd,
+			signal: AbortSignal.any([options.signal, options.interruptSignal].filter((signal) => signal !== undefined)),
 		});
 		completed.acceptance = initialAcceptance;
 		if (shouldRunAcceptanceFinalization(acceptance) && completed.exitCode === 0 && !completed.interrupted) {
@@ -1278,6 +1202,7 @@ async function runAcceptanceFinalizationLoop(input: {
 			governing: input.acceptance,
 			output: rawOutput,
 			cwd: input.options.cwd ?? input.runtimeCwd,
+			signal: AbortSignal.any([input.options.signal, input.options.interruptSignal].filter((signal) => signal !== undefined)),
 		});
 		authoritativeLedger = selfReviewLedger;
 		turns.push(createFinalizationTurn({ turn, prompt, rawOutput, ledger: selfReviewLedger }));
@@ -1289,6 +1214,7 @@ async function runAcceptanceFinalizationLoop(input: {
 					acceptance: input.acceptance,
 					output: rawOutput,
 					cwd: input.options.cwd ?? input.runtimeCwd,
+					signal: AbortSignal.any([input.options.signal, input.options.interruptSignal].filter((signal) => signal !== undefined)),
 				});
 			return attachFinalizationToLedger({ initialLedger: input.initialLedger, authoritativeLedger, turns, status: "completed", maxTurns });
 		}
@@ -1428,7 +1354,7 @@ export async function runSync(
 			if (attemptSucceeded) {
 				break modelLoop;
 			}
-			if (result.timedOut || result.resourceLimitExceeded || result.interrupted) {
+			if (options.signal?.aborted || result.timedOut || result.resourceLimitExceeded || result.interrupted) {
 				break modelLoop;
 			}
 			if (sameModelRetries < MAX_SAME_MODEL_RECOVERY_RETRIES && isRecoverableSameModelFailure(result.error, result.exitCode)) {
@@ -1514,6 +1440,7 @@ export async function runSync(
 		governing: effectiveAcceptance,
 		output: initialAcceptanceOutput,
 		cwd: options.cwd ?? runtimeCwd,
+		signal: AbortSignal.any([options.signal, options.interruptSignal].filter((signal) => signal !== undefined)),
 	});
 	result.acceptance = initialAcceptance;
 	if (shouldRunAcceptanceFinalization(effectiveAcceptance) && result.exitCode === 0 && !result.detached && !result.interrupted) {

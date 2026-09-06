@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { addAbortListener } from "node:events";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -63,7 +64,7 @@ import { createStructuredOutputRuntime, readStructuredOutput, type StructuredOut
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { formatModelAttemptNote, formatModelRecoveryAttemptNote, isRecoverableSameModelFailure, isRetryableModelFailure } from "../shared/model-fallback.ts";
-import { attachPostExitStdioGuard, isChildTreeAlive, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
+import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
 import { hasCompletedMutationToolCall, resolveCompletionPolicy } from "../shared/completion-guard.ts";
 import {
@@ -299,13 +300,14 @@ function runPiStreaming(
 	piArgv1?: string,
 	maxSubagentDepth?: number,
 	childEventContext?: ChildEventContext,
-	registerInterrupt?: (interrupt: (() => void) | undefined) => void,
+	interruptSignal?: AbortSignal,
 	onChildEvent?: (event: ChildEvent) => void,
 	maxExecutionTimeMs?: number,
 	maxTokens?: number,
 	claudeCodeInvocation?: ClaudeCodeInvocation,
 	sessionFile?: string,
 	structuredOutput?: StructuredOutputRuntime,
+	signal?: AbortSignal,
 ): Promise<RunPiStreamingResult> {
 	return new Promise((resolve) => {
 		const startTime = Date.now();
@@ -320,6 +322,7 @@ function runPiStreaming(
 			env: spawnEnv,
 			detached: true,
 		});
+		const lifecycle = attachChildProcessLifecycle(child);
 		let stderr = "";
 		let stdoutBuf = "";
 		let stderrBuf = "";
@@ -348,14 +351,10 @@ function runPiStreaming(
 		};
 
 		const failForToolLoop = (message: string) => {
-			if (settled || resourceLimitExceeded || terminationRequested) return;
+			if (settled || resourceLimitExceeded || lifecycle.stopping) return;
 			error = message;
 			writeOutputLine(message);
-			terminationRequested = true;
-			trySignalChildTree(child, "SIGINT");
-			setTimeout(() => {
-				if (!settled && !childExited && isChildTreeAlive(child)) forceTerminate("SIGTERM");
-			}, 1000).unref?.();
+			lifecycle.terminate();
 		};
 
 		const triggerResourceLimit = (kind: ResourceLimitExceeded["kind"], limit: number, observed?: number) => {
@@ -364,11 +363,7 @@ function runPiStreaming(
 			resourceLimitExceeded = { kind, limit, ...(observed !== undefined ? { observed } : {}), message };
 			error = message;
 			writeOutputLine(message);
-			terminationRequested = true;
-			trySignalChildTree(child, "SIGINT");
-			setTimeout(() => {
-				if (!settled && !childExited && isChildTreeAlive(child)) forceTerminate("SIGTERM");
-			}, 1000).unref?.();
+			lifecycle.terminate();
 		};
 
 		const appendChildEvent = (event: object) => {
@@ -399,6 +394,7 @@ function runPiStreaming(
 				return;
 			}
 			if (!event || typeof event !== "object") return;
+			lifecycle.observeEvent(claudeCodeInvocation && event.type === "result" ? "agent_settled" : event.type);
 			if (claudeCodeInvocation && event.type === "result") {
 				const resultEvent = event as ClaudeCodeResultEvent;
 				if (structuredOutput && resultEvent.structured_output !== undefined) {
@@ -480,11 +476,8 @@ function runPiStreaming(
 				const stopReason = (event.message as { stopReason?: string }).stopReason;
 				const hasToolCall = Array.isArray(event.message.content)
 					&& event.message.content.some((part) => (part as { type?: string }).type === "toolCall");
-				if (stopReason === "stop" && !hasToolCall) {
-					if (!event.message.errorMessage && extractTextFromContent(event.message.content).trim()) assistantError = undefined;
-					cleanTerminalAssistantStopReceived ||= !event.message.errorMessage;
-					startFinalDrain();
-				}
+				cleanTerminalAssistantStopReceived = stopReason === "stop" && !hasToolCall && !event.message.errorMessage;
+				if (cleanTerminalAssistantStopReceived && text.trim()) assistantError = undefined;
 			}
 		};
 
@@ -501,31 +494,14 @@ function runPiStreaming(
 			}
 		};
 
-		// Guard both cases that can leave the parent waiting on `close` forever:
-		// a lingering stdio holder after `exit`, or a child that never exits.
-		const FINAL_STOP_GRACE_MS = 1000;
-		const HARD_KILL_MS = 3000;
-		let childExited = false;
-		let terminationRequested = false;
-		let forcedTerminationSignal = false;
 		let cleanTerminalAssistantStopReceived = false;
-		let finalDrainTimer: NodeJS.Timeout | undefined;
-		let finalHardKillTimer: NodeJS.Timeout | undefined;
 		let settled = false;
-		const forceTerminate = (signal: NodeJS.Signals, graceMs = HARD_KILL_MS) => {
-			terminationRequested = true;
-			trySignalChildTree(child, signal);
-			setTimeout(() => {
-				if (!settled && !childExited && isChildTreeAlive(child)) trySignalChildTree(child, "SIGKILL");
-			}, graceMs).unref?.();
-		};
 		if (maxExecutionTimeMs !== undefined) {
 			resourceLimitTimer = setTimeout(() => {
 				triggerResourceLimit("maxExecutionTimeMs", maxExecutionTimeMs);
 			}, maxExecutionTimeMs);
 			resourceLimitTimer.unref?.();
 		}
-		const clearStdioGuard = attachPostExitStdioGuard(child, { idleMs: 2000, hardMs: 8000 });
 		child.stdout.on("data", (chunk: Buffer) => {
 			const text = chunk.toString();
 			stdoutBuf += text;
@@ -537,70 +513,35 @@ function runPiStreaming(
 		child.stderr.on("data", (chunk: Buffer) => {
 			processStderrText(chunk.toString());
 		});
-		registerInterrupt?.(() => {
-			if (settled || resourceLimitExceeded) return;
+		const interruptListener = interruptSignal && addAbortListener(interruptSignal, () => {
+			if (signal?.aborted || settled || resourceLimitExceeded) return;
 			interrupted = true;
 			if (!error) error = "Interrupted. Waiting for explicit next action.";
-			terminationRequested = true;
-			trySignalChildTree(child, "SIGINT");
-			setTimeout(() => {
-				if (!settled && !childExited && isChildTreeAlive(child)) forceTerminate("SIGTERM");
-			}, 1000).unref?.();
+			lifecycle.terminate();
 		});
-		const clearDrainTimers = () => {
-			if (finalDrainTimer) {
-				clearTimeout(finalDrainTimer);
-				finalDrainTimer = undefined;
-			}
-			if (finalHardKillTimer) {
-				clearTimeout(finalHardKillTimer);
-				finalHardKillTimer = undefined;
-			}
-			if (resourceLimitTimer) {
-				clearTimeout(resourceLimitTimer);
-				resourceLimitTimer = undefined;
-			}
+		const abortListener = signal && addAbortListener(signal, () => {
+			interrupted = false;
+			error = "Subagent cancelled.";
+			lifecycle.terminate();
+		});
+		const cleanup = () => {
+			clearTimeout(resourceLimitTimer);
+			interruptListener?.[Symbol.dispose]();
+			abortListener?.[Symbol.dispose]();
 		};
-		function startFinalDrain(): void {
-			if (childExited || finalDrainTimer || settled) return;
-			terminationRequested = true;
-			finalDrainTimer = setTimeout(() => {
-				if (settled || childExited) return;
-				const termSent = trySignalChildTree(child, "SIGTERM");
-				if (!termSent) return;
-				forcedTerminationSignal = true;
-				if (!cleanTerminalAssistantStopReceived && !error && !assistantError) {
-					error = `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
-				}
-				finalHardKillTimer = setTimeout(() => {
-					finalHardKillTimer = undefined;
-					if (!settled && !childExited && isChildTreeAlive(child)) forcedTerminationSignal = trySignalChildTree(child, "SIGKILL") || forcedTerminationSignal;
-				}, HARD_KILL_MS);
-				finalHardKillTimer.unref?.();
-			}, FINAL_STOP_GRACE_MS);
-			finalDrainTimer.unref?.();
-		}
-		child.on("exit", () => {
-			childExited = true;
-			if (terminationRequested && isChildTreeAlive(child)) {
-				forcedTerminationSignal = trySignalChildTree(child, "SIGKILL") || forcedTerminationSignal;
-			}
-		});
-		child.on("close", (exitCode, signal) => {
+		child.on("close", (exitCode, exitSignal) => {
 			settled = true;
-			registerInterrupt?.(undefined);
-			clearDrainTimers();
-			clearStdioGuard();
+			cleanup();
 			if (stdoutBuf.trim()) processStdoutLine(stdoutBuf);
 			if (stderrBuf.trim()) appendChildLine("subagent.child.stderr", stderrBuf);
 			outputStream.end();
 			const durationMs = Date.now() - startTime;
 			const finalOutput = resourceLimitExceeded?.message ?? (getFinalOutput(messages) || rawStdoutLines.join("\n").trim());
 			const finalError = resourceLimitExceeded?.message ?? error ?? assistantError;
-			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !finalError;
+			const forcedDrainAfterFinalSuccess = lifecycle.settledCleanup && cleanTerminalAssistantStopReceived && !finalError;
 			resolve({
 				stderr,
-				exitCode: resourceLimitExceeded ? 1 : interrupted || forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (exitCode ?? 1) : exitCode,
+				exitCode: resourceLimitExceeded ? 1 : interrupted || forcedDrainAfterFinalSuccess ? 0 : lifecycle.stopping || exitSignal ? (exitCode ?? 1) : exitCode,
 				messages,
 				usage,
 				model,
@@ -615,9 +556,7 @@ function runPiStreaming(
 
 		child.on("error", (spawnError) => {
 			settled = true;
-			registerInterrupt?.(undefined);
-			clearDrainTimers();
-			clearStdioGuard();
+			cleanup();
 			outputStream.end();
 			const finalOutput = resourceLimitExceeded?.message ?? (getFinalOutput(messages) || rawStdoutLines.join("\n").trim());
 			const spawnErrorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
@@ -748,6 +687,7 @@ interface SingleStepContext {
 	piPackageRoot?: string;
 	piArgv1?: string;
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void;
+	signal?: AbortSignal;
 	childIntercomTarget?: string;
 	orchestratorIntercomTarget?: string;
 	nestedRoute?: NestedRouteInfo;
@@ -761,6 +701,10 @@ async function runSingleStep(
 	step: SubagentStep,
 	ctx: SingleStepContext,
 ): Promise<RunSingleStepResult> {
+	if (ctx.signal?.aborted) return { agent: step.agent, output: "", exitCode: 1, error: "Subagent cancelled." };
+	const interruptController = new AbortController();
+	ctx.registerInterrupt?.(() => interruptController.abort());
+	const verificationSignal = AbortSignal.any([ctx.signal, interruptController.signal].filter((signal) => signal !== undefined));
 	const effectiveStructuredOutput = step.structuredOutput ?? (step.structuredOutputSchema
 		? createStructuredOutputRuntime(step.structuredOutputSchema, path.join(path.dirname(ctx.outputFile), "structured-output"))
 		: undefined);
@@ -875,13 +819,14 @@ async function runSingleStep(
 			ctx.piArgv1,
 			step.maxSubagentDepth,
 			{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
-			ctx.registerInterrupt,
+			interruptController.signal,
 			ctx.onChildEvent,
 			step.maxExecutionTimeMs,
 			step.maxTokens,
 			claudeCodeInvocation,
 			step.sessionFile,
 			effectiveStructuredOutput,
+			ctx.signal,
 		);
 		cleanupTempDir(tempDir);
 
@@ -938,7 +883,7 @@ async function runSingleStep(
 		finalOutputSnapshot = outputSnapshot;
 		finalResult = { ...run, exitCode: effectiveExitCode, model: candidate ?? run.model, error, structuredOutput } as RunPiStreamingResult & { structuredOutput?: unknown };
 		if (attempt.success || completionGuardError) break;
-		if (run.resourceLimitExceeded || run.interrupted) break;
+		if (ctx.signal?.aborted || run.resourceLimitExceeded || run.interrupted) break;
 		const sameModelRetryCount = sameModelRetryCounts.get(index) ?? 0;
 		if (sameModelRetryCount < MAX_SAME_MODEL_RECOVERY_RETRIES && isRecoverableSameModelFailure(error, effectiveExitCode)) {
 			const nextRetryCount = sameModelRetryCount + 1;
@@ -1003,12 +948,13 @@ async function runSingleStep(
 			governing: step.effectiveAcceptance,
 			output: outputForAcceptance,
 			cwd: step.cwd ?? ctx.cwd,
+			signal: verificationSignal,
 		})
 		: undefined;
 	let finalizationInterrupted = false;
 	let finalizationResourceLimitExceeded: ResourceLimitExceeded | undefined;
 	let finalizationProcessError: string | undefined;
-	if (acceptance && step.effectiveAcceptance && shouldRunAcceptanceFinalization(step.effectiveAcceptance) && (finalResult?.exitCode ?? 1) === 0 && !finalResult?.interrupted) {
+	if (acceptance && step.effectiveAcceptance && shouldRunAcceptanceFinalization(step.effectiveAcceptance) && (finalResult?.exitCode ?? 1) === 0 && !finalResult?.interrupted && !verificationSignal.aborted) {
 		const sessionFile = step.sessionFile ?? (sessionDir ? findLatestSessionFile(sessionDir) ?? undefined : undefined);
 		const maxTurns = step.effectiveAcceptance.finalization.maxTurns;
 		const turns: AcceptanceFinalizationTurn[] = [];
@@ -1090,12 +1036,14 @@ async function runSingleStep(
 					ctx.piArgv1,
 					step.maxSubagentDepth,
 					{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
-					ctx.registerInterrupt,
+					interruptController.signal,
 					ctx.onChildEvent,
 					step.maxExecutionTimeMs,
 					step.maxTokens,
 					claudeCodeInvocation,
 					sessionFile,
+					undefined,
+					ctx.signal,
 				);
 				cleanupTempDir(tempDir);
 				modelAttempts.push({
@@ -1120,6 +1068,7 @@ async function runSingleStep(
 					governing: step.effectiveAcceptance,
 					output: finalizationOutput,
 					cwd: step.cwd ?? ctx.cwd,
+					signal: verificationSignal,
 				});
 				authoritativeLedger = selfReviewLedger;
 				turns.push(createFinalizationTurn({ turn, prompt, rawOutput: finalizationOutput, ledger: selfReviewLedger }));
@@ -1131,6 +1080,7 @@ async function runSingleStep(
 							acceptance: step.effectiveAcceptance,
 							output: finalizationOutput,
 							cwd: step.cwd ?? ctx.cwd,
+							signal: verificationSignal,
 						});
 					acceptance = attachFinalizationToLedger({ initialLedger: acceptance, authoritativeLedger, turns, status: "completed", maxTurns });
 					break;
@@ -1140,14 +1090,14 @@ async function runSingleStep(
 			}
 		}
 	}
-	const stepInterrupted = Boolean(finalResult?.interrupted || finalizationInterrupted);
+	const stepInterrupted = !ctx.signal?.aborted && Boolean(interruptController.signal.aborted || finalResult?.interrupted || finalizationInterrupted);
 	const stepResourceLimitExceeded = finalizationResourceLimitExceeded ?? finalResult?.resourceLimitExceeded;
 	const acceptanceFailure = acceptance ? acceptanceFailureMessage(acceptance) : undefined;
 	const acceptanceCanFailRun = acceptanceFailure && acceptance?.explicit && (finalResult?.exitCode ?? 1) === 0 && !stepInterrupted && !stepResourceLimitExceeded;
-	const effectiveFinalExitCode = stepInterrupted ? 0 : stepResourceLimitExceeded ? 1 : acceptanceCanFailRun ? 1 : finalResult?.exitCode ?? 1;
+	const effectiveFinalExitCode = ctx.signal?.aborted ? 1 : stepInterrupted ? 0 : stepResourceLimitExceeded ? 1 : acceptanceCanFailRun ? 1 : finalResult?.exitCode ?? 1;
 	const effectiveFinalError = stepInterrupted
 		? undefined
-		: stepResourceLimitExceeded?.message ?? finalizationProcessError ?? (acceptanceCanFailRun
+		: ctx.signal?.aborted ? "Subagent cancelled." : stepResourceLimitExceeded?.message ?? finalizationProcessError ?? (acceptanceCanFailRun
 			? (finalResult?.error ? `${finalResult.error}\n${acceptanceFailure}` : acceptanceFailure)
 			: finalResult?.error);
 
@@ -1351,6 +1301,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const eventsPath = path.join(asyncDir, "events.jsonl");
 	const logPath = path.join(asyncDir, `subagent-log-${id}.md`);
 	const controlConfig = config.controlConfig ?? DEFAULT_CONTROL_CONFIG;
+	const cancellation = new AbortController();
+	const cancelRunner = () => cancellation.abort();
+	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, cancelRunner);
 	const activeChildInterrupts = new Map<number, () => void>();
 	const interruptActiveSiblings = (exceptIndex: number) => {
 		for (const [index, interrupt] of activeChildInterrupts) {
@@ -1858,6 +1811,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			orchestratorIntercomTarget: config.childIntercomTargets?.[fi] ? config.controlIntercomTarget : undefined,
 			nestedRoute: config.nestedRoute,
 			projectTrust: config.projectTrust,
+			signal: cancellation.signal,
 			registerInterrupt: (interrupt) => {
 				if (interrupt) activeChildInterrupts.set(fi, interrupt);
 				else activeChildInterrupts.delete(fi);
@@ -1911,7 +1865,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	let flatIndex = 0;
 
 	for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
-		if (interrupted) break;
+		if (interrupted || cancellation.signal.aborted) break;
 		const step = steps[stepIndex];
 
 		if (isDynamicRunnerGroup(step)) {
@@ -2377,6 +2331,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				orchestratorIntercomTarget: config.childIntercomTargets?.[flatIndex] ? config.controlIntercomTarget : undefined,
 				nestedRoute: config.nestedRoute,
 				projectTrust: config.projectTrust,
+				signal: cancellation.signal,
 				registerInterrupt: (interrupt) => {
 					if (interrupt) activeChildInterrupts.set(flatIndex, interrupt);
 					else activeChildInterrupts.delete(flatIndex);
@@ -2552,6 +2507,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		controlRequestTimer = undefined;
 	}
 	process.off(ASYNC_INTERRUPT_SIGNAL, interruptRunner);
+	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.off(signal, cancelRunner);
 	const effectiveSessionFile = sessionFile ?? latestSessionFile ?? undefined;
 	const runEndedAt = Date.now();
 	if (interrupted) {

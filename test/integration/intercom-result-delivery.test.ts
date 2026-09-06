@@ -466,7 +466,7 @@ describe("intercom result delivery cutover", () => {
 
 	it("detached completion enforces maxOutput even when artifacts are disabled", async () => {
 		mockPi.onCall({ steps: [
-			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching before a long result" })] },
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "detaching before a long result" })] },
 			{ delay: 300, jsonl: [events.assistantMessage("first line\nsecond line\nsecret tail that must not be delivered")] },
 		] });
 		const { executor, events: bus } = makeExecutor();
@@ -493,7 +493,7 @@ describe("intercom result delivery cutover", () => {
 
 	it("detached completion does not double-emit while the placeholder acceptance check settles", async () => {
 		mockPi.onCall({ steps: [
-			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching during acceptance" })] },
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "detaching during acceptance" })] },
 			{ delay: 300, jsonl: [events.assistantMessage("completed once")] },
 		] });
 		const { executor, events: bus } = makeExecutor();
@@ -522,7 +522,7 @@ describe("intercom result delivery cutover", () => {
 
 	it("detached finalization ignores stale update callbacks after the caller returns", async () => {
 		mockPi.onCall({ steps: [
-			{ jsonl: [events.toolStart("contact_supervisor", { reason: "progress_update", message: "detaching before finalization" })] },
+			{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "detaching before finalization" })] },
 			{ delay: 300, jsonl: [events.assistantMessage("child output")] },
 		] });
 		const { executor, events: bus } = makeExecutor();
