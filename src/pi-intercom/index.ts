@@ -696,6 +696,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         replyTo,
         question,
         resolve: (message) => {
+          if (question && message.content.attachments?.some((attachment) => attachment.name === RECIPIENT_TURN_FAILED_ATTACHMENT)) {
+            pi.appendEntry("intercom_question_notification_error", { questionId: question.questionId, error: message.content.text });
+            return;
+          }
           try {
             if (question) saveQuestionAnswer(question, message.content.text);
             cleanup();

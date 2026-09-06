@@ -3179,6 +3179,15 @@ test("child supervisor tool resolves target and includes run metadata", { concur
       assert.match(askMessage.content.text, /Child index: 0/);
       assert.match(askMessage.content.text, /Which API should I use\?/);
 
+      const question = listSupervisorQuestions("supervisor-session-test", "78f659a3").find((entry) => entry.questionId === askMessage.id)!;
+      await orchestrator.send(askFrom.id, {
+        text: "Recipient turn failed: temporary provider error",
+        replyTo: askMessage.id,
+        attachments: [{ type: "context", name: "pi-intercom-recipient-turn-failure", content: "temporary provider error" }],
+      });
+      assert.equal(await Promise.race([askResultPromise.then(() => "settled"), new Promise((resolve) => setTimeout(() => resolve("waiting"), 50))]), "waiting");
+      assert.equal(readQuestionState(question).state, "awaiting_input");
+      assert.equal(readQuestionState(question).answer, undefined);
       const reply = await orchestrator.send(askFrom.id, { text: "Use the stable API.", replyTo: askMessage.id });
       assert.equal(reply.delivered, true);
       const askResult = await askResultPromise;
