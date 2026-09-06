@@ -83,6 +83,7 @@ type TestChainStep = TestSequentialStep | {
 interface ChainResultItem {
 	agent: string;
 	exitCode: number;
+	error?: string;
 	finalOutput?: string;
 	structuredOutput?: unknown;
 	task?: string;
@@ -1479,7 +1480,12 @@ describe("chain execution — parallel steps", () => {
 		}], [makeAgent("a", { model: "mock/fail" }), makeAgent("b", { model: "mock/slow" })]));
 		assert.equal(result.isError, true);
 		assert.ok(Date.now() - startedAt < 2_000, `failFast took ${Date.now() - startedAt}ms`);
-		assert.equal(mockPi.callCount(), 2);
+		assert.equal(result.details.results.length, 2);
+		assert.equal(result.details.results[0]?.agent, "a");
+		assert.equal(result.details.results[0]?.exitCode, 1);
+		assert.equal(result.details.results[1]?.agent, "b");
+		assert.equal(result.details.results[1]?.exitCode, -1);
+		assert.match(result.details.results[1]?.error ?? "", /Interrupted due to fail-fast/);
 	});
 
 	it("rejects worktree parallel steps that set a different task cwd", async () => {
