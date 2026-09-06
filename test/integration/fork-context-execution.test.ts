@@ -1221,7 +1221,7 @@ describe("fork context execution wiring", () => {
 		);
 
 		const text = result.content[0]?.text ?? "";
-		assert.equal(result.isError, undefined);
+		assert.equal(result.isError, true);
 		assert.match(text, /Parallel run detached for intercom coordination/);
 		assert.match(text, /second.*sibling exploded/s);
 		assert.equal(result.details?.results?.length, 2);

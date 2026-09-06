@@ -15,7 +15,6 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
@@ -41,6 +40,7 @@ import { SUBAGENT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
 import { loadConfig } from "./config.ts";
+import { registerToolResultAdapter } from "./tool-result.ts";
 import {
 	type Details,
 	type SubagentExecutionResult,
@@ -114,12 +114,6 @@ function isSlashResultError(result: SubagentExecutionResult): boolean {
 
 function isStaleExtensionContextError(error: unknown): boolean {
 	return error instanceof Error && error.message.includes("Extension context no longer active");
-}
-
-function toRegisteredToolResult(result: SubagentExecutionResult): AgentToolResult<Details> {
-	if (!result.isError) return result;
-	const text = result.content.map((part) => part.type === "text" ? part.text : "").filter(Boolean).join("\n").trim();
-	throw new Error(text || "subagent failed");
 }
 
 function rebuildSlashResultContainer(
@@ -400,6 +394,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}, 0);
 	}
 
+	const toRegisteredToolResult = registerToolResultAdapter(pi, [SUBAGENT_TOOL_NAME, "delegate", "agent_runs"]);
 	pi.registerTool({
 		name: "delegate",
 		label: "Delegate",
@@ -494,9 +489,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			);
 		},
 
-		renderResult(result, options, theme) {
-			return renderSubagentResult(result, options, theme);
-		},
+		renderResult: renderSubagentResult,
 
 	};
 

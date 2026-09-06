@@ -1173,14 +1173,16 @@ export function renderSubagentResult(
 	result: SubagentExecutionResult,
 	options: { expanded: boolean },
 	theme: Theme,
+	context?: { isError: boolean },
 ): Component {
+	const isError = context?.isError ?? result.isError;
 	const d = result.details;
 	if (!d || !d.results.length) {
 		const t = result.content[0];
 		const text = t?.type === "text" ? t.text : "(no output)";
 		const contextPrefix = d?.context === "fork" ? `${theme.fg("warning", "[fork]")} ` : "";
 		if (options.expanded) return new Text(`${contextPrefix}${text}`, 0, 0);
-		if (d?.asyncId && d.mode !== "management" && !result.isError) {
+		if (d?.asyncId && d.mode !== "management" && !isError) {
 			const headline = d.managementControl?.revivedFromRunId ? "Revived async" : firstOutputLine(text).replace(` [${d.asyncId}]`, "");
 			const c = new Container();
 			c.addChild(new TruncatedText(`${contextPrefix}[${d.asyncId.slice(0, 8)}] ${headline}`));
@@ -1226,6 +1228,7 @@ export function renderSubagentResult(
 		const toolCallLines = getToolCallLines(r, expanded);
 		const c = new Container();
 		c.addChild(new Text(fit(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${contextBadge}${progressInfo}`), 0, 0));
+		if (isError && d.runId) c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
 		c.addChild(new Spacer(1));
 		const taskMaxLen = Math.max(20, w - 8);
 		const taskPreview = expanded || r.task.length <= taskMaxLen
@@ -1387,6 +1390,7 @@ export function renderSubagentResult(
 			0,
 		),
 	);
+	if (isError && d.runId) c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
 	if (chainVis) {
 		c.addChild(new Text(fit(`  ${chainVis}`), 0, 0));
 	}

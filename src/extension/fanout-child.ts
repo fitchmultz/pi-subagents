@@ -11,6 +11,8 @@ import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
 import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
+import { registerToolResultAdapter } from "./tool-result.ts";
+import { renderSubagentResult } from "../tui/render.ts";
 import { type Details, type SubagentState } from "../shared/types.ts";
 import { OWNED_RUN_ENTRY, restoreOwnedRuns } from "../runs/shared/run-records.ts";
 
@@ -230,6 +232,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		ensureSessionState,
 	});
 
+	const toRegisteredToolResult = registerToolResultAdapter(pi, ["subagent"]);
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",
 		label: "Subagent",
@@ -249,11 +252,9 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		],
 		parameters: SubagentParams,
 		async execute(id, params, signal, onUpdate, ctx) {
-			const result = await executor.execute(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx);
-			if (!result.isError) return result;
-			const text = result.content.map((part) => part.type === "text" ? part.text : "").filter(Boolean).join("\n").trim();
-			throw new Error(text || "subagent failed");
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx));
 		},
+		renderResult: renderSubagentResult,
 	};
 
 	pi.registerTool(tool);

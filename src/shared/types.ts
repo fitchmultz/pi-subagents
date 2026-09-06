@@ -551,7 +551,7 @@ export interface Details {
 }
 
 export type SubagentExecutionResult = AgentToolResult<Details> & {
-	/** Direct executor/test-layer error marker; Pi runtime tool errors still throw at the tool boundary. */
+	/** Executor error marker; registered tools transfer it through Pi's native tool_result hook. */
 	isError?: boolean;
 };
 
