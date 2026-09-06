@@ -1,22 +1,16 @@
-<p>
-  <img src="https://raw.githubusercontent.com/nicobailon/pi-subagents/main/banner.png" alt="pi-subagents" width="1100">
-</p>
-
 # pi-subagents
 
 `pi-subagents` lets Pi delegate work to focused child agents. Use it for code review, scouting, implementation, parallel audits, saved workflows, background jobs, and anything else that benefits from a second or third set of model eyes.
 
-https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1
-
 ## Installation
 
-Install this fork from GitHub:
+Install from GitHub:
 
 ```bash
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-That is the only required step. This personal fork is not published to npm and does not provide an `npx` installer. Use `pi update --extensions` to refresh it. Local checkout installs remain available for development:
+That is the only required step. This package is not published to npm and does not provide an `npx` installer. Use `pi update --extensions` to refresh it. Local checkout installs remain available for development:
 
 ```bash
 npm install   # builds dist/, which the pi manifest loads
@@ -24,6 +18,8 @@ pi install /absolute/path/to/pi-subagents
 ```
 
 Local path installs do not run npm for you, and the manifest points at compiled `dist/` output, so run `npm install` (or `npm run build` after source edits) before installing or the extensions will not load.
+
+Supported platforms: **macOS and Linux**. Termux on Android is unverified; Windows is not supported.
 
 Pi 0.84.0 or later is required. Pi core packages remain optional wildcard peers, as recommended for Pi packages, while this repository validates against exact Pi 0.84.0 development dependencies.
 
@@ -74,6 +70,19 @@ node scripts/run-tests.mjs integration --timeout-ms 600000
 ```
 
 ## Try this first
+
+For ordinary work, use the compact tools; the full workflow schema stays unloaded:
+
+```typescript
+agent_runs({ action: "profiles" })
+delegate({ agent: "worker", task: "Implement the approved fix", worktree: true })
+agent_runs({ action: "list" })
+agent_runs({ action: "inspect", id: "<run-id>" })
+agent_runs({ action: "nudge", id: "<run-id>", message: "Keep the public API unchanged." })
+agent_runs({ action: "continue", id: "<run-id>", message: "Now check the edge case." })
+```
+
+`delegate` uses the same execution and acceptance paths as `subagent`; `worktree: true` runs one isolated writer through the existing worktree path. `agent_runs` lists owned work, including recent results, across working directories. A nudge never restarts completed work; `continue` explicitly revives its saved session. Use `load_subagent` for parallel groups, chains, detailed overrides, and profile administration. Existing `subagent` calls remain supported.
 
 You do not need to create agents, write config, or learn slash commands. After installing, ask Pi for delegation in plain language:
 
@@ -545,7 +554,7 @@ Important fields:
 | `output` | Default single-agent output file. |
 | `defaultReads` | Files to read before running in chain/parallel behavior. |
 | `defaultProgress` | Maintain `progress.md`. |
-| `completionGuard` | Set `false` only for non-implementation agents that may mention implementation words while using mutation-capable tools such as `bash`. |
+| `completionGuard` | Opt in with `true` to require an observed successful mutating tool result. Disabled by default; task wording never determines success. An explicit `acceptance` contract takes precedence and can allow valid no-op outcomes. |
 | `interactive` | Parsed for compatibility but not enforced in v1. |
 | `maxSubagentDepth` | Tightens nested delegation for this agent’s children; use `0` to block delegation even if the tool is present. |
 | `maxExecutionTimeMs` | Stops each foreground or async child run for this agent after the given number of milliseconds. |
@@ -553,7 +562,7 @@ Important fields:
 
 ### Tool and extension selection
 
-If `tools` is omitted, `pi-subagents` does not pass `--tools`, so the child gets Pi’s normal builtin tools. If `tools` is present, regular tool names become an explicit allowlist. `mcp:` entries are split out and forwarded as direct MCP selections. Path-like `tools` entries, such as extension paths or `.ts`/`.js` files, are treated as tool-extension paths rather than builtin tool names. Agents that declare only known read-only builtin tools skip the implementation completion guard, but `bash`, unknown tools, and MCP tools stay mutation-capable. Use `completionGuard: false` for bash-enabled validators or advisors that should never be judged as implementation agents.
+If `tools` is omitted, `pi-subagents` does not pass `--tools`, so the child gets Pi’s normal builtin tools. If `tools` is present, regular tool names become an explicit allowlist. `mcp:` entries are split out and forwarded as direct MCP selections. Path-like `tools` entries, such as extension paths or `.ts`/`.js` files, are treated as tool-extension paths rather than builtin tool names. Tool capabilities and task prose do not imply a mutation requirement. Use `completionGuard: true` only when a successful mutating tool result is explicitly required, or use `acceptance` with real verification commands for stronger evidence.
 
 Examples:
 
@@ -563,7 +572,7 @@ Examples:
 - `tools: read, bash, mcp:chrome-devtools`: only `read` and `bash` as builtins, plus direct Chrome DevTools MCP tools.
 - `tools: subagent, read`: a child-safe `subagent` tool is available inside that child, but nested calls remain blocked unless the installation explicitly raises `maxSubagentDepth` above its default.
 
-Direct MCP tools require [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter). Subagents only receive direct MCP tools when `mcp:` entries are listed in their frontmatter; global `directTools: true` in `mcp.json` is not enough by itself. The generic `mcp` proxy tool can still be used for discovery when available. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. An `mcp:` entry named `subagent` does not authorize nested fanout; explicit opt-in requires `allowSubagents: true` or the builtin `subagent` tool name plus a global depth limit above the default.
+Direct MCP tools require [pi-mcp-adapter](https://github.com/fitchmultz/pi-mcp-adapter). Subagents only receive direct MCP tools when `mcp:` entries are listed in their frontmatter; global `directTools: true` in `mcp.json` is not enough by itself. The generic `mcp` proxy tool can still be used for discovery when available. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. An `mcp:` entry named `subagent` does not authorize nested fanout; explicit opt-in requires `allowSubagents: true` or the builtin `subagent` tool name plus a global depth limit above the default.
 
 `extensions` controls child extension loading:
 
@@ -1201,7 +1210,7 @@ The result watcher emits `subagent:async-complete`; `src/extension/index.ts` reg
 
 ## Prompt-template integration
 
-`pi-subagents` works standalone through natural language, the `subagent` tool, and its built-in slash commands. The example prompts near the top of this README are not registered as commands. If you use [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model), you can wrap subagent delegation in your own reusable prompt templates.
+`pi-subagents` works standalone through natural language, the `subagent` tool, and its built-in slash commands. The example prompts near the top of this README are not registered as commands. You can wrap subagent delegation in your own reusable Pi prompt templates.
 
 Example:
 

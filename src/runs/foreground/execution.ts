@@ -47,7 +47,7 @@ import {
 	formatResourceLimitExceeded,
 } from "../../shared/utils.ts";
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
-import { evaluateCompletionMutationGuard, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
+import { hasCompletedMutationToolCall, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { attachPostExitStdioGuard, isChildTreeAlive, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
 import { providerQualifiedModelId } from "../../shared/model-info.ts";
@@ -393,9 +393,8 @@ async function runSingleAttempt(
 			cwd: options.cwd ?? runtimeCwd,
 			env: spawnEnv,
 			stdio: ["ignore", "pipe", "pipe"],
-			detached: process.platform !== "win32",
-			windowsHide: true,
-		});
+			detached: true,
+			});
 		let buf = "";
 		let processClosed = false;
 		let settled = false;
@@ -1071,19 +1070,12 @@ async function runSingleAttempt(
 
 	const acceptanceOutput = getFinalOutput(result.messages ?? []);
 	let fullOutput = stripAcceptanceReport(acceptanceOutput);
-	const completionGuard = result.exitCode === 0 && !result.error && shared.completionPolicy === "mutation-guard"
-		? evaluateCompletionMutationGuard({
-			agent: agent.name,
-			task: shared.originalTask ?? task,
-			messages: result.messages ?? [],
-			tools: agent.tools,
-			mcpDirectTools: agent.mcpDirectTools,
-		})
-		: undefined;
-	const completionGuardTriggered = completionGuard?.triggered === true && !observedCompletedMutation;
+	const completionGuardTriggered = result.exitCode === 0 && !result.error
+		&& shared.completionPolicy === "mutation-guard"
+		&& !observedCompletedMutation && !hasCompletedMutationToolCall(result.messages ?? []);
 	if (completionGuardTriggered) {
 		result.exitCode = 1;
-		result.error = "Subagent completed without making edits for an implementation task.\nIt appears to have returned planning or scratchpad output instead of applying changes.";
+		result.error = "Subagent completed without making edits required by completionGuard: true.\nUse an acceptance contract when a valid no-op is allowed.";
 		progress.status = "failed";
 		progress.error = result.error;
 		emitControlEvent(buildControlEvent({
@@ -1093,7 +1085,7 @@ async function runSingleAttempt(
 			agent: agent.name,
 			index: options.index,
 			ts: Date.now(),
-			message: `${agent.name} completed without making edits for an implementation task`,
+			message: `${agent.name} completed without making edits required by completionGuard: true`,
 			reason: "completion_guard",
 		}));
 	}
@@ -1416,12 +1408,8 @@ export async function runSync(
 				outputSnapshot,
 				originalTask: task,
 				completionPolicy: resolveCompletionPolicy({
-					agent: agent.name,
-					task,
-					completionGuardEnabled: agent.completionGuard !== false,
+					completionGuardEnabled: agent.completionGuard === true,
 					usesAcceptanceContract: effectiveAcceptance.explicit,
-					tools: agent.tools,
-					mcpDirectTools: agent.mcpDirectTools,
 				}),
 			});
 			lastResult = result;

@@ -69,6 +69,17 @@ describe("subagent lazy activation with SDK tool filters", () => {
 		}
 	});
 
+	it("exposes compact delegation and run control without loading the advanced schema", async () => {
+		await withSdkSession({}, async (session) => {
+			assert.ok(activeTool(session, "delegate"));
+			const runs = activeTool(session, "agent_runs");
+			assert.ok(runs);
+			const profiles = await runs.execute("profiles", { action: "profiles" }, new AbortController().signal);
+			assert.match(JSON.stringify(profiles.content), /Executable agents/);
+			assert.equal(session.getActiveToolNames().includes("subagent"), false);
+		});
+	});
+
 	it("adds the available full tool through Pi's deferred-loading wrapper", async () => {
 		await withSdkSession({}, async (session) => {
 			assert.equal(session.getActiveToolNames().includes("subagent"), false);

@@ -505,7 +505,7 @@ describe("async execution utilities", () => {
 		});
 		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.[0]?.status === "running" && typeof status.pid === "number", 10_000);
 		await waitForMockPiCalls(mockPi, 1, 10_000);
-		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
+		process.kill(runningStatus.pid!, "SIGUSR2");
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
@@ -842,7 +842,7 @@ describe("async execution utilities", () => {
 		});
 		await waitForMockPiCalls(mockPi, 2, 10_000);
 		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && typeof status.pid === "number", 10_000);
-		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
+		process.kill(runningStatus.pid!, "SIGUSR2");
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
@@ -1245,7 +1245,7 @@ describe("async execution utilities", () => {
 		});
 		await waitForMockPiCalls(mockPi, 3, 10_000);
 		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.filter((step) => step.status === "running").length === 2 && typeof status.pid === "number", 10_000);
-		process.kill(runningStatus.pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
+		process.kill(runningStatus.pid!, "SIGUSR2");
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
@@ -1853,7 +1853,7 @@ describe("async execution utilities", () => {
 		assert.equal(output.match(/stuck repeating the same failed subagent call/g)?.length, 1);
 	});
 
-	it("background implementation runs fail when no mutation attempt occurred", async () => {
+	it("background runs enforce explicitly required mutation evidence", async () => {
 		mockPi.onCall({ output: "I’ll do that now and report back after implementing." });
 
 		const id = `itest-ae-${process.pid}-no-mutation-${Date.now().toString(36)}`;
@@ -1863,7 +1863,7 @@ describe("async execution utilities", () => {
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Implement the approved fixes",
-			agentConfig: makeAgent("worker"),
+			agentConfig: makeAgent("worker", { completionGuard: true }),
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 			shareEnabled: false,
 			sessionRoot,
@@ -1910,7 +1910,7 @@ describe("async execution utilities", () => {
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Implement the approved fixes",
-			agentConfig: makeAgent("worker"),
+			agentConfig: makeAgent("worker", { completionGuard: true }),
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 			shareEnabled: false,
 			sessionRoot,
@@ -1925,7 +1925,7 @@ describe("async execution utilities", () => {
 		assert.equal(payload.results[0].output, "Applied edit");
 	});
 
-	it("background bash-enabled non-implementation agents can opt out of the completion guard", async () => {
+	it("background bash-enabled advisory agents do not require edits by default", async () => {
 		mockPi.onCall({ output: "cold start test after patch" });
 
 		const id = `itest-ae-${process.pid}-completion-guard-optout-${Date.now().toString(36)}`;
@@ -1934,7 +1934,7 @@ describe("async execution utilities", () => {
 		executeAsyncSingle(id, {
 			agent: "test-runner",
 			task: "Run cold start test after patch",
-			agentConfig: makeAgent("test-runner", { tools: ["read", "grep", "bash", "ls"], completionGuard: false }),
+			agentConfig: makeAgent("test-runner", { tools: ["read", "grep", "bash", "ls"] }),
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 			shareEnabled: false,
 			sessionRoot,
@@ -2436,7 +2436,7 @@ describe("async execution utilities", () => {
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Implement the approved fixes",
-			agentConfig: makeAgent("worker"),
+			agentConfig: makeAgent("worker", { completionGuard: true }),
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),

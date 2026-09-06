@@ -273,7 +273,7 @@
 - Removed active-long-running control notices and their thresholds; control notifications now only fire for needs-attention states.
 - Return the last non-empty text part from the latest assistant message so multi-part assistant outputs prefer the final answer over progress text.
 - Keep path-resolution tests hermetic by using a temporary fake home and Pi agent directory instead of touching the real `~/.agents` tree.
-- Updated per-agent context documentation to describe the fork's fixed behavior rather than upstream whole-invocation fork promotion.
+- Updated per-agent context documentation to describe per-agent behavior rather than whole-invocation fork promotion.
 - Retry the same model once for foreground and async subagents after recoverable child transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, before falling back to alternate models.
 - Default child Pi 0.79+ project-trust handling to `--approve` for subagent runs so trusted parent sessions do not lose project-local inputs in non-interactive child processes; explicit parent/configured `--no-approve` remains honored.
 - Treat normal `output` files as runtime-owned handoff scratch: capture their contents into the parent result, then remove the file so `review.md`, `context.md`, and similar subagent outputs do not pollute the working tree.
@@ -354,7 +354,7 @@
 ## [0.24.1] - 2026-05-10
 
 ### Changed
-- Migrated Pi package imports and package metadata to the `@earendil-works/*` scope, switched async TypeScript execution discovery to upstream `jiti`, and hardened forked-session creation to use the public `SessionManager.open()` path.
+- Migrated Pi package imports and package metadata to the `@earendil-works/*` scope, switched async TypeScript execution discovery to Pi's `jiti`, and hardened forked-session creation to use the public `SessionManager.open()` path.
 
 ## [0.24.0] - 2026-05-03
 
@@ -619,7 +619,7 @@
 - Foreground subagent runs now make deeper live detail easier to discover. Running cards show an explicit `Ctrl+O` hint, lightweight live-state signals like recent activity, current-tool durations, and artifact output paths when available. Common array-heavy tool previews such as `web_search.queries` and `fetch_content.urls` are now summarized more clearly instead of collapsing into opaque fallback text.
 
 ### Changed
-- Forked delegated runs now use stronger prompt-side guidance for `pi-intercom` coordination instead of runtime policing. The default fork preamble and intercom bridge instructions now explicitly treat inherited fork history as reference-only context, tell children not to continue the parent conversation in normal assistant text, and steer upstream questions or handoffs through `intercom` when needed.
+- Forked delegated runs now use stronger prompt-side guidance for `pi-intercom` coordination instead of runtime policing. The default fork preamble and intercom bridge instructions now explicitly treat inherited fork history as reference-only context, tell children not to continue the parent conversation in normal assistant text, and steer supervisor questions or handoffs through `intercom` when needed.
 - Documented an opt-in custom agent pattern for forked chat-back workflows so users can make that coordination contract explicit without changing builtin agents.
 - Slash-run status text and `/subagents-status` summary output now use the same more explicit observability language, including clearer live-detail hints and surfaced output/session paths in the async status overlay.
 - Builtin agent defaults now prefer `openai-codex` models for `planner`, `scout`, `researcher`, `context-builder`, and `worker`.
@@ -1340,7 +1340,7 @@
 
 ## [0.1.0] - 2026-01-03
 
-Initial release forked from async-subagent example.
+Initial release.
 
 ### Added
 - Output truncation with configurable byte/line limits

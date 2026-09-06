@@ -237,6 +237,31 @@ const ControlOverrides = Type.Object({
 	})),
 }, { additionalProperties: false });
 
+export const DelegateParams = Type.Object({
+	agent: TaskItem.properties.agent,
+	task: TaskItem.properties.task,
+	cwd: TaskItem.properties.cwd,
+	model: TaskItem.properties.model,
+	context: Type.Optional(Type.Enum(["fresh", "fork"] as const, { type: "string", description: "Override the profile's context policy." })),
+	async: Type.Optional(Type.Boolean({ description: "Background by default; false waits for the result." })),
+	worktree: Type.Optional(Type.Boolean({ description: "Isolate this writer in a Git worktree; return its patch. Requires a clean checkout." })),
+	output: TaskItem.properties.output,
+	acceptance: TaskItem.properties.acceptance,
+}, { additionalProperties: false });
+
+export const AgentRunsParams = Type.Object({
+	action: Type.Enum(["list", "inspect", "nudge", "stop", "continue", "profiles"] as const, { type: "string" }),
+	id: Type.Optional(Type.String({ minLength: 1, description: "Run ID or unambiguous prefix." })),
+	index: Type.Optional(Type.Integer({ minimum: 0, description: "Child index for a multi-child run." })),
+	message: Type.Optional(Type.String({ minLength: 1, description: "Guidance for nudge, or follow-up for continue (which may start a new process)." })),
+}, {
+	additionalProperties: false,
+	allOf: [
+		{ if: { properties: { action: { enum: ["inspect", "nudge", "stop", "continue"] } } }, then: requiredObject("id") },
+		{ if: { properties: { action: { enum: ["nudge", "continue"] } } }, then: requiredObject("message") },
+	],
+});
+
 export const SubagentParams = Type.Object({
 	agent: Type.Optional(Type.String({ minLength: 1, description: "Agent name (SINGLE mode) or target for management get/update/delete" })),
 	task: Type.Optional(Type.String({ minLength: 1, description: "Task (SINGLE mode, optional for self-contained agents)" })),

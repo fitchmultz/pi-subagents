@@ -60,11 +60,9 @@ describe("skills filesystem fallback", () => {
 
 	it("does not leak npm discovery warnings to stderr", () => {
 		const binDir = path.join(tempDir, "bin");
-		const fakeNpm = path.join(binDir, process.platform === "win32" ? "npm.cmd" : "npm");
+		const fakeNpm = path.join(binDir, "npm");
 		fs.mkdirSync(binDir, { recursive: true });
-		fs.writeFileSync(fakeNpm, process.platform === "win32"
-			? `@echo synthetic npm warning 1>&2\r\n@echo ${tempDir}\r\n`
-			: `#!/bin/sh\nprintf 'synthetic npm warning\\n' >&2\nprintf '%s\\n' '${tempDir}'\n`);
+		fs.writeFileSync(fakeNpm, `#!/bin/sh\nprintf 'synthetic npm warning\\n' >&2\nprintf '%s\\n' '${tempDir}'\n`);
 		fs.chmodSync(fakeNpm, 0o755);
 
 		const moduleUrl = new URL("../../src/agents/skills.ts", import.meta.url).href;

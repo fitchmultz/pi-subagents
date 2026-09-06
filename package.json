@@ -2,7 +2,6 @@
   "name": "pi-subagents",
   "version": "0.34.18",
   "description": "Pi extension for subagent orchestration and local session coordination",
-  "author": "Nico Bailon",
   "license": "MIT",
   "type": "module",
   "repository": {

@@ -19,8 +19,7 @@ const execFile = promisify(execFileCallback);
 const RM_OPTIONS = { force: true, maxRetries: 5, recursive: true, retryDelay: 100 };
 const RENAME_RETRY_LIMIT = 50;
 const RENAME_RETRY_MS = 50;
-// Run tsc's JS entrypoint directly through the current node binary: no .cmd shim,
-// no shell, safe for install paths containing spaces on every platform.
+// Use the current Node binary without a shell, including install paths with spaces.
 const tscPath = join(process.cwd(), "node_modules", "typescript", "bin", "tsc");
 
 async function discardStaging(path) {

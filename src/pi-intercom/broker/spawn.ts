@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { mkdir } from "fs/promises";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -12,30 +12,8 @@ const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", 
 const BROKER_PID = join(INTERCOM_DIR, "broker.pid");
 const BROKER_SPAWN_LOCK = join(INTERCOM_DIR, "broker.spawn.lock");
 
-type BrokerLaunchSpec =
-  | {
-    kind: "direct";
-    command: string;
-    args: string[];
-  }
-  | {
-    kind: "windows-launcher";
-    command: string;
-    args: string[];
-    launcherPath: string;
-    launcherCommandLine: string;
-  };
-
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function quoteWindowsArg(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-export function getWindowsHiddenLauncherPath(intercomDir: string = INTERCOM_DIR): string {
-  return join(intercomDir, "broker-launch.vbs");
 }
 
 function usesLegacyTsxDefault(brokerCommand: string, brokerArgs: string[]): boolean {
@@ -45,64 +23,20 @@ function usesLegacyTsxDefault(brokerCommand: string, brokerArgs: string[]): bool
     && brokerArgs[1] === "tsx";
 }
 
-export function getWindowsBrokerCommandLine(
-  brokerPath: string,
-  nodePath: string = process.execPath,
-  brokerCommand: string = nodePath,
-  brokerArgs: string[] = [],
-): string {
-  const command = usesLegacyTsxDefault(brokerCommand, brokerArgs) ? nodePath : brokerCommand;
-  const args = usesLegacyTsxDefault(brokerCommand, brokerArgs) ? [] : brokerArgs;
-  return [quoteWindowsArg(command), ...args.map(quoteWindowsArg), quoteWindowsArg(brokerPath)].join(" ");
-}
-
-export function getWindowsHiddenLauncherScript(commandLine: string): string {
-  return [
-    'Set WshShell = CreateObject("WScript.Shell")',
-    `WshShell.Run "${commandLine.replace(/"/g, '""')}", 0, False`,
-    'Set WshShell = Nothing',
-    '',
-  ].join("\r\n");
-}
-
-function writeWindowsHiddenLauncher(
-  commandLine: string,
-  launcherPath: string = getWindowsHiddenLauncherPath(),
-): string {
-  mkdirSync(dirname(launcherPath), { recursive: true });
-  writeFileSync(launcherPath, getWindowsHiddenLauncherScript(commandLine), "utf-8");
-  return launcherPath;
-}
-
 export function getBrokerLaunchSpec(
   brokerPath: string,
   brokerCommand: string,
   brokerArgs: string[],
-  platform: NodeJS.Platform = process.platform,
-  intercomDir: string = INTERCOM_DIR,
   nodePath: string = process.execPath,
-): BrokerLaunchSpec {
-  if (platform === "win32") {
-    const launcherPath = getWindowsHiddenLauncherPath(intercomDir);
-    return {
-      kind: "windows-launcher",
-      command: "wscript.exe",
-      args: [launcherPath],
-      launcherPath,
-      launcherCommandLine: getWindowsBrokerCommandLine(brokerPath, nodePath, brokerCommand, brokerArgs),
-    };
-  }
-
+): { command: string; args: string[] } {
   if (usesLegacyTsxDefault(brokerCommand, brokerArgs)) {
     return {
-      kind: "direct",
       command: nodePath,
       args: [brokerPath],
     };
   }
 
   return {
-    kind: "direct",
     command: brokerCommand,
     args: [...brokerArgs, brokerPath],
   };
@@ -113,14 +47,12 @@ export function getBrokerSpawnOptions(extensionDir: string = EXTENSION_DIR): {
   stdio: "ignore";
   cwd: string;
   env: NodeJS.ProcessEnv;
-  windowsHide: true;
 } {
   return {
     detached: true,
     stdio: "ignore",
     cwd: extensionDir,
     env: { ...process.env, NODE_NO_WARNINGS: "1" },
-    windowsHide: true,
   };
 }
 
@@ -152,9 +84,6 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
       import.meta.url.endsWith(".ts") ? "broker.ts" : "broker.js",
     );
     const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs);
-    if (launch.kind === "windows-launcher") {
-      writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
-    }
     const child = spawn(launch.command, launch.args, getBrokerSpawnOptions());
     child.unref();
 
@@ -170,9 +99,6 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
       };
 
       const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-        if (launch.kind === "windows-launcher" && code === 0 && signal === null) {
-          return;
-        }
         cleanup();
         if (signal) {
           reject(new Error(`Intercom broker exited before startup with signal ${signal}`));
@@ -232,7 +158,7 @@ export async function stopUnhealthyBrokerBeforeSpawn(
 async function checkSocketConnectable(): Promise<boolean> {
   const preferred = getBrokerSocketPath();
   if (isOwnedBrokerSocket(preferred) && await checkOneSocket(preferred)) return true;
-  const legacy = process.platform === "win32" ? preferred : getLegacyBrokerSocketPath();
+  const legacy = getLegacyBrokerSocketPath();
   return legacy !== preferred && isOwnedBrokerSocket(legacy) && await checkOneSocket(legacy);
 }
 

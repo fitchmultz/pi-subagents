@@ -134,7 +134,7 @@ describe("agent frontmatter completionGuard", () => {
 		assert.match(serialized, /completionGuard: false/);
 	});
 
-	it("omits enabled completion guard from serialized frontmatter", () => {
+	it("preserves an explicitly enabled completion guard in serialized frontmatter", () => {
 		const agent: AgentConfig = {
 			name: "test-runner",
 			description: "Test runner",
@@ -148,7 +148,7 @@ describe("agent frontmatter completionGuard", () => {
 		};
 
 		const serialized = serializeAgent(agent);
-		assert.doesNotMatch(serialized, /completionGuard:/);
+		assert.match(serialized, /completionGuard: true/);
 	});
 
 	it("parses completionGuard from discovered agent frontmatter", () => {

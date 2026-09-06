@@ -25,7 +25,7 @@ import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
 import { cleanupOldRunStorage, ensureSafeTempPath, ensureTempRoot } from "../shared/temp-root.ts";
 import { renderWidget, renderSubagentResult } from "../tui/render.ts";
-import { SubagentParams } from "./schemas.ts";
+import { AgentRunsParams, DelegateParams, SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
@@ -94,27 +94,10 @@ function expandTilde(p: string): string {
 	return p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
 }
 
-/**
- * Create a directory and verify it is actually accessible.
- * On Windows with Azure AD/Entra ID, directories created shortly after
- * wake-from-sleep can end up with broken NTFS ACLs (null DACL) when the
- * cloud SID cannot be resolved without network connectivity. This leaves
- * the directory completely inaccessible to the creating user.
- */
 function ensureAccessibleDir(dirPath: string): void {
 	ensureSafeTempPath(dirPath);
 	fs.mkdirSync(dirPath, { recursive: true });
-	try {
-		fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
-	} catch {
-		try {
-			fs.rmSync(dirPath, { recursive: true, force: true });
-		} catch {
-			// Best effort: retry mkdir/access even if cleanup fails.
-		}
-		fs.mkdirSync(dirPath, { recursive: true });
-		fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
-	}
+	fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
 }
 
 function isSlashResultRunning(result: SubagentExecutionResult): boolean {
@@ -408,10 +391,37 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.registerTool({
+		name: "delegate",
+		label: "Delegate",
+		description: "Delegate one bounded task to a configured agent. Discover profiles with agent_runs({action:'profiles'}). Background by default; completion arrives automatically. Use worktree for an isolated writer, acceptance for explicit requirements, and fresh context for independent review. Advanced workflows and definition management remain behind load_subagent.",
+		parameters: DelegateParams,
+		async execute(id, params, signal, onUpdate, ctx) {
+			const { worktree, context, async: background, ...task } = params;
+			const request = worktree
+				? { tasks: [task], worktree: true, context, async: background, cwd: task.cwd }
+				: { ...task, context, async: background };
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(request), signal, onUpdate, ctx));
+		},
+		renderResult: renderSubagentResult,
+	});
+
+	pi.registerTool({
+		name: "agent_runs",
+		label: "Agent Runs",
+		description: "List your delegated runs across working directories, inspect results, nudge live work, stop a run, or continue a saved specialist. Nudge never restarts completed work; continue may launch a new process. profiles lists available agents. Do not poll for completion: background results arrive automatically.",
+		parameters: AgentRunsParams,
+		async execute(id, params, signal, onUpdate, ctx) {
+			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list" };
+			return toRegisteredToolResult(await executor.execute(id, { ...params, action: actions[params.action] }, signal, onUpdate, ctx));
+		},
+		renderResult: renderSubagentResult,
+	});
+
+	pi.registerTool({
 		name: SUBAGENT_LOADER_TOOL_NAME,
 		label: "Load Subagent",
-		description: "Enable the full subagent orchestration tool for delegation, parallel reviewers, chains, or async-run control. After loading, call subagent with { action: \"list\" } before execution.",
-		promptSnippet: "Enable subagent orchestration when delegation, parallel review, or async-run control would help.",
+		description: "Enable advanced subagent orchestration: parallel groups, chains, saved workflows, or agent-definition management. Ordinary delegation and control use delegate and agent_runs. After loading, call subagent with { action: \"list\" } before execution.",
+		promptSnippet: "Load advanced subagent orchestration and definition management; use delegate and agent_runs for ordinary work.",
 		parameters: Type.Object({}),
 		async execute() {
 			if (!pi.getAllTools().some((tool) => tool.name === SUBAGENT_TOOL_NAME)) {
@@ -530,7 +540,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
 
 	pi.on("tool_result", (event, ctx) => {
-		if (event.toolName !== SUBAGENT_TOOL_NAME) return;
+		if (![SUBAGENT_TOOL_NAME, "delegate", "agent_runs"].includes(event.toolName)) return;
 		if (!isTuiContext(ctx)) return;
 		state.lastUiContext = ctx;
 		if (state.asyncJobs.size > 0) {

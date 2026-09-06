@@ -65,7 +65,7 @@ import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested
 import { formatModelAttemptNote, formatModelRecoveryAttemptNote, isRecoverableSameModelFailure, isRetryableModelFailure } from "../shared/model-fallback.ts";
 import { attachPostExitStdioGuard, isChildTreeAlive, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
-import { evaluateCompletionMutationGuard, resolveCompletionPolicy } from "../shared/completion-guard.ts";
+import { hasCompletedMutationToolCall, resolveCompletionPolicy } from "../shared/completion-guard.ts";
 import {
 	createMutatingFailureState,
 	createMutationCompletionTracker,
@@ -158,7 +158,7 @@ interface StepResult {
 	interrupted?: boolean;
 }
 
-const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
+const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = "SIGUSR2";
 const ASYNC_CONTROL_REQUEST_FILE = "control-request.json";
 const MAX_SAME_MODEL_RECOVERY_RETRIES = 1;
 
@@ -313,16 +313,12 @@ function runPiStreaming(
 		const spawnEnv = { ...process.env, ...(env ?? {}), ...getSubagentDepthEnv(maxSubagentDepth) };
 		const spawnSpec = claudeCodeInvocation
 			? { command: claudeCodeInvocation.command, args: claudeCodeInvocation.args }
-			: getPiSpawnCommand(args, {
-				...(piPackageRoot ? { piPackageRoot } : {}),
-				...(piArgv1 ? { argv1: piArgv1 } : {}),
-			});
+			: getPiSpawnCommand(args);
 		const child = spawn(spawnSpec.command, spawnSpec.args, {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 			env: spawnEnv,
-			detached: process.platform !== "win32",
-			windowsHide: true,
+			detached: true,
 		});
 		let stderr = "";
 		let stdoutBuf = "";
@@ -771,7 +767,6 @@ async function runSingleStep(
 	const placeholderRegex = new RegExp(ctx.placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
 	let task = step.task.replace(placeholderRegex, () => ctx.previousOutput);
 	task = resolveOutputReferences(task, ctx.outputs ?? {});
-	const taskForCompletionGuard = task;
 	if (step.effectiveAcceptance) {
 		const acceptancePrompt = formatAcceptancePrompt(step.effectiveAcceptance);
 		if (acceptancePrompt) task = `${task}\n${acceptancePrompt}`;
@@ -903,25 +898,14 @@ async function runSingleStep(
 			else structuredOutput = structured.value;
 		}
 		const completionPolicy = resolveCompletionPolicy({
-			agent: step.agent,
-			task: taskForCompletionGuard,
-			completionGuardEnabled: step.completionGuard !== false,
+			completionGuardEnabled: step.completionGuard === true,
 			usesAcceptanceContract: step.effectiveAcceptance?.explicit === true,
-			tools: step.tools,
-			mcpDirectTools: step.mcpDirectTools,
 		});
-		const completionGuard = run.exitCode === 0 && !run.error && !hiddenError?.hasError && completionPolicy === "mutation-guard"
-			? evaluateCompletionMutationGuard({
-				agent: step.agent,
-				task: taskForCompletionGuard,
-				messages: run.messages,
-				tools: step.tools,
-				mcpDirectTools: step.mcpDirectTools,
-			})
-			: undefined;
-		const completionGuardTriggered = completionGuard?.triggered === true && !run.observedCompletedMutation;
+		const completionGuardTriggered = run.exitCode === 0 && !run.error && !hiddenError?.hasError
+			&& completionPolicy === "mutation-guard"
+			&& !run.observedCompletedMutation && !hasCompletedMutationToolCall(run.messages);
 		const completionGuardError = completionGuardTriggered
-			? "Subagent completed without making edits for an implementation task.\nIt appears to have returned planning or scratchpad output instead of applying changes."
+			? "Subagent completed without making edits required by completionGuard: true.\nUse an acceptance contract when a valid no-op is allowed."
 			: undefined;
 		const effectiveExitCode = completionGuardError
 			? 1

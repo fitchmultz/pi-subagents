@@ -78,7 +78,7 @@ describe("cleanupOldRunStorage nested events", () => {
 		assert.equal(fs.existsSync(dir), false);
 	});
 
-	it("fails closed when route metadata cannot be read", { skip: process.platform === "win32" }, () => {
+	it("fails closed when route metadata cannot be read", () => {
 		const route = makeRoute("test-cleanup-eacces", true);
 		const routeFile = path.join(route, "route.json");
 		fs.chmodSync(routeFile, 0o000);

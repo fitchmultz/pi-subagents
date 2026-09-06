@@ -11,7 +11,7 @@ export function ensureTempRoot(): void {
 	if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Unsafe pi-subagents temp root: ${TEMP_ROOT_DIR}`);
 	const uid = process.getuid?.();
 	if (uid !== undefined && stat.uid !== uid) throw new Error(`pi-subagents temp root is owned by another user: ${TEMP_ROOT_DIR}`);
-	if (process.platform !== "win32") fs.chmodSync(TEMP_ROOT_DIR, 0o700);
+	fs.chmodSync(TEMP_ROOT_DIR, 0o700);
 }
 
 export function ensureSafeTempPath(candidate: string): void {

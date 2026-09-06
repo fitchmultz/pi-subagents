@@ -991,7 +991,7 @@ export function resolveTempScopeId(options?: {
 		// Fall through to home-directory-based scoping.
 	}
 
-	const homedir = env.USERPROFILE ?? env.HOME;
+	const homedir = env.HOME;
 	if (homedir) return `home-${sanitizeTempScopeSegment(homedir)}`;
 
 	const resolveHomedir = options && Object.hasOwn(options, "homedir")

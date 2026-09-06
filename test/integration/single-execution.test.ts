@@ -222,9 +222,18 @@ describe("single sync execution", () => {
 		}
 	});
 
-	it("fails implementation runs that complete without mutation attempts", async () => {
+	it("does not infer required edits from advisory or already-fixed task prose", async () => {
+		for (const agent of ["oracle", "planner", "debugger", "worker"]) {
+			mockPi.onCall({ output: "No edits needed; the implementation already satisfies the request." });
+			const result = await runSync(tempDir, [makeAgent(agent)], agent,
+				"Read-only investigation. Explain how to fix the bug. Do not write files.", {});
+			assert.equal(result.exitCode, 0, `${agent}: ${result.error}`);
+		}
+	});
+
+	it("enforces explicitly required mutation evidence", async () => {
 		mockPi.onCall({ output: "Validation:\nlet rawFilename = params.filename.trim();" });
-		const agents = [makeAgent("worker")];
+		const agents = [makeAgent("worker", { completionGuard: true })];
 		const controlEvents: Array<{ message: string }> = [];
 
 		const result = await runSync(tempDir, agents, "worker", "Implement the approved file changes", {
@@ -237,14 +246,14 @@ describe("single sync execution", () => {
 		assert.equal(result.finalOutput, "Validation:\nlet rawFilename = params.filename.trim();");
 		assert.equal(result.progress.status, "failed");
 		assert.deepEqual(controlEvents.map((event) => event.message), [
-			"worker completed without making edits for an implementation task",
+			"worker completed without making edits required by completionGuard: true",
 		]);
 		assert.deepEqual(result.controlEvents?.map((event) => event.message), [
-			"worker completed without making edits for an implementation task",
+			"worker completed without making edits required by completionGuard: true",
 		]);
 	});
 
-	it("fails future-tense implementation summaries when no mutation attempt occurred", async () => {
+	it("does not infer mutation requirements from future-tense output", async () => {
 		mockPi.onCall({ output: "I’ll do that now and report back after implementing." });
 		const agents = [makeAgent("worker")];
 
@@ -252,8 +261,8 @@ describe("single sync execution", () => {
 			runId: "guard-future-tense",
 		});
 
-		assert.equal(result.exitCode, 1);
-		assert.match(result.error ?? "", /completed without making edits/);
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.error, undefined);
 	});
 
 	it("allows declared read-only agents to mention implementation words without edits", async () => {
@@ -269,7 +278,7 @@ describe("single sync execution", () => {
 		assert.equal(result.finalOutput, "Validation report after the patch");
 	});
 
-	it("keeps bash-enabled agents conservative unless completion guard is disabled", async () => {
+	it("does not infer mutation requirements from bash capability", async () => {
 		mockPi.onCall({ output: "cold start test after patch" });
 		mockPi.onCall({ output: "cold start test after patch" });
 		const agents = [
@@ -280,8 +289,8 @@ describe("single sync execution", () => {
 		const withoutOptOut = await runSync(tempDir, agents, "test-runner", "Run cold start test after patch", {
 			runId: "guard-bash-conservative",
 		});
-		assert.equal(withoutOptOut.exitCode, 1);
-		assert.match(withoutOptOut.error ?? "", /completed without making edits/);
+		assert.equal(withoutOptOut.exitCode, 0);
+		assert.equal(withoutOptOut.error, undefined);
 
 		const withOptOut = await runSync(tempDir, agents, "test-runner-optout", "Run cold start test after patch", {
 			runId: "guard-bash-optout",
@@ -293,7 +302,7 @@ describe("single sync execution", () => {
 	it("lets explicit acceptance own completion for report-only output", async () => {
 		mockPi.onCall({ output: acceptanceReport() });
 		mockPi.onCall({ output: acceptanceReport() });
-		const agents = [makeAgent("worker")];
+		const agents = [makeAgent("worker", { completionGuard: true })];
 
 		const result = await runSync(tempDir, agents, "worker", "Create guard-acceptance.txt with verified content", {
 			runId: "guard-acceptance-explicit",
@@ -393,7 +402,7 @@ describe("single sync execution", () => {
 				events.assistantMessage("I need to retry the same edit."),
 			],
 		});
-		const agents = [makeAgent("worker")];
+		const agents = [makeAgent("worker", { completionGuard: true })];
 		const controlEvents: NonNullable<RunSyncResult["controlEvents"]> = [];
 
 		const result = await runSync(tempDir, agents, "worker", "Implement the approved fixes", {
@@ -1421,7 +1430,7 @@ describe("single sync execution", () => {
 		// The key assertion: the run should complete much faster than the 10s delay,
 		// proving the abort signal terminated the process early.
 		assert.ok(elapsed < 5000, `should abort early, took ${elapsed}ms`);
-		// Exit code is platform-dependent (Windows: often 1 or 0, Linux: null/143)
+		// Signal termination can report null or the shell's signal-derived exit code.
 	});
 
 	it("retries the same model once after child SIGTERM-style provider exits", async () => {

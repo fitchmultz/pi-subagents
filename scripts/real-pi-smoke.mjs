@@ -57,10 +57,6 @@ function parseArgs(argv) {
 	return options;
 }
 
-function commandName(base) {
-	return process.platform === "win32" ? `${base}.cmd` : base;
-}
-
 function copyLiveAuth(agentDir) {
 	if (!authAgentDir || !existsSync(authAgentDir)) return [];
 	mkdirSync(agentDir, { recursive: true });
@@ -81,15 +77,11 @@ function isolatedEnv(root, agentDir) {
 	return {
 		...env,
 		HOME: home,
-		USERPROFILE: home,
-		APPDATA: join(home, "AppData", "Roaming"),
-		LOCALAPPDATA: join(home, "AppData", "Local"),
 		XDG_CONFIG_HOME: join(home, ".config"),
 		XDG_CACHE_HOME: join(home, ".cache"),
 		PI_CODING_AGENT_DIR: agentDir,
 		PI_OFFLINE: "1",
 		PATH: process.env.PATH ?? "",
-		Path: process.env.Path ?? process.env.PATH ?? "",
 	};
 }
 
@@ -114,7 +106,7 @@ function run(label, command, args, { cwd, env, timeoutMs, input }) {
 }
 
 function runPi(label, args, options) {
-	return run(label, commandName("pi"), args, options);
+	return run(label, "pi", args, options);
 }
 
 function verifyBundledResources(options) {

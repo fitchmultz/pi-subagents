@@ -55,7 +55,7 @@ type BrokerProcess = ChildProcessByStdio<null, Readable, Readable>;
 const activeBrokers = new Set<BrokerProcess>();
 
 function signalBroker(broker: BrokerProcess, signal: NodeJS.Signals): void {
-  if (broker.pid && process.platform !== "win32") {
+  if (broker.pid) {
     try {
       process.kill(-broker.pid, signal);
       return;
@@ -323,7 +323,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
 async function setupBroker() {
   const broker = spawn(process.execPath, [path.join(repoDir, "src", "pi-intercom", "broker", "broker.ts")], {
     cwd: repoDir,
-    detached: process.platform !== "win32",
+    detached: true,
     env: { ...process.env, HOME: sharedHomeDir, USERPROFILE: sharedHomeDir, PI_CODING_AGENT_DIR: sharedAgentDir },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -664,7 +664,7 @@ test("before_agent_start adds a bounded hint only for same-project peers", { con
   }
 });
 
-test("background reconnect chain survives a failed attempt", { concurrency: false, skip: process.platform === "win32" }, async () => {
+test("background reconnect chain survives a failed attempt", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const configPath = path.join(sharedAgentDir, "intercom", "config.json");
   // Broker self-spawn must fail deterministically during this test: node
@@ -715,7 +715,7 @@ test("background reconnect chain survives a failed attempt", { concurrency: fals
   }
 });
 
-test("failed foreground attempt during backoff re-arms the reconnect chain", { concurrency: false, skip: process.platform === "win32" }, async () => {
+test("failed foreground attempt during backoff re-arms the reconnect chain", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const configPath = path.join(sharedAgentDir, "intercom", "config.json");
   mkdirSync(path.dirname(configPath), { recursive: true });
@@ -766,7 +766,7 @@ test("failed foreground attempt during backoff re-arms the reconnect chain", { c
   }
 });
 
-test("before_agent_start fails open while project identity resolution is slow", { concurrency: false, skip: process.platform === "win32" }, async () => {
+test("before_agent_start fails open while project identity resolution is slow", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const broker = await setupBroker();
   const harness = createExtensionHarness("slow-project-controller");

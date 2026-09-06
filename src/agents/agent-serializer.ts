@@ -83,7 +83,7 @@ export function serializeAgent(config: AgentConfig): string {
 	if (typeof maxTokens === "number" && Number.isInteger(maxTokens) && maxTokens >= 1) {
 		lines.push(`maxTokens: ${maxTokens}`);
 	}
-	if (config.completionGuard === false) lines.push("completionGuard: false");
+	if (config.completionGuard !== undefined) lines.push(`completionGuard: ${config.completionGuard}`);
 
 	if (config.extraFields) {
 		for (const [key, value] of Object.entries(config.extraFields)) {

@@ -188,8 +188,7 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, asyncDir: string)
 			cwd,
 			detached: true,
 			stdio: ["ignore", "ignore", errorLogFd],
-			windowsHide: true,
-		});
+			});
 		proc.on("error", (error) => {
 			console.error(`[pi-subagents] async spawn failed: ${error.message}`);
 		});
