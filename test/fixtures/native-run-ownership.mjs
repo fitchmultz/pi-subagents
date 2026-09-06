@@ -3,7 +3,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
-const [root, repo, sdkRoot] = process.argv.slice(2);
+const [root, repo, sdkRoot, phase = "journey"] = process.argv.slice(2);
+const coldParent = phase === "cold-parent";
 const cwd = path.join(root, "project"), agentDir = path.join(root, "agent"), runtimeDir = path.join(root, "pi-subagents-runtime"), callsDir = path.join(root, "calls");
 for (const dir of [cwd, agentDir, callsDir, path.join(cwd, ".pi/agents"), path.join(root, "bin"), path.join(cwd, ".pi/skills/saved-skill")]) fs.mkdirSync(dir, { recursive: true });
 Object.assign(process.env, { HOME: root, TMPDIR: root, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENT_TEMP_ROOT: runtimeDir, PI_OFFLINE: "1", OWNERSHIP_SDK_ROOT: sdkRoot, OWNERSHIP_PROBE_DIR: callsDir, OWNERSHIP_REPO: repo });
@@ -11,7 +12,7 @@ fs.writeFileSync(path.join(root, "bin/pi"), `#!/bin/sh\nexec "${process.execPath
 process.env.PATH = `${path.join(root, "bin")}${path.delimiter}${process.env.PATH}`;
 const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
 const { QUESTIONS_DIR, getRunMetadataDir, readQuestionContract } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
-const evidence = { nativeProviderRequests: 0, failures: [], checks: [], root };
+const evidence = { nativeProviderRequests: 0, failures: [], checks: [], root, parentPid: process.pid };
 const check = (name, run) => { run(); evidence.checks.push(name); };
 const profilePath = path.join(cwd, ".pi/agents/probe.md");
 const skillPath = path.join(cwd, ".pi/skills/saved-skill/SKILL.md");
@@ -19,12 +20,13 @@ const writeProfile = (changed = false) => {
 	fs.writeFileSync(profilePath, `---\nname: probe\ndescription: Native ownership probe\nmodel: openai/gpt-6-astra\nthinking: ${changed ? "low" : "off"}\ntools: ${changed ? "read" : "read, bash"}\nextensions:\ninheritProjectContext: ${changed}\ninheritSkills: false\nskills: saved-skill\n---\n${changed ? "CHANGED_PROFILE" : "ORIGINAL_PROFILE"}\n`);
 	fs.writeFileSync(skillPath, `---\nname: saved-skill\ndescription: Selected context for a native probe\n---\n${changed ? "SKILL_AFTER" : "SKILL_BEFORE"}\n`);
 };
-writeProfile();
+if (!coldParent) writeProfile();
 function newParent(file, id = randomUUID()) {
 	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id, cwd, timestamp: new Date().toISOString() })}\n`);
 	return file;
 }
-const parentFile = newParent(path.join(root, "parent.jsonl"));
+const parentFile = path.join(root, "parent.jsonl");
+if (!coldParent) newParent(parentFile);
 const calls = () => fs.readdirSync(callsDir).filter((file) => file.startsWith("call-")).sort().map((file) => JSON.parse(fs.readFileSync(path.join(callsDir, file), "utf8")));
 const wait = async (predicate, label) => {
 	const deadline = Date.now() + 20_000;
@@ -33,7 +35,7 @@ const wait = async (predicate, label) => {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 };
-let acknowledgeResults = false;
+let acknowledgeResults = coldParent;
 let nudgeDeliveries = 0;
 const resolvedQuestions = [];
 const bus = sdk.createEventBus();
@@ -66,7 +68,15 @@ async function completed(id) {
 	await wait(() => fs.existsSync(resultFile(id)), `durable result ${id}`);
 	return JSON.parse(fs.readFileSync(resultFile(id), "utf8"));
 }
-try {
+function runSnapshot(run) {
+	return {
+		runId: run.runId, source: run.source, state: run.state, review: run.review,
+		rootRunId: run.rootRunId, predecessorRunId: run.predecessorRunId ?? null, continuations: run.continuations,
+		sessionFile: run.children[0].sessionFile, launch: run.children[0].launch,
+		output: run.children[0].result.finalOutput, acceptance: run.children[0].result.acceptance,
+	};
+}
+async function runJourney() {
 	await open(parentFile);
 	const first = await invoke("delegate", { agent: "probe", task: "Return FIRST_SESSION_TOKEN", async: false, context: "fresh", output: false, model: "openai-codex/gpt-6-astra:high" });
 	const originalId = first.details.runId;
@@ -279,12 +289,54 @@ try {
 	await completed(explicitlyRecovered.details.asyncId);
 	assert.ok(calls().at(-1).modelArg.startsWith("openai-codex/gpt-6-astra"));
 	evidence.checks.push("pre-update native receipt recovers handle/result/session; missing profile needs explicit override rather than silent substitution");
+	await close(); await open(parentFile);
+	// The legacy case deleted the first run's metadata; these earlier handles are untouched.
+	const coldRuns = [];
+	for (const [id, decision] of [[questionId, "accepted"], [answered.details.asyncId, "needs_changes"]]) {
+		const reviewed = await invoke("agent_runs", { action: "review", id, decision });
+		coldRuns.push(runSnapshot(reviewed.details.run));
+	}
+	evidence.coldParent = { parentFile, runs: coldRuns, total: (await invoke("agent_runs", { action: "list" })).details.runList.total };
+}
+async function runColdParent() {
+	const prior = JSON.parse(fs.readFileSync(path.join(root, "evidence.json"), "utf8"));
+	assert.notEqual(process.pid, prior.parentPid, "cold recovery must run in a new parent OS process");
+	assert.equal(parentFile, prior.coldParent.parentFile);
+	await open(parentFile);
+	const before = calls().length;
+	for (const expected of prior.coldParent.runs) assert.deepEqual(runSnapshot((await inspect(expected.runId)).details.run), expected);
+	assert.equal((await invoke("agent_runs", { action: "list" })).details.runList.total, prior.coldParent.total);
+	assert.equal(calls().length, before, "cold inspection must not launch a child");
+	evidence.checks.push("new parent OS process restores original foreground/background handles, results, review, configuration and lineage from the same saved directories");
+	const [foreground, background] = prior.coldParent.runs;
+	const previousEntryCount = sdk.SessionManager.open(background.sessionFile).getEntries().length;
+	const continued = await invoke("agent_runs", { action: "continue", id: background.runId, message: "RECALL_TOKEN after a cold parent process restart." });
+	const result = await completed(continued.details.asyncId);
+	assert.equal(result.success, true);
+	const newEntries = sdk.SessionManager.open(background.sessionFile).getEntries().slice(previousEntryCount);
+	assert.ok(newEntries.some((entry) => entry.type === "message" && entry.message.role === "assistant" && entry.message.content.some((part) => part.type === "text" && part.text.startsWith("RECALLED FIRST_SESSION_TOKEN"))), "cold continuation must recall the original conversation before acceptance finalization");
+	const call = calls().at(-1);
+	assert.equal(call.sessionFile, background.sessionFile);
+	assert.equal(call.modelArg, "openai-codex/gpt-6-astra:off");
+	assert.ok(call.previousMessages >= 4);
+	const continuation = (await inspect(continued.details.asyncId)).details.run;
+	assert.equal(continuation.rootRunId, foreground.runId);
+	assert.equal(continuation.predecessorRunId, background.runId);
+	assert.equal(continuation.review, undefined);
+	assert.deepEqual(continuation.children[0].launch.effectiveAcceptance, background.launch.effectiveAcceptance);
+	assert.ok((await inspect(foreground.runId)).details.run.continuations.some((next) => next.runId === continuation.runId && next.predecessorRunId === background.runId));
+	evidence.coldParent = { originalPid: prior.parentPid, parentFile, foregroundId: foreground.runId, backgroundId: background.runId, continuedId: continuation.runId };
+	evidence.checks.push("cold-process continuation reuses the saved child conversation, provider/thinking and acceptance, with a new review outcome and linked lineage");
+}
+try {
+	if (coldParent) await runColdParent();
+	else await runJourney();
 	assert.equal(evidence.nativeProviderRequests, 0);
 } catch (error) {
 	evidence.failures.push(error.stack ?? String(error));
 	process.exitCode = 1;
 } finally {
 	await close();
-	fs.writeFileSync(path.join(root, "evidence.json"), JSON.stringify(evidence, null, 2));
+	fs.writeFileSync(path.join(root, coldParent ? "cold-evidence.json" : "evidence.json"), JSON.stringify(evidence, null, 2));
 	console.log(JSON.stringify(evidence, null, 2));
 }
