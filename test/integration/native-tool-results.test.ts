@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-for (const route of ["parent", "child"]) it(`native registered ${route} tools retain mixed-outcome results and native error flags`, { timeout: 100_000 }, async (t) => {
+for (const route of ["parent", "child"]) it(`native registered ${route} tools retain outcomes, aggregate errors and recovery receipts`, { timeout: 100_000 }, async (t) => {
 	const evidenceDir = process.env.PI_NATIVE_TOOL_RESULT_EVIDENCE_DIR ?? os.tmpdir();
 	fs.mkdirSync(evidenceDir, { recursive: true });
 	const root = fs.mkdtempSync(path.join(evidenceDir, `native-tool-results-${route}-`));
@@ -35,6 +35,10 @@ for (const route of ["parent", "child"]) it(`native registered ${route} tools re
 		assert.deepEqual(evidence.extensionErrors, []);
 		assert.equal(child.stderr, "");
 		assert.equal(evidence.cases.filter((entry) => entry.mixed).length, 6);
+		assert.equal(evidence.cases.filter((entry) => entry.name.endsWith("-pure")).length, 8);
+		assert.equal(evidence.cases.find((entry) => entry.name === "static-chain-interrupt-pure")?.liveUpdate?.type, "tool_execution_update");
+		for (const name of ["static-chain-interrupt-mixed", "static-chain-interrupt-pure"]) assert.equal(evidence.cases.find((entry) => entry.name === name)?.settlingUpdate?.type, "tool_execution_update");
+		for (const name of ["static-preflight-failure", "dynamic-collect-schema-failure", "dynamic-collect-success", "normal-success", "intercom-receipt-success", "inspect-handle"]) assert.ok(evidence.cases.some((entry) => entry.name === name), name);
 		for (const receipt of evidence.cases) await t.test(receipt.name, () => {
 			assert.deepEqual(receipt.failures, [], receipt.failures.join("\n"));
 			assert.ok(receipt.checks.length > 0);

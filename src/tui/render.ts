@@ -502,10 +502,10 @@ function buildAsyncChainStepSpans(total: number, stepCount: number, parallelGrou
 }
 
 function isDoneResult(result: Details["results"][number]): boolean {
+	if (result.interrupted || result.detached || result.timedOut) return false;
 	const status = result.progress?.status;
 	if (status === "completed") return true;
 	if (status === "running" || status === "pending") return false;
-	if (result.interrupted || result.detached || result.timedOut) return false;
 	return result.exitCode === 0;
 }
 
@@ -621,25 +621,13 @@ function buildMultiProgressLabel(details: Pick<Details, "mode" | "results" | "pr
 		let paused = 0;
 		for (let index = groupStart; index < groupEnd; index++) {
 			const progressEntry = details.progress?.find((progress) => progress.index === index);
-			const resultEntry = details.results.find((result) => result.progress?.index === index);
-			if (progressEntry?.status === "running") {
-				running++;
-				continue;
-			}
-			if (progressEntry?.status === "completed") {
-				succeeded++;
-				continue;
-			}
-			if (progressEntry?.status === "failed" || progressEntry?.status === "timed-out") {
-				failed++;
-				continue;
-			}
-			if (progressEntry?.status === "detached") {
-				paused++;
-				continue;
-			}
-			if (resultEntry && isDoneResult(resultEntry)) succeeded++;
+			const resultEntry = details.results.find((result, position) => (result.progress?.index ?? position) === index);
+			const status = progressEntry?.status ?? resultEntry?.progress?.status;
+			if (status === "running") running++;
+			else if (status === "failed" || status === "timed-out" || resultEntry?.timedOut) failed++;
+			else if (status === "paused" || status === "detached" || resultEntry?.interrupted || resultEntry?.detached) paused++;
 			else if (resultEntry && resultEntry.exitCode !== 0) failed++;
+			else if (status === "completed" || (resultEntry && isDoneResult(resultEntry))) succeeded++;
 		}
 		const totalSteps = details.totalSteps ?? details.chainAgents?.length ?? 1;
 		const groupParts = [`${succeeded}/${groupSize} succeeded`];
@@ -1030,11 +1018,11 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 	ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(jobs, () => ctx.ui.getToolsExpanded()));
 }
 
-function renderSingleCompact(d: Details, r: Details["results"][number], theme: Theme): Component {
+function renderSingleCompact(d: Details, r: Details["results"][number], theme: Theme, isError = false): Component {
 	const output = r.truncation?.text || getSingleResultOutput(r);
 	const statusOutput = output || (d.intercomDelivery?.delivered ? d.intercomDelivery.summary : "");
 	const progress = r.progress || r.progressSummary;
-	const isRunning = r.progress?.status === "running";
+	const isRunning = !isError && r.progress?.status === "running";
 	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 	const stats = statJoin(theme, [
 		r.usage?.turns ? `⟳ ${r.usage.turns}` : "",
@@ -1043,7 +1031,7 @@ function renderSingleCompact(d: Details, r: Details["results"][number], theme: T
 	const c = new Container();
 	const width = getTermWidth() - 4;
 	const modelDisplay = modelThinkingBadge(theme, r.model);
-	c.addChild(new TruncatedText(`${resultGlyph(r, statusOutput, theme, isRunning)} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`));
+	c.addChild(new TruncatedText(`${isError ? theme.fg("error", "✗") : resultGlyph(r, statusOutput, theme, isRunning)} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`));
 
 	if (isRunning && r.progress) {
 		const progressSnapshotNow = snapshotNowForProgress(r.progress);
@@ -1068,11 +1056,11 @@ function renderSingleCompact(d: Details, r: Details["results"][number], theme: T
 	return c;
 }
 
-function renderMultiCompact(d: Details, theme: Theme): Component {
-	const hasRunning = d.progress?.some((p) => p.status === "running")
+function renderMultiCompact(d: Details, theme: Theme, isError = false): Component {
+	const hasRunning = !isError && (d.progress?.some((p) => p.status === "running")
 		|| d.results.some((r) => r.progress?.status === "running")
-		|| workflowGraphHasStatus(d, ["running"]);
-	const failed = d.results.some((r) => r.exitCode !== 0 && r.progress?.status !== "running")
+		|| workflowGraphHasStatus(d, ["running"]));
+	const failed = isError || d.results.some((r) => r.exitCode !== 0 && r.progress?.status !== "running")
 		|| workflowGraphHasStatus(d, ["failed", "timed-out"]);
 	const paused = d.results.some((r) => (r.interrupted || r.detached) && r.progress?.status !== "running")
 		|| workflowGraphHasStatus(d, ["paused", "detached"]);
@@ -1198,22 +1186,27 @@ export function renderSubagentResult(
 	}
 
 	const expanded = options.expanded;
-	const receiptText = expanded && d.intercomDelivery?.delivered
+	const hasWorkflowFailure = workflowGraphHasStatus(d, ["failed", "timed-out"]);
+	const hasWorkflowPause = d.results.some((r) => r.interrupted || r.detached)
+		|| workflowGraphHasStatus(d, ["paused", "detached"]);
+	const receiptText = expanded && (isError || hasWorkflowFailure || hasWorkflowPause || d.intercomDelivery?.delivered)
 		? result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")
 		: undefined;
 	const mdTheme = getMarkdownTheme();
 
 	if (d.mode === "single" && d.results.length === 1) {
 		const r = d.results[0];
-		if (!expanded) return renderSingleCompact(d, r, theme);
-		const isRunning = r.progress?.status === "running";
+		if (!expanded) return renderSingleCompact(d, r, theme, isError);
+		const isRunning = !isError && r.progress?.status === "running";
 		const icon = isRunning
 			? theme.fg("warning", "running")
-			: r.detached
-				? theme.fg("warning", "detached")
-				: r.exitCode === 0
-					? theme.fg("success", "ok")
-					: theme.fg("error", "failed");
+			: isError || r.timedOut
+				? theme.fg("error", "failed")
+				: r.detached || r.interrupted
+					? theme.fg("warning", r.detached ? "detached" : "paused")
+					: r.exitCode === 0
+						? theme.fg("success", "ok")
+						: theme.fg("error", "failed");
 		const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 		const output = r.truncation?.text || getSingleResultOutput(r);
 
@@ -1228,7 +1221,7 @@ export function renderSubagentResult(
 		const toolCallLines = getToolCallLines(r, expanded);
 		const c = new Container();
 		c.addChild(new Text(fit(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${contextBadge}${progressInfo}`), 0, 0));
-		if (isError && d.runId) c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
+		if ((isError || hasWorkflowFailure || hasWorkflowPause) && d.runId) c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
 		c.addChild(new Spacer(1));
 		const taskMaxLen = Math.max(20, w - 8);
 		const taskPreview = expanded || r.task.length <= taskMaxLen
@@ -1302,30 +1295,28 @@ export function renderSubagentResult(
 		return c;
 	}
 
-	if (!expanded) return renderMultiCompact(d, theme);
+	if (!expanded) return renderMultiCompact(d, theme, isError);
 
-	const hasRunning = d.progress?.some((p) => p.status === "running") 
+	const hasRunning = !isError && (d.progress?.some((p) => p.status === "running")
 		|| d.results.some((r) => r.progress?.status === "running")
-		|| workflowGraphHasStatus(d, ["running"]);
-	const ok = d.results.filter((r) => r.progress?.status === "completed" || (r.exitCode === 0 && r.progress?.status !== "running")).length;
+		|| workflowGraphHasStatus(d, ["running"]));
+	const hasFailure = isError || hasWorkflowFailure || d.results.some((r) =>
+		(r.exitCode !== 0 || r.timedOut) && !r.interrupted && !r.detached && r.progress?.status !== "running",
+	);
 	const hasEmptyWithoutTarget = !d.intercomDelivery?.delivered && d.results.some((r) =>
 		r.exitCode === 0
 		&& r.progress?.status !== "running"
 		&& hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
 	);
-	const hasWorkflowFailure = workflowGraphHasStatus(d, ["failed", "timed-out"]);
-	const hasWorkflowPause = workflowGraphHasStatus(d, ["paused", "detached"]);
 	const icon = hasRunning
 		? theme.fg("warning", "running")
-		: hasEmptyWithoutTarget
-			? theme.fg("warning", "warning")
-			: hasWorkflowFailure
-				? theme.fg("error", "failed")
-				: hasWorkflowPause
-					? theme.fg("warning", "paused")
-					: ok === d.results.length
-						? theme.fg("success", "ok")
-						: theme.fg("error", "failed");
+		: hasFailure
+			? theme.fg("error", "failed")
+			: hasWorkflowPause
+				? theme.fg("warning", "paused")
+				: hasEmptyWithoutTarget
+					? theme.fg("warning", "warning")
+					: theme.fg("success", "ok");
 
 	const totalSummary =
 		d.progressSummary ||
@@ -1390,7 +1381,7 @@ export function renderSubagentResult(
 			0,
 		),
 	);
-	if (isError && d.runId) c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
+	if ((isError || hasWorkflowFailure || hasWorkflowPause) && d.runId) c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
 	if (chainVis) {
 		c.addChild(new Text(fit(`  ${chainVis}`), 0, 0));
 	}
