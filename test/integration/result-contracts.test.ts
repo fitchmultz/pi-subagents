@@ -47,6 +47,79 @@ describe("result contracts", () => {
 	}
 
 	for (const background of [false, true]) {
+		it(`${background ? "background" : "foreground"} falls back after exhausted short-lived transport recovery`, async () => {
+			mock.onCall({ exitCode: 143 });
+			mock.onCall({ exitCode: 143 });
+			mock.onCall({ output: "Recovered on the configured fallback" });
+			const agent = makeAgent("worker", { model: "mock/primary", fallbackModels: ["mock/fallback"] });
+			let result;
+			if (background) {
+				executeAsyncSingle(id, { agent: "worker", task: "Deliver the result", agentConfig: agent,
+					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id },
+					shareEnabled: false, maxSubagentDepth: 2 });
+				result = (await waitForResult(id)).results[0];
+			} else {
+				result = await runSync(cwd, [agent], "worker", "Deliver the result", { runId: id });
+			}
+			assert.equal(result.exitCode, 0, result.error);
+			assert.deepEqual(result.attemptedModels, ["mock/primary", "mock/primary", "mock/fallback"]);
+			assert.equal(mock.callCount(), 3);
+			assert.match(result.finalOutput ?? result.output, /Recovered on the configured fallback/);
+		});
+
+		it(`${background ? "background" : "foreground"} passes configured thinking on the first child attempt`, async () => {
+			mock.onCall({ output: "Done" });
+			const agent = makeAgent("worker", { model: "mock/primary", thinking: "high" });
+			if (background) {
+				executeAsyncSingle(id, { agent: "worker", task: "Deliver the result", agentConfig: agent,
+					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id },
+					shareEnabled: false, maxSubagentDepth: 2 });
+				assert.equal((await waitForResult(id)).success, true);
+			} else {
+				assert.equal((await runSync(cwd, [agent], "worker", "Deliver the result", { runId: id })).exitCode, 0);
+			}
+			const args = calls()[0].args;
+			assert.equal(args[args.indexOf("--model") + 1], "mock/primary:high");
+		});
+
+		it(`${background ? "background" : "foreground"} interruption during verification pauses before publishing terminal metadata`, async () => {
+			mock.onCall({ output: `Initial report\n${report()}` });
+			mock.onCall({ output: `Reviewed report\n${report()}` });
+			const marker = path.join(cwd, "verification-started");
+			const contract = { ...acceptance, verify: [{ id: "wait", command: `touch '${marker}'; sleep 20`, timeoutMs: 30_000 }] };
+			const controller = new AbortController();
+			let completion;
+			if (background) {
+				executeAsyncSingle(id, { agent: "worker", task: "Deliver the result", agentConfig: makeAgent("worker"),
+					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, acceptance: contract,
+					artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), shareEnabled: false, maxSubagentDepth: 2 });
+				completion = waitForResult(id).then((payload) => {
+					assert.equal(payload.state, "paused");
+					return payload.results[0];
+				});
+			} else {
+				completion = runSync(cwd, [makeAgent("worker")], "worker", "Deliver the result", { runId: id,
+					acceptance: contract, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), interruptSignal: controller.signal });
+			}
+			const deadline = Date.now() + 10_000;
+			while (!fs.existsSync(marker)) {
+				assert.ok(Date.now() < deadline, "verification must start");
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			if (background) {
+				const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8"));
+				assert.ok(Number.isSafeInteger(status.pid) && status.pid > 0);
+				process.kill(status.pid, "SIGUSR2");
+			} else controller.abort();
+			const result = await completion;
+			assert.equal(result.exitCode, 0, result.error);
+			assert.equal(result.interrupted, true);
+			const metadata = JSON.parse(fs.readFileSync(result.artifactPaths.metadataPath, "utf8"));
+			assert.equal(metadata.exitCode, result.exitCode);
+			assert.equal(metadata.interrupted, true);
+			assert.equal(mock.callCount(), 2, "must not start another review after interruption");
+		});
+
 		for (const satisfied of [true, false]) {
 			it(`${background ? "background" : "foreground"} finalization publishes authoritative output, acceptance and usage (${satisfied ? "accepted" : "rejected"})`, async () => {
 				mock.onCall({ output: `Initial incomplete answer\n${report(false)}` });
@@ -243,6 +316,21 @@ describe("result contracts", () => {
 			}
 		});
 	}
+
+	it("foreground timeout extensions carry into recovery attempts", async () => {
+		mock.onCall({ exitCode: 1, stderr: "connection reset", delay: 350 });
+		mock.onCall({ output: "Recovered inside the extended deadline", delay: 350 });
+		let registered = 0;
+		const result = await runSync(cwd, [makeAgent("worker", { model: "mock/primary" })], "worker", "Deliver the result", {
+			runId: id, timeoutMs: 250,
+			registerTimeoutExtension: (extend) => {
+				if (registered++ === 0) assert.equal(extend(1500).ok, true);
+			},
+		});
+		assert.equal(result.exitCode, 0, result.error);
+		assert.equal(result.finalOutput, "Recovered inside the extended deadline");
+		assert.equal(mock.callCount(), 2);
+	});
 
 	for (const questionPhase of ["initial", "finalization"]) it(`a question during ${questionPhase} releases the parent while the complete acceptance operation keeps running`, { timeout: 10_000 }, async () => {
 		for (const [phase, output] of [["initial", "Initial answer"], ["finalization", "Final detached answer"]]) {

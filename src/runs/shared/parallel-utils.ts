@@ -143,4 +143,10 @@ export function aggregateParallelOutputs(
 		.join("\n\n");
 }
 
+export const FAIL_FAST_REASON = "subagent-fail-fast";
+
+export function isFailFastAbort(signal: AbortSignal | undefined): boolean {
+	return signal?.aborted === true && signal.reason === FAIL_FAST_REASON;
+}
+
 export const MAX_PARALLEL_CONCURRENCY = 4;

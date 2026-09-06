@@ -7,9 +7,8 @@ import type { Message } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
 import { PI_CODING_AGENT_PACKAGE, getPiSpawnCommand, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
-import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, findDuplicateOutputPath, formatConsumedOutputReference, formatSavedOutputReference, injectSingleOutputInstruction, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
+import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, findDuplicateOutputPath, formatConsumedOutputReference, formatSavedOutputReference, injectSingleOutputInstruction, resolveSingleOutput } from "../shared/single-output.ts";
 import {
-	type AcceptanceFinalizationTurn,
 	type AcceptanceLedger,
 	type AsyncResultFile,
 	type ActivityState,
@@ -63,7 +62,7 @@ import { outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/c
 import { createStructuredOutputRuntime, readStructuredOutput, type StructuredOutputRuntime } from "../shared/structured-output.ts";
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
-import { formatModelAttemptNote, formatModelRecoveryAttemptNote, isRecoverableSameModelFailure, isRetryableModelFailure } from "../shared/model-fallback.ts";
+import { runModelAttempts, sumAttemptUsage } from "../shared/model-fallback.ts";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
 import { saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
@@ -96,17 +95,10 @@ import { providerQualifiedModelId, resolveEffectiveThinking } from "../../shared
 import { namespaceParallelOutput, writeInitialProgressFile } from "../../shared/settings.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
-	acceptanceFailureMessage,
-	acceptanceSelfReviewConfig,
-	attachFinalizationToLedger,
-	buildFinalizationProcessFailureLedger,
-	createFinalizationProcessFailureTurn,
-	createFinalizationTurn,
-	evaluateAcceptance,
-	formatAcceptanceFinalizationPrompt,
+	evaluateRunAcceptance,
+	resolveExecutionOutcome,
 	resolveFinalizationOutput,
 	formatAcceptancePrompt,
-	shouldRunAcceptanceFinalization,
 	stripAcceptanceReport,
 } from "../shared/acceptance.ts";
 
@@ -163,7 +155,6 @@ interface StepResult {
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = "SIGUSR2";
 const ASYNC_CONTROL_REQUEST_FILE = "control-request.json";
-const MAX_SAME_MODEL_RECOVERY_RETRIES = 1;
 
 function formatProcessExitFailure(input: { agent: string; exitCode: number | null; durationMs?: number }): string {
 	const duration = input.durationMs !== undefined ? ` after ${input.durationMs}ms` : "";
@@ -686,6 +677,7 @@ interface SingleStepContext {
 	outputFile: string;
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void;
 	signal?: AbortSignal;
+	interruptSignal?: AbortSignal;
 	childIntercomTarget?: string;
 	orchestratorIntercomTarget?: string;
 	nestedRoute?: NestedRouteInfo;
@@ -703,7 +695,8 @@ async function runSingleStep(
 	saveQuestionContract(ctx.id, ctx.flatIndex, { effectiveAcceptance: step.effectiveAcceptance, output: step.outputPath ?? false, outputMode: step.outputMode, outputSchema: step.structuredOutputSchema ?? step.structuredOutput?.schema });
 	const interruptController = new AbortController();
 	ctx.registerInterrupt?.(() => interruptController.abort());
-	const verificationSignal = AbortSignal.any([ctx.signal, interruptController.signal].filter((signal) => signal !== undefined));
+	const interruptSignal = AbortSignal.any([ctx.interruptSignal, interruptController.signal].filter((signal) => signal !== undefined));
+	const verificationSignal = AbortSignal.any([ctx.signal, interruptSignal].filter((signal) => signal !== undefined));
 	const effectiveStructuredOutput = step.structuredOutput ?? (step.structuredOutputSchema
 		? createStructuredOutputRuntime(step.structuredOutputSchema, path.join(path.dirname(ctx.outputFile), "structured-output"))
 		: undefined);
@@ -716,7 +709,6 @@ async function runSingleStep(
 	}
 	const sessionEnabled = Boolean(step.sessionFile) || ctx.sessionEnabled;
 	const sessionDir = step.sessionFile ? undefined : ctx.sessionDir;
-
 	let artifactPaths: ArtifactPaths | undefined;
 	if (ctx.artifactsDir) {
 		const index = ctx.flatStepCount > 1 ? ctx.flatIndex : undefined;
@@ -725,79 +717,51 @@ async function runSingleStep(
 		fs.writeFileSync(artifactPaths.inputPath, `# Task for ${step.agent}\n\n${task}`, "utf-8");
 	}
 
-	const candidates = step.modelCandidates && step.modelCandidates.length > 0
-		? step.modelCandidates
-		: step.model
-			? [step.model]
-			: [undefined];
-	const attemptedModels: string[] = [];
-	const modelAttempts: ModelAttempt[] = [];
-	const attemptNotes: string[] = [];
+	type StepAttempt = RunPiStreamingResult & {
+		terminalFailure?: boolean;
+		completionGuardTriggered?: boolean;
+		structuredOutput?: unknown;
+		resolvedOutput: ReturnType<typeof resolveSingleOutput>;
+	};
 	const eventsPath = path.join(path.dirname(ctx.outputFile), "events.jsonl");
-	let finalResult: RunPiStreamingResult | undefined;
-	let finalOutputSnapshot: SingleOutputSnapshot | undefined;
-	let completionGuardTriggeredFinal = false;
-	const sameModelRetryCounts = new Map<number, number>();
-
-	for (let index = 0; index < candidates.length; index++) {
-		const candidate = candidates[index];
-		ctx.onAttemptStart?.({ model: candidate, thinking: resolveEffectiveThinking(candidate, step.thinking) });
-		const outputSnapshot = captureSingleOutputSnapshot(step.outputPath);
-		if (effectiveStructuredOutput) {
-			try {
-				if (fs.existsSync(effectiveStructuredOutput.outputPath)) fs.unlinkSync(effectiveStructuredOutput.outputPath);
-			} catch {
-				// Missing/stale structured-output files are handled after the child exits.
+	async function runAttempt(prompt: string, model: string | undefined, review?: { turn: number; sessionFile: string; previousOutput: string }): Promise<StepAttempt> {
+		if (verificationSignal.aborted) {
+			const outcome = resolveExecutionOutcome({ result: { exitCode: 1 }, signal: ctx.signal, interruptSignal });
+			return { stderr: "", messages: [], usage: emptyUsage(), finalOutput: outcome.error ?? "Interrupted. Waiting for explicit next action.",
+				...outcome, model, terminalFailure: true, resolvedOutput: { fullOutput: "" } };
+		}
+		ctx.onAttemptStart?.({ model, thinking: resolveEffectiveThinking(model, step.thinking) });
+		const structuredRuntime = review ? undefined : effectiveStructuredOutput;
+		const outputSnapshot = review ? undefined : captureSingleOutputSnapshot(step.outputPath);
+		if (structuredRuntime) {
+			try { fs.rmSync(structuredRuntime.outputPath, { force: true }); } catch {
+				// readStructuredOutput reports unreadable or stale output after the attempt.
 			}
 		}
 		let args: string[];
 		let env: Record<string, string | undefined>;
 		let tempDir: string | undefined;
 		let claudeCodeInvocation: ClaudeCodeInvocation | undefined;
+		const sessionFile = review?.sessionFile ?? step.sessionFile;
 		try {
-			if (candidate && isClaudeCodeModel(candidate)) {
-				claudeCodeInvocation = buildClaudeCodeInvocation({
-					model: candidate,
-					task,
-					systemPrompt: step.systemPrompt ?? undefined,
-					systemPromptMode: step.systemPromptMode,
-					sessionFile: step.sessionFile,
-					sessionName: ctx.childIntercomTarget,
-					tools: step.tools,
-					mcpDirectTools: step.mcpDirectTools,
-					allowSubagents: step.allowSubagents,
-					outputSchema: effectiveStructuredOutput?.schema,
-				});
+			if (model && isClaudeCodeModel(model)) {
+				claudeCodeInvocation = buildClaudeCodeInvocation({ model, task: prompt, systemPrompt: step.systemPrompt ?? undefined,
+					systemPromptMode: step.systemPromptMode, sessionFile, sessionName: ctx.childIntercomTarget,
+					tools: step.tools, mcpDirectTools: step.mcpDirectTools, allowSubagents: step.allowSubagents, outputSchema: structuredRuntime?.schema });
 				args = claudeCodeInvocation.args;
 				env = claudeCodeInvocation.env;
 			} else {
 				const built = buildPiArgs({
-					baseArgs: ["--mode", "json", "-p"],
-					task,
-					sessionEnabled,
-					sessionDir,
-					sessionFile: step.sessionFile,
-					model: candidate,
-					inheritProjectContext: step.inheritProjectContext,
-					inheritSkills: step.inheritSkills,
-					tools: step.tools,
-					allowSubagents: step.allowSubagents,
-					extensions: step.extensions,
-					systemPrompt: step.systemPrompt,
-					systemPromptMode: step.systemPromptMode,
-					mcpDirectTools: step.mcpDirectTools,
-					cwd: step.cwd ?? ctx.cwd,
-					intercomSessionName: ctx.childIntercomTarget,
-					orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
-					runId: ctx.id,
-					childAgentName: step.agent,
-					childIndex: ctx.flatIndex,
-					parentEventSink: ctx.nestedRoute?.eventSink,
-					parentControlInbox: ctx.nestedRoute?.controlInbox,
-					parentRootRunId: ctx.nestedRoute?.rootRunId,
-					parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
-					structuredOutput: effectiveStructuredOutput,
-					projectTrust: ctx.projectTrust,
+					baseArgs: ["--mode", "json", "-p"], task: prompt, model, thinking: step.thinking,
+					sessionEnabled: review ? true : sessionEnabled, sessionDir: review ? undefined : sessionDir, sessionFile,
+					inheritProjectContext: step.inheritProjectContext, inheritSkills: step.inheritSkills,
+					tools: step.tools, allowSubagents: step.allowSubagents, extensions: step.extensions,
+					systemPrompt: step.systemPrompt, systemPromptMode: step.systemPromptMode, mcpDirectTools: step.mcpDirectTools,
+					cwd: step.cwd ?? ctx.cwd, intercomSessionName: ctx.childIntercomTarget, orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
+					runId: ctx.id, childAgentName: step.agent, childIndex: ctx.flatIndex,
+					parentEventSink: ctx.nestedRoute?.eventSink, parentControlInbox: ctx.nestedRoute?.controlInbox,
+					parentRootRunId: ctx.nestedRoute?.rootRunId, parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
+					structuredOutput: structuredRuntime, projectTrust: ctx.projectTrust,
 				});
 				args = built.args;
 				env = built.env;
@@ -805,350 +769,100 @@ async function runSingleStep(
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			finalResult = { stderr: message, exitCode: 1, messages: [], usage: emptyUsage(), model: candidate, error: message, finalOutput: message };
-			modelAttempts.push({ model: candidate ?? step.model ?? "default", success: false, exitCode: 1, error: message, usage: emptyUsage() });
-			break;
+			return { stderr: message, exitCode: 1, messages: [], usage: emptyUsage(), model, error: message,
+				finalOutput: message, terminalFailure: true, resolvedOutput: { fullOutput: message } };
 		}
-		const run = await runPiStreaming(
-			args,
-			step.cwd ?? ctx.cwd,
-			ctx.outputFile,
-			env,
-			step.maxSubagentDepth,
-			{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
-			interruptController.signal,
-			ctx.onChildEvent,
-			step.maxExecutionTimeMs,
-			step.maxTokens,
-			claudeCodeInvocation,
-			step.sessionFile,
-			effectiveStructuredOutput,
-			ctx.signal,
-		);
-		cleanupTempDir(tempDir);
-
-		const hiddenError = run.exitCode === 0 && !run.error ? detectSubagentError(run.messages) : null;
+		let run: RunPiStreamingResult;
+		try {
+			run = await runPiStreaming(args, step.cwd ?? ctx.cwd, review ? `${ctx.outputFile}.finalization-${review.turn}.log` : ctx.outputFile,
+				env, step.maxSubagentDepth, { eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
+				interruptSignal, ctx.onChildEvent, step.maxExecutionTimeMs, step.maxTokens, claudeCodeInvocation,
+				sessionFile, structuredRuntime, ctx.signal);
+		} finally {
+			cleanupTempDir(tempDir);
+		}
+		const hiddenError = run.exitCode === 0 && !run.error ? detectSubagentError(run.messages) : undefined;
 		let structuredOutput: unknown;
 		let structuredError: string | undefined;
-		if (effectiveStructuredOutput && run.exitCode === 0 && !run.error && !hiddenError?.hasError) {
-			const structured = readStructuredOutput({
-				schema: effectiveStructuredOutput.schema,
-				schemaPath: effectiveStructuredOutput.schemaPath,
-				outputPath: effectiveStructuredOutput.outputPath,
-			});
-			if (structured.error) structuredError = structured.error;
-			else structuredOutput = structured.value;
+		if (structuredRuntime && run.exitCode === 0 && !run.error && !hiddenError?.hasError && !run.interrupted) {
+			const structured = readStructuredOutput(structuredRuntime);
+			structuredError = structured.error;
+			structuredOutput = structured.value;
 		}
-		const completionPolicy = resolveCompletionPolicy({
-			completionGuardEnabled: step.completionGuard === true,
-			usesAcceptanceContract: step.effectiveAcceptance?.explicit === true,
-		});
-		const completionGuardTriggered = run.exitCode === 0 && !run.error && !hiddenError?.hasError
-			&& completionPolicy === "mutation-guard"
+		const completionGuardTriggered = !review && run.exitCode === 0 && !run.error && !hiddenError?.hasError && !run.interrupted
+			&& resolveCompletionPolicy({ completionGuardEnabled: step.completionGuard === true, usesAcceptanceContract: step.effectiveAcceptance?.explicit === true }) === "mutation-guard"
 			&& !run.observedCompletedMutation && !hasCompletedMutationToolCall(run.messages);
-		const completionGuardError = completionGuardTriggered
+		let error = completionGuardTriggered
 			? "Subagent completed without making edits required by completionGuard: true.\nUse an acceptance contract when a valid no-op is allowed."
-			: undefined;
-		const effectiveExitCode = completionGuardError
-			? 1
-			: structuredError
-				? 1
-				: hiddenError?.hasError
-				? (hiddenError.exitCode ?? 1)
-				: run.error && run.exitCode === 0
-					? 1
-					: run.exitCode;
-		const error = completionGuardError
-			?? structuredError
-			?? (hiddenError?.hasError
-				? hiddenError.details
-					? `${hiddenError.errorType} failed (exit ${effectiveExitCode}): ${hiddenError.details}`
-					: `${hiddenError.errorType} failed with exit code ${effectiveExitCode}`
-				: run.error
-					|| (run.exitCode !== 0 && run.stderr.trim() ? run.stderr.trim() : undefined)
-					|| (run.exitCode !== 0 ? formatProcessExitFailure({ agent: step.agent, exitCode: run.exitCode, durationMs: run.durationMs }) : undefined));
-		const attempt: ModelAttempt = {
-			model: candidate ?? run.model ?? step.model ?? "default",
-			success: effectiveExitCode === 0 && !error,
-			exitCode: effectiveExitCode,
-			error,
-			usage: run.usage,
-		};
-		modelAttempts.push(attempt);
-		if (candidate) attemptedModels.push(candidate);
-		completionGuardTriggeredFinal = completionGuardTriggered;
-		finalOutputSnapshot = outputSnapshot;
-		finalResult = { ...run, exitCode: effectiveExitCode, model: candidate ?? run.model, error, structuredOutput } as RunPiStreamingResult & { structuredOutput?: unknown };
-		if (attempt.success || completionGuardError) break;
-		if (ctx.signal?.aborted || run.resourceLimitExceeded || run.interrupted) break;
-		const sameModelRetryCount = sameModelRetryCounts.get(index) ?? 0;
-		if (sameModelRetryCount < MAX_SAME_MODEL_RECOVERY_RETRIES && isRecoverableSameModelFailure(error, effectiveExitCode)) {
-			const nextRetryCount = sameModelRetryCount + 1;
-			sameModelRetryCounts.set(index, nextRetryCount);
-			attemptNotes.push(formatModelRecoveryAttemptNote(attempt, nextRetryCount, MAX_SAME_MODEL_RECOVERY_RETRIES));
-			index--;
-			continue;
+			: structuredError ?? (hiddenError?.hasError
+				? hiddenError.details ? `${hiddenError.errorType} failed (exit ${hiddenError.exitCode ?? 1}): ${hiddenError.details}` : `${hiddenError.errorType} failed with exit code ${hiddenError.exitCode ?? 1}`
+				: run.error || (run.exitCode !== 0 ? run.stderr.trim() || formatProcessExitFailure({ agent: step.agent, exitCode: run.exitCode, durationMs: run.durationMs }) : undefined));
+		let exitCode = completionGuardTriggered || structuredError ? 1 : hiddenError?.hasError ? hiddenError.exitCode ?? 1 : error && run.exitCode === 0 ? 1 : run.exitCode;
+		const fullOutput = review ? resolveFinalizationOutput(run.finalOutput, review.previousOutput) : stripAcceptanceReport(run.finalOutput);
+		const resolvedOutput = step.outputPath && exitCode === 0 && !run.interrupted
+			? resolveSingleOutput(step.outputPath, fullOutput, outputSnapshot)
+			: { fullOutput };
+		if (resolvedOutput.saveError) {
+			exitCode = 1;
+			error = `Failed to save output file '${step.outputPath}': ${resolvedOutput.saveError}`;
 		}
-		if (!isRetryableModelFailure(error) || index === candidates.length - 1) break;
-		attemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
+		return { ...run, exitCode, error, model: model ?? run.model, structuredOutput, resolvedOutput, completionGuardTriggered,
+			terminalFailure: Boolean(completionGuardTriggered || structuredError || hiddenError?.hasError || resolvedOutput.saveError) };
 	}
 
-	const rawOutput = finalResult?.finalOutput ?? "";
-	const outputForPersistence = stripAcceptanceReport(rawOutput);
-	let resolvedOutput = step.outputPath && finalResult?.exitCode === 0
-		? resolveSingleOutput(step.outputPath, outputForPersistence, finalOutputSnapshot)
-		: { fullOutput: outputForPersistence };
+	const { result: initial, modelAttempts, attemptedModels, notes: attemptNotes } = await runModelAttempts({
+		candidates: step.modelCandidates?.length ? step.modelCandidates : [step.model], signal: verificationSignal,
+		runAttempt: (model) => runAttempt(task, model),
+	});
+	let execution = initial;
+	let resolvedOutput = initial.resolvedOutput;
 	let output = stripAcceptanceReport(resolvedOutput.fullOutput);
-	let initialOutput: string | undefined;
-	if (resolvedOutput.saveError) {
-		const saveError = `Failed to save output file '${step.outputPath}': ${resolvedOutput.saveError}`;
-		if (finalResult) {
-			finalResult.exitCode = 1;
-			finalResult.error = saveError;
-		}
-		const lastAttempt = modelAttempts.at(-1);
-		if (lastAttempt) {
-			lastAttempt.success = false;
-			lastAttempt.exitCode = 1;
-			lastAttempt.error = saveError;
-		}
-	}
-	const outputForAcceptance = rawOutput;
-	const acceptanceForInitialReport = step.effectiveAcceptance && shouldRunAcceptanceFinalization(step.effectiveAcceptance)
-		? acceptanceSelfReviewConfig(step.effectiveAcceptance)
-		: step.effectiveAcceptance;
-	let acceptance = acceptanceForInitialReport
-		? await evaluateAcceptance({
-			acceptance: acceptanceForInitialReport,
-			governing: step.effectiveAcceptance,
-			output: outputForAcceptance,
-			cwd: step.cwd ?? ctx.cwd,
-			signal: verificationSignal,
-		})
-		: undefined;
-	let finalizationInterrupted = false;
-	let finalizationResourceLimitExceeded: ResourceLimitExceeded | undefined;
-	let finalizationProcessError: string | undefined;
-	if (acceptance && step.effectiveAcceptance && shouldRunAcceptanceFinalization(step.effectiveAcceptance) && (finalResult?.exitCode ?? 1) === 0 && !finalResult?.interrupted && !verificationSignal.aborted) {
-		initialOutput = output;
-		const sessionFile = step.sessionFile ?? (sessionDir ? findLatestSessionFile(sessionDir) ?? undefined : undefined);
-		const maxTurns = step.effectiveAcceptance.finalization.maxTurns;
-		const turns: AcceptanceFinalizationTurn[] = [];
-		if (!sessionFile) {
-			const message = "Acceptance finalization requires a session file for same-session continuation.";
-			turns.push(createFinalizationProcessFailureTurn({ turn: 1, prompt: "", message }));
-			acceptance = buildFinalizationProcessFailureLedger({ initialLedger: acceptance, turns, maxTurns, message });
-		} else {
-			const selfReviewAcceptance = acceptanceSelfReviewConfig(step.effectiveAcceptance);
-			let previousFailure = acceptanceFailureMessage(acceptance);
-			let authoritativeLedger = acceptance;
-			for (let turn = 1; turn <= maxTurns; turn++) {
-				const prompt = formatAcceptanceFinalizationPrompt({
-					acceptance: step.effectiveAcceptance,
-					initialOutput: outputForAcceptance,
-					initialLedger: acceptance,
-					turn,
-					maxTurns,
-					...(previousFailure ? { previousFailure } : {}),
-				});
-				const finalizationModel = finalResult?.model ?? step.model;
-				let args: string[];
-				let env: Record<string, string | undefined>;
-				let tempDir: string | undefined;
-				let claudeCodeInvocation: ClaudeCodeInvocation | undefined;
-				if (finalizationModel && isClaudeCodeModel(finalizationModel)) {
-					claudeCodeInvocation = buildClaudeCodeInvocation({
-						model: finalizationModel,
-						task: prompt,
-						systemPrompt: step.systemPrompt ?? undefined,
-						systemPromptMode: step.systemPromptMode,
-						sessionFile,
-						sessionName: ctx.childIntercomTarget,
-						tools: step.tools,
-						mcpDirectTools: step.mcpDirectTools,
-						allowSubagents: step.allowSubagents,
-					});
-					args = claudeCodeInvocation.args;
-					env = claudeCodeInvocation.env;
-				} else {
-					const built = buildPiArgs({
-						baseArgs: ["--mode", "json", "-p"],
-						task: prompt,
-						sessionEnabled: true,
-						sessionFile,
-						model: finalizationModel,
-						thinking: step.thinking,
-						inheritProjectContext: step.inheritProjectContext,
-						inheritSkills: step.inheritSkills,
-						tools: step.tools,
-						allowSubagents: step.allowSubagents,
-						extensions: step.extensions,
-						systemPrompt: step.systemPrompt,
-						systemPromptMode: step.systemPromptMode,
-						mcpDirectTools: step.mcpDirectTools,
-						cwd: step.cwd ?? ctx.cwd,
-						intercomSessionName: ctx.childIntercomTarget,
-						orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
-						runId: ctx.id,
-						childAgentName: step.agent,
-						childIndex: ctx.flatIndex,
-						parentEventSink: ctx.nestedRoute?.eventSink,
-						parentControlInbox: ctx.nestedRoute?.controlInbox,
-						parentRootRunId: ctx.nestedRoute?.rootRunId,
-						parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
-						projectTrust: ctx.projectTrust,
-					});
-					args = built.args;
-					env = built.env;
-					tempDir = built.tempDir;
-				}
-				ctx.onAttemptStart?.({ model: finalizationModel, thinking: resolveEffectiveThinking(finalizationModel, step.thinking) });
-				const finalizationRun = await runPiStreaming(
-					args,
-					step.cwd ?? ctx.cwd,
-					`${ctx.outputFile}.finalization-${turn}.log`,
-					env,
-					step.maxSubagentDepth,
-					{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
-					interruptController.signal,
-					ctx.onChildEvent,
-					step.maxExecutionTimeMs,
-					step.maxTokens,
-					claudeCodeInvocation,
-					sessionFile,
-					undefined,
-					ctx.signal,
-				);
-				cleanupTempDir(tempDir);
-				modelAttempts.push({
-					model: finalResult?.model ?? finalizationRun.model ?? step.model ?? "default",
-					success: finalizationRun.exitCode === 0 && !finalizationRun.error,
-					exitCode: finalizationRun.exitCode,
-					error: finalizationRun.error,
-					usage: finalizationRun.usage,
-				});
-				const finalizationOutput = finalizationRun.finalOutput;
-				if (finalizationRun.exitCode !== 0 || finalizationRun.error || finalizationRun.interrupted) {
-					finalizationInterrupted = finalizationRun.interrupted === true;
-					finalizationResourceLimitExceeded = finalizationRun.resourceLimitExceeded;
-					const message = finalizationRun.error ?? finalizationRun.resourceLimitExceeded?.message ?? "Acceptance finalization turn did not complete successfully.";
-					finalizationProcessError = message;
-					turns.push(createFinalizationProcessFailureTurn({ turn, prompt, rawOutput: finalizationOutput, message }));
-					acceptance = buildFinalizationProcessFailureLedger({ initialLedger: acceptance, turns, maxTurns, message });
-					break;
-				}
-				resolvedOutput = resolveSingleOutput(step.outputPath, resolveFinalizationOutput(finalizationOutput, output), undefined);
-				output = stripAcceptanceReport(resolvedOutput.fullOutput);
-				if (resolvedOutput.saveError) {
-					finalizationProcessError = `Failed to save output file '${step.outputPath}': ${resolvedOutput.saveError}`;
-					turns.push(createFinalizationProcessFailureTurn({ turn, prompt, rawOutput: finalizationOutput, message: finalizationProcessError }));
-					acceptance = buildFinalizationProcessFailureLedger({ initialLedger: acceptance, turns, maxTurns, message: finalizationProcessError });
-					break;
-				}
-				const selfReviewLedger = await evaluateAcceptance({
-					acceptance: selfReviewAcceptance,
-					governing: step.effectiveAcceptance,
-					output: finalizationOutput,
-					cwd: step.cwd ?? ctx.cwd,
-					signal: verificationSignal,
-				});
-				authoritativeLedger = selfReviewLedger;
-				turns.push(createFinalizationTurn({ turn, prompt, rawOutput: finalizationOutput, ledger: selfReviewLedger }));
-				const failure = acceptanceFailureMessage(selfReviewLedger);
-				if (!failure) {
-					authoritativeLedger = step.effectiveAcceptance === selfReviewAcceptance
-						? selfReviewLedger
-						: await evaluateAcceptance({
-							acceptance: step.effectiveAcceptance,
-							output: finalizationOutput,
-							cwd: step.cwd ?? ctx.cwd,
-							signal: verificationSignal,
-						});
-					acceptance = attachFinalizationToLedger({ initialLedger: acceptance, authoritativeLedger, turns, status: "completed", maxTurns });
-					break;
-				}
-				previousFailure = failure;
-				if (turn === maxTurns) acceptance = attachFinalizationToLedger({ initialLedger: acceptance, authoritativeLedger, turns, status: "failed", maxTurns });
-			}
-		}
-	}
-	const stepInterrupted = !ctx.signal?.aborted && Boolean(interruptController.signal.aborted || finalResult?.interrupted || finalizationInterrupted);
-	const stepResourceLimitExceeded = finalizationResourceLimitExceeded ?? finalResult?.resourceLimitExceeded;
-	const acceptanceFailure = acceptance ? acceptanceFailureMessage(acceptance) : undefined;
-	const acceptanceCanFailRun = acceptanceFailure && acceptance?.explicit && (finalResult?.exitCode ?? 1) === 0 && !stepInterrupted && !stepResourceLimitExceeded;
-	const effectiveFinalExitCode = ctx.signal?.aborted ? 1 : stepInterrupted ? 0 : stepResourceLimitExceeded ? 1 : acceptanceCanFailRun ? 1 : finalResult?.exitCode ?? 1;
-	const effectiveFinalError = stepInterrupted
-		? undefined
-		: ctx.signal?.aborted ? "Subagent cancelled." : stepResourceLimitExceeded?.message ?? finalizationProcessError ?? (acceptanceCanFailRun
-			? (finalResult?.error ? `${finalResult.error}\n${acceptanceFailure}` : acceptanceFailure)
-			: finalResult?.error);
-
-	const cleanup = effectiveFinalExitCode === 0 && resolvedOutput.savedPath && step.outputMode !== "file-only" && step.outputPathFromAgentDefault === true
+	const initialOutput = output;
+	const sessionFile = step.sessionFile ?? (sessionDir ? findLatestSessionFile(sessionDir) ?? undefined : undefined);
+	const acceptance = step.effectiveAcceptance ? await evaluateRunAcceptance({
+		acceptance: step.effectiveAcceptance, initial, initialOutput: initial.finalOutput, sessionFile, cwd: step.cwd ?? ctx.cwd, signal: verificationSignal,
+		runTurn: async (prompt, turn, sessionFile) => {
+			const reviewed = await runAttempt(prompt, initial.model ?? step.model, { turn, sessionFile, previousOutput: output });
+			execution = reviewed;
+			modelAttempts.push({ model: reviewed.model ?? "default", success: reviewed.exitCode === 0 && !reviewed.error && !reviewed.interrupted,
+				exitCode: reviewed.exitCode, error: reviewed.error, usage: { ...reviewed.usage } });
+			if (reviewed.exitCode !== 0 || reviewed.error || reviewed.interrupted) return { output: reviewed.finalOutput,
+				error: reviewed.error ?? reviewed.resourceLimitExceeded?.message ?? "Acceptance finalization turn did not complete successfully." };
+			resolvedOutput = reviewed.resolvedOutput;
+			output = stripAcceptanceReport(resolvedOutput.fullOutput);
+			return { output: reviewed.finalOutput };
+		},
+	}) : undefined;
+	const outcome = resolveExecutionOutcome({ result: execution, acceptance, signal: ctx.signal, interruptSignal });
+	const effectiveFinalExitCode = outcome.exitCode ?? 1;
+	const cleanup = effectiveFinalExitCode === 0 && !outcome.interrupted && resolvedOutput.savedPath && step.outputMode !== "file-only" && step.outputPathFromAgentDefault === true
 		? cleanupSingleOutputFile(resolvedOutput.savedPath, output, undefined)
 		: undefined;
 	const outputReference = resolvedOutput.savedPath
-		? cleanup
-			? formatConsumedOutputReference(resolvedOutput.savedPath, output, cleanup)
-			: formatSavedOutputReference(resolvedOutput.savedPath, output)
+		? cleanup ? formatConsumedOutputReference(resolvedOutput.savedPath, output, cleanup) : formatSavedOutputReference(resolvedOutput.savedPath, output)
 		: undefined;
 	const outputForSummary = finalizeSingleOutput({
 		fullOutput: attemptNotes.length ? `${attemptNotes.join("\n")}\n\n${output}`.trim() : output,
-		outputPath: step.outputPath,
-		outputMode: step.outputMode,
-		exitCode: effectiveFinalExitCode,
-		savedPath: resolvedOutput.savedPath,
-		outputReference,
-		saveError: resolvedOutput.saveError,
-		cleanup,
+		outputPath: step.outputPath, outputMode: step.outputMode, exitCode: effectiveFinalExitCode,
+		savedPath: resolvedOutput.savedPath, outputReference, saveError: resolvedOutput.saveError, cleanup,
 	}).displayOutput;
-	const usage = emptyUsage();
-	for (const attempt of modelAttempts) {
-		for (const key of ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"] as const) usage[key] += attempt.usage?.[key] ?? 0;
-	}
-
+	const usage = sumAttemptUsage(modelAttempts);
 	if (artifactPaths) {
 		fs.writeFileSync(artifactPaths.outputPath, output, "utf-8");
-		fs.writeFileSync(
-			artifactPaths.metadataPath,
-			JSON.stringify({
-				runId: ctx.id,
-				agent: step.agent,
-				task,
-				exitCode: effectiveFinalExitCode,
-				interrupted: stepInterrupted,
-				error: effectiveFinalError,
-				acceptance,
-				initialOutput,
-				usage,
-				model: finalResult?.model,
-				attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
-				modelAttempts,
-				resourceLimitExceeded: stepResourceLimitExceeded,
-				skills: step.skills,
-				timestamp: Date.now(),
-			}, null, 2),
-			"utf-8",
-		);
+		fs.writeFileSync(artifactPaths.metadataPath, JSON.stringify({
+			runId: ctx.id, agent: step.agent, task, exitCode: effectiveFinalExitCode, interrupted: outcome.interrupted,
+			error: outcome.error, acceptance, initialOutput: acceptance?.finalization ? initialOutput : undefined, usage,
+			model: initial.model, attemptedModels: attemptedModels.length ? attemptedModels : undefined, modelAttempts,
+			resourceLimitExceeded: outcome.resourceLimitExceeded, skills: step.skills, timestamp: Date.now(),
+		}, null, 2), "utf-8");
 	}
-
 	return {
-		agent: step.agent,
-		output: outputForSummary,
-		exitCode: effectiveFinalExitCode,
-		error: effectiveFinalError,
-		sessionFile: step.sessionFile,
-		intercomTarget: ctx.childIntercomTarget,
-		model: finalResult?.model,
-		attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
-		modelAttempts,
-		artifactPaths,
-		interrupted: stepInterrupted,
-		completionGuardTriggered: completionGuardTriggeredFinal,
-		structuredOutput: (finalResult as (RunPiStreamingResult & { structuredOutput?: unknown }) | undefined)?.structuredOutput,
-		structuredOutputPath: effectiveStructuredOutput?.outputPath,
-		structuredOutputSchemaPath: effectiveStructuredOutput?.schemaPath,
-		acceptance,
-		resourceLimitExceeded: stepResourceLimitExceeded,
+		agent: step.agent, output: outputForSummary, exitCode: effectiveFinalExitCode, error: outcome.error,
+		sessionFile, intercomTarget: ctx.childIntercomTarget, model: initial.model,
+		attemptedModels: attemptedModels.length ? attemptedModels : undefined, modelAttempts, artifactPaths,
+		interrupted: outcome.interrupted, completionGuardTriggered: initial.completionGuardTriggered,
+		structuredOutput: initial.structuredOutput, structuredOutputPath: effectiveStructuredOutput?.outputPath,
+		structuredOutputSchemaPath: effectiveStructuredOutput?.schemaPath, acceptance, resourceLimitExceeded: outcome.resourceLimitExceeded,
 	};
 }
 

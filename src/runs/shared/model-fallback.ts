@@ -1,5 +1,5 @@
 import type { ModelInfo as AvailableModelInfo } from "../../shared/model-info.ts";
-import type { Usage } from "../../shared/types.ts";
+import type { ModelAttempt, ResourceLimitExceeded, Usage } from "../../shared/types.ts";
 
 export type { AvailableModelInfo };
 
@@ -156,4 +156,61 @@ export function formatModelAttemptNote(attempt: ModelAttemptSummary, nextModel?:
 export function formatModelRecoveryAttemptNote(attempt: ModelAttemptSummary, retryNumber: number, maxRetries: number): string {
 	const failure = attempt.error?.trim() || `exit ${attempt.exitCode ?? 1}`;
 	return `[retry] ${attempt.model} failed: ${failure}. Retrying same model (${retryNumber}/${maxRetries}).`;
+}
+
+export interface AttemptOutcome {
+	exitCode: number | null;
+	error?: string;
+	model?: string;
+	usage: Usage;
+	interrupted?: boolean;
+	timedOut?: boolean;
+	resourceLimitExceeded?: ResourceLimitExceeded;
+	terminalFailure?: boolean;
+}
+
+export function sumAttemptUsage(attempts: readonly ModelAttempt[]): Usage {
+	const usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+	for (const attempt of attempts) {
+		for (const key of ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"] as const) usage[key] += attempt.usage?.[key] ?? 0;
+	}
+	return usage;
+}
+
+export async function runModelAttempts<T extends AttemptOutcome>(input: {
+	candidates: readonly (string | undefined)[];
+	signal?: AbortSignal;
+	runAttempt: (model: string | undefined, notes: string[]) => Promise<T>;
+}): Promise<{ result: T; modelAttempts: ModelAttempt[]; attemptedModels: string[]; notes: string[]; usage: Usage }> {
+	const candidates = input.candidates.length ? input.candidates : [undefined];
+	const modelAttempts: ModelAttempt[] = [];
+	const attemptedModels: string[] = [];
+	const notes: string[] = [];
+	let result!: T;
+	modelLoop:
+	for (let index = 0; index < candidates.length; index++) {
+		const model = candidates[index];
+		for (let recovery = 0; ; recovery++) {
+			result = await input.runAttempt(model, notes);
+			if (model) attemptedModels.push(model);
+			const attempt: ModelAttempt = {
+				model: model ?? result.model ?? "default",
+				success: result.exitCode === 0 && !result.error && !result.interrupted,
+				exitCode: result.exitCode,
+				error: result.error,
+				usage: { ...result.usage },
+			};
+			modelAttempts.push(attempt);
+			if (attempt.success || input.signal?.aborted || result.interrupted || result.timedOut || result.resourceLimitExceeded || result.terminalFailure) break modelLoop;
+			const recoverable = isRecoverableSameModelFailure(result.error, result.exitCode);
+			if (recoverable && recovery === 0) {
+				notes.push(formatModelRecoveryAttemptNote(attempt, 1, 1));
+				continue;
+			}
+			if ((!recoverable && !isRetryableModelFailure(result.error)) || index === candidates.length - 1) break modelLoop;
+			notes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
+			break;
+		}
+	}
+	return { result, modelAttempts, attemptedModels, notes, usage: sumAttemptUsage(modelAttempts) };
 }
