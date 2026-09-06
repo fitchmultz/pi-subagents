@@ -351,6 +351,7 @@ async function runJourney() {
 	evidence.coldParent = { parentFile, runs: coldRuns, total: (await invoke("agent_runs", { action: "list" })).details.runList.total };
 }
 async function runWorkflowOutcomes() {
+	const { asyncStatusToSummary, listAsyncRuns } = await import(pathToFileURL(path.join(repo, "dist/runs/background/async-status.js")).href);
 	acknowledgeResults = true;
 	const notifications = [], completions = [];
 	bus.on("subagent:result-intercom", (message) => notifications.push(message));
@@ -433,6 +434,23 @@ async function runWorkflowOutcomes() {
 			const run = inspection.details.run;
 			const list = (await invoke("agent_runs", { action: "list", limit: 100 })).details.runs.find((entry) => entry.runId === id);
 			receipt.inspections.push({ checkpoint, inspection, list });
+			if (result.details.asyncId) verify(`${name}: saved async summaries survive ${checkpoint}`, () => {
+				const asyncDir = result.details.asyncDir;
+				const status = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf8"));
+				const summary = asyncStatusToSummary(asyncDir, status);
+				receipt.inspections.at(-1).asyncSummary = summary;
+				assert.equal(summary.chainStepCount, scenario.chain.length);
+				assert.equal(summary.steps.length, status.steps.length);
+				assert.deepEqual(summary.parallelGroups, status.parallelGroups);
+				assert.equal(summary.state, terminal.state);
+				assert.deepEqual(listAsyncRuns(path.dirname(asyncDir), { sessionId: session.sessionFile }).find((entry) => entry.id === id), summary);
+			});
+			if (result.details.asyncId && !scenario.error) verify(`${name}: empty fanout retains logical progress ${checkpoint}`, () => {
+				const text = inspection.content.map((part) => part.text).join("\n");
+				const last = scenario.chain.length;
+				assert.ok(text.includes(`Progress: step ${last}/${last}`), text);
+				assert.ok(text.includes(`Step ${last}/${last}: probe complete`), text);
+			});
 			verify(`${name}: inspect/list outcome and attention ${checkpoint}`, () => {
 				const expected = scenario.error ? "failed" : "completed";
 				assert.equal(run.state, expected);

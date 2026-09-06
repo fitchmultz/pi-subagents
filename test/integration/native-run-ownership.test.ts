@@ -15,6 +15,7 @@ it("native workflow outcomes retain successful evidence, truthful grouped notifi
 	try {
 		const result = spawnSync(process.execPath, [path.join(repo, "test/fixtures/native-run-ownership.mjs"), root, repo, packageRoot, "workflow-outcomes"], { cwd: repo, env, encoding: "utf8", timeout: 110_000, maxBuffer: 1024 * 1024 });
 		assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
+		assert.equal(result.stderr, "", "Native workflow reload/reopen must not warn about valid saved statuses.");
 		const evidence = JSON.parse(fs.readFileSync(path.join(root, "workflow-evidence.json"), "utf8"));
 		assert.equal(evidence.nativeProviderRequests, 0);
 		assert.deepEqual(evidence.failures, []);
