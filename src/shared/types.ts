@@ -482,7 +482,7 @@ export interface OwnedRunView extends OwnedRun {
 	attention: string[];
 	children: Array<OwnedRun["children"][number] & {
 		state: ManagementRunState;
-		result?: SingleResult;
+		result?: Omit<SingleResult, "artifactPaths"> & { artifactPaths?: Partial<ArtifactPaths> };
 		launch?: SavedLaunchConfig;
 		configuration: "saved" | "legacy-partial";
 		missingSession?: boolean;

@@ -11,6 +11,7 @@ import { buildManagementControl } from "../../shared/status-format.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { readAsyncResultFile } from "../background/async-result-file.ts";
 import { applyThinkingSuffix } from "./pi-args.ts";
+import { sumAttemptUsage } from "./model-fallback.ts";
 import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
 import { getRunMetadataDir, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionContract, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
@@ -201,11 +202,10 @@ function processAlive(pid: number | undefined): boolean {
 	return Boolean(pid && Number.isSafeInteger(pid) && pid > 0 && questionProcessAlive({ pid }));
 }
 
-function asyncChildResult(child: AsyncResultChild, task: string): SingleResult {
+function asyncChildResult(child: AsyncResultChild, task: string) {
 	return {
 		...child, agent: child.agent ?? "unknown", task, exitCode: child.exitCode ?? (child.success ? 0 : 1),
-		finalOutput: child.output, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-		artifactPaths: undefined,
+		finalOutput: child.output, usage: sumAttemptUsage(child.modelAttempts ?? []),
 	};
 }
 
