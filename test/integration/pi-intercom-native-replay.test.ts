@@ -43,6 +43,7 @@ const broker = spawn(process.execPath, [path.join(repo, "src/pi-intercom/broker/
     PATH: process.env.PATH,
     HOME: process.env.HOME,
     USERPROFILE: process.env.USERPROFILE,
+    TMPDIR: tmpdir(),
     PI_CODING_AGENT_DIR: agentDir,
     PI_SUBAGENT_TEMP_ROOT: process.env.PI_SUBAGENT_TEMP_ROOT,
   },
@@ -483,6 +484,7 @@ function restartFixture(t: TestContext, mode: string, directory: string, session
     cwd: root,
     env: {
       PATH: process.env.PATH, HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE,
+      TMPDIR: tmpdir(),
       PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENT_TEMP_ROOT: process.env.PI_SUBAGENT_TEMP_ROOT,
       PI_OFFLINE: "1", JITI_FS_CACHE: path.join(root, "jiti-child"),
       PI_INTERCOM_TEST_SDK: process.env.PI_INTERCOM_TEST_SDK,

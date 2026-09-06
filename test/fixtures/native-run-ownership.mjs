@@ -145,7 +145,9 @@ async function runJourney() {
 	await session.reload();
 	assert.equal((await inspect(slow.details.runId)).details.run.state, "live");
 	const liveCallCount = calls().length;
-	await assert.rejects(() => invoke("agent_runs", { action: "review", id: slow.details.runId, decision: "accepted" }), /still live/);
+	const liveReview = await invoke("agent_runs", { action: "review", id: slow.details.runId, decision: "accepted" });
+	assert.equal(liveReview.isError, true);
+	assert.match(JSON.stringify(liveReview.content), /still live/);
 	const liveFollowUp = await invoke("agent_runs", { action: "continue", id: slow.details.runId, message: "Keep doing the active task.", model: "openai/gpt-6-astra:low" });
 	assert.match(JSON.stringify(liveFollowUp.content), /No launch settings were changed/);
 	assert.equal(calls().length, liveCallCount);
@@ -265,10 +267,12 @@ async function runJourney() {
 		assert.equal(answerCalls.filter((call) => call.task.includes(`Supervisor answer to question ${pending.questionId}:`)).length, 1);
 		assert.deepEqual(answerContinuations.map((run) => run.runId), [answered.details.asyncId]);
 		assert.deepEqual([...new Set(answerCalls.map((call) => call.cwd))], [fs.realpathSync(replacementCwd)]);
-		assert.equal(answerContract.launch.cwd, fs.realpathSync(replacementCwd));
+		assert.equal(answerContract.launch.cwd, replacementCwd);
 	});
 	assert.equal(resolvedQuestions.filter((id) => id === pending.questionId).length, 2, "same-answer retries repeat the idempotent presence-resolution event");
-	await assert.rejects(() => invoke("agent_runs", { action: "answer", id: questionId, questionId: pending.questionId, message: "A conflicting answer." }), /different saved answer/);
+	const conflictingAnswer = await invoke("agent_runs", { action: "answer", id: questionId, questionId: pending.questionId, message: "A conflicting answer." });
+	assert.equal(conflictingAnswer.isError, true);
+	assert.match(JSON.stringify(conflictingAnswer.content), /different saved answer/);
 	assert.equal(resolvedQuestions.filter((id) => id === pending.questionId).length, 2, "failed durable writes must not emit resolution");
 	const cancelledRun = await invoke("delegate", { agent: "probe", task: "CREATE_QUESTION", async: false, output: false });
 	const cancelledQuestion = (await invoke("agent_runs", { action: "questions", id: cancelledRun.details.runId })).details.questions[0];
@@ -318,7 +322,9 @@ async function runJourney() {
 	assert.equal((await inspect(continuedId)).details.run.children[0].result.finalOutput, "RECALLED FIRST_SESSION_TOKEN");
 	assert.equal((await inspect(unknownId)).details.run.state, "unknown");
 	assert.equal((await inspect(missingId)).details.run.children[0].missingSession, true);
-	await assert.rejects(() => invoke("agent_runs", { action: "continue", id: missingId, message: "Do not invent a missing session." }), /unavailable/);
+	const missingSession = await invoke("agent_runs", { action: "continue", id: missingId, message: "Do not invent a missing session." });
+	assert.equal(missingSession.isError, true);
+	assert.match(JSON.stringify(missingSession.content), /unavailable/);
 	const afterLoss = await invoke("agent_runs", { action: "continue", id: originalId, message: "RECALL_TOKEN after temp cleanup." });
 	assert.equal((await completed(afterLoss.details.asyncId)).results[0].output, "RECALLED FIRST_SESSION_TOKEN");
 	evidence.checks.push("more than 50 results, durable review/config/result, temp cleanup, and truthful missing/unconfirmed artifacts");
@@ -326,7 +332,9 @@ async function runJourney() {
 	const other = newParent(path.join(root, "unrelated.jsonl"));
 	await open(other);
 	assert.equal((await invoke("agent_runs", { action: "list" })).details.runList.total, 0);
-	await assert.rejects(() => inspect(originalId), /not found/);
+	const foreignInspection = await inspect(originalId);
+	assert.equal(foreignInspection.isError, true);
+	assert.match(JSON.stringify(foreignInspection.content), /not found/);
 	assert.equal((await inspect(afterLoss.details.asyncId)).details.managementControl.state, "completed");
 	assert.equal((await invoke("agent_runs", { action: "list" })).details.runList.total, 0, "explicit legacy inspection must not adopt the run");
 	await close();
@@ -350,7 +358,9 @@ async function runJourney() {
 	assert.equal((await inspect(originalId)).details.run.state, "completed");
 	assert.equal((await inspect(stripped.details.runId)).details.run.children[0].result.finalOutput, "FIRST_SESSION_TOKEN", "recover an output-stripped receipt from its native child session");
 	const beforeLegacy = calls().length;
-	await assert.rejects(() => invoke("agent_runs", { action: "continue", id: originalId, message: "Do not guess the old profile." }), /predates saved launch/);
+	const missingProfile = await invoke("agent_runs", { action: "continue", id: originalId, message: "Do not guess the old profile." });
+	assert.equal(missingProfile.isError, true);
+	assert.match(JSON.stringify(missingProfile.content), /predates saved launch/);
 	assert.equal(calls().length, beforeLegacy);
 	const explicitlyRecovered = await invoke("agent_runs", { action: "continue", id: originalId, agent: "probe", message: "RECALL_TOKEN with explicitly selected profile." });
 	await completed(explicitlyRecovered.details.asyncId);
@@ -450,8 +460,8 @@ async function runWorkflowOutcomes() {
 	bus.on("subagent:result-intercom", (message) => notifications.push(message));
 	bus.on("subagent:async-complete", (message) => completions.push(message));
 	await open(parentFile);
-	// The native slash bridge calls the same owning executor and retains error details
-	// that the registered tool boundary otherwise converts into a thrown Error.
+	// The native slash bridge calls the same owning executor and retains its rich
+	// error content/details without going through the registered tool hooks.
 	const execute = (params) => new Promise((resolve) => {
 		const requestId = randomUUID();
 		const unsubscribe = bus.on("subagent:slash:response", (message) => {
