@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { applyThinkingSuffix } from "../shared/pi-args.ts";
 import { findDuplicateOutputPath, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
-import { buildChainInstructions, createChainDir, isDynamicParallelStep, isParallelStep, resolveParallelBehaviors, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
+import { buildChainInstructions, createChainDir, isDynamicParallelStep, isParallelStep, resolveChainTemplates, resolveParallelBehaviors, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
 import type { RunnerStep } from "../shared/parallel-utils.ts";
 import { resolvePiPackageRoot } from "../shared/pi-spawn.ts";
 import { buildSkillInjection, normalizeSkillInput, resolveSkillsWithFallback } from "../../agents/skills.ts";
@@ -260,6 +260,7 @@ export function executeAsyncChain(
 		throw error;
 	}
 	const workflowGraph = buildWorkflowGraphSnapshot({ runId: id, mode: resultMode, steps: chain });
+	const templates = resolveChainTemplates(chain);
 
 	for (const s of chain) {
 		const stepAgents = isParallelStep(s)
@@ -334,9 +335,7 @@ export function executeAsyncChain(
 		const outputPath = resolveSingleOutputPath(output, ctx.cwd, instructionCwd);
 		const validationError = validateFileOnlyOutputMode(behavior.outputMode, outputPath, `Async step (${s.agent})`);
 		if (validationError) throw new AsyncStartValidationError(validationError);
-		let taskTemplate = s.task ?? "{previous}";
-		taskTemplate = taskTemplate.replace(/\{task\}/g, originalTask ?? "");
-		taskTemplate = taskTemplate.replace(/\{chain_dir\}/g, chainDir);
+		const taskTemplate = s.task ?? "{previous}";
 		const task = injectSingleOutputInstruction(`${readInstructions.prefix}${taskTemplate}${progressInstructions.suffix}`, outputPath);
 
 		const primaryModel = resolveModelCandidate(behavior.model ?? a.model, availableModels, ctx.currentModelProvider);
@@ -423,7 +422,7 @@ export function executeAsyncChain(
 							throw new AsyncStartValidationError(`Failed to initialize progress in '${progressCwd}': ${error instanceof Error ? error.message : String(error)}`);
 						}
 					}
-					return buildSeqStep({ ...t, cwd: resolveChildCwd(groupCwd, t.cwd) }, nextSessionFile(), behaviorCwd, taskProgressPrecreated, parallelBehaviors[taskIndex]);
+					return buildSeqStep({ ...t, task: (templates[stepIndex] as string[])[taskIndex], cwd: resolveChildCwd(groupCwd, t.cwd) }, nextSessionFile(), behaviorCwd, taskProgressPrecreated, parallelBehaviors[taskIndex]);
 				});
 				const duplicateOutputError = findDuplicateOutputPath(parallelSteps);
 				if (duplicateOutputError) throw new AsyncStartValidationError(duplicateOutputError);
@@ -446,7 +445,7 @@ export function executeAsyncChain(
 				const maxItems = s.expand.maxItems ?? params.dynamicFanoutMaxItems ?? 0;
 				return {
 					expand: s.expand,
-					parallel: buildSeqStep(s.parallel as SequentialStep, undefined, undefined, progressPrecreated, behavior),
+					parallel: buildSeqStep({ ...s.parallel, task: templates[stepIndex] as string }, undefined, undefined, progressPrecreated, behavior),
 					collect: s.collect,
 					concurrency: s.concurrency,
 					failFast: s.failFast,
@@ -455,7 +454,7 @@ export function executeAsyncChain(
 					sessionFiles: takeDynamicSessionFiles(maxItems),
 				};
 			}
-			return buildSeqStep(s as SequentialStep, nextSessionFile());
+			return buildSeqStep({ ...s, task: templates[stepIndex] as string }, nextSessionFile());
 		});
 	} catch (error) {
 		if (error instanceof UnavailableSubagentSkillError || error instanceof AsyncStartValidationError) return formatAsyncStartError(resultMode, error.message);
@@ -479,6 +478,7 @@ export function executeAsyncChain(
 				id,
 				steps,
 				chainDir,
+				originalTask,
 				resultPath: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : path.join(RESULTS_DIR, `${id}.json`),
 				cwd: runnerCwd,
 				placeholder: "{previous}",

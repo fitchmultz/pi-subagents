@@ -1,7 +1,6 @@
 import { isDynamicParallelStep, isParallelStep, type ChainStep, type SequentialStep } from "../../shared/settings.ts";
-import type { ChainOutputMap, ChainOutputMapEntry, SingleResult } from "../../shared/types.ts";
-import { getSingleResultOutput } from "../../shared/utils.ts";
-import { DynamicFanoutError, hasDynamicFanoutFields, isSafeOutputName, type DynamicFanoutConfig, validateDynamicStepShape } from "./dynamic-fanout.ts";
+import type { ChainOutputMap, ChainOutputMapEntry } from "../../shared/types.ts";
+import { DynamicFanoutError, hasDynamicFanoutFields, isSafeOutputName, resolveItemTemplate, type DynamicFanoutConfig, validateDynamicStepShape } from "./dynamic-fanout.ts";
 
 const OUTPUT_REF_PATTERN = /\{outputs\.([^}]*)\}/g;
 
@@ -77,22 +76,37 @@ export function resolveOutputReferences(template: string, outputs: ChainOutputMa
 	});
 }
 
-function compactStructuredText(value: unknown): string {
-	return JSON.stringify(value);
+export function renderChainTask(template: string, values: {
+	originalTask?: string;
+	previousOutput?: string;
+	chainDir?: string;
+	outputs?: ChainOutputMap;
+	item?: { name: string; value: unknown };
+}, placeholder = "{previous}"): string {
+	const pattern = new RegExp(`${placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|\\{([^{}]*)\\}`, "g");
+	const previousOutput = values.previousOutput ?? "";
+	let usedPrevious = false;
+	const task = template.replace(pattern, (raw, reference: string | undefined) => {
+		if (values.item && (raw === `{${values.item.name}}` || raw.startsWith(`{${values.item.name}.`))) {
+			return resolveItemTemplate(raw, values.item.name, values.item.value);
+		}
+		if (raw === placeholder) {
+			usedPrevious = true;
+			return previousOutput;
+		}
+		if (reference === "task") return values.originalTask ?? "";
+		if (reference === "chain_dir") return values.chainDir ?? "";
+		if (reference?.startsWith("outputs.")) return resolveOutputReferences(raw, values.outputs ?? {});
+		return raw;
+	});
+	return !usedPrevious && previousOutput.trim()
+		? `${task}\n\n---\nPrevious step output:\n${previousOutput.trim()}`
+		: task;
 }
 
-export function outputEntryFromResult(result: SingleResult, stepIndex: number): ChainOutputMapEntry {
+export function outputEntryFromResult(result: { agent: string; output: string; structuredOutput?: unknown }, stepIndex: number): ChainOutputMapEntry {
 	return {
-		text: result.structuredOutput !== undefined ? compactStructuredText(result.structuredOutput) : getSingleResultOutput(result),
-		...(result.structuredOutput !== undefined ? { structured: result.structuredOutput } : {}),
-		agent: result.agent,
-		stepIndex,
-	};
-}
-
-export function outputEntryFromAsyncResult(result: { agent: string; output: string; structuredOutput?: unknown }, stepIndex: number): ChainOutputMapEntry {
-	return {
-		text: result.structuredOutput !== undefined ? compactStructuredText(result.structuredOutput) : result.output,
+		text: result.structuredOutput !== undefined ? JSON.stringify(result.structuredOutput) : result.output,
 		...(result.structuredOutput !== undefined ? { structured: result.structuredOutput } : {}),
 		agent: result.agent,
 		stepIndex,

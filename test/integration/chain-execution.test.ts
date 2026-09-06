@@ -673,7 +673,7 @@ describe("chain execution — sequential", () => {
 
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /does not support group-level acceptance/);
-		assert.equal(mockPi.callCount(), 1);
+		assert.equal(mockPi.callCount(), 0);
 	});
 
 	it("does not expose collected dynamic output when a child fails", async () => {

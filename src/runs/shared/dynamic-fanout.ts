@@ -33,7 +33,6 @@ export interface DynamicCollectedResult {
 export interface DynamicMaterializedGroup {
 	items: DynamicMaterializedItem[];
 	parallel: ParallelTaskItem[];
-	collectedOnEmpty?: DynamicCollectedResult[];
 }
 
 const SAFE_OUTPUT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -49,7 +48,7 @@ const RUNNER_DYNAMIC_PARALLEL_KEYS = new Set([
 	...DYNAMIC_PARALLEL_KEYS,
 	"outputName", "structured", "inheritProjectContext", "inheritSkills", "skills", "outputPath", "outputPathFromAgentDefault", "allowSubagents", "maxSubagentDepth",
 	"structuredOutput", "structuredOutputSchema", "tools", "extensions", "mcpDirectTools", "completionGuard", "systemPrompt",
-	"systemPromptMode", "thinking", "modelCandidates", "sessionFile", "effectiveAcceptance",
+	"systemPromptMode", "thinking", "modelCandidates", "sessionFile", "effectiveAcceptance", "maxExecutionTimeMs", "maxTokens",
 ]);
 const DYNAMIC_COLLECT_KEYS = new Set(["as", "outputSchema"]);
 
@@ -180,6 +179,9 @@ export function hasDynamicFanoutFields(step: unknown): boolean {
 
 export function validateDynamicStepShape(step: DynamicParallelStep, stepIndex: number, config: DynamicFanoutConfig = {}): void {
 	const prefix = `Dynamic chain step ${stepIndex + 1}`;
+	if (Object.hasOwn(step, "acceptance") || Object.hasOwn(step, "effectiveAcceptance")) {
+		throw new DynamicFanoutError(`Dynamic fanout step ${stepIndex + 1} does not support group-level acceptance; set acceptance on the child template instead.`);
+	}
 	assertOnlyKeys(step, config.allowRunnerFields ? RUNNER_DYNAMIC_STEP_KEYS : DYNAMIC_STEP_KEYS, prefix);
 	if (!step.expand || !step.expand.from) throw new DynamicFanoutError(`${prefix} requires expand.from.`);
 	assertOnlyKeys(step.expand, DYNAMIC_EXPAND_KEYS, `${prefix} expand`);
@@ -244,7 +246,7 @@ export function materializeDynamicParallelStep(step: DynamicParallelStep, output
 		if ((step.expand.onEmpty ?? "skip") === "fail") {
 			throw new DynamicFanoutError(`Dynamic chain step ${stepIndex + 1} source array is empty.`);
 		}
-		return { items, parallel: [], collectedOnEmpty: [] };
+		return { items, parallel: [] };
 	}
 	const itemName = step.expand.item ?? "item";
 	const parallel = items.map((entry) => {
@@ -262,7 +264,7 @@ export function materializeDynamicParallelStep(step: DynamicParallelStep, output
 export function collectDynamicResults(
 	step: DynamicParallelStep,
 	items: DynamicMaterializedItem[],
-	results: Array<Pick<SingleResult, "agent" | "exitCode" | "error" | "structuredOutput" | "artifactPaths" | "savedOutputPath"> & { output?: string; finalOutput?: string }>,
+	results: Array<Pick<SingleResult, "agent" | "error" | "structuredOutput" | "artifactPaths" | "savedOutputPath"> & { exitCode: number | null; output?: string; finalOutput?: string }>,
 ): DynamicCollectedResult[] {
 	return items.map((entry, index) => {
 		const result = results[index];

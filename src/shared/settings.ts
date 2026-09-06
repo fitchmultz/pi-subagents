@@ -255,7 +255,7 @@ export function resolveStepBehavior(
 
 export function resolveTaskTextForFileUpdatePolicy(task: string | undefined, originalTask?: string): string | undefined {
 	if (!task) return originalTask;
-	return originalTask ? task.replaceAll("{task}", originalTask) : task;
+	return originalTask ? task.replaceAll("{task}", () => originalTask) : task;
 }
 
 export function taskDisallowsFileUpdates(task: string | undefined): boolean {
@@ -363,37 +363,15 @@ export function resolveParallelBehaviors(
 			throw new Error(`Unknown agent: ${task.agent}`);
 		}
 
-		const output = namespaceParallelOutput(normalizeOutputOverride(task.output) ?? normalizeOutputOverride(config.output) ?? false, task.agent, stepIndex, taskIndex);
-
-		// Reads: task override > agent default > false
-		const reads =
-			task.reads !== undefined ? task.reads : config.defaultReads ?? false;
-
-		// Progress: task override > agent default > false
-		const progress =
-			task.progress !== undefined
-				? task.progress
-				: config.defaultProgress ?? false;
-
-		const taskSkillInput = normalizeSkillInput(task.skill);
-		let skills: string[] | false;
-		if (taskSkillInput === false) {
-			skills = false;
-		} else if (taskSkillInput !== undefined) {
-			skills = [...taskSkillInput];
-			if (chainSkills && chainSkills.length > 0) {
-				skills = [...new Set([...skills, ...chainSkills])];
-			}
-		} else {
-			skills = config.skills ? [...config.skills] : [];
-			if (chainSkills && chainSkills.length > 0) {
-				skills = [...new Set([...skills, ...chainSkills])];
-			}
-		}
-
-		const outputMode = task.outputMode ?? "inline";
-		const model = task.model ?? config.model;
-		return { output, outputMode, reads, progress, skills, model };
+		const behavior = resolveStepBehavior(config, {
+			output: task.output,
+			outputMode: task.outputMode,
+			reads: task.reads,
+			progress: task.progress,
+			skills: normalizeSkillInput(task.skill),
+			model: task.model,
+		}, chainSkills);
+		return { ...behavior, output: namespaceParallelOutput(behavior.output, task.agent, stepIndex, taskIndex) };
 	});
 }
 

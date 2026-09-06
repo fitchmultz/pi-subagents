@@ -10,6 +10,7 @@ import {
 } from "./timeout-extension.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
+import { completeWorkflowStep, runParallelTasks } from "../shared/workflow-policy.ts";
 import { recordRun } from "../shared/run-history.ts";
 import {
 	buildChainInstructions,
@@ -32,7 +33,7 @@ import {
 } from "../shared/single-output.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { formatDetachedIntercomGuidance } from "../shared/intercom-detach.ts";
-import { compactForegroundDetails, getSingleResultOutput, mapConcurrent } from "../../shared/utils.ts";
+import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
 import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
 import {
 	appendWorktreeSummary,
@@ -154,16 +155,16 @@ function buildParallelWorktreeSuffix(
 }
 
 async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Promise<SingleResult[]> {
+	const groupInterrupt = new AbortController();
 	const activeChildren = input.foregroundControl?.activeChildren ?? new Map();
-	if (input.foregroundControl) {
-		input.foregroundControl.activeChildren = activeChildren;
-		input.foregroundControl.interrupt = () => {
-			let interrupted = false;
-			for (const child of activeChildren.values()) interrupted = child.interrupt?.() === true || interrupted;
-			return interrupted;
-		};
-	}
-	return mapConcurrent(input.tasks, input.concurrencyLimit, async (task, index) => {
+	if (input.foregroundControl) input.foregroundControl.activeChildren = activeChildren;
+	const interruptGroup = () => {
+		groupInterrupt.abort();
+		let interrupted = false;
+		for (const child of activeChildren.values()) interrupted = child.interrupt?.() === true || interrupted;
+		return interrupted;
+	};
+	const runTask = async (task: TaskParam, index: number, failFastSignal: AbortSignal): Promise<SingleResult> => {
 		const behavior = input.behaviors[index];
 		const effectiveSkills = behavior?.skills;
 		const taskCwd = resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index);
@@ -180,6 +181,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 		);
 		const interruptController = new AbortController();
 		if (input.foregroundControl) {
+			input.foregroundControl.interrupt = interruptGroup;
 			input.foregroundControl.currentAgent = task.agent;
 			input.foregroundControl.currentIndex = index;
 			input.foregroundControl.currentActivityState = undefined;
@@ -216,7 +218,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 		return runSync(input.ctx.cwd, input.agents, task.agent, taskText, {
 			cwd: taskCwd,
 			signal: input.signal,
-			interruptSignal: interruptController.signal,
+			interruptSignal: AbortSignal.any([interruptController.signal, groupInterrupt.signal, failFastSignal]),
 			...(input.timeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: input.timeoutMs, timeoutAt } : {}),
 			...(input.timeoutMs !== undefined && timeoutAt !== undefined && input.timeoutExtensionRegistry ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { unregisterTimeoutExtension = input.timeoutExtensionRegistry?.register(String(index), extend); } } : {}),
 			allowIntercomDetach: agentConfig?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
@@ -284,6 +286,18 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 					}
 				: undefined,
 		});
+	};
+	return runParallelTasks({
+		tasks: input.tasks,
+		concurrency: input.concurrencyLimit,
+		signal: input.signal,
+		interruptSignal: groupInterrupt.signal,
+		runTask,
+		stoppedTask: (task, _index, reason): SingleResult => ({
+			agent: task.agent, task: task.task, exitCode: reason === "interrupted" ? 0 : -1,
+			interrupted: reason === "interrupted", error: `Skipped due to ${reason}`,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+		}),
 	});
 }
 
@@ -595,8 +609,10 @@ export async function runParallelPath(data: ExecutionContextData, deps: Executor
 			if (result.artifactPaths) allArtifactPaths.push(result.artifactPaths);
 		}
 
-		const timedOut = results.find((result) => result.timedOut);
-		const interrupted = results.find((result) => result.interrupted);
+		const completion = completeWorkflowStep({ stepIndex: 0, stepCount: 1, previousOutput: "", parallel: true,
+			results: results.map((result) => ({ ...result, output: getSingleResultOutput(result) })) });
+		const timedOut = results[completion.timedOutIndex];
+		const interrupted = results[completion.interruptedIndex];
 		const details = compactForegroundDetails({
 			mode: "parallel",
 			runId,
@@ -621,16 +637,13 @@ export async function runParallelPath(data: ExecutionContextData, deps: Executor
 				details,
 			};
 		}
-		const detachedIndex = results.findIndex((result) => result.detached);
+		const detachedIndex = completion.detachedIndex;
 		const detached = detachedIndex >= 0 ? results[detachedIndex] : undefined;
 		if (detached) {
-			const failedSiblings = results.flatMap((result, taskIndex) => !result.detached && result.exitCode !== 0 ? [{
-				agent: result.agent,
-				taskIndex,
-				output: result.truncation?.text || getSingleResultOutput(result),
-				exitCode: result.exitCode,
-				error: result.error,
-			}] : []);
+			const failedSiblings = completion.failedIndices.map((taskIndex) => {
+				const result = results[taskIndex]!;
+				return { agent: result.agent, taskIndex, output: result.truncation?.text || getSingleResultOutput(result), exitCode: result.exitCode, error: result.error };
+			});
 			const failedSummary = failedSiblings.length
 				? `\n\nFailed siblings:\n${aggregateParallelOutputs(failedSiblings, (i, agent) => `=== Task ${i + 1}: ${agent} ===`)}`
 				: "";
@@ -665,7 +678,7 @@ export async function runParallelPath(data: ExecutionContextData, deps: Executor
 			};
 		}
 
-		const ok = results.filter((result) => result.exitCode === 0).length;
+		const ok = results.length - completion.failedIndices.length;
 		const downgradeNote = backgroundRequestedWhileClarifying ? " (background requested, but clarify kept this run foreground)" : "";
 		const aggregatedOutput = aggregateParallelOutputs(
 			results.map((result) => ({
@@ -685,7 +698,7 @@ export async function runParallelPath(data: ExecutionContextData, deps: Executor
 		return {
 			content: [{ type: "text", text: fullContent }],
 			details,
-			...(ok !== results.length ? { isError: true } : {}),
+			...(!completion.complete ? { isError: true } : {}),
 		};
 	} finally {
 		if (worktreeSetup && !worktreeCleanupDeferred) cleanupWorktrees(worktreeSetup);

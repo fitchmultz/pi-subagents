@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Share bounded parallel execution and workflow advancement across foreground and detached hosts. Preserve completed sibling outputs when a group fails or stops, stop queued work after interruption or detachment, and distinguish fail-fast from user pause before publishing child outcomes.
+- Require the requested workflow to finish before reporting completion, and publish dynamic collections only after every child and the collection schema succeed.
+- Align omitted task defaults, literal template substitution, previous-output handoffs, and dynamic child resource limits across both modes. Empty fanouts no longer consume child indices; preallocated fork sessions retain their associations across later expansions.
+- Keep foreground group interruption available as queued children start after earlier siblings finish, and keep out-of-order live child updates on their own graph nodes.
+
 ## [0.35.0] - 2026-09-06
 
 ### Added

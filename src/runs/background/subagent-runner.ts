@@ -44,8 +44,6 @@ import {
 	isDynamicRunnerGroup,
 	isParallelGroup,
 	flattenSteps,
-	mapConcurrent,
-	aggregateParallelOutputs,
 	MAX_PARALLEL_CONCURRENCY,
 } from "../shared/parallel-utils.ts";
 import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
@@ -58,9 +56,10 @@ import {
 	type ClaudeCodeInvocation,
 	type ClaudeCodeResultEvent,
 } from "../shared/claude-code.ts";
-import { outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
+import { renderChainTask } from "../shared/chain-outputs.ts";
 import { createStructuredOutputRuntime, readStructuredOutput, type StructuredOutputRuntime } from "../shared/structured-output.ts";
-import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
+import { DynamicFanoutError, materializeDynamicParallelStep } from "../shared/dynamic-fanout.ts";
+import { completeWorkflowStep, runParallelTasks, workflowChildSucceeded, type ParallelStopReason } from "../shared/workflow-policy.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { runModelAttempts, sumAttemptUsage } from "../shared/model-fallback.ts";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
@@ -106,6 +105,7 @@ interface SubagentRunConfig {
 	id: string;
 	steps: RunnerStep[];
 	chainDir?: string;
+	originalTask?: string;
 	resultPath: string;
 	cwd: string;
 	placeholder: string;
@@ -700,9 +700,7 @@ async function runSingleStep(
 	const effectiveStructuredOutput = step.structuredOutput ?? (step.structuredOutputSchema
 		? createStructuredOutputRuntime(step.structuredOutputSchema, path.join(path.dirname(ctx.outputFile), "structured-output"))
 		: undefined);
-	const placeholderRegex = new RegExp(ctx.placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
-	let task = step.task.replace(placeholderRegex, () => ctx.previousOutput);
-	task = resolveOutputReferences(task, ctx.outputs ?? {});
+	let task = step.task;
 	if (step.effectiveAcceptance) {
 		const acceptancePrompt = formatAcceptancePrompt(step.effectiveAcceptance);
 		if (acceptancePrompt) task = `${task}\n${acceptancePrompt}`;
@@ -1010,6 +1008,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		config;
 	let previousOutput = "";
 	const outputs: ChainOutputMap = {};
+	const renderTask = (template: string, item?: { name: string; value: unknown }): string =>
+		config.resultMode === "single" || config.resultMode === "parallel" ? template
+			: renderChainTask(template, { originalTask: config.originalTask, previousOutput, chainDir: config.chainDir, outputs, item }, placeholder);
 	const results: StepResult[] = [];
 	const worktreeSummaries: string[] = [];
 	const overallStartTime = Date.now();
@@ -1023,11 +1024,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const cancelRunner = () => cancellation.abort();
 	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, cancelRunner);
 	const activeChildInterrupts = new Map<number, () => void>();
-	const interruptActiveSiblings = (exceptIndex: number) => {
-		for (const [index, interrupt] of activeChildInterrupts) {
-			if (index !== exceptIndex) interrupt();
-		}
-	};
+	const interruption = new AbortController();
 	let interrupted = false;
 	let currentActivityState: ActivityState | undefined;
 	let activityTimer: NodeJS.Timeout | undefined;
@@ -1409,6 +1406,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const interruptRunner = () => {
 		if (interrupted || statusPayload.state !== "running") return;
 		interrupted = true;
+		interruption.abort();
 		const now = Date.now();
 		statusPayload.state = "paused";
 		currentActivityState = undefined;
@@ -1459,44 +1457,33 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		}),
 	);
 
+	const stoppedParallelChild = (task: SubagentStep, index: number, reason: ParallelStopReason): AsyncParallelStepResult => {
+		const now = Date.now();
+		const step = statusPayload.steps[index]!;
+		const paused = reason === "interrupted";
+		const error = `Skipped due to ${reason}`;
+		const exitCode = paused ? 0 : -1;
+		if (paused) markStepPaused(step, now);
+		else Object.assign(step, { status: "failed", error, startedAt: now, endedAt: now, durationMs: 0, exitCode });
+		statusPayload.lastUpdate = now;
+		writeStatusPayload();
+		appendJsonl(eventsPath, JSON.stringify({ type: paused ? "subagent.step.paused" : "subagent.step.failed", ts: now, runId: id, stepIndex: index, agent: task.agent, exitCode, interrupted: paused, durationMs: 0 }));
+		return { agent: task.agent, output: error, error, exitCode, interrupted: paused, skipped: true };
+	};
+
 	const runParallelChild = async (input: {
 		task: SubagentStep;
 		flatIndex: number;
-		failFast: boolean;
-		aborted: boolean;
+		interruptSignal: AbortSignal;
+		item?: { name: string; value: unknown };
 		taskCwd: string;
 		sessionDir?: string;
 		flatStepCount: number;
 		resetTiming?: boolean;
-		emitSkippedEvent?: boolean;
 		trackSession?: boolean;
 		notifyCompletionGuard?: boolean;
 	}): Promise<AsyncParallelStepResult> => {
 		const { task, flatIndex: fi } = input;
-		if (interrupted) {
-			const pausedAt = Date.now();
-			markStepPaused(statusPayload.steps[fi], pausedAt);
-			statusPayload.lastUpdate = pausedAt;
-			writeStatusPayload();
-			appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.paused", ts: pausedAt, runId: id, stepIndex: fi, agent: task.agent, interrupted: true, durationMs: 0 }));
-			return { agent: task.agent, output: "Paused after interrupt. Waiting for explicit next action.", exitCode: 0, interrupted: true };
-		}
-		if (input.aborted && input.failFast) {
-			const skippedAt = Date.now();
-			const statusStep = statusPayload.steps[fi];
-			statusStep.status = "failed";
-			statusStep.error = "Skipped due to fail-fast";
-			statusStep.startedAt = skippedAt;
-			statusStep.endedAt = skippedAt;
-			statusStep.durationMs = 0;
-			statusStep.exitCode = -1;
-			if (input.emitSkippedEvent) statusStep.activityState = undefined;
-			statusPayload.lastUpdate = skippedAt;
-			writeStatusPayload();
-			if (input.emitSkippedEvent) appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.failed", ts: skippedAt, runId: id, stepIndex: fi, agent: task.agent, exitCode: -1, durationMs: 0 }));
-			return { agent: task.agent, output: "(skipped — fail-fast)", exitCode: -1, skipped: true };
-		}
-
 		const taskStartTime = Date.now();
 		const statusStep = statusPayload.steps[fi];
 		statusPayload.currentStep = fi;
@@ -1516,7 +1503,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		writeStatusPayload();
 		appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.started", ts: taskStartTime, runId: id, stepIndex: fi, agent: task.agent }));
 
-		const singleResult = await runSingleStep(task, {
+		const singleResult = await runSingleStep({ ...task, task: renderTask(task.task, input.item) }, {
 			previousOutput, placeholder, cwd: input.taskCwd, sessionEnabled,
 			outputs,
 			sessionDir: input.sessionDir,
@@ -1528,6 +1515,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			nestedRoute: config.nestedRoute,
 			projectTrust: config.projectTrust,
 			signal: cancellation.signal,
+			interruptSignal: input.interruptSignal,
 			registerInterrupt: (interrupt) => {
 				if (interrupt) activeChildInterrupts.set(fi, interrupt);
 				else activeChildInterrupts.delete(fi);
@@ -1579,6 +1567,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	};
 
 	let flatIndex = 0;
+	let workflowComplete = false;
 
 	for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
 		if (interrupted || cancellation.signal.aborted) break;
@@ -1588,8 +1577,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			const groupStartFlatIndex = flatIndex;
 			let materialized: ReturnType<typeof materializeDynamicParallelStep>;
 			try {
-				materialized = materializeDynamicParallelStep(step as Parameters<typeof materializeDynamicParallelStep>[0], outputs, stepIndex, { maxItems: config.dynamicFanoutMaxItems, allowRunnerFields: true });
-				if (materialized.collectedOnEmpty) validateDynamicCollection(step.collect.outputSchema, materialized.collectedOnEmpty);
+				materialized = materializeDynamicParallelStep(step, outputs, stepIndex, { maxItems: config.dynamicFanoutMaxItems, allowRunnerFields: true });
 			} catch (error) {
 				const now = Date.now();
 				const message = error instanceof DynamicFanoutError ? error.message : error instanceof Error ? error.message : String(error);
@@ -1612,36 +1600,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				break;
 			}
 
-			if (materialized.parallel.length === 0) {
-				const now = Date.now();
-				const collection = materialized.collectedOnEmpty ?? [];
-				outputs[step.collect.as] = {
-					text: JSON.stringify(collection),
-					structured: collection,
-					agent: step.parallel.agent,
-					stepIndex,
-				};
-				statusPayload.outputs = outputs;
-				const placeholder = statusPayload.steps[groupStartFlatIndex];
-				if (placeholder) {
-					placeholder.status = "complete";
-					placeholder.startedAt = now;
-					placeholder.endedAt = now;
-					placeholder.durationMs = 0;
-					placeholder.exitCode = 0;
-				}
-				flatIndex++;
-				previousOutput = "Dynamic fanout produced 0 results.";
-				statusPayload.lastUpdate = now;
-				markDynamicGraphGroup(stepIndex, "completed");
-				writeStatusPayload();
-				continue;
-			}
-
 			const dynamicSteps = materialized.parallel.map((task, itemIndex) => materializeDynamicOutputPath({
 				step: {
 					...step.parallel,
-					task: task.task ?? step.parallel.task,
+					task: step.parallel.task,
 					label: task.label ?? step.parallel.label,
 					sessionFile: step.sessionFiles?.[itemIndex],
 					structuredOutput: undefined,
@@ -1708,7 +1670,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				if (group.stepIndex === stepIndex) {
 					group.start = groupStartFlatIndex;
 					group.count = dynamicStatusSteps.length;
-				} else if (group.start > groupStartFlatIndex) {
+				} else if (group.stepIndex > stepIndex) {
 					group.start += materializedDelta;
 				}
 			}
@@ -1740,24 +1702,22 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}
 			writeStatusPayload();
 
-			const concurrency = step.concurrency ?? MAX_PARALLEL_CONCURRENCY;
-			const failFast = step.failFast ?? false;
-			let aborted = false;
-			const parallelResults = await mapConcurrent<SubagentStep, AsyncParallelStepResult>(dynamicSteps, concurrency, async (task, taskIdx) => {
-				const result = await runParallelChild({
+			const parallelResults = await runParallelTasks<SubagentStep, AsyncParallelStepResult>({
+				tasks: dynamicSteps,
+				concurrency: step.concurrency ?? MAX_PARALLEL_CONCURRENCY,
+				failFast: step.failFast,
+				signal: cancellation.signal,
+				interruptSignal: interruption.signal,
+				stoppedTask: (task, index, reason) => stoppedParallelChild(task, groupStartFlatIndex + index, reason),
+				runTask: (task, taskIdx, failFastSignal) => runParallelChild({
 					task,
 					flatIndex: groupStartFlatIndex + taskIdx,
-					failFast,
-					aborted,
+					interruptSignal: failFastSignal,
+					item: { name: step.expand.item ?? "item", value: materialized.items[taskIdx]!.item },
 					taskCwd: cwd,
 					sessionDir: config.sessionDir ? path.join(config.sessionDir, `dynamic-${stepIndex}-${taskIdx}`) : undefined,
 					flatStepCount: Math.max(statusPayload.steps.length, 1),
-				});
-				if (result.exitCode !== 0 && failFast) {
-					aborted = true;
-					interruptActiveSiblings(groupStartFlatIndex + taskIdx);
-				}
-				return result;
+				}),
 			});
 
 			flatIndex += dynamicSteps.length;
@@ -1766,7 +1726,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					agent: pr.agent,
 					output: pr.output,
 					error: pr.error,
-					success: !pr.interrupted && pr.exitCode === 0,
+					success: workflowChildSucceeded(pr),
 					exitCode: pr.exitCode,
 					skipped: pr.skipped,
 					sessionFile: pr.sessionFile,
@@ -1783,60 +1743,35 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					interrupted: pr.interrupted,
 				});
 			}
-			const collection = collectDynamicResults(step as Parameters<typeof collectDynamicResults>[0], materialized.items, parallelResults);
-			const interruptedResults = parallelResults.filter((result) => result.interrupted);
-			const failures = parallelResults.filter((result) => !result.interrupted && result.exitCode !== 0 && result.exitCode !== -1);
-			if (failures.length === 0 && interruptedResults.length === 0) {
-				try {
-					validateDynamicCollection(step.collect.outputSchema, collection);
-					outputs[step.collect.as] = {
-						text: JSON.stringify(collection),
-						structured: collection,
-						agent: step.parallel.agent,
-						stepIndex,
-					};
-					statusPayload.outputs = outputs;
-					markDynamicGraphGroup(stepIndex, "completed");
-				} catch (error) {
-					const message = error instanceof DynamicFanoutError ? error.message : error instanceof Error ? error.message : String(error);
-					results.push({ agent: step.parallel.agent, output: message, error: message, success: false, exitCode: 1, structuredOutput: collection });
-					statusPayload.error = message;
-					markDynamicGraphGroup(stepIndex, "failed", message);
-				}
+			const completion = completeWorkflowStep({ stepIndex, stepCount: steps.length, results: parallelResults, previousOutput, dynamic: { step, items: materialized.items } });
+			Object.assign(outputs, completion.outputs);
+			statusPayload.outputs = outputs;
+			if (completion.error) {
+				results.push({ agent: step.parallel.agent, output: completion.error, error: completion.error, success: false, exitCode: 1, structuredOutput: completion.collection });
+				statusPayload.error = completion.error;
 			}
-			previousOutput = aggregateParallelOutputs(
-				parallelResults.map((r, i) => ({
-					agent: r.agent,
-					taskIndex: i,
-					output: r.output,
-					exitCode: r.exitCode,
-					error: r.error,
-				})),
-				(i, agent) => `=== Dynamic Item ${i + 1} (${agent}, key ${materialized.items[i]?.key ?? i}) ===`,
-			);
+			previousOutput = completion.previousOutput;
+			workflowComplete = completion.complete;
+			const error = completion.error ?? parallelResults[completion.failedIndices[0]]?.error;
+			markDynamicGraphGroup(stepIndex, completion.status === "completed" ? "completed" : completion.status === "paused" ? "paused" : "failed", error);
 			appendJsonl(eventsPath, JSON.stringify({
 				type: "subagent.dynamic.completed",
 				ts: Date.now(),
 				runId: id,
 				stepIndex,
-				success: failures.length === 0 && interruptedResults.length === 0,
-				state: interruptedResults.length > 0 ? "paused" : failures.length > 0 ? "failed" : "complete",
+				success: completion.advance,
+				state: completion.status === "completed" ? "complete" : completion.status,
 			}));
-			if (interruptedResults.length > 0) markDynamicGraphGroup(stepIndex, "paused");
-			if (failures.length > 0) markDynamicGraphGroup(stepIndex, "failed", failures[0]?.error ?? "Dynamic fanout child failed.");
 			statusPayload.lastUpdate = Date.now();
 			writeStatusPayload();
-			if (interruptedResults.length > 0 || failures.length > 0 || statusPayload.error) break;
+			if (!completion.advance) break;
 			continue;
 		}
 
 		if (isParallelGroup(step)) {
 			const group = step;
 			const groupCwd = group.cwd ?? cwd;
-			const concurrency = group.concurrency ?? MAX_PARALLEL_CONCURRENCY;
-			const failFast = group.failFast ?? false;
 			const groupStartFlatIndex = flatIndex;
-			let aborted = false;
 			let worktreeSetup: WorktreeSetup | undefined;
 			if (group.worktree) {
 				const worktreeTaskCwdConflict = findWorktreeTaskCwdConflict(group.parallel, groupCwd);
@@ -1900,31 +1835,28 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					runId: id,
 					stepIndex,
 				});
-				const parallelResults = await mapConcurrent<SubagentStep, AsyncParallelStepResult>(
-					group.parallel,
-					concurrency,
-					async (task, taskIdx) => {
+				const parallelResults = await runParallelTasks<SubagentStep, AsyncParallelStepResult>({
+					tasks: group.parallel,
+					concurrency: group.concurrency ?? MAX_PARALLEL_CONCURRENCY,
+					failFast: group.failFast,
+					signal: cancellation.signal,
+					interruptSignal: interruption.signal,
+					stoppedTask: (task, index, reason) => stoppedParallelChild(task, groupStartFlatIndex + index, reason),
+					runTask: (task, taskIdx, failFastSignal) => {
 						const { taskForRun, taskCwd } = prepareParallelTaskRun(task, groupCwd, worktreeSetup, taskIdx);
-						const result = await runParallelChild({
+						return runParallelChild({
 							task: taskForRun,
 							flatIndex: groupStartFlatIndex + taskIdx,
-							failFast,
-							aborted,
+							interruptSignal: failFastSignal,
 							taskCwd,
 							sessionDir: config.sessionDir ? path.join(config.sessionDir, `parallel-${taskIdx}`) : undefined,
 							flatStepCount: flatSteps.length,
 							resetTiming: true,
-							emitSkippedEvent: true,
 							trackSession: true,
 							notifyCompletionGuard: true,
 						});
-						if (result.exitCode !== 0 && failFast) {
-							aborted = true;
-							interruptActiveSiblings(groupStartFlatIndex + taskIdx);
-						}
-						return result;
 					},
-				);
+				});
 
 				flatIndex += group.parallel.length;
 
@@ -1951,7 +1883,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						agent: pr.agent,
 						output: pr.output,
 						error: pr.error,
-						success: !pr.interrupted && pr.exitCode === 0,
+						success: workflowChildSucceeded(pr),
 						exitCode: pr.exitCode,
 						skipped: pr.skipped,
 						sessionFile: pr.sessionFile,
@@ -1968,45 +1900,26 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							interrupted: pr.interrupted,
 						});
 					}
-				for (let t = 0; t < group.parallel.length; t++) {
-					const outputName = group.parallel[t]?.outputName;
-					const childResult = parallelResults[t]!;
-					if (outputName && !childResult.interrupted && childResult.exitCode === 0) outputs[outputName] = outputEntryFromAsyncResult({
-						agent: childResult.agent,
-						output: childResult.output,
-						structuredOutput: childResult.structuredOutput,
-					}, stepIndex);
-				}
+				const completion = completeWorkflowStep({
+					stepIndex, stepCount: steps.length, results: parallelResults, previousOutput, parallel: true,
+					outputNames: group.parallel.map((task) => task.outputName),
+				});
+				Object.assign(outputs, completion.outputs);
 				statusPayload.outputs = outputs;
-
-				previousOutput = aggregateParallelOutputs(
-					parallelResults.map((r) => ({
-					agent: r.agent,
-					output: r.output,
-					exitCode: r.exitCode,
-					error: r.error,
-					model: r.model,
-					attemptedModels: r.attemptedModels,
-				})),
-				);
 				const worktreeSummary = formatRunnerWorktreeSummary(worktreeSetup, asyncDir, stepIndex, group);
-				previousOutput = appendWorktreeSummary(previousOutput, worktreeSummary);
+				previousOutput = completion.advance ? appendWorktreeSummary(completion.previousOutput, worktreeSummary) : completion.previousOutput;
+				workflowComplete = completion.complete;
 				if (worktreeSummary) worktreeSummaries.push(worktreeSummary);
-
-				const hasInterruptedParallelResult = parallelResults.some((r) => r.interrupted);
-				const hasFailedParallelResult = parallelResults.some((r) => !r.interrupted && r.exitCode !== 0 && r.exitCode !== -1);
 				appendJsonl(eventsPath, JSON.stringify({
 					type: "subagent.parallel.completed",
 					ts: Date.now(),
 					runId: id,
 					stepIndex,
-					success: !hasInterruptedParallelResult && !hasFailedParallelResult,
-					state: hasInterruptedParallelResult ? "paused" : hasFailedParallelResult ? "failed" : "complete",
+					success: completion.advance,
+					state: completion.status === "completed" ? "complete" : completion.status,
 				}));
-
-				if (hasInterruptedParallelResult || hasFailedParallelResult) {
-					break;
-				}
+				writeStatusPayload();
+				if (!completion.advance) break;
 			} finally {
 				if (worktreeSetup) cleanupWorktrees(worktreeSetup);
 			}
@@ -2034,7 +1947,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				agent: seqStep.agent,
 			}));
 
-			const singleResult = await runSingleStep(seqStep, {
+			const singleResult = await runSingleStep({ ...seqStep, task: renderTask(seqStep.task) }, {
 				previousOutput, placeholder, cwd, sessionEnabled,
 				outputs,
 				sessionDir: config.sessionDir,
@@ -2058,12 +1971,14 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				latestSessionFile = seqStep.sessionFile;
 			}
 
-			previousOutput = singleResult.output;
+			const completion = completeWorkflowStep({ stepIndex, stepCount: steps.length, results: [singleResult], previousOutput, outputNames: [seqStep.outputName] });
+			previousOutput = completion.previousOutput;
+			workflowComplete = completion.complete;
 			results.push({
 				agent: singleResult.agent,
 				output: singleResult.output,
 				error: singleResult.error,
-				success: !singleResult.interrupted && singleResult.exitCode === 0,
+				success: workflowChildSucceeded(singleResult),
 				exitCode: singleResult.exitCode,
 				sessionFile: singleResult.sessionFile,
 				intercomTarget: singleResult.intercomTarget,
@@ -2078,13 +1993,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				resourceLimitExceeded: singleResult.resourceLimitExceeded,
 				interrupted: singleResult.interrupted,
 			});
-			if (seqStep.outputName && !singleResult.interrupted && singleResult.exitCode === 0) {
-				outputs[seqStep.outputName] = outputEntryFromAsyncResult({
-					agent: singleResult.agent,
-					output: singleResult.output,
-					structuredOutput: singleResult.structuredOutput,
-				}, stepIndex);
-			}
+			Object.assign(outputs, completion.outputs);
 			statusPayload.outputs = outputs;
 
 			const cumulativeTokens = config.sessionDir ? parseSessionTokens(config.sessionDir) : null;
@@ -2158,9 +2067,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}
 
 			flatIndex++;
-			if (singleResult.exitCode !== 0) {
-				break;
-			}
+			if (!completion.advance) break;
 		}
 	}
 
@@ -2242,10 +2149,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	}
 	const hasFailedSteps = statusPayload.steps.some((step) => step.status === "failed");
 	const hasPausedSteps = statusPayload.steps.some((step) => step.status === "paused");
-	const allResultsSucceeded = results.length > 0 && results.every((r) => r.success);
-	const allStatusStepsComplete = statusPayload.steps.length > 0 && statusPayload.steps.every((step) => step.status === "complete");
-	const allWorkflowNodesCompleted = !statusPayload.workflowGraph?.nodes?.length || statusPayload.workflowGraph.nodes.every((node) => node.status === "completed");
-	const finalRunState: AsyncStatus["state"] = hasFailedSteps ? "failed" : interrupted || hasPausedSteps ? "paused" : allResultsSucceeded || (allStatusStepsComplete && allWorkflowNodesCompleted) ? "complete" : "failed";
+	const finalRunState: AsyncStatus["state"] = hasFailedSteps || statusPayload.error || cancellation.signal.aborted ? "failed"
+		: interrupted || hasPausedSteps ? "paused" : workflowComplete ? "complete" : "failed";
 	statusPayload.state = finalRunState;
 	statusPayload.activityState = undefined;
 	statusPayload.currentTool = undefined;
@@ -2261,6 +2166,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		const failedStep = statusPayload.steps.find((s) => s.status === "failed");
 		if (failedStep?.agent) {
 			statusPayload.error = `Step failed: ${failedStep.agent}`;
+		} else if (cancellation.signal.aborted) {
+			statusPayload.error = "Subagent cancelled.";
 		}
 	}
 	writeStatusPayload();
