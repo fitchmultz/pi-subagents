@@ -2099,6 +2099,10 @@ test("busy interactive sessions retain all accepted asks beyond 100 queued messa
         expectsReply: true,
       })).delivered, true);
     }
+    // Sender acknowledgements confirm broker writes, not recipient processing.
+    await waitForSession(planner,
+      (session) => session.id === target.id && session.pendingAsks === 101,
+      (sessions) => `Timed out waiting for 101 received asks; pending: ${sessions.find((session) => session.id === target.id)?.pendingAsks}`);
     const intercom = harness.tools.find((tool) => tool.name === "intercom")!;
     const pending = await intercom.execute("backlog-pending", { action: "pending" }, new AbortController().signal, undefined, harness.ctx);
     assert.match(pending.content[0]?.text ?? "", /backlog-ask-0"/);
