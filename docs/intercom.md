@@ -28,26 +28,25 @@ Each Pi session with the bundled intercom extension loaded connects to a tiny lo
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-That one package includes both extension entries and both skills. For local development, install the checkout with `pi install /absolute/path/to/pi-subagents`, then fully exit and restart Pi to load the changed code. `/reload` alone is not a reliable code-update boundary on the current Pi build.
+That one package includes both extension entries and both skills. For local development, build the checkout before `pi install /absolute/path/to/pi-subagents`. After Pi or extension code updates, fully exit and restart Pi, then resume the same saved parent session to retain ownership and pending coordination. `/reload` refreshes supported settings, skills, and prompts but is not a reliable code-update boundary.
 
-Reliable abort recovery requires Pi's custom steering/follow-up queue reporting fix (Pi fork commit `7679cb7b5` or a build containing it). Unpatched Pi 0.84.x and 0.85.1 report only pending user text, so their version numbers alone do not establish support for this recovery behavior.
+Full support requires a corrected native `fitchmultz/pi` build containing `acf4c2d98ec44de2108f16a47bf59de5193341a7`: custom steering/follow-up queue reporting (`7679cb7b5`) plus the restart notice/tests. Stock Pi 0.84.x and 0.85.1 report only pending user text and fail the queue contract. The corrected fork also reports 0.85.1, so that version alone does not establish support. See [installation prerequisites](../README.md#installation) for the native PR status.
 
 ## Development
 
-```bash
-npm run ci
-npm run smoke:real-pi
-```
+Follow the [local completion gate](../README.md#local-validation) to set both `PI_INTERCOM_TEST_SDK` and `PI_OWNERSHIP_TEST_PACKAGE_ROOT` to the corrected build's `packages/coding-agent` directory and point this checkout's CLI link at that build before `npm run ci`.
 
-`ci` runs typechecking, package and install smokes, and the full subagent/intercom test suite. The native intercom regression uses real SDK sessions, a controlled provider, and private runtime directories without credentials or model-service calls. To check against a separately built Pi checkout, set `PI_INTERCOM_TEST_SDK` to its `packages/coding-agent` directory:
+`ci` runs typechecking, package and install smokes, and the full subagent/intercom test suite. The native intercom regression uses real SDK sessions, a controlled provider, and private runtime directories without credentials or model-service calls. To run just that regression:
 
 ```bash
 PI_INTERCOM_TEST_SDK=/path/to/pi/packages/coding-agent node --test test/integration/pi-intercom-native-replay.test.ts
 ```
 
-`smoke:real-pi` installs the single checkout into an isolated temporary Pi home, verifies `pi list`, and loads both bundled extension entries. For live model-backed status/list checks, run:
+The real-Pi smoke installs the single checkout into an isolated temporary Pi home, verifies `pi list`, and loads both bundled extension entries. Use direct `node` with the corrected CLI first on `PATH`; npm scripts may otherwise select the stock development CLI. With the checkout-only link from the completion gate in place:
 
 ```bash
+export PATH="$PWD/node_modules/.bin:$PATH"
+node scripts/real-pi-smoke.mjs
 PI_REAL_SMOKE_MODEL=openai/gpt-6-astra node scripts/real-pi-smoke.mjs --llm
 ```
 
@@ -134,7 +133,7 @@ If Esc clears a steered or follow-up message before native handoff, it is re-del
 
 An omitted `ask` still honors recipient availability; use explicit steer only when the sender must remain alive for a busy recipient's reply. The recipient should incorporate relevant context and continue its active task unless the message explicitly replaces it. Use `delivery:"queue"` only when delay is intentional; `queueMode:"replace"` keeps only the latest undelivered thread update.
 
-Pending delivery is checkpointed in the saved Pi session before native handoff. Reloading or resuming that same session restores undelivered messages and the latest unsuperseded milestones; a fork or new session does not adopt them. Accepted pending messages have no fixed-count backlog cap or age-based expiry. Ordinary peer asks still use the configured reply timeout. Attachment content is included in the agent-visible body and stored in Pi session history. Only passive `send` renders without waking the recipient model.
+Pending delivery is checkpointed in the saved Pi session before native handoff. Reloading, or resuming that same saved session in a fresh process, restores undelivered messages, including lost native queues, and the latest unsuperseded milestones once; a fork or new session does not adopt them. Resuming again does not replay consumed messages, and passive-only recovery does not start a model turn. Accepted pending messages have no fixed-count backlog cap or age-based expiry. Ordinary peer asks still use the configured reply timeout. Attachment content is included in the agent-visible body and stored in Pi session history. Only passive `send` renders without waking the recipient model.
 
 ## Workflow: Planner-Worker Coordination
 

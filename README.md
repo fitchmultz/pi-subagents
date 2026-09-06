@@ -4,13 +4,17 @@
 
 ## Installation
 
-Install from GitHub:
+Full durable-runtime support requires a corrected native [`fitchmultz/pi` build containing `acf4c2d98ec44de2108f16a47bf59de5193341a7`](https://github.com/fitchmultz/pi/commit/acf4c2d98ec44de2108f16a47bf59de5193341a7), including custom steering/follow-up queue reporting and the code-update restart notice. Stock Pi 0.84.x and stock 0.85.1 both fail that queue contract. The corrected fork also reports 0.85.1, so `pi --version` alone does not prove support. [Native PR #9](https://github.com/fitchmultz/pi/pull/9) is open, with CI passed, as of 2026-09-06; it is not merged. This package does not install the corrected native build.
+
+With that native build available, install from GitHub:
 
 ```bash
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-That is the only required step. This package is not published to npm and does not provide an `npx` installer. Use `pi update --extensions` to refresh it. Local checkout installs remain available for development:
+This package is not published to npm and does not provide an `npx` installer. Use `pi update --extensions` to refresh it. After installing or updating Pi or extension code, **fully exit Pi and start a new process**; `/reload` can refresh supported settings, skills, and prompts, but cannot reliably activate changed JavaScript. Resume the **same saved parent session**, for example with `pi --session /path/to/parent.jsonl`, to retain run ownership, questions, and pending intercom delivery. A new or forked parent does not adopt them.
+
+Local checkout installs remain available for development:
 
 ```bash
 npm install   # builds dist/, which the pi manifest loads
@@ -21,34 +25,54 @@ Local path installs do not run npm for you, and the manifest points at compiled 
 
 Supported platforms: **macOS and Linux**. Termux on Android is unverified; Windows is not supported.
 
-Pi 0.84.0 or later is required. Pi core packages remain optional wildcard peers, as recommended for Pi packages, while this repository validates against exact Pi 0.84.0 development dependencies.
+Pi core packages remain optional wildcard peers. Development dependencies are pinned to Pi 0.85.1 for compilation and package checks; those pins do not supply the native fixes above.
 
 ## Local validation
 
-Run the local completion gate before treating changes as complete:
+Use a built checkout of the required native Pi revision for the completion gate:
 
 ```bash
+npm ci
+export PI_INTERCOM_TEST_SDK=/absolute/path/to/pi/packages/coding-agent
+export PI_OWNERSHIP_TEST_PACKAGE_ROOT="$PI_INTERCOM_TEST_SDK"
+ln -sf "$PI_INTERCOM_TEST_SDK/dist/bundle/cli.js" node_modules/.bin/pi
 npm run ci
 ```
 
+Both SDK overrides point at the built `packages/coding-agent` directory, not the monorepo root. The CLI link changes only this checkout's `node_modules/.bin/pi`; repeat it after `npm ci`, which restores the stock development CLI.
+
 That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
-For a credential-free Linux gate against committed `HEAD` (Docker required):
+For a credential-free Linux gate against committed `HEAD`, Docker and `PI_LINUX_PI_ARCHIVE` are required. Supply an absolute path to a `.tar.gz` containing one top-level `pi/`: the required native checkout, its Linux `node_modules` (including workspace dependencies), and all built `dist/` output. It must include `pi/packages/coding-agent/dist/index.js` and `pi/packages/coding-agent/dist/bundle/cli.js`.
+
+Prepare that checkout in a clean Linux build environment matching the image's CPU architecture and Node version. Install locked dependencies and complete Pi's workspace build, including its generated model data, before archiving. Do not copy host `node_modules`, Pi user state, `auth.json`, secret `.env` files, or credential-bearing npm/Git configuration. From the Linux build environment:
 
 ```bash
-bash scripts/linux-smoke.sh
-PI_LINUX_IMAGE=node:22.19.0-bookworm bash scripts/linux-smoke.sh # Node support floor
+tar -czf /absolute/path/native-pi-linux-node24.tar.gz -C /clean/linux-build pi
 ```
 
-The container runs as an unprivileged user, installs locked dependencies, and runs the same `npm run ci` gate. No host home, source mount, credentials, or model calls are passed into it.
+Run with a matching archive for each image:
+
+```bash
+PI_LINUX_PI_ARCHIVE=/absolute/path/native-pi-linux-node24.tar.gz \
+  bash scripts/linux-smoke.sh
+PI_LINUX_IMAGE=node:22.19.0-bookworm \
+PI_LINUX_PI_ARCHIVE=/absolute/path/native-pi-linux-node22.tar.gz \
+  bash scripts/linux-smoke.sh # Node support floor
+```
+
+The archive is mounted read-only and extracted to `/native-pi`. The unprivileged `node` user installs locked package dependencies in `/workspace`, points the private CLI link and both SDK overrides at the supplied build, and runs the full, unchanged `npm run ci` gate. No host home, source mount, credentials, or model calls are passed into it. The gate does not patch Pi/Jiti or skip native cases.
 
 ## Real Pi smoke
 
 The default local gate includes real SDK reload/reopen and native child-session ownership checks with a controlled CLI and no model calls. Other execution tests stay mock-heavy and deterministic. When you need to verify the actual local file-path Pi package boundary, run the opt-in real smoke:
 
 ```bash
-npm run smoke:real-pi
+export PATH="$PWD/node_modules/.bin:$PATH" # corrected checkout-only CLI link from above
+node scripts/real-pi-smoke.mjs
 ```
+
+Use direct `node` invocation with the corrected `pi` first on `PATH`. npm scripts prepend `node_modules/.bin` and may select the stock development CLI if its link has not been changed after dependency installation.
 
 It installs this checkout into an isolated temporary Pi home, runs `pi list`, and loads the bundled subagent and intercom extensions. It does not install pi-fitch-kit, publish to npm, or use GitHub Actions.
 
@@ -66,7 +90,7 @@ For a broader live gate, add `--llm-full`:
 PI_REAL_SMOKE_MODEL=openai/gpt-6-astra node scripts/real-pi-smoke.mjs --llm-full
 ```
 
-That also verifies real parallel, chain, file output, and acceptance flows. It checks actual tool calls and native settlement, and audits saved parent/child model identities. Use `--keep-temp` to preserve evidence; copied credentials are still removed. Direct `node` invocation uses the active `pi` on your PATH; npm scripts may select the pinned development CLI instead.
+That also verifies real parallel, chain, file output, and acceptance flows. It checks actual tool calls and native settlement, and audits saved parent/child model identities. Use `--keep-temp` to preserve evidence; copied credentials are still removed.
 
 ## Local test watchdog
 
@@ -350,7 +374,7 @@ Resume the **same saved supervisor session**, even from another cwd, to recover 
 
 Answers are saved once. Repeating the same answer does not start duplicate work; conflicting answers are rejected without replacing the original. A live child reads the saved answer; an exited child resumes from its saved session in a new run, retaining the original acceptance contract. An answer receipt is not execution completion. `stop` cancels outstanding questions and aborts a live waiter even after the foreground registry was lost.
 
-If an answer launch was interrupted before a continuation existed, the reply gives an explicit `continue` recovery call. It refuses to restart when launch evidence is uncertain; inspect the advertised continuation first. Questions and answers live in the user-scoped temporary runtime directory and survive process/broker restarts, not deletion of that directory. Pending questions are excluded from normal age-based cleanup.
+If an answer launch was interrupted before a continuation existed, the reply gives an explicit `continue` recovery call. It refuses to restart when launch evidence is uncertain; inspect the advertised continuation first. Questions, answers, launch contracts, and results live under `${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions/subagent-runs/<run-id>/`, separate from temporary logs. Ownership and review use native parent `subagent-run` entries; pending intercom delivery is journaled in that same saved Pi session. Temporary cleanup does not erase these records, but deleting saved sessions or metadata removes their recovery data. Pending questions are not age-cleaned.
 
 After 10 minutes of no observed child activity by default, needs-attention notices can show up in the parent session with useful next actions, such as checking status, interrupting the run, or nudging the child. When the child is registered, prefer `subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })` for live guidance, answers, corrections, or blockers. It sends a non-blocking steer that supplements the child's active task unless the message explicitly replaces it. Use the status-shown blocking intercom ask only when the parent must remain alive waiting for a reply.
 
@@ -1164,7 +1188,7 @@ If you are coming from Codex Goals, `acceptance` is the subagent equivalent for 
 }
 ```
 
-When `acceptance` is present, the initial child prompt includes a standardized acceptance section and asks for a fenced `acceptance-report` JSON block. After the child’s initial completion, the runtime continues the same persisted child session with an acceptance finalization prompt. The child can repair omissions in that same session, then must return the final `acceptance-report`. Missing or malformed finalization reports reject the run when the loop limit is reached.
+When `acceptance` is present, the initial child prompt includes a standardized acceptance section and asks for a fenced `acceptance-report` JSON block. After the child’s initial completion, the runtime continues the same persisted child session with an acceptance finalization prompt. The child can repair omissions in that same session, then must return the final `acceptance-report`. Missing or malformed finalization reports reject the run when the loop limit is reached. The final answer replaces the initial answer and must stand alone with every requested handoff detail, including paths, identifiers, findings, and cumulative evidence—not only a statement that the work was rechecked.
 
 Public acceptance config is evidence-driven. There is no public `level` field and no `acceptance: "checked"` shorthand. Runtime provenance is derived from what actually happened:
 

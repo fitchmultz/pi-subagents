@@ -59,7 +59,7 @@ test("detached runtimes install only their production dependency", () => {
 	assert.equal(dependencies.tsx, undefined);
 });
 
-test("Pi 0.84.0 is the exact development baseline with optional wildcard peers", () => {
+test("Pi 0.85.1 is the exact development baseline with optional wildcard peers", () => {
 	const packageJson = readPackageJson();
 	const devDependencies = packageJson.devDependencies as Record<string, unknown>;
 	const peerDependencies = packageJson.peerDependencies as Record<string, unknown>;
@@ -70,7 +70,7 @@ test("Pi 0.84.0 is the exact development baseline with optional wildcard peers",
 		"@earendil-works/pi-coding-agent",
 		"@earendil-works/pi-tui",
 	]) {
-		assert.equal(devDependencies[name], "0.84.0", name);
+		assert.equal(devDependencies[name], "0.85.1", name);
 		assert.equal(peerDependencies[name], "*", name);
 		assert.equal(peerDependenciesMeta[name]?.optional, true, name);
 	}

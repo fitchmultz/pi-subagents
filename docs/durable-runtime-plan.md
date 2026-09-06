@@ -11,6 +11,12 @@ The runtime must let a parent delegate once, retain ownership, exchange question
 - Share retry, acceptance finalization, and workflow decisions across the concrete foreground and detached hosts. Preserve successful sibling outputs as evidence when a group fails; do not run downstream steps after failed, paused, or detached work. Publish a dynamic collection only after its children and collection schema succeed.
 - Require a full Pi restart for extension code updates. `/reload` must not claim changed code is active when the loader retains cached JavaScript. Continue supported settings, skills, and prompt refresh without a Jiti fork or per-extension cache workaround.
 
+## Implemented scope
+
+Native parent `subagent-run` entries retain ownership, review, and continuation links. Launch contracts, questions, and results live under `${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions/subagent-runs`, outside temporary-log cleanup. Intercom checkpoints pending delivery in the owning native session and reconciles native queues and full-session receipts without replaying consumed messages; cold recovery preserves deferred, passive, and latest-milestone behavior without artificial accepted-message caps.
+
+Foreground and detached hosts share retry, acceptance finalization, and workflow decisions. Finalization returns a standalone full handoff with cumulative evidence; successful sibling results remain available when a workflow stops. Native SDK regressions cover reload and fresh-process recovery of delivery and owned runs.
+
 ## Verification
 
 Use actual Pi SDK/CLI boundaries with isolated sessions and controlled children/providers for deterministic reproduction. New regressions need a failing run against the original implementation and a passing run against the fix. Checks must cover delivery interruption and early prompt failure, reload/restart recovery, explicit configuration overrides, continuation lineage, review persistence, and cross-mode retry/finalization/workflow parity.
@@ -19,8 +25,12 @@ Run the package checks on macOS and supported Linux Node versions, native Pi's r
 
 ## Dependency decision
 
-Jiti's disabled module cache still uses native cached JavaScript for some extension imports. An isolated dependency patch demonstrated correct reloads, but Mitch chose full process restarts rather than maintaining a Jiti fork. The native change must make that boundary explicit and test that a fresh process loads the updated schemas. The upstream defect is already tracked in [Jiti #418](https://github.com/unjs/jiti/issues/418); [PR #462](https://github.com/unjs/jiti/pull/462) remains unmerged.
+Full support requires native `fitchmultz/pi` commit [`acf4c2d98ec44de2108f16a47bf59de5193341a7`](https://github.com/fitchmultz/pi/commit/acf4c2d98ec44de2108f16a47bf59de5193341a7), which includes the custom-queue reporting fix (`7679cb7b5`) and the restart notice/tests. Stock Pi 0.84.x and 0.85.1 both fail the custom-queue contract. The corrected build also reports 0.85.1; development pins and version output do not identify the fix. [Native PR #9](https://github.com/fitchmultz/pi/pull/9) is open with CI passed as of 2026-09-06, not merged.
+
+Jiti's disabled module cache still uses native cached JavaScript for some extension imports. An isolated dependency patch demonstrated correct reloads, but Mitch chose full process restarts rather than maintaining a Jiti fork. The native change makes that boundary explicit and tests that a fresh process loads updated schemas. The upstream defect is tracked in [Jiti #418](https://github.com/unjs/jiti/issues/418); [PR #462](https://github.com/unjs/jiti/pull/462) remains unmerged. No Pi/Jiti dependency patch belongs in this package.
 
 ## Delivery boundary
 
-Develop and verify in isolated worktrees. Keep installed code and active sessions untouched until both updates are ready. Publish the approved repository changes, then coordinate one full restart before testing the updated tools in active sessions.
+The 0.36.0 repository preparation does not install, deploy, or activate either update. Final release readiness still requires parent review, the full macOS/Linux package gates against the corrected native build, and isolated model-backed smoke tests. The Linux gate takes a credential-free prebuilt native archive and keeps every package test; see [local validation](../README.md#local-validation) for the archive shape and both SDK overrides.
+
+Keep installed code and active sessions untouched until both updates are approved for delivery. After updating both, fully exit Pi and restart it, then resume the same saved parent session before testing active tools. A new or forked parent must not adopt the original parent's runs or pending intercom delivery.

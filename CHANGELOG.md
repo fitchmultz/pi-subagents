@@ -2,11 +2,17 @@
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-09-06
+
 ### Added
 - Attention-first, paged owned-run lists and explicit parent review (`accepted` or `needs_changes`), separate from execution, acceptance checks, and notification.
 - Persistent root/predecessor/continuation history and inspectable effective launch configuration with profile provenance.
 
 ### Fixed
+- Deliver intercom messages once by reconciling native queues and full-session receipts. Recover pending steers, follow-ups, and latest milestones after a cold restart without replaying consumed messages or waking passive-only restores.
+- Remove artificial message-count caps from broker replace queues, accepted-message recovery, and pending asks; retain milestone coalescing and ordinary peer ask timeouts.
+- Share same-model retry/fallback, acceptance finalization, and execution outcome rules across foreground and detached hosts, preserving cancellation, timeout, resource-limit, fail-fast, and user-pause outcomes.
+- Require standalone finalization answers that retain every requested handoff detail and cumulative whole-task evidence instead of replacing useful results with a recheck receipt.
 - Share bounded parallel execution and workflow advancement across foreground and detached hosts. Preserve completed sibling outputs when a group fails or stops, stop queued work after interruption or detachment, and distinguish fail-fast from user pause before publishing child outcomes.
 - Require the requested workflow to finish before reporting completion, and publish dynamic collections only after every child and the collection schema succeed.
 - Align omitted task defaults, literal template substitution, previous-output handoffs, and dynamic child resource limits across both modes. Empty fanouts no longer consume child indices; preallocated fork sessions retain their associations across later expansions.
@@ -14,6 +20,12 @@
 - Preserve original foreground and background handles, results, questions, and launch contracts across native reload/restart and temporary-log cleanup; list bounds no longer discard exact-ID history.
 - Continue with the actual saved provider/model, thinking, profile and output/acceptance choices instead of rediscovering changed defaults. Recover older native receipts where possible and require an explicit profile choice when the original profile was not saved.
 - Emit durable question-resolution events after answers and cancellation so the intercom presence consumer can clear pending asks without another model turn.
+- Report out-of-range owned-run pages as showing none instead of an inverted range.
+
+### Changed
+- Require a corrected native `fitchmultz/pi` build containing `acf4c2d98ec44de2108f16a47bf59de5193341a7` for full durable-runtime support. Stock Pi 0.84.x and 0.85.1 do not satisfy the custom-queue contract; the unchanged 0.85.1 development pins are not proof of the fix.
+- Require a full Pi process restart after code updates, then resume the same saved parent to retain ownership and pending coordination; do not rely on `/reload` to activate changed code.
+- Run the full Linux gate against a supplied credential-free, prebuilt native Pi archive, with no dependency patches or skipped native cases.
 
 ## [0.35.0] - 2026-09-06
 
