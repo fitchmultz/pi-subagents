@@ -759,11 +759,16 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					}),
 				});
 				Object.assign(outputs, completion.outputs);
+				const failures = completion.failedIndices.map((originalIndex) => ({ ...parallelResults[originalIndex]!, originalIndex }));
+				const failureSummary = failures
+					.map((failure) => `- Task ${failure.originalIndex + 1} (${failure.agent}): ${failure.error || "failed"}`)
+					.join("\n");
+				const failedSummary = failureSummary ? `\n\nFailed siblings:\n${failureSummary}` : "";
 				const timedOutIndexInStep = completion.timedOutIndex;
 				const timedOut = timedOutIndexInStep >= 0 ? parallelResults[timedOutIndexInStep] : undefined;
 				if (timedOut) {
 					return {
-						content: [{ type: "text", text: appendWorktreeSummary(`Chain timed out at step ${stepIndex + 1} (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}`, worktreeSummary) }],
+						content: [{ type: "text", text: appendWorktreeSummary(`Chain timed out at step ${stepIndex + 1} (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}${failedSummary}`, worktreeSummary) }],
 						isError: true,
 						details: buildChainExecutionDetails(makeDetailsInput({
 							currentStepIndex: stepIndex,
@@ -775,7 +780,8 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				const interrupted = interruptedIndexInStep >= 0 ? parallelResults[interruptedIndexInStep] : undefined;
 				if (interrupted) {
 					return {
-						content: [{ type: "text", text: appendWorktreeSummary(`Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.`, worktreeSummary) }],
+						content: [{ type: "text", text: appendWorktreeSummary(`Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.${failedSummary}`, worktreeSummary) }],
+						...(completion.status === "failed" ? { isError: true } : {}),
 						details: buildChainExecutionDetails(makeDetailsInput({
 							currentStepIndex: stepIndex,
 							currentFlatIndex: globalTaskIndex - step.parallel.length + interruptedIndexInStep,
@@ -786,9 +792,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				const detached = detachedIndexInStep >= 0 ? parallelResults[detachedIndexInStep] : undefined;
 				if (detached) {
 					const detachedFlatIndex = globalTaskIndex - step.parallel.length + detachedIndexInStep;
-					const failedSummary = completion.failedIndices
-						.map((index) => `- Task ${index + 1} (${parallelResults[index]!.agent}): ${parallelResults[index]!.error || "failed"}`)
-						.join("\n");
 					return {
 						content: [{
 							type: "text",
@@ -797,8 +800,9 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 								runId,
 								result: detached,
 								childIndex: detachedFlatIndex,
-							})}${failedSummary ? `\n\nFailed siblings:\n${failedSummary}` : ""}`, worktreeSummary),
+							})}${failedSummary}`, worktreeSummary),
 						}],
+						...(completion.status === "failed" ? { isError: true } : {}),
 						details: buildChainExecutionDetails(makeDetailsInput({
 							currentStepIndex: stepIndex,
 							currentFlatIndex: detachedFlatIndex,
@@ -806,11 +810,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					};
 				}
 
-				const failures = completion.failedIndices.map((originalIndex) => ({ ...parallelResults[originalIndex]!, originalIndex }));
 				if (!completion.advance) {
-					const failureSummary = failures
-						.map((failure) => `- Task ${failure.originalIndex + 1} (${failure.agent}): ${failure.error || "failed"}`)
-						.join("\n");
 					const errorMsg = `Parallel step ${stepIndex + 1} failed:\n${failureSummary}`;
 					const summary = buildChainSummary(chainSteps, results, chainDir, "failed", {
 						index: stepIndex,
@@ -940,13 +940,18 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				results: parallelResults.map((result) => ({ ...result, output: getSingleResultOutput(result) })),
 			});
 			Object.assign(outputs, completion.outputs);
-			dynamicGroupStatuses[stepIndex] = { status: completion.status, error: completion.error };
+			const failures = completion.failedIndices.map((originalIndex) => ({ ...parallelResults[originalIndex]!, originalIndex }));
+			const failureSummary = failures
+				.map((failure) => `- Item ${failure.originalIndex + 1} (${failure.agent}, key ${materialized.items[failure.originalIndex]?.key ?? failure.originalIndex}): ${failure.error || "failed"}`)
+				.join("\n");
+			const failedSummary = failureSummary ? `\n\nFailed items:\n${failureSummary}` : "";
+			dynamicGroupStatuses[stepIndex] = { status: completion.status, error: completion.error ?? (failureSummary || undefined) };
 			const timedOutIndexInStep = completion.timedOutIndex;
 			const timedOut = timedOutIndexInStep >= 0 ? parallelResults[timedOutIndexInStep] : undefined;
 			if (timedOut) {
-				dynamicGroupStatuses[stepIndex] = { status: "timed-out", error: timedOut.error };
+				dynamicGroupStatuses[stepIndex] = { status: completion.status, error: failureSummary || timedOut.error };
 				return {
-					content: [{ type: "text", text: `Chain timed out at step ${stepIndex + 1} (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}` }],
+					content: [{ type: "text", text: `Chain timed out at step ${stepIndex + 1} (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}${failedSummary}` }],
 					isError: true,
 					details: buildChainExecutionDetails(makeDetailsInput({
 						currentStepIndex: stepIndex,
@@ -958,7 +963,8 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			const interrupted = interruptedIndexInStep >= 0 ? parallelResults[interruptedIndexInStep] : undefined;
 			if (interrupted) {
 				return {
-					content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.` }],
+					content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.${failedSummary}` }],
+					...(completion.status === "failed" ? { isError: true } : {}),
 					details: buildChainExecutionDetails(makeDetailsInput({
 						currentStepIndex: stepIndex,
 						currentFlatIndex: globalTaskIndex - dynamicParallelStep.parallel.length + interruptedIndexInStep,
@@ -969,9 +975,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			const detached = detachedIndexInStep >= 0 ? parallelResults[detachedIndexInStep] : undefined;
 			if (detached) {
 				const detachedFlatIndex = globalTaskIndex - dynamicParallelStep.parallel.length + detachedIndexInStep;
-				const failedSummary = completion.failedIndices
-					.map((index) => `- Item ${index + 1} (${parallelResults[index]!.agent}, key ${materialized.items[index]?.key ?? index}): ${parallelResults[index]!.error || "failed"}`)
-					.join("\n");
 				return {
 					content: [{
 						type: "text",
@@ -980,19 +983,16 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 							runId,
 							result: detached,
 							childIndex: detachedFlatIndex,
-						})}${failedSummary ? `\n\nFailed items:\n${failedSummary}` : ""}`,
+						})}${failedSummary}`,
 					}],
+					...(completion.status === "failed" ? { isError: true } : {}),
 					details: buildChainExecutionDetails(makeDetailsInput({
 						currentStepIndex: stepIndex,
 						currentFlatIndex: detachedFlatIndex,
 					})),
 				};
 			}
-			const failures = completion.failedIndices.map((originalIndex) => ({ ...parallelResults[originalIndex]!, originalIndex }));
 			if (failures.length > 0) {
-				const failureSummary = failures
-					.map((failure) => `- Item ${failure.originalIndex + 1} (${failure.agent}, key ${materialized.items[failure.originalIndex]?.key ?? failure.originalIndex}): ${failure.error || "failed"}`)
-					.join("\n");
 				const errorMsg = `Dynamic step ${stepIndex + 1} failed:\n${failureSummary}`;
 				dynamicGroupStatuses[stepIndex] = { status: "failed", error: errorMsg };
 				const summary = buildChainSummary(chainSteps, results, chainDir, "failed", {

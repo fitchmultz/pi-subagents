@@ -611,6 +611,13 @@ export async function runParallelPath(data: ExecutionContextData, deps: Executor
 
 		const completion = completeWorkflowStep({ stepIndex: 0, stepCount: 1, previousOutput: "", parallel: true,
 			results: results.map((result) => ({ ...result, output: getSingleResultOutput(result) })) });
+		const failedSiblings = completion.failedIndices.map((taskIndex) => {
+			const result = results[taskIndex]!;
+			return { agent: result.agent, taskIndex, output: result.truncation?.text || getSingleResultOutput(result), exitCode: result.exitCode, error: result.error };
+		});
+		const failedSummary = failedSiblings.length
+			? `\n\nFailed siblings:\n${aggregateParallelOutputs(failedSiblings, (i, agent) => `=== Task ${i + 1}: ${agent} ===`)}`
+			: "";
 		const timedOut = results[completion.timedOutIndex];
 		const interrupted = results[completion.interruptedIndex];
 		const details = compactForegroundDetails({
@@ -626,27 +633,21 @@ export async function runParallelPath(data: ExecutionContextData, deps: Executor
 		const worktreeSuffix = worktreeCleanupDeferred ? "" : buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks);
 		if (timedOut) {
 			return {
-				content: [{ type: "text", text: appendWorktreeSummary(`Parallel run timed out (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}`, worktreeSuffix) }],
+				content: [{ type: "text", text: appendWorktreeSummary(`Parallel run timed out (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}${failedSummary}`, worktreeSuffix) }],
 				details,
 				isError: true,
 			};
 		}
 		if (interrupted) {
 			return {
-				content: [{ type: "text", text: appendWorktreeSummary(`Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.`, worktreeSuffix) }],
+				content: [{ type: "text", text: appendWorktreeSummary(`Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.${failedSummary}`, worktreeSuffix) }],
 				details,
+				...(completion.status === "failed" ? { isError: true } : {}),
 			};
 		}
 		const detachedIndex = completion.detachedIndex;
 		const detached = detachedIndex >= 0 ? results[detachedIndex] : undefined;
 		if (detached) {
-			const failedSiblings = completion.failedIndices.map((taskIndex) => {
-				const result = results[taskIndex]!;
-				return { agent: result.agent, taskIndex, output: result.truncation?.text || getSingleResultOutput(result), exitCode: result.exitCode, error: result.error };
-			});
-			const failedSummary = failedSiblings.length
-				? `\n\nFailed siblings:\n${aggregateParallelOutputs(failedSiblings, (i, agent) => `=== Task ${i + 1}: ${agent} ===`)}`
-				: "";
 			return {
 				content: [{
 					type: "text",
@@ -658,6 +659,7 @@ export async function runParallelPath(data: ExecutionContextData, deps: Executor
 					})}${failedSummary}`, worktreeSuffix),
 				}],
 				details,
+				...(completion.status === "failed" ? { isError: true } : {}),
 			};
 		}
 

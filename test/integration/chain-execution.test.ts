@@ -1329,7 +1329,7 @@ describe("chain execution — parallel steps", () => {
 			),
 		);
 
-		assert.equal(result.isError, undefined);
+		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /Chain detached for intercom coordination/);
 		assert.match(result.content[0]?.text ?? "", /Failed siblings:.*Task \d+ \([ab]\): Other task failed/s);
 		assert.doesNotMatch(result.content[0]?.text ?? "", /resume/);
@@ -1402,7 +1402,7 @@ describe("chain execution — parallel steps", () => {
 			},
 		}));
 
-		assert.equal(result.isError, undefined, result.content[0]?.text);
+		assert.equal(result.isError, true, result.content[0]?.text);
 		assert.match(result.content[0]?.text ?? "", /Chain detached for intercom coordination/);
 		assert.match(result.content[0]?.text ?? "", /Failed items:.*Item \d+ \(reviewer, key [ab]\): Item b failed/s);
 		assert.equal(result.details.results.some((entry) => entry.detached === true), true);

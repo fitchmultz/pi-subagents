@@ -128,7 +128,7 @@ export function aggregateParallelOutputs(
 			const hasOutput = Boolean(r.output?.trim());
 			const status =
 				r.exitCode === -1
-					? "SKIPPED"
+					? `SKIPPED${r.error ? `: ${r.error}` : ""}`
 					: r.exitCode !== 0 && r.exitCode !== null
 						? `FAILED (exit code ${r.exitCode})${r.error ? `: ${r.error}` : ""}`
 						: r.error

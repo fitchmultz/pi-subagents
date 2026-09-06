@@ -195,9 +195,9 @@ describe("aggregateParallelOutputs", () => {
 	it("marks skipped tasks (exitCode=-1) distinctly from failed", () => {
 		const result = aggregateParallelOutputs([
 			{ agent: "agent-a", output: "done", exitCode: 0 },
-			{ agent: "agent-b", output: "(skipped — fail-fast)", exitCode: -1 },
+			{ agent: "agent-b", output: "", exitCode: -1, error: "Skipped due to detached" },
 		]);
-		assert.ok(result.includes("SKIPPED"), "skipped task should show SKIPPED");
+		assert.ok(result.includes("SKIPPED: Skipped due to detached"), "skipped task should include the reason it never started");
 		assert.ok(!result.includes("FAILED"), "skipped task should not show FAILED");
 	});
 });
