@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext, parseSessionEntries } from "../../shared/native-session.ts";
+import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { compactForegroundResult, getFinalOutput, getSingleResultOutput, readStatus } from "../../shared/utils.ts";
@@ -160,7 +161,7 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext): v
 		const asyncDir = path.join(ASYNC_DIR, name);
 		try {
 			const status = readStatus(asyncDir);
-			if (!status || status.sessionId !== ownerSessionId) continue;
+			if (!status || status.sessionId !== resolveCurrentSessionId(ctx.sessionManager)) continue;
 			saveRunStatus(status.runId, status);
 			const old = state.ownedRuns.get(status.runId);
 			rememberOwnedRun(state, {

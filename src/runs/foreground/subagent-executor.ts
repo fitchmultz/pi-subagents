@@ -119,7 +119,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				}
 			}
 			if (params.action === "questions" || params.action === "answer") {
-				return controlSupervisorQuestion({ params, requestCwd, ctx, deps });
+				return controlSupervisorQuestion({ params: paramsWithResolvedCwd, requestCwd, ctx, deps });
 			}
 			if (params.action === "doctor") {
 				let currentSessionFile: string | null = null;
