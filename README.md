@@ -92,7 +92,7 @@ For a broader live gate, add `--llm-full`:
 PI_REAL_SMOKE_MODEL=openai/gpt-6-astra node scripts/real-pi-smoke.mjs --llm-full
 ```
 
-That also verifies real parallel, chain, file output, and acceptance flows. It checks actual tool calls and native settlement, and audits saved parent/child model identities. Use `--keep-temp` to preserve evidence; copied credentials are still removed.
+That also verifies real parallel, chain, file output, and acceptance flows. It checks actual tool calls and native settlement, and audits saved parent/child model identities. The smoke stops its own processes before removing copied credentials or artifacts, including on timeout or handled cancellation. Use `--keep-temp` to preserve noncredential evidence.
 
 ## Local test watchdog
 
@@ -1231,7 +1231,7 @@ subagent({
 
 Foreground runs show compact live progress for single, chain, and parallel modes: current tool, recent output, token counts, duration, activity freshness, current-tool duration, and chain graph metadata when available.
 
-Press `Ctrl+O` to expand the full streaming view with complete output per step. The background async widget stays at one line per run until then.
+Delegation receipts, completed responses, and completion messages show compact summaries by default. Press `Ctrl+O` to expand their full responses and details, or the full streaming view with output per step. The background async widget stays at one line per run until then. Collapsing these views does not shorten the content sent to the model.
 
 Sequential chains show a flow line like `done scout → running planner`. Chains with parallel steps show per-step cards instead. Chain status uses `label` and `phase` metadata when present, while falling back to agent names for older chains.
 
