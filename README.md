@@ -14,6 +14,8 @@ pi install git:github.com/fitchmultz/pi-subagents
 
 This package is not published to npm and does not provide an `npx` installer. Use `pi update --extensions` to refresh it. After installing or updating Pi or extension code, **fully exit Pi and start a new process**; `/reload` can refresh supported settings, skills, and prompts, but cannot reliably activate changed JavaScript. Resume the **same saved parent session**, for example with `pi --session /path/to/parent.jsonl`, to retain run ownership, questions, and pending intercom delivery. A new or forked parent does not adopt them.
 
+To restart the bundled broker too, close every Pi session using the same agent directory and wait at least five seconds before reopening Pi.
+
 Local checkout installs remain available for development:
 
 ```bash

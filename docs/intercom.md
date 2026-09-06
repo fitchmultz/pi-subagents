@@ -30,6 +30,8 @@ pi install git:github.com/fitchmultz/pi-subagents
 
 That one package includes both extension entries and both skills. For local development, build the checkout before `pi install /absolute/path/to/pi-subagents`. After Pi or extension code updates, fully exit and restart Pi, then resume the same saved parent session to retain ownership and pending coordination. `/reload` refreshes supported settings, skills, and prompts but is not a reliable code-update boundary.
 
+To restart the shared broker too, close every Pi session using the same agent directory and wait at least five seconds before reopening Pi.
+
 Full support requires a corrected native `fitchmultz/pi` build containing `acf4c2d98ec44de2108f16a47bf59de5193341a7`: custom steering/follow-up queue reporting (`7679cb7b5`) plus the restart notice/tests. Stock Pi 0.84.x and 0.85.1 report only pending user text and fail the queue contract. The corrected fork also reports 0.85.1, so that version alone does not establish support. See [installation prerequisites](../README.md#installation) for the native PR status.
 
 ## Development
