@@ -296,4 +296,16 @@ Preserve process isolation, local IPC/reconnect, fresh and forked contexts, pare
 
 This was an architecture/product/safety assessment, not a certification or full platform matrix. No Windows/Linux runtime, exhaustive TUI keyboard/rendering dogfood, every provider fallback route, live crash/restart fault matrix, or remote sharing was exercised. Mock-stream reproductions establish package behavior for a reachable event sequence; they are not claims that the corresponding live race occurred during every dispatch. Proposed fixes have not been implemented.
 
-**Suggested next authorization:** approve the reliability patch set and a bounded RPC comparison, then review the compact API/ownership design before migration. No nuke needed.
+## Implementation decisions (2026-09-06)
+
+The implementation was subsequently authorized. Keep the assessment above as the pre-change record, not a description of the released runtime.
+
+**Transport: retain JSON.** A bounded Pi 0.85.1 experiment used 17 real `openai/gpt-6-astra` assistant messages. Both JSON and RPC finished a near-final follow-up before `agent_settled`, continued the saved session through an actual supervisor question, stopped Bash descendants before a delayed marker write, and recovered a saved result after supervisor disconnect/reconnect while the host remained alive. The evidence validator passed ten checks. RPC did not demonstrate meaningful net deletion and does not make pending input or host ownership durable; raw stdin EOF is not reattachment. No worker pool or transport migration is justified.
+
+**Shared process lifetime:** foreground, background, and acceptance commands now use `attachChildProcessLifecycle`. Assistant-message completion is not settlement. Cancellation owns the process group; a blocking supervisor handoff is a separate explicit event. Acceptance keeps composed shell commands and propagates cancellation.
+
+**Everyday API:** `delegate` and `agent_runs` adapt the existing executor. Advanced workflows and definition management remain available behind `load_subagent`; existing callers are not replaced. One isolated writer reuses the existing one-task worktree path instead of introducing a second workspace manager.
+
+**Completion authority:** task prose and tool capability no longer imply a required edit. `completionGuard: true` explicitly requests mutation evidence; an acceptance contract takes precedence and can describe a valid no-op. Passing an attestation check remains distinct from executing verification commands.
+
+**Platforms and trust:** macOS/Linux are supported; Windows runtime branches are removed. Termux remains unverified. Local intercom remains trusted same-user IPC, without project ACLs or a new authorization service.

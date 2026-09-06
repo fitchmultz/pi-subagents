@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import * as path from "node:path";
+import * as fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import { getModel } from "@earendil-works/pi-ai/compat";
@@ -10,7 +12,7 @@ import {
 	type AgentSession,
 	type CreateAgentSessionOptions,
 } from "@earendil-works/pi-coding-agent";
-import { createTempDir, removeTempDir } from "../support/helpers.ts";
+import { createMockPi, createTempDir, removeTempDir } from "../support/helpers.ts";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const extensionPath = path.join(projectRoot, "src/extension/index.ts");
@@ -78,6 +80,40 @@ describe("subagent lazy activation with SDK tool filters", () => {
 			assert.match(JSON.stringify(profiles.content), /Executable agents/);
 			assert.equal(session.getActiveToolNames().includes("subagent"), false);
 		});
+	});
+
+	it("delegates through the same executor and isolates a single writer on request", async () => {
+		const repo = createTempDir("pi-compact-delegate-");
+		const mock = createMockPi();
+		mock.install();
+		try {
+			fs.mkdirSync(path.join(repo, ".pi/agents"), { recursive: true });
+			fs.writeFileSync(path.join(repo, ".pi/agents/compact-probe.md"), "---\nname: compact-probe\ndescription: Compact tool test\nmodel: openai/gpt-6-astra\n---\nReturn the requested answer.\n");
+			execFileSync("git", ["init", "-q", repo]);
+			execFileSync("git", ["-C", repo, "add", "."]);
+			execFileSync("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"]);
+			await withSdkSession({}, async (session) => {
+				const delegate = activeTool(session, "delegate");
+				assert.ok(delegate);
+				for (const worktree of [false, true]) {
+					mock.reset();
+					mock.onCall({ output: "COMPACT_DONE" });
+					const result = await delegate.execute(`delegate-${worktree}`, {
+						agent: "compact-probe", task: "Report completion", cwd: repo,
+						async: false, worktree, output: false,
+					}, new AbortController().signal);
+					assert.match(JSON.stringify(result), /COMPACT_DONE/);
+					const callFile = fs.readdirSync(mock.dir).find((name) => name.startsWith("call-"));
+					assert.ok(callFile);
+					const call = JSON.parse(fs.readFileSync(path.join(mock.dir, callFile), "utf8"));
+					assert.equal(call.cwd === fs.realpathSync(repo), !worktree);
+					assert.equal(mock.callCount(), 1);
+				}
+			});
+		} finally {
+			mock.uninstall();
+			removeTempDir(repo);
+		}
 	});
 
 	it("adds the available full tool through Pi's deferred-loading wrapper", async () => {

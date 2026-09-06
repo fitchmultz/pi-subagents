@@ -7,6 +7,7 @@ import {
 	hasCompletedMutationToolCall,
 	resolveCompletionPolicy,
 } from "../../src/runs/shared/completion-guard.ts";
+import { resolveCurrentPath } from "../../src/runs/shared/mutating-tool-guard.ts";
 
 function assistantToolCall(name: string, args: Record<string, unknown> = {}, id?: string): Message {
 	return {
@@ -35,6 +36,17 @@ test("edit and write tool calls require successful tool results to count as comp
 	assert.equal(hasCompletedMutationToolCall([assistantToolCall("edit", { path: "a.ts" })]), false);
 	assert.equal(hasCompletedMutationToolCall([assistantToolCall("edit", { path: "a.ts" }), toolResult("edited a.ts")]), true);
 	assert.equal(hasCompletedMutationToolCall([assistantToolCall("write", { path: "a.ts" }), toolResult("permission denied", true)]), false);
+});
+
+test("native apply_edits counts only after a successful result", () => {
+	const call = assistantToolCall("apply_edits", { path: "a.ts", rewrite: "updated" });
+	assert.equal(hasCompletedMutationToolCall([call, toolResult("updated a.ts")]), true);
+	assert.equal(hasCompletedMutationToolCall([call, toolResult("anchor missing", true)]), false);
+});
+
+test("bash activity paths ignore file descriptors and tolerate redirect whitespace", () => {
+	assert.equal(resolveCurrentPath("bash", { command: "npm test > /tmp/check.log 2>&1" }), "/tmp/check.log");
+	assert.equal(resolveCurrentPath("bash", { command: "npm test 2>&1" }), undefined);
 });
 
 test("successful mutating tool results count even when output mentions failure words", () => {

@@ -243,7 +243,7 @@
 - Raised the default subagent no-activity needs-attention threshold from 1 minute to 10 minutes so long test/build commands do not trigger early nudge reminders.
 - Added `subagent({ action: "nudge" })` as a first-class live child nudge that routes through `pi-intercom` with `delivery:"steer"` when the child is registered, and updated status/control hints to show both the subagent nudge and direct blocking intercom ask paths.
 - Control nudge hints now use live intercom steering because they request a child reply and should reach active children promptly.
-- Kept this personal fork private with no legacy `npx` installer, made GitHub `pi install` the canonical install/refresh workflow, and retained local path installs for development.
+- Kept the package private with no legacy `npx` installer, made GitHub `pi install` the canonical install/refresh workflow, and retained local path installs for development.
 - Bundled the 14 pi-fitch-kit agent profiles as defaults, retained the extension's lightweight `delegate`, and removed pi-fitch-kit from the canonical local validation gate.
 - Added a per-suite local watchdog to `scripts/run-tests.mjs`, with timeout diagnostics and `PI_TEST_TIMEOUT_MS` / `--timeout-ms` overrides for slow debug runs.
 - Added an opt-in `npm run smoke:real-pi` command that installs this checkout in an isolated temporary Pi home, loads both bundled extension entries, and verifies `pi list`; live model subagent prompts remain gated behind `-- --llm`.

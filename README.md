@@ -33,6 +33,15 @@ npm run ci
 
 That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
+For a credential-free Linux gate against committed `HEAD` (Docker required):
+
+```bash
+bash scripts/linux-smoke.sh
+PI_LINUX_IMAGE=node:22.19.0-bookworm bash scripts/linux-smoke.sh # Node support floor
+```
+
+The container runs as an unprivileged user, installs locked dependencies, and runs the same `npm run ci` gate. No host home, source mount, credentials, or model calls are passed into it.
+
 ## Real Pi smoke
 
 The default local gate stays mock-heavy and deterministic. When you need to verify the actual local file-path Pi package boundary, run the opt-in real smoke:
