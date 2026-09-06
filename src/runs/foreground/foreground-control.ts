@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
-import { saveQuestionOwner } from "../shared/supervisor-questions.ts";
+import { listSupervisorQuestions, questionProcessAlive, readQuestionContract, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -31,6 +31,9 @@ import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { buildManagementControl, formatLiveIntercomActionLines } from "../../shared/status-format.ts";
 import { acceptanceInputFromResolved } from "../shared/acceptance.ts";
 import {
+	ASYNC_DIR,
+	getAsyncConfigPath,
+	RUNNER_ERROR_LOG_FILE,
 	type ControlEvent,
 	type Details,
 	type SubagentExecutionResult,
@@ -54,7 +57,6 @@ import {
 	type ExecutionContextData,
 	type ExecutorDeps,
 	type SubagentParamsLike,
-	isRecord,
 } from "./subagent-params.ts";
 
 const ASYNC_CONTROL_REQUEST_FILE = "control-request.json";
@@ -213,8 +215,9 @@ export function resolveRememberedForegroundRun(requested: string | undefined, st
 }
 
 function foregroundResumeGuidance(run: ForegroundResumeRun): string {
-	if (run.children.length === 1) return `Revive: subagent({ action: "resume", id: "${run.runId}", message: "..." })`;
-	const childWithSession = run.children.find((child) => child.sessionFile);
+	const childWithSession = run.children.find((child) => child.sessionFile && child.status !== "detached");
+	if (!childWithSession && run.children.some((child) => child.status === "detached")) return `Completion unconfirmed. Check agent_runs({ action: "questions", id: "${run.runId}" }) before continuing.`;
+	if (run.children.length === 1 && childWithSession) return `Revive: subagent({ action: "resume", id: "${run.runId}", message: "..." })`;
 	if (!childWithSession) return "Revive: unavailable; no child session file was persisted.";
 	return `Revive child: subagent({ action: "resume", id: "${run.runId}", index: ${childWithSession.index}, message: "..." })`;
 }
@@ -224,48 +227,18 @@ function compactStatusText(value: string, maxLength = 240): string {
 	return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
 }
 
-function finalAssistantTextFromSession(sessionFile: string | undefined): string | undefined {
-	if (!sessionFile || path.extname(sessionFile) !== ".jsonl" || !fs.existsSync(sessionFile)) return undefined;
-	let finalText: string | undefined;
-	for (const line of fs.readFileSync(sessionFile, "utf-8").split(/\r?\n/)) {
-		if (!line.trim()) continue;
-		let event: unknown;
-		try {
-			event = JSON.parse(line);
-		} catch {
-			continue;
-		}
-		if (!isRecord(event) || event.type !== "message" || !isRecord(event.message) || event.message.role !== "assistant" || !Array.isArray(event.message.content)) continue;
-		const hasToolCall = event.message.content.some((part) => isRecord(part) && part.type === "toolCall");
-		const text = event.message.content
-			.map((part) => isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : "")
-			.filter(Boolean)
-			.join("\n")
-			.trim();
-		finalText = hasToolCall ? undefined : text || undefined;
-	}
-	return finalText;
+function foregroundResultChildren(run: ForegroundResumeRun) {
+	return run.children.map((child) => ({ child, finalOutput: child.summary }));
 }
 
-function refreshDetachedForegroundChildren(run: ForegroundResumeRun): Array<{ child: ForegroundResumeRun["children"][number]; finalOutput?: string }> {
-	return run.children.map((child) => {
-		const finalOutput = child.summary ?? (child.status === "detached" ? finalAssistantTextFromSession(child.sessionFile) : undefined);
-		if (finalOutput && child.status === "detached") {
-			child.status = "completed";
-			run.updatedAt = Date.now();
-		}
-		return { child, finalOutput };
-	});
-}
-
-function rememberedForegroundState(children: ReturnType<typeof refreshDetachedForegroundChildren>): "completed" | "paused" | "failed" | "unknown" {
+function rememberedForegroundState(children: ReturnType<typeof foregroundResultChildren>): "completed" | "paused" | "failed" | "unknown" {
 	if (children.some(({ child }) => child.status === "failed" || child.status === "timed-out")) return "failed";
 	if (children.some(({ child }) => child.status === "paused")) return "paused";
 	return children.some(({ child }) => child.status === "detached") ? "unknown" : "completed";
 }
 
 export function rememberedForegroundStatusResult(run: ForegroundResumeRun): SubagentExecutionResult {
-	const children = refreshDetachedForegroundChildren(run);
+	const children = foregroundResultChildren(run);
 	const state = rememberedForegroundState(children);
 	const resumable = children.find(({ child }) => child.sessionFile && child.status !== "detached")?.child;
 	const lines = [
@@ -293,7 +266,7 @@ function resolveForegroundResumeTarget(params: SubagentParamsLike, state: Subage
 	const requested = (params.id ?? params.runId)?.trim();
 	const run = resolveRememberedForegroundRun(requested, state);
 	if (!run) return undefined;
-	refreshDetachedForegroundChildren(run);
+	foregroundResultChildren(run);
 	if (run.children.length > 1 && params.index === undefined) throw new Error(`Foreground run '${run.runId}' has ${run.children.length} children. Provide index to choose one.`);
 	const index = params.index ?? 0;
 	if (!Number.isInteger(index)) throw new Error(`Foreground run '${run.runId}' index must be an integer.`);
@@ -725,7 +698,16 @@ export async function resumeAsyncRun(input: {
 	const parentSessionFile = input.ctx.sessionManager.getSessionFile() ?? null;
 	try {
 		const requestedId = input.params.id ?? input.params.runId;
+		const pendingQuestions = requestedId && !input.params.dir
+			? listSupervisorQuestions(input.ctx.sessionManager.getSessionId(), requestedId).filter((question) => question.state === "awaiting_input" || question.state === "answer_pending")
+			: [];
+		if (pendingQuestions.length) return continueQuestionSession(input, pendingQuestions);
 		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
+		if (resolved?.kind === "foreground") {
+			const result = await nudgeSubagentRun({ params: { ...input.params, message: followUp }, deps: input.deps });
+			if (input.params.acceptance !== undefined) result.content.push({ type: "text", text: LIVE_ACCEPTANCE_OVERRIDE_NOTICE });
+			return result;
+		}
 		if (resolved?.kind === "nested") {
 			if (resolved.match.run.state === "running" || resolved.match.run.state === "queued") {
 				return resumeLiveNestedRun({ target: resolved, message: followUp, acceptanceOverrideSupplied: input.params.acceptance !== undefined, events: input.deps.pi.events });
@@ -740,6 +722,15 @@ export async function resumeAsyncRun(input: {
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		const requestedId = input.params.id ?? input.params.runId;
+		if (requestedId && !input.params.dir && (isAsyncRunNotFound(error) || message.includes("is detached for intercom coordination"))) {
+			try {
+				const questions = listSupervisorQuestions(input.ctx.sessionManager.getSessionId(), requestedId);
+				if (questions.length) return continueQuestionSession(input, questions);
+			} catch (questionError) {
+				return { content: [{ type: "text", text: questionError instanceof Error ? questionError.message : String(questionError) }], isError: true, details: { mode: "management", results: [] } };
+			}
+		}
 		return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
 	}
 
@@ -767,12 +758,32 @@ export async function resumeAsyncRun(input: {
 	return reviveSavedSubagent(input, target);
 }
 
+function continueQuestionSession(input: Parameters<typeof reviveSavedSubagent>[0], questions: SupervisorQuestionView[]): SubagentExecutionResult {
+	if (input.params.index === undefined && new Set(questions.map((question) => question.index)).size > 1) throw new Error("Provide index to choose which child question to continue.");
+	const question = questions.findLast((entry) => input.params.index === undefined || entry.index === input.params.index);
+	if (!question) throw new Error("No saved question for that child index.");
+	if (questionProcessAlive(question)) throw new Error("The question's child is still alive. Answer the question or stop it before continuing.");
+	if (question.delivery?.kind === "revive") throw new Error(`Use continue with the answer's continuation run ${question.delivery.runId}.`);
+	const revival = question.revival;
+	const prior = revival ? resolveSubagentRunId(revival.runId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
+	const priorExists = prior?.kind === "async"
+		? prior.location.resultPath || (prior.location.asyncDir && fs.existsSync(path.join(prior.location.asyncDir, "status.json")))
+		: Boolean(prior);
+	if (revival && (questionProcessAlive(revival) || priorExists || fs.existsSync(getAsyncConfigPath(revival.runId)) || fs.existsSync(path.join(ASYNC_DIR, revival.runId, RUNNER_ERROR_LOG_FILE)))) {
+		throw new Error(`Continuation ${revival.runId} may already have launched. Inspect or continue that run; the original question was not restarted.`);
+	}
+	const message = [input.params.message ?? input.params.task, question.answer ? `Saved supervisor answer:\n${question.answer.message}\n\nOriginal question:\n${question.message}` : undefined].filter(Boolean).join("\n\n");
+	const result = reviveSavedSubagent({ ...input, params: { ...input.params, message } }, { ...question, source: "question" });
+	if (!result.isError && question.answer && !question.delivery) recordQuestionDelivery(question, { kind: "revive", runId: result.details.asyncId!, deliveredAt: Date.now() });
+	return result;
+}
+
 export function reviveSavedSubagent(input: {
 	params: SubagentParamsLike;
 	requestCwd: string;
 	ctx: ExtensionContext;
 	deps: ExecutorDeps;
-}, target: Pick<ResumeSourceTarget, "runId" | "agent" | "index" | "cwd" | "sessionFile" | "effectiveAcceptance"> & { source: string }, runId = randomUUID().slice(0, 8)): SubagentExecutionResult {
+}, target: Pick<ResumeSourceTarget, "runId" | "agent" | "index" | "cwd" | "sessionFile" | "effectiveAcceptance"> & SupervisorRunContract & { source: string }, runId: string = randomUUID()): SubagentExecutionResult {
 	const followUp = (input.params.message ?? input.params.task ?? "").trim();
 	const parentSessionFile = input.ctx.sessionManager.getSessionFile() ?? null;
 	if (!target.sessionFile || path.extname(target.sessionFile) !== ".jsonl" || !fs.existsSync(target.sessionFile)) {
@@ -804,7 +815,8 @@ export function reviveSavedSubagent(input: {
 		};
 	}
 
-	saveQuestionOwner(runId, input.deps.state.currentSessionId);
+	saveQuestionOwner(runId, input.ctx.sessionManager.getSessionId());
+	const contract = readQuestionContract(target.runId, target.index) ?? target;
 	const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const result = executeAsyncSingle(runId, {
 		agent: target.agent,
@@ -830,7 +842,10 @@ export function reviveSavedSubagent(input: {
 		controlIntercomTarget: intercomBridge.orchestratorTarget,
 		childIntercomTarget: (agent, index) => resolveSubagentIntercomTarget(runId, agent, index),
 		availableModels,
-		acceptance: input.params.acceptance ?? acceptanceInputFromResolved(target.effectiveAcceptance),
+		acceptance: input.params.acceptance ?? acceptanceInputFromResolved(contract.effectiveAcceptance),
+		output: input.params.output ?? contract.output,
+		outputMode: input.params.outputMode ?? contract.outputMode,
+		outputSchema: input.params.outputSchema ?? contract.outputSchema,
 		projectTrust: resolveConfiguredChildProjectTrustPolicy(input.deps.config.projectTrust),
 	});
 	if (result.isError) return result;

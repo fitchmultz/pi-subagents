@@ -668,7 +668,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       const poll = question ? setInterval(() => {
         try {
           const saved = readQuestionState(question);
-          if (saved.state === "cancelled") return rejectReplyWaiter(new Error("Cancelled"));
+          if (saved.state === "cancelled") {
+            getLiveContext()?.abort();
+            return rejectReplyWaiter(new Error("Cancelled"));
+          }
           if (saved.answer) replyWaiter?.resolve({ id: replyTo, replyTo, timestamp: saved.answer.answeredAt, content: { text: saved.answer.message } });
         } catch (error) {
           rejectReplyWaiter(toError(error));
@@ -1118,7 +1121,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (!isRecipientIdle(activeContext)) {
-        if (activeContext.hasUI && isBlockingSubagentSupervisorMessage(entry)) {
+        if (isBlockingSubagentSupervisorMessage(entry)) {
           await requestSubagentDetachForBlockingSupervisorMessage(entry);
           if (!getLiveContext(liveContext, messageGeneration)) {
             return;

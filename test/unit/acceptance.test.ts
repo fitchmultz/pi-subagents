@@ -96,7 +96,7 @@ describe("acceptance gates", () => {
 
 	it("formats child and finalization prompt sections without public levels", () => {
 		const resolved = resolveEffectiveAcceptance({
-			explicit: { criteria: ["Patch the bug"], evidence: ["diff-summary", "changed-files"], stopRules: ["Do not stop after analysis"] },
+			explicit: { criteria: [{ id: "scope", must: "Patch the bug", evidence: ["diff-summary", "changed-files"] }], stopRules: ["Do not stop after analysis"] },
 		});
 		const prompt = formatAcceptancePrompt(resolved);
 
@@ -139,6 +139,9 @@ describe("acceptance gates", () => {
 		assert.match(finalizationPrompt, /"diffSummary":/);
 		assert.match(finalizationPrompt, /Stop rules are hard constraints/);
 		assert.match(finalizationPrompt, /Previous finalization failure/);
+		assert.match(finalizationPrompt, /Report cumulative evidence for the whole delegated task/);
+		assert.match(finalizationPrompt, /scope: Patch the bug \(evidence: diff-summary, changed-files\)/);
+		assert.doesNotMatch(finalizationPrompt, /Required evidence: none/);
 		assert.match(finalizationPrompt, /exactly one fenced JSON block/);
 	});
 

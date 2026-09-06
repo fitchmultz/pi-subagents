@@ -8,7 +8,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import net from "node:net";
 import type { Readable } from "node:stream";
 import { ReplyTracker } from "../../src/pi-intercom/reply-tracker.ts";
-import { listSupervisorQuestions, readQuestionState, saveQuestionAnswer, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
+import { cancelSupervisorQuestion, listSupervisorQuestions, readQuestionState, saveQuestionAnswer, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
 import { resolveSessionProjectId } from "../../src/pi-intercom/session-targets.ts";
 import { ComposeOverlay } from "../../src/pi-intercom/ui/compose.ts";
 import type { Message, SessionInfo } from "../../src/pi-intercom/types.ts";
@@ -2837,13 +2837,13 @@ test("busy interactive sessions request subagent detach before idle-gating super
   }
 });
 
-test("steered supervisor decisions and interviews detach the foreground child before reaching the busy parent", { concurrency: false }, async () => {
+for (const hasUI of [true, false]) test(`steered supervisor decisions and interviews detach before reaching a busy ${hasUI ? "interactive" : "headless"} parent`, { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { planner, cleanup } = await setupClients();
   const detachRequests: string[] = [];
   const messagesSentBeforeDetach: number[] = [];
-  const harness = createExtensionHarness("interactive-supervisor-steer", {
-    hasUI: true,
+  const harness = createExtensionHarness("supervisor-steer", {
+    hasUI,
     isIdle: () => false,
   });
 
@@ -2858,7 +2858,7 @@ test("steered supervisor decisions and interviews detach the foreground child be
     });
     await harness.emitLifecycle("session_start");
 
-    const target = await waitForSessionByName(planner, "interactive-supervisor-steer");
+    const target = await waitForSessionByName(planner, "supervisor-steer");
     const requests = [
       {
         messageId: "supervisor-steered-decision",
@@ -3397,6 +3397,34 @@ test("child supervisor tool preserves delivery failure reasons", { concurrency: 
       assert.match((await askResult).content[0]?.text ?? "", /Cancelled/);
       assert.equal(readQuestionState(question).state, "cancelled");
       await harness.emitLifecycle("session_shutdown");
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("durable cancellation aborts the child agent, not only its question tool", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { orchestrator, cleanup } = await setupClients();
+  try {
+    await withChildOrchestratorEnv({ orchestratorTarget: "orchestrator", runId: "durable-stop", agent: "worker", index: "0" }, async () => {
+      const controller = new AbortController();
+      let aborted = false;
+      const harness = createExtensionHarness("durable-stop-child", { abort: () => { aborted = true; controller.abort(); } });
+      piIntercomExtension(harness.pi as never);
+      await harness.emitLifecycle("session_start");
+      const incoming = once(orchestrator, "message") as Promise<[SessionInfo, Message]>;
+      const waiting = harness.tools.find((tool) => tool.name === "contact_supervisor")!.execute("stop-question", { reason: "need_decision", message: "Continue?" }, controller.signal, undefined, harness.ctx);
+      const [, message] = await incoming;
+      const question = listSupervisorQuestions("supervisor-session-test", "durable-stop").find((item) => item.questionId === message.id)!;
+      cancelSupervisorQuestion(question);
+      try {
+        assert.match((await waiting).content[0]?.text ?? "", /Cancelled/);
+        assert.equal(aborted, true);
+        assert.equal(controller.signal.aborted, true);
+      } finally {
+        await harness.emitLifecycle("session_shutdown");
+      }
     });
   } finally {
     await cleanup();

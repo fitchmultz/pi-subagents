@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.35.0] - 2026-09-06
+
+### Added
+- Compact `delegate` and `agent_runs` tools for ordinary delegation, owned-run discovery, inspection, nudges, continuation, and stopping without loading the advanced workflow schema.
+- Durable supervisor questions and immutable answers, recoverable by the owning saved session after reload or child exit, with launch-time acceptance, output paths, and structured schemas preserved on revival.
+- Credential-free Linux validation on the supported Node floor and current Node, plus stronger real-Pi tool, settlement, and model-identity checks.
+
+### Fixed
+- Use one run identity across foreground, background, and clarify-to-background paths; retain completed owned work across cwd changes and keep late nudges from restarting it.
+- Share child-process lifecycle handling, wait for native Pi settlement, stop descendant processes on cancellation, and distinguish explicit supervisor-question detachment from interruption.
+- Keep the full foreground operation alive through supervisor questions during initial execution or finalization; release only the parent wait and retain real completion/control state.
+- Make the final substantive acceptance output authoritative across results, artifacts, usage, and chain handoffs; preserve unchanged report files and retain the initial answer for audit. Include criterion-local and cumulative whole-task evidence in finalization prompts.
+- Preserve acceptance through background clarification, pass native context-file suppression, inherit the parent model for fresh delegate runs, and align static/dynamic chain cwd and output behavior.
+- Capture binary worktree patches outside the source checkout, recognize `apply_edits` mutation evidence, and avoid treating shell descriptor redirection as a file path.
+- Keep deferred material updates until delivered or superseded, distinguish busy-peer refusal from successful delivery, and expose unconsumed intercom messages.
+
+### Changed
+- Completion mutation checks are explicitly opt-in with `completionGuard: true`; task prose no longer determines whether a valid answer must edit files.
+- Support macOS and Linux only; remove Windows-specific runtime branches and old package promotional branding while retaining required license notices.
+
 ## [0.34.18] - 2026-09-05
 
 ### Fixed

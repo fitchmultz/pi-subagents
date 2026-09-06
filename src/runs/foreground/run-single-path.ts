@@ -277,7 +277,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 		projectTrust: resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust),
 		projectTrusted: ctx.isProjectTrusted(),
 	});
-	if (foregroundControl?.currentIndex === 0) {
+	if (foregroundControl?.currentIndex === 0 && !r.detached) {
 		foregroundControl.interrupt = undefined;
 		foregroundControl.activeChildren?.delete(0);
 		foregroundControl.extendTimeout = undefined;

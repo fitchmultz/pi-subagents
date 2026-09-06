@@ -879,6 +879,7 @@ export interface RunSyncOptions {
 	registerTimeoutExtension?: (extend: TimeoutExtensionCallback) => void;
 	allowIntercomDetach?: boolean;
 	onDetachedComplete?: (result: SingleResult) => void | Promise<void>;
+	onRunSettled?: () => void;
 	intercomEvents?: IntercomEventBus;
 	onUpdate?: (r: SubagentExecutionResult) => void;
 	onControlEvent?: (event: ControlEvent) => void;

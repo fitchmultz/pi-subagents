@@ -2,11 +2,18 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
-import { ASYNC_DIR, TEMP_ROOT_DIR, type AsyncStatus, type ResolvedAcceptanceConfig } from "../../shared/types.ts";
+import { ASYNC_DIR, TEMP_ROOT_DIR, type AsyncStatus, type ResolvedAcceptanceConfig, type JsonSchemaObject, type OutputMode } from "../../shared/types.ts";
 
 export const QUESTIONS_DIR = path.join(TEMP_ROOT_DIR, "supervisor-questions");
 
-export interface SupervisorQuestion {
+export interface SupervisorRunContract {
+	effectiveAcceptance?: ResolvedAcceptanceConfig;
+	output?: string | false;
+	outputMode?: OutputMode;
+	outputSchema?: JsonSchemaObject;
+}
+
+export interface SupervisorQuestion extends SupervisorRunContract {
 	questionId: string;
 	runId: string;
 	ownerSessionId: string;
@@ -22,7 +29,6 @@ export interface SupervisorQuestion {
 	reason: "need_decision" | "interview_request";
 	message: string;
 	interview?: unknown;
-	effectiveAcceptance?: ResolvedAcceptanceConfig;
 }
 
 export interface QuestionAnswer {
@@ -80,6 +86,15 @@ export function saveQuestionOwner(runId: string, sessionId: string, root = QUEST
 	writeAtomicJson(path.join(root, safeId(runId), "question-owner.json"), { sessionId });
 }
 
+export function saveQuestionContract(runId: string, index: number, contract: SupervisorRunContract, root = QUESTIONS_DIR): void {
+	if (!Number.isSafeInteger(index) || index < 0) throw new Error("Child index must be a non-negative integer.");
+	writeAtomicJson(path.join(root, safeId(runId), "contracts", `${index}.json`), contract);
+}
+
+export function readQuestionContract(runId: string, index: number, root = QUESTIONS_DIR): SupervisorRunContract | undefined {
+	return readJson<SupervisorRunContract>(path.join(root, safeId(runId), "contracts", `${index}.json`));
+}
+
 export function createSupervisorQuestion(input: Omit<SupervisorQuestion, "questionId" | "createdAt" | "ownerSessionId">, root = QUESTIONS_DIR): SupervisorQuestion {
 	const runDir = path.join(root, safeId(input.runId));
 	const status = root === QUESTIONS_DIR ? readJson<AsyncStatus>(path.join(ASYNC_DIR, safeId(input.runId), "status.json")) : undefined;
@@ -88,8 +103,9 @@ export function createSupervisorQuestion(input: Omit<SupervisorQuestion, "questi
 	if (!input.sessionFile || path.extname(input.sessionFile) !== ".jsonl") throw new Error("Supervisor questions require a saved child session.");
 	if (!Number.isSafeInteger(input.index) || input.index < 0) throw new Error("Child index must be a non-negative integer.");
 	if (!input.message.trim()) throw new Error("Supervisor question must not be empty.");
-	const effectiveAcceptance = status?.steps?.[input.index]?.acceptance?.effectiveAcceptance;
-	const question = { ...input, ownerSessionId: owner.sessionId, questionId: randomUUID(), createdAt: Date.now(), ...(effectiveAcceptance ? { effectiveAcceptance } : {}) };
+	const contract = readQuestionContract(input.runId, input.index, root)
+		?? { effectiveAcceptance: status?.steps?.[input.index]?.acceptance?.effectiveAcceptance };
+	const question = { ...input, ...contract, ownerSessionId: owner.sessionId, questionId: randomUUID(), createdAt: Date.now() };
 	writeAtomicJson(path.join(questionDir(question, root), "question.json"), question);
 	return question;
 }
@@ -146,6 +162,7 @@ export function cancelSupervisorQuestion(question: SupervisorQuestion, root = QU
 }
 
 export function questionProcessAlive(question: Pick<SupervisorQuestion, "pid">): boolean {
+	if (!Number.isSafeInteger(question.pid) || question.pid <= 0) throw new Error("Invalid child process ID.");
 	try {
 		process.kill(question.pid, 0);
 		return true;
@@ -164,6 +181,10 @@ export function releaseQuestionRevival(question: SupervisorQuestion, root = QUES
 	fs.rmSync(path.join(questionDir(question, root), "revival.json"), { force: true });
 }
 
+export function questionRecoveryHint(question: SupervisorQuestion): string {
+	return `Recover an unlaunched continuation: agent_runs({ action: "continue", id: "${question.runId}", index: ${question.index}, message: "Continue with the saved supervisor answer." })`;
+}
+
 export function formatSupervisorQuestions(questions: SupervisorQuestionView[]): string {
 	if (!questions.length) return "No supervisor questions owned by this session.";
 	return questions.map((question) => [
@@ -172,7 +193,7 @@ export function formatSupervisorQuestions(questions: SupervisorQuestionView[]): 
 		`Session: ${question.sessionFile} | Child target: ${question.childTarget}`,
 		question.message,
 		...(question.answer ? [`Saved answer: ${question.answer.message}`] : []),
-		...(question.revival && !question.delivery ? [`Continuation requested: ${question.revival.runId}; delivery unconfirmed. Answer retained.`] : []),
+		...(question.revival && !question.delivery ? [`Continuation requested: ${question.revival.runId}; delivery unconfirmed. Answer retained.`, questionRecoveryHint(question)] : []),
 		question.delivery ? `Answer delivered via ${question.delivery.kind}; run: ${question.delivery.runId}`
 			: question.state === "cancelled" ? "Question cancelled; use continue for a new follow-up."
 			: `Answer: agent_runs({ action: "answer", id: "${question.runId}", questionId: "${question.questionId}", message: "..." })`,

@@ -65,6 +65,7 @@ import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelSt
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { formatModelAttemptNote, formatModelRecoveryAttemptNote, isRecoverableSameModelFailure, isRetryableModelFailure } from "../shared/model-fallback.ts";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
+import { saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
 import { hasCompletedMutationToolCall, resolveCompletionPolicy } from "../shared/completion-guard.ts";
 import {
@@ -699,6 +700,7 @@ async function runSingleStep(
 	ctx: SingleStepContext,
 ): Promise<RunSingleStepResult> {
 	if (ctx.signal?.aborted) return { agent: step.agent, output: "", exitCode: 1, error: "Subagent cancelled." };
+	saveQuestionContract(ctx.id, ctx.flatIndex, { effectiveAcceptance: step.effectiveAcceptance, output: step.outputPath ?? false, outputMode: step.outputMode, outputSchema: step.structuredOutputSchema ?? step.structuredOutput?.schema });
 	const interruptController = new AbortController();
 	ctx.registerInterrupt?.(() => interruptController.abort());
 	const verificationSignal = AbortSignal.any([ctx.signal, interruptController.signal].filter((signal) => signal !== undefined));
@@ -1000,7 +1002,6 @@ async function runSingleStep(
 					env = built.env;
 					tempDir = built.tempDir;
 				}
-				const outputSnapshot = captureSingleOutputSnapshot(step.outputPath);
 				ctx.onAttemptStart?.({ model: finalizationModel, thinking: resolveEffectiveThinking(finalizationModel, step.thinking) });
 				const finalizationRun = await runPiStreaming(
 					args,
@@ -1036,7 +1037,7 @@ async function runSingleStep(
 					acceptance = buildFinalizationProcessFailureLedger({ initialLedger: acceptance, turns, maxTurns, message });
 					break;
 				}
-				resolvedOutput = resolveSingleOutput(step.outputPath, resolveFinalizationOutput(finalizationOutput, output), outputSnapshot);
+				resolvedOutput = resolveSingleOutput(step.outputPath, resolveFinalizationOutput(finalizationOutput, output), undefined);
 				output = stripAcceptanceReport(resolvedOutput.fullOutput);
 				if (resolvedOutput.saveError) {
 					finalizationProcessError = `Failed to save output file '${step.outputPath}': ${resolvedOutput.saveError}`;

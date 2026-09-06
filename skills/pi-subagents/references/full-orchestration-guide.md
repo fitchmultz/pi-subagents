@@ -22,7 +22,16 @@ Use this skill when the parent orchestrator needs to launch a specialized subage
 
 ## Tool vs Slash Commands
 
-Agents can use the `subagent(...)` tool directly for execution, management, status, and control.
+Prefer the compact tools for ordinary delegation:
+
+```typescript
+agent_runs({ action: "profiles" })
+delegate({ agent: "worker", task: "Implement the approved fix", worktree: true })
+agent_runs({ action: "list" })
+agent_runs({ action: "inspect", id: "<run-id>" })
+```
+
+These share the full executor, including acceptance and isolated single-writer worktrees. Use `load_subagent` and `subagent(...)` for parallel groups, chains, detailed overrides, and profile administration.
 Humans often use the slash-command layer instead:
 
 - `/run` — launch a single agent
@@ -145,27 +154,7 @@ subagent({
 Builtin agents load at the lowest priority. Project agents override user agents,
 and user/project agents override builtins with the same name.
 
-| Agent | Purpose | Primary model | Typical output / role |
-|-------|---------|---------------|------------------------|
-| `scout` | Fast codebase recon | `cloudflare-ai-gateway/gpt-5.6-sol` | Writes `context.md` handoff material |
-| `context-builder` | Requirements/codebase handoff builder | `cloudflare-ai-gateway/claude-fable-5` | Writes structured context and meta-prompts |
-| `researcher` | Evidence-driven technical research | `cloudflare-ai-gateway/gpt-5.6-sol` | Writes `research.md` |
-| `watcher` | Read-only background monitoring | `cloudflare-ai-gateway/gpt-5.6-sol` | Queues the latest material transition; returns at the terminal condition |
-| `planner` | Creates implementation plans | `cloudflare-ai-gateway/claude-fable-5` | Writes `plan.md` |
-| `worker` | Bounded implementation | `cloudflare-ai-gateway/gpt-5.6-sol` | Single-writer implementation and validation |
-| `debugger` | Root-cause diagnosis | `cloudflare-ai-gateway/claude-fable-5` | Writes `diagnosis.md` |
-| `fixer` | Decided, bounded remediation | `cloudflare-ai-gateway/claude-fable-5` | Applies an explicit fix list |
-| `reviewer` | General implementation review | `cloudflare-ai-gateway/claude-fable-5` | Review-only by default |
-| `reviewer-gpt` | Strict completion gate | `cloudflare-ai-gateway/gpt-5.6-sol` | Maintainability/correctness review |
-| `reviewer-claude` | Cross-model product-risk review | `cloudflare-ai-gateway/claude-fable-5` | Independent review |
-| `reviewer-security` | Trust-boundary review | `fireworks/accounts/fireworks/routers/kimi-k3-fast` | Security/data-safety findings |
-| `reviewer-ponytail` | Over-engineering and slop review | `fireworks/accounts/fireworks/routers/kimi-k3-fast` | Deletion-focused findings; behavior-preserving only |
-| `ui-designer` | UI and accessibility review | `cloudflare-ai-gateway/claude-fable-5` | Rendered UX guidance |
-| `writer` | Human-facing writing | `cloudflare-ai-gateway/claude-fable-5` | Writes `draft.md` |
-| `oracle` | Decision-consistency advisory review | `cloudflare-ai-gateway/gpt-5.6-sol` | Forked advisory review |
-| `delegate` | Lightweight generic delegate | inherits default | No fixed output; generic delegated work |
-
-The Fitch role profiles pin primary and fallback routes; the six gateway Sol profiles put direct OpenAI first in their fallback lists. `delegate` inherits the current Pi model. Keep those configured defaults unless a run, user setting, or project setting has a concrete reason to override them.
+Use `agent_runs({ action: "profiles" })` for the effective roles, primary/fallback models, and context defaults. The [README](../../../README.md#builtin-agents-in-plain-english) describes the bundled roles. Do not infer installed model routes from an old workflow example. `delegate` inherits the current parent model, including fresh-context runs.
 
 For one run, use inline config:
 
@@ -369,7 +358,7 @@ subagent({ action: "resume", id: "nested-run-id", message: "Continue this nested
 ```
 
 Resume behavior:
-- If an async child is still running and reachable, `resume` sends the follow-up to that live child over intercom.
+- If a foreground or async child is still running and reachable, `resume` sends the follow-up to that live child over intercom.
 - If a live foreground or async child needs a prompt but not a blocking reply, `nudge` sends a steered intercom message through the same bridge.
 - If an async child has completed, `resume` revives it by starting a new async child from the persisted child session file.
 - Multi-child async runs require `index` unless only one running child is selectable.
@@ -499,7 +488,15 @@ Use blocking `contact_supervisor` only when an ephemeral child cannot safely con
 - `reason: "need_decision"` for one decision, approval, or product/API/scope clarification
 - `reason: "interview_request"` when multiple structured answers are all required before safe progress
 
-Both reasons steer the supervisor at its next tool boundary.
+Both reasons persist the question before steering the supervisor, and neither uses the ordinary intercom ask timeout. After supervisor reload, reconnect, or child exit, resume the same saved supervisor session and use:
+
+```typescript
+agent_runs({ action: "questions" })
+agent_runs({ action: "answer", id: "<run-id>", questionId: "<question-id>", message: "Use the stable API." })
+agent_runs({ action: "stop", id: "<run-id>" })
+```
+
+A live waiter reads the saved answer; an exited child is revived from its saved session with its original acceptance contract. Identical repeated answers do not duplicate work, and conflicting answers retain the original. A nudge is guidance, not an answer. `awaiting_input` and `answer_pending` are not execution completion. Stop cancels pending questions and aborts live waiters even after reload. Question recovery depends on keeping the user-scoped temporary runtime data. An interrupted pre-launch answer receipt gives an explicit `continue` recovery call; it never silently retries an uncertain launch.
 
 Do not use `contact_supervisor` just to resolve review-only/no-project-edit versus progress-writing or output-artifact instructions. The child must not modify project/source files, but returning findings through its normal response or configured output artifact is allowed unless the parent explicitly set `output: false`.
 
@@ -630,8 +627,7 @@ particular agent or with forked context.
   forked context; the other Fitch role profiles default to fresh context.
 - **Forked runs inherit parent history.** They are branched threads, not fresh
   filtered contexts. Use fresh context for adversarial reviewers unless the user explicitly asks for forked context.
-- **Default subagent nesting depth is 2.** Deeper recursive delegation is blocked
-  unless configured otherwise.
+- **Default subagent nesting depth is 1.** The parent can delegate; children cannot delegate again unless explicitly configured.
 - **Attention signals are not lifecycle state.** `needs_attention` means no activity has been observed past the configured threshold. `paused` means the child turn was intentionally interrupted or is awaiting direction; it is not the same as `failed`.
 - **Intercom asks are blocking.** A session can only maintain one pending outbound
   ask wait state at a time.
@@ -716,7 +712,7 @@ clarify → validation contract → planner → worker → fresh-context reviewe
 
 The validation contract defines acceptance before code is written: expected behavior, acceptance checks, commands or user flows to exercise, and evidence the worker should return. Keep it lightweight for small tasks, but make it explicit enough that reviewers and validators are checking the intended outcome rather than the worker’s own assumptions.
 
-Use the structured `acceptance` field when the run should carry an explicit acceptance contract. If omitted, the run stays lightweight. For review-only tasks, omit it unless the user explicitly requests a same-session acceptance contract; the extra finalization turn is not independent review. When present, acceptance is object-only: define concrete `criteria`, required `evidence`, optional runtime `verify` commands, and optionally `maxFinalizationTurns`. The runtime continues the same child session for a bounded self-review/repair loop before evaluating the final report, so set `acceptance` on single runs, sequential chain steps, parallel task items, and dynamic fanout child templates, not on static parallel or dynamic fanout groups. Independent review stays parent-controlled: `acceptance.review` is unsupported and fails preflight, so launch reviewer subagents separately after the worker completes. Child-reported command success is evidence, not runtime verification.
+Use the structured `acceptance` field when the run should carry an explicit acceptance contract. If omitted, the run stays lightweight. For review-only tasks, omit it unless the user explicitly requests a same-session acceptance contract; the extra finalization turn is not independent review. When present, acceptance is object-only: define concrete `criteria`, required `evidence`, optional runtime `verify` commands, and optionally `maxFinalizationTurns`. The runtime continues the same child session for a bounded self-review/repair loop before evaluating the final report, so set `acceptance` on single runs, sequential chain steps, parallel task items, and dynamic fanout child templates, not on static parallel or dynamic fanout groups. Independent review stays parent-controlled: `acceptance.review` is unsupported and fails preflight, so launch reviewer subagents separately after the worker completes. The latest substantive finalization answer becomes the result and downstream handoff; report-only finalization preserves the previous substantive answer. Initial output remains audit evidence, not a stale replacement for the corrected result. Child-reported command success is evidence, not runtime verification.
 
 Goal-style requests map to `acceptance`. If the user says `/goal`, “goal”, “active goal”, “continue until evidence says done”, or “verify against a goal” for a subagent run, create an explicit run-scoped acceptance contract: `criteria` for the target, `evidence` and `verify` for proof, `stopRules` for constraints, and `maxFinalizationTurns` for the bounded loop budget.
 

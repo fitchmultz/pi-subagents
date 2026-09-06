@@ -202,6 +202,17 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 		const timeoutAt = input.foregroundControl?.timeoutAt ?? input.timeoutAt;
 		const runIntercomTarget = input.childIntercomTarget?.(task.agent, index);
 		let unregisterTimeoutExtension: (() => void) | undefined;
+		const cleanupChild = () => {
+			unregisterTimeoutExtension?.();
+			activeChildren.delete(index);
+			if (input.foregroundControl?.currentIndex === index) {
+				const next = activeChildren.entries().next().value as [number, { agent: string }] | undefined;
+				input.foregroundControl.currentIndex = next?.[0];
+				input.foregroundControl.currentAgent = next?.[1].agent;
+				input.foregroundControl.updatedAt = Date.now();
+			}
+			if (input.foregroundControl && activeChildren.size === 0) input.foregroundControl.interrupt = undefined;
+		};
 		return runSync(input.ctx.cwd, input.agents, task.agent, taskText, {
 			cwd: taskCwd,
 			signal: input.signal,
@@ -210,6 +221,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			...(input.timeoutMs !== undefined && timeoutAt !== undefined && input.timeoutExtensionRegistry ? { registerTimeoutExtension: (extend: TimeoutExtensionCallback) => { unregisterTimeoutExtension = input.timeoutExtensionRegistry?.register(String(index), extend); } } : {}),
 			allowIntercomDetach: agentConfig?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 			onDetachedComplete: (result) => input.onDetachedComplete?.(result, index),
+			onRunSettled: cleanupChild,
 			intercomEvents: input.intercomEvents,
 			runId: input.runId,
 			index,
@@ -271,16 +283,6 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 						});
 					}
 				: undefined,
-		}).finally(() => {
-			unregisterTimeoutExtension?.();
-			activeChildren.delete(index);
-			if (input.foregroundControl?.currentIndex === index) {
-				const next = activeChildren.entries().next().value as [number, { agent: string }] | undefined;
-				input.foregroundControl.currentIndex = next?.[0];
-				input.foregroundControl.currentAgent = next?.[1].agent;
-				input.foregroundControl.updatedAt = Date.now();
-			}
-			if (input.foregroundControl && activeChildren.size === 0) input.foregroundControl.interrupt = undefined;
 		});
 	});
 }

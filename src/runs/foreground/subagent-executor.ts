@@ -431,7 +431,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			? (r: SubagentExecutionResult) => onUpdate(withForkContext(r, invocationContext))
 			: undefined;
 
-		saveQuestionOwner(runId, deps.state.currentSessionId);
+		saveQuestionOwner(runId, ctx.sessionManager.getSessionId());
 		const execData: ExecutionContextData = {
 			params: effectiveParams,
 			effectiveCwd,
@@ -477,7 +477,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			deps.state.lastForegroundControlId = runId;
 		}
 		let deferForegroundCleanup = false;
-		let detachedNestedSettled = false;
+		let detachedSettled = false;
 		const cleanupForegroundControl = () => {
 			if (!foregroundControl) return;
 			clearPendingForegroundControlNotices(deps.state, runId);
@@ -544,27 +544,21 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 		};
 
-		if (inheritedNestedRoute && nestedParentAddress) {
-			execData.onDetachedResultsSettled = (mode, results, totalSteps) => {
-				detachedNestedSettled = true;
-				deferForegroundCleanup = false;
-				const failure = results.find((result) => result.exitCode !== 0);
-				writeNestedForegroundEvent("subagent.nested.completed", {
-					content: [{ type: "text", text: failure?.error ?? "Detached nested run completed." }],
-					isError: Boolean(failure),
-					details: {
-						mode,
-						results,
-						...(totalSteps !== undefined ? { totalSteps } : {}),
-					},
-				});
-				cleanupForegroundControl();
-			};
-		}
+		execData.onDetachedResultsSettled = (mode, results, totalSteps) => {
+			detachedSettled = true;
+			deferForegroundCleanup = false;
+			const failure = results.find((result) => result.exitCode !== 0);
+			writeNestedForegroundEvent("subagent.nested.completed", {
+				content: [{ type: "text", text: failure?.error ?? "Detached run completed." }],
+				isError: Boolean(failure),
+				details: { mode, results, ...(totalSteps !== undefined ? { totalSteps } : {}) },
+			});
+			cleanupForegroundControl();
+		};
 
 		const completeNestedForeground = (result: SubagentExecutionResult): void => {
-			if (inheritedNestedRoute && nestedParentAddress && result.details?.results.some((child) => child.detached)) {
-				deferForegroundCleanup = !detachedNestedSettled;
+			if (result.details?.results.some((child) => child.detached)) {
+				deferForegroundCleanup = !detachedSettled;
 				return;
 			}
 			writeNestedForegroundEvent("subagent.nested.completed", result);

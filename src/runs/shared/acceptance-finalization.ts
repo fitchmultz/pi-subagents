@@ -35,6 +35,7 @@ export function formatAcceptanceFinalizationPrompt(input: {
 	maxTurns: number;
 	previousFailure?: string;
 }): string {
+	const evidence = [...new Set([...input.acceptance.evidence, ...input.acceptance.criteria.flatMap((criterion) => criterion.evidence)])];
 	const lines = [
 		"## Acceptance Finalization",
 		"You are continuing the same subagent session. Before this run can be accepted, compare the current work to the acceptance contract and the evidence below.",
@@ -43,19 +44,20 @@ export function formatAcceptanceFinalizationPrompt(input: {
 		"If a criterion is incomplete and fixable in this session, keep working now before returning the final report.",
 		"If a criterion cannot be satisfied in this session, report it as not-satisfied, explain the blocker in residualRisks, and say what input would unblock progress.",
 		"Do not claim a criterion is satisfied unless the current work has concrete evidence from files, commands, validation output, or other inspectable artifacts.",
+		"Report cumulative evidence for the whole delegated task, not just this finalization turn. Retain still-valid changed files, tests, commands, and other evidence from the initial report; correct or remove evidence only when the final state invalidates it. No new edits during review does not mean changedFiles is empty.",
 		"",
 		"## Acceptance Contract",
 		"Criteria:",
-		...(input.acceptance.criteria.length ? input.acceptance.criteria.map((criterion) => `- ${criterion.id}: ${criterion.must}`) : ["- No explicit criteria were configured; satisfy the requested task and required evidence/checks."]),
+		...(input.acceptance.criteria.length ? input.acceptance.criteria.map((criterion) => `- ${criterion.id}: ${criterion.must}${criterion.evidence.length ? ` (evidence: ${criterion.evidence.join(", ")})` : ""}`) : ["- No explicit criteria were configured; satisfy the requested task and required evidence/checks."]),
 		"",
-		`Required evidence: ${input.acceptance.evidence.join(", ") || "none explicitly requested"}`,
+		`Required evidence: ${evidence.join(", ") || "none explicitly requested"}`,
 	];
-	if (input.acceptance.evidence.length > 0) {
+	if (evidence.length > 0) {
 		lines.push(
 			"",
 			"Structured evidence must be present in the final `acceptance-report` JSON fields. Markdown sections in the visible answer do not satisfy required evidence by themselves. If the previous visible output already included the evidence, copy or summarize it into the matching JSON field.",
 			"Evidence field mapping:",
-			...formatEvidenceReportFieldMapping(input.acceptance.evidence),
+			...formatEvidenceReportFieldMapping(evidence),
 		);
 	}
 	if (input.acceptance.verify.length > 0) {

@@ -52,13 +52,12 @@ describe("result contracts", () => {
 				mock.onCall({ output: `Initial incomplete answer\n${report(false)}` });
 				mock.onCall({ output: `Final ${satisfied ? "repaired" : "blocked"} answer\n${report(satisfied)}` });
 				const expectedOutput = `Final ${satisfied ? "repaired" : "blocked"} answer`;
-				const outputPath = path.join(cwd, "answer.md");
 				let result;
 				if (background) {
 					const started = executeAsyncSingle(id, {
 						agent: "worker", task: "Deliver the result", agentConfig: makeAgent("worker"),
 						ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id },
-						acceptance, output: outputPath, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), shareEnabled: false, maxSubagentDepth: 2,
+						acceptance, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), shareEnabled: false, maxSubagentDepth: 2,
 					});
 					assert.ok(!started.isError, started.content[0]?.text);
 					const payload = await waitForResult(id);
@@ -68,7 +67,7 @@ describe("result contracts", () => {
 					assert.equal(payload.exitCode, satisfied ? 0 : 1);
 				} else {
 					result = await runSync(cwd, [makeAgent("worker")], "worker", "Deliver the result", {
-						runId: id, acceptance, outputPath, persistOutputFile: true, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"),
+						runId: id, acceptance, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"),
 					});
 				}
 				const metadata = JSON.parse(fs.readFileSync(result.artifactPaths.metadataPath, "utf8"));
@@ -83,7 +82,6 @@ describe("result contracts", () => {
 				}
 				assert.match(result.finalOutput ?? result.output, new RegExp(expectedOutput));
 				assert.equal(fs.readFileSync(result.artifactPaths.outputPath, "utf8"), expectedOutput);
-				assert.equal(fs.readFileSync(outputPath, "utf8"), expectedOutput);
 				assert.equal(metadata.initialOutput, "Initial incomplete answer");
 			});
 		}
@@ -122,6 +120,34 @@ describe("result contracts", () => {
 			const metadata = JSON.parse(fs.readFileSync(result.artifactPaths.metadataPath, "utf8"));
 			assert.equal(metadata.initialOutput, "Still incomplete");
 			assert.equal(metadata.acceptance.finalization.turns[0].report.diffSummary, "Repaired the missing work and verified the final result.");
+		});
+
+		it(`${background ? "background" : "foreground"} finalization preserves an unchanged detailed handoff instead of overwriting it with review prose`, async () => {
+			mock.onCall({ output: `Wrote the report\n${report()}`, delay: 300 });
+			mock.onCall({ output: `Report is complete; no changes needed.\n${report()}` });
+			const outputPath = path.join(cwd, "report.md");
+			const contract = { ...acceptance, verify: [{ id: "contents", command: `grep -q 'CRITICAL DETAIL' '${outputPath}'` }] };
+			let completion;
+			if (background) {
+				executeAsyncSingle(id, { agent: "worker", task: "Write the report", agentConfig: makeAgent("worker"),
+					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, acceptance: contract, output: outputPath, outputMode: "file-only",
+					artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), shareEnabled: false, maxSubagentDepth: 2 });
+				completion = waitForResult(id).then((payload) => payload.results[0]);
+			} else {
+				completion = runSync(cwd, [makeAgent("worker")], "worker", "Write the report", { runId: id, acceptance: contract,
+					outputPath, outputMode: "file-only", artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl") });
+			}
+			const deadline = Date.now() + 10_000;
+			while (!mock.callCount()) {
+				assert.ok(Date.now() < deadline, "initial child must start");
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			fs.writeFileSync(outputPath, "Detailed report\nCRITICAL DETAIL: preserve this artifact.\n");
+			const result = await completion;
+			assert.equal(result.exitCode, 0, result.error);
+			assert.equal(result.acceptance.status, "verified");
+			assert.equal(fs.readFileSync(result.artifactPaths.outputPath, "utf8"), "Detailed report\nCRITICAL DETAIL: preserve this artifact.");
+			assert.equal(fs.readFileSync(outputPath, "utf8"), "Detailed report\nCRITICAL DETAIL: preserve this artifact.\n");
 		});
 
 		it(`${background ? "background" : "foreground"} finalization recaptures repaired output files before verification and file-only publication`, async () => {
@@ -218,18 +244,21 @@ describe("result contracts", () => {
 		});
 	}
 
-	it("detached finalization publishes the final answer and accounts for both turns", { timeout: 10_000 }, async () => {
-		mock.onCall({ steps: [
-			{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
-			{ delay: 300, jsonl: [events.assistantMessage(`Initial answer\n${report()}`)] },
-		] });
-		mock.onCall({ output: `Final detached answer\n${report()}` });
+	for (const questionPhase of ["initial", "finalization"]) it(`a question during ${questionPhase} releases the parent while the complete acceptance operation keeps running`, { timeout: 10_000 }, async () => {
+		for (const [phase, output] of [["initial", "Initial answer"], ["finalization", "Final detached answer"]]) {
+			mock.onCall(phase === questionPhase ? { steps: [
+				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
+				{ delay: 300, jsonl: [events.assistantMessage(`${output}\n${report()}`)] },
+			] } : { output: `${output}\n${report()}` });
+		}
 		const bus = createEventBus();
 		const completion = Promise.withResolvers<Awaited<ReturnType<typeof runSync>>>();
 		let detached = false;
+		let settled = 0;
 		const immediate = await runSync(cwd, [makeAgent("worker")], "worker", "Deliver the result", {
 			runId: id, acceptance, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), allowIntercomDetach: true, intercomEvents: bus,
 			onDetachedComplete: completion.resolve,
+			onRunSettled: () => settled++,
 			onUpdate: (update) => {
 				if (!detached && update.details?.progress?.some((progress) => progress.currentTool === "contact_supervisor")) {
 					detached = true;
@@ -238,7 +267,9 @@ describe("result contracts", () => {
 			},
 		});
 		assert.equal(immediate.detached, true);
+		assert.equal(settled, 0);
 		const result = await completion.promise;
+		assert.equal(settled, 1);
 		assert.equal(result.finalOutput, "Final detached answer");
 		assert.equal(result.usage.turns, 2);
 		assert.equal(result.modelAttempts.reduce((turns, attempt) => turns + attempt.usage.turns, 0), 2);

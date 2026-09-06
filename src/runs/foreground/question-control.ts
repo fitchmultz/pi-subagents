@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import type { SubagentExecutionResult } from "../../shared/types.ts";
-import { cancelSupervisorQuestion, claimQuestionRevival, formatSupervisorQuestions, listSupervisorQuestions, questionProcessAlive, readQuestionState, recordQuestionDelivery, releaseQuestionRevival, saveQuestionAnswer, type SupervisorQuestionView } from "../shared/supervisor-questions.ts";
+import { cancelSupervisorQuestion, claimQuestionRevival, formatSupervisorQuestions, listSupervisorQuestions, questionProcessAlive, questionRecoveryHint, readQuestionState, recordQuestionDelivery, releaseQuestionRevival, saveQuestionAnswer, type SupervisorQuestionView } from "../shared/supervisor-questions.ts";
 import { reviveSavedSubagent } from "./foreground-control.ts";
 import type { ExecutorDeps, SubagentParamsLike } from "./subagent-params.ts";
 
@@ -28,10 +28,10 @@ export function cancelSupervisorInput(result: SubagentExecutionResult, params: S
 	const id = result.details.managementControl?.runId ?? params.id ?? params.runId;
 	if (!id) return result;
 	const questions = listSupervisorQuestions(ownerSessionId, id).filter((question) => question.state === "awaiting_input" || question.state === "answer_pending");
-	if (!questions.length || (result.isError && questions.some(questionProcessAlive))) return result;
+	if (!questions.length) return result;
 	for (const question of questions) cancelSupervisorQuestion(question);
 	const cancelled = questions.map((question) => readQuestionState(question));
-	return result.isError ? questionResult(cancelled, `Cancelled ${questions.length} pending supervisor question(s). The child process has already exited.`)
+	return result.isError ? questionResult(cancelled, `Cancelled ${questions.length} pending supervisor question(s). Any live waiter will abort its agent; cancellation is requested, not proof of process exit.`)
 		: { ...result, details: { ...result.details, questions: cancelled } };
 }
 
@@ -52,7 +52,7 @@ export function controlSupervisorQuestion(input: { params: SubagentParamsLike; r
 		const delivery = readQuestionState(question).delivery;
 		if (delivery) return questionResult([readQuestionState(question)], `Question ${question.questionId} was already answered; no new work started. Delivery: ${delivery.kind}, run: ${delivery.runId}.`);
 		const claim = claimQuestionRevival(question);
-		if (!claim.claimed) return questionResult([readQuestionState(question)], `Answer retained for question ${question.questionId}; continuation ${claim.runId} was already requested. No duplicate process started. Inspect that run before retrying; an interrupted launch may need recovery.`);
+		if (!claim.claimed) return questionResult([readQuestionState(question)], `Answer retained for question ${question.questionId}; continuation ${claim.runId} was already requested. No duplicate process started. Inspect that run first. ${questionRecoveryHint(question)}`);
 		const result = reviveSavedSubagent({ ...input, params: { ...params, message: `Supervisor answer to question ${question.questionId}:\n\n${answer.message}\n\nOriginal question:\n${question.message}` } }, { ...question, source: "question" }, claim.runId);
 		if (result.isError) {
 			releaseQuestionRevival(question);

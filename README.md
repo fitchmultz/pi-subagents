@@ -55,7 +55,7 @@ It installs this checkout into an isolated temporary Pi home, runs `pi list`, an
 Live model-backed subagent paths are intentionally opt-in because they can use provider credentials and tokens:
 
 ```bash
-PI_REAL_SMOKE_MODEL=openai-codex/gpt-5.6-sol npm run smoke:real-pi -- --llm
+PI_REAL_SMOKE_MODEL=openai/gpt-6-astra node scripts/real-pi-smoke.mjs --llm
 ```
 
 That mode copies local `auth.json` and `models.json` into the isolated Pi agent dir, then asks a real Pi session to exercise intercom status plus subagent list, foreground, async launch, and async completion. Set `PI_REAL_SMOKE_AUTH_AGENT_DIR` if your auth files are not in `~/.pi/agent`.
@@ -63,10 +63,10 @@ That mode copies local `auth.json` and `models.json` into the isolated Pi agent 
 For a broader live gate, add `--llm-full`:
 
 ```bash
-PI_REAL_SMOKE_MODEL=openai-codex/gpt-5.6-sol npm run smoke:real-pi -- --llm-full
+PI_REAL_SMOKE_MODEL=openai/gpt-6-astra node scripts/real-pi-smoke.mjs --llm-full
 ```
 
-That also verifies real parallel, chain, file output, and acceptance flows. Use `--keep-temp` to preserve the isolated Pi home for debugging.
+That also verifies real parallel, chain, file output, and acceptance flows. It checks actual tool calls and native settlement, and audits saved parent/child model identities. Use `--keep-temp` to preserve evidence; copied credentials are still removed. Direct `node` invocation uses the active `pi` on your PATH; npm scripts may select the pinned development CLI instead.
 
 ## Local test watchdog
 
@@ -117,7 +117,7 @@ That is enough to start.
 
 Pi is the parent session. A subagent is a focused child Pi session with its own job.
 
-When you ask for a subagent, Pi calls `load_subagent` to load the full orchestration schema on demand, then starts the child and gives it the task. Runs launch in the background by default, then notify the originating session on completion. Set `async: false` or use `--fg` when you explicitly need foreground streaming.
+For ordinary delegation, Pi uses `delegate` and `agent_runs`. Parallel workflows and advanced controls use `load_subagent` to load the full orchestration schema on demand. Runs launch in the background by default, then notify the originating session on completion. Set `async: false` or use `--fg` when you explicitly need foreground streaming.
 
 Installing the extension does not start an automatic reviewer in the background. It gives Pi a delegation tool. `acceptance.review` is not a supported shortcut: review remains parent-controlled so a worker cannot spend a full run and then fail for a reviewer result the runtime never produced. If you want every implementation reviewed, say that in your prompt or put it in your project instructions:
 
@@ -325,7 +325,21 @@ The child can use one dedicated coordination tool:
 
 Child-side routine completion handoffs are still not expected. Parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested child summaries under the parent child that launched them.
 
-When a foreground child raises a blocking supervisor question, `pi-subagents` detaches that foreground run so the parent can answer immediately. The tool result includes the exact `intercom({ action: "pending" })` and `intercom({ action: "reply", to: "..." })` calls to use. After replying, inspect `subagent({ action: "status", id: "..." })` or wait for the normal result delivery.
+### Questions that survive a reload
+
+Blocking supervisor questions are saved before notification, with their owner session, child session, and launch-time acceptance/output requirements. They do not expire at the ordinary intercom ask timeout. A foreground child detaches so the supervisor can answer; that is waiting for input, not successful completion.
+
+```typescript
+agent_runs({ action: "questions" })
+agent_runs({ action: "answer", id: "<run-id>", questionId: "<question-id>", message: "Use the stable API." })
+agent_runs({ action: "stop", id: "<run-id>" })
+```
+
+Resume the **same saved supervisor session**, even from another cwd, to recover its questions. A different session does not silently adopt them. Ordinary `intercom` replies also save the answer while the live waiter is connected. After supervisor/broker restart, prefer `agent_runs` questions/answer; a nudge is guidance, not an answer to a blocking question.
+
+Answers are saved once. Repeating the same answer does not start duplicate work; conflicting answers are rejected without replacing the original. A live child reads the saved answer; an exited child resumes from its saved session in a new run, retaining the original acceptance contract. An answer receipt is not execution completion. `stop` cancels outstanding questions and aborts a live waiter even after the foreground registry was lost.
+
+If an answer launch was interrupted before a continuation existed, the reply gives an explicit `continue` recovery call. It refuses to restart when launch evidence is uncertain; inspect the advertised continuation first. Questions and answers live in the user-scoped temporary runtime directory and survive process/broker restarts, not deletion of that directory. Pending questions are excluded from normal age-based cleanup.
 
 After 10 minutes of no observed child activity by default, needs-attention notices can show up in the parent session with useful next actions, such as checking status, interrupting the run, or nudging the child. When the child is registered, prefer `subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })` for live guidance, answers, corrections, or blockers. It sends a non-blocking steer that supplements the child's active task unless the message explicitly replaces it. Use the status-shown blocking intercom ask only when the parent must remain alive waiting for a reply.
 
@@ -556,7 +570,7 @@ Important fields:
 | `fallbackModels` | Ordered backup models for provider/model failures such as quota, usage limit, auth, timeout, or unavailable model. Foreground and async subagents first retry the same model once for recoverable transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, then fall back when appropriate. Ordinary task failures do not trigger retry or fallback. |
 | `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present. |
 | `systemPromptMode` | `replace` by default; `append` keeps Pi’s base prompt. |
-| `inheritProjectContext` | Keeps or strips inherited project instruction blocks. |
+| `inheritProjectContext` | Uses Pi's native context-file loading policy; `false` passes `--no-context-files`. |
 | `inheritSkills` | Keeps or strips Pi’s discovered skills catalog. |
 | `defaultContext` | Optional `fresh` or `fork` launch context default for this agent. |
 | `skills` | Injects specific skills directly, regardless of `inheritSkills`. |
@@ -890,7 +904,8 @@ Agent definitions are not loaded into context by default. Management actions let
 |-------|------|---------|-------------|
 | `agent` | string | - | Agent name for single mode, or target for management actions. |
 | `task` | string | - | Task string for single mode. |
-| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `extend`, `resume`, `nudge`, or `doctor`. |
+| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `extend`, `resume`, `nudge`, `questions`, `answer`, or `doctor`. |
+| `questionId` | string | - | Required with `id` and `message` for `action: "answer"`. |
 | `chainName` | string | - | Chain name for management actions. |
 | `config` | object/string | - | Agent or chain config for create/update. |
 | `output` | `string \| false` | agent default | Override single-agent output handoff file. Explicit caller paths persist at their resolved cwd/workspace path; agent-default relative paths are materialized under run artifacts. |
@@ -946,7 +961,7 @@ subagent({ action: "doctor" })
 
 `extend` targets an active foreground run with an existing timeout and adds more milliseconds to the current child deadline. It is useful when progress or a needs-attention notice shows useful work still happening and throwing away the child session would waste context. It cannot revive an already-timed-out run; use `resume` after timeout.
 
-`resume` sends the follow-up directly when an async child is still reachable over intercom. After completion, it revives the child by starting a new async child from the stored child session file. Multi-child async runs and remembered foreground single, parallel, or chain runs can be revived by passing `index` to choose the child. Nested runs can be resumed by nested id when their live route or persisted nested session metadata is available. Timed-out or transient-error foreground children also use this revive path when their `.jsonl` session file was persisted. Revived children inherit the original explicit acceptance contract; an `acceptance` object supplied on the resume call overrides it. Revive starts a new child process from the old session context; it does not restart the same OS process, and it requires the chosen child to have a persisted `.jsonl` session file.
+`resume` sends the follow-up directly when a foreground or async child is still reachable over intercom. After completion, it revives the child by starting a new async child from the stored child session file. Multi-child async runs and remembered foreground single, parallel, or chain runs can be revived by passing `index` to choose the child. Nested runs can be resumed by nested id when their live route or persisted nested session metadata is available. Timed-out or transient-error foreground children also use this revive path when their `.jsonl` session file was persisted. Revived children inherit the original explicit acceptance contract; an `acceptance` object supplied on the resume call overrides it. Revive starts a new child process from the old session context; it does not restart the same OS process, and it requires the chosen child to have a persisted `.jsonl` session file.
 
 `nudge` sends a short non-blocking steered intercom message to a live foreground or async child. Use it for guidance, answers, corrections, or blockers that may affect active work. The child treats it as supplemental coordination and continues its current task unless the message explicitly replaces it. It requires the bundled intercom extension and a registered child target. Use the `Ask:` command shown by `status` only when the parent must remain alive waiting for a reply.
 
@@ -1029,7 +1044,7 @@ Session directory precedence is: `params.sessionDir`, then `config.defaultSessio
 { "projectTrust": { "childRuns": "approve" } }
 ```
 
-Controls project-trust flags for non-interactive child `pi` processes. This fork defaults child runs to `approve` so subagents see the same project-local instructions, settings, skills, and extensions the parent trusted. If the parent Pi process was explicitly started with `--no-approve`, child runs keep `--no-approve`. Set `"childRuns": "inherit"` to only forward the parent CLI trust flag, or `"childRuns": "no-approve"` to force children to ignore project-local inputs.
+Controls project-trust flags for non-interactive child `pi` processes. Child runs default to `approve` so subagents see the same project-local instructions, settings, skills, and extensions the parent trusted. If the parent Pi process was explicitly started with `--no-approve`, child runs keep `--no-approve`. Set `"childRuns": "inherit"` to only forward the parent CLI trust flag, or `"childRuns": "no-approve"` to force children to ignore project-local inputs.
 
 ### `maxSubagentDepth`
 
@@ -1139,7 +1154,7 @@ Public acceptance config is evidence-driven. There is no public `level` field an
 - `verified`: configured runtime verification commands passed. Child-reported command success does not count.
 - `rejected`: attestation, structural checks, verification, or finalization failed.
 
-Independent review is not part of `acceptance`; the parent launches reviewer runs after the worker completes. Unsupported `acceptance.review` input fails during preflight before any child starts. Self-review finalization never counts as independent review, and it never counts as `verified` unless configured runtime verification commands actually pass. The visible child output remains the initial answer; finalization reports and residual risks are stored in the acceptance ledger and async/status details.
+Independent review is not part of `acceptance`; the parent launches reviewer runs after the worker completes. Unsupported `acceptance.review` input fails during preflight before any child starts. Self-review finalization never counts as independent review, and it never counts as `verified` unless configured runtime verification commands actually pass. Existing handoff files remain authoritative during finalization; review prose never overwrites an unchanged report. Without a handoff file, the latest substantive finalization answer becomes the parent result, chain input, and artifact output. A report-only finalization keeps the last substantive answer. The initial output remains available as acceptance audit evidence; finalization usage and residual risks are included in the result. Final reports describe cumulative whole-task evidence, including criterion-local evidence requirements, not only edits made during the finalization turn.
 
 When delegating implementation from a plan or spec, keep the task focused on what to implement and put the definition of done in `acceptance` so the runtime can finalize and evaluate it:
 

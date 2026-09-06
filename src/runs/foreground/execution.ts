@@ -50,6 +50,7 @@ import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/ski
 import { hasCompletedMutationToolCall, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
+import { saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
@@ -247,12 +248,14 @@ function snapshotResult(result: SingleResult, progress: AgentProgress): SingleRe
 	};
 }
 
+type AttemptOptions = RunSyncOptions & { onIntercomDetach?: (result: SingleResult) => void };
+
 async function runSingleAttempt(
 	runtimeCwd: string,
 	agent: AgentConfig,
 	task: string,
 	model: string | undefined,
-	options: RunSyncOptions,
+	options: AttemptOptions,
 	shared: {
 		sessionEnabled: boolean;
 		systemPrompt: string;
@@ -260,7 +263,6 @@ async function runSingleAttempt(
 		skillsWarning?: string;
 		artifactPaths?: ArtifactPaths;
 		attemptNotes: string[];
-		previousAttempts?: ModelAttempt[];
 		outputSnapshot?: SingleOutputSnapshot;
 		previousOutput?: string;
 		originalTask?: string;
@@ -416,27 +418,18 @@ async function runSingleAttempt(
 		let removeInterruptListener: (() => void) | undefined;
 		let activityTimer: NodeJS.Timeout | undefined;
 		let unsubscribeIntercomDetach: (() => void) | undefined;
-		let promiseResolved = false;
-		const resolveOuter = (code: number) => {
-			if (promiseResolved) return;
-			promiseResolved = true;
-			resolve(code);
-		};
 
 		const detachForIntercom = () => {
 			detached = true;
-			result.detached = true;
-			result.detachedReason = "intercom coordination";
-			progress.status = "detached";
-			progress.activityState = undefined;
-			progress.durationMs = Date.now() - startTime;
-			result.progressSummary = {
-				toolCount: progress.toolCount,
-				tokens: progress.tokens,
-				durationMs: progress.durationMs,
-			};
 			unsubscribeIntercomDetach?.();
-			resolveOuter(-2);
+			options.onIntercomDetach?.({
+				...snapshotResult(result, { ...snapshotProgress(progress), status: "detached" }),
+				detached: true,
+				detachedReason: "intercom coordination",
+				sessionFile: options.sessionFile,
+				finalOutput: "Detached for intercom coordination.",
+				progressSummary: { toolCount: progress.toolCount, tokens: progress.tokens, durationMs: Date.now() - startTime },
+			});
 		};
 
 		let cleanTerminalAssistantStopReceived = false;
@@ -468,7 +461,7 @@ async function runSingleAttempt(
 			unsubscribeIntercomDetach?.();
 			removeAbortListener?.();
 			removeInterruptListener?.();
-			resolveOuter(code);
+			resolve(code);
 		};
 
 		const drainPendingControlEvents = (): ControlEvent[] | undefined => {
@@ -556,7 +549,7 @@ async function runSingleAttempt(
 		};
 
 		const emitUpdateSnapshot = (text: string) => {
-			if (!options.onUpdate || processClosed || result.detached) return;
+			if (!options.onUpdate || processClosed) return;
 			const progressSnapshot = snapshotProgress(progress);
 			const resultSnapshot = snapshotResult(result, progressSnapshot);
 			const controlEvents = drainPendingControlEvents();
@@ -758,42 +751,6 @@ async function runSingleAttempt(
 				result.error = stderrBuf.trim();
 			}
 			const finalCode = forcedDrainAfterFinalSuccess ? 0 : lifecycle.stopping || signal ? (code ?? 1) : (code ?? 0);
-			if (detached) {
-				result.exitCode = finalCode;
-				let finalized: SingleResult;
-				try {
-					finalized = finalizeCompletedAttempt();
-				} catch (error) {
-					result.exitCode = 1;
-					result.error = `Detached completion finalization failed: ${error instanceof Error ? error.message : String(error)}`;
-					result.finalOutput = result.error;
-					progress.status = "failed";
-					progress.error = result.error;
-					finalized = result;
-				}
-				const completed = { ...finalized };
-				delete completed.detached;
-				delete completed.detachedReason;
-				artifactOutputByResult.set(completed, artifactOutputByResult.get(finalized) ?? finalized.finalOutput ?? "");
-				acceptanceOutputByResult.set(completed, acceptanceOutputByResult.get(finalized) ?? finalized.finalOutput ?? "");
-				void finalizeDetachedCompletion(completed).then(
-					(completedResult) => {
-						try { options.onDetachedComplete?.(completedResult); } catch (error) {
-							console.error("Failed to deliver detached foreground completion:", error);
-						}
-					},
-					(error) => {
-						completed.exitCode = 1;
-						completed.error = `Detached completion finalization failed: ${error instanceof Error ? error.message : String(error)}`;
-						completed.finalOutput = completed.error;
-						try { options.onDetachedComplete?.(completed); } catch (deliveryError) {
-							console.error("Failed to deliver detached foreground completion:", deliveryError);
-						}
-					},
-				);
-				finish(-2);
-				return;
-			}
 			finish(finalCode);
 		});
 		proc.on("error", (error) => {
@@ -936,11 +893,6 @@ async function runSingleAttempt(
 		};
 		return result;
 	}
-	if (result.detached) {
-		result.exitCode = 0;
-		result.finalOutput = "Detached for intercom coordination.";
-		return snapshotResult(result, snapshotProgress(progress));
-	}
 
 	return finalizeCompletedAttempt();
 
@@ -1041,59 +993,9 @@ async function runSingleAttempt(
 	result.controlEvents = allControlEvents.length ? allControlEvents : undefined;
 	return result;
 	}
-
-	async function finalizeDetachedCompletion(completed: SingleResult): Promise<SingleResult> {
-		completed.modelAttempts = [...(shared.previousAttempts ?? []), {
-			model: completed.model ?? "default",
-			success: completed.exitCode === 0 && !completed.error,
-			exitCode: completed.exitCode,
-			error: completed.error,
-			usage: { ...completed.usage },
-		}];
-		completed.attemptedModels = completed.modelAttempts.map((attempt) => attempt.model);
-		completed.usage = emptyUsage();
-		for (const attempt of completed.modelAttempts) if (attempt.usage) sumUsage(completed.usage, attempt.usage);
-		const acceptance = resolveEffectiveAcceptance({ explicit: options.acceptance });
-		const output = acceptanceOutputByResult.get(completed) ?? completed.finalOutput ?? "";
-		const initialAcceptance = await evaluateAcceptance({
-			acceptance: shouldRunAcceptanceFinalization(acceptance) ? acceptanceSelfReviewConfig(acceptance) : acceptance,
-			governing: acceptance,
-			output,
-			cwd: options.cwd ?? runtimeCwd,
-			signal: AbortSignal.any([options.signal, options.interruptSignal].filter((signal) => signal !== undefined)),
-		});
-		completed.acceptance = initialAcceptance;
-		if (shouldRunAcceptanceFinalization(acceptance) && completed.exitCode === 0 && !completed.interrupted) {
-			completed.acceptance = await runAcceptanceFinalizationLoop({
-				runtimeCwd,
-				agent,
-				result: completed,
-				initialLedger: initialAcceptance,
-				initialOutput: output,
-				acceptance,
-				options,
-				systemPrompt: shared.systemPrompt,
-				resolvedSkillNames: shared.resolvedSkillNames,
-				skillsWarning: shared.skillsWarning,
-			});
-		}
-		const failure = acceptanceFailureMessage(completed.acceptance);
-		stripAcceptanceReportsFromMessages(completed.messages ?? []);
-		if (failure && completed.acceptance.explicit && completed.exitCode === 0 && !completed.interrupted) {
-			completed.exitCode = 1;
-			completed.error = completed.error ? `${completed.error}\n${failure}` : failure;
-			if (completed.progress) {
-				completed.progress.status = "failed";
-				completed.progress.error = completed.error;
-			}
-		}
-		publishFinalResult(completed, { ...options, onUpdate: undefined });
-		return completed;
-	}
 }
 
 function publishFinalResult(result: SingleResult, options: RunSyncOptions): void {
-	if (result.detached) return;
 	const fullOutput = artifactOutputByResult.get(result) ?? result.finalOutput ?? "";
 	if (result.savedOutputPath && result.exitCode === 0) {
 		const cleanup = options.persistOutputFile || options.outputMode === "file-only"
@@ -1159,7 +1061,7 @@ async function runAcceptanceFinalizationLoop(input: {
 	initialLedger: AcceptanceLedger;
 	initialOutput: string;
 	acceptance: ResolvedAcceptanceConfig;
-	options: RunSyncOptions;
+	options: AttemptOptions;
 	systemPrompt: string;
 	resolvedSkillNames?: string[];
 	skillsWarning?: string;
@@ -1186,12 +1088,9 @@ async function runAcceptanceFinalizationLoop(input: {
 			maxTurns,
 			...(previousFailure ? { previousFailure } : {}),
 		});
-		const finalizationOptions: RunSyncOptions = { ...input.options, sessionFile, outputMode: "inline" };
-		const outputSnapshot = captureSingleOutputSnapshot(input.options.outputPath);
+		const finalizationOptions: AttemptOptions = { ...input.options, sessionFile, outputMode: "inline" };
 		delete finalizationOptions.sessionDir;
 		delete finalizationOptions.structuredOutput;
-		delete finalizationOptions.onUpdate;
-		finalizationOptions.allowIntercomDetach = false;
 		const finalizationResult = await runSingleAttempt(
 			input.runtimeCwd,
 			input.agent,
@@ -1206,7 +1105,8 @@ async function runAcceptanceFinalizationLoop(input: {
 				attemptNotes: [],
 				originalTask: prompt,
 				completionPolicy: "acceptance-contract",
-				outputSnapshot,
+				// An existing handoff file remains authoritative during review.
+				outputSnapshot: undefined,
 				previousOutput: artifactOutputByResult.get(input.result) ?? input.result.finalOutput,
 			},
 		);
@@ -1279,6 +1179,37 @@ export async function runSync(
 	task: string,
 	options: RunSyncOptions,
 ): Promise<SingleResult> {
+	let detached = false;
+	const question = Promise.withResolvers<SingleResult>();
+	const completion = runToCompletion(runtimeCwd, agents, agentName, task, {
+		...options,
+		onUpdate: (update) => { if (!detached) options.onUpdate?.(update); },
+		onIntercomDetach: (result) => {
+			if (detached) return;
+			detached = true;
+			question.resolve(result);
+		},
+	}).catch((error): SingleResult => {
+		if (!detached) throw error;
+		return { agent: agentName, task, exitCode: 1, usage: emptyUsage(), sessionFile: options.sessionFile, error: `Detached run failed: ${error instanceof Error ? error.message : String(error)}` };
+	}).finally(() => options.onRunSettled?.()).then(async (result) => {
+		if (detached) {
+			try { await options.onDetachedComplete?.(result); } catch (error) {
+				console.error("Failed to deliver detached foreground completion:", error);
+			}
+		}
+		return result;
+	});
+	return Promise.race([completion, question.promise]);
+}
+
+async function runToCompletion(
+	runtimeCwd: string,
+	agents: AgentConfig[],
+	agentName: string,
+	task: string,
+	options: AttemptOptions,
+): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) {
 		return {
@@ -1304,7 +1235,7 @@ export async function runSync(
 	}
 	const timeoutAt = options.timeoutAt ?? (options.timeoutMs !== undefined ? Date.now() + options.timeoutMs : undefined);
 	if (timeoutAt !== undefined && Date.now() >= timeoutAt) return createTimedOutResult(agentName, task, options);
-	const effectiveOptions: RunSyncOptions = {
+	const effectiveOptions: AttemptOptions = {
 		...options,
 		timeoutAt,
 		maxExecutionTimeMs: options.maxExecutionTimeMs ?? agent.maxExecutionTimeMs,
@@ -1313,6 +1244,7 @@ export async function runSync(
 
 	const shareEnabled = effectiveOptions.share === true;
 	const effectiveAcceptance = resolveEffectiveAcceptance({ explicit: options.acceptance });
+	if (effectiveOptions.runId) saveQuestionContract(effectiveOptions.runId, effectiveOptions.index ?? 0, { effectiveAcceptance, output: effectiveOptions.outputPath ?? false, outputMode: effectiveOptions.outputMode, outputSchema: effectiveOptions.structuredOutput?.schema });
 	if (shouldRunAcceptanceFinalization(effectiveAcceptance) && !options.sessionFile) {
 		const sessionDir = options.sessionDir ?? mkdtempSync(path.join(os.tmpdir(), "pi-subagent-finalization-"));
 		options.sessionFile = path.join(sessionDir, "session.jsonl");
@@ -1377,7 +1309,6 @@ export async function runSync(
 				skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
 				artifactPaths: artifactPathsResult,
 				attemptNotes,
-				previousAttempts: [...modelAttempts],
 				outputSnapshot,
 				originalTask: task,
 				completionPolicy: resolveCompletionPolicy({
@@ -1463,7 +1394,7 @@ export async function runSync(
 		signal: AbortSignal.any([options.signal, options.interruptSignal].filter((signal) => signal !== undefined)),
 	});
 	result.acceptance = initialAcceptance;
-	if (shouldRunAcceptanceFinalization(effectiveAcceptance) && result.exitCode === 0 && !result.detached && !result.interrupted) {
+	if (shouldRunAcceptanceFinalization(effectiveAcceptance) && result.exitCode === 0 && !result.interrupted) {
 		result.acceptance = await runAcceptanceFinalizationLoop({
 			runtimeCwd,
 			agent,
@@ -1479,7 +1410,7 @@ export async function runSync(
 	}
 	const acceptanceFailure = acceptanceFailureMessage(result.acceptance);
 	stripAcceptanceReportsFromMessages(result.messages ?? []);
-	if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.detached && !result.interrupted) {
+	if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.interrupted) {
 		result.exitCode = 1;
 		result.error = result.error ? `${result.error}\n${acceptanceFailure}` : acceptanceFailure;
 		if (result.progress) {
