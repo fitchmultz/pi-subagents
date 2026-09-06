@@ -443,7 +443,6 @@ export async function runParallelPath(data: ExecutionContextData, deps: Executor
 					...(output !== undefined ? { output } : {}),
 					...(behaviorOverrides[i]?.outputMode !== undefined ? { outputMode: behaviorOverrides[i]!.outputMode } : {}),
 					...(outputUsesAgentDefault[i] && output !== undefined ? { outputFromAgentDefault: true } : {}),
-					...(outputUsesAgentDefault[i] && typeof agentConfigs[i]?.output === "string" ? { defaultOutputSource: agentConfigs[i]!.output } : {}),
 					...(t.outputSchema !== undefined ? { outputSchema: t.outputSchema } : {}),
 					...(behaviorOverrides[i]?.reads !== undefined ? { reads: behaviorOverrides[i]!.reads } : {}),
 					...(progress !== undefined ? { progress } : {}),

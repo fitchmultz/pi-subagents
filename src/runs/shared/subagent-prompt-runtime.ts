@@ -41,7 +41,6 @@ const PARENT_ONLY_CUSTOM_MESSAGE_TYPES = new Set([
 	"subagent-control-notice",
 ]);
 const SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN = /<name>\s*pi-subagents\s*<\/name>/;
-const PROJECT_CONTEXT_HEADER = "\n\n# Project Context\n\nProject-specific instructions and guidelines:\n\n";
 const SKILLS_HEADER = "\n\nThe following skills provide specialized instructions for specific tasks.";
 const DATE_HEADER = "\nCurrent date:";
 
@@ -60,13 +59,6 @@ function findSectionEnd(prompt: string, startIndex: number, nextHeaders: string[
 		}
 	}
 	return endIndex;
-}
-
-export function stripProjectContext(prompt: string): string {
-	const startIndex = prompt.indexOf(PROJECT_CONTEXT_HEADER);
-	if (startIndex === -1) return prompt;
-	const endIndex = findSectionEnd(prompt, startIndex + PROJECT_CONTEXT_HEADER.length, [SKILLS_HEADER, DATE_HEADER]);
-	return `${prompt.slice(0, startIndex)}${prompt.slice(endIndex)}`;
 }
 
 export function stripInheritedSkills(prompt: string): string {
@@ -95,9 +87,6 @@ export function rewriteSubagentPrompt(
 	options: { inheritProjectContext: boolean; inheritSkills: boolean; fanoutChild?: boolean },
 ): string {
 	let rewritten = prompt;
-	if (!options.inheritProjectContext) {
-		rewritten = stripProjectContext(rewritten);
-	}
 	if (!options.inheritSkills) {
 		rewritten = stripInheritedSkills(rewritten);
 	}

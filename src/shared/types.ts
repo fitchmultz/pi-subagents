@@ -410,6 +410,7 @@ export interface SingleResult {
 	artifactPaths?: ArtifactPaths;
 	truncation?: TruncationResult;
 	finalOutput?: string;
+	initialOutput?: string;
 	outputMode?: OutputMode;
 	savedOutputPath?: string;
 	outputReference?: SavedOutputReference;
@@ -505,6 +506,7 @@ export type AsyncResultTerminalState = "complete" | "failed" | "paused";
 
 export interface AsyncResultChild {
 	agent?: string;
+	exitCode?: number | null;
 	output?: string;
 	error?: string;
 	success?: boolean;

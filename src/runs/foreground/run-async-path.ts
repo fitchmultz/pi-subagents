@@ -113,7 +113,6 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 				...(output !== undefined ? { output } : {}),
 				...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
 				...(outputFromAgentDefault && output !== undefined ? { outputFromAgentDefault: true } : {}),
-				...(outputFromAgentDefault && typeof agentConfigs[index]?.output === "string" ? { defaultOutputSource: agentConfigs[index]!.output } : {}),
 				...(task.outputSchema !== undefined ? { outputSchema: task.outputSchema } : {}),
 				...(task.reads !== undefined && task.reads !== true ? { reads: task.reads } : {}),
 				...(task.progress !== undefined ? { progress: task.progress } : {}),

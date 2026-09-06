@@ -5,7 +5,14 @@ import type {
 } from "../../shared/types.ts";
 import { acceptanceFailureMessage } from "./acceptance-evaluation.ts";
 import { formatEvidenceReportFieldMapping } from "./acceptance-contract.ts";
-import { stripAcceptanceReport } from "./acceptance-reports.ts";
+import { parseAcceptanceReport, stripAcceptanceReport } from "./acceptance-reports.ts";
+
+export function resolveFinalizationOutput(rawOutput: string, previousOutput: string): string {
+	const prose = stripAcceptanceReport(rawOutput);
+	if (prose.trim()) return prose;
+	const report = parseAcceptanceReport(rawOutput).report;
+	return report?.diffSummary?.trim() || report?.notes?.trim() || previousOutput;
+}
 
 const INITIAL_OUTPUT_LIMIT = 8_000;
 
@@ -70,7 +77,7 @@ export function formatAcceptanceFinalizationPrompt(input: {
 	}
 	lines.push(
 		"",
-		"Now do the self-check. If work was missing and you repaired it, report the repaired final state. Finish with exactly one fenced JSON block tagged `acceptance-report`.",
+		"Now do the self-check. Return a concise final answer describing the current result, including any repairs or remaining blockers, before the acceptance report. Finish with exactly one fenced JSON block tagged `acceptance-report`.",
 		"```acceptance-report",
 		JSON.stringify({
 			criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "specific proof from the final state" }],

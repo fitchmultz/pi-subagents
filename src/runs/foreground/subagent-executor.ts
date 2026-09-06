@@ -6,7 +6,7 @@ import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { handleManagementAction } from "../../agents/agent-management.ts";
 import { buildDoctorReport } from "../../extension/doctor.ts";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.ts";
-import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { providerQualifiedModelId, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { getArtifactsDir } from "../../shared/artifacts.ts";
 import {
@@ -312,7 +312,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const effectiveCwd = effectiveParams.cwd ?? ctx.cwd;
 		const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
 		deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
-		const discoveredAgents = deps.discoverAgents(effectiveCwd, scope, { projectTrusted: ctx.isProjectTrusted() }).agents;
+		const inheritedModel = providerQualifiedModelId(ctx.model?.provider, ctx.model?.id);
+		const discoveredAgents = deps.discoverAgents(effectiveCwd, scope, { projectTrusted: ctx.isProjectTrusted() }).agents
+			.map((agent) => agent.model || !inheritedModel ? agent : { ...agent, model: inheritedModel });
 		const invocationAgentNames = collectInvocationAgentNames(effectiveParams);
 		const invocationContext: SubagentParamsLike["context"] = invocationUsesForkContext(
 			effectiveParams.context,

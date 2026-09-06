@@ -155,6 +155,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 				output,
 				outputMode: effectiveOutputMode,
 				outputSchema: params.outputSchema,
+				acceptance: params.acceptance,
 				modelOverride,
 				maxSubagentDepth,
 				worktreeSetupHook: deps.config.worktreeSetupHook,

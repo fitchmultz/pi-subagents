@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import {
 	cleanupWorktrees,
 	createWorktrees,
@@ -54,6 +55,47 @@ const hookScriptSkip = process.platform === "win32"
 	: undefined;
 
 describe("worktree", () => {
+	it("binary patches reconstruct the complete edited tree after cleanup", () => {
+		const repoDir = createRepo("pi-worktree-binary-");
+		let setup: WorktreeSetup | undefined;
+		try {
+			fs.writeFileSync(path.join(repoDir, "modify.bin"), Buffer.from([0, 1, 2, 3]));
+			fs.writeFileSync(path.join(repoDir, "delete.bin"), Buffer.from([0, 4, 5, 6]));
+			git(repoDir, ["add", "-A"]);
+			git(repoDir, ["commit", "-m", "binary baseline"]);
+			setup = createWorktrees(repoDir, "binary-roundtrip", 1);
+			const worktree = setup.worktrees[0]!;
+			fs.writeFileSync(path.join(worktree.path, "modify.bin"), Buffer.from([0, 7, 8, 9]));
+			fs.writeFileSync(path.join(worktree.path, "add.bin"), Buffer.from([0, 10, 11, 12]));
+			fs.unlinkSync(path.join(worktree.path, "delete.bin"));
+			fs.appendFileSync(path.join(worktree.path, "tracked.txt"), "edited\n");
+			fs.chmodSync(path.join(worktree.path, "tracked.txt"), 0o755);
+			const [diff] = diffWorktrees(setup, ["worker"], path.join(repoDir, "patches"));
+			assert.equal(diff.captureError, undefined);
+			const expectedTree = git(worktree.path, ["write-tree"]);
+			cleanupWorktrees(setup);
+			setup = undefined;
+			assert.equal(fs.existsSync(worktree.path), false);
+			git(repoDir, ["apply", "--index", diff.patchPath]);
+			assert.equal(git(repoDir, ["write-tree"]), expectedTree);
+		} finally {
+			if (setup) cleanupWorktrees(setup);
+			cleanupRepo(repoDir);
+		}
+	});
+
+	it("creates worktrees inside the existing private temp root", () => {
+		const repoDir = createRepo("pi-worktree-root-");
+		let setup: WorktreeSetup | undefined;
+		try {
+			setup = createWorktrees(repoDir, "private-root", 1);
+			assert.equal(path.dirname(setup.worktrees[0]!.path), path.join(TEMP_ROOT_DIR, "worktrees"));
+		} finally {
+			if (setup) cleanupWorktrees(setup);
+			cleanupRepo(repoDir);
+		}
+	});
+
 	it("createWorktrees returns expected structure", () => {
 		const repoDir = createRepo("pi-worktree-structure-");
 		let setup: WorktreeSetup | undefined;
@@ -105,7 +147,7 @@ describe("worktree", () => {
 		try {
 			assert.equal(
 				resolveExpectedWorktreeAgentCwd(nestedDir, "preview", 2),
-				path.join(os.tmpdir(), "pi-worktree-preview-2", "packages", "app"),
+				path.join(TEMP_ROOT_DIR, "worktrees", "pi-worktree-preview-2", "packages", "app"),
 			);
 		} finally {
 			cleanupRepo(repoDir);
@@ -256,6 +298,7 @@ describe("worktree", () => {
 			const worktreePath = setup.worktrees[0]!.path;
 			cleanupWorktrees(setup);
 			assert.equal(fs.existsSync(worktreePath), true, "cleanup should preserve worktrees after diff capture failure");
+			assert.equal(fs.readFileSync(path.join(worktreePath, "tracked.txt"), "utf8"), "modified\n");
 		} finally {
 			if (setup) {
 				setup.preserveOnCleanup = false;

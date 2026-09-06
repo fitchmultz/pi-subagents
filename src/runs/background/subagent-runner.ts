@@ -7,7 +7,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
 import { PI_CODING_AGENT_PACKAGE, getPiSpawnCommand, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
-import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, findDuplicateOutputPath, formatConsumedOutputReference, formatSavedOutputReference, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
+import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, findDuplicateOutputPath, formatConsumedOutputReference, formatSavedOutputReference, injectSingleOutputInstruction, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	type AcceptanceFinalizationTurn,
 	type AcceptanceLedger,
@@ -92,7 +92,7 @@ import {
 	type WorktreeSetup,
 } from "../shared/worktree.ts";
 import { providerQualifiedModelId, resolveEffectiveThinking } from "../../shared/model-info.ts";
-import { writeInitialProgressFile } from "../../shared/settings.ts";
+import { namespaceParallelOutput, writeInitialProgressFile } from "../../shared/settings.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
 	acceptanceFailureMessage,
@@ -103,6 +103,7 @@ import {
 	createFinalizationTurn,
 	evaluateAcceptance,
 	formatAcceptanceFinalizationPrompt,
+	resolveFinalizationOutput,
 	formatAcceptancePrompt,
 	shouldRunAcceptanceFinalization,
 	stripAcceptanceReport,
@@ -111,6 +112,7 @@ import {
 interface SubagentRunConfig {
 	id: string;
 	steps: RunnerStep[];
+	chainDir?: string;
 	resultPath: string;
 	cwd: string;
 	placeholder: string;
@@ -898,10 +900,11 @@ async function runSingleStep(
 
 	const rawOutput = finalResult?.finalOutput ?? "";
 	const outputForPersistence = stripAcceptanceReport(rawOutput);
-	const resolvedOutput = step.outputPath && finalResult?.exitCode === 0
+	let resolvedOutput = step.outputPath && finalResult?.exitCode === 0
 		? resolveSingleOutput(step.outputPath, outputForPersistence, finalOutputSnapshot)
 		: { fullOutput: outputForPersistence };
-	const output = resolvedOutput.fullOutput;
+	let output = stripAcceptanceReport(resolvedOutput.fullOutput);
+	let initialOutput: string | undefined;
 	if (resolvedOutput.saveError) {
 		const saveError = `Failed to save output file '${step.outputPath}': ${resolvedOutput.saveError}`;
 		if (finalResult) {
@@ -915,30 +918,7 @@ async function runSingleStep(
 			lastAttempt.error = saveError;
 		}
 	}
-	const cleanup = resolvedOutput.savedPath && step.outputMode !== "file-only" && step.outputPathFromAgentDefault === true
-		? cleanupSingleOutputFile(resolvedOutput.savedPath, resolvedOutput.fullOutput, finalOutputSnapshot)
-		: undefined;
-	const outputReference = resolvedOutput.savedPath
-		? cleanup
-			? formatConsumedOutputReference(resolvedOutput.savedPath, output, cleanup)
-			: formatSavedOutputReference(resolvedOutput.savedPath, output)
-		: undefined;
-	let outputForSummary = output;
-	if (attemptNotes.length > 0) {
-		outputForSummary = `${attemptNotes.join("\n")}\n\n${outputForSummary}`.trim();
-	}
 	const outputForAcceptance = rawOutput;
-	const finalizedOutput = finalizeSingleOutput({
-		fullOutput: outputForSummary,
-		outputPath: step.outputPath,
-		outputMode: step.outputMode,
-		exitCode: finalResult?.exitCode ?? 1,
-		savedPath: resolvedOutput.savedPath,
-		outputReference,
-		saveError: resolvedOutput.saveError,
-		cleanup,
-	});
-	outputForSummary = finalizedOutput.displayOutput;
 	const acceptanceForInitialReport = step.effectiveAcceptance && shouldRunAcceptanceFinalization(step.effectiveAcceptance)
 		? acceptanceSelfReviewConfig(step.effectiveAcceptance)
 		: step.effectiveAcceptance;
@@ -955,6 +935,7 @@ async function runSingleStep(
 	let finalizationResourceLimitExceeded: ResourceLimitExceeded | undefined;
 	let finalizationProcessError: string | undefined;
 	if (acceptance && step.effectiveAcceptance && shouldRunAcceptanceFinalization(step.effectiveAcceptance) && (finalResult?.exitCode ?? 1) === 0 && !finalResult?.interrupted && !verificationSignal.aborted) {
+		initialOutput = output;
 		const sessionFile = step.sessionFile ?? (sessionDir ? findLatestSessionFile(sessionDir) ?? undefined : undefined);
 		const maxTurns = step.effectiveAcceptance.finalization.maxTurns;
 		const turns: AcceptanceFinalizationTurn[] = [];
@@ -1026,6 +1007,7 @@ async function runSingleStep(
 					env = built.env;
 					tempDir = built.tempDir;
 				}
+				const outputSnapshot = captureSingleOutputSnapshot(step.outputPath);
 				ctx.onAttemptStart?.({ model: finalizationModel, thinking: resolveEffectiveThinking(finalizationModel, step.thinking) });
 				const finalizationRun = await runPiStreaming(
 					args,
@@ -1061,6 +1043,14 @@ async function runSingleStep(
 					finalizationProcessError = message;
 					turns.push(createFinalizationProcessFailureTurn({ turn, prompt, rawOutput: finalizationOutput, message }));
 					acceptance = buildFinalizationProcessFailureLedger({ initialLedger: acceptance, turns, maxTurns, message });
+					break;
+				}
+				resolvedOutput = resolveSingleOutput(step.outputPath, resolveFinalizationOutput(finalizationOutput, output), outputSnapshot);
+				output = stripAcceptanceReport(resolvedOutput.fullOutput);
+				if (resolvedOutput.saveError) {
+					finalizationProcessError = `Failed to save output file '${step.outputPath}': ${resolvedOutput.saveError}`;
+					turns.push(createFinalizationProcessFailureTurn({ turn, prompt, rawOutput: finalizationOutput, message: finalizationProcessError }));
+					acceptance = buildFinalizationProcessFailureLedger({ initialLedger: acceptance, turns, maxTurns, message: finalizationProcessError });
 					break;
 				}
 				const selfReviewLedger = await evaluateAcceptance({
@@ -1101,6 +1091,29 @@ async function runSingleStep(
 			? (finalResult?.error ? `${finalResult.error}\n${acceptanceFailure}` : acceptanceFailure)
 			: finalResult?.error);
 
+	const cleanup = effectiveFinalExitCode === 0 && resolvedOutput.savedPath && step.outputMode !== "file-only" && step.outputPathFromAgentDefault === true
+		? cleanupSingleOutputFile(resolvedOutput.savedPath, output, undefined)
+		: undefined;
+	const outputReference = resolvedOutput.savedPath
+		? cleanup
+			? formatConsumedOutputReference(resolvedOutput.savedPath, output, cleanup)
+			: formatSavedOutputReference(resolvedOutput.savedPath, output)
+		: undefined;
+	const outputForSummary = finalizeSingleOutput({
+		fullOutput: attemptNotes.length ? `${attemptNotes.join("\n")}\n\n${output}`.trim() : output,
+		outputPath: step.outputPath,
+		outputMode: step.outputMode,
+		exitCode: effectiveFinalExitCode,
+		savedPath: resolvedOutput.savedPath,
+		outputReference,
+		saveError: resolvedOutput.saveError,
+		cleanup,
+	}).displayOutput;
+	const usage = emptyUsage();
+	for (const attempt of modelAttempts) {
+		for (const key of ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"] as const) usage[key] += attempt.usage?.[key] ?? 0;
+	}
+
 	if (artifactPaths) {
 		fs.writeFileSync(artifactPaths.outputPath, output, "utf-8");
 		fs.writeFileSync(
@@ -1110,6 +1123,11 @@ async function runSingleStep(
 				agent: step.agent,
 				task,
 				exitCode: effectiveFinalExitCode,
+				interrupted: stepInterrupted,
+				error: effectiveFinalError,
+				acceptance,
+				initialOutput,
+				usage,
 				model: finalResult?.model,
 				attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
 				modelAttempts,
@@ -1265,26 +1283,20 @@ function ensureParallelProgressFile(cwd: string, group: Extract<RunnerStep, { pa
 	writeInitialProgressFile(cwd);
 }
 
-function materializeDynamicDefaultOutputPath(input: {
+function materializeDynamicOutputPath(input: {
 	step: SubagentStep;
-	artifactsDir: string | undefined;
-	asyncDir: string;
-	runId: string;
-	index: number | string;
+	chainDir: string;
+	stepIndex: number;
+	taskIndex: number;
 }): SubagentStep {
-	if (!input.step.outputPathFromAgentDefault || !input.step.defaultOutputSource || !input.step.outputPath) return input.step;
-	const output = materializeAgentDefaultOutputPath({
-		output: input.step.defaultOutputSource,
-		artifactsDir: input.artifactsDir ?? input.asyncDir,
-		runId: input.runId,
-		agent: input.step.agent,
-		index: input.index,
-	});
-	if (typeof output !== "string" || output === input.step.outputPath) return input.step;
+	if (!input.step.output || !input.step.outputPath) return input.step;
+	const output = namespaceParallelOutput(input.step.output, input.step.agent, input.stepIndex, input.taskIndex);
+	if (!output) return input.step;
+	const outputPath = path.resolve(input.chainDir, output);
 	const task = input.step.task.includes(input.step.outputPath)
-		? input.step.task.split(input.step.outputPath).join(output)
-		: injectSingleOutputInstruction(input.step.task, output);
-	return { ...input.step, task, outputPath: output };
+		? input.step.task.split(input.step.outputPath).join(outputPath)
+		: injectSingleOutputInstruction(input.step.task, outputPath);
+	return { ...input.step, task, outputPath };
 }
 
 async function runSubagent(config: SubagentRunConfig): Promise<void> {
@@ -1922,7 +1934,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				continue;
 			}
 
-			const dynamicSteps = materialized.parallel.map((task, itemIndex) => materializeDynamicDefaultOutputPath({
+			const dynamicSteps = materialized.parallel.map((task, itemIndex) => materializeDynamicOutputPath({
 				step: {
 					...step.parallel,
 					task: task.task ?? step.parallel.task,
@@ -1931,10 +1943,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					structuredOutput: undefined,
 					structuredOutputSchema: step.parallel.structuredOutputSchema ?? step.parallel.structuredOutput?.schema,
 				},
-				artifactsDir,
-				asyncDir: config.asyncDir,
-				runId: id,
-				index: `d${stepIndex}-${itemIndex}`,
+				chainDir: config.chainDir ?? cwd,
+				stepIndex,
+				taskIndex: itemIndex,
 			}));
 			const duplicateOutputError = findDuplicateOutputPath(dynamicSteps);
 			if (duplicateOutputError) {
@@ -2117,13 +2128,14 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 		if (isParallelGroup(step)) {
 			const group = step;
+			const groupCwd = group.cwd ?? cwd;
 			const concurrency = group.concurrency ?? MAX_PARALLEL_CONCURRENCY;
 			const failFast = group.failFast ?? false;
 			const groupStartFlatIndex = flatIndex;
 			let aborted = false;
 			let worktreeSetup: WorktreeSetup | undefined;
 			if (group.worktree) {
-				const worktreeTaskCwdConflict = findWorktreeTaskCwdConflict(group.parallel, cwd);
+				const worktreeTaskCwdConflict = findWorktreeTaskCwdConflict(group.parallel, groupCwd);
 				if (worktreeTaskCwdConflict) {
 					const failedAt = Date.now();
 					markParallelGroupSetupFailure({
@@ -2131,7 +2143,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						results,
 						group,
 						groupStartFlatIndex,
-						setupError: formatWorktreeTaskCwdConflict(worktreeTaskCwdConflict, cwd),
+						setupError: formatWorktreeTaskCwdConflict(worktreeTaskCwdConflict, groupCwd),
 						failedAt,
 						statusPath,
 						eventsPath,
@@ -2143,7 +2155,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					break;
 				}
 				try {
-					worktreeSetup = createWorktrees(cwd, `${id}-s${stepIndex}`, group.parallel.length, {
+					worktreeSetup = createWorktrees(groupCwd, `${id}-s${stepIndex}`, group.parallel.length, {
 						agents: group.parallel.map((task) => task.agent),
 						setupHook: config.worktreeSetupHook
 							? { hookPath: config.worktreeSetupHook, timeoutMs: config.worktreeSetupHookTimeoutMs }
@@ -2171,7 +2183,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}
 
 			try {
-				if (group.worktree) ensureParallelProgressFile(cwd, group);
+				if (group.worktree) ensureParallelProgressFile(groupCwd, group);
 				const groupStartTime = Date.now();
 				markParallelGroupRunning({
 					statusPayload,
@@ -2188,7 +2200,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					group.parallel,
 					concurrency,
 					async (task, taskIdx) => {
-						const { taskForRun, taskCwd } = prepareParallelTaskRun(task, cwd, worktreeSetup, taskIdx);
+						const { taskForRun, taskCwd } = prepareParallelTaskRun(task, groupCwd, worktreeSetup, taskIdx);
 						const result = await runParallelChild({
 							task: taskForRun,
 							flatIndex: groupStartFlatIndex + taskIdx,
@@ -2592,6 +2604,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				return {
 					agent: r.agent,
 					output: childOutput.text,
+					exitCode: r.exitCode,
 					error: r.error,
 					success: r.success,
 					skipped: r.skipped || undefined,

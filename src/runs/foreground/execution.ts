@@ -93,6 +93,7 @@ import {
 	createFinalizationTurn,
 	evaluateAcceptance,
 	formatAcceptanceFinalizationPrompt,
+	resolveFinalizationOutput,
 	formatAcceptancePrompt,
 	resolveEffectiveAcceptance,
 	shouldRunAcceptanceFinalization,
@@ -259,7 +260,9 @@ async function runSingleAttempt(
 		skillsWarning?: string;
 		artifactPaths?: ArtifactPaths;
 		attemptNotes: string[];
+		previousAttempts?: ModelAttempt[];
 		outputSnapshot?: SingleOutputSnapshot;
+		previousOutput?: string;
 		originalTask?: string;
 		completionPolicy: CompletionPolicy;
 	},
@@ -992,7 +995,9 @@ async function runSingleAttempt(
 	};
 
 	const acceptanceOutput = getFinalOutput(result.messages ?? []);
-	let fullOutput = stripAcceptanceReport(acceptanceOutput);
+	let fullOutput = shared.previousOutput === undefined
+		? stripAcceptanceReport(acceptanceOutput)
+		: resolveFinalizationOutput(acceptanceOutput, shared.previousOutput);
 	const completionGuardTriggered = result.exitCode === 0 && !result.error
 		&& shared.completionPolicy === "mutation-guard"
 		&& !observedCompletedMutation && !hasCompletedMutationToolCall(result.messages ?? []);
@@ -1024,16 +1029,7 @@ async function runSingleAttempt(
 			progress.error = result.error;
 		}
 		if (resolvedOutput.savedPath) {
-			// Explicit caller output paths persist in the workspace; only agent-default
-			// materialized files (and never file-only outputs) are consumed after capture.
-			const cleanup = (options.persistOutputFile || options.outputMode === "file-only")
-				? undefined
-				: cleanupSingleOutputFile(resolvedOutput.savedPath, resolvedOutput.fullOutput, shared.outputSnapshot);
-			result.outputCleanup = cleanup;
-			result.outputReference = cleanup
-				? formatConsumedOutputReference(resolvedOutput.savedPath, fullOutput, cleanup)
-				: formatSavedOutputReference(resolvedOutput.savedPath, fullOutput);
-			if (cleanup && cleanup.action !== "skipped") result.savedOutputPath = undefined;
+			result.outputReference = formatSavedOutputReference(resolvedOutput.savedPath, fullOutput);
 		}
 	}
 	artifactOutputByResult.set(result, fullOutput);
@@ -1043,24 +1039,20 @@ async function runSingleAttempt(
 		? result.outputReference.message
 		: fullOutput;
 	result.controlEvents = allControlEvents.length ? allControlEvents : undefined;
-	if (options.onUpdate && !result.detached) {
-		const finalText = result.finalOutput || result.error || "(no output)";
-		const progressSnapshot = snapshotProgress(progress);
-		const resultSnapshot = snapshotResult(result, progressSnapshot);
-		options.onUpdate({
-			content: [{ type: "text", text: finalText }],
-			details: {
-				mode: "single",
-				results: [resultSnapshot],
-				progress: [progressSnapshot],
-				controlEvents: allControlEvents.length ? allControlEvents : undefined,
-			},
-		});
-	}
 	return result;
 	}
 
 	async function finalizeDetachedCompletion(completed: SingleResult): Promise<SingleResult> {
+		completed.modelAttempts = [...(shared.previousAttempts ?? []), {
+			model: completed.model ?? "default",
+			success: completed.exitCode === 0 && !completed.error,
+			exitCode: completed.exitCode,
+			error: completed.error,
+			usage: { ...completed.usage },
+		}];
+		completed.attemptedModels = completed.modelAttempts.map((attempt) => attempt.model);
+		completed.usage = emptyUsage();
+		for (const attempt of completed.modelAttempts) if (attempt.usage) sumUsage(completed.usage, attempt.usage);
 		const acceptance = resolveEffectiveAcceptance({ explicit: options.acceptance });
 		const output = acceptanceOutputByResult.get(completed) ?? completed.finalOutput ?? "";
 		const initialAcceptance = await evaluateAcceptance({
@@ -1095,36 +1087,69 @@ async function runSingleAttempt(
 				completed.progress.error = completed.error;
 			}
 		}
-		const lastAttempt = completed.modelAttempts?.[completed.modelAttempts.length - 1];
-		if (lastAttempt) {
-			lastAttempt.success = completed.exitCode === 0 && !completed.error;
-			lastAttempt.exitCode = completed.exitCode;
-			lastAttempt.error = completed.error;
-			lastAttempt.usage = { ...completed.usage };
-		}
-		if (completed.artifactPaths) {
-			writeArtifact(completed.artifactPaths.outputPath, artifactOutputByResult.get(completed) ?? completed.finalOutput ?? "");
-			writeMetadata(completed.artifactPaths.metadataPath, {
-				runId: options.runId,
-				agent: completed.agent,
-				task: completed.task,
-				exitCode: completed.exitCode,
-				usage: completed.usage,
-				model: completed.model,
-				attemptedModels: completed.attemptedModels,
-				modelAttempts: completed.modelAttempts,
-				durationMs: completed.progressSummary?.durationMs,
-				toolCount: completed.progressSummary?.toolCount,
-				error: completed.error,
-				skills: completed.skills,
-				skillsWarning: completed.skillsWarning,
-				timestamp: Date.now(),
-			});
-		}
-		const truncation = truncateOutput(completed.finalOutput ?? "", { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput }, completed.artifactPaths?.outputPath);
-		completed.truncation = truncation.truncated ? truncation : undefined;
+		publishFinalResult(completed, { ...options, onUpdate: undefined });
 		return completed;
 	}
+}
+
+function publishFinalResult(result: SingleResult, options: RunSyncOptions): void {
+	if (result.detached) return;
+	const fullOutput = artifactOutputByResult.get(result) ?? result.finalOutput ?? "";
+	if (result.savedOutputPath && result.exitCode === 0) {
+		const cleanup = options.persistOutputFile || options.outputMode === "file-only"
+			? undefined
+			: cleanupSingleOutputFile(result.savedOutputPath, fullOutput, undefined);
+		result.outputCleanup = cleanup;
+		result.outputReference = cleanup
+			? formatConsumedOutputReference(result.savedOutputPath, fullOutput, cleanup)
+			: formatSavedOutputReference(result.savedOutputPath, fullOutput);
+		if (cleanup && cleanup.action !== "skipped") result.savedOutputPath = undefined;
+		if (options.outputMode === "file-only") result.finalOutput = result.outputReference.message;
+	}
+	if (result.progress) {
+		result.progress.status = result.interrupted ? "paused" : result.exitCode === 0 ? "completed" : "failed";
+		result.progress.error = result.error;
+		result.progress.tokens = result.usage.input + result.usage.output;
+		result.progress.turnCount = result.usage.turns;
+		result.progress.toolCount = result.progressSummary?.toolCount ?? result.progress.toolCount;
+		result.progress.durationMs = result.progressSummary?.durationMs ?? result.progress.durationMs;
+	}
+	if (result.artifactPaths) {
+		writeArtifact(result.artifactPaths.outputPath, fullOutput);
+		writeMetadata(result.artifactPaths.metadataPath, {
+			runId: options.runId,
+			agent: result.agent,
+			task: result.task,
+			exitCode: result.exitCode,
+			interrupted: result.interrupted,
+			timedOut: result.timedOut,
+			resourceLimitExceeded: result.resourceLimitExceeded,
+			usage: result.usage,
+			model: result.model,
+			attemptedModels: result.attemptedModels,
+			modelAttempts: result.modelAttempts,
+			durationMs: result.progressSummary?.durationMs,
+			toolCount: result.progressSummary?.toolCount,
+			error: result.error,
+			skills: result.skills,
+			skillsWarning: result.skillsWarning,
+			acceptance: result.acceptance,
+			initialOutput: result.initialOutput,
+			timestamp: Date.now(),
+		});
+	}
+	const truncation = truncateOutput(result.finalOutput ?? "", { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput }, result.artifactPaths?.outputPath);
+	result.truncation = truncation.truncated ? truncation : undefined;
+	const progress = result.progress ? snapshotProgress(result.progress) : undefined;
+	options.onUpdate?.({
+		content: [{ type: "text", text: result.finalOutput || result.error || "(no output)" }],
+		details: {
+			mode: "single",
+			results: [progress ? snapshotResult(result, progress) : { ...result }],
+			progress: progress ? [progress] : undefined,
+			controlEvents: result.controlEvents,
+		},
+	});
 }
 
 async function runAcceptanceFinalizationLoop(input: {
@@ -1139,6 +1164,7 @@ async function runAcceptanceFinalizationLoop(input: {
 	resolvedSkillNames?: string[];
 	skillsWarning?: string;
 }): Promise<AcceptanceLedger> {
+	input.result.initialOutput = artifactOutputByResult.get(input.result) ?? input.result.finalOutput ?? "";
 	const sessionFile = input.result.sessionFile ?? input.options.sessionFile;
 	const maxTurns = input.acceptance.finalization.maxTurns;
 	const turns: AcceptanceFinalizationTurn[] = [];
@@ -1161,8 +1187,8 @@ async function runAcceptanceFinalizationLoop(input: {
 			...(previousFailure ? { previousFailure } : {}),
 		});
 		const finalizationOptions: RunSyncOptions = { ...input.options, sessionFile, outputMode: "inline" };
+		const outputSnapshot = captureSingleOutputSnapshot(input.options.outputPath);
 		delete finalizationOptions.sessionDir;
-		delete finalizationOptions.outputPath;
 		delete finalizationOptions.structuredOutput;
 		delete finalizationOptions.onUpdate;
 		finalizationOptions.allowIntercomDetach = false;
@@ -1180,8 +1206,17 @@ async function runAcceptanceFinalizationLoop(input: {
 				attemptNotes: [],
 				originalTask: prompt,
 				completionPolicy: "acceptance-contract",
+				outputSnapshot,
+				previousOutput: artifactOutputByResult.get(input.result) ?? input.result.finalOutput,
 			},
 		);
+		(input.result.modelAttempts ??= []).push({
+			model: finalizationResult.model ?? input.result.model ?? "default",
+			success: finalizationResult.exitCode === 0 && !finalizationResult.error,
+			exitCode: finalizationResult.exitCode,
+			error: finalizationResult.error,
+			usage: { ...finalizationResult.usage },
+		});
 		sumUsage(input.result.usage, finalizationResult.usage);
 		input.result.progressSummary = {
 			toolCount: (input.result.progressSummary?.toolCount ?? 0) + (finalizationResult.progressSummary?.toolCount ?? 0),
@@ -1192,11 +1227,22 @@ async function runAcceptanceFinalizationLoop(input: {
 			input.result.controlEvents = [...(input.result.controlEvents ?? []), ...finalizationResult.controlEvents];
 		}
 		const rawOutput = acceptanceOutputByResult.get(finalizationResult) ?? getFinalOutput(finalizationResult.messages ?? []) ?? finalizationResult.finalOutput ?? "";
+		input.result.messages = [...(input.result.messages ?? []), ...(finalizationResult.messages ?? [])];
 		if (finalizationResult.exitCode !== 0 || finalizationResult.error || finalizationResult.detached || finalizationResult.interrupted) {
+			input.result.interrupted = finalizationResult.interrupted;
+			input.result.timedOut = finalizationResult.timedOut;
+			input.result.resourceLimitExceeded = finalizationResult.resourceLimitExceeded;
+			input.result.exitCode = finalizationResult.exitCode;
+			input.result.error = finalizationResult.error;
 			const message = finalizationResult.error ?? "Acceptance finalization turn did not complete successfully.";
 			turns.push(createFinalizationProcessFailureTurn({ turn, prompt, rawOutput, message }));
 			return buildFinalizationProcessFailureLedger({ initialLedger: input.initialLedger, turns, maxTurns, message });
 		}
+		input.result.finalOutput = finalizationResult.finalOutput;
+		input.result.savedOutputPath = finalizationResult.savedOutputPath;
+		input.result.outputReference = finalizationResult.outputReference;
+		input.result.outputSaveError = finalizationResult.outputSaveError;
+		artifactOutputByResult.set(input.result, artifactOutputByResult.get(finalizationResult) ?? finalizationResult.finalOutput ?? "");
 		const selfReviewLedger = await evaluateAcceptance({
 			acceptance: selfReviewAcceptance,
 			governing: input.acceptance,
@@ -1331,6 +1377,7 @@ export async function runSync(
 				skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
 				artifactPaths: artifactPathsResult,
 				attemptNotes,
+				previousAttempts: [...modelAttempts],
 				outputSnapshot,
 				originalTask: task,
 				completionPolicy: resolveCompletionPolicy({
@@ -1395,34 +1442,7 @@ export async function runSync(
 		}
 	}
 
-	if (artifactPathsResult) {
-		result.artifactPaths = artifactPathsResult;
-		writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(result) ?? result.finalOutput ?? "");
-		writeMetadata(artifactPathsResult.metadataPath, {
-			runId: options.runId,
-			agent: agentName,
-			task,
-			exitCode: result.exitCode,
-			usage: result.usage,
-			model: result.model,
-			attemptedModels: result.attemptedModels,
-			modelAttempts: result.modelAttempts,
-			durationMs: result.progressSummary?.durationMs,
-			toolCount: result.progressSummary?.toolCount,
-			error: result.error,
-			skills: result.skills,
-			skillsWarning: result.skillsWarning,
-			timestamp: Date.now(),
-		});
-
-		const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
-		const truncationResult = truncateOutput(result.finalOutput ?? "", config, artifactPathsResult.outputPath);
-		if (truncationResult.truncated) result.truncation = truncationResult;
-	} else {
-		const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
-		const truncationResult = truncateOutput(result.finalOutput ?? "", config);
-		if (truncationResult.truncated) result.truncation = truncationResult;
-	}
+	result.artifactPaths = artifactPathsResult;
 
 	if (options.sessionFile && (existsSync(options.sessionFile) || result.messages?.length)) {
 		result.sessionFile = options.sessionFile;
@@ -1451,7 +1471,7 @@ export async function runSync(
 			initialLedger: initialAcceptance,
 			initialOutput: initialAcceptanceOutput,
 			acceptance: effectiveAcceptance,
-			options,
+			options: effectiveOptions,
 			systemPrompt,
 			resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
 			...(missingSkills.length > 0 ? { skillsWarning: `Skills not found: ${missingSkills.join(", ")}` } : {}),
@@ -1468,5 +1488,6 @@ export async function runSync(
 		}
 	}
 
+	publishFinalResult(result, effectiveOptions);
 	return result;
 }

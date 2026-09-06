@@ -20,4 +20,5 @@ export {
 	createFinalizationProcessFailureTurn,
 	createFinalizationTurn,
 	formatAcceptanceFinalizationPrompt,
+	resolveFinalizationOutput,
 } from "./acceptance-finalization.ts";

@@ -186,6 +186,9 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	if (!input.inheritSkills) {
 		args.push("--no-skills");
 	}
+	if (!input.inheritProjectContext) {
+		args.push("--no-context-files");
+	}
 
 	let tempDir: string | undefined;
 	if (input.systemPrompt !== undefined && input.systemPrompt !== null) {
