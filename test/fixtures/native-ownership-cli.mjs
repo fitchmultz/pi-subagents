@@ -18,7 +18,7 @@ const provider = model.slice(0, slash), modelId = model.slice(slash + 1);
 const thinking = suffix ?? "medium";
 const task = args.filter((arg) => arg.startsWith("Task: ") || arg.startsWith("@")).map((arg) => arg.startsWith("@") ? fs.readFileSync(arg.slice(1), "utf8") : arg).join("\n");
 const prompt = args.includes("--system-prompt") ? fs.readFileSync(value("--system-prompt"), "utf8") : args.includes("--append-system-prompt") ? fs.readFileSync(value("--append-system-prompt"), "utf8") : "";
-const record = { pid: process.pid, modelArg, model, thinking, sessionFile: file, previousMessages: session.getEntries().filter((entry) => entry.type === "message").length, task, prompt, tools: args.includes("--tools") ? value("--tools") : null, extensions: args.flatMap((arg, index) => arg === "--extension" ? [args[index + 1]] : []), noExtensions: args.includes("--no-extensions"), noContextFiles: args.includes("--no-context-files"), noSkills: args.includes("--no-skills") };
+const record = { pid: process.pid, cwd: process.cwd(), modelArg, model, thinking, sessionFile: file, previousMessages: session.getEntries().filter((entry) => entry.type === "message").length, task, prompt, tools: args.includes("--tools") ? value("--tools") : null, extensions: args.flatMap((arg, index) => arg === "--extension" ? [args[index + 1]] : []), noExtensions: args.includes("--no-extensions"), noContextFiles: args.includes("--no-context-files"), noSkills: args.includes("--no-skills") };
 fs.writeFileSync(path.join(process.env.OWNERSHIP_PROBE_DIR, `call-${Date.now()}-${randomUUID()}.json`), JSON.stringify(record));
 session.appendModelChange(provider, modelId);
 session.appendThinkingLevelChange(thinking);

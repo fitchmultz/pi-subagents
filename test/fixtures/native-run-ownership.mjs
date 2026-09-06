@@ -11,8 +11,8 @@ Object.assign(process.env, { HOME: root, TMPDIR: root, PI_CODING_AGENT_DIR: agen
 fs.writeFileSync(path.join(root, "bin/pi"), `#!/bin/sh\nexec "${process.execPath}" "${path.join(repo, "test/fixtures/native-ownership-cli.mjs")}" "$@"\n`, { mode: 0o755 });
 process.env.PATH = `${path.join(root, "bin")}${path.delimiter}${process.env.PATH}`;
 const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
-const { QUESTIONS_DIR, getRunMetadataDir, readQuestionContract } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
-const evidence = { nativeProviderRequests: 0, failures: [], checks: [], root, parentPid: process.pid };
+const { QUESTIONS_DIR, getRunMetadataDir, readQuestionContract, questionProcessAlive } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
+const evidence = { nativeProviderRequests: 0, failures: [], checks: [], root, parentPid: process.pid, nodeVersion: process.version, sdkRoot };
 const check = (name, run) => { run(); evidence.checks.push(name); };
 const profilePath = path.join(cwd, ".pi/agents/probe.md");
 const skillPath = path.join(cwd, ".pi/skills/saved-skill/SKILL.md");
@@ -240,8 +240,14 @@ async function runJourney() {
 	assert.equal(withQuestion.details.runs[0].runId, questionId);
 	fs.rmSync(runtimeDir, { recursive: true, force: true });
 	await session.reload();
-	const answered = await invoke("agent_runs", { action: "answer", id: questionId, questionId: pending.questionId, message: "Use the stable answer." });
+	const replacementCwd = path.join(cwd, "replacement");
+	fs.mkdirSync(path.join(replacementCwd, "replacement"), { recursive: true });
+	const answerParams = { action: "answer", id: questionId, questionId: pending.questionId, message: "Use the stable answer.", cwd: "replacement" };
+	const beforeAnswer = calls().length;
+	assert.equal(questionProcessAlive(pending), false, "the original question child must have exited before revival");
+	const answered = await invoke("agent_runs", answerParams);
 	await completed(answered.details.asyncId);
+	const answerCalls = calls().slice(beforeAnswer);
 	const answerContract = readQuestionContract(answered.details.asyncId, 0);
 	check("saved question revival keeps actual model, off thinking, output and acceptance", () => {
 		assert.equal(answerContract.launch.model, "openai-codex/gpt-6-astra");
@@ -250,8 +256,17 @@ async function runJourney() {
 		assert.deepEqual(answerContract.effectiveAcceptance, questionContract.effectiveAcceptance);
 	});
 	const beforeDuplicate = calls().length;
-	await invoke("agent_runs", { action: "answer", id: questionId, questionId: pending.questionId, message: "Use the stable answer." });
+	const repeatedAnswer = await invoke("agent_runs", answerParams);
 	assert.equal(calls().length, beforeDuplicate);
+	assert.equal(repeatedAnswer.details.questions[0].delivery.runId, answered.details.asyncId);
+	const answerContinuations = (await inspect(questionId)).details.run.continuations;
+	evidence.questionContinuation = { questionId: pending.questionId, originalRunId: questionId, exitedChildPid: pending.pid, continuedRunId: answered.details.asyncId, sessionFile: pending.sessionFile, requestedCwd: replacementCwd, answerCalls, answerContinuations, beforeDuplicate, afterDuplicate: calls().length };
+	check("exited question answer resolves relative cwd once and repeated answers do not launch again", () => {
+		assert.equal(answerCalls.filter((call) => call.task.includes(`Supervisor answer to question ${pending.questionId}:`)).length, 1);
+		assert.deepEqual(answerContinuations.map((run) => run.runId), [answered.details.asyncId]);
+		assert.deepEqual([...new Set(answerCalls.map((call) => call.cwd))], [fs.realpathSync(replacementCwd)]);
+		assert.equal(answerContract.launch.cwd, fs.realpathSync(replacementCwd));
+	});
 	assert.equal(resolvedQuestions.filter((id) => id === pending.questionId).length, 2, "same-answer retries repeat the idempotent presence-resolution event");
 	await assert.rejects(() => invoke("agent_runs", { action: "answer", id: questionId, questionId: pending.questionId, message: "A conflicting answer." }), /different saved answer/);
 	assert.equal(resolvedQuestions.filter((id) => id === pending.questionId).length, 2, "failed durable writes must not emit resolution");
@@ -348,7 +363,85 @@ async function runJourney() {
 		const reviewed = await invoke("agent_runs", { action: "review", id, decision });
 		coldRuns.push(runSnapshot(reviewed.details.run));
 	}
+	evidence.questionContinuation.nativeAnswerMessages = sdk.SessionManager.open(pending.sessionFile).getEntries().filter((entry) => entry.type === "message" && entry.message.role === "user" && JSON.stringify(entry.message.content).includes(`Supervisor answer to question ${pending.questionId}:`)).length;
+	assert.equal(evidence.questionContinuation.nativeAnswerMessages, 1, "the saved native conversation must contain exactly one delivered answer after the retry");
 	evidence.coldParent = { parentFile, runs: coldRuns, total: (await invoke("agent_runs", { action: "list" })).details.runList.total };
+}
+async function runLegacyAsync() {
+	const route = phase.slice("legacy-async-".length);
+	const owner = sdk.SessionManager.create(cwd, path.join(root, "legacy-parent"));
+	const child = sdk.SessionManager.create(cwd, path.join(root, "legacy-child"));
+	const ownerFile = owner.getSessionFile(), sessionFile = child.getSessionFile(), runId = randomUUID();
+	const output = `LEGACY_ASYNC_${route.toUpperCase()}`;
+	const assistant = { role: "assistant", content: [{ type: "text", text: output }], provider: "openai", model: "gpt-6-astra", api: "openai-responses", stopReason: "stop", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() };
+	owner.appendMessage({ role: "user", content: "Recover the saved background task.", timestamp: Date.now() });
+	owner.appendMessage({ ...assistant, content: [{ type: "text", text: "Saved native parent before the update." }] });
+	child.appendMessage({ role: "user", content: `Return ${output}`, timestamp: Date.now() });
+	child.appendMessage(assistant);
+	const { ASYNC_DIR, RESULTS_DIR } = await import(pathToFileURL(path.join(repo, "dist/shared/types.js")).href);
+	const asyncDir = path.join(ASYNC_DIR, runId), oldResultPath = path.join(RESULTS_DIR, `${runId}.json`);
+	fs.mkdirSync(asyncDir, { recursive: true });
+	fs.mkdirSync(RESULTS_DIR, { recursive: true });
+	const endedAt = Date.now(), startedAt = endedAt - 1000;
+	const status = { runId, sessionId: ownerFile, mode: "single", state: "complete", cwd, startedAt, endedAt, lastUpdate: endedAt, currentStep: 0, chainStepCount: 1, sessionFile, steps: [{ agent: "probe", status: "complete", model: "openai/gpt-6-astra", sessionFile, startedAt, endedAt, exitCode: 0 }] };
+	const result = { id: runId, sessionId: ownerFile, mode: "single", state: "complete", success: true, cwd, asyncDir, sessionFile, timestamp: endedAt, exitCode: 0, results: [{ agent: "probe", model: "openai/gpt-6-astra", sessionFile, success: true, exitCode: 0, output }] };
+	fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify(status));
+	if (route !== "status-session") {
+		fs.writeFileSync(path.join(asyncDir, "output-0.log"), output);
+		fs.writeFileSync(oldResultPath, JSON.stringify(result));
+	}
+	if (route === "receipt-result") {
+		const toolCallId = randomUUID();
+		owner.appendMessage({ ...assistant, stopReason: "toolUse", content: [{ type: "toolCall", id: toolCallId, name: "subagent", arguments: { agent: "probe", task: `Return ${output}`, async: true, output: false } }] });
+		owner.appendMessage({ role: "toolResult", toolCallId, toolName: "subagent", content: [{ type: "text", text: `Async: probe [${runId}]` }], details: { mode: "single", runId, results: [], asyncId: runId, asyncDir }, isError: false, timestamp: Date.now() });
+	}
+	fs.copyFileSync(ownerFile, path.join(root, "legacy-parent-before.jsonl"));
+	const legacy = evidence.legacyAsync = { route, runId, ownerFile, ownerSessionId: owner.getSessionId(), childSessionId: child.getSessionId(), sessionFile, status, result: route === "status-session" ? null : result, nonOwners: [] };
+	check("legacy fixture uses persisted native sessions and the .35 saved-file async identity without .36 metadata", () => {
+		assert.equal(sdk.SessionManager.open(ownerFile).getSessionId(), owner.getSessionId());
+		assert.notEqual(status.sessionId, owner.getSessionId());
+		assert.equal(owner.getEntries().some((entry) => entry.type === "custom" && entry.customType === "subagent-run"), false);
+		assert.equal(fs.existsSync(getRunMetadataDir(runId)), false);
+	});
+	const assertUnowned = async (file, label) => {
+		await open(file);
+		const total = (await invoke("agent_runs", { action: "list" })).details.runList.total;
+		legacy.nonOwners.push({ label, file, sessionId: session.sessionManager.getSessionId(), total });
+		assert.notEqual(session.sessionManager.getSessionId(), owner.getSessionId());
+		assert.equal(total, 0, `${label} must not adopt the saved parent's async work`);
+		await close();
+	};
+	await assertUnowned(newParent(path.join(root, "unrelated.jsonl")), "foreign parent");
+	await assertUnowned(sdk.SessionManager.forkFrom(ownerFile, cwd, path.join(root, "legacy-forks")).getSessionFile(), "fork with legacy receipts");
+	assert.equal(fs.existsSync(getRunMetadataDir(runId)), false, "non-owners must not migrate another parent's metadata");
+	await open(ownerFile);
+	legacy.beforeCleanup = await inspect(runId);
+	legacy.durableBeforeCleanup = { status: fs.existsSync(path.join(getRunMetadataDir(runId), "status.json")), result: fs.existsSync(resultFile(runId)) };
+	await close();
+	fs.rmSync(runtimeDir, { recursive: true, force: true });
+	legacy.tempRemoved = !fs.existsSync(runtimeDir);
+	await open(ownerFile);
+	try { legacy.afterCleanup = await inspect(runId); } catch (error) { legacy.afterCleanup = { error: error.message }; }
+	check("owning native parent retains the original async handle, terminal result, and child session after temp removal", () => {
+		const recovered = legacy.afterCleanup.details?.run;
+		assert.ok(recovered, JSON.stringify(legacy.afterCleanup));
+		assert.equal(recovered.state, "completed");
+		assert.equal(recovered.runId, runId);
+		assert.equal(recovered.ownerSessionId, owner.getSessionId());
+		assert.equal(recovered.legacy, true);
+		assert.equal(recovered.children[0].sessionFile, sessionFile);
+		assert.equal(recovered.children[0].result.finalOutput, output);
+		assert.equal(recovered.children[0].configuration, "legacy-partial");
+		assert.deepEqual(legacy.durableBeforeCleanup, { status: true, result: true });
+		assert.equal(JSON.parse(fs.readFileSync(resultFile(runId), "utf8")).results[0].output, output);
+		assert.equal(sdk.SessionManager.open(sessionFile).getSessionId(), child.getSessionId());
+		assert.equal(fs.existsSync(asyncDir), false);
+		assert.equal(fs.existsSync(oldResultPath), false);
+		assert.ok(session.sessionManager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "subagent-run" && entry.data.runId === runId && entry.data.ownerSessionId === owner.getSessionId()));
+	});
+	await close();
+	await assertUnowned(sdk.SessionManager.forkFrom(ownerFile, cwd, path.join(root, "owned-forks")).getSessionFile(), "fork with durable ownership entries");
+	assert.equal(calls().length, 0, "legacy recovery must not launch child work");
 }
 async function runWorkflowOutcomes() {
 	const { asyncStatusToSummary, listAsyncRuns } = await import(pathToFileURL(path.join(repo, "dist/runs/background/async-status.js")).href);
@@ -522,6 +615,7 @@ async function runColdParent() {
 try {
 	if (coldParent) await runColdParent();
 	else if (phase === "workflow-outcomes") await runWorkflowOutcomes();
+	else if (phase.startsWith("legacy-async-")) await runLegacyAsync();
 	else await runJourney();
 	assert.equal(evidence.nativeProviderRequests, 0);
 } catch (error) {
@@ -529,6 +623,6 @@ try {
 	process.exitCode = 1;
 } finally {
 	await close();
-	fs.writeFileSync(path.join(root, coldParent ? "cold-evidence.json" : phase === "workflow-outcomes" ? "workflow-evidence.json" : "evidence.json"), JSON.stringify(evidence, null, 2));
+	fs.writeFileSync(path.join(root, coldParent ? "cold-evidence.json" : phase === "workflow-outcomes" ? "workflow-evidence.json" : phase.startsWith("legacy-async-") ? "legacy-evidence.json" : "evidence.json"), JSON.stringify(evidence, null, 2));
 	console.log(JSON.stringify(evidence, null, 2));
 }

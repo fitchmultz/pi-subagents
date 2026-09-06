@@ -26,6 +26,27 @@ it("native workflow outcomes retain successful evidence, truthful grouped notifi
 	}
 });
 
+for (const route of ["receipt-result", "status-result", "status-session"]) it(`native legacy async ${route} migrates saved-file ownership and terminal evidence without foreign/fork adoption`, { timeout: 30_000 }, () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), `pi-native-legacy-async-${route}-`));
+	const repo = fileURLToPath(new URL("../../", import.meta.url));
+	const packageRoot = process.env.PI_OWNERSHIP_TEST_PACKAGE_ROOT ?? path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
+	const env = { ...process.env };
+	for (const key of Object.keys(env)) if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key)) delete env[key];
+	try {
+		const result = spawnSync(process.execPath, [path.join(repo, "test/fixtures/native-run-ownership.mjs"), root, repo, packageRoot, `legacy-async-${route}`], { cwd: repo, env, encoding: "utf8", timeout: 25_000, maxBuffer: 1024 * 1024 });
+		assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
+		assert.equal(result.stderr, "", "Valid legacy async metadata must migrate without warnings.");
+		const evidence = JSON.parse(fs.readFileSync(path.join(root, "legacy-evidence.json"), "utf8"));
+		assert.equal(evidence.nativeProviderRequests, 0);
+		assert.deepEqual(evidence.failures, []);
+		assert.equal(evidence.legacyAsync.tempRemoved, true);
+		assert.equal(evidence.legacyAsync.nonOwners.length, 3);
+	} finally {
+		if (process.env.PI_OWNERSHIP_KEEP_EVIDENCE) console.log(`Native legacy async evidence: ${root}/legacy-evidence.json`);
+		else fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 it("native reload and a new parent process retain ownership, effective launch, questions, review, and lineage without adopting another parent", { timeout: 120_000 }, () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-ownership-"));
 	const repo = fileURLToPath(new URL("../../", import.meta.url));
