@@ -852,6 +852,8 @@ async function runSingleStep(
 			resourceLimitExceeded: outcome.resourceLimitExceeded, skills: step.skills, timestamp: Date.now(),
 		}, null, 2), "utf-8");
 	}
+	// Snapshot before a continuation can append different choices to this same session.
+	refreshQuestionLaunch(ctx.id, ctx.flatIndex, sessionFile);
 	return {
 		agent: step.agent, output: outputForSummary, exitCode: effectiveFinalExitCode, error: outcome.error,
 		sessionFile, intercomTarget: ctx.childIntercomTarget, model: initial.model,
@@ -1602,7 +1604,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			const dynamicSteps = materialized.parallel.map((task, itemIndex) => materializeDynamicOutputPath({
 				step: {
 					...step.parallel,
-					task: step.parallel.task,
 					label: task.label ?? step.parallel.label,
 					sessionFile: step.sessionFiles?.[itemIndex],
 					structuredOutput: undefined,
@@ -2248,7 +2249,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			...(taskIndex !== undefined && { taskIndex }),
 			...(totalTasks !== undefined && { totalTasks }),
 		};
-		for (const [index, result] of results.entries()) refreshQuestionLaunch(id, index, result.sessionFile);
 		saveAsyncRunResult(id, { ...resultData, results });
 		writeAtomicJson(resultPath, resultData);
 	} catch (err) {

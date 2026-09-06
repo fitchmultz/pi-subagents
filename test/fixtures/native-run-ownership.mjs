@@ -153,6 +153,58 @@ async function runJourney() {
 	assert.equal((await completed(slow.details.runId)).state, "paused");
 	evidence.checks.push("running background survives reload; continue steers instead of spawning; stop remains paused");
 	await invoke("load_subagent", {});
+	const launchGroup = await invoke("subagent", { tasks: [
+		{ agent: "probe", task: "Return FIRST_SESSION_TOKEN before the sibling finishes.", output: false, model: "openai-codex/gpt-6-astra:high", acceptance: { criteria: ["Return the requested token"], evidence: ["manual-notes"], maxFinalizationTurns: 1 } },
+		{ agent: "probe", task: "WAIT_GATE:release_launch_sibling", output: false, model: "openai/gpt-6-astra:off" },
+	], concurrency: 2, async: true });
+	const launchGroupId = launchGroup.details.runId;
+	const launchStatusFile = path.join(getRunMetadataDir(launchGroupId), "status.json");
+	await wait(() => fs.existsSync(launchStatusFile) && JSON.parse(fs.readFileSync(launchStatusFile, "utf8")).steps[0].status === "complete", "first parallel child including acceptance finalization");
+	const beforeContinuation = (await inspect(launchGroupId)).details.run;
+	assert.deepEqual(beforeContinuation.children.map((child) => child.state), ["completed", "live"]);
+	const launchSession = beforeContinuation.children[0].sessionFile;
+	const initialLaunchCalls = calls().filter((call) => call.sessionFile === launchSession);
+	assert.equal(initialLaunchCalls.length, 2, "the initial child completes its same-session acceptance turn before continuation");
+	assert.ok(initialLaunchCalls.every((call) => call.modelArg === "openai-codex/gpt-6-astra:high"));
+	assert.equal(JSON.parse(fs.readFileSync(launchStatusFile, "utf8")).steps[0].acceptance.finalization.status, "completed");
+	const nativeInitial = sdk.SessionManager.open(launchSession).buildSessionContext();
+	assert.deepEqual(nativeInitial.model, { provider: "openai-codex", modelId: "gpt-6-astra" });
+	assert.equal(nativeInitial.thinkingLevel, "high");
+	const launchContinuation = await invoke("agent_runs", { action: "continue", id: launchGroupId, index: 0, message: "RECALL_TOKEN with an explicit model override.", model: "openai/gpt-6-astra:low" });
+	const launchContinuationId = launchContinuation.details.asyncId;
+	const launchContinuationResult = await completed(launchContinuationId);
+	assert.equal(launchContinuationResult.success, true);
+	assert.equal(launchContinuationResult.results[0].sessionFile, launchSession);
+	assert.equal(launchContinuationResult.results[0].acceptance.finalization.status, "completed");
+	const continuationCalls = calls().filter((call) => call.sessionFile === launchSession).slice(initialLaunchCalls.length);
+	assert.equal(continuationCalls.length, 2);
+	assert.ok(continuationCalls.every((call) => call.modelArg === "openai/gpt-6-astra:low" && call.previousMessages >= 4));
+	const nativeContinued = sdk.SessionManager.open(launchSession).buildSessionContext();
+	assert.deepEqual(nativeContinued.model, { provider: "openai", modelId: "gpt-6-astra" });
+	assert.equal(nativeContinued.thinkingLevel, "low");
+	assert.equal((await inspect(launchGroupId)).details.run.children[1].state, "live");
+	assert.equal(fs.existsSync(resultFile(launchGroupId)), false, "the sibling still holds the original workflow open");
+	fs.writeFileSync(path.join(callsDir, "release_launch_sibling"), "release");
+	assert.equal((await completed(launchGroupId)).success, true);
+	const launchSnapshots = [];
+	for (const afterReload of [false, true]) {
+		if (afterReload) await session.reload();
+		for (const id of [launchGroupId, launchContinuationId]) {
+			const run = (await inspect(id)).details.run;
+			const child = run.children[0];
+			launchSnapshots.push({ afterReload, runId: id, state: run.state, sessionFile: child.sessionFile, model: child.launch.model, thinking: child.launch.thinking });
+		}
+	}
+	evidence.childLaunchSnapshots = { originalRunId: launchGroupId, continuationRunId: launchContinuationId, initialCalls: initialLaunchCalls.length, continuationCalls: continuationCalls.length, snapshots: launchSnapshots };
+	check("completed background child keeps its own model/thinking after a same-session override finishes before its sibling, including finalization and SDK reload", () => {
+		for (const snapshot of launchSnapshots) {
+			assert.equal(snapshot.state, "completed");
+			assert.equal(snapshot.sessionFile, launchSession);
+			assert.equal(snapshot.model, snapshot.runId === launchGroupId ? "openai-codex/gpt-6-astra" : "openai/gpt-6-astra", "original launch must not inherit the later continuation model");
+			assert.equal(snapshot.thinking, snapshot.runId === launchGroupId ? "high" : "low", "original launch must not inherit the later continuation thinking");
+		}
+	});
+	await invoke("load_subagent", {});
 	const mixed = await invoke("subagent", { chain: [{ agent: "probe", task: "Complete the first step", output: false }, { agent: "probe", task: "WAIT_GATE:chain_pause", output: false }], async: true });
 	await wait(() => calls().some((call) => call.task.includes("WAIT_GATE:chain_pause")), "chain second step");
 	await invoke("agent_runs", { action: "stop", id: mixed.details.runId });
