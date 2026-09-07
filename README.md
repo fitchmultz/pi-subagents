@@ -1249,6 +1249,12 @@ Delegation receipts, completed responses, and completion messages show compact s
 
 Sequential chains show a flow line like `done scout → running planner`. Chains with parallel steps show per-step cards instead. Chain status uses `label` and `phase` metadata when present, while falling back to agent names for older chains.
 
+## Compact view
+
+On a native [`fitchmultz/pi` build with compact-view support](https://github.com/fitchmultz/pi/commit/17cb62faade465700692b0d474ec5652e8df3aed), use `/compact-view on`, `/compact-view off`, or `/compact-view toggle`. `/settings` → **Compact view** controls the same setting. It defaults off, updates the current UI immediately, and saves your default for future Pi starts without changing other running sessions.
+
+When enabled, ordinary Intercom messages, subagent notifications, and slash-command result cards use one content row plus Pi's existing blank line. Press `Ctrl+O` (or your configured expansion key) for full details. Questions, reply guidance, and needs-attention notices stay prominent. Turning the mode off restores normal presentation; older hosts without the native hint keep that presentation too. This is display-only: message content, attachments, model context, history, and delivery are unchanged. `/compact` is the separate context-compaction command.
+
 ## Session sharing
 
 Pass `share: true` to export a full session to HTML, upload it to a secret GitHub Gist through your `gh` credentials, and return a `https://shittycodingagent.ai/session/?<gistId>` URL.

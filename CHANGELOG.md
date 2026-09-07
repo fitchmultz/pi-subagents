@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-09-07
+
+### Added
+- Honor native Pi compact view for ordinary Intercom messages, subagent notifications, and slash-command results: one content row plus Pi's existing spacer. The optional mode defaults off; native expansion reveals full details, while questions, reply guidance, and needs-attention notices stay prominent. Normal presentation, message content, history, and delivery behavior are unchanged.
+
 ## [0.36.1] - 2026-09-07
 
 ### Fixed
