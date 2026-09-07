@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { keyText, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { IntercomClient, type SendResult } from "./broker/client.ts";
 import { isBrokerRunning, spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import { SessionListOverlay } from "./ui/session-list.ts";
@@ -1740,8 +1740,29 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   });
 
   pi.registerMessageRenderer("intercom_message", (message, options, theme) => {
-    const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string } | undefined;
+    const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string; subagentCompletion?: SubagentCompletion } | undefined;
     if (!details) return undefined;
+    if ("compactView" in options && options.compactView === true && !options.expanded
+      && details.from.id !== "subagent-control" && details.from.status !== "needs_attention"
+      && !details.message.expectsReply && !details.replyCommand) {
+      const sender = details.from.name || details.from.id.slice(0, 8);
+      const body = details.bodyText || details.message.content.text;
+      const summary = details.subagentCompletion
+        ? `${details.subagentCompletion.status} [${details.subagentCompletion.runId.slice(0, 8)}]`
+        : details.from.id === "subagent-result"
+          ? body.split("\n").slice(2, 6).join(" · ")
+          : body.split("\n").find((line) => line.trim()) || "(no text)";
+      const preview = `${sender}: ${summary}`.replace(/\s+/g, " ").trim();
+      return {
+        render(width) {
+          const key = keyText("app.tools.expand");
+          const hint = key ? theme.fg("dim", ` · ${key}`) : "";
+          const text = `${" ".repeat(options.outputPad)}${theme.fg("accent", "📨 ")}${theme.fg("muted", preview)}`;
+          return [truncateToWidth(truncateToWidth(text, width - visibleWidth(hint)) + hint, width)];
+        },
+        invalidate() {},
+      };
+    }
     const expanded = options.expanded || details.from.id !== "subagent-result" || details.from.status === "needs_attention" || details.message.expectsReply === true || Boolean(details.replyCommand);
     return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, expanded);
   });

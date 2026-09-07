@@ -118,6 +118,8 @@ intercom({
 
 ### Receiving Messages
 
+With native [compact view](../README.md#compact-view) enabled, ordinary incoming messages use one content row plus Pi's blank line; the configured expansion key reveals the full message and attachments. Questions, reply guidance, and needs-attention notices stay prominent. The mode defaults off and does not change delivery or model-visible content.
+
 When a message arrives, it appears inline in your chat with the sender's info. The cwd label is the sender's **Native session cwd**, not proof of a command's physical directory. Messages sent with `ask` include a reply hint:
 
 ```

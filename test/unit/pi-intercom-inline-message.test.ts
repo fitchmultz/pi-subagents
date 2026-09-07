@@ -31,13 +31,14 @@ const message: Message = {
   },
 };
 
-test("registered subagent completion messages honor native collapse and expand without changing peer messages", async () => {
+test("registered subagent completion messages honor native collapse and expand without changing peer messages", async (t) => {
   const { loadExtensionFromFactory } = await import(new URL("./core/extensions/loader.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
   const runtime = createExtensionRuntime();
   const extension = await loadExtensionFromFactory(registerIntercomExtension, process.cwd(), createEventBus(), runtime);
   const renderer = extension.messageRenderers.get("intercom_message");
   assert.ok(renderer, "exercise the actual registered message renderer, not just the component constructor");
   initTheme("dark", false);
+  const { theme: nativeTheme } = await import(new URL("./modes/interactive/theme/theme.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
   const { KeybindingsManager } = await import(new URL("./core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
   const { setKeybindings } = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
   setKeybindings(new KeybindingsManager());
@@ -94,6 +95,89 @@ test("registered subagent completion messages honor native collapse and expand w
         assert.deepEqual(peer.render(40), collapsed);
       }
     }
+    await t.test("direct compact Intercom previews preserve state, attachments and attention exceptions", () => {
+      const bodyText = "Historical/deferred progress from completed child (completed); not new work.\nOriginally sent: earlier\nDelivered to Pi: later\n\nSubagent progress update.\n\n📎 notes.ts\nconst proof = 'café e\u0301 中文 👩🏽‍💻';\nLast attachment detail.";
+      const received = {
+        role: "custom" as const, customType: "intercom_message", display: true, timestamp: 0,
+        content: bodyText,
+        details: {
+          from: { ...from, name: "worker" }, bodyText,
+          message: { ...message, replyTo: "previous-message", content: { text: "Subagent progress update.", attachments: [{ type: "snippet" as const, name: "notes.ts", content: "Last attachment detail." }] } },
+        },
+      };
+      const payload = buildSubagentResultIntercomPayload({
+        to: "parent", runId: "f5b4b221-5c64-4bc7-9862-70a35d94dc9b", mode: "parallel", source: "async",
+        children: [{ agent: "worker", index: 0, status: "failed", summary: "First child response." }, { agent: "reviewer", index: 1, status: "completed", summary: "Last child response." }],
+      });
+      const grouped = {
+        ...received, content: payload.message,
+        details: {
+          from: { ...from, id: "subagent-result", name: "subagent-result", status: "result" }, bodyText: payload.message,
+          message: { ...message, content: { text: payload.message } },
+        },
+      };
+      const render = (entry: typeof received | typeof grouped, compactView?: boolean, expanded = false, outputPad = 1) => {
+        const options = { expanded, outputPad, ...(compactView === undefined ? {} : { compactView }) };
+        const component = renderer(entry, options, nativeTheme);
+        assert.ok(component);
+        return component;
+      };
+      for (const entry of [
+        received,
+        { ...received, details: { ...received.details, bodyText: "Peer update: café e\u0301 中文 👩🏽‍💻\r\n\tMore peer detail.", from: { ...from, name: "peer 中文 👩🏽‍💻" } } },
+        grouped,
+        { ...grouped, details: { ...grouped.details, subagentCompletion: { runId: payload.runId, status: payload.status, children: [{ agent: "worker", index: 0, status: "failed", intercomTarget: "worker" }], ownerSessionId: "parent" } } },
+      ]) {
+        const original = structuredClone(entry);
+        for (const outputPad of [0, 2]) {
+          const compact = render(entry, true, false, outputPad);
+          for (const width of [120, 40, 2, 1, 3, 80]) {
+            const lines = compact.render(width);
+            assert.equal(lines.length, 1, "the registered compact renderer must return one content row, without a native wrapper");
+            assert.ok(lines.every((line) => visibleWidth(line) <= width && !/[\r\n\t]/.test(line)));
+            if (width >= 40 && outputPad > 0) assert.ok(lines[0]!.startsWith(" ".repeat(outputPad)));
+            assert.deepEqual(render(entry, false, false, outputPad).render(width), render(entry, undefined, false, outputPad).render(width), "OFF and absent use the same presentation");
+            compact.invalidate();
+            assert.deepEqual(compact.render(width), lines);
+            assert.deepEqual(render(entry, true, false, outputPad).render(width), lines, "OFF/ON cycles restore the compact view");
+          }
+        }
+        const wide = render(entry, true).render(120).map(stripVTControlCharacters).join("\n");
+        assert.match(wide, /ctrl\+o/i);
+        assert.ok(wide.includes(entry.details.from.name!));
+        if (entry.details.from.id === "subagent-result") {
+          assert.match(wide, /failed/);
+          assert.match(wide, /f5b4b221/);
+          assert.doesNotMatch(wide, /1 child/);
+        }
+        for (const width of [40, 120]) {
+          const expanded = render(entry, true, true).render(width);
+          assert.deepEqual(expanded, render(entry, false, true).render(width), "compact mode never changes the expanded renderer");
+          assert.ok(unwrap(expanded).includes(entry.details.bodyText.replace(/\s/g, "")));
+        }
+        assert.deepEqual(entry, original);
+      }
+      assert.match(render(received, true).render(120).map(stripVTControlCharacters).join("\n"), /Historical\/deferred progress/);
+      for (const details of [
+        { ...received.details, from: { ...from, id: "subagent-control" } },
+        { ...received.details, from: { ...from, status: "needs_attention" } },
+        { ...received.details, message: { ...received.details.message, expectsReply: true } },
+        { ...received.details, replyCommand: 'intercom({ action: "reply", message: "..." })' },
+      ]) {
+        const entry = { ...received, details };
+        const original = structuredClone(entry);
+        const lines = render(entry, true).render(40);
+        assert.deepEqual(lines, render(entry, false).render(40), "attention and reply guidance stay prominent");
+        assert.ok(unwrap(lines).includes(bodyText.replace(/\s/g, "")));
+        assert.deepEqual(entry, original);
+      }
+      setKeybindings(new KeybindingsManager({ "app.tools.expand": ["ctrl+e"] }));
+      try {
+        assert.match(render(received, true).render(120).map(stripVTControlCharacters).join("\n"), /ctrl\+e/i);
+      } finally {
+        setKeybindings(new KeybindingsManager());
+      }
+    });
   } finally {
     runtime.invalidate();
   }
