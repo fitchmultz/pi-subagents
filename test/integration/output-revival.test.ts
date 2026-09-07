@@ -449,6 +449,38 @@ describe("saved output choices", () => {
 		});
 	}
 
+	for (const action of ["resume", "answer"] as const) it(`${action} passes replacement cwd to the saved child and its finalization`, async () => {
+		const originalCwd = path.join(tempDir, "original");
+		const replacementCwd = path.join(tempDir, "replacement");
+		fs.mkdirSync(originalCwd);
+		fs.mkdirSync(replacementCwd);
+		mockPi.onCall({ output: "Predecessor report" });
+		mockPi.onCall({ output: "Predecessor report" });
+		const original = await run({ agent: "writer", task: "Prepare the result", cwd: originalCwd, output: false,
+			acceptance: { criteria: ["Deliver the result"], maxFinalizationTurns: 1 } });
+		const id = original.details.runId!;
+		const contract = readQuestionContract(id, 0)!;
+		assert.ok(contract.pid && !questionProcessAlive({ pid: contract.pid }));
+		const question = action === "answer" ? createSupervisorQuestion({
+			runId: id, index: 0, agent: "writer", ownerTarget: "fixture-parent", childTarget: "fixture-child", childSessionId: "fixture-session",
+			sessionFile: contract.sessionFile!, cwd: originalCwd, pid: contract.pid, reason: "need_decision", message: "May I continue?",
+		}) : undefined;
+		fs.rmdirSync(originalCwd);
+		const before = mockPi.callCount();
+		mockPi.onCall({ output: "Continued report" });
+		mockPi.onCall({ output: "Continued report" });
+		const continued = await run({ action, id, questionId: question?.questionId, message: "Continue in the replacement", cwd: "replacement" });
+		assert.equal(savedLaunch(continued.details.asyncId!).cwd, replacementCwd);
+		const attempts = fs.readdirSync(mockPi.dir).filter((name) => /^call-.*\.json$/.test(name)).sort()
+			.map((name) => JSON.parse(fs.readFileSync(path.join(mockPi.dir, name), "utf8"))).slice(before);
+		assert.equal(attempts.length, 2);
+		for (const call of attempts) {
+			assert.equal(call.cwd, fs.realpathSync(replacementCwd));
+			assert.equal(call.args[call.args.indexOf("--session") + 1], contract.sessionFile);
+			assert.equal(call.args[call.args.indexOf("--session-cwd") + 1], replacementCwd);
+		}
+	});
+
 	it("rejects file-only with output:false before any child starts", async () => {
 		const result = await executor.execute("disabled-file-only", { ...writer, output: false, async: true }, undefined, undefined, ctx);
 		assert.equal(result.isError, true);

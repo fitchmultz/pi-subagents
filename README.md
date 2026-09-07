@@ -4,7 +4,7 @@
 
 ## Installation
 
-Full durable-runtime support requires a corrected native [`fitchmultz/pi` build containing `acf4c2d98ec44de2108f16a47bf59de5193341a7`](https://github.com/fitchmultz/pi/commit/acf4c2d98ec44de2108f16a47bf59de5193341a7), including custom steering/follow-up queue reporting and the code-update restart notice. Stock Pi 0.84.x and stock 0.85.1 both fail that queue contract. The corrected fork also reports 0.85.1, so `pi --version` alone does not prove support. [Native PR #9](https://github.com/fitchmultz/pi/pull/9) contains these core fixes. This package does not install the corrected native build.
+Full durable-runtime support requires a corrected native [`fitchmultz/pi` build containing `9e85002de14cf0bde86903cb3124ac2e2b81ecbf`](https://github.com/fitchmultz/pi/commit/9e85002de14cf0bde86903cb3124ac2e2b81ecbf). It adds `--session-cwd` for saved-session launches ([native PR #12](https://github.com/fitchmultz/pi/pull/12)) and includes the earlier custom steering/follow-up queue reporting and code-update restart notice from [native PR #9](https://github.com/fitchmultz/pi/pull/9). Stock Pi 0.84.x and published 0.85.1 lack these capabilities. The corrected fork also reports 0.85.1, so `pi --version` alone does not prove support. This package does not install the corrected native build.
 
 With that native build available, install from GitHub:
 
@@ -37,11 +37,13 @@ Use a built checkout of the required native Pi revision for the completion gate:
 npm ci
 export PI_INTERCOM_TEST_SDK=/absolute/path/to/pi/packages/coding-agent
 export PI_OWNERSHIP_TEST_PACKAGE_ROOT="$PI_INTERCOM_TEST_SDK"
+export PI_CONTEXT_TEST_PACKAGE_ROOT="$PI_INTERCOM_TEST_SDK"
+export PI_PACKAGE_DIR="$PI_INTERCOM_TEST_SDK"
 ln -sf "$PI_INTERCOM_TEST_SDK/dist/bundle/cli.js" node_modules/.bin/pi
 npm run ci
 ```
 
-Both SDK overrides point at the built `packages/coding-agent` directory, not the monorepo root. The CLI link changes only this checkout's `node_modules/.bin/pi`; repeat it after `npm ci`, which restores the stock development CLI.
+All SDK overrides point at the built `packages/coding-agent` directory, not the monorepo root. The CLI link changes only this checkout's `node_modules/.bin/pi`; repeat it after `npm ci`, which restores the stock development CLI.
 
 That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
@@ -63,7 +65,7 @@ PI_LINUX_PI_ARCHIVE=/absolute/path/native-pi-linux-node22.tar.gz \
   bash scripts/linux-smoke.sh # Node support floor
 ```
 
-The archive is mounted read-only and extracted to `/native-pi`. The unprivileged `node` user installs locked package dependencies in `/workspace`, points the private CLI link and both SDK overrides at the supplied build, and runs the full, unchanged `npm run ci` gate. No host home, source mount, credentials, or model calls are passed into it. The gate does not patch Pi/Jiti or skip native cases.
+The archive is mounted read-only and extracted to `/native-pi`. The unprivileged `node` user installs locked package dependencies in `/workspace`, points the private CLI link and all SDK overrides at the supplied build, and runs the full, unchanged `npm run ci` gate. No host home, source mount, credentials, or model calls are passed into it. The gate does not patch Pi/Jiti or skip native cases.
 
 ## Real Pi smoke
 
@@ -126,7 +128,7 @@ agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "C
 
 `review` records `decision: "accepted"` or `"needs_changes"`, with an optional `message`. Review a finished result, not a live run. The decision is separate from execution status, runtime acceptance checks, and delivery. It does not run checks, launch another child, or mark a follow-up accepted. Use `continue` explicitly when more work is needed; inspect and late nudges do not restart anything.
 
-Continuation and exited-question revival reuse the resolved provider/model, thinking level, profile, selected skill injection, tool/extension and context policies, output settings, limits, and acceptance contract. Changed profile defaults are not substituted. `agent_runs` accepts explicit `model`, `cwd`, `output`, and `acceptance` overrides on `continue`/`answer`; `agent` explicitly selects a current profile. Detailed overrides remain available through `subagent({ action: "resume", ... })`. Launch overrides apply when starting a continuation, not when delivering a follow-up or answer to a still-live child. A missing worktree can be replaced with an explicit `cwd`; a missing child session cannot be invented. If the same saved child already has a live continuation, another `continue` sends it the follow-up instead of starting a second process.
+Continuation and exited-question revival reuse the resolved provider/model, thinking level, profile, selected skill injection, tool/extension and context policies, output settings, limits, and acceptance contract. Changed profile defaults are not substituted. `agent_runs` accepts explicit `model`, `cwd`, `output`, and `acceptance` overrides on `continue`/`answer`; `agent` explicitly selects a current profile. Detailed overrides remain available through `subagent({ action: "resume", ... })`. Launch overrides apply when starting a continuation, not when delivering a follow-up or answer to a still-live child. A missing worktree can be replaced with an explicit `cwd`; a missing child session cannot be invented. Every native saved-session launch, including acceptance finalization, passes its effective cwd through `--session-cwd` before extensions start, without rewriting the saved session header, identity, or history. If the same saved child already has a live continuation, another `continue` sends it the follow-up instead of starting a second process.
 
 When the saved launch records that an output path was generated from a relative profile default, continuation and exited-question revival generate a new path for the successor using that saved filename, leaving the predecessor file untouched. Selecting a current profile with `agent` preserves the saved filename independently of that profile's current default; an explicit `output` override changes the output choice. Explicit paths, absolute profile defaults, and `output: false` retain their saved choices unless overridden. Older snapshots without output-origin information keep their saved paths; supply an explicit `output` override to choose a different path.
 

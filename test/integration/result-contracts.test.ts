@@ -126,12 +126,14 @@ describe("result contracts", () => {
 				mock.onCall({ output: `Initial incomplete answer\n${report(false)}` });
 				mock.onCall({ output: `Final ${satisfied ? "repaired" : "blocked"} answer\n${report(satisfied)}` });
 				const expectedOutput = `Final ${satisfied ? "repaired" : "blocked"} answer`;
+				const childCwd = path.join(cwd, "child");
+				fs.mkdirSync(childCwd);
 				let result;
 				if (background) {
 					const started = executeAsyncSingle(id, {
 						agent: "worker", task: "Deliver the result", agentConfig: makeAgent("worker"),
 						ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id },
-						acceptance, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), shareEnabled: false, maxSubagentDepth: 2,
+						cwd: childCwd, acceptance, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), shareEnabled: false, maxSubagentDepth: 2,
 					});
 					assert.ok(!started.isError, started.content[0]?.text);
 					const payload = await waitForResult(id);
@@ -141,7 +143,7 @@ describe("result contracts", () => {
 					assert.equal(payload.exitCode, satisfied ? 0 : 1);
 				} else {
 					result = await runSync(cwd, [makeAgent("worker")], "worker", "Deliver the result", {
-						runId: id, acceptance, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"),
+						runId: id, cwd: childCwd, acceptance, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"),
 					});
 				}
 				const metadata = JSON.parse(fs.readFileSync(result.artifactPaths.metadataPath, "utf8"));
@@ -157,6 +159,13 @@ describe("result contracts", () => {
 				assert.match(result.finalOutput ?? result.output, new RegExp(expectedOutput));
 				assert.equal(fs.readFileSync(result.artifactPaths.outputPath, "utf8"), expectedOutput);
 				assert.equal(metadata.initialOutput, "Initial incomplete answer");
+				const attempts = calls();
+				assert.equal(attempts.length, 2);
+				for (const call of attempts) {
+					assert.equal(call.cwd, fs.realpathSync(childCwd));
+					assert.equal(call.args[call.args.indexOf("--session") + 1], path.join(cwd, "child.jsonl"));
+					assert.equal(call.args[call.args.indexOf("--session-cwd") + 1], childCwd);
+				}
 			});
 		}
 

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Pass the effective cwd through native `--session-cwd` on every saved-session launch, including acceptance finalization, so a replacement worktree is used before extensions start without rewriting saved history. Requires the corrected native fork build documented in the README.
 - Require a current explicit full-report submission for native acceptance finalization, so queued coordination cannot replace the task handoff or reuse stale success. Missing submissions retry within the configured limit; failed delivery retains an explicitly unconfirmed report for audit. Initial public structured outputs and Claude Code behavior remain unchanged.
 - Preserve generated relative-default output origin across single, parallel, chain, fanout, and background clarification launches. Continuations and exited-question revivals use a successor-owned path with the saved filename even when explicitly selecting a current profile, without overwriting the predecessor file; explicit paths and legacy snapshots without origin proof retain their saved behavior.
 - Combine owned-run inspection and live diagnostics into one report without duplicate run headers or lost evidence and controls.
