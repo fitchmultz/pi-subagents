@@ -29,6 +29,6 @@ describe("detached intercom guidance", () => {
 		assert.match(text, /Question: Should I use the stable API\?/);
 		assert.match(text, /intercom\(\{ action: "pending" \}\)/);
 		assert.match(text, /intercom\(\{ action: "reply", to: "subagent-delegate-78f659a3-1", message: "<answer>" \}\)/);
-		assert.match(text, /subagent\(\{ action: "status", id: "78f659a3" \}\)/);
+		assert.match(text, /agent_runs\(\{ action: "inspect", id: "78f659a3" \}\)/);
 	});
 });

@@ -47,7 +47,7 @@ import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/ski
 import { hasCompletedMutationToolCall, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
-import { refreshQuestionLaunch, saveQuestionContract } from "../shared/supervisor-questions.ts";
+import { pendingSupervisorQuestion, refreshQuestionLaunch, saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { saveForegroundLaunch } from "../shared/run-records.ts";
 import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
@@ -466,7 +466,7 @@ async function runSingleAttempt(
 		const subagentLoopGuard = createRepeatedSubagentCallGuardState();
 		const mutatingFailures = createMutatingFailureState();
 		const mutatingFailureWindowMs = 5 * 60_000;
-		const currentToolDurationMs = (now: number) => progress.currentToolStartedAt ? Math.max(0, now - progress.currentToolStartedAt) : undefined;
+		const currentToolDurationMs = (now: number) => progress.currentToolStartedAt !== undefined ? Math.max(0, now - progress.currentToolStartedAt) : undefined;
 		const emitNeedsAttention = (now: number, input: { message?: string; reason?: ControlEvent["reason"]; recentFailureSummary?: string; currentTool?: string; currentPath?: string; currentToolDurationMs?: number } = {}): boolean => {
 			if (!controlConfig.enabled) return false;
 			const previous = progress.activityState;
@@ -489,6 +489,8 @@ async function runSingleAttempt(
 				currentToolDurationMs: input.currentToolDurationMs ?? currentToolDurationMs(now),
 				currentPath: input.currentPath ?? progress.currentPath,
 				recentFailureSummary: input.recentFailureSummary,
+				supervisorQuestion: input.reason === undefined || input.reason === "idle"
+					? pendingSupervisorQuestion({ runId: options.runId, agent: agent.name, index: options.index ?? 0, sessionFile: options.sessionFile, pid: proc.pid }) : undefined,
 			});
 			emitControlEvent(event);
 			return previous !== "needs_attention";

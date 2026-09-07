@@ -240,7 +240,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 			"Delegate to subagents from child-safe fanout mode.",
 			"For goal-style requests such as /goal, goal, active goal, or work until evidence says done, use explicit acceptance on the delegated run: criteria for the target, evidence/verify for proof, stopRules for constraints, and maxFinalizationTurns for the bounded loop.",
 			"For implementation handoffs from a plan, PRD, spec, issue, or broad fix, put implementation instructions and plan paths in task, and put the definition of done, evidence, verification commands, constraints, and loop cap in acceptance.",
-			"Allowed management/control actions: list, get, status, interrupt, extend, resume, doctor.",
+			"Allowed management/control actions: list, get, status, nudge, interrupt, extend, resume, questions, answer, review, doctor. Exact status is concise; full:true includes the full task/configuration. Review notes are parent-only, not sent to children. Put actionable instructions in resume/nudge. Resume/answer overrides do not amend live acceptance.",
 			"Agent config mutation actions create, update, and delete are blocked in this mode.",
 		].join("\n"),
 		promptSnippet: "Delegate nested child-safe subagent work from an explicitly allowed fanout child.",

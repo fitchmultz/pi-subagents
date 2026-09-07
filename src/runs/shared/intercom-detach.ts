@@ -1,4 +1,6 @@
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import { formatRunAction } from "../../shared/status-format.ts";
+import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "./pi-args.ts";
 import type { SingleResult } from "../../shared/types.ts";
 
 type CoordinationTool = "contact_supervisor" | "intercom";
@@ -97,7 +99,7 @@ export function formatDetachedIntercomGuidance(input: {
 		"1. Inspect pending asks: intercom({ action: \"pending\" })",
 		`2. Reply: intercom({ action: \"reply\", to: \"${childTarget}\", message: \"<answer>\" })`,
 	);
-	lines.push(`3. Then inspect the child: subagent({ action: \"status\", id: \"${input.runId}\" })`);
+	lines.push(`3. Then inspect the child: ${formatRunAction("status", input.runId, {}, process.env[SUBAGENT_CHILD_ENV] === "1" && process.env[SUBAGENT_FANOUT_CHILD_ENV] === "1")}`);
 	lines.push("After the child exits, start a fresh follow-up if needed.");
 
 	return lines.join("\n");

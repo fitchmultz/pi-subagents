@@ -546,7 +546,7 @@ describe("result watcher", () => {
 			assert.equal(eventData.mode, "parallel");
 			assert.equal(eventData.status, "failed");
 			const message = String(eventData.message ?? "");
-			assert.match(message, /Revive child: subagent\(\{ action: "resume", id: "async-1", index: 0, message: "\.\.\." \}\)/);
+			assert.match(message, /Continue child: agent_runs\(\{ action: "continue", id: "async-1", index: 0, message: "\.\.\." \}\)/);
 			assert.ok(message.includes(`Session: ${firstSession}`));
 			assert.equal(message.includes(missingSession), false);
 			const completion = emitted.find((entry) => entry.event === "subagent:async-complete")?.data as { intercomResultDelivered?: boolean } | undefined;

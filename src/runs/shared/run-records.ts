@@ -8,7 +8,7 @@ import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { compactForegroundResult, getFinalOutput, getSingleResultOutput, readStatus } from "../../shared/utils.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { resolveSubagentResultStatus } from "../../intercom/result-intercom.ts";
-import { buildManagementControl } from "../../shared/status-format.ts";
+import { buildManagementControl, formatRunAction } from "../../shared/status-format.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { readAsyncResultFile } from "../background/async-result-file.ts";
 import { applyThinkingSuffix } from "./pi-args.ts";
@@ -290,14 +290,14 @@ function ownedRunControl(view: OwnedRunView) {
 	return buildManagementControl({ state: view.state, runId: view.runId, index: resumable?.index, canReview: view.state !== "live", canResume: Boolean(resumable), canNudge: Boolean(active), canInterrupt: view.canInterrupt, intercomTarget: active ? resolveSubagentIntercomTarget(view.runId, active.agent, active.index) : undefined });
 }
 
-export function ownedRunStatusResult(run: OwnedRun, state: SubagentState, runtime?: SubagentExecutionResult): SubagentExecutionResult {
+export function ownedRunStatusResult(run: OwnedRun, state: SubagentState, runtime?: SubagentExecutionResult, options: { full?: boolean; childSafe?: boolean } = {}): SubagentExecutionResult {
 	const view = ownedRunView(run, state);
 	const liveControl = view.state === "live" && runtime?.details.managementControl?.state === "live" ? runtime.details.managementControl : undefined;
 	const control = liveControl ?? ownedRunControl(view);
 	const lines = [
-		`Run: ${run.runId}`, `State: ${view.state}`, `Mode: ${run.mode} (${run.source})`, `Task: ${run.task}`, `Cwd: ${run.cwd}`,
+		`Run: ${run.runId}`, `State: ${view.state}`, `Mode: ${run.mode} (${run.source})`, `Task: ${options.full ? run.task : compact(run.task)}`, `Launch cwd: ${run.cwd}`,
 		`Root: ${run.rootRunId}`, ...(run.predecessorRunId ? [`Predecessor: ${run.predecessorRunId} (child ${run.predecessorIndex ?? 0})`] : []),
-		`Parent review: ${run.review?.decision ?? "unreviewed"}${run.review?.message ? ` — ${run.review.message}` : ""}`,
+		`Parent review (not sent to child): ${run.review?.decision ?? "unreviewed"}${run.review?.message ? ` — ${options.full ? run.review.message : compact(run.review.message)}` : ""}`,
 		`Notification: ${run.delivery ? `recorded ${new Date(run.delivery.notifiedAt).toISOString()}; intercom ${run.delivery.intercomDelivered ? "delivered" : "not confirmed"}` : "not recorded"}`,
 		...(view.attention.length ? [`Attention: ${view.attention.join(", ")}`] : []),
 		...(view.resultPath ? [`Result: ${view.resultPath}`] : []), ...(view.diagnosis ? [view.diagnosis] : []),
@@ -308,21 +308,22 @@ export function ownedRunStatusResult(run: OwnedRun, state: SubagentState, runtim
 		if (child.sessionFile) lines.push(`  Session: ${child.sessionFile}${child.missingSession ? " (missing; continuation unavailable)" : ""}`);
 		const artifact = child.result?.artifactPaths?.outputPath;
 		if (artifact) lines.push(`  Artifact: ${artifact}${fs.existsSync(artifact) ? "" : " (missing)"}`);
+		const metadata = child.result?.artifactPaths?.metadataPath;
+		if (metadata) lines.push(`  Result metadata (acceptance details when configured): ${metadata}${fs.existsSync(metadata) ? "" : " (missing)"}`);
 		if (child.launch) {
 			const launch = child.launch;
 			lines.push(`  Effective model: ${launch.model ?? "native default"}; thinking: ${launch.thinking ?? "native default"}`,
-				`  Profile: ${launch.agent.source} ${launch.agent.filePath}`,
-				`  Context: ${launch.context}; project context: ${launch.agent.inheritProjectContext}; skills inheritance: ${launch.agent.inheritSkills}`,
-				`  Profile tools: ${launch.agent.tools?.join(", ") ?? "native defaults"}; profile extensions: ${launch.agent.extensions?.join(", ") || (launch.agent.extensions ? "none" : "native discovery")}`,
 				`  Output: ${launch.output || "disabled"} (${launch.outputMode}); configuration: saved launch snapshot`);
+			if (options.full) lines.push(`  Saved launch configuration:\n${JSON.stringify(launch, null, 2)}`);
 		} else lines.push("  Configuration: legacy-partial; original profile snapshot was not recorded.");
 		const output = child.result && getSingleResultOutput(child.result);
 		if (output) lines.push(`  Result: ${compact(output, 600)}`);
 		if (child.result?.error) lines.push(`  Error: ${child.result.error}`);
 	}
-	if (control.capabilities.includes("review")) lines.push(`Review: agent_runs({ action: "review", id: "${run.runId}", decision: "accepted" }) or decision: "needs_changes".`);
+	if (control.capabilities.includes("review")) lines.push(`Review (parent-only, not sent to child): ${formatRunAction("review", run.runId, { decision: "accepted" }, options.childSafe)} or decision: "needs_changes".`);
 	if (view.continuations.length) lines.push("Continuation history:", ...view.continuations.map((next) => `  ${next.predecessorRunId}:${next.predecessorIndex ?? 0} -> ${next.runId}`));
-	if (control.capabilities.includes("resume")) lines.push(`Continue: agent_runs({ action: "continue", id: "${run.runId}",${view.children.length > 1 ? ` index: ${control.nextActions.find((action) => action.action === "resume")?.index ?? 0},` : ""} message: "..." })`);
+	if (control.capabilities.includes("resume")) lines.push(`Continue: ${formatRunAction("resume", run.runId, { ...(view.children.length > 1 ? { index: control.nextActions.find((action) => action.action === "resume")?.index ?? 0 } : {}), message: "..." }, options.childSafe)}`);
+	if (!options.full) lines.push(`Full task/configuration: ${formatRunAction("status", run.runId, { full: true }, options.childSafe)}`);
 	return {
 		content: [{ type: "text", text: lines.join("\n") }],
 		details: { ...runtime?.details, mode: "management", results: [], run: view, managementControl: control },
@@ -359,15 +360,15 @@ export function ownedRunList(state: SubagentState, params: { offset?: number; li
 	if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Run list requires offset >= 0 and limit from 1 to 100.");
 	const owned = [...(state.ownedRuns?.values() ?? [])];
 	for (const owner of new Set(owned.map((run) => run.ownerSessionId))) migrateSupervisorQuestions(owner);
-	const rank = (run: ReturnType<typeof runListSummary>) => run.attention.includes("awaiting_input") ? 0 : run.attention.some((reason) => reason !== "unreviewed") ? 1 : run.attention.length ? 2 : run.state === "live" ? 3 : 4;
+	const rank = (run: ReturnType<typeof runListSummary>) => run.attention.includes("awaiting_input") ? 0 : run.attention.some((reason) => reason !== "unreviewed") ? 1 : run.state === "live" ? 2 : run.attention.length ? 3 : 4;
 	const views = owned.map((run) => runListSummary(run, state, listRunQuestions(getRunMetadataDir(run.runId)).some((question) => question.ownerSessionId === run.ownerSessionId && (question.state === "awaiting_input" || question.state === "answer_pending"))))
 		.sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt || a.run.runId.localeCompare(b.run.runId));
 	const page = views.slice(offset, offset + limit).map(({ run, pendingInput }) => ownedRunView(run, state, { pendingInput, includeContinuations: false }));
-	const runs = page.map(({ runId, source, mode, cwd, task, state: runState, updatedAt, attention, review, rootRunId, predecessorRunId, children }) => ({ runId, source, mode, cwd, task, state: runState, updatedAt, attention, review, rootRunId, predecessorRunId, summary: compact(children.map((child) => child.result ? getSingleResultOutput(child.result) || child.result.error || "" : "").filter(Boolean).join(" | ")) }));
+	const runs = page.map(({ runId, source, mode, cwd, task, state: runState, updatedAt, attention, review, rootRunId, predecessorRunId, predecessorIndex, children }) => ({ runId, source, mode, cwd, task, state: runState, updatedAt, attention, review, rootRunId, predecessorRunId, predecessorIndex, continuations: owned.filter((candidate) => candidate.predecessorRunId === runId).map((candidate) => candidate.runId), summary: compact(children.map((child) => child.result ? getSingleResultOutput(child.result) || child.result.error || "" : "").filter(Boolean).join(" | ")) }));
 	const controls = page.map(ownedRunControl);
 	const nextOffset = offset + page.length < views.length ? offset + page.length : undefined;
 	return {
-		content: [{ type: "text", text: views.length ? [`Owned runs: ${views.length} (showing ${page.length ? `${offset + 1}–${offset + page.length}` : "none"}; attention first)`, ...runs.map((run) => `- ${run.runId} | ${run.state}${run.attention.length ? ` | ${run.attention.join(", ")}` : ""} | ${compact(run.task)}${run.summary ? ` | ${run.summary}` : ""} | ${run.cwd}`), ...(nextOffset !== undefined ? [`Next: agent_runs({ action: "list", offset: ${nextOffset}, limit: ${limit} })`] : [])].join("\n") : "No delegated runs owned by this session." }],
+		content: [{ type: "text", text: views.length ? [`Owned runs: ${views.length} (showing ${page.length ? `${offset + 1}–${offset + page.length}` : "none"}; attention first)`, ...runs.map((run) => `- ${run.runId} | ${run.state}${run.attention.length ? ` | ${run.attention.join(", ")}` : ""} | ${compact(run.task)}${run.summary ? ` | ${run.summary}` : ""} | Launch cwd: ${run.cwd}${run.predecessorRunId ? ` | from ${run.predecessorRunId}:${run.predecessorIndex ?? 0}` : ""}${run.continuations.length ? ` | continued as ${run.continuations.join(", ")} (separate results/reviews)` : ""}`), ...(nextOffset !== undefined ? [`Next: agent_runs({ action: "list", offset: ${nextOffset}, limit: ${limit} })`] : [])].join("\n") : "No delegated runs owned by this session." }],
 		details: { mode: "management", results: [], runs, managementControls: controls, managementControl: controls.find((control) => control.state === "live"), runList: { total: views.length, offset, limit, ...(nextOffset !== undefined ? { nextOffset } : {}) } },
 	};
 }

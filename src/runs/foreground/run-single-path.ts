@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { formatRunAction } from "../../shared/status-format.ts";
 import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
 import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { runSync } from "./execution.ts";
@@ -34,6 +35,7 @@ import { type ExecutionContextData, type ExecutorDeps, usesAgentDefaultOutput } 
 import {
 	createDetachedCompletionGroup,
 	createForegroundControlNotifier,
+	nestedResolutionScopeForExecutor,
 	maybeBuildForegroundIntercomReceipt,
 	rememberForegroundRun,
 } from "./foreground-control.ts";
@@ -358,7 +360,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 		const timeoutText = r.finalOutput && r.finalOutput !== r.error
 			? `Run timed out (${params.agent}).\n${r.finalOutput}`
 			: `Run timed out (${params.agent}): ${r.error ?? "timeout expired"}`;
-		const resumeText = r.sessionFile ? `\n\nResume without losing session context: subagent({ action: "resume", id: "${runId}", message: "Continue from the timeout and finish the task." })` : "";
+		const resumeText = r.sessionFile ? `\n\nContinue without losing session context: ${formatRunAction("resume", runId, { message: "Continue from the timeout and finish the task." }, Boolean(nestedResolutionScopeForExecutor(deps)))}` : "";
 		return {
 			content: [{ type: "text", text: `${timeoutText}${resumeText}` }],
 			details,
@@ -374,7 +376,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 	}
 
 	if (r.exitCode !== 0) {
-		const resumeText = r.sessionFile ? `\n\nIf this was transient, resume without losing session context: subagent({ action: "resume", id: "${runId}", message: "Continue from the failure and finish the task." })` : "";
+		const resumeText = r.sessionFile ? `\n\nIf this was transient, continue without losing session context: ${formatRunAction("resume", runId, { message: "Continue from the failure and finish the task." }, Boolean(nestedResolutionScopeForExecutor(deps)))}` : "";
 		return {
 			content: [{ type: "text", text: `${r.error || "Failed"}${resumeText}` }],
 			details,

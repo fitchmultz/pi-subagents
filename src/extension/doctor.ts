@@ -29,6 +29,7 @@ interface DoctorDeps {
 
 interface DoctorReportInput {
 	cwd: string;
+	nativeSessionCwd?: string;
 	config: ExtensionConfig;
 	state: SubagentState;
 	requestedSessionDir?: string;
@@ -169,7 +170,8 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		"Subagents doctor report",
 		"",
 		"Runtime",
-		`- cwd: ${input.cwd}`,
+		`- Native session cwd: ${input.nativeSessionCwd ?? input.cwd}`,
+		...(input.nativeSessionCwd && input.nativeSessionCwd !== input.cwd ? [`- Requested cwd: ${input.cwd}`] : []),
 		`- Node: ${process.version}`,
 		`- process: ${process.pid} (${process.execPath})`,
 		`- loaded Pi version: ${PI_VERSION}`,

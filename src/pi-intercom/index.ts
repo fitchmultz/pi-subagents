@@ -16,6 +16,7 @@ import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode } fro
 import { isDurableSupervisorQuestion, ReplyTracker } from "./reply-tracker.ts";
 import { filterProjectSessions, formatPeerAwarenessHint, formatSessionTarget, formatTargetOptions, PEER_AWARENESS_HINT, resolveSessionProjectId, targetDisplayName, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
 import { registerSubagentLiveEventHandlers } from "./subagent-live-events.ts";
+import { formatRunAction } from "../shared/status-format.ts";
 import { cancelSupervisorQuestion, createSupervisorQuestion, readQuestionState, recordQuestionDelivery, saveQuestionAnswer, type SupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -50,11 +51,18 @@ interface ChildOrchestratorMetadata {
   sessionName?: string;
 }
 
+interface SubagentCompletion {
+  runId: string;
+  status: string;
+  children: Array<{ agent: string; index: number; status: string; intercomTarget: string }>;
+}
+
 interface InboundMessageEntry {
   from: SessionInfo;
   message: Message;
   replyCommand?: string;
   bodyText: string;
+  subagentCompletion?: SubagentCompletion & { ownerSessionId: string };
 }
 
 interface PendingInboundMessage extends InboundMessageEntry {
@@ -425,7 +433,7 @@ function duplicateSessionNames(sessions: SessionInfo[]): Set<string> {
       .filter((name, index, names) => names.indexOf(name) !== index)
   );
 }
-function parseSubagentIntercomPayload(payload: unknown): { to: string; message: string; requestId?: string; source?: "foreground" | "async" } | null {
+function parseSubagentIntercomPayload(payload: unknown): { to: string; message: string; requestId?: string; source?: "foreground" | "async"; completion?: SubagentCompletion } | null {
   if (typeof payload !== "object" || payload === null) {
     return null;
   }
@@ -435,7 +443,17 @@ function parseSubagentIntercomPayload(payload: unknown): { to: string; message: 
   }
   const requestId = typeof record.requestId === "string" ? record.requestId : undefined;
   const source = record.source === "foreground" || record.source === "async" ? record.source : undefined;
-  return { to: record.to, message: record.message, ...(requestId ? { requestId } : {}), ...(source ? { source } : {}) };
+  const children = Array.isArray(record.children) ? record.children.flatMap((value: unknown) => {
+    if (!value || typeof value !== "object") return [];
+    const child = value as Record<string, unknown>;
+    return typeof child.agent === "string" && typeof child.index === "number" && Number.isSafeInteger(child.index) && child.index >= 0
+      && typeof child.intercomTarget === "string" && child.intercomTarget.length > 0 && typeof child.status === "string"
+      && ["completed", "failed", "paused", "timed-out", "detached"].includes(child.status)
+      ? [{ agent: child.agent, index: child.index, status: child.status, intercomTarget: child.intercomTarget }] : [];
+  }) : [];
+  const completion = source && typeof record.runId === "string" && typeof record.status === "string" && children.length
+    ? { runId: record.runId, status: record.status, children } : undefined;
+  return { to: record.to, message: record.message, ...(requestId ? { requestId } : {}), ...(source ? { source } : {}), ...(completion ? { completion } : {}) };
 }
 function resolveIntercomPresenceName(sessionName: string | undefined, sessionId: string): string {
   const trimmedName = sessionName?.trim();
@@ -489,14 +507,14 @@ function formatSessionListRow(session: SessionInfo, currentCwd: string, isSelf: 
     healthTags.push(`last_seen:${formatDuration(Math.max(0, Math.floor((now - session.lastSeen) / 1000)))} ago`);
   }
   const tags = [
-    isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined,
+    isSelf ? "self" : session.cwd === currentCwd ? "same native session cwd" : undefined,
     session.status,
     duplicateName ? `target:${formatSessionTarget(session, allSessions)}` : undefined,
     ...healthTags,
   ].filter((tag): tag is string => Boolean(tag));
   const target = formatSessionTarget(session, allSessions);
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
-  return `• ${name} (${target}) — ${session.cwd} (${session.model})${suffix}\n  ↳ ${sessionDeliveryGuidance(session, isSelf)}`;
+  return `• ${name} (${target}) — Native session cwd: ${session.cwd} (${session.model})${suffix}\n  ↳ ${sessionDeliveryGuidance(session, isSelf)}`;
 }
 function sessionsForScope(sessions: SessionInfo[], currentSessionId: string, scope: IntercomSessionScope): SessionInfo[] {
   return scope === "all" ? sessions : filterProjectSessions(sessions, currentSessionId);
@@ -651,6 +669,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   const replyTracker = new ReplyTracker(config.askTimeoutMs);
   const pendingInbound = new Map<string, PendingInboundMessage>();
   const consumedInboundIds = new Set<string>();
+  const completedChildren = new Map<string, SubagentCompletion["children"][number]>();
   let reconciledLeafId: string | null = null;
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   let replyWaiter: {
@@ -897,7 +916,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const askIndex = entries.findIndex((entry) => canTrigger(entry) && entry.message.expectsReply === true);
     return askIndex === -1 ? entries.findIndex(canTrigger) : askIndex;
   }
-  function sendTriggerFirst(entries: PendingInboundMessage[], generation = runtimeGeneration): void {
+  function sendTriggerLast(entries: PendingInboundMessage[], generation = runtimeGeneration): void {
     const passives: PendingInboundMessage[] = [];
     const rest: PendingInboundMessage[] = [];
     for (const entry of entries) {
@@ -906,8 +925,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     for (const entry of passives) sendIncomingMessage(entry, "passive", generation);
     const triggerIndex = queuedTriggerIndex(rest);
-    if (triggerIndex !== -1) sendIncomingMessage(rest.splice(triggerIndex, 1)[0]!, "trigger", generation);
+    const trigger = triggerIndex === -1 ? undefined : rest.splice(triggerIndex, 1)[0];
+    if (trigger) replyTracker.queueTurnContext({ ...trigger, receivedAt: Date.now() });
     for (const entry of rest) sendIncomingMessage(entry, entry.flushDelivery === "steer" ? "steer" : "followUp", generation);
+    if (trigger) sendIncomingMessage(trigger, "trigger", generation);
   }
   function currentSessionTargetMatches(to: string, resolvedTo?: string | null, activeClient?: IntercomClient): boolean {
     const targets = new Set<string>();
@@ -954,10 +975,35 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   function queuedInbound(): PendingInboundMessage[] {
     return [...pendingInbound.values()].filter((entry) => entry.stage === "queued");
   }
+  function rememberCompletedChildren(entry: InboundMessageEntry): void {
+    const completion = entry.subagentCompletion;
+    if (entry.from.id !== "subagent-result" || completion?.ownerSessionId !== currentSessionId) return;
+    for (const child of completion.children) {
+      const thread = `subagent-progress:${completion.runId}:${child.agent}:${child.index}`;
+      if (child.status === "detached") completedChildren.delete(thread);
+      else completedChildren.set(thread, child);
+    }
+  }
+  function deliveredBody(entry: InboundMessageEntry, deliveredAt: number): string {
+    const message = entry.message;
+    if (message.delivery !== "queue" || message.queueMode !== "replace" || !message.threadId || message.expectsReply || message.replyTo) return entry.bodyText;
+    const child = completedChildren.get(message.threadId);
+    if (!child || (entry.from.id !== child.intercomTarget && entry.from.name !== child.intercomTarget)) return entry.bodyText;
+    return [
+      `Historical/deferred progress from completed child (${child.status}); not new work.`,
+      `Originally sent: ${new Date(message.timestamp).toISOString()}`,
+      `Delivered to Pi: ${new Date(deliveredAt).toISOString()}`,
+      "",
+      entry.bodyText,
+    ].join("\n");
+  }
   function restoreInbound(ctx: ExtensionContext): void {
     consumedInboundIds.clear();
+    completedChildren.clear();
     for (const item of ctx.sessionManager.getEntries()) {
       if (item.type === "custom_message") {
+        const receipt = item.details as InboundMessageEntry | undefined;
+        if (receipt?.subagentCompletion) rememberCompletedChildren(receipt);
         const id = inboundIdFromCustomMessage(item);
         if (id) {
           consumedInboundIds.add(id);
@@ -968,6 +1014,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         // Forks inherit entries, but pending delivery belongs to the saved session UUID.
         if (data?.sessionId !== currentSessionId) continue;
         if ("entry" in data) {
+          rememberCompletedChildren(data.entry);
           if (!consumedInboundIds.has(data.entry.message.id)) keepInbound({ ...data.entry });
         } else if (data.stage === "discarded") {
           pendingInbound.delete(data.messageId);
@@ -992,6 +1039,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
     }
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
+    const bodyText = deliveredBody(entry, Date.now());
     const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
     const options = delivery === "trigger"
       ? { triggerTurn: true }
@@ -1001,9 +1049,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     pi.sendMessage(
       {
         customType: "intercom_message",
-        content: `**📨 From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n${entry.bodyText}`,
+        content: `**📨 From ${senderDisplay}** (Native session cwd: ${entry.from.cwd})${replyInstruction}\n\n${bodyText}`,
         display: true,
-        details: entry,
+        details: { ...entry, bodyText },
       },
       options
     );
@@ -1070,7 +1118,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (queuedInbound().length > 0) scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
       return;
     }
-    sendTriggerFirst(entries, generation);
+    sendTriggerLast(entries, generation);
   }
   function queueIdleMessage(entry: InboundMessageEntry, flushDelivery: PendingInboundMessage["flushDelivery"] = "auto", delayMs = INBOUND_FLUSH_DELAY_MS): void {
     rememberInbound(entry, "queued", flushDelivery);
@@ -1105,7 +1153,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     reconcileConsumedInbound(ctx);
     // Abort can leave native custom messages queued; only recover cleared ones.
     if (pendingInbound.size === 0 || ctx.hasPendingMessages()) return;
-    sendTriggerFirst([...pendingInbound.values()].filter((entry) => entry.stage === "native"));
+    sendTriggerLast([...pendingInbound.values()].filter((entry) => entry.stage === "native"));
   }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
@@ -1347,9 +1395,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   function peerDeclinesAsks(health: SessionInfo | null): boolean {
     return health?.acceptsAsks === false;
   }
-  function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string): void {
+  function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string, completion?: SubagentCompletion): void {
     const now = Date.now();
-    sendIncomingMessage({
+    const entry: InboundMessageEntry = {
       from: {
         id: sender,
         name: sender,
@@ -1363,7 +1411,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         content: { text: messageText },
       },
       bodyText: messageText,
-    }, "trigger");
+      ...(sender === "subagent-result" && completion && currentSessionId ? { subagentCompletion: { ...completion, ownerSessionId: currentSessionId } } : {}),
+    };
+    rememberCompletedChildren(entry);
+    sendIncomingMessage(entry, "trigger");
   }
   function recordSubagentDeliveryError(entryType: string, to: string, message: string, error: unknown): void {
     pi.appendEntry(entryType, {
@@ -1401,7 +1452,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
           return;
         }
-        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
+        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, parsed.completion);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
         return;
       }
@@ -1426,7 +1477,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
           return;
         }
-        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
+        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, parsed.completion);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
         return;
       }
@@ -1545,6 +1596,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     replyTracker.reset();
     pendingInbound.clear();
     consumedInboundIds.clear();
+    completedChildren.clear();
     reconciledLeafId = null;
     clearInboundFlushTimer();
     agentRunning = false;
@@ -1715,7 +1767,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     });
     const requestText = formatChildOrchestratorMessage(interview ? "interview" : "ask", metadata, [
       `Question ID: ${question.questionId}`,
-      `Answer after reconnect/reload: agent_runs({ action: "answer", id: "${question.runId}", questionId: "${question.questionId}", message: "..." })`,
+      `Answer after reconnect/reload: ${formatRunAction("answer", question.runId, { questionId: question.questionId, message: "..." }, Number(process.env.PI_SUBAGENT_DEPTH) > 1)}`,
       body,
     ].join("\n"));
     const replyPromise = waitForReply(metadata.orchestratorTarget, question.questionId, signal, question);

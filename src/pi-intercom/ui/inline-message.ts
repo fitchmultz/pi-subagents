@@ -40,7 +40,7 @@ export class InlineMessageComponent implements Component {
     const bodyWidth = Math.max(1, width - 2);
 
     const senderName = this.from.name || this.from.id.slice(0, 8);
-    const header = ` 📨 From: ${senderName} (${this.from.cwd}) `;
+    const header = ` 📨 From: ${senderName} (Native session cwd: ${this.from.cwd}) `;
     const headerText = truncateToWidth(header, bodyWidth, "");
     const headerPadding = Math.max(0, bodyWidth - visibleWidth(headerText));
     lines.push(this.theme.fg("accent", `╭${headerText}${borderChar.repeat(headerPadding)}╮`));

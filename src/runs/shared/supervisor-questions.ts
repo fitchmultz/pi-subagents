@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import { formatRunAction } from "../../shared/status-format.ts";
 import { buildSessionContext, parseSessionEntries } from "../../shared/native-session.ts";
 import { getAgentDir } from "../../shared/utils.ts";
 import { ASYNC_DIR, TEMP_ROOT_DIR, type AsyncStatus, type AsyncResultFile, type ResolvedAcceptanceConfig, type JsonSchemaObject, type OutputMode, type SavedLaunchConfig } from "../../shared/types.ts";
@@ -193,6 +194,23 @@ export function listRunQuestions(runDir: string): SupervisorQuestionView[] {
 	});
 }
 
+export function pendingSupervisorQuestion(input: { runId: string; agent: string; index: number; sessionFile?: string; pid?: number }): import("../../shared/types.ts").ControlEvent["supervisorQuestion"] {
+	if (!input.sessionFile) return undefined;
+	try {
+		const pid = input.pid ?? readQuestionContract(input.runId, input.index)?.pid;
+		const question = listRunQuestions(getRunMetadataDir(input.runId)).find((question) =>
+			question.runId === input.runId && question.agent === input.agent && question.index === input.index
+			&& question.sessionFile === input.sessionFile && question.pid === pid
+			&& (question.state === "awaiting_input" || question.state === "answer_pending"));
+		if (question && (question.state === "awaiting_input" || question.state === "answer_pending")) return {
+			questionId: question.questionId, state: question.state, ...(question.answer ? { answer: question.answer.message } : {}),
+		};
+	} catch (error) {
+		console.error(`Could not read supervisor wait for ${input.runId}:${input.index}:`, error);
+	}
+	return undefined;
+}
+
 export function listSupervisorQuestions(ownerSessionId: string, runId?: string, root = QUESTIONS_DIR): SupervisorQuestionView[] {
 	if (runId !== undefined) safeId(runId);
 	if (root === QUESTIONS_DIR) migrateSupervisorQuestions(ownerSessionId);
@@ -243,11 +261,11 @@ export function releaseQuestionRevival(question: SupervisorQuestion, root = QUES
 	for (const file of questionStatePaths(question, "revival.json", root)) fs.rmSync(file, { force: true });
 }
 
-export function questionRecoveryHint(question: SupervisorQuestion): string {
-	return `Recover an unlaunched continuation: agent_runs({ action: "continue", id: "${question.runId}", index: ${question.index}, message: "Continue with the saved supervisor answer." })`;
+export function questionRecoveryHint(question: SupervisorQuestion, childSafe = false): string {
+	return `Recover an unlaunched continuation: ${formatRunAction("resume", question.runId, { index: question.index, message: "Continue with the saved supervisor answer." }, childSafe)}`;
 }
 
-export function formatSupervisorQuestions(questions: SupervisorQuestionView[]): string {
+export function formatSupervisorQuestions(questions: SupervisorQuestionView[], childSafe = false): string {
 	if (!questions.length) return "No supervisor questions owned by this session.";
 	return questions.map((question) => [
 		`Question: ${question.questionId} | ${question.state}`,
@@ -255,9 +273,9 @@ export function formatSupervisorQuestions(questions: SupervisorQuestionView[]): 
 		`Session: ${question.sessionFile} | Child target: ${question.childTarget}`,
 		question.message,
 		...(question.answer ? [`Saved answer: ${question.answer.message}`] : []),
-		...(question.revival && !question.delivery ? [`Continuation requested: ${question.revival.runId}; delivery unconfirmed. Answer retained.`, questionRecoveryHint(question)] : []),
+		...(question.revival && !question.delivery ? [`Continuation requested: ${question.revival.runId}; delivery unconfirmed. Answer retained.`, questionRecoveryHint(question, childSafe)] : []),
 		question.delivery ? `Answer delivered via ${question.delivery.kind}; run: ${question.delivery.runId}`
 			: question.state === "cancelled" ? "Question cancelled; use continue for a new follow-up."
-			: `Answer: agent_runs({ action: "answer", id: "${question.runId}", questionId: "${question.questionId}", message: "..." })`,
+			: `Answer: ${formatRunAction("answer", question.runId, { questionId: question.questionId, message: question.answer?.message ?? "..." }, childSafe)}`,
 	].join("\n")).join("\n\n");
 }

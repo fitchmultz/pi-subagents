@@ -97,7 +97,7 @@ export const AcceptanceOverride = Type.Unsafe({
 		maxFinalizationTurns: { type: "integer", minimum: 1, maximum: 10 },
 	},
 	additionalProperties: false,
-	description: "Optional acceptance contract. criteria=definition of done, evidence/verify=proof, stopRules=constraints, maxFinalizationTurns=self-review budget; at least one required. See the pi-subagents skill.",
+	description: "Optional acceptance contract. criteria=definition of done, evidence/verify=proof, stopRules=constraints, maxFinalizationTurns=self-review budget; at least one required. no-staged-files requires the entire Git index to be empty, including pre-existing staged paths. Continue/resume/answer overrides apply only to newly started continuations, never to a live child's acceptance. See the pi-subagents skill.",
 });
 
 const TaskItem = Type.Object({
@@ -254,10 +254,11 @@ export const AgentRunsParams = Type.Object({
 	id: Type.Optional(Type.String({ minLength: 1, description: "Run ID or unambiguous prefix." })),
 	questionId: Type.Optional(Type.String({ minLength: 1, description: "Durable supervisor question ID for answer." })),
 	index: Type.Optional(Type.Integer({ minimum: 0, description: "Child index for a multi-child run." })),
-	message: Type.Optional(Type.String({ minLength: 1, description: "Guidance, follow-up, answer, or optional parent review note. Only continue/answer can start a saved child." })),
-	decision: Type.Optional(Type.Enum(["accepted", "needs_changes"] as const, { type: "string", description: "Parent review outcome; separate from execution and runtime acceptance checks." })),
+	message: Type.Optional(Type.String({ minLength: 1, description: "Guidance, follow-up, answer, or optional parent-only review note. Review notes are not sent to the child; put actionable instructions in continue/nudge. Only continue/answer can start a saved child." })),
+	decision: Type.Optional(Type.Enum(["accepted", "needs_changes"] as const, { type: "string", description: "Parent-only review outcome; not sent to the child. Separate from execution and runtime acceptance checks." })),
 	offset: Type.Optional(Type.Integer({ minimum: 0, description: "List offset; history is retained regardless of page size." })),
 	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "Runs per list page (default 20)." })),
+	full: Type.Optional(Type.Boolean({ description: "Inspect only: include the full task and saved launch configuration. Default is a concise report; stored data is unchanged." })),
 	agent: Type.Optional(Type.String({ minLength: 1, description: "Continue/answer: explicitly replace the saved profile with this current profile. Required only for old runs without a saved profile." })),
 	model: TaskItem.properties.model,
 	cwd: TaskItem.properties.cwd,
@@ -273,6 +274,7 @@ export const AgentRunsParams = Type.Object({
 		{ if: { anyOf: [requiredObject("agent"), requiredObject("model"), requiredObject("cwd"), requiredObject("output"), requiredObject("acceptance")] }, then: { properties: { action: { enum: ["continue", "answer"] } } } },
 		{ if: { anyOf: [requiredObject("offset"), requiredObject("limit")] }, then: { properties: { action: { enum: ["list"] } } } },
 		{ if: requiredObject("decision"), then: { properties: { action: { enum: ["review"] } } } },
+		{ if: requiredObject("full"), then: { properties: { action: { enum: ["inspect"] } } } },
 	],
 });
 
@@ -291,14 +293,15 @@ export const SubagentParams = Type.Object({
 		description: "Target run ID; prefer id. Defaults to the most recently active controllable run for interrupt/extend/nudge."
 	})),
 	questionId: Type.Optional(Type.String({ minLength: 1, description: "Durable supervisor question ID for answer." })),
-	decision: Type.Optional(Type.Enum(["accepted", "needs_changes"] as const, { type: "string", description: "Parent review decision. Does not launch work or change runtime acceptance." })),
+	decision: Type.Optional(Type.Enum(["accepted", "needs_changes"] as const, { type: "string", description: "Parent-only review decision; not sent to the child. Put actionable instructions in resume/nudge. Does not launch work or change runtime acceptance." })),
 	offset: Type.Optional(Type.Integer({ minimum: 0, description: "Status list offset." })),
 	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "Status list page size (default 20)." })),
+	full: Type.Optional(Type.Boolean({ description: "Exact status only: include the full task and saved launch configuration; default is concise." })),
 	dir: Type.Optional(Type.String({
 		description: "Async run directory for status/resume."
 	})),
 	index: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based child index for actions that target a specific child." })),
-	message: Type.Optional(Type.String({ description: "Follow-up message for resume, nudge text, or answer to a durable question. Use index to pick a child in multi-child runs." })),
+	message: Type.Optional(Type.String({ description: "Follow-up for resume, nudge text, answer, or parent-only review note. Review notes are not sent to the child; put actionable instructions in resume/nudge. Use index for multi-child runs." })),
 	extendMs: Type.Optional(Type.Integer({ minimum: 1, description: "Additional ms for extend; defaults to timeoutMs/maxRuntimeMs." })),
 	// Chain identifier for management (can't reuse 'chain' — that's the execution array)
 	chainName: Type.Optional(Type.String({
@@ -364,6 +367,7 @@ export const SubagentParams = Type.Object({
 		] } },
 		{ if: requiredObject("decision"), then: { ...requiredObject("action"), properties: { action: { enum: ["review"] } } } },
 		{ if: { anyOf: [requiredObject("offset"), requiredObject("limit")] }, then: { ...requiredObject("action"), properties: { action: { enum: ["status"] } } } },
+		{ if: requiredObject("full"), then: { allOf: [{ ...requiredObject("action"), properties: { action: { enum: ["status"] } } }, { anyOf: [requiredObject("id"), requiredObject("runId"), requiredObject("dir")] }] } },
 		{ if: requiredObject("worktree"), then: requiredObject("tasks") },
 		{ if: requiredObject("concurrency"), then: requiredObject("tasks") },
 		{ if: requiredObject("chainDir"), then: requiredObject("chain") },

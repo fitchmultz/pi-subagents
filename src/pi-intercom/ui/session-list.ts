@@ -39,8 +39,8 @@ export class SessionListOverlay implements Component {
     this.allSessions = allSessions;
     const items: SelectItem[] = sessions.map((session) => ({
       value: session.id,
-      label: sessionTitle(session, this.allSessions, session.cwd === currentSession.cwd ? "same cwd" : undefined),
-      description: `${session.cwd} • ${session.model}`,
+      label: sessionTitle(session, this.allSessions, session.cwd === currentSession.cwd ? "same native session cwd" : undefined),
+      description: `Native session cwd: ${session.cwd} • ${session.model}`,
     }));
     this.selectList = new SelectList(items, 8, {
       selectedPrefix: (text) => theme.fg("accent", text),
@@ -84,7 +84,7 @@ export class SessionListOverlay implements Component {
       row(this.theme.bold(" Current Session")),
       border(`├${"─".repeat(contentWidth)}┤`),
       row(`  ${this.theme.fg("dim", sessionTitle(this.currentSession, this.allSessions, "self"))}`),
-      row(`  ${this.theme.fg("dim", `${this.currentSession.cwd} • ${this.currentSession.model}`)}`),
+      row(`  ${this.theme.fg("dim", `Native session cwd: ${this.currentSession.cwd} • ${this.currentSession.model}`)}`),
       border(`├${"─".repeat(contentWidth)}┤`),
       row(this.theme.bold(" Other Sessions")),
     ];

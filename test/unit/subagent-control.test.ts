@@ -119,10 +119,10 @@ describe("subagent control attention state", () => {
 			"Run: 78f659a3",
 			"Signal: worker needs attention",
 			"Hint: Inspect status first unless the run is clearly blocked.",
-			"Nudge (preferred live coordination): subagent({ action: \"nudge\", id: \"78f659a3\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
+			"Nudge (preferred live coordination): agent_runs({ action: \"nudge\", id: \"78f659a3\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
 			"Ask (blocking wait only; parent must remain alive): intercom({ action: \"ask\", to: \"subagent-worker-78f659a3\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
-			"Status: subagent({ action: \"status\", id: \"78f659a3\" })",
-			"Interrupt: subagent({ action: \"interrupt\", id: \"78f659a3\" })",
+			"Status: agent_runs({ action: \"inspect\", id: \"78f659a3\" })",
+			"Stop: agent_runs({ action: \"stop\", id: \"78f659a3\" })",
 		].join("\n"));
 	});
 
@@ -160,10 +160,10 @@ describe("subagent control attention state", () => {
 			"Run: 78f659a3",
 			"Signal: worker needs attention",
 			"Hint: Inspect status first unless the run is clearly blocked.",
-			"Nudge (preferred live coordination): subagent({ action: \"nudge\", id: \"78f659a3\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
+			"Nudge (preferred live coordination): agent_runs({ action: \"nudge\", id: \"78f659a3\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
 			"Ask (blocking wait only; parent must remain alive): intercom({ action: \"ask\", to: \"subagent-worker-78f659a3\", delivery: \"steer\", message: \"What are you blocked on? Reply with the smallest next step, or state the exact decision you need.\" })",
-			"Status: subagent({ action: \"status\", id: \"78f659a3\" })",
-			"Interrupt: subagent({ action: \"interrupt\", id: \"78f659a3\" })",
+			"Status: agent_runs({ action: \"inspect\", id: \"78f659a3\" })",
+			"Stop: agent_runs({ action: \"stop\", id: \"78f659a3\" })",
 		].join("\n"));
 	});
 

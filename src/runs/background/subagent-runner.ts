@@ -46,7 +46,7 @@ import {
 	flattenSteps,
 	MAX_PARALLEL_CONCURRENCY,
 } from "../shared/parallel-utils.ts";
-import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
+import { buildPiArgs, cleanupTempDir, SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../shared/pi-args.ts";
 import {
 	appendClaudeCodeMessage,
 	buildClaudeCodeInvocation,
@@ -63,7 +63,7 @@ import { completeWorkflowStep, runParallelTasks, workflowChildSucceeded, type Pa
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { runModelAttempts, sumAttemptUsage } from "../shared/model-fallback.ts";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
-import { refreshQuestionLaunch, saveAsyncRunResult, saveRunStatus, saveQuestionContract } from "../shared/supervisor-questions.ts";
+import { pendingSupervisorQuestion, refreshQuestionLaunch, saveAsyncRunResult, saveRunStatus, saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
 import { hasCompletedMutationToolCall, resolveCompletionPolicy } from "../shared/completion-guard.ts";
 import {
@@ -639,7 +639,7 @@ function writeRunLog(
 	lines.push(`# Subagent run ${input.id}`);
 	lines.push("");
 	lines.push(`- **Mode:** ${input.mode}`);
-	lines.push(`- **CWD:** ${input.cwd}`);
+	lines.push(`- **Launch cwd:** ${input.cwd}`);
 	lines.push(`- **Started:** ${new Date(input.startedAt).toISOString()}`);
 	lines.push(`- **Ended:** ${new Date(input.endedAt).toISOString()}`);
 	lines.push(`- **Duration:** ${formatDuration(input.endedAt - input.startedAt)}`);
@@ -1224,6 +1224,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		}
 		return lastActivityAt;
 	};
+	const childSafeControls = Boolean(config.nestedSelf) || (process.env[SUBAGENT_CHILD_ENV] === "1" && process.env[SUBAGENT_FANOUT_CHILD_ENV] === "1");
 	const emittedControlEventKeys = new Set<string>();
 	const mutatingFailureStates = initialStatusSteps.map(() => createMutatingFailureState());
 	const mutationTrackers = initialStatusSteps.map(() => createMutationCompletionTracker());
@@ -1238,11 +1239,11 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			event,
 			channels,
 			childIntercomTarget,
-			noticeText: formatControlNoticeMessage(event, childIntercomTarget),
+			noticeText: formatControlNoticeMessage(event, childIntercomTarget, childSafeControls),
 			...(config.controlIntercomTarget && channels.includes("intercom") ? {
 				intercom: {
 					to: config.controlIntercomTarget,
-					message: formatControlIntercomMessage(event, childIntercomTarget),
+					message: formatControlIntercomMessage(event, childIntercomTarget, childSafeControls),
 				},
 			} : {}),
 		}));
@@ -1390,6 +1391,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						index,
 						ts: now,
 						lastActivityAt,
+						currentTool: step.currentTool,
+						currentToolDurationMs: step.currentToolStartedAt !== undefined ? Math.max(0, now - step.currentToolStartedAt) : undefined,
+						supervisorQuestion: pendingSupervisorQuestion({ runId: id, agent: step.agent, index, sessionFile: step.sessionFile }),
 					}));
 					changed = true;
 				}

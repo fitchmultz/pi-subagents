@@ -78,7 +78,7 @@ Interview replies use plain JSON or a fenced JSON block. `info` questions are co
 }
 ```
 
-If a subagent status line advertises an intercom target, trust it only when that target appears in `intercom({ action: "list" })`. If absent, use normal subagent controls (`status`, `resume`, `nudge`, result artifacts); the child may be Claude Code-backed or already exited and have no child-side `contact_supervisor`. From a parent session, prefer `subagent({ action: "nudge", id, message })` for non-blocking live child coordination; it supplements the active child task unless it explicitly replaces it. Use direct `intercom({ action: "ask", to, delivery: "steer", message })` only when the parent process must remain alive and cannot safely continue without a listed child reply.
+If a subagent status line advertises an intercom target, trust it only when that target appears in `intercom({ action: "list" })`. If absent, use `agent_runs` inspection, continuation, nudging, or result artifacts; the child may be Claude Code-backed or already exited and have no child-side `contact_supervisor`. From a parent session, prefer `agent_runs({ action: "nudge", id, message })` for non-blocking live child coordination; it supplements the active child task unless it explicitly replaces it. Use direct `intercom({ action: "ask", to, delivery: "steer", message })` only when the parent process must remain alive and cannot safely continue without a listed child reply.
 
 ## Optional visible peer sessions
 

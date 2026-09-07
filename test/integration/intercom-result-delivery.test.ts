@@ -643,8 +643,8 @@ describe("intercom result delivery cutover", () => {
 			assert.match(text, /Verified completed outcome/);
 			assert.ok(text.includes(path.join(asyncDir, "output-0.log")));
 			assert.equal(events.emitted.length, 0, "no child launch or intercom delivery");
-			assert.match(text, new RegExp(`action: "resume", id: "${runId}"`));
-			assert.match(text, new RegExp(`action: "status", id: "${runId}"`));
+			assert.match(text, new RegExp(`action: "continue", id: "${runId}"`));
+			assert.match(text, new RegExp(`action: "inspect", id: "${runId}"`));
 			assert.equal(result.details?.managementControl?.state, "completed");
 			assert.equal(result.details?.managementControl?.capabilities.includes("nudge"), false);
 		} finally {
@@ -981,7 +981,8 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(result.results[0].acceptance.effectiveAcceptance.criteria[0].must, "Keep the original contract");
 		assert.equal(result.results[0].acceptance.verifyRuns[0].exitCode, 23);
 		assert.deepEqual(result.results[0].structuredOutput, { answer: "stable" });
-		assert.equal(fs.readFileSync(outputPath, "utf8"), "Answered with original acceptance");
+		assert.equal(fs.readFileSync(outputPath, "utf8"), "Final validation");
+		assert.equal(JSON.parse(fs.readFileSync(result.results[0].artifactPaths.metadataPath, "utf8")).initialOutput, "Answered with original acceptance");
 	});
 
 	for (const registered of [false, true]) it(`continue recovers a pre-launch answer claim and refuses an uncertain launch (${registered ? "registered" : "missing"} original run)`, async () => {
@@ -1096,7 +1097,7 @@ describe("intercom result delivery cutover", () => {
 			assert.match(result.content[0]?.text ?? "", /Revived async subagent from/);
 			assert.match(result.content[0]?.text ?? "", /Do not run sleep timers or polling loops/);
 			assert.match(result.content[0]?.text ?? "", /end your turn now/);
-			assert.match(result.content[0]?.text ?? "", /Status if needed: subagent\(\{ action: "status"/);
+			assert.match(result.content[0]?.text ?? "", /Status if needed: agent_runs\(\{ action: "inspect"/);
 			assert.match(result.content[0]?.text ?? "", new RegExp(`Run mapping: ${runId} ->`));
 			assert.match(result.content[0]?.text ?? "", /Prior pending-reply context .* is invalid/);
 			assert.doesNotMatch(result.content[0]?.text ?? "", /Follow:/);
@@ -1150,7 +1151,7 @@ describe("intercom result delivery cutover", () => {
 		assert.match(text, /State: remembered foreground/);
 		assert.match(text, /1\. a completed, session:/);
 		assert.match(text, /2\. b timed-out, session: .*final: Detached child timed out/);
-		assert.match(text, /Revive child: subagent\(\{ action: "resume", id: "remembered-status-run", index: 0, message: "\.\.\." \}\)/);
+		assert.match(text, /Continue child: agent_runs\(\{ action: "continue", id: "remembered-status-run", index: 0, message: "\.\.\." \}\)/);
 		assert.doesNotMatch(text, /Async run not found/);
 		assert.equal(result.details?.managementControl?.state, "failed");
 		assert.equal(result.details?.managementControl?.capabilities.includes("nudge"), false);
@@ -1165,8 +1166,8 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(nudge.isError, undefined);
 		assert.match(nudge.content[0]?.text ?? "", /already failed/);
 		assert.match(nudge.content[0]?.text ?? "", /Detached child timed out/);
-		assert.match(nudge.content[0]?.text ?? "", /action: "resume", id: "remembered-status-run", index: 0/);
-		assert.match(nudge.content[0]?.text ?? "", /action: "status", id: "remembered-status-run"/);
+		assert.match(nudge.content[0]?.text ?? "", /action: "continue", id: "remembered-status-run", index: 0/);
+		assert.match(nudge.content[0]?.text ?? "", /action: "inspect", id: "remembered-status-run"/);
 		assert.equal(nudge.details?.managementControl?.capabilities.includes("nudge"), false);
 	});
 

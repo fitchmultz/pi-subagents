@@ -243,7 +243,7 @@ export class ComposeOverlay implements Component {
     const lines: string[] = [];
     lines.push(border(`╭${"─".repeat(contentWidth)}╮`));
     lines.push(row(this.theme.bold(` ${this.mode === "ask" ? "Request reply" : "Send"} to: ${this.targetLabel}`)));
-    lines.push(row(this.theme.fg("dim", ` ${this.target.cwd} • ${this.target.model}`)));
+    lines.push(row(this.theme.fg("dim", ` Native session cwd: ${this.target.cwd} • ${this.target.model}`)));
     lines.push(border(`├${"─".repeat(contentWidth)}┤`));
     lines.push(row());
 

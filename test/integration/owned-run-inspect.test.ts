@@ -65,7 +65,8 @@ for (const source of ["async", "foreground"] as const) test(`owned ${source} ins
 	const text = live.content.map((part) => part.text).join("\n");
 	for (const heading of ["Run", "State", "Mode"]) assert.equal(text.match(new RegExp(`^${heading}:`, "gm"))?.length, 1, `${heading} must appear once`);
 	assert.equal(live.content.length, 1, "one coherent report, not two content blocks");
-	for (const detail of ["Task: Check the approved behavior", "Root:", "Parent review:", "Notification:", "Profile: project /fixture/worker.md", "Effective model: fixture/original", "Activity:", "Intercom: registered", "Nudge (preferred", "Ask (blocking"]) assert.ok(text.includes(detail), detail);
+	for (const detail of ["Task: Check the approved behavior", "Root:", "Parent review (not sent to child):", "Notification:", "configuration: saved launch snapshot", "Effective model: fixture/original", "Activity:", "Intercom: registered", "Nudge (preferred", "Ask (blocking"]) assert.ok(text.includes(detail), detail);
+	assert.equal(live.details.run?.children[0]?.launch?.agent.filePath, "/fixture/worker.md", "full profile provenance remains stored");
 	assert.ok(live.details.managementControl?.capabilities.includes("nudge"));
 	assert.ok(live.details.managementControl?.capabilities.includes("resume"));
 	assert.ok(live.details.managementControl?.capabilities.includes("interrupt"));

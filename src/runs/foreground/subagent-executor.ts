@@ -113,7 +113,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					if (ownedRunView(run, deps.state).state === "live") throw new Error("The run is still live. Use nudge for guidance, or stop it before reviewing its result.");
 					const reviewed = { ...run, review: { decision: params.decision, ...(params.message ? { message: params.message } : {}), reviewedAt: Date.now() } };
 					rememberOwnedRun(deps.state, reviewed);
-					return ownedRunStatusResult(reviewed, deps.state);
+					const result = ownedRunStatusResult(reviewed, deps.state, undefined, { childSafe: Boolean(nestedResolutionScopeForExecutor(deps)) });
+					return { ...result, content: [{ type: "text", text: `Saved parent review for ${run.runId}: ${params.decision}.\nThe review note is parent-only and was not sent to the child. Put actionable instructions in ${deps.allowMutatingManagementActions === false ? "subagent resume/nudge" : "agent_runs continue/nudge"}. No work started.` }] };
 				} catch (error) {
 					return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
 				}
@@ -142,6 +143,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						type: "text",
 						text: buildDoctorReport({
 							cwd: requestCwd,
+							nativeSessionCwd: ctx.cwd,
 							config: deps.config,
 							state: deps.state,
 							requestedSessionDir: paramsWithResolvedCwd.sessionDir,
@@ -175,7 +177,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							if (foreground) {
 								const target = foregroundIntercomTarget(foreground);
 								const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
-								return foregroundStatusResult(foreground, health, includeRunHeader);
+								return foregroundStatusResult(foreground, health, includeRunHeader, Boolean(nestedScope));
 							}
 						}
 					} catch (error) {
@@ -187,7 +189,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					if (foreground) {
 						const target = foregroundIntercomTarget(foreground);
 						const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
-						return foregroundStatusResult(foreground, health);
+						return foregroundStatusResult(foreground, health, true, true);
 					}
 				}
 				let inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps), includeRunHeader });
@@ -199,7 +201,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				if (targetRunId && inspected.isError && inspected.content[0]?.type === "text" && inspected.content[0].text.startsWith("Async run not found.")) {
 					try {
 						const remembered = resolveRememberedForegroundRun(targetRunId, deps.state);
-						if (remembered) return rememberedForegroundStatusResult(remembered);
+						if (remembered) return rememberedForegroundStatusResult(remembered, Boolean(nestedResolutionScopeForExecutor(deps)));
 					} catch (error) {
 						const message = error instanceof Error ? error.message : String(error);
 						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
@@ -214,7 +216,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						...[...(deps.state.foregroundRuns?.values() ?? [])]
 							.filter((run) => !deps.state.foregroundControls.has(run.runId))
 							.sort((a, b) => b.updatedAt - a.updatedAt)
-							.map(rememberedForegroundStatusResult),
+							.map((run) => rememberedForegroundStatusResult(run)),
 					];
 					if (foreground.length) {
 						inspected = {
@@ -661,11 +663,11 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		if (requested && !args[1].dir) {
 			try {
 				const owned = resolveOwnedRun(deps.state, requested);
-				if (owned) result = ownedRunStatusResult(owned, deps.state, result);
+				if (owned) result = ownedRunStatusResult(owned, deps.state, result, { full: args[1].full, childSafe: Boolean(nestedResolutionScopeForExecutor(deps)) });
 			} catch (error) {
 				return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
 			}
 		}
-		return projectSupervisorQuestions(result, args[1], args[4].sessionManager.getSessionId());
+		return projectSupervisorQuestions(result, args[1], args[4].sessionManager.getSessionId(), Boolean(nestedResolutionScopeForExecutor(deps)));
 	} };
 }

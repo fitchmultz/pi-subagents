@@ -413,7 +413,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "agent_runs",
 		label: "Agent Runs",
-		description: "List your delegated runs across working directories (attention first, 20 per page), inspect saved results/configuration/continuations, answer durable questions, nudge live work, stop, continue a saved specialist, or record parent review. History survives reload; review/inspect/nudge never restart finished work. Continue or answering an exited child may launch a saved session with its original effective configuration. profiles lists agents. Background results arrive automatically.",
+		description: "List your delegated runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; overrides apply only to a new continuation, never to live acceptance. profiles lists agents. Results arrive automatically; history survives reload.",
 		parameters: AgentRunsParams,
 		async execute(id, params, signal, onUpdate, ctx) {
 			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list", questions: "questions", answer: "answer", review: "review" };
@@ -451,7 +451,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: SUBAGENT_TOOL_NAME,
 		label: "Subagent",
-		description: `Delegate bounded work to configured Pi subagents, chains, or parallel reviewers; manage agent definitions; inspect/control async runs. Use exactly one execution mode (agent, tasks, or chain) or one management/control action. Before execution, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled. Parallel tasks support output?,reads?,progress?. maxOutput accepts { bytes?: number, lines?: number }. Prefer acceptance for goal/spec handoffs and status/resume/interrupt/extend/nudge for active runs.`,
+		description: `Delegate bounded work to configured Pi subagents, chains, or parallel reviewers; manage agent definitions; inspect/control async runs. Use exactly one execution mode (agent, tasks, or chain) or one management/control action. Before execution, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled. Parallel tasks support output?,reads?,progress?. maxOutput accepts { bytes?: number, lines?: number }. Prefer acceptance for goal/spec handoffs and status/resume/interrupt/extend/nudge for active runs. Exact status is concise by default; full:true includes the full task/configuration. Review notes are parent-only, not sent to children; put actionable instructions in resume/nudge. Resume/answer overrides do not amend live acceptance.`,
 		parameters: SubagentParams,
 
 		async execute(id, params, signal, onUpdate, ctx) {

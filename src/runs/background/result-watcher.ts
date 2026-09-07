@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { getRunMetadataDir } from "../shared/supervisor-questions.ts";
 import { buildCompletionKey, markSeenWithTtl } from "./completion-dedupe.ts";
 import { createFileCoalescer } from "../../shared/file-coalescer.ts";
 import { resolveOrchestratorIntercomTarget } from "../../intercom/intercom-bridge.ts";
@@ -132,6 +133,7 @@ export function createResultWatcher(
 					summary,
 					index,
 					artifactPath: result.artifactPaths?.outputPath,
+					metadataPath: result.artifactPaths?.metadataPath,
 					...(typeof sessionPath === "string" && fsApi.existsSync(sessionPath) ? { sessionPath } : {}),
 					...(result.intercomTarget ? { intercomTarget: result.intercomTarget } : {}),
 					...(childNestedChildren ? { children: childNestedChildren } : {}),
@@ -153,11 +155,13 @@ export function createResultWatcher(
 				const mode = data.mode === "single" || data.mode === "parallel" || data.mode === "chain"
 					? data.mode
 					: resultChildren.length > 1 ? "chain" : "single";
+				const savedResultPath = path.join(getRunMetadataDir(runId), "result.json");
 				const payload = buildSubagentResultIntercomPayload({
 					to: intercomTarget,
 					runId,
 					mode,
 					source: "async",
+					...(fsApi.existsSync(savedResultPath) ? { resultPath: savedResultPath } : {}),
 					status: resolveSubagentResultStatus({ state: data.terminalState }),
 					error: data.workflowGraph?.nodes.find((node) => node.error)?.error,
 					children: normalizedChildren,

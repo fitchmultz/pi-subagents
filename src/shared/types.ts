@@ -133,6 +133,7 @@ export interface ControlEvent {
 	currentPath?: string;
 	elapsedMs?: number;
 	recentFailureSummary?: string;
+	supervisorQuestion?: { questionId: string; state: "awaiting_input" | "answer_pending"; answer?: string };
 }
 
 export type SubagentResultStatus = "completed" | "failed" | "paused" | "detached" | "timed-out";
@@ -159,6 +160,7 @@ export interface SubagentResultIntercomChild {
 	summary: string;
 	index?: number;
 	artifactPath?: string;
+	metadataPath?: string;
 	sessionPath?: string;
 	intercomTarget?: string;
 	children?: PublicNestedRunSummary[];
@@ -175,6 +177,7 @@ export interface SubagentResultIntercomPayload {
 	error?: string;
 	source: "foreground" | "async";
 	children: SubagentResultIntercomChild[];
+	resultPath?: string;
 	asyncId?: string;
 	asyncDir?: string;
 	chainSteps?: number;
@@ -529,7 +532,7 @@ export interface Details {
 	managementControls?: ManagementControl[];
 	questions?: import("../runs/shared/supervisor-questions.ts").SupervisorQuestionView[];
 	run?: OwnedRunView;
-	runs?: Array<Pick<OwnedRunView, "runId" | "source" | "mode" | "cwd" | "task" | "state" | "updatedAt" | "attention" | "review" | "rootRunId" | "predecessorRunId"> & { summary?: string }>;
+	runs?: Array<Pick<OwnedRunView, "runId" | "source" | "mode" | "cwd" | "task" | "state" | "updatedAt" | "attention" | "review" | "rootRunId" | "predecessorRunId" | "predecessorIndex"> & { summary?: string; continuations?: string[] }>;
 	runList?: { total: number; offset: number; limit: number; nextOffset?: number };
 	intercomDelivery?: {
 		delivered: boolean;

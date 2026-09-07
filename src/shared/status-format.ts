@@ -1,5 +1,13 @@
 import type { ActivityState, AsyncJobStep, ManagementAction, ManagementControl, ManagementRunState, SubagentLiveIntercomHealth } from "./types.ts";
 
+export function formatRunAction(action: ManagementAction | "questions" | "answer", id: string, fields: Record<string, string | number | boolean> = {}, childSafe = false): string {
+	const parentAction = { status: "inspect", resume: "continue", interrupt: "stop" };
+	const name = childSafe ? action : parentAction[action as keyof typeof parentAction] ?? action;
+	const args = Object.entries({ action: name, id, ...fields }).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join(", ");
+	const call = `${childSafe || action === "extend" ? "subagent" : "agent_runs"}({ ${args} })`;
+	return action === "extend" && !childSafe ? `load_subagent({}), then ${call}` : call;
+}
+
 export function buildManagementControl(input: {
 	state: ManagementRunState;
 	runId: string;
@@ -76,8 +84,9 @@ export function formatLiveIntercomActionLines(input: {
 	index?: number;
 	health?: SubagentLiveIntercomHealth;
 	indent?: string;
+	childSafe?: boolean;
 }): string[] {
-	const indexPart = input.index !== undefined ? `, index: ${input.index}` : "";
+	const fields = { ...(input.index !== undefined ? { index: input.index } : {}), message: "What are you blocked on?" };
 	const healthText = !input.health
 		? "unknown"
 		: input.health.status === "registered"
@@ -86,7 +95,7 @@ export function formatLiveIntercomActionLines(input: {
 	const indent = input.indent ?? "";
 	return [
 		`${indent}Intercom: ${healthText} (${input.target})`,
-		`${indent}Nudge (preferred live coordination): subagent({ action: "nudge", id: "${input.runId}"${indexPart}, message: "What are you blocked on?" })`,
+		`${indent}Nudge (preferred live coordination): ${formatRunAction("nudge", input.runId, fields, input.childSafe)}`,
 		`${indent}Ask (blocking wait only; parent must remain alive): intercom({ action: "ask", to: "${input.target}", delivery: "steer", message: "What are you blocked on?" })`,
 	];
 }
