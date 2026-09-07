@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-09-07
+
+### Fixed
+- Skip unrelated sessions before nested-run discovery during startup and the first restore poll, preserving matching jobs and their reconciliation.
+
 ## [0.37.0] - 2026-09-07
 
 ### Added
