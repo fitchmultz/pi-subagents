@@ -934,6 +934,12 @@ export const SUBAGENT_INTERCOM_HEALTH_RESPONSE_EVENT = "subagent:intercom-health
 export const SUBAGENT_INTERCOM_IDENTITY_REQUEST_EVENT = "subagent:intercom-identity-request";
 export const SUBAGENT_INTERCOM_IDENTITY_RESPONSE_EVENT = "subagent:intercom-identity-response";
 
+export interface SubagentIntercomConnection {
+	status: "connected" | "disconnected" | "connecting" | "unknown";
+	sessionId?: string;
+	reason?: string;
+}
+
 export interface SubagentLiveIntercomHealth {
 	target: string;
 	status: "registered" | "none" | "missing" | "ambiguous" | "prefix_too_short";

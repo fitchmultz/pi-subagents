@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -61,8 +61,14 @@ async function waitFor(check: () => boolean | Promise<boolean>, description: str
   }
 }
 
-before(() => waitFor(() => brokerLog.includes("Intercom broker started"), "private broker"));
+const fixtureClient = new IntercomClient();
+before(async () => {
+  await waitFor(() => brokerLog.includes("Intercom broker started"), "private broker");
+  // Keep the suite's broker alive between cold SDK loads, beyond its 5s idle exit.
+  await fixtureClient.connect({ name: "fixture-host", cwd: root, model: "fixture" });
+});
 after(async () => {
+  await fixtureClient.disconnect();
   if (broker.exitCode === null) {
     const exited = once(broker, "exit");
     broker.kill("SIGTERM");
@@ -85,7 +91,7 @@ function inboundId(message: unknown): string | undefined {
 async function makeSession(t: TestContext, name: string, options: {
   configure?: (pi: ExtensionAPI) => void;
   hasUI?: boolean;
-  subagents?: boolean;
+  subagents?: boolean | string;
   child?: { runId: string; supervisor: string };
 } = {}) {
   const cwd = path.join(root, name);
@@ -103,7 +109,7 @@ async function makeSession(t: TestContext, name: string, options: {
     systemPrompt: "Deterministic intercom regression fixture.",
     additionalExtensionPaths: [
       process.env.PI_INTERCOM_TEST_EXTENSION ?? path.join(repo, "src/pi-intercom/index.ts"),
-      ...(options.subagents ? [path.join(repo, "src/extension/index.ts")] : []),
+      ...(options.subagents ? [typeof options.subagents === "string" ? options.subagents : path.join(repo, "src/extension/index.ts")] : []),
     ],
     extensionFactories: [(pi: ExtensionAPI) => {
       pi.on("session_start", (event, context) => {
@@ -182,6 +188,80 @@ async function makeSession(t: TestContext, name: string, options: {
     },
   };
 }
+
+test("native Doctor reports broker registration and loaded compiled identity, not changed files on disk", async (t) => {
+  const packageCopy = path.join(root, "doctor-package");
+  mkdirSync(packageCopy);
+  cpSync(path.join(repo, "dist"), path.join(packageCopy, "dist"), { recursive: true });
+  const manifest = JSON.parse(readFileSync(path.join(repo, "package.json"), "utf8"));
+  writeFileSync(path.join(packageCopy, "package.json"), JSON.stringify(manifest));
+  const receiver = await makeSession(t, "doctor-loaded", { subagents: path.join(packageCopy, "dist/extension/index.js") });
+  const loader = receiver.session.agent.state.tools.find((tool: { name: string }) => tool.name === "load_subagent");
+  await loader.execute("load", {}, new AbortController().signal);
+  const subagent = receiver.session.agent.state.tools.find((tool: { name: string }) => tool.name === "subagent");
+  const doctor = async () => {
+    const result = await subagent.execute("doctor", { action: "doctor" }, new AbortController().signal);
+    assert.equal(result.isError, undefined);
+    return result.content.map((part: { text?: string }) => part.text ?? "").join("\n");
+  };
+  const before = await doctor();
+  assert.match(before, /- bridge: responding\n- connection: connected/);
+  const registered = (await receiver.sender.listSessions()).find((peer) => peer.name === "doctor-loaded")!;
+  assert.ok(before.includes(`- broker session id: ${registered.id}`));
+  assert.ok(before.includes(`- Node: ${process.version}`));
+  assert.ok(before.includes(`- process: ${process.pid} (${process.execPath})`));
+  assert.ok(before.includes(`- Pi package directory: ${sdkRoot}`));
+  assert.ok(before.includes(`- extension module: ${path.join(packageCopy, "dist/extension/doctor.js")}`));
+  const build = before.match(/^- loaded pi-subagents build: (.+)$/m)?.[1];
+  assert.ok(build?.startsWith(`${manifest.version} (runtime SHA-256 `), "Doctor must identify the loaded compiled build");
+  assert.match(build, /[0-9a-f]{64}\)$/);
+  assert.match(before, /- native queue contract: not verified/);
+  writeFileSync(path.join(packageCopy, "package.json"), JSON.stringify({ ...manifest, version: "99.0.0" }));
+  writeFileSync(path.join(packageCopy, "dist/extension/build-info.js"), `export const EXTENSION_BUILD = { version: "99.0.0", sha256: "${"0".repeat(64)}" };\n`);
+  const after = await doctor();
+  assert.equal(after.match(/^- loaded pi-subagents build: (.+)$/m)?.[1], build, "on-disk replacement does not change loaded code identity");
+  assert.equal(receiver.faux.state.callCount, 0);
+  assert.deepEqual(receiver.errors, []);
+  if (evidenceDir) writeFileSync(path.join(root, "doctor-loaded-identity.json"), JSON.stringify({ before, after }, null, 2));
+});
+
+test("native steady passive receipts do not rescan old history and still survive tree navigation", async (t) => {
+  const receiver = await makeSession(t, "incremental-receipts");
+  const manager = receiver.session.sessionManager;
+  for (let index = 0; index < 1_024; index++) manager.appendCustomMessageEntry("intercom_message", `old receipt ${index}`, false, { message: { id: `old-${index}` } });
+  const branchPoint = manager.getLeafId();
+  await receiver.session.reload();
+  await waitFor(async () => (await receiver.sender.listSessions()).some((peer) => peer.name === "incremental-receipts"), "registration after receipt restore");
+  const entriesBefore = manager.getEntries();
+  const oldIds = new Set(entriesBefore.map((entry: { id: string }) => entry.id));
+  let fullReads = 0, oldLookups = 0, lookups = 0;
+  const readAll = manager.getEntries.bind(manager), readOne = manager.getEntry.bind(manager);
+  t.mock.method(manager, "getEntries", () => { fullReads++; return readAll(); });
+  t.mock.method(manager, "getEntry", (id: string) => { lookups++; if (oldIds.has(id)) oldLookups++; return readOne(id); });
+  for (let index = 0; index < 12; index++) {
+    const id = `new-${index}`;
+    await receiver.send(id, { text: `passive ${index}`, delivery: "passive" });
+    await waitFor(() => receiver.events.some((event) => event.type === "sdk.message_end" && event.id === id), "native passive receipt");
+  }
+  t.diagnostic(`1,024 historical receipts; 12 passive deliveries; full history reads: ${fullReads}; old entry lookups: ${oldLookups}; total lookups: ${lookups}.`);
+  assert.equal(fullReads, 0, "steady inbound reconciliation must not load the old entry list");
+  assert.ok(oldLookups <= 1, "the receipt cursor must stop at the already visited boundary");
+  assert.equal(receiver.faux.state.callCount, 0, "passive receipts must not wake the model");
+  t.mock.restoreAll();
+  assert.match(await receiver.status(), /Pending inbound messages: 0/);
+
+  await receiver.session.navigateTree(branchPoint, { summarize: false });
+  await receiver.send("after-branch", { text: "passive on another branch", delivery: "passive" });
+  await waitFor(() => receiver.visible("after-branch").length === 1, "branched passive receipt");
+  await receiver.session.reload();
+  assert.match(await receiver.status(), /Pending inbound messages: 0/);
+  for (const id of receiver.sends) assert.equal(receiver.visible(id).length, 1, id);
+  // This is receipt indexing, not a new explicit-message-ID deduplication policy.
+  await receiver.send("after-branch", { text: "explicit same-ID send remains a second send", delivery: "passive" });
+  await waitFor(() => receiver.visible("after-branch").length === 2, "unchanged explicit same-ID behavior");
+  assert.equal(receiver.faux.state.callCount, 0);
+  assert.deepEqual(receiver.errors, []);
+});
 
 test("native idle send is visible once and passive delivery does not start a turn", async (t) => {
   const receiver = await makeSession(t, "normal");

@@ -250,7 +250,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
   const commands = new Map<string, (args: string, ctx: unknown) => unknown>();
   const tools: CapturedTool[] = [];
   const entries: Array<{ type: string; data: unknown }> = [];
-  const sessionEntries: Array<{ type: string; customType?: string; details?: unknown; data?: unknown }> = [];
+  const sessionEntries: Array<{ id: string; parentId: string | null; type: string; customType?: string; details?: unknown; data?: unknown }> = [];
   const sentMessages: Array<{ message: { customType?: string; content?: string; details?: unknown }; options?: { triggerTurn?: boolean; deliverAs?: string } }> = [];
   const pi = {
     getSessionName: () => sessionName,
@@ -299,7 +299,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
     },
     appendEntry: (type: string, data: unknown) => {
       entries.push({ type, data });
-      sessionEntries.push({ type: "custom", customType: type, data });
+      sessionEntries.push({ id: `entry-${sessionEntries.length}`, parentId: sessionEntries.at(-1)?.id ?? null, type: "custom", customType: type, data });
     },
   };
   const sessionFile = path.join(sharedHomeDir, `${sessionName}.jsonl`);
@@ -307,7 +307,8 @@ function createExtensionHarness(sessionName = "child-worker", options: {
   const ctx = {
     cwd: repoDir,
     model: { id: "child-model" },
-    sessionManager: { getSessionId: () => "session-child-test", getSessionFile: () => sessionFile, getEntries: () => sessionEntries },
+    sessionManager: { getSessionId: () => "session-child-test", getSessionFile: () => sessionFile, getEntries: () => sessionEntries,
+      getLeafId: () => sessionEntries.at(-1)?.id ?? null, getEntry: (id: string) => sessionEntries.find((entry) => entry.id === id) },
     isIdle: options.isIdle ?? (() => true),
     hasPendingMessages: () => false,
     hasUI: options.hasUI ?? false,
@@ -414,7 +415,7 @@ async function waitForSentMessages(harness: ReturnType<typeof createExtensionHar
 function persistSentIntercom(harness: ReturnType<typeof createExtensionHarness>): void {
   const sent = harness.sentMessages.at(-1);
   assert.ok(sent, "expected a sent intercom message to persist");
-  harness.sessionEntries.push({ type: "custom_message", ...sent.message });
+  harness.sessionEntries.push({ id: `entry-${harness.sessionEntries.length}`, parentId: harness.sessionEntries.at(-1)?.id ?? null, type: "custom_message", ...sent.message });
 }
 
 function waitForReply(client: InstanceType<typeof IntercomClient>, replyTo: string, timeoutMs = 5000): Promise<{ from: SessionInfo; message: Message; }> {
@@ -3767,6 +3768,45 @@ test("subagent intercom health queries report registered and missing targets", {
   } finally {
     await harness.emitLifecycle("session_shutdown").catch(() => undefined);
     await child.disconnect().catch(() => undefined);
+    await stopBroker(broker);
+  }
+});
+
+test("local health distinguishes startup, registered, disconnected and unavailable without reconnecting", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const broker = await setupBroker();
+  const observer = new IntercomClient();
+  const harness = createExtensionHarness("local-health");
+  let sequence = 0;
+  const query = (targets: string[] = []) => new Promise<{ status: string; sessionId?: string } | undefined>((resolve) => {
+    const requestId = `local-health-${sequence++}`;
+    const timer = setTimeout(() => { unsubscribe(); resolve(undefined); }, 500);
+    const unsubscribe = harness.pi.events.on("subagent:intercom-health-response", (payload) => {
+      const response = payload as { requestId: string; connection?: { status: string; sessionId?: string } };
+      if (response.requestId !== requestId) return;
+      clearTimeout(timer); unsubscribe(); resolve(response.connection);
+    });
+    harness.pi.events.emit("subagent:intercom-health-request", { requestId, targets });
+  });
+  try {
+    await connectClient(observer, "health-observer");
+    piIntercomExtension(harness.pi as never);
+    assert.equal((await query())?.status, "unknown", "a loaded but unstarted bridge must answer honestly");
+    await harness.emitLifecycle("session_start");
+    assert.equal((await query())?.status, "connecting");
+    const registered = await waitForSessionByName(observer, "local-health");
+    assert.deepEqual(await query(), { status: "connected", sessionId: registered.id });
+    assert.equal((await query(["missing-peer"]))?.status, "connected", "a missing target is not a disconnected local client");
+    const disconnected = once(observer, "disconnected");
+    await stopBroker(broker);
+    await disconnected;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal((await query())?.status, "disconnected", "a diagnostic read must not reconnect or restart the broker");
+    await harness.emitLifecycle("session_shutdown");
+    assert.equal(await query(), undefined, "an unloaded bridge has no live answer");
+  } finally {
+    await harness.emitLifecycle("session_shutdown").catch(() => undefined);
+    await observer.disconnect().catch(() => undefined);
     await stopBroker(broker);
   }
 });

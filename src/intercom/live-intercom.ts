@@ -6,6 +6,7 @@ import {
 	SUBAGENT_LIVE_INTERCOM_EVENT,
 	type IntercomEventBus,
 	type SubagentLiveIntercomHealth,
+	type SubagentIntercomConnection,
 } from "../shared/types.ts";
 
 export async function sendLiveSubagentMessage(events: IntercomEventBus, input: {
@@ -50,28 +51,34 @@ export async function sendLiveSubagentMessage(events: IntercomEventBus, input: {
 }
 
 export async function queryLiveIntercomHealth(events: IntercomEventBus, targets: string[], timeoutMs = 300): Promise<Map<string, SubagentLiveIntercomHealth>> {
+	if (!targets.some((target) => target.trim())) return new Map();
+	return (await queryLiveIntercomStatus(events, targets, timeoutMs)).health;
+}
+
+export async function queryLiveIntercomStatus(events: IntercomEventBus, targets: string[] = [], timeoutMs = 300): Promise<{ health: Map<string, SubagentLiveIntercomHealth>; connection?: SubagentIntercomConnection }> {
 	const uniqueTargets = [...new Set(targets.map((target) => target.trim()).filter(Boolean))];
-	if (uniqueTargets.length === 0 || typeof events.on !== "function" || typeof events.emit !== "function") return new Map();
+	if (typeof events.on !== "function" || typeof events.emit !== "function") return { health: new Map() };
 	const requestId = randomUUID();
 	return new Promise((resolve) => {
 		let settled = false;
 		let unsubscribe: (() => void) | undefined;
 		let timer: ReturnType<typeof setTimeout> | undefined;
-		const finish = (items: SubagentLiveIntercomHealth[] = []) => {
+		const finish = (items: SubagentLiveIntercomHealth[] = [], connection?: SubagentIntercomConnection) => {
 			if (settled) return;
 			settled = true;
 			if (timer) clearTimeout(timer);
 			unsubscribe?.();
-			resolve(new Map(items.map((item) => [item.target, item])));
+			resolve({ health: new Map(items.map((item) => [item.target, item])), connection });
 		};
-		unsubscribe = events.on(SUBAGENT_INTERCOM_HEALTH_RESPONSE_EVENT, (data) => {
-			if (!data || typeof data !== "object") return;
-			const payload = data as { requestId?: unknown; health?: unknown };
-			if (payload.requestId !== requestId || !Array.isArray(payload.health)) return;
-			finish(payload.health.filter((item): item is SubagentLiveIntercomHealth => Boolean(item && typeof item === "object" && typeof (item as { target?: unknown }).target === "string")));
-		});
-		timer = setTimeout(() => finish(), timeoutMs);
 		try {
+			unsubscribe = events.on(SUBAGENT_INTERCOM_HEALTH_RESPONSE_EVENT, (data) => {
+				if (!data || typeof data !== "object") return;
+				const payload = data as { requestId?: unknown; health?: unknown; connection?: SubagentIntercomConnection };
+				if (payload.requestId !== requestId || !Array.isArray(payload.health)) return;
+				const connection = payload.connection && ["connected", "disconnected", "connecting", "unknown"].includes(payload.connection.status) ? payload.connection : undefined;
+				finish(payload.health.filter((item): item is SubagentLiveIntercomHealth => Boolean(item && typeof item === "object" && typeof (item as { target?: unknown }).target === "string")), connection);
+			});
+			timer = setTimeout(() => finish(), timeoutMs);
 			events.emit(SUBAGENT_INTERCOM_HEALTH_REQUEST_EVENT, { requestId, targets: uniqueTargets });
 		} catch {
 			finish();

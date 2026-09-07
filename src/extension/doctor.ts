@@ -1,5 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { VERSION as PI_VERSION, getPackageDir } from "@earendil-works/pi-coding-agent";
+import { EXTENSION_BUILD } from "./build-info.ts";
 import { discoverAgentsAll, type AgentSource } from "../agents/agents.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
 import {
@@ -9,6 +12,7 @@ import {
 	TEMP_ROOT_DIR,
 	type ExtensionConfig,
 	type SubagentState,
+	type SubagentIntercomConnection,
 } from "../shared/types.ts";
 
 interface DoctorPaths {
@@ -31,12 +35,16 @@ interface DoctorReportInput {
 	currentSessionFile?: string | null;
 	currentSessionId?: string | null;
 	orchestratorTarget?: string;
+	connection?: SubagentIntercomConnection;
 	sessionError?: string;
 	expandTilde?: (value: string) => string;
 	projectTrusted?: boolean;
 	paths?: DoctorPaths;
 	deps?: Partial<DoctorDeps>;
 }
+
+const PI_PACKAGE_DIR = getPackageDir();
+const EXTENSION_MODULE = fileURLToPath(import.meta.url);
 
 const DEFAULT_PATHS: DoctorPaths = {
 	tempRootDir: TEMP_ROOT_DIR,
@@ -145,10 +153,12 @@ function formatDiscovery(input: DoctorReportInput, deps: DoctorDeps): string[] {
 	];
 }
 
-function formatIntercomSection(orchestratorTarget: string | undefined): string[] {
+function formatIntercomSection(input: DoctorReportInput): string[] {
 	return [
-		"- wiring: active",
-		`- orchestrator target: ${orchestratorTarget?.trim() || "not available"}`,
+		`- bridge: ${input.connection ? "responding" : "unavailable (no live health response)"}`,
+		`- connection: ${input.connection?.status ?? "unknown"}${input.connection?.reason ? ` — ${input.connection.reason}` : ""}`,
+		`- broker session id: ${input.connection?.sessionId ?? "not available"}`,
+		`- orchestrator target: ${input.orchestratorTarget?.trim() || "not available"}`,
 	];
 }
 
@@ -160,6 +170,13 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		"",
 		"Runtime",
 		`- cwd: ${input.cwd}`,
+		`- Node: ${process.version}`,
+		`- process: ${process.pid} (${process.execPath})`,
+		`- loaded Pi version: ${PI_VERSION}`,
+		`- Pi package directory: ${PI_PACKAGE_DIR} (Pi resource path; may be overridden)`,
+		"- native queue contract: not verified (version alone does not identify fork patches)",
+		`- loaded pi-subagents build: ${EXTENSION_BUILD.version && EXTENSION_BUILD.sha256 ? `${EXTENSION_BUILD.version} (runtime SHA-256 ${EXTENSION_BUILD.sha256})` : "unknown (unbuilt source)"}`,
+		`- extension module: ${EXTENSION_MODULE}`,
 		"- async support: available (Node >=22.19)",
 		...formatSessionLines(input),
 		"",
@@ -173,7 +190,7 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		...formatDiscovery(input, deps),
 		"",
 		"Intercom",
-		...formatIntercomSection(input.orchestratorTarget),
+		...formatIntercomSection(input),
 	];
 	return lines.join("\n");
 }

@@ -8,8 +8,9 @@
  */
 
 import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, rename, rm } from "node:fs/promises";
+import { readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -70,6 +71,13 @@ async function compileToStaging(cwd, stagingDir) {
 		);
 		if (stdout) process.stdout.write(stdout);
 		if (stderr) process.stderr.write(stderr);
+		const stamp = "extension/build-info.js";
+		const hash = createHash("sha256");
+		for (const file of (await readdir(stagingDir, { recursive: true })).filter((file) => file.endsWith(".js") && file !== stamp).sort()) {
+			hash.update(file).update("\0").update(await readFile(join(stagingDir, file))).update("\0");
+		}
+		const { version } = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
+		await writeFile(join(stagingDir, stamp), `export const EXTENSION_BUILD = Object.freeze(${JSON.stringify({ version, sha256: hash.digest("hex") })});\n`);
 	} catch (error) {
 		if (error?.stdout) process.stdout.write(error.stdout);
 		if (error?.stderr) process.stderr.write(error.stderr);

@@ -15,7 +15,7 @@ import { applyThinkingSuffix } from "./pi-args.ts";
 import { sumAttemptUsage } from "./model-fallback.ts";
 import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
-import { getRunMetadataDir, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionContract, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
+import { getRunMetadataDir, listRunQuestions, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionContract, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
 import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, type AsyncResultChild, type AsyncResultFile, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type RunSyncOptions, type SingleResult, type SubagentExecutionResult, type SubagentState } from "../../shared/types.ts";
 
 export const OWNED_RUN_ENTRY = "subagent-run";
@@ -29,10 +29,10 @@ export function rememberOwnedRun(state: SubagentState, run: OwnedRun): void {
 export function resolveOwnedRun(state: SubagentState, requested: string): OwnedRun | undefined {
 	const id = requested.trim();
 	getRunMetadataDir(id); // Same ID boundary as the question and result files.
+	const exact = state.ownedRuns?.get(id);
+	if (exact && id !== "latest" && id !== "last") return exact;
 	const runs = [...(state.ownedRuns?.values() ?? [])];
 	if (id === "latest" || id === "last") return runs.sort((a, b) => b.startedAt - a.startedAt)[0];
-	const exact = state.ownedRuns?.get(id);
-	if (exact) return exact;
 	const matches = runs.filter((run) => run.runId.startsWith(id));
 	if (matches.length > 1) throw new Error(`Ambiguous owned run id prefix '${id}' matched: ${matches.map((run) => run.runId).join(", ")}. Provide a longer id.`);
 	return matches[0];
@@ -212,7 +212,16 @@ function asyncChildResult(child: AsyncResultChild, task: string) {
 	};
 }
 
-export function ownedRunView(run: OwnedRun, state: SubagentState): OwnedRunView {
+function runAttention(run: OwnedRun, executionState: ManagementRunState, pendingInput: boolean): string[] {
+	return [
+		...(pendingInput ? ["awaiting_input"] : []),
+		...(run.review?.decision === "needs_changes" ? ["needs_changes"] : []),
+		...(run.review?.decision !== "accepted" && ["failed", "paused", "unknown"].includes(executionState) ? [executionState] : []),
+		...(executionState === "completed" && !run.review ? ["unreviewed"] : []),
+	];
+}
+
+export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pendingInput?: boolean; includeContinuations?: boolean } = {}): OwnedRunView {
 	const root = getRunMetadataDir(run.runId);
 	const foreground = readRunJson<ForegroundResumeRun>(path.join(root, "foreground.json")) ?? state.foregroundRuns?.get(run.runId);
 	const resultPath = path.join(root, "result.json");
@@ -258,18 +267,12 @@ export function ownedRunView(run: OwnedRun, state: SubagentState): OwnedRunView 
 		: children.some((child) => child.state === "paused") ? "paused"
 		: children.length && children.every((child) => child.state === "completed") ? (foreground?.pausedReason ? "paused" : "completed")
 		: status && !["running", "queued"].includes(status.state) ? normalizedState(status.state) : "unknown";
-	const questions = listSupervisorQuestions(run.ownerSessionId, run.runId).filter((question) => question.state === "awaiting_input" || question.state === "answer_pending");
-	const attention = [
-		...(questions.length ? ["awaiting_input"] : []),
-		...(run.review?.decision === "needs_changes" ? ["needs_changes"] : []),
-		...(run.review?.decision !== "accepted" && ["failed", "paused", "unknown"].includes(executionState) ? [executionState] : []),
-		...(executionState === "completed" && !run.review ? ["unreviewed"] : []),
-	];
+	const pendingInput = options.pendingInput ?? listSupervisorQuestions(run.ownerSessionId, run.runId).some((question) => question.state === "awaiting_input" || question.state === "answer_pending");
 	return {
-		...run, state: executionState, children, attention,
-		canInterrupt: questions.length > 0 || Boolean(state.foregroundControls.get(run.runId)?.interrupt) || (liveStatus?.state === "running" && state.asyncJobs.has(run.runId)),
+		...run, state: executionState, children, attention: runAttention(run, executionState, pendingInput),
+		canInterrupt: pendingInput || Boolean(state.foregroundControls.get(run.runId)?.interrupt) || (liveStatus?.state === "running" && state.asyncJobs.has(run.runId)),
 		updatedAt: result?.timestamp ?? status?.lastUpdate ?? foreground?.updatedAt ?? run.startedAt,
-		continuations: [...(state.ownedRuns?.values() ?? [])].filter((candidate) => candidate.rootRunId === run.rootRunId && candidate.predecessorRunId).sort((a, b) => a.startedAt - b.startedAt).map((candidate) => ({ runId: candidate.runId, predecessorRunId: candidate.predecessorRunId!, predecessorIndex: candidate.predecessorIndex })),
+		continuations: options.includeContinuations === false ? [] : [...(state.ownedRuns?.values() ?? [])].filter((candidate) => candidate.rootRunId === run.rootRunId && candidate.predecessorRunId).sort((a, b) => a.startedAt - b.startedAt).map((candidate) => ({ runId: candidate.runId, predecessorRunId: candidate.predecessorRunId!, predecessorIndex: candidate.predecessorIndex })),
 		...(result ? { resultPath } : foreground ? { resultPath: path.join(root, "foreground.json") } : {}),
 		...(error ? { diagnosis: error } : executionState === "paused" && foreground?.pausedReason ? { diagnosis: foreground.pausedReason } : executionState === "unknown" ? { diagnosis: "Completion is unconfirmed. Saved sessions are context, not proof of successful execution." } : {}),
 	};
@@ -286,9 +289,10 @@ function ownedRunControl(view: OwnedRunView) {
 	return buildManagementControl({ state: view.state, runId: view.runId, index: resumable?.index, canReview: view.state !== "live", canResume: Boolean(resumable), canNudge: Boolean(active), canInterrupt: view.canInterrupt, intercomTarget: active ? resolveSubagentIntercomTarget(view.runId, active.agent, active.index) : undefined });
 }
 
-export function ownedRunStatusResult(run: OwnedRun, state: SubagentState): SubagentExecutionResult {
+export function ownedRunStatusResult(run: OwnedRun, state: SubagentState, runtime?: SubagentExecutionResult): SubagentExecutionResult {
 	const view = ownedRunView(run, state);
-	const control = ownedRunControl(view);
+	const liveControl = view.state === "live" && runtime?.details.managementControl?.state === "live" ? runtime.details.managementControl : undefined;
+	const control = liveControl ?? ownedRunControl(view);
 	const lines = [
 		`Run: ${run.runId}`, `State: ${view.state}`, `Mode: ${run.mode} (${run.source})`, `Task: ${run.task}`, `Cwd: ${run.cwd}`,
 		`Root: ${run.rootRunId}`, ...(run.predecessorRunId ? [`Predecessor: ${run.predecessorRunId} (child ${run.predecessorIndex ?? 0})`] : []),
@@ -296,6 +300,7 @@ export function ownedRunStatusResult(run: OwnedRun, state: SubagentState): Subag
 		`Notification: ${run.delivery ? `recorded ${new Date(run.delivery.notifiedAt).toISOString()}; intercom ${run.delivery.intercomDelivered ? "delivered" : "not confirmed"}` : "not recorded"}`,
 		...(view.attention.length ? [`Attention: ${view.attention.join(", ")}`] : []),
 		...(view.resultPath ? [`Result: ${view.resultPath}`] : []), ...(view.diagnosis ? [view.diagnosis] : []),
+		...(runtime && !runtime.isError && (run.source === "async" || liveControl) ? runtime.content.flatMap((part) => part.type === "text" ? [part.text] : []) : []),
 	];
 	for (const child of view.children) {
 		lines.push(`Child ${child.index}: ${child.agent} | ${child.state}${child.result?.acceptance ? ` | validation: ${child.result.acceptance.status}` : ""}`);
@@ -319,16 +324,44 @@ export function ownedRunStatusResult(run: OwnedRun, state: SubagentState): Subag
 	if (control.capabilities.includes("resume")) lines.push(`Continue: agent_runs({ action: "continue", id: "${run.runId}",${view.children.length > 1 ? ` index: ${control.nextActions.find((action) => action.action === "resume")?.index ?? 0},` : ""} message: "..." })`);
 	return {
 		content: [{ type: "text", text: lines.join("\n") }],
-		details: { mode: "management", results: [], run: view, managementControl: control },
+		details: { ...runtime?.details, mode: "management", results: [], run: view, managementControl: control },
 	};
+}
+
+// Keep ordering facts, not every historical result and launch prompt. File replacement
+// invalidates them; live/unconfirmed runs and selected-page controls are always read fresh.
+const listSummaryCache = new WeakMap<OwnedRun, {
+	stamp: string;
+	foreground?: ForegroundResumeRun;
+	summary: Pick<OwnedRunView, "state" | "updatedAt">;
+}>();
+
+function runListSummary(run: OwnedRun, state: SubagentState, pendingInput: boolean) {
+	const root = getRunMetadataDir(run.runId);
+	const files = [path.join(root, "foreground.json"), path.join(root, "result.json"), path.join(root, "status.json"), path.join(root, "contracts"), ...(run.asyncDir ? [path.join(run.asyncDir, "status.json")] : [])];
+	const stamp = files.map((file) => {
+		const stat = fs.statSync(file, { bigint: true, throwIfNoEntry: false });
+		return stat ? `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` : "missing";
+	}).join("|");
+	const foreground = state.foregroundRuns?.get(run.runId);
+	let cached = listSummaryCache.get(run);
+	if (!cached || cached.stamp !== stamp || cached.foreground !== foreground || state.foregroundControls.has(run.runId) || cached.summary.state === "live" || cached.summary.state === "unknown") {
+		const view = ownedRunView(run, state, { pendingInput, includeContinuations: false });
+		cached = { stamp, foreground, summary: { state: view.state, updatedAt: view.updatedAt } };
+		listSummaryCache.set(run, cached);
+	}
+	return { run, pendingInput, ...cached.summary, attention: runAttention(run, cached.summary.state, pendingInput) };
 }
 
 export function ownedRunList(state: SubagentState, params: { offset?: number; limit?: number }): SubagentExecutionResult {
 	const offset = params.offset ?? 0, limit = params.limit ?? 20;
 	if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Run list requires offset >= 0 and limit from 1 to 100.");
-	const rank = (run: OwnedRunView) => run.attention.includes("awaiting_input") ? 0 : run.attention.some((reason) => reason !== "unreviewed") ? 1 : run.attention.length ? 2 : run.state === "live" ? 3 : 4;
-	const views = [...(state.ownedRuns?.values() ?? [])].map((run) => ownedRunView(run, state)).sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt || a.runId.localeCompare(b.runId));
-	const page = views.slice(offset, offset + limit);
+	const owned = [...(state.ownedRuns?.values() ?? [])];
+	for (const owner of new Set(owned.map((run) => run.ownerSessionId))) migrateSupervisorQuestions(owner);
+	const rank = (run: ReturnType<typeof runListSummary>) => run.attention.includes("awaiting_input") ? 0 : run.attention.some((reason) => reason !== "unreviewed") ? 1 : run.attention.length ? 2 : run.state === "live" ? 3 : 4;
+	const views = owned.map((run) => runListSummary(run, state, listRunQuestions(getRunMetadataDir(run.runId)).some((question) => question.ownerSessionId === run.ownerSessionId && (question.state === "awaiting_input" || question.state === "answer_pending"))))
+		.sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt || a.run.runId.localeCompare(b.run.runId));
+	const page = views.slice(offset, offset + limit).map(({ run, pendingInput }) => ownedRunView(run, state, { pendingInput, includeContinuations: false }));
 	const runs = page.map(({ runId, source, mode, cwd, task, state: runState, updatedAt, attention, review, rootRunId, predecessorRunId, children }) => ({ runId, source, mode, cwd, task, state: runState, updatedAt, attention, review, rootRunId, predecessorRunId, summary: compact(children.map((child) => child.result ? getSingleResultOutput(child.result) || child.result.error || "" : "").filter(Boolean).join(" | ")) }));
 	const controls = page.map(ownedRunControl);
 	const nextOffset = offset + page.length < views.length ? offset + page.length : undefined;

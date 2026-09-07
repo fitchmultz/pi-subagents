@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -18,6 +19,7 @@ function makeFixture(): string {
 	const dir = mkdtempSync(join(tmpdir(), "build-swap-"));
 	mkdirSync(join(dir, "node_modules", "typescript", "bin"), { recursive: true });
 	copyFileSync(tscStub, join(dir, "node_modules", "typescript", "bin", "tsc"));
+	writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module", version: "1.2.3" }));
 	return dir;
 }
 
@@ -54,6 +56,24 @@ async function withFixture(run: (dir: string) => Promise<void>): Promise<void> {
 		rmSync(dir, { force: true, recursive: true });
 	}
 }
+
+test("build.mjs: loaded provenance fingerprints emitted code and stays fixed until a fresh import", () =>
+	withFixture(async (dir) => {
+		assert.equal((await runBuild(dir)).code, 0);
+		const stamp = pathToFileURL(join(dir, "dist", "extension", "build-info.js")).href;
+		assert.ok(existsSync(fileURLToPath(stamp)), "a built runtime must carry its own provenance, not reread package.json at doctor time");
+		const loaded = (await import(stamp)).EXTENSION_BUILD;
+		const expectedHash = createHash("sha256").update("index.js\0").update(readFileSync(join(dir, "dist", "index.js"))).update("\0").digest("hex");
+		assert.deepEqual(loaded, { version: "1.2.3", sha256: expectedHash });
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module", version: "2.0.0" }));
+		assert.equal((await runBuild(dir, { TSC_STUB_MARKER: "changed compiled code" })).code, 0);
+		assert.equal((await import(stamp)).EXTENSION_BUILD, loaded, "a loaded module must not impersonate the rebuilt files on disk");
+		const fresh = spawnSync(process.execPath, ["--input-type=module", "-e", `console.log(JSON.stringify((await import(${JSON.stringify(stamp)})).EXTENSION_BUILD))`], { encoding: "utf8" });
+		assert.equal(fresh.status, 0, fresh.stderr);
+		const next = JSON.parse(fresh.stdout);
+		assert.equal(next.version, "2.0.0");
+		assert.notEqual(next.sha256, loaded.sha256);
+	}));
 
 test("build.mjs: failed compile preserves the previous dist and cleans staging", () =>
 	withFixture(async (dir) => {

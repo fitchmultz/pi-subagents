@@ -87,8 +87,38 @@ describe("doctor action executor routing", () => {
 		const text = result.content[0]?.text ?? "";
 		assert.match(text, /^Subagents doctor report/);
 		assert.match(text, /- configured session dir: .*configured-sessions/);
-		assert.match(text, /- wiring: active/);
+		assert.match(text, /- connection: unknown/);
+		assert.match(text, /- bridge: unavailable/);
 		assert.match(text, /- orchestrator target:/);
+	});
+
+	for (const connection of ["connected", "disconnected", "connecting", "unknown", "unavailable"] as const) it(`reports ${connection} from the live bridge, not the routing name`, async () => {
+		const events = createEventBus();
+		let requests = 0;
+		if (connection !== "unavailable") events.on("subagent:intercom-health-request", (payload) => {
+			requests++;
+			const { requestId } = payload as { requestId: string };
+			events.emit("subagent:intercom-health-response", { requestId, health: [], connection: { status: connection, ...(connection === "connected" ? { sessionId: "registered-parent" } : {}) } });
+		});
+		const executor = createSubagentExecutor({
+			pi: { events, getSessionName: () => "looks-connected" }, state: makeState(tempDir), config: {}, asyncByDefault: false,
+			tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir, expandTilde: (value) => value, discoverAgents: () => ({ agents: [] }),
+		});
+		const started = performance.now();
+		const result = await executor.execute("doctor", { action: "doctor" }, undefined, undefined, makeMinimalCtx(tempDir));
+		const text = result.content[0]?.text ?? "";
+		assert.equal(result.isError, undefined);
+		assert.ok(performance.now() - started < 2_000, "an unavailable bridge must not block diagnostics");
+		assert.match(text, new RegExp(`- connection: ${connection === "unavailable" ? "unknown" : connection}`));
+		assert.match(text, new RegExp(`- bridge: ${connection === "unavailable" ? "unavailable" : "responding"}`));
+		assert.equal(requests, connection === "unavailable" ? 0 : 1);
+		assert.ok(text.includes(`- Node: ${process.version}`));
+		assert.ok(text.includes(`- process: ${process.pid} (${process.execPath})`));
+		assert.match(text, /- loaded Pi version: \S+/);
+		assert.match(text, /- Pi package directory:/);
+		assert.match(text, /- native queue contract: not verified/);
+		assert.match(text, /- loaded pi-subagents build: unknown \(unbuilt source\)/);
+		assert.doesNotMatch(text, /wiring: active/);
 	});
 
 	it("reports session manager failures without failing the doctor action", async () => {
