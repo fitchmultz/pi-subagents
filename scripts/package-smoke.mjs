@@ -163,7 +163,7 @@ export default function (pi) {
 	for (const key of Object.keys(nativeEnv)) if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key)) delete nativeEnv[key];
 	nativeEnv.PI_SUBAGENT_TEMP_ROOT = join(home, "pi-subagents-runtime");
 	const nativePi = await import(new URL("../dist/runs/shared/pi-spawn.js", import.meta.url));
-	const piPackageRoot = nativePi.resolvePiPackageRoot() ?? nativePi.resolveInstalledPiPackageRoot();
+	const piPackageRoot = process.env.PI_PACKAGE_DIR || nativePi.resolvePiPackageRoot() || nativePi.resolveInstalledPiPackageRoot();
 	if (!piPackageRoot) throw new Error("Native Pi is required for the packed detached-run check");
 	const bin = join(home, "bin");
 	mkdirSync(bin);
