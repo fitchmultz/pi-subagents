@@ -131,6 +131,7 @@ interface AsyncSingleParams {
 	sessionFile?: string;
 	skills?: string[];
 	output?: string | boolean;
+	outputFromAgentDefault?: boolean;
 	outputMode?: "inline" | "file-only";
 	outputSchema?: JsonSchemaObject;
 	modelOverride?: string;
@@ -154,6 +155,7 @@ function withSavedLaunch(step: RunnerSubagentStep, agent: AgentConfig, params: A
 		artifacts: params.artifactsDir !== undefined, artifactsDir: params.artifactsDir, share: params.shareEnabled,
 		systemPrompt: step.systemPrompt ?? "", skills: step.skills ?? [], cwd: step.cwd ?? params.ctx.cwd,
 		context: agent.defaultContext ?? "fresh", output: step.outputPath ?? false, outputMode: step.outputMode ?? "inline",
+		...(step.outputPathFromAgentDefault && step.outputPath && typeof agent.output === "string" && !path.isAbsolute(agent.output) ? { outputFromAgentDefault: true } : {}),
 		outputSchema: step.structuredOutputSchema, effectiveAcceptance: step.effectiveAcceptance,
 		maxOutput: { ...DEFAULT_MAX_OUTPUT, ...params.maxOutput }, maxSubagentDepth: step.maxSubagentDepth,
 		maxExecutionTimeMs: step.maxExecutionTimeMs, maxTokens: step.maxTokens,
@@ -685,7 +687,7 @@ export function executeAsyncSingle(
 		};
 	}
 
-	const outputUsesAgentDefault = usesAgentDefaultOutput(params.output);
+	const outputUsesAgentDefault = usesAgentDefaultOutput(params.output) || params.outputFromAgentDefault === true;
 	const effectiveOutput = resolveAsyncOutput({
 		requestedOutput: params.output,
 		agentDefaultOutput: agentConfig.output,

@@ -152,6 +152,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 				sessionFile: sessionFileForIndex(0),
 				skills: skillOverride === false ? [] : skillOverride,
 				output,
+				outputFromAgentDefault: outputUsesAgentDefault && typeof effectiveOutput === "string" && !path.isAbsolute(effectiveOutput),
 				outputMode: effectiveOutputMode,
 				outputSchema: params.outputSchema,
 				acceptance: params.acceptance,
@@ -254,6 +255,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 		artifactsDir: artifactsEnabled ? artifactsDir : undefined,
 		maxOutput: params.maxOutput,
 		outputPath,
+		outputPathFromAgentDefault: outputUsesAgentDefault,
 		outputMode: effectiveOutputMode,
 		persistOutputFile: !outputUsesAgentDefault,
 		structuredOutput: params.outputSchema

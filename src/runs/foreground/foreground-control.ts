@@ -902,7 +902,7 @@ export function reviveSavedSubagent(input: {
 		availableModels, savedLaunch, modelOverride,
 		skills: skill === false ? [] : skill,
 		acceptance: input.params.acceptance ?? acceptanceInputFromResolved(contract.effectiveAcceptance ?? savedLaunch?.effectiveAcceptance),
-		output: input.params.output ?? savedLaunch?.output ?? contract.output,
+		output: input.params.output ?? (savedLaunch?.outputFromAgentDefault === true ? true : savedLaunch?.output ?? contract.output),
 		outputMode: input.params.outputMode ?? savedLaunch?.outputMode ?? contract.outputMode,
 		outputSchema: input.params.outputSchema ?? savedLaunch?.outputSchema ?? contract.outputSchema,
 		projectTrust: savedLaunch?.projectTrust ?? resolveConfiguredChildProjectTrustPolicy(input.deps.config.projectTrust),

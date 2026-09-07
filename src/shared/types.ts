@@ -439,6 +439,8 @@ export interface SavedLaunchConfig {
 	cwd: string;
 	context: "fresh" | "fork";
 	output: string | false;
+	/** Proven generated path from this saved profile's relative output default; absent on legacy snapshots. */
+	outputFromAgentDefault?: boolean;
 	outputMode: OutputMode;
 	outputSchema?: JsonSchemaObject;
 	effectiveAcceptance?: ResolvedAcceptanceConfig;
@@ -978,6 +980,7 @@ export interface RunSyncOptions {
 	sessionFile?: string;
 	share?: boolean;
 	outputPath?: string;
+	outputPathFromAgentDefault?: boolean;
 	outputMode?: OutputMode;
 	/** When true, an inline output file is left in place (workspace/cwd) instead of being consumed after capture. */
 	persistOutputFile?: boolean;
