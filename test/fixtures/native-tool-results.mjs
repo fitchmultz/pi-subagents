@@ -306,7 +306,7 @@ async function workflow(shape, stop, failed = true) {
 			if (stop === "detach") {
 				assert.match(text(result), /Child is waiting on a parent\/coordinator reply\./);
 				assert.match(text(result), /Reply: intercom\(\{ action: "reply", to: "/);
-				assert.match(text(result), /Then inspect the child: subagent/);
+				assert.ok(text(result).includes(`Then inspect the child: ${route === "parent" ? "agent_runs" : "subagent"}({ action: "${route === "parent" ? "inspect" : "status"}", id: "${receipt.runId}" })`), text(result));
 			} else assert.match(text(result), /Waiting for explicit next action\./);
 		});
 	});

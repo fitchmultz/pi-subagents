@@ -11,7 +11,7 @@ export async function runNativeReport(args, fixture) {
 	const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
 	const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(sdkRoot, "dist/index.js"))));
 	const ai = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
-	const cwd = process.cwd(), agentDir = process.env.PI_CODING_AGENT_DIR;
+	const cwd = process.cwd(), agentDir = sdk.getAgentDir();
 	const { scenario, report, laterReport = report } = fixture;
 	const valueAfter = (flag) => args[args.indexOf(flag) + 1];
 	const schemaPath = process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA;
