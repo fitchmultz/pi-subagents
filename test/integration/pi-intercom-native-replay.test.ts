@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -35,7 +35,13 @@ const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry)!)
 const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } = await import(sdkEntry.href);
 const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore, Type } = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
 const { IntercomClient } = await import("../../src/pi-intercom/broker/client.ts");
-const { listSupervisorQuestions, readQuestionState, saveQuestionAnswer, saveQuestionOwner } = await import("../../src/runs/shared/supervisor-questions.ts");
+const { buildSubagentResultIntercomPayload, deliverSubagentResultIntercomEvent } = await import("../../src/intercom/result-intercom.ts");
+const { listSupervisorQuestions, questionProcessAlive, readQuestionState, saveQuestionAnswer, saveQuestionOwner } = await import("../../src/runs/shared/supervisor-questions.ts");
+const { runSync } = await import("../../src/runs/foreground/execution.ts");
+const { executeAsyncSingle } = await import("../../src/runs/background/async-execution.ts");
+const { resolveControlConfig, formatControlNoticeMessage } = await import("../../src/runs/shared/subagent-control.ts");
+const { handleSubagentControlNotice } = await import("../../src/extension/control-notices.ts");
+const { makeAgent } = await import("../support/helpers.ts");
 
 const broker = spawn(process.execPath, [path.join(repo, "src/pi-intercom/broker/broker.ts")], {
   cwd: root,
@@ -371,38 +377,159 @@ test("native abort retaining custom queues does not enqueue a second copy", asyn
   t.diagnostic("retained native queues survive reload; next prompt delivers both once, without a recovery-only turn.");
 });
 
-test("native concurrent prompt preflight failure cannot spin receiver replay", async (t) => {
-  const launch = gate(t);
-  const activeRun = gate(t);
-  let beforeStarts = 0;
-  let heldFirstStart = false;
-  const receiver = await makeSession(t, "early-failure", { configure(pi) {
-    pi.on("before_agent_start", async () => {
-      beforeStarts++;
-      if (beforeStarts <= 2) await launch.promise;
-      else await sleep(10); // A broken replay stays bounded and lets test cleanup run.
+test("native idle multi-ask batch keeps the selected first ask as the default reply target", async (t) => {
+  const hold = gate(t);
+  let started = false;
+  const receiver = await makeSession(t, "ask-batch-priority", { hasUI: true, configure(pi) {
+    pi.registerTool({ name: "hold", label: "Hold", description: "Fixture gate", parameters: Type.Object({}), async execute() {
+      started = true;
+      await hold.promise;
+      return { content: [{ type: "text", text: "Released" }], details: {} };
+    } });
+  } });
+  const replies: string[] = [];
+  receiver.sender.on("message", (_from, message) => { if (message.replyTo) replies.push(message.replyTo); });
+  receiver.faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }),
+    fauxAssistantMessage("Current work finished"),
+    fauxAssistantMessage(fauxToolCall("intercom", { action: "reply", message: "Answer the selected first ask" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("Answer sent"),
+  ]);
+  const running = receiver.session.prompt("Hold before the ask batch");
+  await waitFor(() => started, "busy native tool");
+  for (const id of ["first-ask", "second-ask"]) {
+    await receiver.send(id, { text: `Question ${id}`, expectsReply: true });
+    await waitFor(async () => (await receiver.status()).includes(`Question ${id}`), "staged ask");
+  }
+  hold.resolve();
+  await running;
+  await waitFor(() => receiver.settled() === 2 && receiver.session.isIdle && replies.length === 1, "default reply delivery");
+  assert.deepEqual(replies, ["first-ask"], "trigger-last must not switch the implicit reply to a follower ask");
+  const intercom = receiver.session.agent.state.tools.find((tool: { name: string }) => tool.name === "intercom");
+  const pending = await intercom.execute("remaining-ask", { action: "pending" }, new AbortController().signal);
+  assert.match(JSON.stringify(pending), /second-ask/);
+  assert.doesNotMatch(JSON.stringify(pending), /first-ask/);
+  for (const id of receiver.sends) assert.equal(receiver.visible(id).length, 1, id);
+  assert.equal(receiver.faux.state.callCount, 4);
+  assert.match(await receiver.status(), /Pending inbound messages: 0/);
+  assert.deepEqual(receiver.errors, []);
+  receiver.events.push({ type: "fixture.default_reply", replies });
+  t.diagnostic("Two queued asks append once in one delivery run; the real intercom reply tool targets the originally selected first ask.");
+});
+
+test("native rejected input leaves the active intercom run and idle wait intact", async (t) => {
+  const inputRelease = gate(t);
+  const responseRelease = gate(t);
+  const losingInput = "User input held before admission";
+  const preflight: boolean[] = [];
+  let inputHeld = false, beforeStarts = 0, seen = "";
+  const receiver = await makeSession(t, "input-rejection", { configure(pi) {
+    pi.on("input", async (event) => {
+      if (event.text === losingInput) { inputHeld = true; await inputRelease.promise; }
     });
-    pi.on("agent_start", async () => {
-      if (!heldFirstStart) { heldFirstStart = true; await activeRun.promise; }
+    pi.on("before_agent_start", () => { beforeStarts++; });
+  } });
+  receiver.faux.setResponses([async (context: unknown) => {
+    seen = JSON.stringify(context);
+    await responseRelease.promise;
+    return fauxAssistantMessage("Owned intercom work finished");
+  }]);
+  const rejected = assert.rejects(receiver.session.prompt(losingInput, { preflightResult: (accepted: boolean) => preflight.push(accepted) }), /already processing/);
+  try {
+    await waitFor(() => inputHeld, "held input interception");
+    await receiver.send("input-owner");
+    await waitFor(() => receiver.faux.state.callCount === 1, "custom-owned provider request");
+    const signal = receiver.context().signal;
+    const systemPrompt = receiver.session.systemPrompt;
+    assert.ok(signal && !signal.aborted);
+    let idleResolved = false;
+    const idle = receiver.session.waitForIdle().then(() => { idleResolved = true; });
+    inputRelease.resolve();
+    await rejected;
+    receiver.events.push({ type: "fixture.input_rejection", preflight: [...preflight], beforeStarts, idle: receiver.session.isIdle, streaming: receiver.session.isStreaming, signalUnchanged: receiver.context().signal === signal, idleResolved, settled: receiver.settled() });
+    assert.deepEqual(preflight, [false]);
+    assert.equal(receiver.context().signal, signal);
+    assert.equal(signal.aborted, false);
+    assert.equal(receiver.session.systemPrompt, systemPrompt);
+    assert.equal(receiver.session.isStreaming, true);
+    assert.equal(receiver.context().isIdle(), false);
+    assert.equal(idleResolved, false, "a rejected input cannot release the owning run's idle waiter");
+    assert.equal(receiver.settled(), 0);
+    assert.equal(beforeStarts, 1, "rejected admission must not prepare receiver replay");
+    assert.equal(receiver.faux.state.callCount, 1);
+    assert.equal(receiver.visible("input-owner").length, 1);
+    responseRelease.resolve();
+    await idle;
+    assert.equal(idleResolved, true);
+    assert.equal(receiver.settled(), 1);
+    assert.equal(receiver.context().isIdle(), true);
+    assert.equal(receiver.context().signal, undefined);
+    assert.equal(receiver.context().hasPendingMessages(), false);
+    assert.equal(beforeStarts, 1);
+    assert.equal(receiver.faux.state.callCount, 1);
+    assert.equal(receiver.visible("input-owner").length, 1);
+    assert.equal(seen.split("message:input-owner").length - 1, 1);
+    assert.doesNotMatch(seen, /User input held before admission/);
+    assert.deepEqual(preflight, [false]);
+    assert.deepEqual(receiver.events.filter((event) => event.type === "extension.message_end" && event.role === "assistant").map((event) => event.stopReason), ["stop"]);
+    assert.match(await receiver.status(), /Pending inbound messages: 0/);
+    assert.deepEqual(receiver.errors, []);
+    receiver.events.push({ type: "fixture.input_complete", providerContext: seen, idleResolved, settled: receiver.settled() });
+    t.diagnostic("Real losing input rejects once; the original custom signal, busy state and idle wait survive; one visible custom receipt, one clean provider call and one true settlement.");
+  } finally {
+    inputRelease.resolve();
+    responseRelease.resolve();
+    await Promise.allSettled([rejected, receiver.session.agent.waitForIdle()]);
+  }
+});
+
+test("native user preparation queues intercom without another startup or provider turn", async (t) => {
+  const startupRelease = gate(t);
+  const userPrompt = "User startup held before the agent runs";
+  let beforeStarts = 0, seen = "";
+  const receiver = await makeSession(t, "startup-queued", { configure(pi) {
+    pi.on("before_agent_start", async (event) => {
+      beforeStarts++;
+      if (event.prompt === userPrompt) await startupRelease.promise;
     });
   } });
-  receiver.faux.setResponses([fauxAssistantMessage("First handled"), fauxAssistantMessage("Second handled")]);
-  await Promise.all([receiver.send("first"), receiver.send("second")]);
-  await waitFor(() => beforeStarts === 2, "overlapping native prompt preparation");
-  launch.resolve();
-  await waitFor(() => receiver.errors.some((error) => error.error.includes("already processing")), "native preflight rejection");
-  await sleep(60);
-  const attemptsWhileOriginalActive = beforeStarts;
-  activeRun.resolve();
-  await waitFor(() => receiver.faux.state.callCount >= 2 && receiver.session.isIdle, "real run and failed handoff recovery");
-  assert.equal(attemptsWhileOriginalActive, 2, "settlement of a rejected prompt must not start repeated receiver prompts");
-  assert.equal(receiver.errors.length, 1);
-  assert.equal(receiver.visible("first").length, 1);
-  assert.equal(receiver.visible("second").length, 1);
-  assert.equal(receiver.faux.state.callCount, 2);
-  assert.equal(beforeStarts, 3);
-  assert.match(await receiver.status(), /Pending inbound messages: 0/);
-  t.diagnostic("2 one-time sends; 1 real preflight rejection; no replay while native signal is active; 2 visible messages and 2 provider calls.");
+  receiver.faux.setResponses([(context: unknown) => { seen = JSON.stringify(context); return fauxAssistantMessage("Both inputs handled"); }]);
+  const running = receiver.session.prompt(userPrompt);
+  try {
+    await waitFor(() => beforeStarts === 1, "held user preparation");
+    receiver.events.push({ type: "fixture.user_preparation", idle: receiver.context().isIdle(), streaming: receiver.session.isStreaming, beforeStarts, providerCalls: receiver.faux.state.callCount });
+    assert.equal(receiver.context().isIdle(), false, "admitted user preparation must already be busy");
+    assert.equal(receiver.session.isStreaming, true);
+    assert.equal(receiver.faux.state.callCount, 0);
+    await receiver.send("startup-queued");
+    await waitFor(() => receiver.context().hasPendingMessages(), "native queued custom message");
+    assert.equal(beforeStarts, 1, "the queued custom message must not start another preflight");
+    assert.equal(receiver.faux.state.callCount, 0);
+    assert.equal(receiver.visible("startup-queued").length, 0);
+    assert.equal(receiver.settled(), 0);
+    receiver.events.push({ type: "fixture.startup_queue", nativeQueued: receiver.context().hasPendingMessages(), beforeStarts, settled: receiver.settled() });
+    startupRelease.resolve();
+    await running;
+    await receiver.session.waitForIdle();
+    assert.equal(beforeStarts, 1);
+    assert.equal(receiver.faux.state.callCount, 1);
+    assert.equal(receiver.settled(), 1);
+    assert.equal(receiver.visible("startup-queued").length, 1);
+    const users = receiver.session.sessionManager.getEntries().filter((entry: { type: string; message?: { role: string; content: unknown } }) => entry.type === "message" && entry.message?.role === "user" && JSON.stringify(entry.message.content).includes(userPrompt));
+    assert.equal(users.length, 1);
+    for (const body of [userPrompt, "message:startup-queued"]) assert.equal(seen.split(body).length - 1, 1, body);
+    assert.equal(receiver.context().isIdle(), true);
+    assert.equal(receiver.context().signal, undefined);
+    assert.equal(receiver.context().hasPendingMessages(), false);
+    assert.deepEqual(receiver.events.filter((event) => event.type === "extension.message_end" && event.role === "assistant").map((event) => event.stopReason), ["stop"]);
+    assert.match(await receiver.status(), /Pending inbound messages: 0/);
+    assert.deepEqual(receiver.errors, []);
+    receiver.events.push({ type: "fixture.startup_complete", providerContext: seen, settled: receiver.settled() });
+    t.diagnostic("Busy user preparation queues the real intercom send; both accepted inputs reach one provider request and history once, with one startup and one true settlement.");
+  } finally {
+    startupRelease.resolve();
+    await running;
+  }
 });
 
 test("native context reset, compaction, and reload preserve receipts without replaying consumed messages", async (t) => {
@@ -654,6 +781,221 @@ test("fresh native processes resume pending messages once without fork/new-sessi
   assert.deepEqual(passiveResult.visibleIds, ["passive-only"]);
   assert.deepEqual(passiveResult.errors, []);
   t.diagnostic("hard-killed host restores 2 native-queued + 2 staged messages once in 1 turn; second resume/fork/new/passive-only restore run 0 turns; superseded progress stays absent.");
+});
+
+for (const background of [false, true]) for (const scenario of ["question", "tool"] as const) test(`native ${background ? "background" : "foreground"} attention uses observed ${scenario} state and still finishes normally`, async (t) => {
+  const name = `attention-${background ? "bg" : "fg"}-${scenario}`;
+  let api: ExtensionAPI;
+  const parent = await makeSession(t, name, { configure(pi) { api = pi; } });
+  parent.faux.setResponses([fauxAssistantMessage("Synthetic question or attention noted"), ...(scenario === "question" ? [fauxAssistantMessage("Synthetic supervisor wait noted")] : [])]);
+  const owner = parent.session.sessionManager.getSessionId();
+  const directory = path.join(root, `${name}-child`), bin = path.join(directory, "bin"), release = path.join(directory, "release");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${path.join(repo, "test/fixtures/native-feedback-child.mjs")}" "$@"\n`, { mode: 0o700 });
+  const savedEnv = { PATH: process.env.PATH, PI_FEEDBACK_RELEASE_FILE: process.env.PI_FEEDBACK_RELEASE_FILE, PI_FEEDBACK_SCENARIO: process.env.PI_FEEDBACK_SCENARIO };
+  process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
+  process.env.PI_FEEDBACK_RELEASE_FILE = release;
+  process.env.PI_FEEDBACK_SCENARIO = scenario;
+  saveQuestionOwner(name, owner);
+  const controlConfig = resolveControlConfig({ needsAttentionAfterMs: 300 });
+  const agent = makeAgent("worker", { model: "feedback-fixture/faux-1", extensions: [], output: false });
+  const notices: Array<{ event: import("../../src/shared/types.ts").ControlEvent; noticeText?: string }> = [];
+  let asyncDir: string | undefined, pending: Promise<unknown> | undefined;
+  t.after(async () => {
+    writeFileSync(release, "released");
+    for (const question of listSupervisorQuestions(owner, name)) if (question.state === "awaiting_input") saveQuestionAnswer(question, "Use the synthetic native path.");
+    await pending;
+    for (const [key, value] of Object.entries(savedEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  });
+  if (background) {
+    const started = executeAsyncSingle(name, { agent: "worker", task: "Synthetic attention check", agentConfig: agent,
+      ctx: { pi: api!, cwd: directory, currentSessionId: owner }, sessionFile: path.join(directory, "session.jsonl"), shareEnabled: false, maxSubagentDepth: 1,
+      controlConfig, controlIntercomTarget: name, childIntercomTarget: () => `${name}-child` });
+    assert.ok(!started.isError, started.content[0]?.text);
+    asyncDir = started.details.asyncDir!;
+    // The durable runner status is also the cleanup receipt for this synthetic child.
+    pending = (async () => {
+      await waitFor(() => existsSync(path.join(asyncDir!, "status.json")) && JSON.parse(readFileSync(path.join(asyncDir!, "status.json"), "utf8")).state !== "running", "async child completion");
+      const status = JSON.parse(readFileSync(path.join(asyncDir!, "status.json"), "utf8"));
+      assert.equal(status.state, "complete");
+      await waitFor(() => !questionProcessAlive({ pid: status.pid }), "private runner exit");
+      return status;
+    })();
+  } else {
+    pending = runSync(directory, [agent], "worker", "Synthetic attention check", { runId: name, sessionFile: path.join(directory, "session.jsonl"), index: 0,
+      controlConfig, orchestratorIntercomTarget: name, intercomSessionName: `${name}-child`, onControlEvent: (event) => notices.push({ event, noticeText: formatControlNoticeMessage(event, `${name}-child`) }) });
+  }
+  const childReceipt = () => JSON.parse(readFileSync(`${release}.json`, "utf8"));
+  await waitFor(() => existsSync(`${release}.json`) && childReceipt().events.some((event: { type: string }) => event.type === "tool_execution_start"), "real native child tool start");
+  const toolStartedAt = childReceipt().events.find((event: { type: string }) => event.type === "tool_execution_start").timestamp;
+  if (scenario === "question") await waitFor(() => listSupervisorQuestions(owner, name)[0]?.state === "awaiting_input", "real durable contact_supervisor wait");
+  const readNotices = () => background
+    ? existsSync(path.join(asyncDir!, "events.jsonl")) ? readFileSync(path.join(asyncDir!, "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((entry) => entry.type === "subagent.control") : []
+    : notices;
+  await waitFor(() => readNotices().some(({ event }) => event.ts > toolStartedAt + controlConfig.needsAttentionAfterMs), "runner idle producer event");
+  const notice = readNotices().find(({ event }) => event.ts > toolStartedAt + controlConfig.needsAttentionAfterMs)!;
+  const event = notice.event;
+  const state = { foregroundControls: new Map([[name, { runId: name, mode: "single", startedAt: toolStartedAt, updatedAt: event.ts, currentAgent: "worker", currentIndex: 0, currentActivityState: "needs_attention" }]]) };
+  handleSubagentControlNotice({ pi: api!, state, visibleControlNotices: new Set(), details: { ...notice, source: background ? "async" : "foreground", childIntercomTarget: `${name}-child` }, foregroundDelayMs: 0 });
+  await waitFor(() => parent.session.sessionManager.getEntries().some((entry: { type: string; customType?: string }) => entry.type === "custom_message" && entry.customType === "subagent_control_notice"), "native attention custom message");
+  const message = parent.session.sessionManager.getEntries().find((entry: { customType?: string }) => entry.customType === "subagent_control_notice");
+  assert.equal(message.content, notice.noticeText);
+  if (scenario === "question") {
+    const question = listSupervisorQuestions(owner, name)[0]!;
+    assert.match(message.content, /Waiting for supervisor input/);
+    assert.ok(message.content.includes(question.questionId));
+    assert.match(message.content, /agent_runs\(\{ action: "answer"/);
+    assert.doesNotMatch(message.content, /waiting for user|What are you blocked on/i);
+    saveQuestionAnswer(question, "Use the synthetic native path.");
+  } else {
+    assert.match(message.content, /bash still active for \d+s; no observed output\/events for \d+s/);
+    assert.match(message.content, /Inspect command progress/);
+    assert.doesNotMatch(message.content, /Waiting for supervisor input|timed out|making progress/);
+    writeFileSync(release, "released");
+  }
+  assert.equal(event.currentTool, scenario === "question" ? "contact_supervisor" : "bash");
+  assert.ok(event.currentToolDurationMs >= controlConfig.needsAttentionAfterMs);
+  assert.ok(event.elapsedMs >= controlConfig.needsAttentionAfterMs);
+  assert.match(message.content, /agent_runs\(\{ action: "inspect"/);
+  assert.doesNotMatch(message.content, /subagent\(\{ action: "(?:status|nudge|interrupt)"/);
+  await pending;
+  assert.equal(childReceipt().modelCalls, 2);
+  assert.equal(childReceipt().networkRequests, 0);
+  assert.deepEqual(childReceipt().errors, []);
+  if (scenario === "question") assert.equal(listSupervisorQuestions(owner, name)[0]?.state, "answered");
+  await parent.session.waitForIdle();
+  for (const message of parent.session.messages) if (message.role === "assistant") assert.equal(message.stopReason, "stop", message.errorMessage);
+  assert.deepEqual(parent.errors, []);
+  t.diagnostic(`Real native ${scenario} + ${background ? "async" : "foreground"} idle producer; observed tool/age and actionable notice, then normal completion (no 10-minute wait).`);
+});
+
+test("native completed-child progress is historical after the result without dropping findings or its wake", async (t) => {
+  const hold = gate(t);
+  let started = false, api: ExtensionAPI;
+  const seen: string[] = [];
+  const parent = await makeSession(t, "historical-busy", { hasUI: true, configure(pi) {
+    api = pi;
+    pi.registerTool({ name: "hold", label: "Hold", description: "Synthetic blocking parent tool", parameters: Type.Object({}), async execute() {
+      started = true;
+      await hold.promise;
+      return { content: [{ type: "text", text: "Released" }], details: {} };
+    } });
+  } });
+  parent.faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }),
+    (context: unknown) => { seen.push(JSON.stringify(context)); return fauxAssistantMessage("Result read"); },
+    (context: unknown) => { seen.push(JSON.stringify(context)); return fauxAssistantMessage("Historical finding read"); },
+  ]);
+  const running = parent.session.prompt("Hold for synthetic child work");
+  await waitFor(() => started, "native blocking parent tool");
+  const threadId = "subagent-progress:historical-run:worker:0";
+  const sentAt = Date.now() - 120_000;
+  const now = Date.now;
+  try {
+    Date.now = () => sentAt;
+    await parent.send("superseded-progress", { text: "Earlier milestone", delivery: "queue", queueMode: "replace", threadId });
+    await parent.send("material-progress", { text: "Subagent progress update.\n\nFinishing the change.\nMATERIAL FINDING: preserve this complete body, even after acceptance.", delivery: "queue", queueMode: "replace", threadId });
+  } finally { Date.now = now; }
+  await waitFor(async () => (await parent.status()).includes("MATERIAL FINDING"), "staged progress");
+  assert.equal(await deliverSubagentResultIntercomEvent(api!.events, buildSubagentResultIntercomPayload({
+    to: "historical-busy", runId: "historical-run", mode: "single", source: "foreground", children: [
+      { agent: "worker", index: 0, status: "completed", summary: "Final accepted result", intercomTarget: "sender-historical-busy" },
+    ],
+  })), true);
+  hold.resolve();
+  await running;
+  await waitFor(() => parent.visible("material-progress").length === 1 && parent.session.isIdle, "historical progress turn");
+  const entry = parent.visible("material-progress")[0];
+  assert.match(entry.content, /Historical\/deferred progress from completed child \(completed\); not new work/);
+  assert.match(entry.content, /Finishing the change\.\nMATERIAL FINDING: preserve this complete body, even after acceptance\./);
+  assert.ok(entry.content.includes(`Originally sent: ${new Date(sentAt).toISOString()}`));
+  assert.match(entry.content, /Delivered to Pi: \d{4}-\d{2}-\d{2}T/);
+  assert.equal(entry.details.message.timestamp, sentAt);
+  assert.equal(entry.details.message.delivery, "queue");
+  assert.equal(parent.visible("superseded-progress").length, 0);
+  assert.equal(parent.faux.state.callCount, 3, "historical progress still wakes its own turn");
+  assert.match(seen[0]!, /Final accepted result/);
+  assert.doesNotMatch(seen[0]!, /MATERIAL FINDING/);
+  assert.match(seen[1]!, /Historical\/deferred progress/);
+  assert.deepEqual(parent.errors, []);
+  t.diagnostic("One terminal result then one fully retained historical progress turn; latest replacement delivered exactly once.");
+});
+
+test("native broker-staged progress recovers terminal child identity across reload and sender disconnect", async (t) => {
+  const hold = gate(t);
+  let api: ExtensionAPI, started = false;
+  const parent = await makeSession(t, "historical-reload", { hasUI: true, configure(pi) {
+    api = pi;
+    pi.registerTool({ name: "hold", label: "Hold", description: "Fixture gate", parameters: Type.Object({}), async execute() {
+      started = true; await hold.promise; return { content: [{ type: "text", text: "Released" }], details: {} };
+    } });
+  } });
+  parent.faux.setResponses([fauxAssistantMessage("Completion received"), fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }), fauxAssistantMessage("Independent work finished"), fauxAssistantMessage("Deferred finding read")]);
+  const receipt = await parent.send("broker-delayed-progress", { text: "Finishing tests; material old warning retained", delivery: "queue", queueMode: "replace", threadId: "subagent-progress:reload-run:worker:0" });
+  assert.equal(receipt.queued, true, "idle replace is staged by the real private broker");
+  assert.equal(await deliverSubagentResultIntercomEvent(api!.events, buildSubagentResultIntercomPayload({
+    to: "historical-reload", runId: "reload-run", mode: "parallel", source: "async", children: [
+      { agent: "worker", index: 0, status: "completed", summary: "Work finished", intercomTarget: "sender-historical-reload" },
+      { agent: "sibling", index: 1, status: "detached", summary: "Still alive", intercomTarget: "sender-historical-reload" },
+    ],
+  })), true);
+  await waitFor(() => parent.settled() === 1, "completion before broker release");
+  await parent.sender.disconnect();
+  const running = parent.session.prompt("Independent work while progress is deferred");
+  await waitFor(() => started, "second native blocking tool");
+  await waitFor(async () => (await parent.status()).includes("material old warning retained"), "broker delivery checkpoint before receiver reload");
+  await parent.session.reload();
+  hold.resolve();
+  await running;
+  await waitFor(() => parent.visible("broker-delayed-progress").length === 1 && parent.session.isIdle, "late delivery after reload/disconnect");
+  assert.match(parent.visible("broker-delayed-progress")[0].content, /Historical\/deferred progress from completed child/);
+  assert.match(parent.visible("broker-delayed-progress")[0].content, /material old warning retained/);
+  assert.equal(parent.faux.state.callCount, 4, "completion plus two independent-work responses plus one late progress wake");
+  assert.deepEqual(parent.errors, []);
+  t.diagnostic("Terminal association restored from the existing saved delivery/receipt metadata, with broker delay and no replay.");
+});
+
+test("native historical labeling leaves detached, successor, unknown, wrong-sender, question and answer progress untouched", async (t) => {
+  const hold = gate(t);
+  let started = false, api: ExtensionAPI;
+  const parent = await makeSession(t, "historical-boundaries", { hasUI: true, configure(pi) {
+    api = pi;
+    pi.registerTool({ name: "hold", label: "Hold", description: "Fixture gate", parameters: Type.Object({}), async execute() {
+      started = true; await hold.promise; return { content: [{ type: "text", text: "Released" }], details: {} };
+    } });
+  } });
+  parent.faux.setResponses([fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }), fauxAssistantMessage("Result read"), fauxAssistantMessage("Updates read")]);
+  const running = parent.session.prompt("Hold");
+  await waitFor(() => started, "blocking parent");
+  const cases = [
+    { id: "terminal", agent: "worker", index: 0 },
+    { id: "detached", agent: "sibling", index: 1 },
+    { id: "live-unreported", agent: "worker", index: 2 },
+    { id: "successor", agent: "worker", index: 0, runId: "successor-run" },
+    { id: "unknown", agent: "worker", index: 0, runId: "unknown-run" },
+    { id: "ordinary-peer", agent: "worker", index: 0, threadId: "ordinary-peer-thread" },
+    { id: "ask", agent: "asker", index: 3, expectsReply: true },
+    { id: "answer", agent: "answerer", index: 4, replyTo: "old-question" },
+  ];
+  for (const item of cases) await parent.send(item.id, { text: `Subagent progress update. Finished? ${item.id}`, delivery: "queue", queueMode: "replace", threadId: item.threadId ?? `subagent-progress:${item.runId ?? "mixed-run"}:${item.agent}:${item.index}`, expectsReply: item.expectsReply, replyTo: item.replyTo });
+  const stranger = new IntercomClient();
+  t.after(() => stranger.disconnect());
+  await stranger.connect({ name: "unrelated-peer", cwd: root, model: "fixture" });
+  assert.equal((await stranger.send("historical-boundaries", { messageId: "wrong-sender", text: "Subagent progress update. Claimed completion", delivery: "queue", queueMode: "replace", threadId: "subagent-progress:mixed-run:worker:0" })).accepted, true);
+  await waitFor(async () => { const status = await parent.status(); return status.includes("Claimed completion") && status.includes("Finished? ask"); }, "all messages staged, including the broker-delayed ask");
+  assert.equal(await deliverSubagentResultIntercomEvent(api!.events, buildSubagentResultIntercomPayload({ to: "historical-boundaries", runId: "mixed-run", mode: "parallel", source: "foreground", children: [
+    { agent: "worker", index: 0, status: "completed", summary: "One child finished", intercomTarget: "sender-historical-boundaries" },
+    { agent: "sibling", index: 1, status: "detached", summary: "Another child remains live", intercomTarget: "sender-historical-boundaries" },
+    { agent: "asker", index: 3, status: "completed", summary: "Question control", intercomTarget: "sender-historical-boundaries" },
+    { agent: "answerer", index: 4, status: "completed", summary: "Answer control", intercomTarget: "sender-historical-boundaries" },
+  ] })), true);
+  hold.resolve();
+  await running;
+  await waitFor(() => cases.every(({ id }) => parent.visible(id).length === 1) && parent.visible("wrong-sender").length === 1 && parent.session.isIdle, "all retained updates");
+  assert.match(parent.visible("terminal")[0].content, /Historical\/deferred progress/);
+  for (const id of [...cases.filter((item) => item.id !== "terminal").map((item) => item.id), "wrong-sender"]) assert.doesNotMatch(parent.visible(id)[0].content, /Historical\/deferred progress|Originally sent:/, id);
+  assert.equal(parent.faux.state.callCount, 3);
+  assert.deepEqual(parent.errors, []);
 });
 
 test("native latest material milestone survives two minutes busy and reload without stale superseded delivery", async (t) => {

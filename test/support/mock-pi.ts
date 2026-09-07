@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 interface MockPiResponse {
 	matchArgsIncludes?: string | string[];
 	output?: string;
+	structuredOutput?: unknown;
+	nativeReport?: { scenario: string; report: string; laterReport?: string; receiptPath: string; handoffPath?: string; handoff?: string };
 	stderr?: string;
 	exitCode?: number;
 	delay?: number;

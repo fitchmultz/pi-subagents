@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { formatDuration, formatModelThinking, formatTokens, shortenPath } from "../../shared/formatters.ts";
-import { formatActivityLabel, formatParallelOutcome } from "../../shared/status-format.ts";
+import { formatRunAction, formatActivityLabel, formatParallelOutcome } from "../../shared/status-format.ts";
 import { type ActivityState, type AsyncJobStep, type AsyncParallelGroupStatus, type AsyncStatus, type NestedRunSummary, type SubagentRunMode, type TokenUsage } from "../../shared/types.ts";
 import { readStatus } from "../../shared/utils.ts";
 import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-events.ts";
@@ -405,7 +405,7 @@ export function formatAsyncRunList(runs: AsyncRunSummary[], heading = "Active as
 	const lines = [`${heading}: ${runs.length}`, ""];
 	for (const run of runs) {
 		lines.push(`- ${formatRunHeader(run)}`);
-		lines.push(`  Status: subagent({ action: "status", id: "${run.id}" })`);
+		lines.push(`  Status: ${formatRunAction("status", run.id)}`);
 		for (const step of run.steps) {
 			lines.push(`  ${formatStepLine(step)}`);
 			lines.push(...formatNestedRunStatusLines(step.children, { indent: "    ", maxLines: 12 }));

@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { resolveStepBehavior, type ChainStep } from "../../shared/settings.ts";
@@ -225,6 +226,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 			sessionFile: sessionFileForIndex(0),
 			skills,
 			output: effectiveOutput,
+			outputFromAgentDefault: usesAgentDefaultOutput(params.output) && typeof a.output === "string" && !path.isAbsolute(a.output),
 			outputMode: effectiveOutputMode,
 			outputSchema: params.outputSchema,
 			modelOverride,

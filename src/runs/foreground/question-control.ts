@@ -2,14 +2,14 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import type { IntercomEventBus, SubagentExecutionResult } from "../../shared/types.ts";
 import { cancelSupervisorQuestion, claimQuestionRevival, formatSupervisorQuestions, listSupervisorQuestions, questionProcessAlive, questionRecoveryHint, readQuestionState, recordQuestionDelivery, releaseQuestionRevival, saveQuestionAnswer, type SupervisorQuestionView } from "../shared/supervisor-questions.ts";
-import { liveLaunchOverrideNotice, reviveSavedSubagent } from "./foreground-control.ts";
+import { liveLaunchOverrideNotice, nestedResolutionScopeForExecutor, reviveSavedSubagent } from "./foreground-control.ts";
 import type { ExecutorDeps, SubagentParamsLike } from "./subagent-params.ts";
 
 function questionResult(questions: SupervisorQuestionView[], text = formatSupervisorQuestions(questions)): SubagentExecutionResult {
 	return { content: [{ type: "text", text }], details: { mode: "management", results: [], questions } };
 }
 
-export function projectSupervisorQuestions(result: SubagentExecutionResult, params: SubagentParamsLike, ownerSessionId: string): SubagentExecutionResult {
+export function projectSupervisorQuestions(result: SubagentExecutionResult, params: SubagentParamsLike, ownerSessionId: string, childSafe = false): SubagentExecutionResult {
 	if (result.isError && !result.content.some((item) => item.type === "text" && /Async run not found|Status file not found/.test(item.text))) return result;
 	const questions = listSupervisorQuestions(ownerSessionId, params.id ?? params.runId ?? (params.dir ? path.basename(params.dir) : undefined))
 		.filter((question) => question.state === "awaiting_input" || question.state === "answer_pending");
@@ -18,7 +18,7 @@ export function projectSupervisorQuestions(result: SubagentExecutionResult, para
 	return {
 		...result,
 		...(questionOnly ? { isError: false } : {}),
-		content: [{ type: "text", text: [`Supervisor input (not execution completion):\n${formatSupervisorQuestions(questions)}`, ...(questionOnly ? [] : result.content.map((item) => item.type === "text" ? item.text : ""))].join("\n\n") }],
+		content: [{ type: "text", text: [`Supervisor input (not execution completion):\n${formatSupervisorQuestions(questions, childSafe)}`, ...(questionOnly ? [] : result.content.map((item) => item.type === "text" ? item.text : ""))].join("\n\n") }],
 		details: { ...result.details, questions },
 	};
 }
@@ -46,7 +46,7 @@ export function controlSupervisorQuestion(input: { params: SubagentParamsLike; r
 		if (params.index !== undefined && (!Number.isSafeInteger(params.index) || params.index < 0)) throw new Error("index must be a non-negative integer.");
 		const questions = listSupervisorQuestions(input.ctx.sessionManager.getSessionId(), id)
 			.filter((question) => params.index === undefined || question.index === params.index);
-		if (params.action === "questions") return questionResult(questions);
+		if (params.action === "questions") return questionResult(questions, formatSupervisorQuestions(questions, Boolean(nestedResolutionScopeForExecutor(input.deps))));
 		if (!id || !params.questionId) throw new Error("action='answer' requires id and questionId.");
 		const question = questions.find((entry) => entry.questionId === params.questionId);
 		if (!question) throw new Error("Question not found in this session's runs. Resume the owning supervisor session to answer it.");
@@ -56,7 +56,7 @@ export function controlSupervisorQuestion(input: { params: SubagentParamsLike; r
 		const delivery = readQuestionState(question).delivery;
 		if (delivery) return questionResult([readQuestionState(question)], `Question ${question.questionId} was already answered; no new work started. Delivery: ${delivery.kind}, run: ${delivery.runId}.`);
 		const claim = claimQuestionRevival(question);
-		if (!claim.claimed) return questionResult([readQuestionState(question)], `Answer retained for question ${question.questionId}; continuation ${claim.runId} was already requested. No duplicate process started. Inspect that run first. ${questionRecoveryHint(question)}`);
+		if (!claim.claimed) return questionResult([readQuestionState(question)], `Answer retained for question ${question.questionId}; continuation ${claim.runId} was already requested. No duplicate process started. Inspect that run first. ${questionRecoveryHint(question, Boolean(nestedResolutionScopeForExecutor(input.deps)))}`);
 		const result = reviveSavedSubagent({ ...input, params: { ...params, message: `Supervisor answer to question ${question.questionId}:\n\n${answer.message}\n\nOriginal question:\n${question.message}` } }, { ...question, source: "question" }, claim.runId);
 		if (result.isError) {
 			releaseQuestionRevival(question);

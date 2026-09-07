@@ -118,7 +118,7 @@ afterEach(() => {
 });
 
 describe("buildPiArgs session wiring", () => {
-	it("uses --session when sessionFile is provided", () => {
+	for (const cwd of [undefined, "/requested project"]) it(`uses --session with ${cwd ? "an explicit" : "no"} cwd override`, () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-args-session-"));
 		try {
 			const sessionFile = path.join(tempDir, "nested", "session.jsonl");
@@ -127,6 +127,7 @@ describe("buildPiArgs session wiring", () => {
 				task: "hello",
 				sessionEnabled: true,
 				sessionFile,
+				cwd,
 				sessionDir: "/tmp/should-not-be-used",
 				inheritProjectContext: false,
 				inheritSkills: false,
@@ -134,6 +135,8 @@ describe("buildPiArgs session wiring", () => {
 
 			assert.ok(args.includes("--session"));
 			assert.ok(args.includes(sessionFile));
+			if (cwd) assert.deepEqual(args.slice(args.indexOf("--session-cwd"), args.indexOf("--session-cwd") + 2), ["--session-cwd", cwd]);
+			else assert.ok(!args.includes("--session-cwd"));
 			assert.ok(fs.existsSync(path.dirname(sessionFile)));
 			assert.ok(!args.includes("--session-dir"), "--session-dir should not be emitted with --session");
 			assert.ok(!args.includes("--no-session"), "--no-session should not be emitted with --session");
@@ -143,18 +146,22 @@ describe("buildPiArgs session wiring", () => {
 	});
 
 	it("keeps fresh mode behavior (sessionDir + no session file)", () => {
+		const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-args-fresh-"));
+		tempRoots.push(sessionDir);
 		const { args } = buildPiArgs({
 			baseArgs: ["-p"],
 			task: "hello",
 			sessionEnabled: true,
-			sessionDir: "/tmp/subagent-sessions",
+			sessionDir,
+			cwd: "/requested project",
 			inheritProjectContext: false,
 			inheritSkills: false,
 		});
 
 		assert.ok(args.includes("--session-dir"));
-		assert.ok(args.includes("/tmp/subagent-sessions"));
+		assert.ok(args.includes(sessionDir));
 		assert.ok(!args.includes("--session"));
+		assert.ok(!args.includes("--session-cwd"));
 	});
 });
 

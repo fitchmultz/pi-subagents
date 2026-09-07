@@ -90,7 +90,7 @@ describe("buildDoctorReport", () => {
 			});
 
 			assert.match(report, /^Subagents doctor report/);
-			assert.ok(report.includes(`- cwd: ${root}`));
+			assert.ok(report.includes(`- Native session cwd: ${root}`));
 			assert.match(report, /- async support: available/);
 			assert.match(report, /- configured session dir: .*subagent-sessions/);
 			assert.match(report, /- current session file: .*parent\.jsonl/);

@@ -4,7 +4,7 @@
 
 ## Installation
 
-Full durable-runtime support requires a corrected native [`fitchmultz/pi` build containing `acf4c2d98ec44de2108f16a47bf59de5193341a7`](https://github.com/fitchmultz/pi/commit/acf4c2d98ec44de2108f16a47bf59de5193341a7), including custom steering/follow-up queue reporting and the code-update restart notice. Stock Pi 0.84.x and stock 0.85.1 both fail that queue contract. The corrected fork also reports 0.85.1, so `pi --version` alone does not prove support. [Native PR #9](https://github.com/fitchmultz/pi/pull/9) contains these core fixes. This package does not install the corrected native build.
+Full durable-runtime support requires a corrected native [`fitchmultz/pi` build containing `952c27cd628ac742653f1fe4093685bdbe3a8444`](https://github.com/fitchmultz/pi/commit/952c27cd628ac742653f1fe4093685bdbe3a8444) ([native PR #16](https://github.com/fitchmultz/pi/pull/16)). It fixes prompt-admission ownership and settlement, including busy user startup, and includes the earlier custom steering/follow-up queue reporting, code-update restart notice, and `--session-cwd` support. Stock Pi 0.84.x and published 0.85.1 lack these contracts. The corrected fork also reports 0.85.1, so `pi --version` alone does not prove support. This package does not install the corrected native build.
 
 With that native build available, install from GitHub:
 
@@ -37,11 +37,13 @@ Use a built checkout of the required native Pi revision for the completion gate:
 npm ci
 export PI_INTERCOM_TEST_SDK=/absolute/path/to/pi/packages/coding-agent
 export PI_OWNERSHIP_TEST_PACKAGE_ROOT="$PI_INTERCOM_TEST_SDK"
+export PI_CONTEXT_TEST_PACKAGE_ROOT="$PI_INTERCOM_TEST_SDK"
+export PI_PACKAGE_DIR="$PI_INTERCOM_TEST_SDK"
 ln -sf "$PI_INTERCOM_TEST_SDK/dist/bundle/cli.js" node_modules/.bin/pi
 npm run ci
 ```
 
-Both SDK overrides point at the built `packages/coding-agent` directory, not the monorepo root. The CLI link changes only this checkout's `node_modules/.bin/pi`; repeat it after `npm ci`, which restores the stock development CLI.
+All SDK overrides point at the built `packages/coding-agent` directory, not the monorepo root. The CLI link changes only this checkout's `node_modules/.bin/pi`; repeat it after `npm ci`, which restores the stock development CLI.
 
 That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
@@ -63,7 +65,7 @@ PI_LINUX_PI_ARCHIVE=/absolute/path/native-pi-linux-node22.tar.gz \
   bash scripts/linux-smoke.sh # Node support floor
 ```
 
-The archive is mounted read-only and extracted to `/native-pi`. The unprivileged `node` user installs locked package dependencies in `/workspace`, points the private CLI link and both SDK overrides at the supplied build, and runs the full, unchanged `npm run ci` gate. No host home, source mount, credentials, or model calls are passed into it. The gate does not patch Pi/Jiti or skip native cases.
+The archive is mounted read-only and extracted to `/native-pi`. The unprivileged `node` user installs locked package dependencies in `/workspace`, points the private CLI link and all SDK overrides at the supplied build, and runs the full, unchanged `npm run ci` gate. No host home, source mount, credentials, or model calls are passed into it. The gate does not patch Pi/Jiti or skip native cases.
 
 ## Real Pi smoke
 
@@ -113,6 +115,7 @@ agent_runs({ action: "profiles" })
 delegate({ agent: "worker", task: "Implement the approved fix", worktree: true })
 agent_runs({ action: "list" })
 agent_runs({ action: "inspect", id: "<run-id>" })
+agent_runs({ action: "inspect", id: "<run-id>", full: true }) // Full task and launch configuration
 agent_runs({ action: "nudge", id: "<run-id>", message: "Keep the public API unchanged." })
 agent_runs({ action: "continue", id: "<run-id>", message: "Now check the edge case." })
 agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "Checked the result." })
@@ -122,11 +125,13 @@ agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "C
 
 ### Owned runs, review, and continuation
 
-`agent_runs({ action: "list" })` puts unanswered questions first, then failures, interrupted or unconfirmed work, completed-but-unreviewed results, and other runs. It returns 20 runs by default. Use `offset` and `limit` (1–100) to page; `details.runList.nextOffset` points to the next page. Paging never discards history or disables exact-ID lookup. After the first read, unchanged finished runs reuse compact ordering facts instead of reloading every result and launch contract. Live or unconfirmed work, questions, and the displayed page stay fresh. `inspect` combines the result, saved launch configuration and profile source, parent review, notification receipt, root/predecessor/continuation history, and available live progress and diagnostics in one report.
+`agent_runs({ action: "list" })` puts unanswered questions first, then failures, interrupted or unconfirmed work, live work, completed-but-unreviewed results, and other runs. It returns 20 runs by default. Use `offset` and `limit` (1–100) to page; `details.runList.nextOffset` points to the next page. Paging never discards history or disables exact-ID lookup. After the first read, unchanged finished runs reuse compact ordering facts instead of reloading every result and launch contract. Live or unconfirmed work, questions, and the displayed page stay fresh. `inspect` shows a concise task/result summary, acceptance outcome, questions, errors, paths, review, continuation links, and available live diagnostics. Use `full: true` for the full task and saved launch configuration (also supported by exact `subagent` status). Stored details and history are unchanged. Explicit continuation links identify separate work; a successor's result or review never satisfies the predecessor automatically.
 
-`review` records `decision: "accepted"` or `"needs_changes"`, with an optional `message`. Review a finished result, not a live run. The decision is separate from execution status, runtime acceptance checks, and delivery. It does not run checks, launch another child, or mark a follow-up accepted. Use `continue` explicitly when more work is needed; inspect and late nudges do not restart anything.
+`review` records `decision: "accepted"` or `"needs_changes"`, with an optional `message`. Review a finished result, not a live run. The decision is separate from execution status, runtime acceptance checks, and delivery. It returns a short saved-decision receipt, not another inspection. The review note is parent-only and is **not sent to the child**, including on revival. Put actionable instructions in `continue` or `nudge`. Review does not run checks, launch another child, or mark a follow-up accepted; inspect and late nudges do not restart anything.
 
-Continuation and exited-question revival reuse the resolved provider/model, thinking level, profile, selected skill injection, tool/extension and context policies, output settings, limits, and acceptance contract. Changed profile defaults are not substituted. `agent_runs` accepts explicit `model`, `cwd`, `output`, and `acceptance` overrides on `continue`/`answer`; `agent` explicitly selects a current profile. Detailed overrides remain available through `subagent({ action: "resume", ... })`. Launch overrides apply when starting a continuation, not when delivering a follow-up or answer to a still-live child. A missing worktree can be replaced with an explicit `cwd`; a missing child session cannot be invented. If the same saved child already has a live continuation, another `continue` sends it the follow-up instead of starting a second process.
+Continuation and exited-question revival reuse the resolved provider/model, thinking level, profile, selected skill injection, tool/extension and context policies, output settings, limits, and acceptance contract. Changed profile defaults are not substituted. `agent_runs` accepts explicit `model`, `cwd`, `output`, and `acceptance` overrides on `continue`/`answer`; `agent` explicitly selects a current profile. Detailed overrides remain available through `subagent({ action: "resume", ... })`. Launch overrides apply when starting a continuation, not when delivering a follow-up or answer to a still-live child. In particular, live `continue`/`answer` acceptance overrides do **not** amend that child's acceptance contract. A missing worktree can be replaced with an explicit `cwd`; a missing child session cannot be invented. Every native saved-session launch, including acceptance finalization, passes its effective cwd through `--session-cwd` before extensions start, without rewriting the saved session header, identity, or history. If the same saved child already has a live continuation, another `continue` sends it the follow-up instead of starting a second process. Status labels distinguish **Launch cwd** from intercom's **Native session cwd**; neither proves a shell command's physical directory. The **Saved session header cwd** remains unchanged by the native override.
+
+When the saved launch records that an output path was generated from a relative profile default, continuation and exited-question revival generate a new path for the successor using that saved filename, leaving the predecessor file untouched. Selecting a current profile with `agent` preserves the saved filename independently of that profile's current default; an explicit `output` override changes the output choice. Explicit paths, absolute profile defaults, and `output: false` retain their saved choices unless overridden. Older snapshots without output-origin information keep their saved paths; supply an explicit `output` override to choose a different path.
 
 Old receipts recover their handles and available results from saved parent/child sessions and existing metadata. When an old run has no saved profile snapshot, continuation asks for an explicit `agent` choice rather than guessing its original configuration. Resuming the same saved parent restores its ownership; a new or forked parent does not automatically adopt that work. Explicit legacy async-ID inspection remains available without adopting the inspected run.
 
@@ -382,7 +387,7 @@ Answers are saved once. Repeating the same answer does not start duplicate work;
 
 If an answer launch was interrupted before a continuation existed, the reply gives an explicit `continue` recovery call. It refuses to restart when launch evidence is uncertain; inspect the advertised continuation first. Questions, answers, launch contracts, and results live under `${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions/subagent-runs/<run-id>/`, separate from temporary logs. Ownership and review use native parent `subagent-run` entries; pending intercom delivery is journaled in that same saved Pi session. Temporary cleanup does not erase these records, but deleting saved sessions or metadata removes their recovery data. Pending questions are not age-cleaned.
 
-After 10 minutes of no observed child activity by default, needs-attention notices can show up in the parent session with useful next actions, such as checking status, interrupting the run, or nudging the child. When the child is registered, prefer `subagent({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })` for live guidance, answers, corrections, or blockers. It sends a non-blocking steer that supplements the child's active task unless the message explicitly replaces it. Use the status-shown blocking intercom ask only when the parent must remain alive waiting for a reply.
+After 10 minutes of no observed child activity by default, needs-attention notices offer `agent_runs` inspection, stopping, or nudging. A matching unresolved durable question says **Waiting for supervisor input** and gives its question ID and answer call; a saved but undelivered answer remains actionable. An active tool is named with its elapsed time and no-output age, with guidance to inspect command progress—not a claim of a hang or forward progress. When the child is registered, prefer `agent_runs({ action: "nudge", id: "<run-id>", message: "What are you blocked on?" })` for live guidance, answers, corrections, or blockers. It sends a non-blocking steer that supplements the child's active task unless the message explicitly replaces it. Use the status-shown blocking intercom ask only when the parent must remain alive waiting for a reply.
 
 If messages do not show up, run:
 
@@ -948,7 +953,8 @@ Agent definitions are not loaded into context by default. Management actions let
 | `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `extend`, `resume`, `nudge`, `questions`, `answer`, `review`, or `doctor`. |
 | `questionId` | string | - | Required with `id` and `message` for `action: "answer"`. |
 | `decision` | `accepted \| needs_changes` | - | Parent review outcome for `action: "review"`; optional `message` adds a note. |
-| `offset` / `limit` | integer | 0 / 20 | Page the attention-first `status` list; limit is 1–100. Exact-ID lookup is unbounded. |
+| `offset` / `limit` | integer | 0 / 20 | Page the attention-first `status` list; limit is 1–100. Live work precedes completed unreviewed results. Exact-ID lookup is unbounded. |
+| `full` | boolean | false | Exact `status`/`agent_runs` inspect: include the full task and saved launch configuration. |
 | `chainName` | string | - | Chain name for management actions. |
 | `config` | object/string | - | Agent or chain config for create/update. |
 | `output` | `string \| false` | agent default | Override single-agent output handoff file. Explicit caller paths persist at their resolved cwd/workspace path; agent-default relative paths are materialized under run artifacts. |
@@ -1006,7 +1012,7 @@ subagent({ action: "doctor" })
 
 `extend` targets an active foreground run with an existing timeout and adds more milliseconds to the current child deadline. It is useful when progress or a needs-attention notice shows useful work still happening and throwing away the child session would waste context. It cannot revive an already-timed-out run; use `resume` after timeout.
 
-`resume` sends the follow-up directly when a foreground or async child is still reachable over intercom. After completion, it revives the child by starting a new async child from the stored child session file. Multi-child async runs and remembered foreground single, parallel, or chain runs can be revived by passing `index` to choose the child. Nested runs can be resumed by nested id when their live route or persisted nested session metadata is available. Timed-out or transient-error foreground children also use this revive path when their `.jsonl` session file was persisted. Revived children reuse their saved effective launch configuration, including the original explicit acceptance contract. Explicit resume overrides replace the corresponding choices. `agent` opts into a current profile; old runs without a profile snapshot require that choice. Revive starts a new child process from the old session context; it does not restart the same OS process, and it requires the chosen child to have a persisted `.jsonl` session file.
+`resume` sends the follow-up directly when a foreground or async child is still reachable over intercom. After completion, it revives the child by starting a new async child from the stored child session file. Multi-child async runs and remembered foreground single, parallel, or chain runs can be revived by passing `index` to choose the child. Nested runs can be resumed by nested id when their live route or persisted nested session metadata is available. Timed-out or transient-error foreground children also use this revive path when their `.jsonl` session file was persisted. Revived children reuse their saved effective launch configuration, including the original explicit acceptance contract. Explicit resume overrides replace the corresponding choices only on a newly launched continuation, never a live child's acceptance. `agent` opts into a current profile; old runs without a profile snapshot require that choice. Revive starts a new child process from the old session context; it does not restart the same OS process, and it requires the chosen child to have a persisted `.jsonl` session file.
 
 `nudge` sends a short non-blocking steered intercom message to a live foreground or async child. Use it for guidance, answers, corrections, or blockers that may affect active work. The child treats it as supplemental coordination and continues its current task unless the message explicitly replaces it. It requires the bundled intercom extension and a registered child target. Use the `Ask:` command shown by `status` only when the parent must remain alive waiting for a reply.
 
@@ -1153,7 +1159,7 @@ Debug artifacts live under `{sessionDir}/subagent-artifacts/` or a user-scoped t
 - `{runId}_{agent}_output.md`
 - `{runId}_{agent}_meta.json`
 
-Metadata records timing, usage, exit code, final model, attempted models, fallback attempt outcomes, and any resource-limit termination reason.
+Metadata records timing, usage, exit code, final model, attempted models, fallback attempt outcomes, acceptance details when configured, and any resource-limit termination reason. Completion notices and compact delivery receipts include existing result/metadata paths so a short worker summary does not hide that evidence. Disabled artifacts do not create metadata paths.
 
 Session files are stored under a per-run session directory. With `context: "fork"`, each child starts with `--session <branched-session-file>` produced from the parent’s current leaf. That is a real session fork, not an injected summary.
 
@@ -1179,6 +1185,8 @@ Async runs write:
 
 `acceptance` is an explicit contract. Omit it for lightweight runs. For review-only tasks, omit it unless the user explicitly requests a same-session acceptance contract; the extra finalization turn is not independent review. Set it on single runs, top-level parallel task items, sequential chain steps, static parallel task items, and dynamic fanout child templates when the child must prove the work meets concrete criteria. Do not set it on static parallel groups or dynamic fanout aggregate groups; those groups do not own a same-session child turn.
 
+`no-staged-files` requires the **entire Git index** to be empty, including paths staged before the child started. It does not mean only files changed by that child. A parent contract requiring both a staged deliverable and `no-staged-files` is contradictory; the runtime does not weaken the check or alter the index to reconcile it.
+
 If you are coming from Codex Goals, `acceptance` is the subagent equivalent for one delegated run. When a user says `/goal`, “goal”, “active goal”, “continue until evidence says done”, or “verify against a goal”, translate that into an acceptance contract: `criteria` are the target, `evidence` and `verify` are proof, `stopRules` are constraints, and `maxFinalizationTurns` is the bounded loop budget.
 
 ```ts
@@ -1196,6 +1204,8 @@ If you are coming from Codex Goals, `acceptance` is the subagent equivalent for 
 
 When `acceptance` is present, the initial child prompt includes a standardized acceptance section and asks for a fenced `acceptance-report` JSON block. After the child’s initial completion, the runtime continues the same persisted child session with an acceptance finalization prompt. The child can repair omissions in that same session, then must return the final `acceptance-report`. Missing or malformed finalization reports reject the run when the loop limit is reached. The final answer replaces the initial answer and must stand alone with every requested handoff detail, including paths, identifiers, findings, and cumulative evidence—not only a statement that the work was rechecked.
 
+Native Pi finalization submits the complete standalone answer, including its acceptance fence, through `structured_output({ value: { report: "..." } })`. After queued activity finishes, only the latest assistant turn's sole successful report submission is eligible; the saved capture must match that call. Further prompted activity requires resubmission, while passive context without a new model turn does not. Missing or stale submissions retry only within `maxFinalizationTurns`; an exhausted run is rejected with the prior full report retained as **UNCONFIRMED** audit evidence. The initial public `outputSchema` payload and Claude Code's finalization contract are unchanged.
+
 Public acceptance config is evidence-driven. There is no public `level` field and no `acceptance: "checked"` shorthand. Runtime provenance is derived from what actually happened:
 
 - `attested`: the child returned a structured acceptance report.
@@ -1203,7 +1213,7 @@ Public acceptance config is evidence-driven. There is no public `level` field an
 - `verified`: configured runtime verification commands passed. Child-reported command success does not count.
 - `rejected`: attestation, structural checks, verification, or finalization failed.
 
-Independent review is not part of `acceptance`; the parent launches reviewer runs after the worker completes. Unsupported `acceptance.review` input fails during preflight before any child starts. Self-review finalization never counts as independent review, and it never counts as `verified` unless configured runtime verification commands actually pass. Existing handoff files remain authoritative during finalization; review prose never overwrites an unchanged report. Without a handoff file, the latest substantive finalization answer becomes the parent result, chain input, and artifact output. A report-only finalization keeps the last substantive answer. The initial output remains available as acceptance audit evidence; finalization usage and residual risks are included in the result. Final reports describe cumulative whole-task evidence, including criterion-local evidence requirements, not only edits made during the finalization turn.
+Independent review is not part of `acceptance`; the parent launches reviewer runs after the worker completes. Unsupported `acceptance.review` input fails during preflight before any child starts. Self-review finalization never counts as independent review, and it never counts as `verified` unless configured runtime verification commands actually pass. Child-written handoff files remain authoritative during finalization. Otherwise, the current finalization report supplies the parent result, chain input, and artifact output; native finalization also refreshes files generated from earlier assistant output. A report-only finalization keeps the prior handoff when no new summary is provided. The initial output remains available as acceptance audit evidence; finalization usage and residual risks are included in the result. Final reports describe cumulative whole-task evidence, including criterion-local evidence requirements, not only edits made during the finalization turn.
 
 When delegating implementation from a plan or spec, keep the task focused on what to implement and put the definition of done in `acceptance` so the runtime can finalize and evaluate it:
 

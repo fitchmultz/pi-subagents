@@ -31,6 +31,7 @@ import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skill
 import { validateForkContextModelPolicy, type SubagentExecutionContext } from "../../shared/agent-context-policy.ts";
 import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.ts";
 import { runSync } from "./execution.ts";
+import { usesAgentDefaultOutput } from "./subagent-params.ts";
 import { createForegroundTimeoutExtensionRegistry, type ForegroundTimeoutExtensionRegistry } from "./timeout-extension.ts";
 import { buildChainSummary } from "../../shared/formatters.ts";
 import { compactForegroundDetails, getSingleResultOutput, resolveChildCwd } from "../../shared/utils.ts";
@@ -290,6 +291,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				share: input.shareEnabled,
 				artifactsDir: input.artifactsDir,
 				outputPath,
+				outputPathFromAgentDefault: usesAgentDefaultOutput(task.output) || task.outputFromAgentDefault === true,
 				outputMode: behavior.outputMode,
 				persistOutputFile: task.output !== undefined,
 				maxSubagentDepth,
@@ -1112,6 +1114,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				share: shareEnabled,
 				artifactsDir,
 				outputPath,
+				outputPathFromAgentDefault: tuiOverride?.output === undefined && (usesAgentDefaultOutput(seqStep.output) || seqStep.outputFromAgentDefault === true),
 				outputMode: behavior.outputMode,
 				persistOutputFile: seqStep.output !== undefined,
 				maxSubagentDepth,

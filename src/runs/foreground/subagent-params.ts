@@ -79,6 +79,7 @@ export interface SubagentParamsLike {
 	decision?: "accepted" | "needs_changes";
 	offset?: number;
 	limit?: number;
+	full?: boolean;
 	dir?: string;
 	index?: number;
 	agent?: string;
@@ -215,6 +216,7 @@ export function normalizeSubagentParamsLike(params: RawSubagentParamsLike): Suba
 		decision: params.decision === "accepted" || params.decision === "needs_changes" ? params.decision : undefined,
 		offset: numberValue(params, "offset"),
 		limit: numberValue(params, "limit"),
+		full: booleanValue(params, "full"),
 		dir: stringValue(params, "dir"),
 		index: numberValue(params, "index"),
 		agent: stringValue(params, "agent"),

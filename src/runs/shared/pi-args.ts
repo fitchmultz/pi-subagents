@@ -134,6 +134,7 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	if (input.sessionFile) {
 		fs.mkdirSync(path.dirname(input.sessionFile), { recursive: true });
 		args.push("--session", input.sessionFile);
+		if (input.cwd) args.push("--session-cwd", input.cwd);
 	} else {
 		if (!input.sessionEnabled) {
 			args.push("--no-session");

@@ -7,6 +7,8 @@ import {
 	type ResolvedControlConfig,
 } from "../../shared/types.ts";
 
+import { formatRunAction } from "../../shared/status-format.ts";
+
 const CONTROL_EVENT_TYPES: ControlEventType[] = ["needs_attention"];
 const CONTROL_NOTIFICATION_CHANNELS: ControlNotificationChannel[] = ["event", "async", "intercom"];
 const DEFAULT_NOTIFY_ON: ControlEventType[] = ["needs_attention"];
@@ -91,14 +93,20 @@ export function buildControlEvent(input: {
 	currentPath?: string;
 	elapsedMs?: number;
 	recentFailureSummary?: string;
+	supervisorQuestion?: ControlEvent["supervisorQuestion"];
 }): ControlEvent {
 	const ts = input.ts ?? Date.now();
 	const type = input.type ?? "needs_attention";
-	const elapsedMs = input.elapsedMs ?? (input.lastActivityAt ? Math.max(0, ts - input.lastActivityAt) : undefined);
+	const elapsedMs = input.elapsedMs ?? (input.lastActivityAt !== undefined ? Math.max(0, ts - input.lastActivityAt) : undefined);
 	const elapsedSeconds = elapsedMs !== undefined ? Math.floor(elapsedMs / 1000) : undefined;
-	const message = input.message ?? (elapsedSeconds !== undefined
-		? `${input.agent} needs attention (no observed activity for ${elapsedSeconds}s)`
-		: `${input.agent} needs attention`);
+	const question = input.supervisorQuestion;
+	const observation = input.currentTool
+		? `${input.currentTool} still active${input.currentToolDurationMs !== undefined ? ` for ${Math.floor(input.currentToolDurationMs / 1000)}s` : ""}${elapsedSeconds !== undefined ? `; no observed output/events for ${elapsedSeconds}s` : ""}`
+		: elapsedSeconds !== undefined ? `no observed activity for ${elapsedSeconds}s` : undefined;
+	const signal = question
+		? question.state === "awaiting_input" ? `Waiting for supervisor input (question ${question.questionId})` : `Supervisor answer saved for question ${question.questionId}; delivery unconfirmed`
+		: `${input.agent} needs attention`;
+	const message = input.message ?? `${signal}${observation ? ` (${observation})` : ""}`;
 	return {
 		type,
 		...(input.from ? { from: input.from } : {}),
@@ -117,6 +125,7 @@ export function buildControlEvent(input: {
 		...(input.currentPath ? { currentPath: input.currentPath } : {}),
 		...(elapsedMs !== undefined ? { elapsedMs } : {}),
 		...(input.recentFailureSummary ? { recentFailureSummary: input.recentFailureSummary } : {}),
+		...(question ? { supervisorQuestion: question } : {}),
 	};
 }
 
@@ -137,7 +146,7 @@ export function claimControlNotification(config: ResolvedControlConfig, event: C
 	return true;
 }
 
-export function formatControlNoticeMessage(event: ControlEvent, childIntercomTarget?: string): string {
+export function formatControlNoticeMessage(event: ControlEvent, childIntercomTarget?: string, childSafe = false): string {
 	const runTarget = event.runId;
 	if (event.reason === "completion_guard") {
 		return [
@@ -149,7 +158,8 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 		].filter((line): line is string => Boolean(line)).join("\n");
 	}
 
-	const nudgeCommand = `subagent({ action: "nudge", id: "${runTarget}"${event.index !== undefined ? `, index: ${event.index}` : ""}, message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })`;
+	const nudgeCommand = formatRunAction("nudge", runTarget, { ...(event.index !== undefined ? { index: event.index } : {}), message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." }, childSafe);
+	const question = event.supervisorQuestion;
 	const askCommand = childIntercomTarget
 		? `intercom({ action: "ask", to: "${childIntercomTarget}", delivery: "steer", message: "What are you blocked on? Reply with the smallest next step, or state the exact decision you need." })`
 		: undefined;
@@ -158,17 +168,24 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 		`Run: ${runTarget}${event.index !== undefined ? ` step ${event.index + 1}` : ""}`,
 		`Signal: ${event.message}`,
 		event.recentFailureSummary ? `Recent failures: ${event.recentFailureSummary}` : undefined,
-		"Hint: Inspect status first unless the run is clearly blocked.",
-		`Nudge (preferred live coordination): ${nudgeCommand}`,
-		childIntercomTarget
-			? `Ask (blocking wait only; parent must remain alive): ${askCommand}`
-			: "Ask (blocking wait only): no child message route registered",
-		`Status: subagent({ action: "status", id: "${runTarget}" })`,
-		`Interrupt: subagent({ action: "interrupt", id: "${runTarget}" })`,
+		...(question ? [
+			`Question ID: ${question.questionId}`,
+			question.state === "answer_pending" ? "The saved answer has not been confirmed delivered. Inspect the child and retry the same answer; do not assume it resumed." : "Answer the saved question so the child can continue.",
+			`Questions: ${formatRunAction("questions", runTarget, {}, childSafe)}`,
+			`Answer: ${formatRunAction("answer", runTarget, { questionId: question.questionId, message: question.answer ?? "..." }, childSafe)}`,
+		] : [
+			event.reason === "idle" && event.currentTool ? "Hint: Inspect command progress. A long-running tool may still be running or hung; elapsed time alone does not prove either." : "Hint: Inspect status first unless the run is clearly blocked.",
+			`Nudge (preferred live coordination): ${nudgeCommand}`,
+			childIntercomTarget
+				? `Ask (blocking wait only; parent must remain alive): ${askCommand}`
+				: "Ask (blocking wait only): no child message route registered",
+		]),
+		`Status: ${formatRunAction("status", runTarget, {}, childSafe)}`,
+		`${childSafe ? "Interrupt" : "Stop"}: ${formatRunAction("interrupt", runTarget, {}, childSafe)}`,
 	].filter((line): line is string => Boolean(line)).join("\n");
 }
 
-export function formatControlIntercomMessage(event: ControlEvent, childIntercomTarget?: string): string {
+export function formatControlIntercomMessage(event: ControlEvent, childIntercomTarget?: string, childSafe = false): string {
 	const statusLabel = event.reason === "completion_guard"
 		? "subagent failed"
 		: "subagent needs attention";
@@ -179,6 +196,6 @@ export function formatControlIntercomMessage(event: ControlEvent, childIntercomT
 			? `${event.agent} failed in run ${event.runId}.`
 			: `${event.agent} needs attention in run ${event.runId}.`,
 		"",
-		formatControlNoticeMessage(event, childIntercomTarget),
+		formatControlNoticeMessage(event, childIntercomTarget, childSafe),
 	].join("\n");
 }

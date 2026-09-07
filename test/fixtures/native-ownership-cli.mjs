@@ -24,6 +24,19 @@ session.appendModelChange(provider, modelId);
 session.appendThinkingLevelChange(thinking);
 session.appendMessage({ role: "user", content: task, timestamp: Date.now() });
 const assistant = (text, stopReason = "stop") => ({ role: "assistant", content: [{ type: "text", text }], provider, model: modelId, api: "openai-responses", stopReason, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() });
+async function submitStructuredOutput(value) {
+	const { default: register } = await import(pathToFileURL(path.join(process.env.OWNERSHIP_REPO, "dist/runs/shared/subagent-prompt-runtime.js")).href);
+	let tool;
+	register({ on() {}, registerTool(value) { if (value.name === "structured_output") tool = value; } });
+	if (!tool) throw new Error("The workflow child requires the real structured_output tool.");
+	const id = randomUUID();
+	const message = { ...assistant("", "toolUse"), content: [{ type: "toolCall", id, name: tool.name, arguments: { value } }] };
+	session.appendMessage(message);
+	const result = await tool.execute(id, { value });
+	const toolResult = { role: "toolResult", toolCallId: id, toolName: tool.name, ...result, isError: false, timestamp: Date.now() };
+	session.appendMessage(toolResult);
+	return [message, toolResult];
+}
 const gate = task.match(/WAIT_GATE:(\w+)/)?.[1];
 if (gate) {
 	session.appendMessage(assistant("Checkpoint before controlled wait", "toolUse"));
@@ -43,23 +56,19 @@ const workflowResponse = task.match(/WORKFLOW_RESPONSE:([^\n]+)/)?.[1];
 if (workflowResponse) {
 	const response = JSON.parse(workflowResponse);
 	output = response.text;
-	if (Object.hasOwn(response, "value")) {
-		const { default: register } = await import(pathToFileURL(path.join(process.env.OWNERSHIP_REPO, "dist/runs/shared/subagent-prompt-runtime.js")).href);
-		let tool;
-		register({ on() {}, registerTool(value) { if (value.name === "structured_output") tool = value; } });
-		if (!tool) throw new Error("The workflow child requires the real structured_output tool.");
-		const id = randomUUID();
-		session.appendMessage({ ...assistant(output, "toolUse"), content: [{ type: "toolCall", id, name: tool.name, arguments: { value: response.value } }] });
-		const result = await tool.execute(id, { value: response.value });
-		session.appendMessage({ role: "toolResult", toolCallId: id, toolName: tool.name, ...result, isError: false, timestamp: Date.now() });
-	}
+	if (Object.hasOwn(response, "value")) await submitStructuredOutput(response.value);
 }
 if (task.includes("Supervisor answer to question")) output = "ANSWER_RECEIVED";
 const failed = task.includes("PERMANENT_FAILURE");
 if (failed) output = "Controlled permanent failure";
 if (task.includes("Acceptance Contract") || task.includes("acceptance-report")) output += '\n```acceptance-report\n' + JSON.stringify({ criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "Controlled child returned the requested token." }], manualNotes: "Native-session configuration probe", residualRisks: [] }) + '\n```';
-const message = assistant(output, failed ? "error" : "stop");
-if (failed) message.errorMessage = output;
-session.appendMessage(message);
-process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n${JSON.stringify({ type: "agent_settled" })}\n`);
+if (!failed && process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE && task.includes("## Acceptance Finalization")) {
+	for (const message of await submitStructuredOutput({ report: output })) process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`);
+} else {
+	const message = assistant(output, failed ? "error" : "stop");
+	if (failed) message.errorMessage = output;
+	session.appendMessage(message);
+	process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`);
+}
+process.stdout.write(`${JSON.stringify({ type: "agent_settled" })}\n`);
 process.exitCode = failed ? 1 : 0;

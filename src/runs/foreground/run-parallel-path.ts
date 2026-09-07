@@ -233,6 +233,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			artifactsDir: input.debugArtifactsDir,
 			maxOutput: input.maxOutput,
 			outputPath,
+			outputPathFromAgentDefault: input.outputUsesAgentDefault[index],
 			outputMode: behavior?.outputMode,
 			persistOutputFile: !input.outputUsesAgentDefault[index],
 			structuredOutput: structuredRuntime,

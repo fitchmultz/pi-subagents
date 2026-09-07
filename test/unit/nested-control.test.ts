@@ -239,7 +239,7 @@ describe("nested control routing", () => {
 			assert.equal(result.isError, undefined);
 			assert.match(text(result), /Run: root-control/);
 			assert.match(text(result), /↳ worker \[nested-foreground\] running/);
-			assert.match(text(result), /Status: subagent\(\{ action: "status", id: "nested-foreground" \}\)/);
+			assert.match(text(result), /Status: agent_runs\(\{ action: "inspect", id: "nested-foreground" \}\)/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

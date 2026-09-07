@@ -47,7 +47,7 @@ import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/ski
 import { hasCompletedMutationToolCall, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
-import { refreshQuestionLaunch, saveQuestionContract } from "../shared/supervisor-questions.ts";
+import { pendingSupervisorQuestion, refreshQuestionLaunch, saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { saveForegroundLaunch } from "../shared/run-records.ts";
 import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
@@ -60,7 +60,7 @@ import {
 	type ClaudeCodeInvocation,
 	type ClaudeCodeResultEvent,
 } from "../shared/claude-code.ts";
-import { readStructuredOutput } from "../shared/structured-output.ts";
+import { readStructuredOutput, type StructuredOutputRuntime } from "../shared/structured-output.ts";
 import { captureSingleOutputSnapshot, cleanupSingleOutputFile, formatConsumedOutputReference, formatSavedOutputReference, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	buildModelCandidates,
@@ -83,6 +83,9 @@ import {
 } from "../shared/subagent-tool-loop-guard.ts";
 import {
 	evaluateRunAcceptance,
+	createFinalizationReportRuntime,
+	readFinalizationReport,
+	formatUnconfirmedFinalizationOutput,
 	resolveExecutionOutcome,
 	resolveFinalizationOutput,
 	formatAcceptancePrompt,
@@ -93,6 +96,8 @@ import {
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
+const finalizationReportByResult = new WeakMap<SingleResult, ReturnType<typeof readFinalizationReport>>();
+const writtenOutputSnapshotByResult = new WeakMap<SingleResult, SingleOutputSnapshot>();
 
 function emptyUsage(): Usage {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
@@ -246,6 +251,7 @@ async function runSingleAttempt(
 		attemptNotes: string[];
 		outputSnapshot?: SingleOutputSnapshot;
 		previousOutput?: string;
+		reportRuntime?: StructuredOutputRuntime;
 		originalTask?: string;
 		completionPolicy: CompletionPolicy;
 	},
@@ -303,7 +309,7 @@ async function runSingleAttempt(
 				parentControlInbox: options.nestedRoute?.controlInbox,
 				parentRootRunId: options.nestedRoute?.rootRunId,
 				parentCapabilityToken: options.nestedRoute?.capabilityToken,
-				structuredOutput: options.structuredOutput,
+				structuredOutput: shared.reportRuntime ?? options.structuredOutput,
 				projectTrust: options.projectTrust,
 			});
 			args = built.args;
@@ -460,7 +466,7 @@ async function runSingleAttempt(
 		const subagentLoopGuard = createRepeatedSubagentCallGuardState();
 		const mutatingFailures = createMutatingFailureState();
 		const mutatingFailureWindowMs = 5 * 60_000;
-		const currentToolDurationMs = (now: number) => progress.currentToolStartedAt ? Math.max(0, now - progress.currentToolStartedAt) : undefined;
+		const currentToolDurationMs = (now: number) => progress.currentToolStartedAt !== undefined ? Math.max(0, now - progress.currentToolStartedAt) : undefined;
 		const emitNeedsAttention = (now: number, input: { message?: string; reason?: ControlEvent["reason"]; recentFailureSummary?: string; currentTool?: string; currentPath?: string; currentToolDurationMs?: number } = {}): boolean => {
 			if (!controlConfig.enabled) return false;
 			const previous = progress.activityState;
@@ -483,6 +489,8 @@ async function runSingleAttempt(
 				currentToolDurationMs: input.currentToolDurationMs ?? currentToolDurationMs(now),
 				currentPath: input.currentPath ?? progress.currentPath,
 				recentFailureSummary: input.recentFailureSummary,
+				supervisorQuestion: input.reason === undefined || input.reason === "idle"
+					? pendingSupervisorQuestion({ runId: options.runId, agent: agent.name, index: options.index ?? 0, sessionFile: options.sessionFile, pid: proc.pid }) : undefined,
 			});
 			emitControlEvent(event);
 			return previous !== "needs_attention";
@@ -731,8 +739,10 @@ async function runSingleAttempt(
 			cleanupTempDir(tempDir);
 			processClosed = true;
 			if (buf.trim()) processLine(buf);
+			const currentReport = shared.reportRuntime && readFinalizationReport(result.messages ?? [], shared.reportRuntime).output;
+			if (currentReport) assistantError = undefined;
 			if (!result.error && assistantError) result.error = assistantError;
-			const forcedDrainAfterFinalSuccess = lifecycle.settledCleanup && cleanTerminalAssistantStopReceived && !result.error;
+			const forcedDrainAfterFinalSuccess = lifecycle.settledCleanup && (cleanTerminalAssistantStopReceived || currentReport) && !result.error;
 			if (code !== 0 && stderrBuf.trim() && !result.error && !forcedDrainAfterFinalSuccess) {
 				result.error = stderrBuf.trim();
 			}
@@ -829,6 +839,7 @@ async function runSingleAttempt(
 		}
 	});
 	result.exitCode = exitCode;
+	if (shared.reportRuntime) finalizationReportByResult.set(result, readFinalizationReport(result.messages ?? [], shared.reportRuntime));
 	if (result.resourceLimitExceeded) {
 		result.exitCode = 1;
 		result.error = result.error ?? result.resourceLimitExceeded.message;
@@ -883,10 +894,11 @@ async function runSingleAttempt(
 	return finalizeCompletedAttempt();
 
 	function finalizeCompletedAttempt(): AttemptResult {
+	const submission = finalizationReportByResult.get(result);
 	if (result.error && result.exitCode === 0) {
 		result.exitCode = 1;
 	}
-	if (result.exitCode === 0 && !result.error) {
+	if (result.exitCode === 0 && !result.error && !submission?.output) {
 		const errInfo = detectSubagentError(result.messages ?? []);
 		if (errInfo.hasError) {
 			result.terminalFailure = true;
@@ -934,7 +946,7 @@ async function runSingleAttempt(
 		durationMs: progress.durationMs,
 	};
 
-	const acceptanceOutput = getFinalOutput(result.messages ?? []);
+	const acceptanceOutput = submission?.output ?? getFinalOutput(result.messages ?? []);
 	let fullOutput = shared.previousOutput === undefined
 		? stripAcceptanceReport(acceptanceOutput)
 		: resolveFinalizationOutput(acceptanceOutput, shared.previousOutput);
@@ -958,11 +970,12 @@ async function runSingleAttempt(
 			reason: "completion_guard",
 		}));
 	}
-	if (options.outputPath && result.exitCode === 0) {
+	if (options.outputPath && result.exitCode === 0 && !submission?.reportSubmissionError) {
 		const resolvedOutput = resolveSingleOutput(options.outputPath, fullOutput, shared.outputSnapshot);
 		fullOutput = stripAcceptanceReport(resolvedOutput.fullOutput);
 		result.savedOutputPath = resolvedOutput.savedPath;
 		result.outputSaveError = resolvedOutput.saveError;
+		if (resolvedOutput.writtenSnapshot) writtenOutputSnapshotByResult.set(result, resolvedOutput.writtenSnapshot);
 		if (resolvedOutput.saveError) {
 			result.terminalFailure = true;
 			result.exitCode = 1;
@@ -1223,9 +1236,11 @@ async function runToCompletion(
 	}
 
 	const initialOutput = artifactOutputByResult.get(result) ?? result.finalOutput ?? "";
+	const nativeReport = !result.model || !isClaudeCodeModel(result.model);
 	result.acceptance = await evaluateRunAcceptance({
 		acceptance: effectiveAcceptance,
 		initial: result,
+		nativeReport,
 		initialOutput: acceptanceOutputByResult.get(result) ?? result.finalOutput ?? "",
 		sessionFile: result.sessionFile ?? effectiveOptions.sessionFile,
 		cwd: options.cwd ?? runtimeCwd,
@@ -1234,16 +1249,24 @@ async function runToCompletion(
 			const finalizationOptions: AttemptOptions = { ...effectiveOptions, sessionFile, outputMode: "inline" };
 			delete finalizationOptions.sessionDir;
 			delete finalizationOptions.structuredOutput;
-			const reviewed = await runSingleAttempt(runtimeCwd, agent, prompt, result.model, finalizationOptions, {
-				sessionEnabled: true,
-				systemPrompt,
-				resolvedSkillNames: result.skills,
-				skillsWarning: result.skillsWarning,
-				attemptNotes: [],
-				originalTask: prompt,
-				completionPolicy: "acceptance-contract",
-				previousOutput: artifactOutputByResult.get(result) ?? result.finalOutput,
-			});
+			const reportRuntime = nativeReport ? createFinalizationReportRuntime() : undefined;
+			let reviewed: AttemptResult;
+			try {
+				reviewed = await runSingleAttempt(runtimeCwd, agent, prompt, result.model, finalizationOptions, {
+					sessionEnabled: true,
+					systemPrompt,
+					resolvedSkillNames: result.skills,
+					skillsWarning: result.skillsWarning,
+					attemptNotes: [],
+					originalTask: prompt,
+					completionPolicy: "acceptance-contract",
+					previousOutput: artifactOutputByResult.get(result) ?? result.finalOutput,
+					reportRuntime,
+					outputSnapshot: nativeReport ? writtenOutputSnapshotByResult.get(result) : undefined,
+				});
+			} finally {
+				if (reportRuntime) cleanupTempDir(path.dirname(reportRuntime.schemaPath));
+			}
 			modelAttempts.push({ model: reviewed.model ?? result.model ?? "default", success: reviewed.exitCode === 0 && !reviewed.error && !reviewed.interrupted,
 				exitCode: reviewed.exitCode, error: reviewed.error, usage: { ...reviewed.usage } });
 			result.usage = sumAttemptUsage(modelAttempts);
@@ -1254,25 +1277,36 @@ async function runToCompletion(
 			};
 			if (reviewed.controlEvents?.length) result.controlEvents = [...(result.controlEvents ?? []), ...reviewed.controlEvents];
 			result.messages = [...(result.messages ?? []), ...(reviewed.messages ?? [])];
-			const output = acceptanceOutputByResult.get(reviewed) ?? getFinalOutput(reviewed.messages ?? []) ?? reviewed.finalOutput ?? "";
+			const submission = finalizationReportByResult.get(reviewed);
+			const output = submission?.output ?? acceptanceOutputByResult.get(reviewed) ?? getFinalOutput(reviewed.messages ?? []) ?? reviewed.finalOutput ?? "";
 			if (reviewed.exitCode !== 0 || reviewed.error || reviewed.detached || reviewed.interrupted) {
 				result.interrupted = reviewed.interrupted;
 				result.timedOut = reviewed.timedOut;
 				result.resourceLimitExceeded = reviewed.resourceLimitExceeded;
 				result.exitCode = reviewed.exitCode;
 				result.error = reviewed.error;
-				return { output, error: reviewed.error ?? "Acceptance finalization turn did not complete successfully." };
+				return { ...submission, output, error: reviewed.error ?? "Acceptance finalization turn did not complete successfully." };
 			}
+			if (submission?.reportSubmissionError) return submission;
+			const writtenSnapshot = writtenOutputSnapshotByResult.get(reviewed);
+			if (writtenSnapshot) writtenOutputSnapshotByResult.set(result, writtenSnapshot);
+			else writtenOutputSnapshotByResult.delete(result);
 			result.finalOutput = reviewed.finalOutput;
 			result.savedOutputPath = reviewed.savedOutputPath;
 			result.outputReference = reviewed.outputReference;
 			result.outputSaveError = reviewed.outputSaveError;
 			artifactOutputByResult.set(result, artifactOutputByResult.get(reviewed) ?? reviewed.finalOutput ?? "");
-			return { output };
+			return { ...submission, output };
 		},
 	});
 	if (result.acceptance.finalization) result.initialOutput = initialOutput;
 	Object.assign(result, resolveExecutionOutcome({ result, acceptance: result.acceptance, signal: options.signal, interruptSignal: options.interruptSignal }));
+	if (result.acceptance.unconfirmedOutput !== undefined) {
+		const auditOutput = result.savedOutputPath && !writtenOutputSnapshotByResult.has(result)
+			? artifactOutputByResult.get(result) ?? result.acceptance.unconfirmedOutput : result.acceptance.unconfirmedOutput;
+		result.finalOutput = formatUnconfirmedFinalizationOutput(auditOutput);
+		artifactOutputByResult.set(result, result.finalOutput);
+	}
 	stripAcceptanceReportsFromMessages(result.messages ?? []);
 	delete result.terminalFailure;
 	refreshQuestionLaunch(effectiveOptions.runId, effectiveOptions.index ?? 0, result.sessionFile);

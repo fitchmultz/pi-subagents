@@ -32,11 +32,11 @@ That one package includes both extension entries and both skills. For local deve
 
 To restart the shared broker too, close every Pi session using the same agent directory and wait at least five seconds before reopening Pi.
 
-Full support requires a corrected native `fitchmultz/pi` build containing `acf4c2d98ec44de2108f16a47bf59de5193341a7`: custom steering/follow-up queue reporting (`7679cb7b5`) plus the restart notice/tests. Stock Pi 0.84.x and 0.85.1 report only pending user text and fail the queue contract. The corrected fork also reports 0.85.1, so that version alone does not establish support. See [installation prerequisites](../README.md#installation) for the native PR status.
+Full support requires a corrected native [`fitchmultz/pi` build containing `952c27cd628ac742653f1fe4093685bdbe3a8444`](https://github.com/fitchmultz/pi/commit/952c27cd628ac742653f1fe4093685bdbe3a8444). It preserves prompt-admission ownership and true settlement and includes the earlier custom steering/follow-up queue reporting, restart notice, and `--session-cwd` fixes. Stock Pi 0.84.x and published 0.85.1 lack these contracts. The corrected fork also reports 0.85.1, so that version alone does not establish support. See [installation prerequisites](../README.md#installation) for the required native build.
 
 ## Development
 
-Follow the [local completion gate](../README.md#local-validation) to set both `PI_INTERCOM_TEST_SDK` and `PI_OWNERSHIP_TEST_PACKAGE_ROOT` to the corrected build's `packages/coding-agent` directory and point this checkout's CLI link at that build before `npm run ci`.
+Follow the [local completion gate](../README.md#local-validation) to set all four SDK overrides to the corrected build's `packages/coding-agent` directory and point this checkout's CLI link at its `dist/bundle/cli.js` before `npm run ci`.
 
 `ci` runs typechecking, package and install smokes, and the full subagent/intercom test suite. The native intercom regression uses real SDK sessions, a controlled provider, and private runtime directories without credentials or model-service calls. To run just that regression:
 
@@ -118,10 +118,10 @@ intercom({
 
 ### Receiving Messages
 
-When a message arrives, it appears inline in your chat with the sender's info. Messages sent with `ask` include a reply hint:
+When a message arrives, it appears inline in your chat with the sender's info. The cwd label is the sender's **Native session cwd**, not proof of a command's physical directory. Messages sent with `ask` include a reply hint:
 
 ```
-**From research** (~/projects/api)
+**From research** (Native session cwd: ~/projects/api)
 
 To reply, use the intercom tool: intercom({ action: "reply", message: "..." })
 
@@ -134,6 +134,8 @@ The reply hint (enabled by default) points to `intercom({ action: "reply", ... }
 If Esc clears a steered or follow-up message before native handoff, it is re-delivered after the actual agent run settles. Messages already in Pi's session history are not reinserted, even after compaction or reload; messages still in Pi's native queues remain there for its next continuation or prompt. A rejected overlapping prompt does not start receiver retries while the original run is active.
 
 An omitted `ask` still honors recipient availability; use explicit steer only when the sender must remain alive for a busy recipient's reply. The recipient should incorporate relevant context and continue its active task unless the message explicitly replaces it. Use `delivery:"queue"` only when delay is intentional; `queueMode:"replace"` keeps only the latest undelivered thread update.
+
+Deferred subagent progress can arrive after its result. When the exact generated thread and sender match a known terminal child, it is labeled **Historical/deferred progress from completed child; not new work**, with original send and Pi handoff times. The full body and wake behavior are preserved. The association survives reload in the existing saved delivery/receipt metadata; detached siblings, successor runs, unknown peers, questions, and answers are not reclassified.
 
 Pending delivery is checkpointed in the saved Pi session before native handoff. Reloading, or resuming that same saved session in a fresh process, restores undelivered messages, including lost native queues, and the latest unsuperseded milestones once; a fork or new session does not adopt them. Resuming again does not replay consumed messages, and passive-only recovery does not start a model turn. Accepted pending messages have no fixed-count backlog cap or age-based expiry. Ordinary peer asks still use the configured reply timeout. Attachment content is included in the agent-visible body and stored in Pi session history. Only passive `send` renders without waking the recipient model.
 
@@ -241,7 +243,7 @@ When this package spawns a Pi-backed delegated child, it supplies bridge metadat
 
 If any are missing, the session falls back to the regular `intercom` tool. A subagent status line may mention an intercom target before the child is actually registered with pi-intercom; treat `intercom({ action: "list" })` as the source of truth. If the advertised target is absent from `list`, use normal subagent controls (`status`, `resume`, `nudge`, result artifacts) instead of sending to that target; the child may be Claude Code-backed or already exited and have no child-side `contact_supervisor`.
 
-When both bundled extension entries are enabled, parent sessions can use `subagent({ action: "nudge", id: "<run-id>", message: "..." })` to send a non-blocking steered nudge to a live child. If the run has already finished, nudge returns its terminal outcome and evidence without restarting it. Unqualified `subagent({ action: "status" })` includes this parent's active and remembered foreground runs plus its persisted async runs across working directories, including completed results. `subagent status` may also show the direct blocking `intercom({ action: "ask", to: "...", delivery: "steer", message: "..." })` path; use that exception only when the parent process must remain alive and cannot safely continue without the reply. `pi-intercom` remains the source of truth for connected sessions and only delivers to registered local peers.
+When both bundled extension entries are enabled, parent sessions can use `agent_runs({ action: "nudge", id: "<run-id>", message: "..." })` to send a non-blocking steered nudge to a live child. If the run has already finished, nudge returns its terminal outcome and evidence without restarting it. `agent_runs({ action: "list" })` includes this parent's active and remembered foreground runs plus its persisted async runs across working directories, including completed results. `agent_runs` inspection may also show the direct blocking `intercom({ action: "ask", to: "...", delivery: "steer", message: "..." })` path; use that exception only when the parent process must remain alive and cannot safely continue without the reply. `pi-intercom` remains the source of truth for connected sessions and only delivers to registered local peers.
 
 ### Three Reasons
 
@@ -253,7 +255,7 @@ When both bundled extension entries are enabled, parent sessions can use `subage
 
 Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally through `pi-subagents`.
 
-Intercom delivery is for live coordination and grouped completion notices. Durable subagent output still lives in `pi-subagents` result details and artifact/output paths (`savedOutputPath`, `artifactPaths`, or explicit workspace `output` files). If a grouped intercom notice says output was delivered, use it as a notification; use the artifact or explicit output path as the source of truth for long reports.
+Intercom delivery is for live coordination and grouped completion notices. Durable subagent output still lives in `pi-subagents` result details and artifact/output paths (`savedOutputPath`, `artifactPaths`, or explicit workspace `output` files). Completion notices include existing saved result and metadata paths, including acceptance details when configured. If a grouped intercom notice says output was delivered, use it as a notification; use the artifact or explicit output path as the source of truth for long reports.
 
 ### Recovering a supervisor question
 
@@ -267,7 +269,7 @@ agent_runs({ action: "stop", id: "<run-id>" })
 
 The full `subagent` tool also accepts `questions` and `answer`; its stop action is `interrupt`. Questions expose `awaiting_input`, `answer_pending`, `answered`, or `cancelled` independently of run completion. Ownership follows the saved supervisor session, not its cwd or display name. The live intercom reply path saves the same answer. Saving an answer or cancelling through run controls also clears the matching live intercom pending ask; a nudge does not resolve a question.
 
-A live waiter consumes the durable answer. If it exited, answering revives its saved Pi session with the original acceptance contract and a new run ID. Identical repeated answers do not launch duplicate work; conflicting answers leave the original intact. `stop` cancels the question and aborts any live waiter. An interrupted pre-launch revival can be recovered with the exact `continue` call shown in the answer receipt; ambiguous launch evidence is not silently retried.
+Needs-attention notices for a matching unresolved question say **Waiting for supervisor input** and include the question ID and answer call. `answer_pending` still means delivery is unconfirmed, not that the child resumed. A live waiter consumes the durable answer. If it exited, answering revives its saved Pi session with the original acceptance contract and a new run ID. Identical repeated answers do not launch duplicate work; conflicting answers leave the original intact. `stop` cancels the question and aborts any live waiter. An interrupted pre-launch revival can be recovered with the exact `continue` call shown in the answer receipt; ambiguous launch evidence is not silently retried.
 
 Question records and saved run metadata live under `${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions/subagent-runs`, separate from disposable temporary files. Pending records are not age-cleaned. Legacy temporary records are recovered for the same saved owner session; deleting the saved records removes that recovery data. Ordinary peer asks still use `askTimeoutMs` and are not durable supervisor questions.
 

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
+import { formatRunAction } from "../shared/status-format.ts";
+import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import {
 	type Details,
 	type IntercomEventBus,
@@ -180,6 +182,7 @@ interface GroupedResultIntercomMessageInput {
 	children: SubagentResultIntercomChild[];
 	status?: SubagentResultStatus;
 	error?: string;
+	resultPath?: string;
 	asyncId?: string;
 	asyncDir?: string;
 	chainSteps?: number;
@@ -191,13 +194,14 @@ function asyncResumeGuidance(input: {
 	asyncId?: string;
 }): string | undefined {
 	if (input.source !== "async" || !input.asyncId) return undefined;
+	const childSafe = process.env[SUBAGENT_CHILD_ENV] === "1" && process.env[SUBAGENT_FANOUT_CHILD_ENV] === "1";
 	const resumable = input.children.filter((child) => typeof child.sessionPath === "string" && fs.existsSync(child.sessionPath));
 	if (input.children.length === 1 && resumable.length === 1) {
-		return `Revive: subagent({ action: "resume", id: "${input.asyncId}", message: "..." })`;
+		return `Continue: ${formatRunAction("resume", input.asyncId, { message: "..." }, childSafe)}`;
 	}
 	if (resumable.length > 0) {
 		const firstIndex = resumable[0]?.index ?? input.children.indexOf(resumable[0]!);
-		return `Revive child: subagent({ action: "resume", id: "${input.asyncId}", index: ${firstIndex}, message: "..." })`;
+		return `Continue child: ${formatRunAction("resume", input.asyncId, { index: firstIndex, message: "..." }, childSafe)}`;
 	}
 	return "Resume: unavailable; no child session file was persisted.";
 }
@@ -209,6 +213,7 @@ function formatSubagentResultIntercomMessage(input: {
 	error?: string;
 	source: "foreground" | "async";
 	children: SubagentResultIntercomChild[];
+	resultPath?: string;
 	asyncId?: string;
 	asyncDir?: string;
 	chainSteps?: number;
@@ -229,6 +234,7 @@ function formatSubagentResultIntercomMessage(input: {
 	if (input.mode === "chain" && typeof input.chainSteps === "number") {
 		lines.push(`Chain steps: ${input.chainSteps}`);
 	}
+	if (input.resultPath) lines.push(`Saved result (acceptance details when configured): ${input.resultPath}`);
 	if (input.asyncId) lines.push(`Async id: ${input.asyncId}`);
 	if (input.asyncDir) lines.push(`Async dir: ${input.asyncDir}`);
 	const resumeGuidance = asyncResumeGuidance(input);
@@ -246,6 +252,7 @@ function formatSubagentResultIntercomMessage(input: {
 		lines.push(`${index + 1}. ${child.agent} — ${child.status}`);
 		if (child.intercomTarget) lines.push(`${input.source === "async" ? "Previous intercom target" : "Run intercom target"}: ${child.intercomTarget}`);
 		if (child.artifactPath) lines.push(`Output artifact: ${child.artifactPath}`);
+		if (child.metadataPath) lines.push(`Result metadata (acceptance details when configured): ${child.metadataPath}${fs.existsSync(child.metadataPath) ? "" : " (missing)"}`);
 		if (child.sessionPath) lines.push(`Session: ${child.sessionPath}`);
 		lines.push(...formatNestedResultLines(child.children));
 		lines.push("Summary:");
@@ -273,6 +280,7 @@ export function buildSubagentResultIntercomPayload(input: GroupedResultIntercomM
 		...(input.error ? { error: input.error } : {}),
 		source: input.source,
 		children,
+		...(input.resultPath ? { resultPath: input.resultPath } : {}),
 		...(input.asyncId ? { asyncId: input.asyncId } : {}),
 		...(input.asyncDir ? { asyncDir: input.asyncDir } : {}),
 		...(typeof input.chainSteps === "number" ? { chainSteps: input.chainSteps } : {}),
@@ -371,6 +379,11 @@ export function formatSubagentResultReceipt(input: {
 		`Children: ${formatStatusCounts(counts)}`,
 		...(input.payload.error ? [`Workflow ${input.payload.status === "paused" ? "paused" : "error"}: ${input.payload.error}`] : []),
 	];
+
+	if (input.payload.resultPath) lines.push(`Saved result (acceptance details when configured): ${input.payload.resultPath}`);
+	for (const child of input.payload.children) {
+		if (child.metadataPath) lines.push(`Result metadata (${child.agent}; acceptance details when configured): ${child.metadataPath}${fs.existsSync(child.metadataPath) ? "" : " (missing)"}`);
+	}
 
 	const artifacts = input.payload.children.filter((child) => typeof child.artifactPath === "string");
 	if (artifacts.length > 0) {

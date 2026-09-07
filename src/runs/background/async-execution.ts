@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
-import { applyThinkingSuffix } from "../shared/pi-args.ts";
+import { applyThinkingSuffix, SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../shared/pi-args.ts";
 import { findDuplicateOutputPath, injectSingleOutputInstruction, materializeAgentDefaultOutputPath, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { buildChainInstructions, createChainDir, isDynamicParallelStep, isParallelStep, resolveChainTemplates, resolveParallelBehaviors, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
 import type { RunnerStep, RunnerSubagentStep } from "../shared/parallel-utils.ts";
@@ -42,6 +42,7 @@ import {
 	resolveChildMaxSubagentDepth,
 } from "../../shared/types.ts";
 import { nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
+import { formatRunAction } from "../../shared/status-format.ts";
 import { ensureTempRoot } from "../../shared/temp-root.ts";
 
 const piPackageRoot = resolvePiPackageRoot();
@@ -131,6 +132,8 @@ interface AsyncSingleParams {
 	sessionFile?: string;
 	skills?: string[];
 	output?: string | boolean;
+	outputFromAgentDefault?: boolean;
+	generatedOutputFilename?: string;
 	outputMode?: "inline" | "file-only";
 	outputSchema?: JsonSchemaObject;
 	modelOverride?: string;
@@ -148,12 +151,13 @@ interface AsyncSingleParams {
 	projectTrust?: ChildProjectTrustPolicy;
 }
 
-function withSavedLaunch(step: RunnerSubagentStep, agent: AgentConfig, params: AsyncChainParams | AsyncSingleParams): RunnerSubagentStep {
+function withSavedLaunch(step: RunnerSubagentStep, agent: AgentConfig, params: AsyncChainParams | AsyncSingleParams, generatedOutputFilename?: string): RunnerSubagentStep {
 	return { ...step, launch: {
 		agent, model: step.model, thinking: step.thinking, modelCandidates: step.modelCandidates ?? [],
 		artifacts: params.artifactsDir !== undefined, artifactsDir: params.artifactsDir, share: params.shareEnabled,
 		systemPrompt: step.systemPrompt ?? "", skills: step.skills ?? [], cwd: step.cwd ?? params.ctx.cwd,
 		context: agent.defaultContext ?? "fresh", output: step.outputPath ?? false, outputMode: step.outputMode ?? "inline",
+		...(generatedOutputFilename ? { generatedOutputFilename } : step.outputPathFromAgentDefault && step.outputPath && typeof agent.output === "string" && !path.isAbsolute(agent.output) ? { generatedOutputFilename: path.basename(agent.output) } : {}),
 		outputSchema: step.structuredOutputSchema, effectiveAcceptance: step.effectiveAcceptance,
 		maxOutput: { ...DEFAULT_MAX_OUTPUT, ...params.maxOutput }, maxSubagentDepth: step.maxSubagentDepth,
 		maxExecutionTimeMs: step.maxExecutionTimeMs, maxTokens: step.maxTokens,
@@ -167,13 +171,13 @@ interface AsyncExecutionResult {
 	isError?: boolean;
 }
 
-export function formatAsyncStartedMessage(headline: string): string {
+export function formatAsyncStartedMessage(headline: string, childSafe = process.env[SUBAGENT_CHILD_ENV] === "1" && process.env[SUBAGENT_FANOUT_CHILD_ENV] === "1"): string {
 	return [
 		headline,
 		"",
 		"The async run is detached. Do not run sleep timers or polling loops just to wait for it.",
 		"If you have independent work, continue that work. If you have nothing else to do until the async result arrives, end your turn now; Pi will deliver the completion when the run finishes.",
-		"Use subagent({ action: \"status\", id: \"...\" }) when you need the current status/result, or to inspect a blocked/stale run. Do not poll just to wait.",
+		`Use ${formatRunAction("status", "...", {}, childSafe)} when you need the current status/result, or to inspect a blocked/stale run. Do not poll just to wait.`,
 	].join("\n");
 }
 
@@ -685,10 +689,10 @@ export function executeAsyncSingle(
 		};
 	}
 
-	const outputUsesAgentDefault = usesAgentDefaultOutput(params.output);
+	const outputUsesAgentDefault = usesAgentDefaultOutput(params.output) || params.outputFromAgentDefault === true;
 	const effectiveOutput = resolveAsyncOutput({
 		requestedOutput: params.output,
-		agentDefaultOutput: agentConfig.output,
+		agentDefaultOutput: params.generatedOutputFilename ?? agentConfig.output,
 		artifactsDir,
 		asyncDir,
 		runId: id,
@@ -744,7 +748,7 @@ export function executeAsyncSingle(
 						maxExecutionTimeMs: agentConfig.maxExecutionTimeMs,
 						maxTokens: agentConfig.maxTokens,
 						effectiveAcceptance: resolveEffectiveAcceptance({ explicit: params.acceptance }),
-					}, agentConfig, params),
+					}, agentConfig, params, params.generatedOutputFilename),
 				],
 				resultPath: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : path.join(RESULTS_DIR, `${id}.json`),
 				cwd: runnerCwd,

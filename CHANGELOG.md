@@ -2,7 +2,19 @@
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-09-07
+
 ### Fixed
+- Accept current validated finalization reports after successful native retries or settled-process cleanup, while preserving actual process and final assistant failures.
+- Require native Pi `952c27cd6` for correct prompt admission and settlement; verify rejected input and queued startup without receiver replay.
+- Deliver idle intercom batches in one wake while preserving the selected ask as the default reply target.
+- Keep default run inspection concise, with `full: true` for the complete task and saved configuration. Review returns a short parent-only receipt; review notes are not relayed to children. Completion notices and receipts expose existing result/acceptance metadata paths.
+- Put live runs ahead of completed unreviewed results, preserving all pages, exact lookup, and separate continuation results/reviews. Parent control hints use `agent_runs`; child-safe hints keep `subagent`, and timeout extension names the required loader.
+- Label exactly matched terminal-child progress as historical/deferred, with original send and delivery times, while retaining the full body and unchanged delivery/wake behavior across reload. Live, detached, successor, generic peer, question, and answer messages stay unchanged.
+- Make foreground and background attention notices identify durable supervisor waits or observed long-running tools, including question/answer guidance, tool elapsed time, and no-output age. Clarify launch/native-session cwd labels, live acceptance override limits, and the whole-index meaning of `no-staged-files`.
+- Pass the effective cwd through native `--session-cwd` on every saved-session launch, including acceptance finalization, so a replacement worktree is used before extensions start without rewriting saved history. Requires the corrected native fork build documented in the README.
+- Require a current explicit full-report submission for native acceptance finalization, so queued coordination cannot replace the task handoff or reuse stale success. Missing submissions retry within the configured limit; failed delivery retains an explicitly unconfirmed report for audit. Initial public structured outputs and Claude Code behavior remain unchanged.
+- Preserve generated relative-default output origin across single, parallel, chain, fanout, and background clarification launches. Continuations and exited-question revivals use a successor-owned path with the saved filename even when explicitly selecting a current profile, without overwriting the predecessor file; explicit paths and legacy snapshots without origin proof retain their saved behavior.
 - Combine owned-run inspection and live diagnostics into one report without duplicate run headers or lost evidence and controls.
 - Reuse unchanged finished-run ordering facts, load full details for the selected page, and share question discovery across each list. Process new native intercom receipts without rescanning old history during steady delivery; retain full-history recovery at session and tree boundaries, with no history caps.
 - Make Doctor report live bridge and broker-registration health plus the running Node process, loaded Pi version, and build-stamped extension identity instead of static wiring status or current on-disk versions.

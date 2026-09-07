@@ -12,9 +12,9 @@ Parent-orchestrator skill for launching focused child Pi sessions. Parent owns o
 - Prefer `agent_runs({ action: "profiles" })` then `delegate({ agent, task })` for ordinary work. `agent_runs` provides list/inspect/nudge/continue/stop/questions/answer/review without loading the full schema.
 - For parallel groups, chains, detailed overrides, or profile administration, call `load_subagent` if `subagent` is inactive.
 - Discover profiles before execution with `agent_runs({ action: "profiles" })` or `subagent({ action: "list" })` unless already known; their descriptions are the current role/model policy.
-- Treat child output as evidence to inspect, not automatic truth. Record parent review with `agent_runs({ action: "review", id, decision: "accepted" | "needs_changes", message? })`; this is separate from execution/validation/delivery and never launches work.
-- The owned run list is attention-first and paged (`offset`, `limit`, default 20), not a history limit. Resume the same saved parent after reload/restart; inspect the original handle for saved configuration and continuation history.
-- `continue` and exited-question revival preserve effective launch choices, not changed profile defaults. Override `model`, `cwd`, `output`, or `acceptance` explicitly; `agent` opts into a current profile and is required for old runs without a saved profile. A late nudge or inspect never restarts a finished child.
+- Treat child output as evidence to inspect, not automatic truth. Record parent review with `agent_runs({ action: "review", id, decision: "accepted" | "needs_changes", message? })`; this is parent-only, not sent to the child, and never launches work. Put actionable instructions in continue/nudge.
+- The owned run list is attention-first and paged (`offset`, `limit`, default 20), not a history limit. Resume the same saved parent after reload/restart; inspect the original handle for concise results, paths and continuation history; use full:true for the full task/configuration. Live work precedes completed unreviewed rows.
+- `continue` and exited-question revival preserve effective launch choices, not changed profile defaults. Override `model`, `cwd`, `output`, or `acceptance` explicitly for a newly launched continuation; live continue/answer delivery never amends live acceptance; `agent` opts into a current profile and is required for old runs without a saved profile. A late nudge or inspect never restarts a finished child.
 - Keep writes single-threaded unless writers are isolated with `worktree: true`.
 - Use fresh-context reviewers for adversarial review; use forked `oracle` for inherited-decision/drift review.
 - Do not let child subagents launch more subagents. Keep all delegation and fanout in the parent session.
@@ -57,12 +57,12 @@ Keep configured defaults for routine runs. Pass `model`/`thinking` only when the
 - `contact_supervisor({ reason: "need_decision", message })`: steered blocking decision/clarification only when the ephemeral child cannot safely continue and must remain alive for one reply.
 - `contact_supervisor({ reason: "interview_request", message, interview })`: steered blocking structured questions only when the ephemeral child cannot safely continue until it receives multiple answers.
 - `contact_supervisor({ reason: "progress_update", message })`: concise non-blocking material update with intentionally deferred/coalesced delivery that may wait behind active supervisor work.
-- Use `subagent({ action: "status", id })`, then `subagent({ action: "nudge", id, message })` for live child guidance, answers, corrections, or blockers. A nudge supplements the child's active task unless it explicitly says to replace it.
+- Use `agent_runs({ action: "inspect", id })`, then `agent_runs({ action: "nudge", id, message })` for live child guidance, answers, corrections, or blockers. A nudge supplements the child's active task unless it explicitly says to replace it.
 - Blocking supervisor questions are persisted and do not use the ordinary two-minute ask timeout. After reload/reconnect, resume the same saved supervisor session, call `agent_runs({ action: "questions" })`, then `agent_runs({ action: "answer", id, questionId, message })`. A nudge is not a question answer.
 - Questions, answers, launch contracts, and results use persistent Pi session storage, not temporary logs. The live waiter reads the saved answer, or an exited child resumes its saved session with its saved launch configuration and acceptance contract. Identical repeated answers do not duplicate execution; an answer receipt is not run completion. `agent_runs({ action: "stop", id })` also cancels pending questions.
 - Use the status-shown `intercom({ action: "ask", delivery: "steer" })` only when the parent must remain alive waiting for a child reply.
 - Do not use intercom/contact_supervisor for routine completion handoffs; return normal child results.
-- If bridge messages do not appear, run `subagent({ action: "doctor" })`.
+- If bridge messages do not appear, call `load_subagent({})` if needed, then `subagent({ action: "doctor" })`.
 
 ## Detailed recipes
 

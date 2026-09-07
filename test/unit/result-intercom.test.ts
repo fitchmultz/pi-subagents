@@ -98,7 +98,7 @@ describe("result intercom formatter", () => {
 				children: [{ agent: "worker", status: "completed", summary: "done", sessionPath }],
 			});
 
-			assert.match(payload.message, /Revive: subagent\(\{ action: "resume", id: "run-single", message: "\.\.\." \}\)/);
+			assert.match(payload.message, /Continue: agent_runs\(\{ action: "continue", id: "run-single", message: "\.\.\." \}\)/);
 			assert.doesNotMatch(payload.message, /unsupported for multi-child/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
@@ -124,7 +124,7 @@ describe("result intercom formatter", () => {
 				],
 			});
 
-			assert.match(payload.message, /Revive child: subagent\(\{ action: "resume", id: "run-multi", index: 0, message: "\.\.\." \}\)/);
+			assert.match(payload.message, /Continue child: agent_runs\(\{ action: "continue", id: "run-multi", index: 0, message: "\.\.\." \}\)/);
 			assert.doesNotMatch(payload.message, /unsupported for multi-child/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });

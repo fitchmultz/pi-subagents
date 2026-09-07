@@ -126,7 +126,7 @@ describe("async run status inspection", () => {
 			assert.match(textContent(result), /owned-complete/);
 			assert.match(textContent(result), /owned-failed/);
 			assert.doesNotMatch(textContent(result), /foreign-complete|unknown-owner|polling status/);
-			assert.match(textContent(result), /action: "status", id: "owned-complete"/);
+			assert.match(textContent(result), /action: "inspect", id: "owned-complete"/);
 			assert.match(textContent(result), /output-0.log/);
 			assert.deepEqual(result.details.managementControls?.map((control) => control.state), ["failed", "completed"]);
 			assert.ok(result.details.managementControls?.every((control) => control.capabilities.includes("resume")));
@@ -173,7 +173,7 @@ describe("async run status inspection", () => {
 			assert.match(text, /Diagnosis: Async runner process 12345 exited or disappeared/);
 			assert.match(text, new RegExp(`Result: ${path.join(resultsDir, "run-stale.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 			assert.match(text, /Step 1: scout failed, error: Async runner process 12345 exited or disappeared/);
-			assert.match(text, /Revive: subagent\(\{ action: "resume", id: "run-stale", message: "\.\.\." \}\)/);
+			assert.match(text, /Continue: agent_runs\(\{ action: "continue", id: "run-stale", message: "\.\.\." \}\)/);
 			const resultJson = JSON.parse(fs.readFileSync(path.join(resultsDir, "run-stale.json"), "utf-8"));
 			assert.equal(resultJson.success, false);
 			assert.equal(resultJson.results[0].sessionFile, sessionFile);
@@ -359,7 +359,7 @@ describe("async run status inspection", () => {
 			assert.equal(result.isError, undefined);
 			assert.match(text, /Step 1: orchestrator running/);
 			assert.match(text, /↳ reviewer \[nested-status-child\] running \| tool read/);
-			assert.match(text, /Status: subagent\(\{ action: "status", id: "nested-status-child" \}\)/);
+			assert.match(text, /Status: agent_runs\(\{ action: "inspect", id: "nested-status-child" \}\)/);
 		} finally {
 			rmrf(root);
 			rmrf(path.dirname(route.eventSink));
@@ -614,7 +614,7 @@ describe("async run status inspection", () => {
 			});
 
 			const text = textContent(result);
-			assert.match(text, /Revive child: subagent\(\{ action: "resume", id: "run-multi", index: 0, message: "\.\.\." \}\)/);
+			assert.match(text, /Continue child: agent_runs\(\{ action: "continue", id: "run-multi", index: 0, message: "\.\.\." \}\)/);
 			assert.doesNotMatch(text, /unsupported for multi-child/);
 		} finally {
 			rmrf(root);
@@ -642,7 +642,7 @@ describe("async run status inspection", () => {
 			const result = inspectSubagentStatus({ id: "run-result-index" }, { asyncDirRoot: asyncRoot, resultsDir });
 
 			const text = textContent(result);
-			assert.match(text, /Revive child: subagent\(\{ action: "resume", id: "run-result-index", index: 1, message: "\.\.\." \}\)/);
+			assert.match(text, /Continue child: agent_runs\(\{ action: "continue", id: "run-result-index", index: 1, message: "\.\.\." \}\)/);
 		} finally {
 			rmrf(root);
 		}
@@ -715,7 +715,7 @@ describe("async run status inspection", () => {
 			const text = textContent(result);
 			assert.match(text, /Step 1: scout running/);
 			assert.match(text, /Intercom: unknown \(subagent-scout-run-live-1\)/);
-			assert.match(text, /Nudge \(preferred live coordination\): subagent\(\{ action: "nudge", id: "run-live", index: 0/);
+			assert.match(text, /Nudge \(preferred live coordination\): agent_runs\(\{ action: "nudge", id: "run-live", index: 0/);
 			assert.match(text, /Ask \(blocking wait only; parent must remain alive\): intercom\(\{ action: "ask", to: "subagent-scout-run-live-1", delivery: "steer"/);
 		} finally {
 			rmrf(root);
@@ -814,7 +814,7 @@ describe("async run status inspection", () => {
 			assert.equal(result.isError, undefined);
 			assert.match(text, /State: failed/);
 			assert.match(text, /Result: /);
-			assert.match(text, /Revive: subagent\(\{ action: "resume", id: "run-result-only", message: "\.\.\." \}\)/);
+			assert.match(text, /Continue: agent_runs\(\{ action: "continue", id: "run-result-only", message: "\.\.\." \}\)/);
 			assert.match(text, /result survived missing status/);
 		} finally {
 			rmrf(root);

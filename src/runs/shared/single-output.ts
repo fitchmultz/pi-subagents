@@ -172,7 +172,7 @@ export function resolveSingleOutput(
 	outputPath: string | undefined,
 	fallbackOutput: string,
 	beforeRun: SingleOutputSnapshot | undefined,
-): { fullOutput: string; savedPath?: string; saveError?: string } {
+): { fullOutput: string; savedPath?: string; saveError?: string; writtenSnapshot?: SingleOutputSnapshot } {
 	if (!outputPath) return { fullOutput: fallbackOutput };
 
 	try {
@@ -191,7 +191,7 @@ export function resolveSingleOutput(
 	}
 
 	const save = persistSingleOutput(outputPath, fallbackOutput);
-	if (save.savedPath) return { fullOutput: fallbackOutput, savedPath: save.savedPath };
+	if (save.savedPath) return { fullOutput: fallbackOutput, savedPath: save.savedPath, writtenSnapshot: captureSingleOutputSnapshot(save.savedPath) };
 	return { fullOutput: fallbackOutput, saveError: save.error };
 }
 

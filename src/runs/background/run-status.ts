@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { formatAsyncRunList, formatAsyncRunOutputPath, formatAsyncRunProgressLabel, listAsyncRuns } from "./async-status.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { formatModelThinking } from "../../shared/formatters.ts";
-import { buildManagementControl, formatActivityLabel, formatLiveIntercomActionLines } from "../../shared/status-format.ts";
+import { buildManagementControl, formatActivityLabel, formatLiveIntercomActionLines, formatRunAction } from "../../shared/status-format.ts";
 import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus, type NestedRunSummary, type SubagentLiveIntercomHealth, type SubagentState, type SubagentExecutionResult } from "../../shared/types.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { resolveAsyncRunLocation } from "./async-resume.ts";
@@ -21,6 +21,7 @@ interface RunStatusParams {
 	id?: string;
 	runId?: string;
 	dir?: string;
+	full?: boolean;
 }
 
 interface RunStatusDeps {
@@ -56,18 +57,18 @@ function nestedCompletionTargetsCurrentSession(rootRunId: string, asyncDirRoot: 
 	}
 }
 
-function formatResumeGuidance(runId: string | undefined, children: Array<{ agent?: unknown; sessionFile?: unknown }>, fallbackSessionFile?: unknown): string {
+function formatResumeGuidance(runId: string | undefined, children: Array<{ agent?: unknown; sessionFile?: unknown }>, fallbackSessionFile?: unknown, childSafe = false): string {
 	const knownChildren = children
 		.map((child, index) => ({ child, index }))
 		.filter(({ child }) => typeof child.agent === "string");
 	if (!runId || knownChildren.length === 0) return "Resume: unavailable; no child session file was persisted.";
 	const singleSessionFile = knownChildren[0]?.child.sessionFile ?? fallbackSessionFile;
 	if (children.length === 1 && knownChildren.length === 1 && hasExistingSessionFile(singleSessionFile)) {
-		return `Revive: subagent({ action: "resume", id: "${runId}", message: "..." })`;
+		return `Continue: ${formatRunAction("resume", runId, { message: "..." }, childSafe)}`;
 	}
 	const childWithSession = knownChildren.find(({ child }) => hasExistingSessionFile(child.sessionFile));
 	if (childWithSession) {
-		return `Revive child: subagent({ action: "resume", id: "${runId}", index: ${childWithSession.index}, message: "..." })`;
+		return `Continue child: ${formatRunAction("resume", runId, { index: childWithSession.index, message: "..." }, childSafe)}`;
 	}
 	return "Resume: unavailable; no child session file was persisted.";
 }
@@ -121,7 +122,7 @@ function normalizedState(state: AsyncStatus["state"] | NestedRunSummary["state"]
 	return "unknown";
 }
 
-function formatNestedExactStatus(rootRunId: string, run: NestedRunSummary): string {
+function formatNestedExactStatus(rootRunId: string, run: NestedRunSummary, childSafe: boolean): string {
 	const lines = [
 		`Nested run: ${run.id}`,
 		`Root: ${rootRunId}`,
@@ -143,19 +144,20 @@ function formatNestedExactStatus(rootRunId: string, run: NestedRunSummary): stri
 		for (const [index, step] of run.steps.entries()) {
 			const activity = step.status === "running" ? formatActivityLabel(step.lastActivityAt, step.activityState) : undefined;
 			lines.push(`  ${index + 1}. ${step.agent} ${step.status}${activity ? `, ${activity}` : ""}${step.error ? `, error: ${step.error}` : ""}`);
-			lines.push(...formatNestedRunStatusLines(step.children, { indent: "    ", commandHints: true }));
+			lines.push(...formatNestedRunStatusLines(step.children, { indent: "    ", commandHints: true, childSafe }));
 		}
 	}
-	lines.push(...formatNestedRunStatusLines(run.children, { indent: "  ", commandHints: true }));
+	lines.push(...formatNestedRunStatusLines(run.children, { indent: "  ", commandHints: true, childSafe }));
 	const state = normalizedState(run.state);
-	lines.push("Commands:", `  Status: subagent({ action: "status", id: "${run.id}" })`);
-	if (state === "live") lines.push(`  Interrupt: subagent({ action: "interrupt", id: "${run.id}" })`);
-	if (state === "live" || run.sessionFile) lines.push(`  Resume: subagent({ action: "resume", id: "${run.id}", message: "..." })`);
-	lines.push(`  Root status: subagent({ action: "status", id: "${rootRunId}" })`);
+	lines.push("Commands:", `  Status: ${formatRunAction("status", run.id, {}, childSafe)}`);
+	if (state === "live") lines.push(`  ${childSafe ? "Interrupt" : "Stop"}: ${formatRunAction("interrupt", run.id, {}, childSafe)}`);
+	if (state === "live" || run.sessionFile) lines.push(`  ${childSafe ? "Resume" : "Continue"}: ${formatRunAction("resume", run.id, { message: "..." }, childSafe)}`);
+	lines.push(`  Root status: ${formatRunAction("status", rootRunId, {}, childSafe)}`);
 	return lines.join("\n");
 }
 
 export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDeps = {}): SubagentExecutionResult {
+	const childSafe = Boolean(deps.nested);
 	const asyncDirRoot = deps.asyncDirRoot ?? ASYNC_DIR;
 	const resultsDir = deps.resultsDir ?? RESULTS_DIR;
 	if (!params.id && !params.runId && !params.dir) {
@@ -208,7 +210,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				const run = nested.match.run;
 				const state = normalizedState(run.state);
 				const intercomTarget = run.intercomTarget ?? run.leafIntercomTarget;
-				const text = formatNestedExactStatus(nested.match.rootRunId, run);
+				const text = formatNestedExactStatus(nested.match.rootRunId, run, childSafe);
 				const reminder = state === "live" && nestedCompletionTargetsCurrentSession(nested.match.rootRunId, asyncDirRoot, deps.state);
 				return {
 					content: [{ type: "text", text: reminder ? `${text}\n${ASYNC_COMPLETION_REMINDER}` : text }],
@@ -289,7 +291,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				`Started: ${started}`,
 				`Updated: ${updated}`,
 				`Dir: ${asyncDir}`,
-				`Status: subagent({ action: "status", id: "${status.runId}" })`,
+				`Status: ${formatRunAction("status", status.runId, {}, childSafe)}`,
 				outputPath ? `Output: ${outputPath}` : undefined,
 				reconciliation.message ? `Diagnosis: ${reconciliation.message}` : undefined,
 				reconciliation.resultPath && fs.existsSync(reconciliation.resultPath) ? `${deps.includeRunHeader === false ? "Runtime result" : "Result"}: ${reconciliation.resultPath}` : undefined,
@@ -306,22 +308,22 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				const display = step.label ? `${step.label} (${step.agent})` : step.agent;
 				const phase = step.phase ? `[${step.phase}] ` : "";
 				lines.push(`${stepLineLabel(status, index)}: ${phase}${display} ${step.status}${modelText}${stepActivityText ? `, ${stepActivityText}` : ""}${acceptanceText}${errorText}`);
-				lines.push(...formatNestedRunStatusLines(step.children, { indent: "  ", commandHints: true, maxLines: 20 }));
+				lines.push(...formatNestedRunStatusLines(step.children, { indent: "  ", commandHints: true, maxLines: 20, childSafe }));
 				const stepOutputPath = path.join(asyncDir, `output-${index}.log`);
 				if (stepOutputPath !== outputPath && fs.existsSync(stepOutputPath)) lines.push(`  Output: ${stepOutputPath}`);
 				if (step.status === "running") {
 					const target = resolveSubagentIntercomTarget(status.runId, step.agent, index);
 					intercomTargets.push(target);
-					lines.push(...formatLiveIntercomActionLines({ runId: status.runId, index, target, health: deps.intercomHealth?.get(target), indent: "  " }));
+					lines.push(...formatLiveIntercomActionLines({ runId: status.runId, index, target, health: deps.intercomHealth?.get(target), indent: "  ", childSafe }));
 				}
 			}
 			const attached = new Set((status.steps ?? []).flatMap((step) => step.children?.map((child) => child.id) ?? []));
 			const unattached = nestedChildren.filter((child) => !attached.has(child.id));
-			lines.push(...formatNestedRunStatusLines(unattached, { indent: "", commandHints: true, maxLines: 20 }));
+			lines.push(...formatNestedRunStatusLines(unattached, { indent: "", commandHints: true, maxLines: 20, childSafe }));
 			if (nestedWarning) lines.push(`Warning: ${nestedWarning}`);
 			if (status.sessionFile) lines.push(`Session: ${status.sessionFile}`);
 			if (status.state !== "running") {
-				lines.push(formatResumeGuidance(status.runId, status.steps ?? [], status.sessionFile));
+				lines.push(formatResumeGuidance(status.runId, status.steps ?? [], status.sessionFile, childSafe));
 			}
 			if (fs.existsSync(logPath)) lines.push(`Log: ${logPath}`);
 			if (fs.existsSync(eventsPath)) lines.push(`Events: ${eventsPath}`);
@@ -347,10 +349,10 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			const data = readAsyncResultFile(resultPath);
 			const status = data.terminalState;
 			const runId = data.runId ?? data.id ?? resolvedId;
-			const lines = [...(deps.includeRunHeader !== false ? [`Run: ${runId}`, `State: ${status}`] : []), `${deps.includeRunHeader === false ? "Runtime result" : "Result"}: ${resultPath}`, `Status: subagent({ action: "status", id: "${runId}" })`];
+			const lines = [...(deps.includeRunHeader !== false ? [`Run: ${runId}`, `State: ${status}`] : []), `${deps.includeRunHeader === false ? "Runtime result" : "Result"}: ${resultPath}`, `Status: ${formatRunAction("status", runId ?? "unknown", {}, childSafe)}`];
 			const children = Array.isArray(data.results) ? data.results : data.agent ? [{ agent: data.agent, sessionFile: data.sessionFile }] : [];
-			lines.push(formatResumeGuidance(runId, children, data.sessionFile));
-			if (data.summary) lines.push("", data.summary);
+			lines.push(formatResumeGuidance(runId, children, data.sessionFile, childSafe));
+			if (data.summary) lines.push("", params.full ? data.summary : data.summary.length > 600 ? `${data.summary.slice(0, 599)}…` : data.summary);
 			const state = normalizedState(status);
 			const resumableChild = children.map((child, index) => ({ child, index })).find(({ child }) => hasExistingSessionFile(child.sessionFile));
 			return {

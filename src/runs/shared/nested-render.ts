@@ -1,5 +1,5 @@
 import { formatDuration, formatTokens, shortenPath } from "../../shared/formatters.ts";
-import { formatActivityLabel } from "../../shared/status-format.ts";
+import { formatActivityLabel, formatRunAction } from "../../shared/status-format.ts";
 import type { ActivityState, NestedRunSummary } from "../../shared/types.ts";
 
 export interface NestedRunCounts {
@@ -67,7 +67,7 @@ function formatNestedActivity(input: {
 	return activity || facts.length ? [activity, ...facts].filter(Boolean).join(" | ") : undefined;
 }
 
-function formatNestedRunLines(children: NestedRunSummary[] | undefined, options: { indent: string; maxDepth: number; maxLines: number; commandHints?: boolean }): string[] {
+function formatNestedRunLines(children: NestedRunSummary[] | undefined, options: { indent: string; maxDepth: number; maxLines: number; commandHints?: boolean; childSafe?: boolean }): string[] {
 	const lines: string[] = [];
 	const append = (items: NestedRunSummary[] | undefined, depth: number, indent: string): void => {
 		if (!items?.length || lines.length >= options.maxLines) return;
@@ -86,7 +86,7 @@ function formatNestedRunLines(children: NestedRunSummary[] | undefined, options:
 			const activity = child.state === "running" ? formatNestedActivity(child) : undefined;
 			const error = child.error ? ` | error: ${child.error}` : "";
 			lines.push(`${indent}↳ ${nestedRunLabel(child)} [${child.id}] ${child.state}${activity ? ` | ${activity}` : ""}${error}`);
-			if (options.commandHints && lines.length < options.maxLines) lines.push(`${indent}  Status: subagent({ action: "status", id: "${child.id}" })`);
+			if (options.commandHints && lines.length < options.maxLines) lines.push(`${indent}  Status: ${formatRunAction("status", child.id, {}, options.childSafe)}`);
 			if (depth === options.maxDepth) {
 				const aggregate = formatNestedAggregate([...(child.steps?.flatMap((step) => step.children ?? []) ?? []), ...(child.children ?? [])]);
 				if (aggregate && lines.length < options.maxLines) lines.push(`${indent}  ↳ ${aggregate}`);
@@ -105,11 +105,12 @@ function formatNestedRunLines(children: NestedRunSummary[] | undefined, options:
 	return lines;
 }
 
-export function formatNestedRunStatusLines(children: NestedRunSummary[] | undefined, options: { indent?: string; maxDepth?: number; maxLines?: number; commandHints?: boolean } = {}): string[] {
+export function formatNestedRunStatusLines(children: NestedRunSummary[] | undefined, options: { indent?: string; maxDepth?: number; maxLines?: number; commandHints?: boolean; childSafe?: boolean } = {}): string[] {
 	return formatNestedRunLines(children, {
 		indent: options.indent ?? "  ",
 		maxDepth: options.maxDepth ?? 2,
 		maxLines: options.maxLines ?? 40,
 		commandHints: options.commandHints ?? false,
+		childSafe: options.childSafe,
 	});
 }

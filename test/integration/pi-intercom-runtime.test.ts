@@ -1869,18 +1869,18 @@ test("unconsumed inbound messages survive a second abort", { concurrency: false 
     await harness.emitLifecycle("agent_end");
     await harness.emitLifecycle("agent_settled");
     assert.equal(harness.sentMessages.length, 4);
-    assert.deepEqual(harness.sentMessages[2]?.options, { triggerTurn: true });
-    assert.deepEqual(harness.sentMessages[3]?.options, { deliverAs: "followUp" });
-    assert.match(harness.sentMessages[2]?.message.content ?? "", /First leftover/);
-    assert.match(harness.sentMessages[3]?.message.content ?? "", /Second leftover/);
+    assert.deepEqual(harness.sentMessages[2]?.options, { deliverAs: "followUp" });
+    assert.deepEqual(harness.sentMessages[3]?.options, { triggerTurn: true });
+    assert.match(harness.sentMessages[2]?.message.content ?? "", /Second leftover/);
+    assert.match(harness.sentMessages[3]?.message.content ?? "", /First leftover/);
 
     await harness.emitLifecycle("agent_end");
     await harness.emitLifecycle("agent_settled");
     assert.equal(harness.sentMessages.length, 6);
-    assert.deepEqual(harness.sentMessages[4]?.options, { triggerTurn: true });
-    assert.deepEqual(harness.sentMessages[5]?.options, { deliverAs: "followUp" });
-    assert.match(harness.sentMessages[4]?.message.content ?? "", /First leftover/);
-    assert.match(harness.sentMessages[5]?.message.content ?? "", /Second leftover/);
+    assert.deepEqual(harness.sentMessages[4]?.options, { deliverAs: "followUp" });
+    assert.deepEqual(harness.sentMessages[5]?.options, { triggerTurn: true });
+    assert.match(harness.sentMessages[4]?.message.content ?? "", /Second leftover/);
+    assert.match(harness.sentMessages[5]?.message.content ?? "", /First leftover/);
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
@@ -1911,15 +1911,18 @@ test("outstanding inbound recovery retains every accepted message beyond 100 lef
     await harness.emitLifecycle("agent_settled");
     const redelivered = harness.sentMessages.slice(101);
     assert.equal(redelivered.length, 101);
-    assert.match(redelivered[0]?.message.content ?? "", /Leftover 0\./);
-    assert.match(redelivered.at(-1)?.message.content ?? "", /Leftover 100\./);
+    assert.deepEqual(redelivered.map(({ message }) => (message.details as { message: Message }).message.id), [
+      ...Array.from({ length: 100 }, (_, index) => `cap-steer-${index + 1}`), "cap-steer-0",
+    ]);
+    assert.ok(redelivered.slice(0, -1).every(({ options }) => options?.deliverAs === "followUp"));
+    assert.deepEqual(redelivered.at(-1)?.options, { triggerTurn: true });
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
   }
 });
 
-test("recovery wakes an ask before a plain leftover", { concurrency: false }, async () => {
+test("recovery appends plain followers before waking the selected ask", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { planner, cleanup } = await setupClients();
   const harness = createExtensionHarness("ask-first-recovery-worker", {
@@ -1947,17 +1950,17 @@ test("recovery wakes an ask before a plain leftover", { concurrency: false }, as
     await harness.emitLifecycle("agent_end");
     await harness.emitLifecycle("agent_settled");
     assert.equal(harness.sentMessages.length, 4);
-    assert.deepEqual(harness.sentMessages[2]?.options, { triggerTurn: true });
-    assert.deepEqual(harness.sentMessages[3]?.options, { deliverAs: "followUp" });
-    assert.match(harness.sentMessages[2]?.message.content ?? "", /Ask leftover/);
-    assert.match(harness.sentMessages[3]?.message.content ?? "", /Plain leftover/);
+    assert.deepEqual(harness.sentMessages[2]?.options, { deliverAs: "followUp" });
+    assert.deepEqual(harness.sentMessages[3]?.options, { triggerTurn: true });
+    assert.match(harness.sentMessages[2]?.message.content ?? "", /Plain leftover/);
+    assert.match(harness.sentMessages[3]?.message.content ?? "", /Ask leftover/);
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
   }
 });
 
-test("idle flush wakes a queued ask before an earlier plain message", { concurrency: false }, async () => {
+test("idle flush appends the earlier plain message before waking a queued ask", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { planner, cleanup } = await setupClients();
   let idle = false;
@@ -1990,10 +1993,10 @@ test("idle flush wakes a queued ask before an earlier plain message", { concurre
     await harness.emitLifecycle("agent_settled");
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(harness.sentMessages.length, 2);
-    assert.deepEqual(harness.sentMessages[0]?.options, { triggerTurn: true });
-    assert.deepEqual(harness.sentMessages[1]?.options, { deliverAs: "followUp" });
-    assert.match(harness.sentMessages[0]?.message.content ?? "", /Queued ask/);
-    assert.match(harness.sentMessages[1]?.message.content ?? "", /Queued plain/);
+    assert.deepEqual(harness.sentMessages[0]?.options, { deliverAs: "followUp" });
+    assert.deepEqual(harness.sentMessages[1]?.options, { triggerTurn: true });
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /Queued plain/);
+    assert.match(harness.sentMessages[1]?.message.content ?? "", /Queued ask/);
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
@@ -2114,8 +2117,11 @@ test("busy interactive sessions retain all accepted asks beyond 100 queued messa
     await harness.emitLifecycle("agent_settled");
     await waitForSentMessages(harness, 101);
     assert.equal(harness.sentMessages.length, 101);
-    assert.match(harness.sentMessages[0]?.message.content ?? "", /Queued question 0/);
-    assert.match(harness.sentMessages.at(-1)?.message.content ?? "", /Queued question 100/);
+    assert.deepEqual(harness.sentMessages.map(({ message }) => (message.details as { message: Message }).message.id), [
+      ...Array.from({ length: 100 }, (_, index) => `backlog-ask-${index + 1}`), "backlog-ask-0",
+    ]);
+    assert.ok(harness.sentMessages.slice(0, -1).every(({ options }) => options?.deliverAs === "followUp"));
+    assert.deepEqual(harness.sentMessages.at(-1)?.options, { triggerTurn: true });
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
