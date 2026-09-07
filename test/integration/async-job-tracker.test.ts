@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { createAsyncJobTracker } from "../../src/runs/background/async-job-tracker.ts";
+import { createNestedRoute, NESTED_EVENTS_DIR, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import { TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import { buildWidgetLines } from "../../src/tui/render.ts";
 import { createTempDir, removeTempDir } from "../support/helpers.ts";
 
@@ -222,6 +225,78 @@ describe("async job tracker", () => {
 			tracker.resetJobs();
 			if (state.poller) clearInterval(state.poller);
 			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("skips unrelated nested state during restoration and the first poll while restoring matching jobs", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1_000 });
+		const asyncRoot = createTempDir("pi-async-job-session-filter-");
+		const currentSession = "/sessions/current.jsonl";
+		const runId = path.basename(asyncRoot);
+		const route = createNestedRoute(runId);
+		const nestedRoot = path.join(TEMP_ROOT_DIR, "nested-subagent-runs", runId);
+		const nestedDir = path.join(nestedRoot, "stale-child");
+		const resultsDir = path.join(asyncRoot, "results");
+		const writeRun = (id: string, sessionId: string, state: "running" | "queued" | "complete") => {
+			const runDir = path.join(asyncRoot, id);
+			fs.mkdirSync(runDir);
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: id, sessionId, mode: "single", state, startedAt: Date.now(),
+				steps: [{ agent: "worker", status: state === "queued" ? "pending" : state }],
+			}));
+		};
+		const state = createState();
+		const ui = createUiContext();
+		const recorder = createEventRecorder();
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+			pollIntervalMs: 1_000, resultsDir, kill: pidGone,
+		});
+		const readDirectory = t.mock.method(fs, "readdirSync");
+		const listingsOf = (dir: string) => readDirectory.mock.calls.filter((call) => String(call.arguments[0]) === dir).length;
+		syncBuiltinESMExports();
+		try {
+			writeRun("foreign-a", "/sessions/other.jsonl", "complete");
+			writeRun("foreign-b", "/sessions/other.jsonl", "complete");
+			tracker.restoreJobs(currentSession, ui.ctx as never);
+			assert.equal(state.asyncJobs.size, 0);
+			const foreignNestedListings = [listingsOf(NESTED_EVENTS_DIR)];
+
+			readDirectory.mock.resetCalls();
+			t.mock.timers.tick(1_000);
+			assert.ok(listingsOf(asyncRoot) > 0, "the first poll must discover persisted runs");
+			assert.equal(state.asyncJobs.size, 0);
+			foreignNestedListings.push(listingsOf(NESTED_EVENTS_DIR));
+
+			writeRun(runId, currentSession, "running");
+			writeRun("run-queued", currentSession, "queued");
+			fs.mkdirSync(nestedDir, { recursive: true });
+			fs.writeFileSync(path.join(nestedDir, "status.json"), JSON.stringify({
+				runId: "stale-child", mode: "single", state: "running", pid: 12345, startedAt: Date.now(),
+				steps: [{ agent: "reviewer", status: "running" }],
+			}));
+			writeNestedEvent(route, {
+				type: "subagent.nested.started", ts: Date.now(), parentRunId: runId, parentStepIndex: 0,
+				child: {
+					id: "stale-child", parentRunId: runId, parentStepIndex: 0, depth: 1,
+					path: [{ runId, stepIndex: 0 }], state: "running", asyncDir: nestedDir, agent: "reviewer",
+				},
+			});
+			t.mock.timers.tick(1_000);
+			assert.deepEqual([...state.asyncJobs.keys()].sort(), [runId, "run-queued"].sort());
+			assert.equal(state.asyncJobs.get(runId)?.status, "running");
+			assert.equal(state.asyncJobs.get("run-queued")?.status, "queued");
+			assert.equal(state.asyncJobs.get(runId)?.steps?.[0]?.children?.[0]?.state, "failed");
+			assert.equal(fs.existsSync(path.join(resultsDir, "nested", runId, "stale-child.json")), true);
+			t.diagnostic(`Foreign nested listings at restore/first poll: ${foreignNestedListings.join("/")}; matching running/queued jobs restored with stale child repaired.`);
+			assert.deepEqual(foreignNestedListings, [0, 0], "foreign sessions must not trigger nested discovery at startup or on the first poll");
+		} finally {
+			t.mock.restoreAll();
+			syncBuiltinESMExports();
+			tracker.resetJobs();
+			if (state.poller) clearInterval(state.poller);
+			removeTempDir(asyncRoot);
+			removeTempDir(path.dirname(route.eventSink));
+			removeTempDir(nestedRoot);
 		}
 	});
 

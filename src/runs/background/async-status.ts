@@ -321,6 +321,7 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 				: reconcileAsyncRun(asyncDir, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
 			const status = (reconciliation?.status ?? readStatus(asyncDir)) as (AsyncStatus & { cwd?: string }) | null;
 			if (!status) continue;
+			if (options.sessionId && status.sessionId !== options.sessionId) continue;
 			const nestedWarnings: string[] = [];
 			try {
 				const nestedRoute = findNestedRouteForRootId(status.runId || path.basename(asyncDir));
@@ -330,7 +331,6 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 			}
 			const summary = asyncStatusToSummary(asyncDir, status, nestedWarnings);
 			if (allowedStates && !allowedStates.has(summary.state)) continue;
-			if (options.sessionId && summary.sessionId !== options.sessionId) continue;
 			runs.push(summary);
 		} catch (error) {
 			if (!options.skipInvalid) throw error;
