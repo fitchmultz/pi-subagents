@@ -302,6 +302,7 @@ function runPiStreaming(
 	sessionFile?: string,
 	structuredOutput?: StructuredOutputRuntime,
 	signal?: AbortSignal,
+	reportRuntime?: StructuredOutputRuntime,
 ): Promise<RunPiStreamingResult> {
 	return new Promise((resolve) => {
 		const startTime = Date.now();
@@ -532,8 +533,10 @@ function runPiStreaming(
 			outputStream.end();
 			const durationMs = Date.now() - startTime;
 			const finalOutput = resourceLimitExceeded?.message ?? (getFinalOutput(messages) || rawStdoutLines.join("\n").trim());
+			const currentReport = reportRuntime && readFinalizationReport(messages, reportRuntime).output;
+			if (currentReport) assistantError = undefined;
 			const finalError = resourceLimitExceeded?.message ?? error ?? assistantError;
-			const forcedDrainAfterFinalSuccess = lifecycle.settledCleanup && cleanTerminalAssistantStopReceived && !finalError;
+			const forcedDrainAfterFinalSuccess = lifecycle.settledCleanup && (cleanTerminalAssistantStopReceived || currentReport) && !finalError;
 			resolve({
 				stderr,
 				exitCode: resourceLimitExceeded ? 1 : interrupted || forcedDrainAfterFinalSuccess ? 0 : lifecycle.stopping || exitSignal ? (exitCode ?? 1) : exitCode,
@@ -777,7 +780,7 @@ async function runSingleStep(
 			run = await runPiStreaming(args, step.cwd ?? ctx.cwd, review ? `${ctx.outputFile}.finalization-${review.turn}.log` : ctx.outputFile,
 				env, step.maxSubagentDepth, { eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
 				interruptSignal, ctx.onChildEvent, step.maxExecutionTimeMs, step.maxTokens, claudeCodeInvocation,
-				sessionFile, structuredRuntime, ctx.signal);
+				sessionFile, structuredRuntime, ctx.signal, review?.reportRuntime);
 		} finally {
 			cleanupTempDir(tempDir);
 		}

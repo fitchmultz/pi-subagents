@@ -739,8 +739,10 @@ async function runSingleAttempt(
 			cleanupTempDir(tempDir);
 			processClosed = true;
 			if (buf.trim()) processLine(buf);
+			const currentReport = shared.reportRuntime && readFinalizationReport(result.messages ?? [], shared.reportRuntime).output;
+			if (currentReport) assistantError = undefined;
 			if (!result.error && assistantError) result.error = assistantError;
-			const forcedDrainAfterFinalSuccess = lifecycle.settledCleanup && cleanTerminalAssistantStopReceived && !result.error;
+			const forcedDrainAfterFinalSuccess = lifecycle.settledCleanup && (cleanTerminalAssistantStopReceived || currentReport) && !result.error;
 			if (code !== 0 && stderrBuf.trim() && !result.error && !forcedDrainAfterFinalSuccess) {
 				result.error = stderrBuf.trim();
 			}

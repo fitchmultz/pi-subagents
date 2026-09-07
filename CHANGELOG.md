@@ -2,7 +2,10 @@
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-09-07
+
 ### Fixed
+- Accept current validated finalization reports after successful native retries or settled-process cleanup, while preserving actual process and final assistant failures.
 - Require native Pi `952c27cd6` for correct prompt admission and settlement; verify rejected input and queued startup without receiver replay.
 - Deliver idle intercom batches in one wake while preserving the selected ask as the default reply target.
 - Keep default run inspection concise, with `full: true` for the complete task and saved configuration. Review returns a short parent-only receipt; review notes are not relayed to children. Completion notices and receipts expose existing result/acceptance metadata paths.
