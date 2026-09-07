@@ -15,7 +15,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { keyText, type ExtensionAPI, type ExtensionContext, type MessageRenderOptions, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.ts";
@@ -119,10 +119,14 @@ function isStaleExtensionContextError(error: unknown): boolean {
 function rebuildSlashResultContainer(
 	container: Container,
 	result: SubagentExecutionResult,
-	options: { expanded: boolean },
+	options: MessageRenderOptions,
 	theme: ExtensionContext["ui"]["theme"],
 ): void {
 	container.clear();
+	if ("compactView" in options && options.compactView === true && !options.expanded) {
+		container.addChild(renderSubagentResult(result, options, theme));
+		return;
+	}
 	container.addChild(new Spacer(1));
 	const boxTheme = isSlashResultRunning(result) ? "toolPendingBg" : isSlashResultError(result) ? "toolErrorBg" : "toolSuccessBg";
 	const box = new Box(1, 1, (text: string) => theme.bg(boxTheme, text));
@@ -132,7 +136,7 @@ function rebuildSlashResultContainer(
 
 function createSlashResultComponent(
 	details: SlashMessageDetails,
-	options: { expanded: boolean },
+	options: MessageRenderOptions,
 	theme: ExtensionContext["ui"]["theme"],
 ): Container {
 	const container = new Container();
@@ -142,6 +146,12 @@ function createSlashResultComponent(
 		if (snapshot.version !== lastVersion) {
 			lastVersion = snapshot.version;
 			rebuildSlashResultContainer(container, snapshot.result, options, theme);
+		}
+		if ("compactView" in options && options.compactView === true && !options.expanded) {
+			const key = keyText("app.tools.expand");
+			const hint = key ? theme.fg("dim", ` · ${key}`) : "";
+			const [heading = ""] = Container.prototype.render.call(container, Math.max(1, width - options.outputPad - visibleWidth(hint)));
+			return [truncateToWidth(`${" ".repeat(options.outputPad)}${heading.replace(/\s+/g, " ").trimEnd()}${hint}`, width)];
 		}
 		return Container.prototype.render.call(container, width);
 	};
@@ -303,7 +313,19 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", (message, options, theme) => {
 		const content = typeof message.content === "string" ? message.content : "";
 		const details = (message.details as SubagentNotifyDetails | undefined) ?? parseSubagentNotifyContent(content);
-		if (!details) return new Text(content, 0, 0);
+		const compact = "compactView" in options && options.compactView === true && !options.expanded;
+		const compactPreview = (text: string): Component => ({
+			render(width) {
+				const key = keyText("app.tools.expand");
+				const hint = key ? theme.fg("dim", ` · ${key}`) : "";
+				const line = `${" ".repeat(options.outputPad)}${text.replace(/\s+/g, " ").trim()}`;
+				return [truncateToWidth(truncateToWidth(line, width - visibleWidth(hint)) + hint, width)];
+			},
+			invalidate() {},
+		});
+		if (!details) return compact
+			? compactPreview(content.split("\n").find((line) => line.trim()) || "(no output)")
+			: new Text(content, 0, 0);
 		const icon = details.status === "completed"
 			? theme.fg("success", "✓")
 			: details.status === "paused"
@@ -315,6 +337,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		let text = `${icon} ${theme.bold(details.agent)} ${theme.fg("dim", details.status)}`;
 		if (parts.length > 0) text += ` ${theme.fg("dim", "·")} ${parts.map((part) => theme.fg("dim", part)).join(` ${theme.fg("dim", "·")} `)}`;
 		const trimmedPreview = details.resultPreview.trim();
+		if (compact) return compactPreview(`${text} · ${theme.fg("dim", trimmedPreview.split("\n", 1)[0] || "(no output)")}`);
 		const previewLines = options.expanded
 			? trimmedPreview.split("\n").filter((line) => line.trim())
 			: [trimmedPreview.split("\n", 1)[0] ?? ""].filter((line) => line.trim());
