@@ -135,8 +135,8 @@ describe("saved output choices", () => {
 		assert.deepEqual(fs.readFileSync(resultPath), resultBytes, "predecessor result must stay intact");
 		if (artifactPath) assert.deepEqual(fs.readFileSync(artifactPath), artifactBytes, "predecessor artifact must stay intact");
 		assert.equal(discoveries, discoveryCount, "saved continuation must not rediscover the profile");
-		assert.equal(previous.outputFromAgentDefault, true);
-		assert.equal(successor.outputFromAgentDefault, true);
+		assert.equal(previous.generatedOutputFilename, "frozen.md");
+		assert.equal(successor.generatedOutputFilename, "frozen.md");
 		assert.equal(successor.agent.output, "reports/frozen.md");
 		assert.equal(successor.outputMode, overrides.outputMode ?? previous.outputMode);
 		if (successor.outputMode === "file-only") {
@@ -222,13 +222,13 @@ describe("saved output choices", () => {
 				const id = original.details.runId!;
 				const previous = savedLaunch(id);
 				const receipt = contractBytes(id);
-				assert.equal(previous.outputFromAgentDefault, undefined);
+				assert.equal(previous.generatedOutputFilename, undefined);
 				assert.equal(previous.output, choice === "disabled" ? false : fixedPath);
 				mockPi.onCall({ output: "Replacement report" });
 				const continued = await run({ action: "resume", id, message: "Replace the report" });
 				const successor = savedLaunch(continued.details.asyncId!);
 				assert.equal(successor.output, previous.output);
-				assert.equal(successor.outputFromAgentDefault, undefined);
+				assert.equal(successor.generatedOutputFilename, undefined);
 				assert.equal(successor.outputMode, previous.outputMode);
 				assert.deepEqual(contractBytes(id), receipt);
 				if (choice !== "disabled") assert.equal(fs.readFileSync(fixedPath, "utf8"), "Replacement report");
@@ -248,7 +248,7 @@ describe("saved output choices", () => {
 			mockPi.onCall({ output: "Override report" });
 			const continued = await run({ action: "resume", id, message: "Use the override", output, outputMode: output === false ? "inline" : "file-only" });
 			const successor = savedLaunch(continued.details.asyncId!);
-			assert.equal(successor.outputFromAgentDefault, undefined);
+			assert.equal(successor.generatedOutputFilename, undefined);
 			assert.equal(successor.output, output === false ? false : path.join(tempDir, output));
 			assert.deepEqual(fs.readFileSync(previous.output), bytes);
 			if (typeof successor.output === "string") assert.equal(fs.readFileSync(successor.output, "utf8"), "Override report");
@@ -272,7 +272,7 @@ describe("saved output choices", () => {
 		assert.ok(typeof successor.output === "string");
 		assert.ok(path.basename(successor.output).startsWith(`${continued.details.asyncId}_writer_0_`));
 		assert.ok(successor.output.endsWith("_frozen.md"));
-		assert.equal(successor.outputFromAgentDefault, true);
+		assert.equal(successor.generatedOutputFilename, "frozen.md");
 		assert.equal(fs.readFileSync(successor.output, "utf8"), "New default report");
 		assert.equal(fs.readFileSync(path.join(tempDir, "fixed.md"), "utf8"), "Fixed predecessor");
 	});
@@ -284,7 +284,7 @@ describe("saved output choices", () => {
 			ctx.ui.custom = async () => ({ confirmed: true, templates: [writer.task], behaviorOverrides: [], runInBackground: true });
 			mockPi.onCall({ output: "Absolute predecessor" });
 			const original = await run({ ...writer, async: true, clarify, outputMode: "inline" });
-			assert.equal(savedLaunch(original.details.asyncId!).outputFromAgentDefault, undefined);
+			assert.equal(savedLaunch(original.details.asyncId!).generatedOutputFilename, undefined);
 			assert.equal(fs.readFileSync(profile.output, "utf8"), "Absolute predecessor");
 			mockPi.onCall({ output: "Absolute successor" });
 			const continued = await run({ action: "resume", id: original.details.asyncId, message: "Replace fixed output" });
@@ -320,7 +320,7 @@ describe("saved output choices", () => {
 		const original = await run({ ...writer, async: true });
 		const id = original.details.asyncId!;
 		const legacy = { ...savedLaunch(id) };
-		delete legacy.outputFromAgentDefault;
+		delete legacy.generatedOutputFilename;
 		saveQuestionContract(id, 0, { launch: legacy });
 		const receipt = contractBytes(id);
 		assert.ok(typeof legacy.output === "string");
@@ -329,10 +329,93 @@ describe("saved output choices", () => {
 		const continued = await run({ action: "resume", id, message: "Use the saved output choice" });
 		const successor = savedLaunch(continued.details.asyncId!);
 		assert.equal(successor.output, legacy.output);
-		assert.equal(successor.outputFromAgentDefault, undefined);
+		assert.equal(successor.generatedOutputFilename, undefined);
 		assert.equal(fs.readFileSync(legacy.output, "utf8"), "Legacy replacement");
 		assert.deepEqual(contractBytes(id), receipt, "do not migrate legacy receipts");
 	});
+
+	for (const action of ["resume", "answer"] as const) {
+		for (const outputMode of ["inline", "file-only"] as const) {
+			it(`explicit profile ${action} retains the original generated filename (${outputMode})`, async () => {
+				mockPi.onCall({ output: "Predecessor report" });
+				const original = await run({ ...writer, async: true, outputMode });
+				const id = original.details.asyncId!;
+				const previous = savedLaunch(id);
+				assert.ok(typeof previous.output === "string");
+				const receipt = contractBytes(id);
+				const bytes = fs.existsSync(previous.output) ? fs.readFileSync(previous.output) : undefined;
+				const contract = readQuestionContract(id, 0)!;
+				const question = action === "answer" ? createSupervisorQuestion({
+					runId: id, index: 0, agent: "writer", ownerTarget: "fixture-parent", childTarget: "fixture-child", childSessionId: "fixture-session",
+					sessionFile: contract.sessionFile!, cwd: tempDir, pid: contract.pid!, reason: "need_decision", message: "May I continue?",
+				}) : undefined;
+				profile.output = "changed-current-profile.md";
+				profile.systemPrompt = "Use the explicitly selected current profile.";
+				mockPi.onCall({ output: "Current-profile successor report" });
+				const continued = await run({ action, id, agent: "writer", questionId: question?.questionId, message: "Continue with the current profile" });
+				const successor = savedLaunch(continued.details.asyncId!);
+				assert.ok(typeof successor.output === "string");
+				assert.notEqual(successor.output, previous.output);
+				assert.ok(path.basename(successor.output).startsWith(`${continued.details.asyncId}_writer_0_`));
+				assert.ok(successor.output.endsWith("_frozen.md"), "profile selection does not replace the saved output choice");
+				assert.equal(successor.agent.output, profile.output, "the saved profile must remain the current selected profile");
+				assert.match(successor.systemPrompt, /explicitly selected current profile/);
+				assert.equal(successor.outputMode, outputMode);
+				if (bytes) assert.deepEqual(fs.readFileSync(previous.output), bytes);
+				else assert.equal(fs.existsSync(previous.output), false);
+				assert.deepEqual(contractBytes(id), receipt);
+				if (outputMode === "file-only") assert.equal(fs.readFileSync(successor.output, "utf8"), "Current-profile successor report");
+				else assert.equal(fs.existsSync(successor.output), false, "generated inline output still gets consumed");
+
+				mockPi.onCall({ output: "Repeated successor report" });
+				const repeated = await run({ action: "resume", id: continued.details.asyncId, message: "Continue again without selecting a profile" });
+				const latest = savedLaunch(repeated.details.asyncId!);
+				assert.ok(typeof latest.output === "string");
+				assert.notEqual(latest.output, successor.output);
+				assert.ok(latest.output.endsWith("_frozen.md"), "the preserved filename survives another saved continuation");
+				assert.equal(latest.agent.output, profile.output);
+				if (outputMode === "file-only") assert.equal(fs.readFileSync(latest.output, "utf8"), "Repeated successor report");
+				else assert.equal(fs.existsSync(latest.output), false);
+			});
+		}
+	}
+
+	for (const choice of ["explicit", "absolute-default", "disabled", "legacy", "no-launch", "new-default"] as const) {
+		it(`explicit profile selection preserves ${choice} output intent`, async () => {
+			if (choice === "absolute-default") profile.output = path.join(tempDir, "absolute.md");
+			mockPi.onCall({ output: "Predecessor report" });
+			const original = await run({ ...writer, async: true,
+				...(choice === "explicit" ? { output: "fixed.md" } : {}),
+				...(choice === "disabled" ? { output: false, outputMode: "inline" } : {}),
+			});
+			const id = original.details.asyncId!;
+			const previous = savedLaunch(id);
+			if (choice === "legacy") {
+				const legacy = { ...previous };
+				delete legacy.generatedOutputFilename;
+				Reflect.deleteProperty(legacy, "outputFromAgentDefault");
+				saveQuestionContract(id, 0, { launch: legacy });
+			}
+			if (choice === "no-launch") saveQuestionContract(id, 0, { launch: undefined });
+			const receipt = contractBytes(id);
+			profile.output = "changed-current-profile.md";
+			mockPi.onCall({ output: "Current-profile report" });
+			const continued = await run({ action: "resume", id, agent: "writer", message: "Use the current profile",
+				...(choice === "new-default" ? { output: true } : {}),
+			});
+			const successor = savedLaunch(continued.details.asyncId!);
+			assert.equal(successor.agent.output, profile.output);
+			assert.deepEqual(contractBytes(id), receipt);
+			if (choice === "new-default") {
+				assert.ok(typeof successor.output === "string");
+				assert.ok(successor.output.endsWith("_changed-current-profile.md"));
+				assert.notEqual(successor.output, previous.output);
+			} else {
+				assert.equal(successor.output, previous.output, "fixed, disabled and unproven choices remain unchanged");
+				assert.equal(successor.generatedOutputFilename, undefined);
+			}
+		});
+	}
 
 	for (const action of ["answer", "resume"] as const) {
 		it(`${action} revives an exited question with a successor-owned default output`, async () => {
@@ -358,7 +441,7 @@ describe("saved output choices", () => {
 			assert.notEqual(successor.output, previous.output);
 			assert.ok(path.basename(successor.output).startsWith(`${continued.details.asyncId}_writer_0_`));
 			assert.ok(successor.output.endsWith("_frozen.md"));
-			assert.equal(successor.outputFromAgentDefault, true);
+			assert.equal(successor.generatedOutputFilename, "frozen.md");
 			assert.equal(successor.outputMode, "file-only");
 			assert.equal(fs.readFileSync(successor.output, "utf8"), "Answered report");
 			assert.deepEqual(fs.readFileSync(previous.output), bytes);

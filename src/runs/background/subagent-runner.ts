@@ -95,6 +95,9 @@ import { namespaceParallelOutput, writeInitialProgressFile } from "../../shared/
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
 	evaluateRunAcceptance,
+	createFinalizationReportRuntime,
+	readFinalizationReport,
+	formatUnconfirmedFinalizationOutput,
 	resolveExecutionOutcome,
 	resolveFinalizationOutput,
 	formatAcceptancePrompt,
@@ -717,18 +720,19 @@ async function runSingleStep(
 		terminalFailure?: boolean;
 		completionGuardTriggered?: boolean;
 		structuredOutput?: unknown;
+		reportSubmission?: ReturnType<typeof readFinalizationReport>;
 		resolvedOutput: ReturnType<typeof resolveSingleOutput>;
 	};
 	const eventsPath = path.join(path.dirname(ctx.outputFile), "events.jsonl");
-	async function runAttempt(prompt: string, model: string | undefined, review?: { turn: number; sessionFile: string; previousOutput: string }): Promise<StepAttempt> {
+	async function runAttempt(prompt: string, model: string | undefined, review?: { turn: number; sessionFile: string; previousOutput: string; reportRuntime?: StructuredOutputRuntime; outputSnapshot?: ReturnType<typeof captureSingleOutputSnapshot> }): Promise<StepAttempt> {
 		if (verificationSignal.aborted) {
 			const outcome = resolveExecutionOutcome({ result: { exitCode: 1 }, signal: ctx.signal, interruptSignal });
 			return { stderr: "", messages: [], usage: emptyUsage(), finalOutput: outcome.error ?? "Interrupted. Waiting for explicit next action.",
 				...outcome, model, terminalFailure: true, resolvedOutput: { fullOutput: "" } };
 		}
 		ctx.onAttemptStart?.({ model, thinking: resolveEffectiveThinking(model, step.thinking) });
-		const structuredRuntime = review ? undefined : effectiveStructuredOutput;
-		const outputSnapshot = review ? undefined : captureSingleOutputSnapshot(step.outputPath);
+		const structuredRuntime = review ? review.reportRuntime : effectiveStructuredOutput;
+		const outputSnapshot = review ? review.outputSnapshot : captureSingleOutputSnapshot(step.outputPath);
 		if (structuredRuntime) {
 			try { fs.rmSync(structuredRuntime.outputPath, { force: true }); } catch {
 				// readStructuredOutput reports unreadable or stale output after the attempt.
@@ -777,10 +781,11 @@ async function runSingleStep(
 		} finally {
 			cleanupTempDir(tempDir);
 		}
-		const hiddenError = run.exitCode === 0 && !run.error ? detectSubagentError(run.messages) : undefined;
+		const reportSubmission = review?.reportRuntime ? readFinalizationReport(run.messages, review.reportRuntime) : undefined;
+		const hiddenError = run.exitCode === 0 && !run.error && !reportSubmission?.output ? detectSubagentError(run.messages) : undefined;
 		let structuredOutput: unknown;
 		let structuredError: string | undefined;
-		if (structuredRuntime && run.exitCode === 0 && !run.error && !hiddenError?.hasError && !run.interrupted) {
+		if (!review && structuredRuntime && run.exitCode === 0 && !run.error && !hiddenError?.hasError && !run.interrupted) {
 			const structured = readStructuredOutput(structuredRuntime);
 			structuredError = structured.error;
 			structuredOutput = structured.value;
@@ -794,15 +799,16 @@ async function runSingleStep(
 				? hiddenError.details ? `${hiddenError.errorType} failed (exit ${hiddenError.exitCode ?? 1}): ${hiddenError.details}` : `${hiddenError.errorType} failed with exit code ${hiddenError.exitCode ?? 1}`
 				: run.error || (run.exitCode !== 0 ? run.stderr.trim() || formatProcessExitFailure({ agent: step.agent, exitCode: run.exitCode, durationMs: run.durationMs }) : undefined));
 		let exitCode = completionGuardTriggered || structuredError ? 1 : hiddenError?.hasError ? hiddenError.exitCode ?? 1 : error && run.exitCode === 0 ? 1 : run.exitCode;
-		const fullOutput = review ? resolveFinalizationOutput(run.finalOutput, review.previousOutput) : stripAcceptanceReport(run.finalOutput);
-		const resolvedOutput = step.outputPath && exitCode === 0 && !run.interrupted
+		const finalOutput = reportSubmission?.output ?? run.finalOutput;
+		const fullOutput = review ? resolveFinalizationOutput(finalOutput, review.previousOutput) : stripAcceptanceReport(finalOutput);
+		const resolvedOutput = step.outputPath && exitCode === 0 && !run.interrupted && !reportSubmission?.reportSubmissionError
 			? resolveSingleOutput(step.outputPath, fullOutput, outputSnapshot)
 			: { fullOutput };
 		if (resolvedOutput.saveError) {
 			exitCode = 1;
 			error = `Failed to save output file '${step.outputPath}': ${resolvedOutput.saveError}`;
 		}
-		return { ...run, exitCode, error, model: model ?? run.model, structuredOutput, resolvedOutput, completionGuardTriggered,
+		return { ...run, exitCode, error, model: model ?? run.model, structuredOutput, reportSubmission, finalOutput, resolvedOutput, completionGuardTriggered,
 			terminalFailure: Boolean(completionGuardTriggered || structuredError || hiddenError?.hasError || resolvedOutput.saveError) };
 	}
 
@@ -815,21 +821,34 @@ async function runSingleStep(
 	let output = stripAcceptanceReport(resolvedOutput.fullOutput);
 	const initialOutput = output;
 	const sessionFile = step.sessionFile ?? (sessionDir ? findLatestSessionFile(sessionDir) ?? undefined : undefined);
+	const nativeReport = !initial.model || !isClaudeCodeModel(initial.model);
 	const acceptance = step.effectiveAcceptance ? await evaluateRunAcceptance({
-		acceptance: step.effectiveAcceptance, initial, initialOutput: initial.finalOutput, sessionFile, cwd: step.cwd ?? ctx.cwd, signal: verificationSignal,
+		acceptance: step.effectiveAcceptance, initial, initialOutput: initial.finalOutput, sessionFile, cwd: step.cwd ?? ctx.cwd, signal: verificationSignal, nativeReport,
 		runTurn: async (prompt, turn, sessionFile) => {
-			const reviewed = await runAttempt(prompt, initial.model ?? step.model, { turn, sessionFile, previousOutput: output });
+			const reportRuntime = nativeReport ? createFinalizationReportRuntime() : undefined;
+			let reviewed: StepAttempt;
+			try {
+				reviewed = await runAttempt(prompt, initial.model ?? step.model, { turn, sessionFile, previousOutput: output, reportRuntime,
+					outputSnapshot: nativeReport ? resolvedOutput.writtenSnapshot : undefined });
+			} finally {
+				if (reportRuntime) cleanupTempDir(path.dirname(reportRuntime.schemaPath));
+			}
 			execution = reviewed;
 			modelAttempts.push({ model: reviewed.model ?? "default", success: reviewed.exitCode === 0 && !reviewed.error && !reviewed.interrupted,
 				exitCode: reviewed.exitCode, error: reviewed.error, usage: { ...reviewed.usage } });
-			if (reviewed.exitCode !== 0 || reviewed.error || reviewed.interrupted) return { output: reviewed.finalOutput,
+			if (reviewed.exitCode !== 0 || reviewed.error || reviewed.interrupted) return { ...reviewed.reportSubmission, output: reviewed.finalOutput,
 				error: reviewed.error ?? reviewed.resourceLimitExceeded?.message ?? "Acceptance finalization turn did not complete successfully." };
+			if (reviewed.reportSubmission?.reportSubmissionError) return reviewed.reportSubmission;
 			resolvedOutput = reviewed.resolvedOutput;
 			output = stripAcceptanceReport(resolvedOutput.fullOutput);
-			return { output: reviewed.finalOutput };
+			return { ...reviewed.reportSubmission, output: reviewed.finalOutput };
 		},
 	}) : undefined;
 	const outcome = resolveExecutionOutcome({ result: execution, acceptance, signal: ctx.signal, interruptSignal });
+	if (acceptance?.unconfirmedOutput !== undefined) {
+		const auditOutput = resolvedOutput.savedPath && !resolvedOutput.writtenSnapshot ? output : acceptance.unconfirmedOutput;
+		output = formatUnconfirmedFinalizationOutput(auditOutput);
+	}
 	const effectiveFinalExitCode = outcome.exitCode ?? 1;
 	const cleanup = effectiveFinalExitCode === 0 && !outcome.interrupted && resolvedOutput.savedPath && step.outputMode !== "file-only" && step.outputPathFromAgentDefault === true
 		? cleanupSingleOutputFile(resolvedOutput.savedPath, output, undefined)

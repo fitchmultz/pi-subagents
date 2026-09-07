@@ -132,6 +132,7 @@ interface AsyncSingleParams {
 	skills?: string[];
 	output?: string | boolean;
 	outputFromAgentDefault?: boolean;
+	generatedOutputFilename?: string;
 	outputMode?: "inline" | "file-only";
 	outputSchema?: JsonSchemaObject;
 	modelOverride?: string;
@@ -149,13 +150,13 @@ interface AsyncSingleParams {
 	projectTrust?: ChildProjectTrustPolicy;
 }
 
-function withSavedLaunch(step: RunnerSubagentStep, agent: AgentConfig, params: AsyncChainParams | AsyncSingleParams): RunnerSubagentStep {
+function withSavedLaunch(step: RunnerSubagentStep, agent: AgentConfig, params: AsyncChainParams | AsyncSingleParams, generatedOutputFilename?: string): RunnerSubagentStep {
 	return { ...step, launch: {
 		agent, model: step.model, thinking: step.thinking, modelCandidates: step.modelCandidates ?? [],
 		artifacts: params.artifactsDir !== undefined, artifactsDir: params.artifactsDir, share: params.shareEnabled,
 		systemPrompt: step.systemPrompt ?? "", skills: step.skills ?? [], cwd: step.cwd ?? params.ctx.cwd,
 		context: agent.defaultContext ?? "fresh", output: step.outputPath ?? false, outputMode: step.outputMode ?? "inline",
-		...(step.outputPathFromAgentDefault && step.outputPath && typeof agent.output === "string" && !path.isAbsolute(agent.output) ? { outputFromAgentDefault: true } : {}),
+		...(generatedOutputFilename ? { generatedOutputFilename } : step.outputPathFromAgentDefault && step.outputPath && typeof agent.output === "string" && !path.isAbsolute(agent.output) ? { generatedOutputFilename: path.basename(agent.output) } : {}),
 		outputSchema: step.structuredOutputSchema, effectiveAcceptance: step.effectiveAcceptance,
 		maxOutput: { ...DEFAULT_MAX_OUTPUT, ...params.maxOutput }, maxSubagentDepth: step.maxSubagentDepth,
 		maxExecutionTimeMs: step.maxExecutionTimeMs, maxTokens: step.maxTokens,
@@ -690,7 +691,7 @@ export function executeAsyncSingle(
 	const outputUsesAgentDefault = usesAgentDefaultOutput(params.output) || params.outputFromAgentDefault === true;
 	const effectiveOutput = resolveAsyncOutput({
 		requestedOutput: params.output,
-		agentDefaultOutput: agentConfig.output,
+		agentDefaultOutput: params.generatedOutputFilename ?? agentConfig.output,
 		artifactsDir,
 		asyncDir,
 		runId: id,
@@ -746,7 +747,7 @@ export function executeAsyncSingle(
 						maxExecutionTimeMs: agentConfig.maxExecutionTimeMs,
 						maxTokens: agentConfig.maxTokens,
 						effectiveAcceptance: resolveEffectiveAcceptance({ explicit: params.acceptance }),
-					}, agentConfig, params),
+					}, agentConfig, params, params.generatedOutputFilename),
 				],
 				resultPath: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : path.join(RESULTS_DIR, `${id}.json`),
 				cwd: runnerCwd,

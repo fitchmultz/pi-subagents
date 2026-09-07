@@ -350,6 +350,7 @@ export interface AcceptanceFinalizationTurn {
 	prompt: string;
 	status: AcceptanceLedgerStatus;
 	rawOutput?: string;
+	unconfirmedOutput?: string;
 	report?: AcceptanceReport;
 	parseError?: string;
 	runtimeChecks: AcceptanceRuntimeCheck[];
@@ -374,6 +375,8 @@ export interface AcceptanceLedger {
 	childReportParseError?: string;
 	initialChildReport?: AcceptanceReport;
 	initialChildReportParseError?: string;
+	/** Prior full report retained as audit evidence, never as current acceptance. */
+	unconfirmedOutput?: string;
 	runtimeChecks: AcceptanceRuntimeCheck[];
 	verifyRuns: AcceptanceVerifyResult[];
 	finalization?: AcceptanceFinalizationLedger;
@@ -439,8 +442,8 @@ export interface SavedLaunchConfig {
 	cwd: string;
 	context: "fresh" | "fork";
 	output: string | false;
-	/** Proven generated path from this saved profile's relative output default; absent on legacy snapshots. */
-	outputFromAgentDefault?: boolean;
+	/** Proven generated output filename, independent of the selected profile; absent on legacy snapshots. */
+	generatedOutputFilename?: string;
 	outputMode: OutputMode;
 	outputSchema?: JsonSchemaObject;
 	effectiveAcceptance?: ResolvedAcceptanceConfig;

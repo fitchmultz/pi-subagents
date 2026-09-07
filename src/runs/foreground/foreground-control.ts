@@ -841,6 +841,7 @@ export function reviveSavedSubagent(input: {
 	input.deps.state.currentSessionId = resolveCurrentSessionId(input.ctx.sessionManager);
 	const contract = readQuestionContract(target.runId, target.index) ?? target;
 	const savedLaunch = input.params.agent === undefined ? contract.launch : undefined;
+	const generatedOutputFilename = input.params.output === undefined ? contract.launch?.generatedOutputFilename : undefined;
 	const effectiveCwd = input.params.cwd ?? savedLaunch?.cwd ?? target.cwd ?? input.requestCwd;
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
 	if (!savedLaunch && !input.params.agent) {
@@ -902,7 +903,8 @@ export function reviveSavedSubagent(input: {
 		availableModels, savedLaunch, modelOverride,
 		skills: skill === false ? [] : skill,
 		acceptance: input.params.acceptance ?? acceptanceInputFromResolved(contract.effectiveAcceptance ?? savedLaunch?.effectiveAcceptance),
-		output: input.params.output ?? (savedLaunch?.outputFromAgentDefault === true ? true : savedLaunch?.output ?? contract.output),
+		output: input.params.output ?? (generatedOutputFilename ? true : savedLaunch?.output ?? contract.output),
+		generatedOutputFilename,
 		outputMode: input.params.outputMode ?? savedLaunch?.outputMode ?? contract.outputMode,
 		outputSchema: input.params.outputSchema ?? savedLaunch?.outputSchema ?? contract.outputSchema,
 		projectTrust: savedLaunch?.projectTrust ?? resolveConfiguredChildProjectTrustPolicy(input.deps.config.projectTrust),

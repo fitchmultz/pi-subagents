@@ -69,7 +69,7 @@ export function saveForegroundLaunch(agent: AgentConfig, systemPrompt: string, s
 			modelCandidates: models.map((candidate) => applyThinkingSuffix(candidate, agent.thinking)!),
 			cwd: options.cwd ?? runtimeCwd, context: agent.defaultContext ?? "fresh",
 			output: options.outputPath ?? false, outputMode: options.outputMode ?? "inline", outputSchema: options.structuredOutput?.schema,
-			...(options.outputPathFromAgentDefault && options.outputPath && typeof agent.output === "string" && !path.isAbsolute(agent.output) ? { outputFromAgentDefault: true } : {}),
+			...(options.outputPathFromAgentDefault && options.outputPath && typeof agent.output === "string" && !path.isAbsolute(agent.output) ? { generatedOutputFilename: path.basename(agent.output) } : {}),
 			effectiveAcceptance: contract?.effectiveAcceptance,
 			maxOutput: { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput }, maxSubagentDepth: options.maxSubagentDepth,
 			maxExecutionTimeMs: options.maxExecutionTimeMs, maxTokens: options.maxTokens,

@@ -159,6 +159,7 @@ function extractPlainText(entry) {
 }
 
 async function writeResponseEntries(entries, jsonMode, args) {
+	const reportFinalization = process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE && args.some((arg) => expandedArg(arg).includes("## Acceptance Finalization"));
 	let sawProviderError = false;
 	for (const entry of entries) {
 		if (entry?.type === "message_end") {
@@ -167,6 +168,16 @@ async function writeResponseEntries(entries, jsonMode, args) {
 			if (isProviderError) sawProviderError = true;
 			if (!isProviderError && textPart && typeof textPart.text === "string" && (!sawProviderError || textPart.text.trim())) {
 				textPart.text = withAcceptanceReport(textPart.text, args);
+			}
+		}
+		if (jsonMode && reportFinalization && entry?.message?.role === "assistant" && entry.message.stopReason === "stop" && !entry.message.errorMessage) {
+			const report = extractPlainText(entry);
+			if (report.trim()) {
+				const toolCallId = `mock-report-${process.pid}-${Math.random().toString(16).slice(2)}`;
+				const value = { report };
+				await writeJsonlLine({ ...entry, message: { ...entry.message, stopReason: "toolUse", content: [{ type: "toolCall", id: toolCallId, name: "structured_output", arguments: { value } }] } });
+				await maybeWriteStructuredOutput({ structuredOutput: value }, true, toolCallId);
+				continue;
 			}
 		}
 		if (jsonMode) {
@@ -178,23 +189,25 @@ async function writeResponseEntries(entries, jsonMode, args) {
 	}
 }
 
-async function maybeWriteStructuredOutput(response, jsonMode) {
+async function maybeWriteStructuredOutput(response, jsonMode, toolCallId) {
 	if (!Object.prototype.hasOwnProperty.call(response, "structuredOutput")) return;
 	const outputPath = process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE;
 	if (!outputPath) return;
 	fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 	fs.writeFileSync(outputPath, JSON.stringify(response.structuredOutput), "utf-8");
 	if (!jsonMode) return;
-	await writeJsonlLine({ type: "tool_execution_start", toolName: "structured_output", args: { value: response.structuredOutput } });
+	await writeJsonlLine({ type: "tool_execution_start", toolName: "structured_output", toolCallId, args: { value: response.structuredOutput } });
 	await writeJsonlLine({
 		type: "message_end",
 		message: {
 			role: "toolResult",
 			toolName: "structured_output",
+			toolCallId,
+			isError: false,
 			content: [{ type: "text", text: "Structured output captured." }],
 		},
 	});
-	await writeJsonlLine({ type: "tool_execution_end", toolName: "structured_output" });
+	await writeJsonlLine({ type: "tool_execution_end", toolName: "structured_output", toolCallId, isError: false });
 }
 
 async function main() {
@@ -229,7 +242,10 @@ async function main() {
 		await new Promise((resolve) => setTimeout(resolve, response.delay));
 	}
 
-	if (Array.isArray(response.steps) && response.steps.length > 0) {
+	if (response.nativeReport) {
+		const { runNativeReport } = await import("../fixtures/native-acceptance-report.mjs");
+		await runNativeReport(args, response.nativeReport);
+	} else if (Array.isArray(response.steps) && response.steps.length > 0) {
 		for (const step of response.steps) {
 			if (typeof step?.delay === "number" && step.delay > 0) {
 				await new Promise((resolve) => setTimeout(resolve, step.delay));
@@ -246,15 +262,15 @@ async function main() {
 		} else if (Array.isArray(response.echoEnv) && response.echoEnv.length > 0) {
 			const envSnapshot = Object.fromEntries(response.echoEnv.map((key) => [key, process.env[key] ?? null]));
 				const output = withAcceptanceReport(JSON.stringify(envSnapshot), args);
-				if (jsonMode) await writeJsonlLine(defaultAssistantMessage(output));
+				if (jsonMode) await writeResponseEntries([defaultAssistantMessage(output)], true, args);
 				else await writeStdout(`${output}\n`);
 			} else if (typeof response.output === "string") {
 				const output = withAcceptanceReport(response.output, args);
-				if (jsonMode) await writeJsonlLine(defaultAssistantMessage(output));
+				if (jsonMode) await writeResponseEntries([defaultAssistantMessage(output)], true, args);
 				else await writeStdout(`${output}\n`);
 			}
 		await maybeWriteStructuredOutput(response, jsonMode);
-	if (jsonMode) await writeJsonlLine({ type: "agent_settled" });
+	if (jsonMode && !response.nativeReport) await writeJsonlLine({ type: "agent_settled" });
 
 	if (typeof response.stderr === "string" && response.stderr.length > 0) {
 		process.stderr.write(response.stderr);

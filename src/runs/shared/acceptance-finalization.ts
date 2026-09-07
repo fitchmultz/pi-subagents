@@ -1,3 +1,6 @@
+import { isDeepStrictEqual } from "node:util";
+import type { Message } from "@earendil-works/pi-ai";
+import { createStructuredOutputRuntime, readStructuredOutput, validateStructuredOutputValue, type StructuredOutputRuntime } from "./structured-output.ts";
 import type {
 	AcceptanceFinalizationTurn,
 	AcceptanceLedger,
@@ -8,6 +11,54 @@ import { acceptanceSelfReviewConfig, formatEvidenceReportFieldMapping, shouldRun
 import type { AttemptOutcome } from "./model-fallback.ts";
 import { isFailFastAbort } from "./parallel-utils.ts";
 import { parseAcceptanceReport, stripAcceptanceReport } from "./acceptance-reports.ts";
+
+export function createFinalizationReportRuntime(): StructuredOutputRuntime {
+	return createStructuredOutputRuntime({
+		type: "object", properties: { report: { type: "string", minLength: 1 } }, required: ["report"], additionalProperties: false,
+	});
+}
+
+interface FinalizationReportSubmission {
+	output: string;
+	reportSubmissionError?: string;
+	unconfirmedOutput?: string;
+}
+
+export function readFinalizationReport(messages: Message[], runtime: StructuredOutputRuntime): FinalizationReportSubmission {
+	const captured = readStructuredOutput(runtime);
+	const report = (captured.value as { report: string } | undefined)?.report;
+	// Older submissions are audit evidence only, never the current output below.
+	const successfulIds = new Set(messages.flatMap((message) => message.role === "toolResult" && message.toolName === "structured_output" && message.isError === false ? [message.toolCallId] : []));
+	let unconfirmedOutput = report && parseAcceptanceReport(report).report ? report : undefined;
+	for (const message of messages) {
+		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+		for (const call of message.content) {
+			if (call.type !== "toolCall" || call.name !== "structured_output" || !successfulIds.has(call.id)) continue;
+			const value = call.arguments.value;
+			if (validateStructuredOutputValue(runtime.schema, value).status === "valid" && parseAcceptanceReport(value.report).report) unconfirmedOutput = value.report;
+		}
+	}
+	const rejected = (reason: string): FinalizationReportSubmission => ({
+		output: "", reportSubmissionError: `No current finalization report: ${reason}`, unconfirmedOutput,
+	});
+	const index = messages.findLastIndex((message) => message.role === "assistant");
+	const last = messages[index];
+	if (last?.role !== "assistant" || last.errorMessage || !["stop", "toolUse"].includes(last.stopReason) || !Array.isArray(last.content)) {
+		return rejected("the latest assistant turn did not finish successfully.");
+	}
+	const calls = last.content.filter((part) => part.type === "toolCall");
+	if (calls.length !== 1 || calls[0]!.name !== "structured_output") return rejected("the latest assistant turn must submit structured_output as its only tool call.");
+	const call = calls[0]!;
+	const result = messages.slice(index + 1).findLast((message) => message.role === "toolResult" && message.toolCallId === call.id);
+	if (result?.role !== "toolResult" || result.toolName !== "structured_output" || result.isError !== false) return rejected("the latest structured_output call has no matching successful result.");
+	if (captured.error) return rejected(captured.error);
+	if (!isDeepStrictEqual(captured.value, call.arguments.value)) return rejected("the capture does not match the latest submission.");
+	return { output: report!, unconfirmedOutput };
+}
+
+export function formatUnconfirmedFinalizationOutput(output: string): string {
+	return `UNCONFIRMED task report — retained for audit only; finalization did not deliver a current complete report.\n\n${stripAcceptanceReport(output)}`;
+}
 
 export function resolveFinalizationOutput(rawOutput: string, previousOutput: string): string {
 	const prose = stripAcceptanceReport(rawOutput);
@@ -41,7 +92,8 @@ export async function evaluateRunAcceptance(input: {
 	sessionFile?: string;
 	cwd: string;
 	signal?: AbortSignal;
-	runTurn: (prompt: string, turn: number, sessionFile: string) => Promise<{ output: string; error?: string }>;
+	nativeReport?: boolean;
+	runTurn: (prompt: string, turn: number, sessionFile: string) => Promise<FinalizationReportSubmission & { error?: string }>;
 }): Promise<AcceptanceLedger> {
 	const review = shouldRunAcceptanceFinalization(input.acceptance);
 	const selfReview = review ? acceptanceSelfReviewConfig(input.acceptance) : input.acceptance;
@@ -57,16 +109,26 @@ export async function evaluateRunAcceptance(input: {
 	}
 	let previousFailure = acceptanceFailureMessage(initialLedger);
 	let authoritativeLedger = initialLedger;
+	let auditOutput = input.initialOutput;
 	for (let turn = 1; turn <= maxTurns; turn++) {
-		const prompt = formatAcceptanceFinalizationPrompt({ acceptance: input.acceptance, initialOutput: input.initialOutput, initialLedger, turn, maxTurns, previousFailure });
+		const prompt = formatAcceptanceFinalizationPrompt({ acceptance: input.acceptance, initialOutput: input.initialOutput, initialLedger, turn, maxTurns, previousFailure, nativeReport: input.nativeReport });
 		const result = input.signal?.aborted
 			? { output: "", error: "Acceptance finalization cancelled." }
 			: await input.runTurn(prompt, turn, input.sessionFile);
+		const retained = result.unconfirmedOutput ?? result.output;
+		if (input.nativeReport && parseAcceptanceReport(retained).report) auditOutput = retained;
 		if (result.error) {
-			turns.push(createFinalizationProcessFailureTurn({ turn, prompt, rawOutput: result.output, message: result.error }));
-			return buildFinalizationProcessFailureLedger({ initialLedger, turns, maxTurns, message: result.error });
+			turns.push({ ...createFinalizationProcessFailureTurn({ turn, prompt, rawOutput: result.output, message: result.error }),
+				...(input.nativeReport ? { unconfirmedOutput: auditOutput } : {}) });
+			const ledger = buildFinalizationProcessFailureLedger({ initialLedger, turns, maxTurns, message: result.error });
+			return input.nativeReport ? { ...ledger, childReport: undefined, childReportParseError: result.reportSubmissionError, unconfirmedOutput: auditOutput } : ledger;
 		}
-		authoritativeLedger = await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: result.output, cwd: input.cwd, signal: input.signal });
+		authoritativeLedger = await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: result.reportSubmissionError ? "" : result.output, cwd: input.cwd, signal: input.signal });
+		if (result.reportSubmissionError) {
+			authoritativeLedger.childReportParseError = result.reportSubmissionError;
+			authoritativeLedger.runtimeChecks = [{ id: "finalization-report", status: "failed", message: result.reportSubmissionError }];
+		}
+		if (input.nativeReport && authoritativeLedger.childReportParseError) authoritativeLedger.unconfirmedOutput = auditOutput;
 		turns.push(createFinalizationTurn({ turn, prompt, rawOutput: result.output, ledger: authoritativeLedger }));
 		const failure = acceptanceFailureMessage(authoritativeLedger);
 		if (!failure && !input.signal?.aborted) {
@@ -99,6 +161,7 @@ export function formatAcceptanceFinalizationPrompt(input: {
 	turn: number;
 	maxTurns: number;
 	previousFailure?: string;
+	nativeReport?: boolean;
 }): string {
 	const evidence = [...new Set([...input.acceptance.evidence, ...input.acceptance.criteria.flatMap((criterion) => criterion.evidence)])];
 	const lines = [
@@ -144,7 +207,9 @@ export function formatAcceptanceFinalizationPrompt(input: {
 	}
 	lines.push(
 		"",
-		"Now do the self-check. Return a standalone final answer with the current result and every requested handoff detail (including paths, identifiers, findings, and evidence). This answer replaces the initial answer; do not replace useful details with only a statement that you rechecked them. Include repairs or remaining blockers, then finish with exactly one fenced JSON block tagged `acceptance-report`.",
+		input.nativeReport
+			? "Now do the self-check. Your final action must be a sole `structured_output` tool call with {\"value\":{\"report\":\"...\"}}. The report string must contain the complete standalone final answer with the current result and every requested handoff detail (including paths, identifiers, findings, and evidence), repairs or remaining blockers, and end with exactly one fenced JSON block tagged `acceptance-report`. This report replaces the initial answer; do not replace useful details with only a statement that you rechecked them. If additional messages prompt more activity after submission, resubmit the complete current report as your final action; a prose-only reply does not finalize the task."
+			: "Now do the self-check. Return a standalone final answer with the current result and every requested handoff detail (including paths, identifiers, findings, and evidence). This answer replaces the initial answer; do not replace useful details with only a statement that you rechecked them. Include repairs or remaining blockers, then finish with exactly one fenced JSON block tagged `acceptance-report`.",
 		"```acceptance-report",
 		JSON.stringify({
 			criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "specific proof from the final state" }],
@@ -176,6 +241,7 @@ export function createFinalizationTurn(input: {
 		prompt: input.prompt,
 		status: input.ledger.status,
 		rawOutput: input.rawOutput,
+		...(input.ledger.unconfirmedOutput !== undefined ? { unconfirmedOutput: input.ledger.unconfirmedOutput } : {}),
 		...(input.ledger.childReport ? { report: input.ledger.childReport } : {}),
 		...(input.ledger.childReportParseError ? { parseError: input.ledger.childReportParseError } : {}),
 		runtimeChecks: input.ledger.runtimeChecks,
