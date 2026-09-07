@@ -112,7 +112,7 @@ export function foregroundIntercomTarget(control: ForegroundControlState): strin
 	return control.currentAgent ? resolveSubagentIntercomTarget(control.runId, control.currentAgent, control.currentIndex ?? 0) : undefined;
 }
 
-export function foregroundStatusResult(control: ForegroundControlState, health?: SubagentLiveIntercomHealth): SubagentExecutionResult {
+export function foregroundStatusResult(control: ForegroundControlState, health?: SubagentLiveIntercomHealth, includeRunHeader = true): SubagentExecutionResult {
 	let nestedWarning: string | undefined;
 	try {
 		updateForegroundNestedProjection(control);
@@ -122,9 +122,7 @@ export function foregroundStatusResult(control: ForegroundControlState, health?:
 	const activity = formatForegroundActivity(control);
 	const intercomTarget = foregroundIntercomTarget(control);
 	const lines = [
-		`Run: ${control.runId}`,
-		"State: running",
-		`Mode: ${control.mode}`,
+		...(includeRunHeader ? [`Run: ${control.runId}`, "State: running", `Mode: ${control.mode}`] : []),
 		control.currentAgent ? `Current: ${control.currentAgent}${control.currentIndex !== undefined ? ` step ${control.currentIndex + 1}` : ""}` : undefined,
 		(control.activeChildren?.size ?? 0) > 1
 			? `Active: ${[...control.activeChildren!.entries()].map(([index, child]) => `${index}:${child.agent}`).join(", ")}`

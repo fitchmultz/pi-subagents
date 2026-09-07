@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { IntercomClient } from "./broker/client.ts";
+import type { SubagentIntercomConnection } from "../shared/types.ts";
 import { formatSessionTarget, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
 
 const SUBAGENT_LIVE_INTERCOM_EVENT = "subagent:live-intercom";
@@ -12,6 +13,7 @@ type PiEvents = ExtensionAPI["events"];
 type LiveEventDeps = {
   events: PiEvents;
   ensureConnected: () => Promise<IntercomClient>;
+  getConnection: () => { client: IntercomClient | null; connecting: boolean; started: boolean };
   resolveSessionTarget: (client: IntercomClient, target: string) => Promise<string | null | undefined>;
   currentSessionTargetMatches: (requestedTarget: string, resolvedTarget?: string, client?: IntercomClient) => boolean;
   getLivenessCheck: () => () => boolean;
@@ -81,12 +83,21 @@ function parseHealthPayload(payload: unknown): { requestId: string; targets: str
 
 function answerLiveIntercomHealth(payload: unknown, deps: LiveEventDeps): void {
   const parsed = parseHealthPayload(payload);
-  if (!parsed || parsed.targets.length === 0) return;
+  if (!parsed) return;
   const isLive = deps.getLivenessCheck();
+  const connectionSnapshot = (): SubagentIntercomConnection => {
+    const { client, connecting, started } = deps.getConnection();
+    return { status: !started ? "unknown" : connecting ? "connecting" : client?.isConnected() ? "unknown" : "disconnected", ...(client?.sessionId ? { sessionId: client.sessionId } : {}) };
+  };
+  const respond = (health: unknown[], connection: SubagentIntercomConnection) => {
+    if (isLive()) deps.events.emit(SUBAGENT_INTERCOM_HEALTH_RESPONSE_EVENT, { requestId: parsed.requestId, health, connection });
+  };
   void (async () => {
     if (!isLive()) return;
     try {
-      const activeClient = await deps.ensureConnected();
+      // An empty target list is a read-only check of this bridge, not a reconnect request.
+      const activeClient = parsed.targets.length ? await deps.ensureConnected() : deps.getConnection().client;
+      if (!activeClient?.isConnected()) { respond([], connectionSnapshot()); return; }
       const sessions = await activeClient.listSessions();
       const health = parsed.targets.map((target) => {
         const resolution = resolveSessionTargetValue(sessions, target);
@@ -105,9 +116,10 @@ function answerLiveIntercomHealth(payload: unknown, deps: LiveEventDeps): void {
           ...(session.lastIntercomActivity !== undefined ? { lastIntercomActivity: session.lastIntercomActivity } : {}),
         };
       });
-      deps.events.emit(SUBAGENT_INTERCOM_HEALTH_RESPONSE_EVENT, { requestId: parsed.requestId, health });
-    } catch {
-      deps.events.emit(SUBAGENT_INTERCOM_HEALTH_RESPONSE_EVENT, { requestId: parsed.requestId, health: parsed.targets.map((target) => ({ target, status: "missing" })) });
+      const registered = activeClient.isConnected() && sessions.some((session) => session.id === activeClient.sessionId);
+      respond(health, registered ? { status: "connected", sessionId: activeClient.sessionId! } : { ...connectionSnapshot(), reason: "Current broker registration was not confirmed." });
+    } catch (error) {
+      respond(parsed.targets.map((target) => ({ target, status: "missing" })), { ...connectionSnapshot(), reason: getErrorMessage(error) });
     }
   })();
 }

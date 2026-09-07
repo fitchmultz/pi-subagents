@@ -122,7 +122,7 @@ agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "C
 
 ### Owned runs, review, and continuation
 
-`agent_runs({ action: "list" })` puts unanswered questions first, then failures, interrupted or unconfirmed work, completed-but-unreviewed results, and other runs. It returns 20 runs by default. Use `offset` and `limit` (1–100) to page; `details.runList.nextOffset` points to the next page. Paging never discards history or disables exact-ID lookup. `inspect` exposes the result, saved launch configuration and profile source, parent review, notification receipt, and root/predecessor/continuation history.
+`agent_runs({ action: "list" })` puts unanswered questions first, then failures, interrupted or unconfirmed work, completed-but-unreviewed results, and other runs. It returns 20 runs by default. Use `offset` and `limit` (1–100) to page; `details.runList.nextOffset` points to the next page. Paging never discards history or disables exact-ID lookup. After the first read, unchanged finished runs reuse compact ordering facts instead of reloading every result and launch contract. Live or unconfirmed work, questions, and the displayed page stay fresh. `inspect` combines the result, saved launch configuration and profile source, parent review, notification receipt, root/predecessor/continuation history, and available live progress and diagnostics in one report.
 
 `review` records `decision: "accepted"` or `"needs_changes"`, with an optional `message`. Review a finished result, not a live run. The decision is separate from execution status, runtime acceptance checks, and delivery. It does not run checks, launch another child, or mark a follow-up accepted. Use `continue` explicitly when more work is needed; inspect and late nudges do not restart anything.
 
@@ -304,6 +304,10 @@ or ask:
 ```text
 Check whether subagents and intercom are set up correctly.
 ```
+
+Doctor checks the loaded intercom bridge and the current broker registration without requesting a reconnect. Connected, disconnected, connecting, and unknown states are distinct; a missing bridge response is not reported as a healthy connection.
+
+The report identifies the running Node process, Pi's loaded version and reported resource directory, and the loaded extension build. Its SHA-256 fingerprint is embedded at build time from the emitted JavaScript, excluding the stamp itself; replacing files on disk does not change that loaded identity. Direct source loads report an unknown build. Pi's version and resource path alone do not prove the required native fork patches.
 
 ## Recommended orchestration pattern (scaffolding)
 

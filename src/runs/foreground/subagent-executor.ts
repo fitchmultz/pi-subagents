@@ -29,7 +29,7 @@ import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/
 import { inspectSubagentStatus } from "../background/run-status.ts";
 import { buildManagementControl } from "../../shared/status-format.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
-import { queryLiveIntercomHealth } from "../../intercom/live-intercom.ts";
+import { queryLiveIntercomHealth, queryLiveIntercomStatus } from "../../intercom/live-intercom.ts";
 import { saveQuestionOwner } from "../shared/supervisor-questions.ts";
 import { workflowChildSucceeded } from "../shared/workflow-policy.ts";
 import { ownedRunList, ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun, saveForegroundRun } from "../shared/run-records.ts";
@@ -136,6 +136,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					const fallbackTarget = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
 					orchestratorTarget = resolveOrchestratorIntercomTarget(deps.pi.events, fallbackTarget);
 				} catch {}
+				const { connection } = await queryLiveIntercomStatus(deps.pi.events);
 				return {
 					content: [{
 						type: "text",
@@ -147,6 +148,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							currentSessionFile,
 							currentSessionId,
 							orchestratorTarget,
+							connection,
 							sessionError,
 							projectTrusted: ctx.isProjectTrusted(),
 							expandTilde: deps.expandTilde,
@@ -162,8 +164,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
 					}
 				}
+				let includeRunHeader = true;
 				if (targetRunId) {
 					try {
+						includeRunHeader = Boolean(params.dir) || !resolveOwnedRun(deps.state, targetRunId);
 						const nestedScope = nestedResolutionScopeForExecutor(deps);
 						const resolved = resolveSubagentRunId(targetRunId, { state: deps.state, nested: nestedScope });
 						if (resolved?.kind === "foreground") {
@@ -171,7 +175,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							if (foreground) {
 								const target = foregroundIntercomTarget(foreground);
 								const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
-								return foregroundStatusResult(foreground, health);
+								return foregroundStatusResult(foreground, health, includeRunHeader);
 							}
 						}
 					} catch (error) {
@@ -186,11 +190,11 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						return foregroundStatusResult(foreground, health);
 					}
 				}
-				let inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
+				let inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps), includeRunHeader });
 				const targets = inspected.details.intercomTargets ?? [];
 				if (!inspected.isError && targets.length) {
 					const intercomHealth = await queryLiveIntercomHealth(deps.pi.events, targets);
-					if (intercomHealth.size) inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps), intercomHealth });
+					if (intercomHealth.size) inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps), intercomHealth, includeRunHeader });
 				}
 				if (targetRunId && inspected.isError && inspected.content[0]?.type === "text" && inspected.content[0].text.startsWith("Async run not found.")) {
 					try {
@@ -657,15 +661,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		if (requested && !args[1].dir) {
 			try {
 				const owned = resolveOwnedRun(deps.state, requested);
-				if (owned) {
-					const saved = ownedRunStatusResult(owned, deps.state);
-					const liveControl = result.details.managementControl?.state === "live" && saved.details.run?.state === "live";
-					result = {
-						...saved,
-						content: [...saved.content, ...(!result.isError && (owned.source === "async" || liveControl) ? result.content : [])],
-						details: { ...result.details, ...saved.details, managementControl: liveControl ? result.details.managementControl : saved.details.managementControl },
-					};
-				}
+				if (owned) result = ownedRunStatusResult(owned, deps.state, result);
 			} catch (error) {
 				return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
 			}

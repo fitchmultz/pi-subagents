@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+- Combine owned-run inspection and live diagnostics into one report without duplicate run headers or lost evidence and controls.
+- Reuse unchanged finished-run ordering facts, load full details for the selected page, and share question discovery across each list. Process new native intercom receipts without rescanning old history during steady delivery; retain full-history recovery at session and tree boundaries, with no history caps.
+- Make Doctor report live bridge and broker-registration health plus the running Node process, loaded Pi version, and build-stamped extension identity instead of static wiring status or current on-disk versions.
+
 ## [0.36.0] - 2026-09-06
 
 ### Added

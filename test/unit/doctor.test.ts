@@ -66,6 +66,7 @@ describe("buildDoctorReport", () => {
 				currentSessionFile: path.join(root, "sessions", "parent.jsonl"),
 				currentSessionId: "session-abc123",
 				orchestratorTarget: "subagent-chat-abc123",
+				connection: { status: "connected", sessionId: "registered-parent" },
 				expandTilde: (value) => value.replace(/^~\//, `${root}/home/`),
 				paths,
 				deps: {
@@ -97,7 +98,8 @@ describe("buildDoctorReport", () => {
 			assert.match(report, /- agents: total 4 \(builtin 1, user 1, project 2\)/);
 			assert.match(report, /- chains: total 2 \(builtin 0, user 1, project 1\)/);
 			assert.match(report, /- skills: total 2 \(project 1, user-package 1\)/);
-			assert.match(report, /- wiring: active/);
+			assert.match(report, /- connection: connected/);
+			assert.match(report, /- broker session id: registered-parent/);
 			assert.match(report, /- orchestrator target: subagent-chat-abc123/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
@@ -132,7 +134,8 @@ describe("buildDoctorReport", () => {
 			assert.match(report, /- results: missing /);
 			assert.match(report, /- agents\/chains: failed — Error: discovery exploded/);
 			assert.match(report, /- skills: total 0 \(none\)/);
-			assert.match(report, /- wiring: active/);
+			assert.match(report, /- connection: unknown/);
+			assert.match(report, /- bridge: unavailable/);
 			assert.match(report, /- orchestrator target: not available/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });

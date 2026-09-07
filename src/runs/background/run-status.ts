@@ -31,6 +31,7 @@ interface RunStatusDeps {
 	state?: SubagentState;
 	nested?: NestedRunResolutionScope;
 	intercomHealth?: Map<string, SubagentLiveIntercomHealth>;
+	includeRunHeader?: boolean;
 }
 
 function hasExistingSessionFile(value: unknown): value is string {
@@ -282,10 +283,8 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			const statusActivityText = status.state === "running" ? formatActivityLabel(status.lastActivityAt, status.activityState) : undefined;
 
 			const lines = [
-				`Run: ${status.runId}`,
-				`State: ${status.state}`,
+				...(deps.includeRunHeader !== false ? [`Run: ${status.runId}`, `State: ${status.state}`, `Mode: ${status.mode}`] : []),
 				statusActivityText ? `Activity: ${statusActivityText}` : undefined,
-				`Mode: ${status.mode}`,
 				`Progress: ${progressLabel}`,
 				`Started: ${started}`,
 				`Updated: ${updated}`,
@@ -293,7 +292,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				`Status: subagent({ action: "status", id: "${status.runId}" })`,
 				outputPath ? `Output: ${outputPath}` : undefined,
 				reconciliation.message ? `Diagnosis: ${reconciliation.message}` : undefined,
-				reconciliation.resultPath && fs.existsSync(reconciliation.resultPath) ? `Result: ${reconciliation.resultPath}` : undefined,
+				reconciliation.resultPath && fs.existsSync(reconciliation.resultPath) ? `${deps.includeRunHeader === false ? "Runtime result" : "Result"}: ${reconciliation.resultPath}` : undefined,
 			].filter((line): line is string => Boolean(line));
 			if (status.state !== "running") lines.push(...formatOutputExcerpt(outputPath));
 
@@ -348,7 +347,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			const data = readAsyncResultFile(resultPath);
 			const status = data.terminalState;
 			const runId = data.runId ?? data.id ?? resolvedId;
-			const lines = [`Run: ${runId}`, `State: ${status}`, `Result: ${resultPath}`, `Status: subagent({ action: "status", id: "${runId}" })`];
+			const lines = [...(deps.includeRunHeader !== false ? [`Run: ${runId}`, `State: ${status}`] : []), `${deps.includeRunHeader === false ? "Runtime result" : "Result"}: ${resultPath}`, `Status: subagent({ action: "status", id: "${runId}" })`];
 			const children = Array.isArray(data.results) ? data.results : data.agent ? [{ agent: data.agent, sessionFile: data.sessionFile }] : [];
 			lines.push(formatResumeGuidance(runId, children, data.sessionFile));
 			if (data.summary) lines.push("", data.summary);

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -650,6 +650,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker(config.askTimeoutMs);
   const pendingInbound = new Map<string, PendingInboundMessage>();
+  const consumedInboundIds = new Set<string>();
+  let reconciledLeafId: string | null = null;
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   let replyWaiter: {
     from: string;
@@ -953,12 +955,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return [...pendingInbound.values()].filter((entry) => entry.stage === "queued");
   }
   function restoreInbound(ctx: ExtensionContext): void {
-    const consumed = new Set<string>();
+    consumedInboundIds.clear();
     for (const item of ctx.sessionManager.getEntries()) {
       if (item.type === "custom_message") {
         const id = inboundIdFromCustomMessage(item);
         if (id) {
-          consumed.add(id);
+          consumedInboundIds.add(id);
           pendingInbound.delete(id);
         }
       } else if (item.type === "custom" && item.customType === INBOUND_CHECKPOINT_TYPE) {
@@ -966,7 +968,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         // Forks inherit entries, but pending delivery belongs to the saved session UUID.
         if (data?.sessionId !== currentSessionId) continue;
         if ("entry" in data) {
-          if (!consumed.has(data.entry.message.id)) keepInbound({ ...data.entry });
+          if (!consumedInboundIds.has(data.entry.message.id)) keepInbound({ ...data.entry });
         } else if (data.stage === "discarded") {
           pendingInbound.delete(data.messageId);
         } else {
@@ -975,6 +977,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         }
       }
     }
+    reconciledLeafId = ctx.sessionManager.getLeafId();
     for (const entry of pendingInbound.values()) {
       replyTracker.recordIncomingMessage(entry.from, entry.message, entry.receivedAt);
     }
@@ -1074,15 +1077,29 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     syncPresenceStatus();
     scheduleInboundFlush(delayMs);
   }
-  function reconcileConsumedInbound(ctx: ExtensionContext): void {
-    if (pendingInbound.size === 0) return;
-    // Idle custom-message appends emit SDK events, not extension message_end.
-    // Full session entries retain that receipt even after compaction.
-    for (const entry of ctx.sessionManager.getEntries()) {
-      if (entry.type !== "custom_message") continue;
-      const inboundId = inboundIdFromCustomMessage(entry);
-      if (inboundId) pendingInbound.delete(inboundId);
+  function reconcileConsumedInbound(ctx: ExtensionContext, fullScan = false): void {
+    const leafId = ctx.sessionManager.getLeafId();
+    if (pendingInbound.size > 0) {
+      const recent: SessionEntry[] = [];
+      let id = leafId;
+      // Passive appends emit SDK events, not extension message_end. Walk only
+      // new entries; a moved/missing branch boundary still needs full history.
+      while (!fullScan && id !== reconciledLeafId) {
+        const entry = id ? ctx.sessionManager.getEntry(id) : undefined;
+        if (!entry) { fullScan = true; break; }
+        recent.push(entry);
+        id = entry.parentId;
+      }
+      for (const entry of fullScan ? ctx.sessionManager.getEntries() : recent) {
+        if (entry.type !== "custom_message") continue;
+        const inboundId = inboundIdFromCustomMessage(entry);
+        if (inboundId) consumedInboundIds.add(inboundId);
+      }
+      for (const pendingId of pendingInbound.keys()) {
+        if (consumedInboundIds.has(pendingId)) pendingInbound.delete(pendingId);
+      }
     }
+    reconciledLeafId = leafId;
   }
   function redeliverUnconsumedInbound(ctx: ExtensionContext): void {
     reconcileConsumedInbound(ctx);
@@ -1439,6 +1456,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       ...registerSubagentLiveEventHandlers({
         events: pi.events,
         ensureConnected: () => ensureConnected("background"),
+        getConnection: () => ({ client, connecting: Boolean(startupConnectTimer || reconnectPromise), started: runtimeStarted }),
         resolveSessionTarget,
         currentSessionTargetMatches,
         getLivenessCheck: () => {
@@ -1526,6 +1544,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     rejectReplyWaiter(new Error("Session shutting down"));
     replyTracker.reset();
     pendingInbound.clear();
+    consumedInboundIds.clear();
+    reconciledLeafId = null;
     clearInboundFlushTimer();
     agentRunning = false;
     activeTools.clear();
@@ -1535,6 +1555,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     runtimeContext = null;
     currentSessionId = null;
+  });
+  pi.on("session_tree", (_event, ctx) => {
+    if (getLiveContext(ctx)) reconcileConsumedInbound(ctx, true);
   });
   pi.on("turn_end", () => {
     if (!getLiveContext()) {
@@ -1546,7 +1569,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   pi.on("message_end", (event) => {
     const message = (event as { message?: unknown }).message;
     const inboundId = inboundIdFromCustomMessage(message);
-    if (inboundId) pendingInbound.delete(inboundId);
+    if (inboundId) {
+      consumedInboundIds.add(inboundId);
+      pendingInbound.delete(inboundId);
+    }
     const activeClient = client;
     const context = replyTracker.currentTurn();
     const errorMessage = getAssistantErrorMessage(message);
