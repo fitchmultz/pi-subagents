@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
+import { discoverAgentsAll } from "../../src/agents/agents.ts";
 import { buildPiArgs, cleanupTempDir } from "../../src/runs/shared/pi-args.ts";
 
 const packageRoot = process.env.PI_CONTEXT_TEST_PACKAGE_ROOT ?? path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
@@ -37,6 +38,48 @@ export default function(pi) {
 				cleanupTempDir(built.tempDir);
 			}
 		}
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+it("native Pi preserves configured builtins and custom tools for the bundled delegate", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-delegate-tools-"));
+	try {
+		const agentDir = path.join(root, "agent");
+		fs.mkdirSync(path.join(agentDir, "extensions"), { recursive: true });
+		fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", "bash"] }));
+		const output = path.join(root, "tools.json");
+		const shutdown = path.join(root, "shutdown.json");
+		fs.writeFileSync(path.join(agentDir, "extensions", "observe.ts"), `import { writeFileSync } from "node:fs";
+import { Type } from "typebox";
+import { fauxProvider } from "@earendil-works/pi-ai";
+export default function(pi) {
+	const faux = fauxProvider();
+	pi.registerProvider("faux", { api: faux.api, baseUrl: faux.getModel().baseUrl, apiKey: "fixture-key", models: faux.models, streamSimple: faux.provider.streamSimple });
+	pi.registerTool({ name: "fixture_custom_tool", label: "Fixture", description: "Local startup probe", parameters: Type.Object({}),
+		execute: async () => { throw new Error("No tool calls expected"); } });
+	pi.on("session_start", (_event, ctx) => {
+		writeFileSync(process.env.TOOL_PROBE_OUTPUT, JSON.stringify(pi.getActiveTools()));
+		ctx.shutdown();
+	});
+	pi.on("session_shutdown", () => writeFileSync(process.env.TOOL_PROBE_SHUTDOWN, JSON.stringify({ providerCalls: faux.state.callCount })));
+}`);
+		const delegate = discoverAgentsAll(root).builtin.find((agent) => agent.name === "delegate");
+		assert.ok(delegate);
+		const built = buildPiArgs({ baseArgs: ["--offline", "--mode", "rpc", "--no-prompt-templates", "--no-themes"],
+			task: "Do not invoke a model", sessionEnabled: false, model: "faux/faux-1", inheritProjectContext: false, inheritSkills: false,
+			tools: delegate.tools, extensions: delegate.extensions, mcpDirectTools: delegate.mcpDirectTools, allowSubagents: delegate.allowSubagents,
+			projectTrust: "no-approve" });
+		const child = spawnSync(process.execPath, [path.join(packageRoot, "dist/bundle/cli.js"), ...built.args], {
+			cwd: root, input: "", encoding: "utf8", timeout: 15_000,
+			env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HOME: root, USERPROFILE: root,
+				PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", ...built.env,
+				TOOL_PROBE_OUTPUT: output, TOOL_PROBE_SHUTDOWN: shutdown },
+		});
+		assert.equal(child.status, 0, child.stderr || child.error?.message);
+		assert.deepEqual(JSON.parse(fs.readFileSync(shutdown, "utf8")), { providerCalls: 0 });
+		assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")).sort(), ["bash", "fixture_custom_tool", "read"]);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}

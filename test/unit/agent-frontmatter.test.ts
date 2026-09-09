@@ -456,7 +456,7 @@ Do work
 		}
 	});
 
-	it("bundled role agents use the normal tool surface while delegate keeps its allowlist", () => {
+	it("all bundled agents use the normal configured tool surface", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-builtin-tools-"));
 		const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-builtin-tools-home-"));
 		tempDirs.push(dir);
@@ -468,13 +468,12 @@ Do work
 			process.env.HOME = homeDir;
 			process.env.USERPROFILE = homeDir;
 			const builtins = discoverAgentsAll(dir).builtin;
-			for (const agent of builtins.filter((candidate) => candidate.name !== "delegate")) {
+			assert.ok(builtins.some((agent) => agent.name === "delegate"));
+			for (const agent of builtins) {
 				assert.equal(agent.tools, undefined, `${agent.name} should use the normal tool surface`);
+				assert.equal(agent.extensions, undefined, `${agent.name} should use configured extensions`);
+				assert.equal(agent.mcpDirectTools, undefined, `${agent.name} should use configured MCP tools`);
 			}
-			assert.deepEqual(
-				builtins.find((agent) => agent.name === "delegate")?.tools,
-				["read", "grep", "find", "ls", "bash", "edit", "write", "contact_supervisor"],
-			);
 		} finally {
 			if (previousHome === undefined) delete process.env.HOME;
 			else process.env.HOME = previousHome;
