@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -13,7 +13,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const evidenceDir = process.env.PI_INTERCOM_TEST_EVIDENCE_DIR;
 if (evidenceDir) mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
-const root = mkdtempSync(path.join(evidenceDir ?? tmpdir(), "pi-intercom-native-"));
+const root = realpathSync(mkdtempSync(path.join(evidenceDir ?? tmpdir(), "pi-intercom-native-")));
 const agentDir = path.join(root, "agent");
 for (const directory of [agentDir, path.join(root, "home"), path.join(root, "pi-subagents-runtime")]) {
   mkdirSync(directory, { recursive: true });

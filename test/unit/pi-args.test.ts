@@ -26,6 +26,7 @@ const originalEnv = {
 	HOME: process.env.HOME,
 	USERPROFILE: process.env.USERPROFILE,
 	PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+	MCP_DIRECT_TOOLS: process.env.MCP_DIRECT_TOOLS,
 	PI_SUBAGENT_FANOUT_CHILD: process.env.PI_SUBAGENT_FANOUT_CHILD,
 	PI_SUBAGENT_PARENT_EVENT_SINK: process.env.PI_SUBAGENT_PARENT_EVENT_SINK,
 	PI_SUBAGENT_PARENT_CONTROL_INBOX: process.env.PI_SUBAGENT_PARENT_CONTROL_INBOX,
@@ -412,7 +413,22 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		assert.equal(args[args.indexOf("--tools") + 1], "read,structured_output");
 	});
 
+	it("leaves configured and inherited MCP tools unchanged without a profile selection", () => {
+		for (const inherited of [undefined, "inherited-server", "__none__"]) {
+			if (inherited === undefined) delete process.env.MCP_DIRECT_TOOLS;
+			else process.env.MCP_DIRECT_TOOLS = inherited;
+			const { args, env } = buildPiArgs({
+				baseArgs: ["-p"], task: "hello", sessionEnabled: false,
+				inheritProjectContext: false, inheritSkills: false,
+			});
+			assert.equal(args.includes("--tools"), false);
+			assert.equal(Object.hasOwn(env, "MCP_DIRECT_TOOLS"), false);
+			assert.equal({ ...process.env, ...env }.MCP_DIRECT_TOOLS, inherited);
+		}
+	});
+
 	it("augments explicit builtin allowlists with selected direct MCP tool names", () => {
+		process.env.MCP_DIRECT_TOOLS = "inherited-server";
 		const fixture = createMcpFixture();
 		writeMcpFixture(fixture);
 
@@ -427,7 +443,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		});
 
 		assert.equal(args[args.indexOf("--tools") + 1], "read,bash,chrome_devtools_take_screenshot,chrome_devtools_click");
-		assert.equal(env.MCP_DIRECT_TOOLS, "chrome-devtools");
+		assert.equal({ ...process.env, ...env }.MCP_DIRECT_TOOLS, "chrome-devtools");
 	});
 
 	it("preserves no --tools for MCP-only agents", () => {
