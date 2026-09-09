@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.37.2] - 2026-09-09
+
 ### Fixed
 - Let bundled `delegate` use Pi’s configured tools and extensions, like the other bundled profiles. Preserve configured and inherited direct MCP tools in all Pi children unless the profile explicitly selects them; explicit allowlists and nested-delegation limits remain unchanged.
 
