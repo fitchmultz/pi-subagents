@@ -506,6 +506,7 @@ export interface OwnedRunView extends OwnedRun {
 		launch?: SavedLaunchConfig;
 		configuration: "saved" | "legacy-partial";
 		missingSession?: boolean;
+		identityUnavailable?: boolean;
 		activity?: Partial<Pick<AgentProgress, "status" | "currentTool" | "currentToolArgs" | "currentPath" | "recentOutput" | "lastActivityAt" | "streamingText">>;
 	}>;
 	continuations: Array<{ runId: string; predecessorRunId: string; predecessorIndex?: number }>;

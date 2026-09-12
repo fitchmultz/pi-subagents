@@ -16,6 +16,7 @@ import { NativeAgentHistory, readableText, type AgentHistoryItem } from "./agent
 
 const VIEW_ENTRY = "subagent-view";
 const DIRECTION_MESSAGE = "subagent-human-direction";
+const UNAVAILABLE_ASSIGNMENT = "Assignment identity unavailable. Your draft is kept; no message or Stop was sent. Inspect the run and choose a verified assignment before sending it.";
 const PENDING_MESSAGE_NOTICE = "This message is already waiting for the child. You can keep working or write a different message.";
 type ExecuteControl = (params: SubagentParamsLike, ctx: ExtensionContext) => Promise<SubagentExecutionResult>;
 type Quote = { title: string; text: string };
@@ -60,6 +61,7 @@ export function agentTaskLabel(child: OwnedRunView["children"][number]): string 
 	return short(child.label || child.task?.split("\n").find((line) => line.trim()) || `${child.agent} · assignment unavailable`, 42);
 }
 function activity(task: AgentTask): string {
+	if (task.child.identityUnavailable) return "assignment unavailable";
 	if (task.question) return task.question.state === "answer_pending" ? "answer saved · waiting" : "needs an answer";
 	if (task.child.state === "blocked") return "needs your action · acceptance incomplete";
 	if (task.child.state !== "live") return task.child.state === "completed" ? "done" : task.child.state;
@@ -147,7 +149,7 @@ export class AgentViewController {
 					const pinned = this.tasks.find((task) => task.key === this.pinned);
 					if (pinned) {
 						const last = pinned.history.findLast((item) => item.kind === "assistant")?.text;
-						const preview = pinned.child.state === "live" ? activity(pinned) : (pinned.child.result && getSingleResultOutput(pinned.child.result)) || last || activity(pinned);
+						const preview = pinned.child.identityUnavailable ? UNAVAILABLE_ASSIGNMENT : pinned.child.state === "live" ? activity(pinned) : (pinned.child.result && getSingleResultOutput(pinned.child.result)) || last || activity(pinned);
 						const unpin = "[Unpin] ";
 						lines.push(theme.fg("dim", truncateToWidth(`${unpin}${pinned.label}: ${short(preview, width)}`, width)));
 						hits.push({ start: 0, end: unpin.length, row: 1, unpin: true }, { start: unpin.length, end: width, row: 1, key: pinned.key });
@@ -177,9 +179,9 @@ export class AgentViewController {
 		return visit;
 	}
 
-	private taskKey(run: OwnedRun, child: Pick<OwnedRun["children"][number], "index" | "workflowNodeId">): string {
+	private taskKey(run: OwnedRun, child: Pick<OwnedRunView["children"][number], "index" | "workflowNodeId" | "sessionFile" | "identityUnavailable">): string {
 		const predecessor = run.predecessorRunId && this.state.ownedRuns?.get(run.predecessorRunId);
-		if (!predecessor) return `${run.runId}:${child.workflowNodeId ?? child.index}`;
+		if (!predecessor) return `${run.runId}:${child.workflowNodeId ?? (run.mode === "chain" && child.sessionFile && !child.identityUnavailable ? `session:${child.sessionFile}` : child.index)}`;
 		const index = run.predecessorIndex ?? 0;
 		const previous = (this.views.get(predecessor.runId)?.view ?? ownedRunView(predecessor, this.state)).children.find((candidate) => candidate.index === index);
 		return this.taskKey(predecessor, previous ?? { index });
@@ -199,7 +201,7 @@ export class AgentViewController {
 				this.views.set(run.runId, { run, view });
 			} catch (error) {
 				view = { ...run, state: "unknown", updatedAt: run.startedAt, attention: ["unknown"], canInterrupt: false, continuations: [],
-					children: run.children.map((child) => ({ ...child, state: "unknown", configuration: "legacy-partial" })),
+					children: run.children.map((child) => ({ ...child, state: "unknown", configuration: "legacy-partial", ...(run.mode === "chain" ? { identityUnavailable: true } : {}) })),
 					diagnosis: `Run details unavailable: ${error instanceof Error ? error.message : String(error)}` };
 			}
 			for (const child of view.children) {
@@ -207,7 +209,7 @@ export class AgentViewController {
 				const prior = tasks.get(key);
 				if (prior && prior.run.startedAt > run.startedAt) continue;
 				const visit = this.visits.get(key);
-				const history = this.history.read(child.sessionFile, child.state === "live");
+				const history = child.identityUnavailable ? { items: [], unavailable: UNAVAILABLE_ASSIGNMENT } : this.history.read(child.sessionFile, child.state === "live");
 				const readIndex = visit?.readThrough ? history.items.findIndex((item) => item.id === visit.readThrough) : -1;
 				const lastSent = visit?.lastSentId ? history.items.findIndex((item) => item.messageId === visit.lastSentId) : -1;
 				if (visit) {
@@ -218,11 +220,19 @@ export class AgentViewController {
 					}
 					visit.outbox = visit.outbox.filter((sent) => !history.items.some((item) => item.messageId === sent.id));
 				}
-				tasks.set(key, { key, label: prior?.label ?? agentTaskLabel(child), run: view, child, history: history.items, unavailable: history.unavailable ?? view.diagnosis,
-					question: questions.findLast((question) => question.index === child.index && (question.state === "awaiting_input" || question.state === "answer_pending")),
-					unread: Boolean(visit && ((visit.readThrough !== undefined && readIndex < history.items.length - 1) || (child.activity?.lastActivityAt ?? 0) > (visit.seenActivityAt ?? 0))),
+				tasks.set(key, { key, label: child.identityUnavailable ? "Saved assignment unavailable" : prior?.label ?? agentTaskLabel(child), run: view, child, history: history.items, unavailable: history.unavailable ?? view.diagnosis,
+					question: child.identityUnavailable ? undefined : questions.findLast((question) => question.index === child.index && (question.state === "awaiting_input" || question.state === "answer_pending")),
+					unread: !child.identityUnavailable && Boolean(visit && ((visit.readThrough !== undefined && readIndex < history.items.length - 1) || (child.activity?.lastActivityAt ?? 0) > (visit.seenActivityAt ?? 0))),
 					replied: lastSent >= 0 && history.items.slice(lastSent + 1).some((item) => item.kind === "assistant") });
 			}
+		}
+		for (const [key, visit] of this.visits) {
+			if (tasks.has(key) || (!visit.draft && !visit.quote && !visit.outbox.length && this.pinned !== key)) continue;
+			const run = this.views.get(key.slice(0, key.indexOf(":")))?.view;
+			if (!run) continue;
+			tasks.set(key, { key, label: "Saved assignment unavailable", run,
+				child: { agent: "unknown", index: -1, state: "unknown", configuration: "legacy-partial", identityUnavailable: true },
+				history: [], unavailable: UNAVAILABLE_ASSIGNMENT, unread: false, replied: false });
 		}
 		this.tasks = [...tasks.values()].sort((a, b) => Number(Boolean(b.question)) - Number(Boolean(a.question)) || Number(b.child.state === "live") - Number(a.child.state === "live") || Number(b.unread) - Number(a.unread) || b.run.startedAt - a.run.startedAt);
 		this.overlay?.refresh();
@@ -293,6 +303,7 @@ export class AgentViewController {
 		this.refresh(true);
 		const task = this.task(key), visit = this.visit(key), generation = this.generation;
 		if (!task) return;
+		if (task.child.identityUnavailable) { visit.notice = UNAVAILABLE_ASSIGNMENT; this.changed(); return; }
 		if (task.child.activity?.status === "pending") return;
 		const question = task.question;
 		const liveQuestion = question && questionProcessAlive(question);
@@ -355,7 +366,7 @@ export class AgentViewController {
 		if (!this.live() || this.busy.has(key)) return;
 		this.refresh(true);
 		const task = this.task(key);
-		if (!task || (task.child.state !== "live" && !task.question)) return;
+		if (!task || task.child.identityUnavailable || (task.child.state !== "live" && !task.question)) return;
 		if (task.child.activity?.status === "pending") return;
 		const generation = this.generation;
 		this.busy.add(key);
@@ -523,13 +534,13 @@ export class AgentConversation extends Container {
 		const task = this.task;
 		if (!task) return [{ id: "unavailable", kind: "notice", title: "Agent unavailable", text: "The owning session or run is no longer available.", timestamp: 0 }];
 		if (this.detail) return [this.detail];
-		const assignment: AgentHistoryItem = { id: "assignment", kind: "notice", title: `Assignment · ${task.child.agent}`, text: task.child.task ?? "The original per-child assignment was not saved for this older run.", timestamp: task.run.startedAt };
-		const items = [assignment, ...(task.child.state !== "live" ? [{ id: "process-exit", kind: "notice" as const, title: `Agent: ${task.child.state}`, text: formatAgentProcessExit(task.child.result?.agentProcessExit), timestamp: task.run.updatedAt }] : []), ...task.history];
+		const assignment: AgentHistoryItem = { id: "assignment", kind: "notice", title: task.child.identityUnavailable ? "Assignment unavailable" : `Assignment · ${task.child.agent}`, text: task.child.identityUnavailable ? UNAVAILABLE_ASSIGNMENT : task.child.task ?? "The original per-child assignment was not saved for this older run.", timestamp: task.run.startedAt };
+		const items = [assignment, ...(!task.child.identityUnavailable && task.child.state !== "live" ? [{ id: "process-exit", kind: "notice" as const, title: `Agent: ${task.child.state}`, text: formatAgentProcessExit(task.child.result?.agentProcessExit), timestamp: task.run.updatedAt }] : []), ...task.history];
 		const humanAction = acceptanceHumanAction(task.child.result?.acceptance);
-		if (humanAction) items.push({ id: "human-action", kind: "notice", title: "Needs your action — acceptance incomplete", text: humanAction, timestamp: task.run.updatedAt });
-		if (task.unavailable) items.push({ id: "unavailable", kind: "notice", title: "Conversation unavailable", text: task.unavailable, timestamp: 0 });
+		if (humanAction && !task.child.identityUnavailable) items.push({ id: "human-action", kind: "notice", title: "Needs your action — acceptance incomplete", text: humanAction, timestamp: task.run.updatedAt });
+		if (task.unavailable && !task.child.identityUnavailable) items.push({ id: "unavailable", kind: "notice", title: "Conversation unavailable", text: task.unavailable, timestamp: 0 });
 		if (task.question) items.push({ id: `question:${task.question.questionId}`, kind: "notice", title: "Waiting for your answer", text: task.question.message, timestamp: task.question.createdAt });
-		if (task.child.state === "live" && task.child.activity?.streamingText) items.push({ id: `live:${task.run.runId}`, kind: "assistant", title: "Agent · writing", text: task.child.activity.streamingText, timestamp: task.child.activity.lastActivityAt ?? 0 });
+		if (!task.child.identityUnavailable && task.child.state === "live" && task.child.activity?.streamingText) items.push({ id: `live:${task.run.runId}`, kind: "assistant", title: "Agent · writing", text: task.child.activity.streamingText, timestamp: task.child.activity.lastActivityAt ?? 0 });
 		for (const sent of this.visit.outbox) items.push({ id: `outgoing:${sent.id}`, kind: "user", title: sent.status === "sending" ? "You · sending" : sent.status === "waiting" ? "You · waiting for the child / tool boundary" : "You · delivery unconfirmed",
 			text: `${sent.text}${sent.quote ? `\n\nRegarding ${sent.quote.title}:\n${sent.quote.text}` : ""}${sent.reason ? `\n\n${sent.reason}` : ""}`, timestamp: sent.at });
 		return items;
@@ -578,7 +589,7 @@ export class AgentConversation extends Container {
 			bottom.addChild(this.editor);
 		}
 		const terminal = task?.child.state !== "live" && !task?.question;
-		const actionHint = task?.child.activity?.status === "pending" ? "Waiting to start · draft kept" : terminal ? width < 60 ? "Alt+C Continue" : "Alt+C Continue with message" : "Enter Send";
+		const actionHint = task?.child.identityUnavailable ? "Assignment unavailable · draft kept" : task?.child.activity?.status === "pending" ? "Waiting to start · draft kept" : terminal ? width < 60 ? "Alt+C Continue" : "Alt+C Continue with message" : "Enter Send";
 		bottom.addChild(new Text(this.theme.fg("dim", width < 60 ? `F2 Actions · Esc Back\n${actionHint} · Tab Read/write` : this.detail ? "Alt+R Reply · F2 Actions · Esc Back" : `${actionHint} · F2 Actions · Tab Read/write · Esc Back`), 0, 0));
 		const fixedHeight = this.children.reduce((total, child) => total + child.render(width).length, 0) + bottom.render(width).length;
 		this.height = Math.max(1, this.tui.terminal.rows - fixedHeight - 1);
@@ -633,7 +644,7 @@ export class AgentConversation extends Container {
 			{ value: "latest", label: "Jump to latest activity" },
 			{ value: "pin", label: this.controller.pinned === this.key ? "Unpin this agent" : "Keep this agent visible" },
 			...(this.visit.quote ? [{ value: "unquote", label: "Remove quoted context" }] : []),
-			...(task?.child.activity?.status === "pending" ? [] : task?.child.state === "live" || task?.question ? [{ value: "stop", label: "Stop this agent only" }] : [{ value: "continue", label: "Continue with this message" }]),
+			...(task?.child.identityUnavailable || task?.child.activity?.status === "pending" ? [] : task?.child.state === "live" || task?.question ? [{ value: "stop", label: "Stop this agent only" }] : [{ value: "continue", label: "Continue with this message" }]),
 			{ value: "picker", label: "Your other agents" }, { value: "peers", label: "Other connected sessions" },
 		];
 		this.menu = new SelectList(choices, Math.max(1, this.tui.terminal.rows - 5), getSelectListTheme());

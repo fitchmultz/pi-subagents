@@ -5,8 +5,8 @@ import { randomUUID } from "crypto";
 import { getPiAgentDir } from "../agent-dir.ts";
 import { writeMessage, createMessageReader, validateIntercomMessageSize } from "./framing.ts";
 import { prepareBrokerSocketPath } from "./paths.ts";
-import { isMessage, isSessionRegistration, normalizeSessionInfo } from "../types.ts";
-import type { SessionInfo, Message, BrokerMessage } from "../types.ts";
+import { compactTopicMessage, isSessionRegistration, isTopicSubscription, isTopicUpdate, normalizeMessage, normalizeSessionInfo } from "../types.ts";
+import type { SessionInfo, Message, BrokerMessage, SendResult, SessionSnapshot, TopicUpdate } from "../types.ts";
 
 const INTERCOM_DIR = join(getPiAgentDir(), "intercom");
 const PID_PATH = join(INTERCOM_DIR, "broker.pid");
@@ -16,6 +16,12 @@ const REPLACE_DELIVERY_DELAY_MS = 1500;
 interface ConnectedSession {
   socket: net.Socket;
   info: SessionInfo;
+  topicFrames: boolean;
+}
+
+function messageSender(info: SessionInfo): SessionInfo {
+  const { topics: _topics, subscriptions: _subscriptions, ...identity } = info;
+  return identity;
 }
 
 interface PendingReplaceDelivery {
@@ -132,21 +138,23 @@ class IntercomBroker {
           ? clientMessage.requestedId
           : undefined;
         const id = requestedId && !this.sessions.has(requestedId) ? requestedId : randomUUID();
-        setId(id);
         const now = Date.now();
         const info: SessionInfo = {
           ...clientMessage.session,
           id,
           lastSeen: clientMessage.session.lastSeen ?? now,
         };
-        this.sessions.set(id, { socket, info });
+        this.snapshotFrames(randomUUID(), [info], true);
+        const topicFrames = clientMessage.topicFrames === true;
+        this.sessions.set(id, { socket, info, topicFrames });
+        setId(id);
 
         if (this.shutdownTimer) {
           clearTimeout(this.shutdownTimer);
           this.shutdownTimer = null;
         }
 
-        writeMessage(socket, { type: "registered", sessionId: id, topicsSupported: true });
+        writeMessage(socket, { type: "registered", sessionId: id, ...(topicFrames ? { topicsSupported: true, topicFrames: true } : {}) });
         break;
       }
 
@@ -168,16 +176,66 @@ class IntercomBroker {
           throw new Error("Invalid list message");
         }
 
-        const sessions = Array.from(this.sessions.values()).map(s => s.info);
-        writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions });
+        const requestId = clientMessage.requestId;
+        try {
+          const session = currentId && this.sessions.get(currentId);
+          if (!session) throw new Error("Sender session not found");
+          let nextInfo = session.info;
+          let publication: TopicUpdate | undefined;
+          const change = clientMessage.change as { action?: unknown; topic?: unknown; subscription?: unknown } | undefined;
+          if (change !== undefined) {
+            if (!session.topicFrames || !change || typeof change !== "object") throw new Error("Topic snapshots unavailable for this client");
+            const topics = new Map((session.info.topics ?? []).map((topic) => [topic.topic, topic]));
+            const subscriptions = new Map((session.info.subscriptions ?? []).map((entry) => [entry.topic, entry]));
+            if ((change.action === "publish" || change.action === "restore") && isTopicUpdate(change.topic)) {
+              if (!change.topic.text.trim() || (change.topic.event === "release" && (!change.topic.resource || change.topic.ownership !== "released"))) throw new Error("Invalid topic publication");
+              const update = { ...change.topic, ...(change.action === "publish" ? { revision: Math.max(topics.get(change.topic.topic)?.revision ?? 0, change.topic.revision - 1) + 1 } : {}) };
+              if (!isTopicUpdate(update)) throw new Error("Invalid topic revision");
+              if (change.action === "publish" || (topics.get(update.topic)?.revision ?? 0) < update.revision) topics.set(update.topic, update);
+              if (change.action === "publish") publication = update;
+            } else if ((change.action === "subscribe" || change.action === "restore") && isTopicSubscription(change.subscription)) {
+              subscriptions.set(change.subscription.topic, change.subscription);
+            } else if (change.action === "unsubscribe" && typeof change.topic === "string") {
+              subscriptions.delete(change.topic);
+            } else throw new Error("Invalid topic change");
+            nextInfo = { ...session.info, topics: [...topics.values()], subscriptions: [...subscriptions.values()] };
+          }
+          if (publication) nextInfo = { ...nextInfo, lastIntercomActivity: Date.now() };
+          const from = messageSender(nextInfo);
+          const deliveries: Array<{ to: string; message: Message }> = [];
+          if (publication) {
+            for (const target of this.sessions.values()) {
+              const subscription = target.info.subscriptions?.find((entry) => entry.topic === publication!.topic);
+              if (target.info.id === currentId || !subscription) continue;
+              const urgent = publication.event === "blocker" || publication.event === "decision" || publication.event === "release" && subscription.awaitRelease;
+              const message: Message = { id: randomUUID(), timestamp: Date.now(), topic: publication, content: { text: publication.text },
+                delivery: urgent ? "steer" : "queue", ...(urgent ? {} : { queueMode: "replace", threadId: `topic:${publication.topic}` }) };
+              const error = this.validateDeliveryPayload(from, message, target.topicFrames);
+              if (error) throw new Error(error);
+              deliveries.push({ to: target.info.id, message });
+            }
+          }
+          const infos = [...this.sessions.values()].map((entry) => entry === session ? nextInfo : entry.info);
+          // Validate every required frame before replacing the broker's usable state.
+          if (change?.action === "restore") this.snapshotFrames(requestId, [nextInfo], true);
+          const frames = this.snapshotFrames(requestId, change?.action === "restore" ? [] : infos, clientMessage.stream === true);
+          session.info = nextInfo;
+          const receipts: SessionSnapshot["receipts"] = deliveries.map(({ to, message }) => ({ to, ...this.sendToSession(currentId!, to, from, message) }));
+          const last = frames.pop()!;
+          for (const frame of frames) writeMessage(socket, frame);
+          for (const receipt of receipts) writeMessage(socket, { type: "sessions", requestId, sessions: [], receipts: [receipt], more: true });
+          writeMessage(socket, last);
+        } catch (error) {
+          writeMessage(socket, { type: "sessions", requestId, sessions: [], error: error instanceof Error ? error.message : String(error) });
+        }
         break;
       }
 
       case "send": {
-        const message = clientMessage.message;
-        const messageId = isMessage(message) ? message.id : "unknown";
+        const message = normalizeMessage(clientMessage.message);
+        const messageId = message?.id ?? "unknown";
 
-        if (typeof clientMessage.to !== "string" || !isMessage(message)) {
+        if (typeof clientMessage.to !== "string" || !message) {
           writeMessage(socket, {
             type: "delivery_failed",
             messageId,
@@ -207,23 +265,8 @@ class IntercomBroker {
             break;
           }
           this.touchActivity(currentId, true);
-          const target = targets[0].info;
-          const targetStatus = target.status ?? "";
-          const targetIsIdle = targetStatus === "idle" || targetStatus.startsWith("idle ");
-          if (message.delivery === "queue" && message.queueMode === "replace" && message.threadId && (message.expectsReply || (targetIsIdle && target.acceptsAsks !== false))) {
-            this.queueReplaceDelivery(socket, currentId, target.id, fromSession.info, message);
-            break;
-          }
-          const deliveryFailure = this.deliverMessage(target.id, fromSession.info, message);
-          if (!deliveryFailure) {
-            writeMessage(socket, { type: "delivered", messageId: message.id });
-          } else {
-            writeMessage(socket, {
-              type: "delivery_failed",
-              messageId: message.id,
-              reason: deliveryFailure,
-            });
-          }
+          const receipt = this.sendToSession(currentId, targets[0].info.id, messageSender(fromSession.info), message);
+          writeMessage(socket, { type: receipt.accepted ? receipt.queued ? "delivery_queued" : "delivered" : "delivery_failed", messageId: message.id, ...(receipt.reason ? { reason: receipt.reason } : {}) });
           break;
         }
 
@@ -263,6 +306,7 @@ class IntercomBroker {
             lastSeen: Date.now(),
           });
           if (!nextInfo) throw new Error("Invalid presence update");
+          this.snapshotFrames(randomUUID(), [nextInfo], true);
           session.info = nextInfo;
         }
         break;
@@ -271,6 +315,39 @@ class IntercomBroker {
       default:
         throw new Error(`Unknown client message type: ${clientMessage.type}`);
     }
+  }
+
+  private snapshotFrames(requestId: string, infos: SessionInfo[], stream: boolean): BrokerMessage[] {
+    // Older clients have no topic UI or multipart reader; keep their original identity-only list.
+    if (!stream) {
+      const frame: BrokerMessage = { type: "sessions", requestId, sessions: infos.map(messageSender) };
+      const error = validateIntercomMessageSize(frame);
+      if (error) throw error;
+      return [frame];
+    }
+    // ponytail: one record per frame; pack records only if measured socket overhead warrants it.
+    const frames: BrokerMessage[] = [];
+    for (const info of infos) {
+      frames.push({ type: "sessions", requestId, sessions: [{ ...messageSender(info), ...(info.topics ? { topics: [] } : {}), ...(info.subscriptions ? { subscriptions: [] } : {}) }], more: true });
+      for (const topic of info.topics ?? []) frames.push({ type: "sessions", requestId, sessions: [{ id: info.id, topics: [topic] }], more: true });
+      for (const subscription of info.subscriptions ?? []) frames.push({ type: "sessions", requestId, sessions: [{ id: info.id, subscriptions: [subscription] }], more: true });
+    }
+    frames.push({ type: "sessions", requestId, sessions: [], more: false });
+    for (const frame of frames) {
+      const error = validateIntercomMessageSize(frame);
+      if (error) throw error;
+    }
+    return frames;
+  }
+
+  private sendToSession(fromId: string, toId: string, from: SessionInfo, message: Message): SendResult {
+    const target = this.sessions.get(toId);
+    if (!target) return { id: message.id, accepted: false, delivered: false, reason: "Recipient disconnected before delivery" };
+    const status = target.info.status ?? "";
+    const idle = status === "idle" || status.startsWith("idle ");
+    if (message.delivery === "queue" && message.queueMode === "replace" && message.threadId && (message.expectsReply || idle && target.info.acceptsAsks !== false)) return this.queueReplaceDelivery(fromId, toId, from, message);
+    const reason = this.deliverMessage(toId, from, message);
+    return { id: message.id, accepted: !reason, delivered: !reason, ...(reason ? { reason } : {}) };
   }
 
   /** Update liveness/intercom-activity timestamps for a connected session. */
@@ -290,30 +367,21 @@ class IntercomBroker {
     return `${fromId}\0${toId}\0${threadId}`;
   }
 
-  private queueReplaceDelivery(senderSocket: net.Socket, fromId: string, toId: string, from: SessionInfo, message: Message): void {
-    const validationError = this.validateDeliveryPayload(from, message);
+  private queueReplaceDelivery(fromId: string, toId: string, from: SessionInfo, message: Message): SendResult {
+    const validationError = this.validateDeliveryPayload(from, message, this.sessions.get(toId)?.topicFrames === true);
     if (validationError) {
-      writeMessage(senderSocket, {
-        type: "delivery_failed",
-        messageId: message.id,
-        reason: validationError,
-      });
-      return;
+      return { id: message.id, accepted: false, delivered: false, reason: validationError };
     }
     const key = this.replaceKey(fromId, toId, message.threadId ?? "");
     const existing = this.pendingReplaceDeliveries.get(key);
     if (existing) clearTimeout(existing.timer);
-    writeMessage(senderSocket, {
-      type: "delivery_queued",
-      messageId: message.id,
-      reason: "Queued for replace-mode delivery",
-    });
     const timer = setTimeout(() => {
       this.pendingReplaceDeliveries.delete(key);
       this.deliverMessage(toId, from, message);
     }, REPLACE_DELIVERY_DELAY_MS);
     timer.unref?.();
     this.pendingReplaceDeliveries.set(key, { from, fromId, toId, message, timer });
+    return { id: message.id, accepted: true, delivered: false, queued: true, reason: "Queued for replace-mode delivery" };
   }
 
   private clearPendingReplaceDeliveries(sessionId: string): void {
@@ -325,8 +393,8 @@ class IntercomBroker {
     }
   }
 
-  private validateDeliveryPayload(from: SessionInfo, message: Message): string | null {
-    return validateIntercomMessageSize({ type: "message", from, message })?.message ?? null;
+  private validateDeliveryPayload(from: SessionInfo, message: Message, topicFrames: boolean): string | null {
+    return validateIntercomMessageSize({ type: "message", from: messageSender(from), message: topicFrames ? compactTopicMessage(message) : message })?.message ?? null;
   }
 
   private deliverMessage(toId: string, from: SessionInfo, message: Message): string | null {
@@ -334,14 +402,14 @@ class IntercomBroker {
     if (!target || target.socket.destroyed || target.socket.writableEnded || !target.socket.writable) {
       return "Recipient disconnected before delivery";
     }
-    const validationError = this.validateDeliveryPayload(from, message);
+    const validationError = this.validateDeliveryPayload(from, message, target.topicFrames);
     if (validationError) return validationError;
     this.touchActivity(toId, true);
     try {
       writeMessage(target.socket, {
         type: "message",
-        from,
-        message,
+        from: messageSender(from),
+        message: target.topicFrames ? compactTopicMessage(message) : message,
       });
       return null;
     } catch (error) {

@@ -3710,6 +3710,44 @@ test("foreground subagent result intercom events reach the current orchestrator 
   assert.deepEqual(deliveryAcks, [{ requestId: "result-foreground", delivered: true }]);
 });
 
+test("topic subscription acknowledgement takes effect before the next received blocker", async () => {
+  const previousDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = mkdtempSync(path.join(sharedHomeDir, "topic-ack-"));
+  const { prepareBrokerSocketPath } = await import("../../src/pi-intercom/broker/paths.ts");
+  const { createMessageReader } = await import("../../src/pi-intercom/broker/framing.ts");
+  const { default: extension } = await import("../../src/pi-intercom/index.ts");
+  const sockets = new Set<net.Socket>(), topic = "private/first-ack-blocker";
+  const server = net.createServer((socket) => {
+    sockets.add(socket); socket.on("close", () => sockets.delete(socket));
+    let session: SessionInfo;
+    socket.on("data", createMessageReader((input) => {
+      const request = input as { type: string; session: SessionInfo; requestId: string; change?: { action: string } };
+      if (request.type === "register") { session = { ...request.session, id: "ack-receiver" }; writeMessage(socket, { type: "registered", sessionId: session.id, topicsSupported: true, topicFrames: true }); }
+      else if (request.type === "list") {
+        const packets: unknown[] = [{ type: "sessions", requestId: request.requestId, sessions: [session] }];
+        if (request.change?.action === "subscribe") packets.push({ type: "message", from: { id: "ack-publisher", name: "Topic owner", cwd: repoDir, model: "fixture" }, message: { id: "first-live-topic-blocker", timestamp: Date.now(), delivery: "steer", content: { text: "First live blocker after subscription" }, topic: { topic, text: "First live blocker after subscription", event: "blocker", revision: 1, updatedAt: Date.now() } } });
+        // One socket write fixes the acknowledgement / following-message interleaving.
+        socket.write(Buffer.concat(packets.map((packet) => { const body = Buffer.from(JSON.stringify(packet)); const header = Buffer.alloc(4); header.writeUInt32BE(body.length); return Buffer.concat([header, body]); })));
+      } else if (request.type === "unregister") socket.end();
+    }, (error) => socket.destroy(error)));
+  });
+  const harness = createExtensionHarness("topic-ack-parent");
+  try {
+    await new Promise<void>((resolve) => server.listen(prepareBrokerSocketPath(), resolve));
+    extension(harness.pi as never); await harness.emitLifecycle("session_start");
+    const tool = harness.tools.find((tool) => tool.name === "intercom")!;
+    const result = await tool.execute("subscribe", { action: "subscribe", topic }, new AbortController().signal, undefined, harness.ctx);
+    assert.ok(!result.isError, result.content[0]?.text);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.sentMessages.filter((entry) => entry.message.content?.includes("First live blocker after subscription")).length, 1, "the first live blocker must not be dropped between broker confirmation and local subscription commit");
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    process.env.PI_CODING_AGENT_DIR = previousDir;
+  }
+});
+
 test("topic support is explicit and an older broker leaves direct messaging untouched", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const broker = await setupBroker(), peer = new IntercomClient(), harness = createExtensionHarness("topic-capability-parent", { hasUI: true });

@@ -436,6 +436,70 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 	assert.deepEqual(ownedRunView(f.state.ownedRuns!.get(runId!)!, f.state).children.map((child) => [child.label, child.state]), [["Discover files", "completed"], ["Review alpha", "completed"], ["Review beta", "completed"], ["Finalize", "paused"]]);
 });
 
+for (const identity of ["graph", "session", "missing"]) test(`restored legacy dynamic assignments ${identity === "missing" ? "keep unidentifiable drafts unavailable" : `recover saved ${identity} identities`} instead of reusing child slots`, async (t) => {
+	const graphAvailable = identity === "graph";
+	const f = fixture(t), id = randomUUID(), asyncDir = path.join(ASYNC_DIR, id);
+	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear();
+	fs.mkdirSync(asyncDir, { recursive: true });
+	const finalSession = path.join(f.cwd, "legacy-final.jsonl");
+	// d57's saved graph excludes an unexpanded group from flatIndex, but status.steps includes its placeholder.
+	const graph = { runId: id, mode: "chain", phases: [], nodes: [
+		{ id: "step-0", kind: "step", agent: "worker", label: "Discover files", status: "running", stepIndex: 0, flatIndex: 0 },
+		{ id: "step-1", kind: "dynamic-parallel-group", label: "Review {target.name}", status: "pending", stepIndex: 1, children: [] },
+		{ id: "step-2", kind: "step", agent: "worker", label: "Finalize", status: "pending", stepIndex: 2, flatIndex: 1 },
+	] };
+	const status = { runId: id, sessionId: f.parent.getSessionFile(), mode: "chain", state: "running", startedAt: Date.now(), pid: process.pid, cwd: f.cwd,
+		steps: [{ agent: "worker", label: "Discover files", status: "running", sessionFile: f.childSessions[0].getSessionFile() }, { agent: "expand:reviewer", label: "Review {target.name}", status: "pending" }, { agent: "worker", label: "Finalize", status: "pending", ...(identity !== "missing" ? { sessionFile: finalSession } : {}) }],
+		...(graphAvailable ? { workflowGraph: graph } : {}) };
+	const save = () => fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify(status));
+	save(); f.state.asyncJobs.set(id, { asyncId: id, asyncDir, status: "running" });
+	restoreOwnedRuns(f.state, f.ctx); f.controller.start(f.ctx);
+	const later = f.controller.tasks.find((task) => task.run.runId === id && task.child.index === 2)!;
+	const opening = f.controller.open(later.key), view = f.overlay;
+	view.handleInput("Only Finalize should see this"); view.handleInput("\x1bp");
+	const deliveries = [];
+	f.pi.events.on("subagent:live-intercom", (payload) => { deliveries.push(payload); f.pi.events.emit("subagent:live-intercom-delivery", { requestId: payload.requestId, accepted: true, delivered: true, messageId: payload.messageId }); });
+	graph.nodes[0].status = "completed"; graph.nodes[1].status = "running"; graph.nodes[2].flatIndex = 3;
+	graph.nodes[1].children = ["alpha", "beta"].map((name, index) => ({ id: `step-1-item-${name}`, kind: "agent", agent: "reviewer", label: `Review ${name}`, status: "running", stepIndex: 1, flatIndex: index + 1, itemKey: name }));
+	status.steps = [{ ...status.steps[0], status: "complete" }, ...["alpha", "beta"].map((name) => ({ agent: "reviewer", label: `Review ${name}`, status: "running", sessionFile: f.childSessions[0].getSessionFile() })), { agent: "worker", label: "Finalize", status: "pending", sessionFile: finalSession }];
+	for (const index of [1, 2]) saveQuestionContract(id, index, { pid: process.pid, task: `Review ${index === 1 ? "alpha" : "beta"}` });
+	save(); f.controller.refresh(true);
+	await f.controller.send(later.key, f.controller.visit(later.key).draft);
+	await f.controller.stop(later.key);
+	assert.equal(deliveries.length, 0, "a restored legacy draft must not be sent to a reviewer occupying its former slot");
+	assert.equal(f.calls.length, 0, "an uncertain or pending assignment must not address Stop to a reviewer");
+	assert.equal(f.controller.pinned, later.key);
+	assert.equal(f.controller.visit(later.key).draft, "Only Finalize should see this");
+	if (identity !== "missing") {
+		assert.equal(f.controller.task(later.key)!.label, "Finalize");
+		assert.equal(f.controller.task(later.key)!.child.activity?.status, "pending");
+		status.steps[1].status = status.steps[2].status = "complete"; status.steps[3].status = "running";
+		saveQuestionContract(id, 3, { pid: process.pid, task: "Finalize the reviews", sessionFile: finalSession });
+		save(); f.controller.refresh(true);
+		await f.controller.send(later.key, f.controller.visit(later.key).draft);
+		assert.equal(deliveries.length, 1);
+		assert.equal(deliveries[0].to, `subagent-worker-${id}-4`);
+		assert.equal(deliveries[0].human.index, 3);
+		await f.controller.stop(later.key);
+		assert.equal(f.calls[0].index, 3);
+		assert.match(f.controller.visit(later.key).notice!, /older runner/, "the old runner still truthfully refuses unsupported selected Stop");
+	} else {
+		assert.match(plain(view), /assignment.*unavailable/i);
+		view.handleInput("\x1b"); await opening;
+		status.workflowGraph = graph; save();
+		restoreOwnedRuns(f.state, f.ctx); f.controller.start(f.ctx);
+		const reopen = f.controller.open(later.key);
+		assert.ok(f.overlay instanceof AgentConversation, "an unmatched saved draft remains inspectable after reliable graph data becomes available");
+		assert.equal(f.overlay.editor.getText(), "Only Finalize should see this");
+		assert.match(plain(f.overlay), /assignment.*unavailable/i);
+		await f.controller.send(later.key, f.controller.visit(later.key).draft, true);
+		assert.equal(deliveries.length, 0); assert.equal(f.calls.length, 0);
+		f.overlay.handleInput("\x1b"); await reopen;
+		return;
+	}
+	view.handleInput("\x1b"); await opening;
+});
+
 test("native history reflow preserves the same reading message and draft across terminal widths", async (t) => {
 	const f = fixture(t); f.terminal.columns = 99; f.terminal.rows = 34;
 	for (let index = 0; index < 25; index++) assistant(f.childSessions[0], `HISTORY-${index}\n${`Message ${index} contains an inspectable long line. `.repeat(9)}`);

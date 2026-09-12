@@ -225,10 +225,46 @@ export function isSessionRegistration(value: unknown): value is Omit<SessionInfo
   return session.acceptsAsks === undefined || typeof session.acceptsAsks === "boolean";
 }
 
+export interface SendResult {
+  id: string;
+  accepted: boolean;
+  delivered: boolean;
+  queued?: boolean;
+  reason?: string;
+}
+
+export type TopicChange =
+  | { action: "publish" | "restore"; topic: TopicUpdate }
+  | { action: "subscribe" | "restore"; subscription: TopicSubscription }
+  | { action: "unsubscribe"; topic: string };
+export interface SessionSnapshot {
+  sessions: SessionInfo[];
+  receipts: Array<SendResult & { to: string }>;
+}
+
+/** Topic text and the standard coalescing key need only one copy on the wire. */
+export function compactTopicMessage(message: Message) {
+  if (!message.topic) return message;
+  return { ...message,
+    topic: message.topic.text === message.content.text ? { ...message.topic, text: undefined } : message.topic,
+    threadId: message.queueMode === "replace" && message.threadId === `topic:${message.topic.topic}` ? undefined : message.threadId,
+  };
+}
+
+export function normalizeMessage(value: unknown): Message | null {
+  if (isMessage(value)) return value;
+  if (!value || typeof value !== "object") return null;
+  const message = value as Partial<Message>;
+  if (!message.topic || typeof message.topic !== "object" || !message.content) return null;
+  const restored = { ...message, topic: { ...message.topic, text: message.topic.text === undefined ? message.content.text : message.topic.text },
+    ...(message.queueMode === "replace" && message.threadId === undefined ? { threadId: `topic:${message.topic.topic}` } : {}) };
+  return isMessage(restored) ? restored : null;
+}
+
 export type BrokerMessage =
-  | { type: "registered"; sessionId: string; topicsSupported?: true }
-  | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
-  | { type: "message"; from: SessionInfo; message: Message }
+  | { type: "registered"; sessionId: string; topicsSupported?: true; topicFrames?: true }
+  | { type: "sessions"; requestId: string; sessions: Array<Partial<SessionInfo> & Pick<SessionInfo, "id">>; more?: boolean; receipts?: SessionSnapshot["receipts"]; error?: string }
+  | { type: "message"; from: SessionInfo; message: Message | ReturnType<typeof compactTopicMessage> }
   | { type: "session_left"; sessionId: string }
   | { type: "delivered"; messageId: string }
   | { type: "delivery_queued"; messageId: string; reason: string }

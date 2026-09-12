@@ -7,13 +7,12 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { IntercomClient, type SendResult } from "./broker/client.ts";
-import { validateIntercomMessageSize } from "./broker/framing.ts";
 import { isBrokerRunning, spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
 import { loadConfig, type IntercomConfig } from "./config.ts";
-import { isTopicSubscription, isTopicUpdate, type SessionInfo, type Message, type Attachment, type MessageDelivery, type QueueMode, type TopicUpdate } from "./types.ts";
+import { isTopicSubscription, isTopicUpdate, type SessionInfo, type Message, type Attachment, type MessageDelivery, type QueueMode, type TopicUpdate, type TopicChange, type SessionSnapshot } from "./types.ts";
 import { IntercomTopics } from "./topics.ts";
 import { isDurableSupervisorQuestion, ReplyTracker } from "./reply-tracker.ts";
 import { filterProjectSessions, formatPeerAwarenessHint, formatSessionTarget, formatTargetOptions, PEER_AWARENESS_HINT, resolveSessionProjectId, targetDisplayName, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
@@ -676,6 +675,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker(config.askTimeoutMs);
   const topics = new IntercomTopics(pi, () => getLiveContext());
+  let topicSyncError: string | undefined;
   const pendingInbound = new Map<string, PendingInboundMessage>();
   const consumedInboundIds = new Set<string>();
   const completedChildren = new Map<string, SubagentCompletion["children"][number]>();
@@ -876,7 +876,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       lastSeen: Date.now(),
       status: currentStatus(),
       ...buildPresenceHealth(),
-      ...topics.presence(),
     };
   }
   function isRecipientIdle(ctx: ExtensionContext): boolean {
@@ -1333,10 +1332,26 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }, getReconnectDelayMs());
     reconnectTimer.unref?.();
   }
+  async function restoreTopics(activeClient: IntercomClient): Promise<string | undefined> {
+    const changes: TopicChange[] = [
+      ...[...topics.published.values()].map((topic): TopicChange => ({ action: "restore", topic })),
+      ...[...topics.subscriptions.values()].map((subscription): TopicChange => ({ action: "restore", subscription })),
+    ];
+    let failure: string | undefined;
+    for (const change of changes) {
+      try { await activeClient.updateTopics(change); }
+      catch (error) {
+        if (!activeClient.isConnected()) throw error;
+        failure ??= getErrorMessage(error);
+      }
+    }
+    return failure;
+  }
   async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay" | "peer-awareness"): Promise<IntercomClient> {
     if (disposed) {
       throw new Error("Intercom shutting down");
     }
+    if (reconnectPromise && reconnectPromiseGeneration === runtimeGeneration) return reconnectPromise;
     if (client && client.isConnected()) {
       return client;
     }
@@ -1367,8 +1382,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         client = nextClient;
         reconnectAttempt = 0;
         if (nextClient.supportsTopics) {
+          const failure = await restoreTopics(nextClient);
           const sessions = await nextClient.listSessions();
-          if (getLiveContext(contextAtStart, generationAtStart)) topics.refresh(sessions);
+          if (getLiveContext(contextAtStart, generationAtStart)) {
+            topicSyncError = failure;
+            topics.refresh(sessions);
+            if (failure) topics.disconnected(nextClient.sessionId!);
+          }
         } else topics.disconnected();
         return nextClient;
       } catch (error) {
@@ -1602,6 +1622,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     runtimeContext = ctx;
     currentSessionId = ctx.sessionManager.getSessionId();
     topics.start(ctx);
+    topicSyncError = undefined;
     currentModel = ctx.model?.id ?? "unknown";
     agentRunning = false;
     lastIntercomActivity = 0;
@@ -2149,43 +2170,44 @@ Usage:
         const topic = params.topic?.trim();
         if (topic && !isTopicSubscription({ topic, awaitRelease: params.awaitRelease })) return { content: [{ type: "text", text: "Topic must be a plain nonempty label; awaitRelease must be boolean." }], isError: true, details: {} };
         if (action !== "topics" && !topic) return { content: [{ type: "text", text: `${action} requires an exact topic.` }], isError: true, details: {} };
-        const registration = action === "topics" ? undefined : await buildRegistration();
-        if (!getLiveContext(ctx, generation)) return { content: [{ type: "text", text: "Session changed; no topic state saved." }], isError: true, details: {} };
-        const presence = topics.presence();
-        let update: TopicUpdate | undefined;
-        if (action === "subscribe" || action === "unsubscribe") {
-          presence.subscriptions = presence.subscriptions.filter((entry) => entry.topic !== topic);
-          if (action === "subscribe") presence.subscriptions.push({ topic: topic!, ...(params.awaitRelease ? { awaitRelease: true } : {}) });
-        }
+        let change: TopicChange | undefined;
+        if (action === "subscribe") change = { action: "subscribe", subscription: { topic: topic!, ...(params.awaitRelease ? { awaitRelease: true } : {}) } };
+        if (action === "unsubscribe") change = { action: "unsubscribe", topic: topic! };
         if (action === "publish") {
           const event = params.event ?? (params.ownership === "released" ? "release" : "update");
-          update = { topic: topic!, text: message ?? "", event, resource: params.resource, ownership: params.ownership,
+          const update: TopicUpdate = { topic: topic!, text: message ?? "", event, resource: params.resource, ownership: params.ownership,
             revision: (topics.published.get(topic!)?.revision ?? 0) + 1, updatedAt: Date.now() };
           if (!update.text.trim() || !isTopicUpdate(update) || (event === "release" && (!update.resource || update.ownership !== "released"))) return { content: [{ type: "text", text: "Publish requires self-contained message text; ownership needs resource, and release needs ownership:'released'." }], isError: true, details: {} };
-          presence.topics = [...presence.topics.filter((entry) => entry.topic !== topic), update];
+          change = { action: "publish", topic: update };
         }
-        if (registration) {
-          const tooLarge = validateIntercomMessageSize({ type: "presence", ...presence })
-            ?? validateIntercomMessageSize({ type: "register", session: { ...registration, ...presence }, requestedId: connectedClient.sessionId });
-          if (tooLarge) throw tooLarge;
+        const commit = (snapshot: SessionSnapshot) => {
+          if (!getLiveContext(ctx, generation)) throw new Error("Session changed; no topic state saved in this session.");
+          if (action === "subscribe") topics.subscribe(topic!, params.awaitRelease);
+          if (action === "unsubscribe") topics.unsubscribe(topic!);
+          if (action === "publish") {
+            const update = snapshot.sessions.find((session) => session.id === connectedClient.sessionId)?.topics?.find((entry) => entry.topic === topic);
+            if (!update) throw new Error("Broker did not confirm the topic publication; prior saved state is unchanged.");
+            topics.publish(update, { id: connectedClient.sessionId!, name: pi.getSessionName() });
+          }
+          topics.refresh(snapshot.sessions);
+        };
+        const snapshot = change ? await connectedClient.updateTopics(change, commit) : { sessions: await connectedClient.listSessions(), receipts: [] };
+        if (!getLiveContext(ctx, generation)) return { content: [{ type: "text", text: "Session changed; no topic state saved in this session." }], isError: true, details: {} };
+        if (!change) topics.refresh(snapshot.sessions);
+        if (topicSyncError) {
+          const own = snapshot.sessions.find((session) => session.id === connectedClient.sessionId);
+          const published = new Map(own?.topics?.map((update) => [update.topic, update]));
+          const subscribed = new Map(own?.subscriptions?.map((entry) => [entry.topic, entry]));
+          if (own && published.size === topics.published.size && subscribed.size === topics.subscriptions.size
+            && [...topics.published].every(([key, update]) => JSON.stringify(published.get(key)) === JSON.stringify(update))
+            && [...topics.subscriptions].every(([key, entry]) => subscribed.has(key) && Boolean(subscribed.get(key)?.awaitRelease) === Boolean(entry.awaitRelease))) topicSyncError = undefined;
+          else topics.disconnected(connectedClient.sessionId!);
         }
-        if (action === "subscribe") topics.subscribe(topic!, params.awaitRelease);
-        if (action === "unsubscribe") topics.unsubscribe(topic!);
-        if (update) topics.publish(update, { id: connectedClient.sessionId!, name: pi.getSessionName() });
-        connectedClient.updatePresence(presence);
-        const sessions = await connectedClient.listSessions();
-        if (!getLiveContext(ctx, generation)) return { content: [{ type: "text", text: "Session changed; no topic messages sent." }], isError: true, details: {} };
-        if (update) {
-          const subscribers = sessions.filter((session) => session.id !== connectedClient.sessionId && session.subscriptions?.some((entry) => entry.topic === topic));
-          const receipts = await Promise.all(subscribers.map(async (session) => {
-            const urgent = update.event === "blocker" || update.event === "decision" || update.event === "release" && session.subscriptions?.some((entry) => entry.topic === topic && entry.awaitRelease);
-            const receipt = await connectedClient.send(session.id, { text: update.text, topic: update, delivery: urgent ? "steer" : "queue", ...(urgent ? {} : { queueMode: "replace", threadId: `topic:${topic}` }) });
-            return { to: session.id, ...receipt };
-          }));
+        if (action === "publish") {
+          const receipts = snapshot.receipts;
           return { content: [{ type: "text", text: `Current state saved for ${topic}. ${receipts.filter((receipt) => receipt.accepted).length}/${receipts.length} subscribed deliveries accepted; this does not confirm reading or action. Routine updates stay outside conversation context.` }], details: { topic, receipts } };
         }
-        topics.refresh(sessions);
-        return { content: [{ type: "text", text: `${action === "topics" ? "" : `${action === "subscribe" ? "Subscribed to" : "Unsubscribed from"} ${topic}.\n`}${topics.inspect(topic)}` }], details: { topic } };
+        return { content: [{ type: "text", text: `${topicSyncError ? `Some saved topic state could not be restored: ${topicSyncError}\nOrdinary messaging remains available. Correct the saved publication or subscription.\n\n` : ""}${action === "topics" ? "" : `${action === "subscribe" ? "Subscribed to" : "Unsubscribed from"} ${topic}.\n`}${topics.inspect(topic)}` }], details: { topic } };
       }
       if (params.scope !== undefined && action !== "list" && action !== "status") {
         return {

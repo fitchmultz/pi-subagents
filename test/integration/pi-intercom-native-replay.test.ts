@@ -1265,6 +1265,121 @@ for (const boundary of ["presence", "registration"] as const) test(`native rejec
   assert.deepEqual(publisher.errors, []);
 });
 
+test("native aggregate topic snapshots remain complete across reload and ordinary messaging", async (t) => {
+  const { MAX_FRAME_SIZE_BYTES, intercomMessageSizeBytes } = await import("../../src/pi-intercom/broker/framing.ts");
+  const publisher = await makeSession(t, "aggregate-topic-publisher"), topic = "private/aggregate-topic";
+  const call = (params) => publisher.session.agent.state.tools.find((tool) => tool.name === "intercom").execute(randomUUID(), params, new AbortController().signal);
+  publisher.faux.setResponses([fauxAssistantMessage("Persist private native history")]);
+  await publisher.session.prompt("Seed"); await publisher.session.waitForIdle();
+  await call({ action: "publish", topic, message: "Prior valid state" });
+  const peers = [], received = [];
+  t.after(async () => { await Promise.all(peers.map((peer) => peer.disconnect())); });
+  for (let index = 0; index < 4; index++) {
+    const peer = new IntercomClient(); peer.on("message", (_from, message) => received.push(message.content.text));
+    await peer.connect({ name: `aggregate-peer-${index}`, cwd: root, model: "fixture" }); peers.push(peer);
+  }
+  const before = await peers[0].listSessions(), own = before.find((session) => session.name === "aggregate-topic-publisher")!;
+  const { id, ...registration } = own;
+  const update = { topic, text: "", event: "update", revision: 2, updatedAt: Date.now() };
+  const presence = { subscriptions: own.subscriptions ?? [], topics: [update] };
+  update.text = "x".repeat(MAX_FRAME_SIZE_BYTES - intercomMessageSizeBytes({ type: "register", session: { ...registration, ...presence }, requestedId: id }) - 64);
+  assert.ok(intercomMessageSizeBytes({ type: "presence", ...presence }) < MAX_FRAME_SIZE_BYTES);
+  assert.ok(intercomMessageSizeBytes({ type: "sessions", requestId: randomUUID(), sessions: before.map((session) => session.id === id ? { ...session, ...presence } : session) }) > MAX_FRAME_SIZE_BYTES, "the complete valid snapshot exceeds one reply frame");
+  let publicationError;
+  try { await call({ action: "publish", topic, message: update.text }); } catch (error) { publicationError = String(error); }
+  assert.equal(publicationError, undefined, "valid topic data must not fail because ordinary peers enlarge the aggregate snapshot");
+  const snapshot = await peers[0].listSessions();
+  assert.equal(snapshot.find((session) => session.id === id).topics[0].text, update.text);
+  for (const peer of peers) assert.ok(snapshot.some((session) => session.id === peer.sessionId));
+  const otherTopics = ["private/concurrent-a", "private/concurrent-b"];
+  const otherText = "Concurrent quiet result ".repeat(26000);
+  await Promise.all(otherTopics.map((topic) => call({ action: "publish", topic, message: otherText })));
+  const combined = (await peers[0].listSessions()).find((session) => session.id === id)!;
+  assert.ok(intercomMessageSizeBytes(combined) > MAX_FRAME_SIZE_BYTES, "one publisher's valid registry can span reply frames too");
+  for (const topic of otherTopics) assert.equal(combined.topics.find((update) => update.topic === topic).text, otherText, "concurrent publications must not replace one another's records");
+  const direction = "Ordinary direction ".repeat(15000);
+  await call({ action: "send", to: peers[0].sessionId, message: direction });
+  await waitFor(() => received.includes(direction), "ordinary direct delivery must not carry the publisher's large quiet registry");
+  await publisher.session.reload();
+  assert.match(await publisher.status(), /Connected: Yes/);
+  const restored = (await peers[0].listSessions()).find((session) => session.id === id)!;
+  assert.equal(restored.topics.find((entry) => entry.topic === topic).text, update.text, "native reload preserves the complete published state");
+  for (const topic of otherTopics) assert.equal(restored.topics.find((update) => update.topic === topic).text, otherText);
+  await call({ action: "publish", topic, message: "Small corrected state" });
+  await call({ action: "send", to: peers[0].sessionId, message: "After correction" });
+  await waitFor(() => received.includes("After correction"), "ordinary messaging after correction");
+  assert.deepEqual(publisher.errors, []);
+});
+
+test("native large subscribed topic delivery does not duplicate text or leak its registry into messages", async (t) => {
+  const publisher = await makeSession(t, "large-topic-publisher"), subscriber = await makeSession(t, "large-topic-subscriber");
+  const call = (target, params) => target.session.agent.state.tools.find((tool) => tool.name === "intercom").execute(randomUUID(), params, new AbortController().signal);
+  const topic = "private/large-delivery", message = "Complete quiet result 日本語 ".repeat(18000);
+  assert.ok(Buffer.byteLength(message) > 512 * 1024 && Buffer.byteLength(message) < 800 * 1024);
+  await call(subscriber, { action: "subscribe", topic });
+  const receipt = await call(publisher, { action: "publish", topic, message });
+  assert.equal(receipt.details.receipts.length, 1);
+  assert.equal(receipt.details.receipts[0].accepted, true, "a valid large topic update must reach its subscriber within the existing frame limit");
+  await waitFor(() => subscriber.session.sessionManager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "intercom-topic" && entry.data?.record?.update.text === message), "complete quiet topic delivery");
+  assert.equal(subscriber.faux.state.callCount, 0);
+  assert.equal(subscriber.session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message").length, 0);
+  assert.deepEqual(publisher.errors, []); assert.deepEqual(subscriber.errors, []);
+});
+
+test("native rejected complete topic delivery envelope preserves broker and durable state", async (t) => {
+  const { MAX_FRAME_SIZE_BYTES, intercomMessageSizeBytes } = await import("../../src/pi-intercom/broker/framing.ts");
+  const publisher = await makeSession(t, "topic-envelope-publisher"), subscriber = await makeSession(t, "topic-envelope-subscriber");
+  const call = (target, params) => target.session.agent.state.tools.find((tool) => tool.name === "intercom").execute(randomUUID(), params, new AbortController().signal);
+  const topic = "private/delivery-envelope";
+  publisher.faux.setResponses([fauxAssistantMessage("Persist private native history")]);
+  await publisher.session.prompt("Seed"); await publisher.session.waitForIdle();
+  await call(publisher, { action: "publish", topic, message: "Previous usable publication" });
+  await call(subscriber, { action: "subscribe", topic });
+  const own = (await publisher.sender.listSessions()).find((session) => session.name === "topic-envelope-publisher")!;
+  const { id, topics: _topics, subscriptions: _subscriptions, ...from } = own;
+  const update = { topic, text: "", event: "update", revision: 2, updatedAt: Date.now() };
+  const message = { id: randomUUID(), timestamp: Date.now(), topic: { ...update, text: undefined }, delivery: "queue", queueMode: "replace", threadId: `topic:${topic}`, content: { text: "" } };
+  const emptyDeliverySize = intercomMessageSizeBytes({ type: "message", from: { ...from, id }, message });
+  const emptyRegistrationSize = intercomMessageSizeBytes({ type: "register", session: { ...from, subscriptions: [], topics: [update] }, requestedId: id });
+  const text = "x".repeat(Math.min(MAX_FRAME_SIZE_BYTES - emptyRegistrationSize - 32, MAX_FRAME_SIZE_BYTES - emptyDeliverySize + 64));
+  assert.ok(emptyRegistrationSize + text.length < MAX_FRAME_SIZE_BYTES);
+  assert.ok(emptyDeliverySize + text.length > MAX_FRAME_SIZE_BYTES, "the complete delivery envelope, even without duplicated text, exceeds the frame");
+  let rejection;
+  try { await call(publisher, { action: "publish", topic, message: text }); } catch (error) { rejection = String(error); }
+  assert.ok(rejection, "an undeliverable candidate must be rejected before it is saved");
+  const saved = publisher.session.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "intercom-topic" && entry.data?.published);
+  assert.equal(saved.length, 1, "a hard delivery rejection must not overwrite the prior durable publication");
+  assert.equal((await publisher.sender.listSessions()).find((session) => session.id === id).topics[0].text, "Previous usable publication", "the broker must also retain its prior valid snapshot");
+  await publisher.session.reload();
+  assert.match(await publisher.status(), /Connected: Yes/);
+  const received = once(publisher.sender, "message");
+  await call(publisher, { action: "send", to: publisher.sender.sessionId, message: "Direct messaging still works" });
+  assert.equal((await received)[1].content.text, "Direct messaging still works");
+  await call(publisher, { action: "publish", topic, message: "Small valid correction" });
+  assert.deepEqual(publisher.errors, []);
+});
+
+test("native previously poisoned topic history cannot prevent reconnect or a small correction", async (t) => {
+  const publisher = await makeSession(t, "poisoned-topic-history"), topic = "private/old-poisoned-topic";
+  const call = (params) => publisher.session.agent.state.tools.find((tool) => tool.name === "intercom").execute(randomUUID(), params, new AbortController().signal);
+  publisher.faux.setResponses([fauxAssistantMessage("Persist private native history")]);
+  await publisher.session.prompt("Seed"); await publisher.session.waitForIdle();
+  await call({ action: "publish", topic, message: "Previous valid publication" });
+  // This is the durable entry left by the reproduced pre-fix publish-before-validation failure.
+  publisher.session.sessionManager.appendCustomEntry("intercom-topic", { sessionId: publisher.session.sessionManager.getSessionId(), published: { topic, text: "x".repeat(1024 * 1024), event: "update", revision: 2, updatedAt: Date.now() } });
+  await publisher.session.reload();
+  assert.match(await publisher.status(), /Connected: Yes/, "a saved quiet-state failure must not disable the ordinary connection");
+  const received = once(publisher.sender, "message");
+  await call({ action: "send", to: publisher.sender.sessionId, message: "Ordinary message before correction" });
+  assert.equal((await received)[1].content.text, "Ordinary message before correction");
+  await call({ action: "publish", topic, message: "Small corrected state" });
+  assert.equal((await publisher.sender.listSessions()).find((session) => session.name === "poisoned-topic-history").topics[0].text, "Small corrected state");
+  await publisher.session.reload();
+  assert.match(await publisher.status(), /Connected: Yes/);
+  assert.ok(publisher.session.sessionManager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "intercom-topic" && entry.data?.published?.text.length === 1024 * 1024), "raw native history remains intact");
+  assert.deepEqual(publisher.errors, []);
+});
+
 test("native latest material milestone survives two minutes busy and reload without stale superseded delivery", async (t) => {
   const toolGate = gate(t);
   let toolStarted = false;
