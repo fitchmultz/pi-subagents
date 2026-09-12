@@ -7,6 +7,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { IntercomClient, type SendResult } from "./broker/client.ts";
+import { validateIntercomMessageSize } from "./broker/framing.ts";
 import { isBrokerRunning, spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
@@ -2148,28 +2149,41 @@ Usage:
         const topic = params.topic?.trim();
         if (topic && !isTopicSubscription({ topic, awaitRelease: params.awaitRelease })) return { content: [{ type: "text", text: "Topic must be a plain nonempty label; awaitRelease must be boolean." }], isError: true, details: {} };
         if (action !== "topics" && !topic) return { content: [{ type: "text", text: `${action} requires an exact topic.` }], isError: true, details: {} };
-        if (action === "subscribe") topics.subscribe(topic!, params.awaitRelease);
-        if (action === "unsubscribe") topics.unsubscribe(topic!);
+        const registration = action === "topics" ? undefined : await buildRegistration();
+        if (!getLiveContext(ctx, generation)) return { content: [{ type: "text", text: "Session changed; no topic state saved." }], isError: true, details: {} };
+        const presence = topics.presence();
+        let update: TopicUpdate | undefined;
+        if (action === "subscribe" || action === "unsubscribe") {
+          presence.subscriptions = presence.subscriptions.filter((entry) => entry.topic !== topic);
+          if (action === "subscribe") presence.subscriptions.push({ topic: topic!, ...(params.awaitRelease ? { awaitRelease: true } : {}) });
+        }
         if (action === "publish") {
           const event = params.event ?? (params.ownership === "released" ? "release" : "update");
-          const update: TopicUpdate = { topic: topic!, text: message ?? "", event, resource: params.resource, ownership: params.ownership,
+          update = { topic: topic!, text: message ?? "", event, resource: params.resource, ownership: params.ownership,
             revision: (topics.published.get(topic!)?.revision ?? 0) + 1, updatedAt: Date.now() };
           if (!update.text.trim() || !isTopicUpdate(update) || (event === "release" && (!update.resource || update.ownership !== "released"))) return { content: [{ type: "text", text: "Publish requires self-contained message text; ownership needs resource, and release needs ownership:'released'." }], isError: true, details: {} };
-          topics.publish(update, { id: connectedClient.sessionId!, name: pi.getSessionName() });
-          connectedClient.updatePresence(topics.presence());
-          const sessions = await connectedClient.listSessions();
-          if (!getLiveContext(ctx, generation)) return { content: [{ type: "text", text: "Session changed; no topic messages sent." }], isError: true, details: {} };
+          presence.topics = [...presence.topics.filter((entry) => entry.topic !== topic), update];
+        }
+        if (registration) {
+          const tooLarge = validateIntercomMessageSize({ type: "presence", ...presence })
+            ?? validateIntercomMessageSize({ type: "register", session: { ...registration, ...presence }, requestedId: connectedClient.sessionId });
+          if (tooLarge) throw tooLarge;
+        }
+        if (action === "subscribe") topics.subscribe(topic!, params.awaitRelease);
+        if (action === "unsubscribe") topics.unsubscribe(topic!);
+        if (update) topics.publish(update, { id: connectedClient.sessionId!, name: pi.getSessionName() });
+        connectedClient.updatePresence(presence);
+        const sessions = await connectedClient.listSessions();
+        if (!getLiveContext(ctx, generation)) return { content: [{ type: "text", text: "Session changed; no topic messages sent." }], isError: true, details: {} };
+        if (update) {
           const subscribers = sessions.filter((session) => session.id !== connectedClient.sessionId && session.subscriptions?.some((entry) => entry.topic === topic));
           const receipts = await Promise.all(subscribers.map(async (session) => {
-            const urgent = event === "blocker" || event === "decision" || event === "release" && session.subscriptions?.some((entry) => entry.topic === topic && entry.awaitRelease);
+            const urgent = update.event === "blocker" || update.event === "decision" || update.event === "release" && session.subscriptions?.some((entry) => entry.topic === topic && entry.awaitRelease);
             const receipt = await connectedClient.send(session.id, { text: update.text, topic: update, delivery: urgent ? "steer" : "queue", ...(urgent ? {} : { queueMode: "replace", threadId: `topic:${topic}` }) });
             return { to: session.id, ...receipt };
           }));
           return { content: [{ type: "text", text: `Current state saved for ${topic}. ${receipts.filter((receipt) => receipt.accepted).length}/${receipts.length} subscribed deliveries accepted; this does not confirm reading or action. Routine updates stay outside conversation context.` }], details: { topic, receipts } };
         }
-        connectedClient.updatePresence(topics.presence());
-        const sessions = await connectedClient.listSessions();
-        if (!getLiveContext(ctx, generation)) return { content: [{ type: "text", text: "Session changed." }], isError: true, details: {} };
         topics.refresh(sessions);
         return { content: [{ type: "text", text: `${action === "topics" ? "" : `${action === "subscribe" ? "Subscribed to" : "Unsubscribed from"} ${topic}.\n`}${topics.inspect(topic)}` }], details: { topic } };
       }

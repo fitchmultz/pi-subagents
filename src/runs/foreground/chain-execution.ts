@@ -865,9 +865,11 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				Object.assign(outputs, completion.outputs);
 				prev = completion.previousOutput;
 				workflowComplete = completion.complete;
+				onUpdate?.({ content: [], details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex })) });
 				continue;
 			}
 
+			onUpdate?.({ content: [], details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex })) });
 			const dynamicParallelStep: ParallelStep = {
 				parallel: materialized.parallel,
 				concurrency: step.concurrency,

@@ -1183,6 +1183,88 @@ test("native topics keep routine state out of conversation and interrupt only re
   assert.deepEqual(subscriber.errors, []);
 });
 
+test("native concurrent selected stops survive one runner poll without stopping a third child", async (t) => {
+  const { executeAsyncChain } = await import("../../src/runs/background/async-execution.ts");
+  const { interruptAsyncRun } = await import("../../src/runs/foreground/foreground-control.ts");
+  const { getRunMetadataDir } = await import("../../src/runs/shared/supervisor-questions.ts");
+  const directory = path.join(root, "concurrent-stops"), bin = path.join(directory, "bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${path.join(repo, "test/fixtures/native-feedback-child.mjs")}" "$@"\n`, { mode: 0o700 });
+  const pollRelease = path.join(directory, "poll-release"), childRelease = path.join(directory, "child-release-{index}");
+  const saved = Object.fromEntries(["PATH", "NODE_OPTIONS", "PI_TEST_RUNNER_POLL_RELEASE", "PI_FEEDBACK_RELEASE_FILE", "PI_FEEDBACK_SCENARIO"].map((key) => [key, process.env[key]]));
+  process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
+  process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(path.join(repo, "test/fixtures/hold-runner-polls.mjs")).href}`;
+  process.env.PI_TEST_RUNNER_POLL_RELEASE = pollRelease;
+  process.env.PI_FEEDBACK_RELEASE_FILE = childRelease;
+  process.env.PI_FEEDBACK_SCENARIO = "tool";
+  const id = randomUUID();
+  saveQuestionOwner(id, "concurrent-stop-owner");
+  const started = executeAsyncChain(id, { chain: [{ parallel: [0, 1, 2].map((index) => ({ agent: "worker", task: `Held native child ${index}`, output: false })), concurrency: 3 }], resultMode: "parallel",
+    agents: [makeAgent("worker", { model: "feedback-fixture/faux-1", output: false, extensions: [], completionGuard: false })],
+    ctx: { pi: { events: createEventBus() }, cwd: directory, currentSessionId: "concurrent-stop-owner" }, cwd: directory,
+    sessionRoot: path.join(directory, "sessions"), sessionFilesByFlatIndex: [0, 1, 2].map((index) => path.join(directory, "sessions", `${index}.jsonl`)), shareEnabled: false, maxSubagentDepth: 1 });
+  assert.equal(started.isError, undefined, JSON.stringify(started));
+  const statusPath = path.join(started.details.asyncDir!, "status.json"), resultPath = path.join(getRunMetadataDir(id), "result.json");
+  const status = () => existsSync(statusPath) ? JSON.parse(readFileSync(statusPath, "utf8")) : undefined;
+  t.after(async () => {
+    writeFileSync(pollRelease, "released");
+    for (const index of [0, 1, 2]) writeFileSync(childRelease.replace("{index}", String(index)), "released");
+    await waitFor(() => existsSync(resultPath), "all selected-stop fixture children settle");
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  });
+  await waitFor(() => status()?.steps?.length === 3 && status().steps.every((step) => step.currentTool === "bash"), "three real native tools before the first control poll");
+  await waitFor(() => existsSync(`${pollRelease}.held`), "the private runner's poll clock is held");
+  assert.equal(existsSync(pollRelease), false);
+  const state = { asyncJobs: new Map([[id, { asyncId: id, asyncDir: started.details.asyncDir!, status: "running" }]]) };
+  const receipts = [interruptAsyncRun(state, id, 0), interruptAsyncRun(state, id, 1)];
+  assert.ok(receipts.every((receipt) => receipt && !receipt.isError));
+  writeFileSync(pollRelease, "released");
+  await waitFor(() => status().steps[1].status === "paused", "second selected child pauses");
+  await sleep(200);
+  const observed = status().steps.map((step) => ({ status: step.status, currentTool: step.currentTool, agentProcessExit: step.agentProcessExit }));
+  writeFileSync(path.join(directory, "observation.json"), JSON.stringify({ receipts, observed }, null, 2));
+  t.diagnostic(JSON.stringify({ observed }));
+  assert.deepEqual(observed.map((step) => step.status), ["paused", "paused", "running"], "both accepted selected stops must execute; an unrelated native child keeps working");
+  assert.ok(observed[0].agentProcessExit?.at && observed[1].agentProcessExit?.at, "paused agent processes have actual exit evidence");
+  assert.equal(observed[2].currentTool, "bash");
+  assert.equal(observed[2].agentProcessExit, undefined);
+  writeFileSync(childRelease.replace("{index}", "2"), "released");
+  await waitFor(() => existsSync(resultPath), "unselected child finishes normally");
+  assert.deepEqual(status().steps.map((step) => step.status), ["paused", "paused", "complete"]);
+  const receipt = JSON.parse(readFileSync(`${childRelease.replace("{index}", "2")}.json`, "utf8"));
+  assert.equal(receipt.networkRequests, 0); assert.deepEqual(receipt.errors, []);
+});
+
+for (const boundary of ["presence", "registration"] as const) test(`native rejected topic ${boundary} snapshot preserves prior publication through reload and direct messaging`, async (t) => {
+  const { MAX_FRAME_SIZE_BYTES, intercomMessageSizeBytes } = await import("../../src/pi-intercom/broker/framing.ts");
+  const publisher = await makeSession(t, `topic-size-${boundary}`), topic = `private/size-${boundary}`;
+  const call = (params) => publisher.session.agent.state.tools.find((tool) => tool.name === "intercom").execute(randomUUID(), params, new AbortController().signal);
+  publisher.faux.setResponses([fauxAssistantMessage("Persist native history"), fauxAssistantMessage("Direct message after rejection was read")]);
+  await publisher.session.prompt("Seed private session"); await publisher.session.waitForIdle();
+  await call({ action: "publish", topic, message: "Previous valid publication" });
+  const emptyUpdate = { topic, text: "", event: "update", revision: 2, updatedAt: Date.now() };
+  const length = boundary === "presence" ? MAX_FRAME_SIZE_BYTES : MAX_FRAME_SIZE_BYTES - intercomMessageSizeBytes({ type: "presence", subscriptions: [], topics: [emptyUpdate] });
+  const message = "x".repeat(length);
+  if (boundary === "registration") assert.equal(intercomMessageSizeBytes({ type: "presence", subscriptions: [], topics: [{ ...emptyUpdate, text: message }] }), MAX_FRAME_SIZE_BYTES, "the candidate fits the presence frame but must also fit registration");
+  let rejected: string | undefined;
+  try { await call({ action: "publish", topic, message }); } catch (error) { rejected = String(error); }
+  const publications = publisher.session.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "intercom-topic" && entry.data?.published).map((entry) => entry.data.published);
+  await publisher.session.reload();
+  let reconnected: string;
+  try { reconnected = await publisher.status(); } catch (error) { reconnected = String(error); }
+  t.diagnostic(JSON.stringify({ boundary, rejected, publishedTextLengths: publications.map((entry) => entry.text.length), reconnected }));
+  assert.ok(rejected, "oversized transported state must be rejected");
+  assert.equal(publications.length, 1, "a rejected snapshot must change neither publication state nor native durable history");
+  assert.equal(publications[0].text, "Previous valid publication");
+  assert.doesNotMatch(reconnected, /not connected|too large|disconnected/i);
+  await publisher.send(`after-size-${boundary}`, { text: "A normal direct message still works", delivery: "steer" });
+  await waitFor(() => publisher.visible(`after-size-${boundary}`).length === 1 && publisher.session.isIdle, "ordinary native direct delivery after rejected publication and reload");
+  assert.match(JSON.stringify(await call({ action: "topics", topic })), /Previous valid publication/);
+  await call({ action: "publish", topic, message: "Small corrected publication" });
+  assert.match(JSON.stringify(await call({ action: "topics", topic })), /Small corrected publication/);
+  assert.deepEqual(publisher.errors, []);
+});
+
 test("native latest material milestone survives two minutes busy and reload without stale superseded delivery", async (t) => {
   const toolGate = gate(t);
   let toolStarted = false;

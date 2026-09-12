@@ -33,8 +33,9 @@ import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.t
 import { queryLiveIntercomHealth, queryLiveIntercomStatus } from "../../intercom/live-intercom.ts";
 import { saveQuestionOwner } from "../shared/supervisor-questions.ts";
 import { workflowChildSucceeded } from "../shared/workflow-policy.ts";
+import { buildWorkflowGraphSnapshot, workflowAgentNodes } from "../shared/workflow-graph.ts";
 import { acceptanceHumanAction } from "../shared/acceptance.ts";
-import { ownedRunList, ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun, saveForegroundRun } from "../shared/run-records.ts";
+import { ownedRunList, ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun, saveForegroundRun, workflowChildren } from "../shared/run-records.ts";
 import { cancelSupervisorInput, controlSupervisorQuestion, projectSupervisorQuestions } from "./question-control.ts";
 import {
 	type AgentScope,
@@ -463,17 +464,19 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const childSessionFileForAgentIndex = (agentName: string | undefined, idx?: number) =>
 			forkSessionFileForAgentIndex(agentName, idx) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
 
-		const onUpdateWithContext = onUpdate || ctx.mode === "tui"
-			? (r: SubagentExecutionResult) => {
-				const control = deps.state.foregroundControls.get(runId);
-				if (control) {
-					const firstProgress = !control.progress?.length;
-					control.progress = [...new Map([...(control.progress ?? []), ...(r.details.progress ?? [])].map((progress) => [progress.index, progress])).values()];
-					if (firstProgress) deps.state.onRunsChanged?.();
-				}
-				onUpdate?.(withForkContext(r, invocationContext));
+		const workflowGraph = effectiveParams.chain ? buildWorkflowGraphSnapshot({ runId, steps: effectiveParams.chain }) : undefined;
+		const assignmentNodes = workflowGraph && workflowAgentNodes(workflowGraph);
+		const onUpdateWithContext = (r: SubagentExecutionResult) => {
+			const owned = deps.state.ownedRuns?.get(runId);
+			if (owned && r.details.workflowGraph) rememberOwnedRun(deps.state, { ...owned, children: workflowChildren(owned.children, r.details.workflowGraph) });
+			const control = deps.state.foregroundControls.get(runId);
+			if (control) {
+				const firstProgress = !control.progress?.length;
+				control.progress = [...new Map([...(control.progress ?? []), ...(r.details.progress ?? [])].map((progress) => [progress.index, progress])).values()];
+				if (firstProgress) deps.state.onRunsChanged?.();
 			}
-			: undefined;
+			onUpdate?.(withForkContext(r, invocationContext));
+		};
 		const assignments = effectiveParams.tasks ?? effectiveParams.chain?.flatMap((step) =>
 			isParallelStep(step) ? step.parallel : isDynamicParallelStep(step) ? [step.parallel] : [step])
 			?? [{ agent: effectiveParams.agent!, task: effectiveParams.task, label: effectiveParams.label }];
@@ -483,7 +486,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			runId, ownerSessionId: ctx.sessionManager.getSessionId(), rootRunId: runId,
 			source: effectiveAsync ? "async" : "foreground", mode: hasChain ? "chain" : hasTasks ? "parallel" : "single",
 			cwd: effectiveCwd, task: effectiveParams.task ?? effectiveParams.tasks?.map((task) => task.task).join("\n") ?? "Delegated workflow",
-			startedAt: Date.now(), children: assignments.map(({ agent, task, label }, index) => ({ agent, index, task, label })),
+			startedAt: Date.now(), children: assignments.map(({ agent, task, label }, index) => ({ agent, index, task, label, ...(assignmentNodes?.[index] ? { workflowNodeId: assignmentNodes[index]!.id } : {}) })),
 		});
 		const execData: ExecutionContextData = {
 			params: effectiveParams,

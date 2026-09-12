@@ -35,7 +35,8 @@ export interface AgentVisit {
 	draft: string;
 	quote?: Quote;
 	anchor?: Anchor;
-	readThrough?: string;
+	/** null records a visit before the first saved history entry. */
+	readThrough?: string | null;
 	seenActivityAt?: number;
 	outbox: OutgoingMessage[];
 	lastSentId?: string;
@@ -176,9 +177,12 @@ export class AgentViewController {
 		return visit;
 	}
 
-	private taskKey(run: OwnedRun, index: number): string {
+	private taskKey(run: OwnedRun, child: Pick<OwnedRun["children"][number], "index" | "workflowNodeId">): string {
 		const predecessor = run.predecessorRunId && this.state.ownedRuns?.get(run.predecessorRunId);
-		return predecessor ? this.taskKey(predecessor, run.predecessorIndex ?? 0) : `${run.runId}:${index}`;
+		if (!predecessor) return `${run.runId}:${child.workflowNodeId ?? child.index}`;
+		const index = run.predecessorIndex ?? 0;
+		const previous = (this.views.get(predecessor.runId)?.view ?? ownedRunView(predecessor, this.state)).children.find((candidate) => candidate.index === index);
+		return this.taskKey(predecessor, previous ?? { index });
 	}
 
 	refresh(force = false): void {
@@ -199,7 +203,7 @@ export class AgentViewController {
 					diagnosis: `Run details unavailable: ${error instanceof Error ? error.message : String(error)}` };
 			}
 			for (const child of view.children) {
-				const key = this.taskKey(run, child.index);
+				const key = this.taskKey(run, child);
 				const prior = tasks.get(key);
 				if (prior && prior.run.startedAt > run.startedAt) continue;
 				const visit = this.visits.get(key);
@@ -216,7 +220,7 @@ export class AgentViewController {
 				}
 				tasks.set(key, { key, label: prior?.label ?? agentTaskLabel(child), run: view, child, history: history.items, unavailable: history.unavailable ?? view.diagnosis,
 					question: questions.findLast((question) => question.index === child.index && (question.state === "awaiting_input" || question.state === "answer_pending")),
-					unread: Boolean(visit && ((visit.readThrough && readIndex < history.items.length - 1) || (child.activity?.lastActivityAt ?? 0) > (visit.seenActivityAt ?? 0))),
+					unread: Boolean(visit && ((visit.readThrough !== undefined && readIndex < history.items.length - 1) || (child.activity?.lastActivityAt ?? 0) > (visit.seenActivityAt ?? 0))),
 					replied: lastSent >= 0 && history.items.slice(lastSent + 1).some((item) => item.kind === "assistant") });
 			}
 		}
@@ -478,7 +482,7 @@ export class AgentConversation extends Container {
 			if (this.initialPosition) {
 				this.initialPosition = false;
 				const readIndex = this.contentItems.findIndex((item) => item.id === this.visit.readThrough);
-				const unread = readIndex >= 0 ? this.contentItems[readIndex + 1] : undefined;
+				const unread = this.visit.readThrough === null ? this.task?.history[0] : readIndex >= 0 ? this.contentItems[readIndex + 1] : undefined;
 				this.restoreAnchor = unread ? { id: unread.id, line: 0 } : this.visit.anchor;
 			}
 			if (this.restoreAnchor) {
@@ -493,6 +497,7 @@ export class AgentConversation extends Container {
 				const history = this.task?.history ?? [];
 				const last = this.lines.findLast((line) => line.end <= this.scroll.scrollTop + this.height && history.some((item) => item.id === line.id));
 				if (last && history.findIndex((item) => item.id === last.id) > history.findIndex((item) => item.id === this.visit.readThrough)) this.visit.readThrough = last.id;
+				this.visit.readThrough ??= null;
 				if (this.scroll.isFollowingEnd) this.visit.seenActivityAt = this.task?.child.activity?.lastActivityAt ?? Date.now();
 			}
 			return visible;

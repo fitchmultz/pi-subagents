@@ -14,10 +14,11 @@ import { readAsyncResultFile } from "../background/async-result-file.ts";
 import { applyThinkingSuffix } from "./pi-args.ts";
 import { acceptanceHumanAction } from "./acceptance-evaluation.ts";
 import { sumAttemptUsage } from "./model-fallback.ts";
+import { workflowAgentNodes } from "./workflow-graph.ts";
 import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
 import { getRunMetadataDir, listRunQuestions, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionContract, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
-import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, type AsyncResultChild, type AsyncResultFile, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type RunSyncOptions, type SingleResult, type SubagentExecutionResult, type SubagentState } from "../../shared/types.ts";
+import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, type AsyncResultChild, type AsyncResultFile, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type RunSyncOptions, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
 
 export const OWNED_RUN_ENTRY = "subagent-run";
 
@@ -119,6 +120,15 @@ function recoverAsyncResult(status: AsyncStatus, asyncDir: string): AsyncResultF
 	};
 }
 
+export function workflowChildren(children: OwnedRun["children"], graph: WorkflowGraphSnapshot | undefined): OwnedRun["children"] {
+	if (!graph || !children.some((child) => child.workflowNodeId)) return children;
+	return workflowAgentNodes(graph).map((node, index) => {
+		const declared = children.find((child) => child.workflowNodeId === node.id);
+		return { ...declared, index, workflowNodeId: node.id, agent: node.agent ?? declared?.agent ?? "unknown",
+			...(node.itemKey !== undefined ? { label: node.label } : {}) };
+	});
+}
+
 export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext): void {
 	const ownerSessionId = ctx.sessionManager.getSessionId();
 	const entries = ctx.sessionManager.getEntries();
@@ -170,12 +180,13 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext): v
 			if (!status || status.sessionId !== resolveCurrentSessionId(ctx.sessionManager)) continue;
 			saveRunStatus(status.runId, status);
 			const old = state.ownedRuns.get(status.runId);
+			const children = workflowChildren(old?.children ?? [], status.workflowGraph);
 			rememberOwnedRun(state, {
 				...old, runId: status.runId, ownerSessionId, rootRunId: old?.rootRunId ?? status.runId,
 				source: "async", mode: status.mode, cwd: status.cwd ?? old?.cwd ?? ctx.cwd,
 				task: old?.task ?? "Recovered background run", startedAt: status.startedAt,
 				asyncDir, pid: status.pid, legacy: old?.legacy ?? true,
-				children: (status.steps ?? []).map((step, index) => ({ ...old?.children.find((child) => child.index === index), agent: step.agent, index, label: step.label ?? old?.children[index]?.label, sessionFile: step.sessionFile ?? (status.steps?.length === 1 ? status.sessionFile : undefined) })),
+				children: (status.steps ?? []).map((step, index) => ({ ...children.find((child) => child.index === index), agent: step.agent, index, label: step.label ?? children[index]?.label, sessionFile: step.sessionFile ?? (status.steps?.length === 1 ? status.sessionFile : undefined) })),
 			});
 			const resultPath = path.join(RESULTS_DIR, `${status.runId}.json`);
 			if (!fs.existsSync(path.join(getRunMetadataDir(status.runId), "result.json"))) {
@@ -228,6 +239,7 @@ function runAttention(run: OwnedRun, executionState: ManagementRunState, pending
 }
 
 export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pendingInput?: boolean; includeContinuations?: boolean } = {}): OwnedRunView {
+	run = state.ownedRuns?.get(run.runId) ?? run;
 	const root = getRunMetadataDir(run.runId);
 	const foreground = readRunJson<ForegroundResumeRun>(path.join(root, "foreground.json")) ?? state.foregroundRuns?.get(run.runId);
 	const resultPath = path.join(root, "result.json");
@@ -242,17 +254,18 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 		const contract = readQuestionContract(run.runId, index);
 		if (contract) contracts.set(index, contract);
 	}
+	const control = state.foregroundControls.get(run.runId);
+	const declarations = workflowChildren(run.children, status?.workflowGraph);
 	// Terminal snapshots contain materialized children; declared slots can include an empty fanout or unstarted downstream steps.
 	const terminalIndices = result?.results?.map((_, index) => index) ?? foreground?.children.map((child) => child.index);
-	const indices = new Set(terminalIndices ?? [...run.children.map((child) => child.index), ...contracts.keys(), ...(status?.steps?.map((_, index) => index) ?? [])]);
+	const indices = new Set(terminalIndices ?? [...declarations.map((child) => child.index), ...contracts.keys(), ...(status?.steps?.map((_, index) => index) ?? [])]);
 	const children: OwnedRunView["children"] = [...indices].sort((a, b) => a - b).map((index) => {
-		const declared = run.children.find((child) => child.index === index);
+		const declared = declarations.find((child) => child.index === index);
 		const contract = contracts.get(index);
 		const fg = foreground?.children.find((child) => child.index === index);
 		const bg = result?.results?.[index];
 		const step = status?.steps?.[index];
 		const sessionFile = fg?.sessionFile ?? bg?.sessionFile ?? step?.sessionFile ?? contract?.sessionFile ?? declared?.sessionFile;
-		const control = state.foregroundControls.get(run.runId);
 		const live = control?.activeChildren?.has(index) || (control?.currentAgent !== undefined && control.currentAgent === (declared?.agent ?? fg?.agent) && (control.currentIndex ?? 0) === index) || processAlive(contract?.pid) || ((!step || step.status === "running" || step.status === "pending") && processAlive(status?.pid ?? run.pid));
 		const pending = !fg && !bg && !contract?.pid && !contract?.result && (Boolean(control) && !live || step?.status === "pending" && processAlive(status?.pid ?? run.pid));
 		const childState = bg ? normalizedState(resolveSubagentResultStatus({ success: bg.success, exitCode: bg.exitCode ?? undefined, interrupted: bg.interrupted, acceptance: bg.acceptance, state: typeof bg.success !== "boolean" && bg.exitCode == null ? result?.terminalState : undefined }))
@@ -262,7 +275,7 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 			: step && !["running", "pending"].includes(step.status) ? normalizedState(step.status) : "unknown";
 		const task = contract?.task ?? declared?.task ?? fg?.result?.task ?? (run.children.length === 1 ? run.task : undefined);
 		return {
-			agent: fg?.agent ?? bg?.agent ?? step?.agent ?? contract?.launch?.agent.name ?? declared?.agent ?? "unknown", index, sessionFile,
+			agent: fg?.agent ?? bg?.agent ?? step?.agent ?? contract?.launch?.agent.name ?? declared?.agent ?? "unknown", index, workflowNodeId: declared?.workflowNodeId, sessionFile,
 			task, label: contract?.label ?? step?.label ?? declared?.label,
 			activity: childState === "live" ? control?.progress?.find((progress) => progress.index === index) ?? (pending ? { status: "pending" as const } : step) : undefined,
 			state: childState, result: fg?.status !== "detached" && fg?.result ? fg.result : bg ? asyncChildResult(bg, task ?? "Original child assignment unavailable") : contract?.result ?? fg?.result,

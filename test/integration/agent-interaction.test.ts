@@ -18,9 +18,11 @@ process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
 const sdkRoot = process.env.PI_OWNERSHIP_TEST_PACKAGE_ROOT ?? path.dirname(path.dirname(new URL(import.meta.resolve("@earendil-works/pi-coding-agent")).pathname));
 const { SessionManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/session-manager.js")).href);
 const { AgentViewController, AgentConversation } = await import("../../src/tui/agent-view.ts");
-const { restoreOwnedRuns, saveForegroundRun, OWNED_RUN_ENTRY } = await import("../../src/runs/shared/run-records.ts");
+const { restoreOwnedRuns, ownedRunView, saveForegroundRun, OWNED_RUN_ENTRY } = await import("../../src/runs/shared/run-records.ts");
 const { getRunMetadataDir, readQuestionState, saveQuestionOwner, saveQuestionContract } = await import("../../src/runs/shared/supervisor-questions.ts");
 const { createSubagentExecutor } = await import("../../src/runs/foreground/subagent-executor.ts");
+const { createAsyncJobTracker } = await import("../../src/runs/background/async-job-tracker.ts");
+const { ASYNC_DIR } = await import("../../src/shared/types.ts");
 initTheme("dark", false);
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 }, turns: 0 };
 function assistant(manager, text: string) { return manager.appendMessage({ role: "assistant", content: [{ type: "text", text }], provider: "fixture", model: "fixture", api: "openai-responses", stopReason: "stop", usage, timestamp: Date.now() }); }
@@ -78,11 +80,14 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1) {
 		}); },
 	} };
 	state.lastUiContext = ctx;
-	const executor = createSubagentExecutor({ pi, state, config: {}, asyncByDefault: true, tempArtifactsDir: cwd, getSubagentSessionRoot: () => cwd, expandTilde: (value) => value, discoverAgents: () => ({ agents: [makeAgent("worker", { completionGuard: false })] }) });
+	const tracker = createAsyncJobTracker(pi, state, ASYNC_DIR);
+	pi.events.on("subagent:async-started", tracker.handleStarted);
+	const executor = createSubagentExecutor({ pi, state, config: {}, asyncByDefault: true, tempArtifactsDir: cwd, getSubagentSessionRoot: () => cwd, expandTilde: (value) => value, discoverAgents: () => ({ agents: ["worker", "reviewer"].map((name) => makeAgent(name, { completionGuard: false })) }) });
 	const controller = new AgentViewController(pi, state, async (params, context) => { calls.push(params); return executor.execute(randomUUID(), params, undefined, undefined, context); });
 	state.onRunsChanged = () => controller.refresh(true);
+	state.persistOwnedRun = (owned) => parent.appendCustomEntry(OWNED_RUN_ENTRY, structuredClone(owned));
 	controller.start(ctx);
-	t.after(() => { controller.dispose(); tui.stop(); });
+	t.after(() => { controller.dispose(); tui.stop(); if (state.poller) clearInterval(state.poller); for (const timer of state.cleanupTimers.values()) clearTimeout(timer); });
 	return { cwd, parent, run, state, childSessions, interrupts, controller, executor, ctx, pi, tui, terminal, mainEditor, sent, calls, commands,
 		get overlay() { return overlay; }, get strip() { return strip; }, key: `${run.runId}:0`,
 		complete() { state.foregroundControls.clear(); saveForegroundRun({ ...run, results: run.children.map((child) => ({ agent: child.agent, task: child.task!, exitCode: 0, finalOutput: "Finished", sessionFile: child.sessionFile, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } })) }); controller.refresh(true); },
@@ -240,11 +245,22 @@ test("the first native streaming response is readable before its session file ex
 	const opening = f.controller.open(task.key);
 	assert.match(plain(f.overlay), /First live text/);
 	assert.doesNotMatch(plain(f.overlay), /Conversation unavailable|Saved conversation unavailable|ENOENT/);
+	f.overlay.handleInput("Draft for after the first response");
+	f.overlay.handleInput("\x1bp");
 	f.overlay.handleInput("\x1b"); await opening;
 	fs.writeFileSync(release, "released");
-	await pending; f.controller.refresh(true);
-	assert.equal(f.controller.tasks[0]!.unavailable, undefined);
-	assert.match(f.controller.tasks[0]!.history.map((item) => item.text).join("\n"), /Second live text block continues/);
+	await pending;
+	const completed = SessionManager.open(task.child.sessionFile!);
+	for (let index = 0; index < 30; index++) assistant(completed, `Later response ${index}\n${"Later detail ".repeat(15)}`);
+	f.controller.start(f.ctx);
+	assert.equal(f.controller.task(task.key)!.unavailable, undefined);
+	assert.equal(f.controller.task(task.key)!.unread, true, "visiting before native message_end must retain the before-first-saved-entry boundary after completion and reload");
+	assert.match(plain(f.strip), /new/);
+	assert.equal(f.controller.pinned, task.key);
+	const reopen = f.controller.open(task.key);
+	assert.match(plain(f.overlay), /Second live text block continues before message end\./, "reopening must show the first finished reply, not the tail of later history");
+	assert.equal(f.overlay.editor.getText(), "Draft for after the first response");
+	f.overlay.handleInput("\x1b"); await reopen;
 	fs.renameSync(task.child.sessionFile!, `${task.child.sessionFile}.removed`); f.controller.refresh(true);
 	assert.match(f.controller.tasks[0]!.unavailable!, /Saved conversation unavailable/, "a missing completed history remains an honest error");
 });
@@ -352,6 +368,72 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 	assert.equal(view.editor.getText(), "Keep this draft for B");
 	assert.doesNotMatch(plain(view), /waiting to start/i);
 	view.handleInput("\x1b"); await opening;
+});
+
+for (const background of [false, true]) test(`${background ? "background" : "foreground"} dynamic expansion preserves a later assignment's open view, draft, pin and controls`, async (t) => {
+	const f = fixture(t), mock = createMockPi(); mock.install();
+	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
+	const discover = path.join(f.cwd, "discover-release"), reviews = path.join(f.cwd, "reviews-release"), final = path.join(f.cwd, "final-release");
+	mock.onCall({ matchArgsIncludes: "Discover two targets", waitForFile: discover, structuredOutput: { items: [{ name: "alpha" }, { name: "beta" }] }, output: "Targets ready" });
+	mock.onCall({ matchArgsIncludes: "Review alpha", waitForFile: reviews, output: "Alpha review complete" });
+	mock.onCall({ matchArgsIncludes: "Review beta", waitForFile: reviews, output: "Beta review complete" });
+	mock.onCall({ matchArgsIncludes: "Finalize from", waitForFile: final, output: "Finalized" });
+	const pending = f.executor.execute("dynamic-view", { chain: [
+		{ agent: "worker", task: "Discover two targets", label: "Discover files", as: "targets", output: false, outputSchema: { type: "object", properties: { items: { type: "array", items: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } } }, required: ["items"] } },
+		{ expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/name", maxItems: 2 }, parallel: { agent: "reviewer", task: "Review {target.name}", label: "Review {target.name}", output: false }, collect: { as: "reviews" } },
+		{ agent: "worker", task: "Finalize from {outputs.reviews}", label: "Finalize", output: false },
+	], async: background, artifacts: false }, undefined, undefined, f.ctx);
+	let runId: string | undefined;
+	t.after(async () => {
+		for (const gate of [discover, reviews, final]) fs.writeFileSync(gate, "released");
+		await pending;
+		if (background && runId) await until(() => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "dynamic runner cleanup");
+		if (process.env.PI_AGENT_VIEW_EVIDENCE_DIR) fs.cpSync(mock.dir, path.join(f.cwd, "mock-receipts"), { recursive: true });
+		mock.uninstall();
+	});
+	await until(() => mock.callCount() === 1, "discovery starts before materialization");
+	f.controller.refresh(true);
+	const later = f.controller.tasks.find((task) => task.label === "Finalize")!;
+	assert.ok(later, "later pending assignments must remain visible");
+	runId = later.run.runId;
+	const opening = f.controller.open(later.key), view = f.overlay;
+	view.handleInput("Directions intended only for Finalize"); view.handleInput("\x1bp");
+	const deliveries = [];
+	f.pi.events.on("subagent:live-intercom", (payload) => { deliveries.push(payload); f.pi.events.emit("subagent:live-intercom-delivery", { requestId: payload.requestId, accepted: true, delivered: true, messageId: payload.messageId }); });
+	fs.writeFileSync(discover, "released");
+	await until(() => mock.callCount() === 3, "both materialized reviewers start");
+	f.controller.refresh(true);
+	await f.controller.send(later.key, view.editor.getText());
+	await f.controller.stop(later.key);
+	t.diagnostic(JSON.stringify({ phase: "expanded", background, key: later.key, task: f.controller.task(later.key)?.child.task, labels: f.controller.tasks.map((task) => task.label), deliveries: deliveries.map((payload) => payload.to), controls: f.calls }));
+	assert.equal(deliveries.length, 0, "a later-step draft must not be sent to a materialized reviewer");
+	assert.equal(f.calls.length, 0, "a later pending view must not stop an expanded reviewer");
+	assert.equal(f.controller.task(later.key)!.child.activity?.status, "pending");
+	assert.match(plain(view), /Agents › Finalize/);
+	assert.deepEqual(f.controller.tasks.filter((task) => task.child.agent === "reviewer").map((task) => task.label).sort(), ["Review alpha", "Review beta"]);
+	view.handleInput("\x1b"); await opening;
+	restoreOwnedRuns(f.state, f.ctx); f.controller.start(f.ctx);
+	assert.equal(f.controller.pinned, later.key);
+	assert.equal(f.controller.visit(later.key).draft, "Directions intended only for Finalize");
+	fs.writeFileSync(reviews, "released");
+	await until(() => mock.callCount() === 4, "original final assignment starts normally");
+	f.controller.refresh(true);
+	const active = f.controller.task(later.key)!;
+	assert.equal(active.child.agent, "worker"); assert.match(active.child.task!, /^Finalize from/);
+	await f.controller.send(later.key, f.controller.visit(later.key).draft);
+	assert.equal(deliveries.length, 1);
+	assert.equal(deliveries[0].human.index, active.child.index);
+	assert.equal(deliveries[0].human.runId, runId);
+	assert.equal(deliveries[0].to, `subagent-worker-${runId}-${active.child.index + 1}`);
+	await f.controller.stop(later.key);
+	assert.deepEqual(f.calls, [{ action: "interrupt", id: runId, index: active.child.index }]);
+	await pending;
+	if (background) await until(() => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "selected final child stops");
+	restoreOwnedRuns(f.state, f.ctx); f.controller.start(f.ctx);
+	assert.equal(f.controller.task(later.key)!.child.state, "paused");
+	assert.equal(f.controller.visit(later.key).draft, "Directions intended only for Finalize");
+	assert.equal(f.controller.pinned, later.key);
+	assert.deepEqual(ownedRunView(f.state.ownedRuns!.get(runId!)!, f.state).children.map((child) => [child.label, child.state]), [["Discover files", "completed"], ["Review alpha", "completed"], ["Review beta", "completed"], ["Finalize", "paused"]]);
 });
 
 test("native history reflow preserves the same reading message and draft across terminal widths", async (t) => {

@@ -1,6 +1,13 @@
 import { isDynamicParallelStep, isParallelStep, type ChainStep, type SequentialStep } from "../../shared/settings.ts";
 import type { SingleResult, SubagentRunMode, WorkflowGraphNode, WorkflowGraphSnapshot, WorkflowNodeStatus } from "../../shared/types.ts";
 
+/** Pending fanouts keep their own slot until their actual children are known. */
+export function workflowAgentNodes(graph: WorkflowGraphSnapshot): WorkflowGraphNode[] {
+	return graph.nodes.flatMap((node) => node.children?.length ? node.children
+		: node.kind === "dynamic-parallel-group" && node.status !== "completed" && node.status !== "complete" ? [node]
+		: node.children ?? [node]);
+}
+
 export interface WorkflowGraphBuildInput {
 	runId: string;
 	mode?: SubagentRunMode;

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Message } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import { readAsyncControlRequests } from "./async-control.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
 import { PI_CODING_AGENT_PACKAGE, getPiSpawnCommand, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
 import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, findDuplicateOutputPath, formatConsumedOutputReference, formatSavedOutputReference, injectSingleOutputInstruction, resolveSingleOutput } from "../shared/single-output.ts";
@@ -161,7 +162,6 @@ interface StepResult {
 }
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = "SIGUSR2";
-const ASYNC_CONTROL_REQUEST_FILE = "control-request.json";
 
 function formatProcessExitFailure(input: { agent: string; exitCode: number | null; durationMs?: number }): string {
 	const duration = input.durationMs !== undefined ? ` after ${input.durationMs}ms` : "";
@@ -1128,6 +1128,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const statusPayload: RunnerStatusPayload = {
 		runId: id,
 		indexedControl: true,
+		controlRequestFiles: true,
 		...(config.sessionId ? { sessionId: config.sessionId } : {}),
 		mode: config.resultMode ?? (flatSteps.length > 1 ? "chain" : "single"),
 		state: "running",
@@ -1461,26 +1462,11 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		for (const interrupt of activeChildInterrupts.values()) interrupt();
 	};
 	process.on(ASYNC_INTERRUPT_SIGNAL, interruptRunner);
-	const controlRequestPath = path.join(asyncDir, ASYNC_CONTROL_REQUEST_FILE);
-	let lastControlRequestId: string | undefined;
 	controlRequestTimer = setInterval(() => {
-		let request: { requestId?: unknown; runId?: unknown; action?: unknown; index?: unknown };
-		try {
-			if (!fs.existsSync(controlRequestPath)) return;
-			if (fs.statSync(controlRequestPath).size > 64 * 1024) throw new Error("control request exceeds 64 KiB");
-			request = JSON.parse(fs.readFileSync(controlRequestPath, "utf-8")) as typeof request;
-			fs.rmSync(controlRequestPath, { force: true });
-		} catch (error) {
-			console.error(`Failed to read async control request '${controlRequestPath}':`, error);
-			try { fs.rmSync(controlRequestPath, { force: true }); } catch {}
-			return;
-		}
-		if ((request.action !== "interrupt" && request.action !== "cancel") || request.runId !== id || typeof request.requestId !== "string" || !request.requestId || request.requestId === lastControlRequestId) return;
-		lastControlRequestId = request.requestId;
-		if (request.action === "cancel") cancellation.abort();
-		else if (request.index === undefined) interruptRunner();
-		else if (typeof request.index === "number" && Number.isSafeInteger(request.index) && request.index >= 0) {
-			activeChildInterrupts.get(request.index)?.();
+		for (const request of readAsyncControlRequests(asyncDir, id)) {
+			if (request.action === "cancel") cancellation.abort();
+			else if (request.index === undefined) interruptRunner();
+			else activeChildInterrupts.get(request.index)?.();
 		}
 	}, 100);
 	controlRequestTimer.unref?.();

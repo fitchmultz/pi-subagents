@@ -489,7 +489,7 @@ export interface OwnedRun {
 	predecessorIndex?: number;
 	asyncDir?: string;
 	pid?: number;
-	children: Array<{ agent: string; index: number; task?: string; label?: string; sessionFile?: string }>;
+	children: Array<{ agent: string; index: number; workflowNodeId?: string; task?: string; label?: string; sessionFile?: string }>;
 	review?: ParentRunReview;
 	delivery?: { notifiedAt: number; intercomDelivered: boolean };
 	legacy?: boolean;
@@ -740,6 +740,7 @@ export interface AsyncStartedEvent {
 export interface AsyncStatus {
 	runId: string;
 	indexedControl?: boolean;
+	controlRequestFiles?: boolean;
 	sessionId?: string;
 	mode: SubagentRunMode;
 	state: "queued" | "running" | "complete" | "failed" | "blocked" | "paused";

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import { writeAsyncInterruptRequest } from "../background/async-control.ts";
 import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readNativeSessionConfiguration, readQuestionContract, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -61,7 +61,7 @@ import {
 	type SubagentParamsLike,
 } from "./subagent-params.ts";
 
-const ASYNC_CONTROL_REQUEST_FILE = "control-request.json";
+export { writeAsyncInterruptRequest } from "../background/async-control.ts";
 export const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
 
 export function resolveRequestedCwd(runtimeCwd: string, requestedCwd: string | undefined): string {
@@ -387,16 +387,6 @@ function emitControlNotification(input: {
 			message: formatControlIntercomMessage(input.event, childIntercomTarget, input.childSafe),
 		});
 	}
-}
-
-export function writeAsyncInterruptRequest(asyncDir: string, runId: string, index?: number): void {
-	writeAtomicJson(path.join(asyncDir, ASYNC_CONTROL_REQUEST_FILE), {
-		requestId: randomUUID(),
-		runId,
-		action: "interrupt",
-		...(index !== undefined ? { index } : {}),
-		createdAt: Date.now(),
-	});
 }
 
 export function interruptAsyncRun(state: SubagentState, runId: string | undefined, index?: number): SubagentExecutionResult | null {

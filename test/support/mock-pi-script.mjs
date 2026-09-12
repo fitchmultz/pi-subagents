@@ -234,6 +234,14 @@ async function main() {
 		}
 	}
 
+	if (response.waitForFile) {
+		const deadline = Date.now() + 15000;
+		while (!fs.existsSync(response.waitForFile)) {
+			if (Date.now() >= deadline) fail("Timed out waiting for mock response release.");
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	}
+
 	if (response.ignoreSignals === true) {
 		process.on("SIGINT", () => {});
 		process.on("SIGTERM", () => {});

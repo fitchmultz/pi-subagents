@@ -44,7 +44,7 @@ export class IntercomTopics {
 	}
 	unsubscribe(topic: string): void { this.subscriptions.delete(topic); this.save({ subscriptions: [...this.subscriptions.values()] }); }
 	publish(update: TopicUpdate, from: Pick<SessionInfo, "id" | "name">): void { this.published.set(update.topic, update); this.save({ published: update }); this.record(from, update); }
-	presence(): Pick<SessionInfo, "subscriptions" | "topics"> { return { subscriptions: [...this.subscriptions.values()], topics: [...this.published.values()] }; }
+	presence(): Required<Pick<SessionInfo, "subscriptions" | "topics">> { return { subscriptions: [...this.subscriptions.values()], topics: [...this.published.values()] }; }
 	private record(from: Pick<SessionInfo, "id" | "name">, update: TopicUpdate, connected = true): boolean {
 		const key = `${from.id}:${update.topic}`, previous = this.records.get(key);
 		if (previous && previous.update.revision >= update.revision) return false;

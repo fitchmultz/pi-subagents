@@ -1,6 +1,4 @@
-import { writeAtomicJson } from "../../shared/atomic-json.ts";
-import * as path from "node:path";
-import { randomUUID } from "node:crypto";
+import { writeAsyncControlRequest } from "../background/async-control.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ownedRunStatusResult, ownedRunView, resolveOwnedRun } from "../shared/run-records.ts";
 import { listSupervisorQuestions, questionProcessAlive } from "../shared/supervisor-questions.ts";
@@ -40,7 +38,7 @@ export async function waitForOwnedRun(input: {
 		};
 		const abort = () => {
 			if (input.cancelNewRun && target.asyncDir) {
-				writeAtomicJson(path.join(target.asyncDir, "control-request.json"), { requestId: randomUUID(), runId: target.runId, action: "cancel", createdAt: Date.now() });
+				writeAsyncControlRequest(target.asyncDir, target.runId, "cancel");
 			}
 			finish("cancelled", input.cancelNewRun ? `Wait cancelled; cancellation requested for newly launched run ${target.runId}. Process exit is not yet confirmed.` : `Stopped waiting for ${target.runId}. The child was not stopped; wait again to collect its result.`);
 		};
