@@ -273,7 +273,7 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 	const sessions = new Map([...indices].map((index) => [index, foreground?.children.find((child) => child.index === index)?.sessionFile ?? result?.results?.[index]?.sessionFile ?? status?.steps?.[index]?.sessionFile ?? contracts.get(index)?.sessionFile]));
 	const sessionUses = new Map<string, number>();
 	for (const file of sessions.values()) if (file) sessionUses.set(file, (sessionUses.get(file) ?? 0) + 1);
-	const uncertainIndices = run.mode === "chain" && (!run.children.some((child) => child.workflowNodeId) || (run.source === "async" && !nodes));
+	const uncertainIndices = run.mode === "chain" && (!run.children.some((child) => child.workflowNodeId) || (run.source === "async" && status && !nodes));
 	const children: OwnedRunView["children"] = [...indices].sort((a, b) => a - b).map((index) => {
 		const boundSession = sessions.get(index);
 		const declared = uncertainIndices && !nodes

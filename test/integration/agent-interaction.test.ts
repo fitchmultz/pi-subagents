@@ -231,6 +231,48 @@ test("a first foreground launch updates the strip without a manual open", async 
 	await pending;
 });
 
+test("new async chain preserves its launch identity, draft and pin through first status persistence", async (t) => {
+	const f = fixture(t), mock = createMockPi(); mock.install();
+	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
+	const release = path.join(f.cwd, "startup-release"), draft = "Keep the existing public API";
+	mock.onCall({ matchArgsIncludes: "Fix login with original assignment", waitForFile: release, output: "Fixed" });
+	let initial, opening, runId: string | undefined;
+	f.state.onRunsChanged = () => {
+		f.controller.refresh(true);
+		if (initial || !f.controller.tasks.length) return;
+		const task = f.controller.tasks[0]!;
+		// The executor publishes the owned assignment synchronously, before spawning the runner.
+		initial = { key: task.key, label: task.label, task: task.child.task,
+			statusExists: fs.existsSync(path.join(ASYNC_DIR, task.run.runId, "status.json")) || fs.existsSync(path.join(getRunMetadataDir(task.run.runId), "status.json")) };
+		opening = f.controller.open(task.key);
+		f.overlay.handleInput(draft); f.overlay.handleInput("\x1bp");
+	};
+	const deliveries = [];
+	f.pi.events.on("subagent:live-intercom", (payload) => { deliveries.push(payload); f.pi.events.emit("subagent:live-intercom-delivery", { requestId: payload.requestId, accepted: true, delivered: true, messageId: payload.messageId }); });
+	const pending = f.executor.execute("startup-view", { chain: [{ agent: "worker", task: "Fix login with original assignment", label: "Fix login", output: false }], async: true, artifacts: false }, undefined, undefined, f.ctx);
+	t.after(async () => {
+		fs.writeFileSync(release, "released"); await pending;
+		if (runId) await until(() => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "startup runner cleanup");
+		if (process.env.PI_AGENT_VIEW_EVIDENCE_DIR) fs.cpSync(mock.dir, path.join(f.cwd, "mock-receipts"), { recursive: true });
+		mock.uninstall();
+	});
+	const launched = await pending; assert.ok(!launched.isError); runId = launched.details.asyncId;
+	await until(() => mock.callCount() === 1, "the real runner persists status and starts the assigned child");
+	f.controller.refresh(true);
+	assert.equal(initial.statusExists, false, "the initial view is captured before either status record exists");
+	assert.equal(initial.key, `${runId}:step-0`, "the new launch's authoritative assignment identity must survive the pre-status window");
+	assert.equal(initial.label, "Fix login"); assert.equal(initial.task, "Fix login with original assignment");
+	assert.deepEqual(f.controller.tasks.map((task) => task.key), [initial.key], "first status must not strand an early draft on an unavailable duplicate");
+	assert.equal(f.controller.pinned, initial.key);
+	assert.equal(f.controller.visit(initial.key).draft, draft); assert.equal(f.overlay.editor.getText(), draft);
+	assert.match(plain(f.overlay), /Agents › Fix login/); assert.doesNotMatch(plain(f.overlay), /Assignment unavailable/);
+	await f.controller.send(initial.key, f.overlay.editor.getText());
+	assert.equal(deliveries.length, 1);
+	assert.equal(deliveries[0].to, `subagent-worker-${runId}-1`);
+	assert.equal(deliveries[0].human.runId, runId); assert.equal(deliveries[0].human.index, 0);
+	f.overlay.handleInput("\x1b"); await opening;
+});
+
 test("the first native streaming response is readable before its session file exists", async (t) => {
 	const f = fixture(t), native = nativeChild(f.cwd, "streaming"), { release } = native;
 	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
