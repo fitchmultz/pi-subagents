@@ -24,10 +24,10 @@ export function projectSupervisorQuestions(result: SubagentExecutionResult, para
 }
 
 export function cancelSupervisorInput(result: SubagentExecutionResult, params: SubagentParamsLike, ownerSessionId: string, events?: IntercomEventBus): SubagentExecutionResult {
-	if (result.isError && !result.content.some((item) => item.type === "text" && /No interrupt-capable run|No running async run/.test(item.text))) return result;
+	if (result.isError && !result.content.some((item) => item.type === "text" && /No interrupt-capable run|No running async run|has no (active|running) child at index \d+/.test(item.text))) return result;
 	const id = result.details.managementControl?.runId ?? params.id ?? params.runId;
 	if (!id) return result;
-	const questions = listSupervisorQuestions(ownerSessionId, id).filter((question) => question.state === "awaiting_input" || question.state === "answer_pending");
+	const questions = listSupervisorQuestions(ownerSessionId, id).filter((question) => (params.index === undefined || params.index === question.index) && (question.state === "awaiting_input" || question.state === "answer_pending"));
 	if (!questions.length) return result;
 	for (const question of questions) {
 		cancelSupervisorQuestion(question);
@@ -50,14 +50,14 @@ export function controlSupervisorQuestion(input: { params: SubagentParamsLike; r
 		if (!id || !params.questionId) throw new Error("action='answer' requires id and questionId.");
 		const question = questions.find((entry) => entry.questionId === params.questionId);
 		if (!question) throw new Error("Question not found in this session's runs. Resume the owning supervisor session to answer it.");
-		const answer = saveQuestionAnswer(question, params.message ?? "");
+		const answer = saveQuestionAnswer(question, params.message ?? "", undefined, params.messageOrigin);
 		input.deps.pi.events.emit("subagent:supervisor-question-resolved", { questionId: question.questionId });
 		if (!question.delivery && questionProcessAlive(question)) return questionResult([readQuestionState(question)], [`Answer saved for question ${question.questionId}. The live child will read it from the durable waiter; delivery is pending, not execution completion.`, liveLaunchOverrideNotice(params)].filter(Boolean).join("\n"));
 		const delivery = readQuestionState(question).delivery;
 		if (delivery) return questionResult([readQuestionState(question)], `Question ${question.questionId} was already answered; no new work started. Delivery: ${delivery.kind}, run: ${delivery.runId}.`);
 		const claim = claimQuestionRevival(question);
 		if (!claim.claimed) return questionResult([readQuestionState(question)], `Answer retained for question ${question.questionId}; continuation ${claim.runId} was already requested. No duplicate process started. Inspect that run first. ${questionRecoveryHint(question, Boolean(nestedResolutionScopeForExecutor(input.deps)))}`);
-		const result = reviveSavedSubagent({ ...input, params: { ...params, message: `Supervisor answer to question ${question.questionId}:\n\n${answer.message}\n\nOriginal question:\n${question.message}` } }, { ...question, source: "question" }, claim.runId);
+		const result = reviveSavedSubagent({ ...input, params: { ...params, message: `${answer.origin === "human" ? "Direct user answer (human origin)" : "Supervisor answer"} to question ${question.questionId}:\n\n${answer.message}\n\nOriginal question:\n${question.message}` } }, { ...question, source: "question" }, claim.runId);
 		if (result.isError) {
 			releaseQuestionRevival(question);
 			return { ...result, details: { ...result.details, questions: [readQuestionState(question)] } };

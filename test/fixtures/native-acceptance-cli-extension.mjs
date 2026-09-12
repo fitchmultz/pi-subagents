@@ -10,7 +10,7 @@ const { fauxProvider, fauxAssistantMessage, fauxToolCall } = await import(pathTo
 
 export default function (pi) {
 	const input = process.env.PI_FINAL_REPORT_CLI_INPUT;
-	const { scenario, report, initialReport } = JSON.parse(fs.readFileSync(input, "utf8"));
+	const { scenario, report, initialReport, pidDir } = JSON.parse(fs.readFileSync(input, "utf8"));
 	const capturePath = process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE;
 	const finalizing = Boolean(capturePath);
 	const receiptPath = path.join(path.dirname(input), `${finalizing ? "final" : "initial"}-${process.pid}.json`);
@@ -23,7 +23,9 @@ export default function (pi) {
 		fs.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
 	};
 	globalThis.fetch = async () => { receipt.networkRequests++; save(); throw new Error("Network forbidden in native CLI fixture"); };
-	const success = finalizing
+	const success = scenario === "bash-stop"
+		? fauxAssistantMessage(fauxToolCall("bash", { command: `printf '%s' "$$" > '${pidDir}/shell.pid'; sleep 30 & printf '%s' "$!" > '${pidDir}/descendant.pid'; printf ready > '${pidDir}/ready'; wait` }), { stopReason: "toolUse" })
+		: finalizing
 		? fauxAssistantMessage(fauxToolCall("structured_output", { value: { report } }, { id: `report-${process.pid}` }), { stopReason: "toolUse" })
 		: fauxAssistantMessage(initialReport);
 	faux.setResponses([

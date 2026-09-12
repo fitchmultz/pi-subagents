@@ -42,12 +42,14 @@ import {
 	extractToolArgsPreview,
 	extractTextFromContent,
 	formatResourceLimitExceeded,
+	compactForegroundResult,
 } from "../../shared/utils.ts";
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { hasCompletedMutationToolCall, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
 import { pendingSupervisorQuestion, refreshQuestionLaunch, saveQuestionContract } from "../shared/supervisor-questions.ts";
+import { updateStreamingText } from "../shared/streaming-text.ts";
 import { saveForegroundLaunch } from "../shared/run-records.ts";
 import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
@@ -426,8 +428,9 @@ async function runSingleAttempt(
 		let cleanTerminalAssistantStopReceived = false;
 
 		unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
-			if (!options.allowIntercomDetach || detached || processClosed || lifecycle.stopping || blockingIntercomCalls.size === 0) return;
+			if (!options.allowIntercomDetach || detached || processClosed || lifecycle.stopping) return;
 			if (!payload || typeof payload !== "object") return;
+			if ((payload as { reason?: unknown }).reason === "attention" || blockingIntercomCalls.size === 0) return;
 			const requestId = (payload as { requestId?: unknown }).requestId;
 			if (typeof requestId !== "string" || requestId.length === 0) return;
 			options.intercomEvents?.emit(INTERCOM_DETACH_RESPONSE_EVENT, { requestId, accepted: true });
@@ -566,7 +569,7 @@ async function runSingleAttempt(
 
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
-			let evt: { type?: string; message?: Message; toolCallId?: string; toolName?: string; args?: unknown; isError?: boolean };
+			let evt: { type?: string; message?: Message; toolCallId?: string; toolName?: string; args?: unknown; isError?: boolean; assistantMessageEvent?: Parameters<typeof updateStreamingText>[1]["assistantMessageEvent"] };
 			try {
 				evt = JSON.parse(line) as typeof evt;
 			} catch {
@@ -601,6 +604,9 @@ async function runSingleAttempt(
 			progress.durationMs = now - startTime;
 			progress.lastActivityAt = now;
 			updateActivityState(now);
+
+			const streamingText = updateStreamingText(progress.streamingText, evt);
+			if (streamingText !== progress.streamingText) { progress.streamingText = streamingText; fireUpdate(); }
 
 			if (evt.type === "tool_execution_start") {
 				const loopFailure = recordToolStartForSubagentLoopGuard({
@@ -736,6 +742,7 @@ async function runSingleAttempt(
 			stderrBuf += d.toString();
 		});
 		proc.on("close", (code, signal) => {
+			result.agentProcessExit = lifecycle.agentProcessExit;
 			cleanupTempDir(tempDir);
 			processClosed = true;
 			if (buf.trim()) processLine(buf);
@@ -1012,7 +1019,7 @@ function publishFinalResult(result: SingleResult, options: RunSyncOptions): void
 		if (options.outputMode === "file-only") result.finalOutput = result.outputReference.message;
 	}
 	if (result.progress) {
-		result.progress.status = result.interrupted ? "paused" : result.exitCode === 0 ? "completed" : "failed";
+		result.progress.status = result.interrupted ? "paused" : result.exitCode === 0 ? result.acceptance?.status === "blocked" ? "blocked" : "completed" : "failed";
 		result.progress.error = result.error;
 		result.progress.tokens = result.usage.input + result.usage.output;
 		result.progress.turnCount = result.usage.turns;
@@ -1026,6 +1033,7 @@ function publishFinalResult(result: SingleResult, options: RunSyncOptions): void
 			agent: result.agent,
 			task: result.task,
 			exitCode: result.exitCode,
+			agentProcessExit: result.agentProcessExit,
 			interrupted: result.interrupted,
 			timedOut: result.timedOut,
 			resourceLimitExceeded: result.resourceLimitExceeded,
@@ -1081,6 +1089,7 @@ export async function runSync(
 		if (!detached) throw error;
 		return { agent: agentName, task, exitCode: 1, usage: emptyUsage(), sessionFile: options.sessionFile, error: `Detached run failed: ${error instanceof Error ? error.message : String(error)}` };
 	}).finally(() => options.onRunSettled?.()).then(async (result) => {
+		if (options.runId) saveQuestionContract(options.runId, options.index ?? 0, { result: compactForegroundResult(result), updatedAt: Date.now() });
 		if (detached) {
 			try { await options.onDetachedComplete?.(result); } catch (error) {
 				console.error("Failed to deliver detached foreground completion:", error);
@@ -1175,7 +1184,7 @@ async function runToCompletion(
 		options.availableModels,
 		options.preferredModelProvider,
 	);
-	saveForegroundLaunch(agent, systemPrompt, resolvedSkills.map((skill) => skill.name), candidates, effectiveOptions, runtimeCwd);
+	saveForegroundLaunch(agent, task, systemPrompt, resolvedSkills.map((skill) => skill.name), candidates, effectiveOptions, runtimeCwd);
 	let totalToolCount = 0;
 	let totalDurationMs = 0;
 
@@ -1270,6 +1279,7 @@ async function runToCompletion(
 			modelAttempts.push({ model: reviewed.model ?? result.model ?? "default", success: reviewed.exitCode === 0 && !reviewed.error && !reviewed.interrupted,
 				exitCode: reviewed.exitCode, error: reviewed.error, usage: { ...reviewed.usage } });
 			result.usage = sumAttemptUsage(modelAttempts);
+			result.agentProcessExit = reviewed.agentProcessExit ?? result.agentProcessExit;
 			result.progressSummary = {
 				toolCount: (result.progressSummary?.toolCount ?? 0) + (reviewed.progressSummary?.toolCount ?? 0),
 				tokens: result.usage.input + result.usage.output,

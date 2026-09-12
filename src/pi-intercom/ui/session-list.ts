@@ -40,7 +40,7 @@ export class SessionListOverlay implements Component {
     const items: SelectItem[] = sessions.map((session) => ({
       value: session.id,
       label: sessionTitle(session, this.allSessions, session.cwd === currentSession.cwd ? "same native session cwd" : undefined),
-      description: `Native session cwd: ${session.cwd} • ${session.model}`,
+      description: `${session.topics?.filter((topic) => topic.resource && topic.ownership === "held").map((topic) => `Using ${topic.resource}`).join(" · ") || `Native session cwd: ${session.cwd}`} • ${session.model}`,
     }));
     this.selectList = new SelectList(items, 8, {
       selectedPrefix: (text) => theme.fg("accent", text),

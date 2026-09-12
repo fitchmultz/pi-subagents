@@ -40,9 +40,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function isCriterionReport(value: unknown): value is NonNullable<AcceptanceReport["criteriaSatisfied"]>[number] {
 	if (!isPlainObject(value)) return false;
-	const criterion = value as { id?: unknown; status?: unknown; evidence?: unknown };
+	const criterion = value as { id?: unknown; status?: unknown; evidence?: unknown; humanAction?: unknown };
 	if (criterion.id !== undefined && typeof criterion.id !== "string") return false;
-	if (criterion.status !== "satisfied" && criterion.status !== "not-satisfied" && criterion.status !== "not-applicable") return false;
+	if (criterion.status !== "satisfied" && criterion.status !== "not-satisfied" && criterion.status !== "not-applicable" && criterion.status !== "blocked") return false;
+	if (criterion.status === "blocked" && (typeof criterion.humanAction !== "string" || !criterion.humanAction.trim())) return false;
 	return typeof criterion.evidence === "string" && criterion.evidence.trim().length > 0;
 }
 

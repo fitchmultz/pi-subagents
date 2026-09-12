@@ -319,7 +319,7 @@ subagent({
 })
 ```
 
-For changing external state, give `watcher` the target, material transitions, and terminal condition. It suppresses unchanged observations and queues the latest non-terminal material change through the deferred, coalesced supervisor bridge. Pending updates may replace one another; the terminal async completion is what wakes the parent.
+For changing external state, give `watcher` the target, material transitions, and terminal condition. It suppresses unchanged observations and steers non-terminal material changes the parent needs while working. Skip routine status; retain findings in the terminal result instead of sending a duplicate completion update.
 
 ```typescript
 subagent({
@@ -505,11 +505,11 @@ A live waiter reads the saved answer; an exited child is revived from its saved 
 
 Do not use `contact_supervisor` just to resolve review-only/no-project-edit versus progress-writing or output-artifact instructions. The child must not modify project/source files, but returning findings through its normal response or configured output artifact is allowed unless the parent explicitly set `output: false`.
 
-Use `contact_supervisor` with `reason: "progress_update"` only for a concise material update that may intentionally wait behind active supervisor work. It is non-blocking and uses deferred, replace-mode delivery so newer updates can coalesce older undelivered ones.
+Use `contact_supervisor` with `reason: "progress_update"` only for a discovery or change the supervisor needs while working. It is non-blocking and steers at the next tool boundary. Skip starts, redundant narration, and routine completion; retain material findings in the final result.
 
 Message conventions:
 - `reason: "need_decision"` and `reason: "interview_request"` steer, wait for the parent reply, and return it to the child.
-- `reason: "progress_update"` is intentionally deferred and should stay concise.
+- `reason: "progress_update"` steers at the next tool boundary and should contain only a finding needed during active work.
 - Child-side routine completion handoffs are not expected. Parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested summaries under the parent child that launched them.
 
 If bridge instructions provide the child-facing tool, a child can ask:

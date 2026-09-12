@@ -10,7 +10,7 @@ import {
 } from "./timeout-extension.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
-import { completeWorkflowStep, runParallelTasks } from "../shared/workflow-policy.ts";
+import { workflowChildSucceeded, completeWorkflowStep, runParallelTasks } from "../shared/workflow-policy.ts";
 import { recordRun } from "../shared/run-history.ts";
 import {
 	buildChainInstructions,
@@ -32,6 +32,7 @@ import {
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
+import { acceptanceHumanAction } from "../shared/acceptance.ts";
 import { formatDetachedIntercomGuidance } from "../shared/intercom-detach.ts";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
 import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
@@ -677,11 +678,12 @@ export async function runParallelPath(data: ExecutionContextData, deps: Executor
 			return {
 				content: [{ type: "text", text: appendWorktreeSummary(intercomReceipt.text, worktreeSuffix) }],
 				details: intercomReceipt.details,
-				...(intercomReceipt.status !== "completed" ? { isError: true } : {}),
+				...(intercomReceipt.status === "failed" || intercomReceipt.status === "timed-out" ? { isError: true } : {}),
 			};
 		}
 
-		const ok = results.length - completion.failedIndices.length;
+		if (completion.status === "blocked") return { content: [{ type: "text", text: appendWorktreeSummary("Needs human action — acceptance incomplete.\n" + results.map((result) => acceptanceHumanAction(result.acceptance)).filter(Boolean).join("\n"), worktreeSuffix) }], details };
+		const ok = results.filter(workflowChildSucceeded).length;
 		const downgradeNote = backgroundRequestedWhileClarifying ? " (background requested, but clarify kept this run foreground)" : "";
 		const aggregatedOutput = aggregateParallelOutputs(
 			results.map((result) => ({

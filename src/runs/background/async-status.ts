@@ -43,7 +43,7 @@ export interface AsyncRunSummary {
 	asyncDir: string;
 	pid?: number;
 	sessionId?: string;
-	state: "queued" | "running" | "complete" | "failed" | "paused";
+	state: "queued" | "running" | "complete" | "failed" | "blocked" | "paused";
 	activityState?: ActivityState;
 	lastActivityAt?: number;
 	currentTool?: string;
@@ -153,7 +153,7 @@ function validateStatusForSummary(status: AsyncStatus, source: string): void {
 	if (typeof record.runId !== "string") throw new Error(`Invalid async status '${source}': runId must be a string.`);
 	if (typeof record.startedAt !== "number") throw new Error(`Invalid async status '${source}': startedAt must be a number.`);
 	if (!(["single", "parallel", "chain"] as unknown[]).includes(record.mode)) throw new Error(`Invalid async status '${source}': mode is invalid.`);
-	if (!(["queued", "running", "complete", "failed", "paused"] as unknown[]).includes(record.state)) throw new Error(`Invalid async status '${source}': state is invalid.`);
+	if (!(["queued", "running", "complete", "failed", "blocked", "paused"] as unknown[]).includes(record.state)) throw new Error(`Invalid async status '${source}': state is invalid.`);
 	if (record.activityState !== undefined && record.activityState !== "needs_attention") throw new Error(`Invalid async status '${source}': activityState is invalid.`);
 	validateTokenUsage(record.totalTokens, "totalTokens", source);
 	if (record.steps !== undefined && !Array.isArray(record.steps)) throw new Error(`Invalid async status '${source}': steps must be an array.`);
@@ -171,7 +171,7 @@ function validateStatusForSummary(status: AsyncStatus, source: string): void {
 		assertOptionalFields(step, ["agent", "phase", "label", "outputName", "sessionFile", "currentTool", "currentToolArgs", "currentPath", "model", "thinking", "error"], (field) => typeof field === "string", "a string", stepSource);
 		assertOptionalFields(step, ["lastActivityAt", "currentToolStartedAt", "turnCount", "toolCount", "startedAt", "endedAt", "durationMs"], (field) => typeof field === "number" && Number.isFinite(field), "a finite number", stepSource);
 		if (typeof step.agent !== "string") throw new Error(`Invalid async status '${source}': steps[${index}].agent must be a string.`);
-		if (!(["pending", "running", "complete", "completed", "failed", "paused", "timed-out"] as unknown[]).includes(step.status)) throw new Error(`Invalid async status '${source}': steps[${index}].status is invalid.`);
+		if (!(["pending", "running", "complete", "completed", "failed", "blocked", "paused", "timed-out"] as unknown[]).includes(step.status)) throw new Error(`Invalid async status '${source}': steps[${index}].status is invalid.`);
 		if (step.activityState !== undefined && step.activityState !== "needs_attention") throw new Error(`Invalid async status '${source}': steps[${index}].activityState is invalid.`);
 		if (step.structured !== undefined && typeof step.structured !== "boolean") throw new Error(`Invalid async status '${source}': steps[${index}].structured must be a boolean.`);
 		for (const field of ["recentOutput", "skills", "attemptedModels"]) {
@@ -279,6 +279,7 @@ function sortRuns(runs: AsyncRunSummary[]): AsyncRunSummary[] {
 			case "running": return 0;
 			case "queued": return 1;
 			case "failed": return 2;
+			case "blocked": return 2;
 			case "paused": return 2;
 			case "complete": return 3;
 		}

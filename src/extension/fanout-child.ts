@@ -4,7 +4,8 @@ import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "../agents/agents.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
-import { createSubagentExecutor, normalizeSubagentParamsLike, writeAsyncInterruptRequest } from "../runs/foreground/subagent-executor.ts";
+import { createSubagentExecutor, normalizeSubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import { interruptAsyncRun, interruptForegroundChild } from "../runs/foreground/foreground-control.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV, SUBAGENT_PARENT_CHILD_INDEX_ENV } from "../runs/shared/pi-args.ts";
 import { readNestedControlRequests, resolveNestedRouteFromEnv, writeNestedControlResult } from "../runs/shared/nested-events.ts";
 import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.ts";
@@ -118,11 +119,11 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 								if (!control && !liveAsyncJob) {
 									message = `Nested run ${request.targetRunId} is not active in this fanout child.`;
 								} else if (liveAsyncJob && request.action === "interrupt") {
-									writeAsyncInterruptRequest(liveAsyncJob.asyncDir, liveAsyncJob.asyncId);
-									ok = true;
-									message = `Interrupt requested for nested async run ${request.targetRunId}.`;
+									const receipt = interruptAsyncRun(state, liveAsyncJob.asyncId, request.index);
+									ok = Boolean(receipt && !receipt.isError);
+									message = receipt?.content.map((part) => part.type === "text" ? part.text : "").join("\n") ?? "Nested run is not interruptible.";
 								} else if (control && request.action === "interrupt") {
-									ok = control.interrupt?.() === true;
+									ok = interruptForegroundChild(control, request.index);
 									message = ok
 										? `Interrupt requested for nested run ${request.targetRunId}.`
 										: `Nested run ${request.targetRunId} has no active child step to interrupt.`;

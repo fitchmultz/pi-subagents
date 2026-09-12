@@ -3,8 +3,9 @@ import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.ts";
 import { getBrokerSocketPath, getLegacyBrokerSocketPath, isOwnedBrokerSocket } from "./paths.ts";
-import { isMessage, normalizeSessionInfo } from "../types.ts";
-import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode } from "../types.ts";
+import { compactTopicMessage, normalizeMessage, normalizeSessionInfo } from "../types.ts";
+import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode, HumanMessageOrigin, TopicUpdate, TopicChange, SessionSnapshot, SendResult } from "../types.ts";
+export type { SendResult } from "../types.ts";
 
 /** Default delivery-ack timeout for `send` (broker acknowledges quickly). */
 const DEFAULT_SEND_TIMEOUT_MS = 8000;
@@ -28,14 +29,8 @@ interface SendOptions {
   threadId?: string;
   passive?: boolean;
   messageId?: string;
-}
-
-export interface SendResult {
-  id: string;
-  accepted: boolean;
-  delivered: boolean;
-  queued?: boolean;
-  reason?: string;
+  human?: HumanMessageOrigin;
+  topic?: TopicUpdate;
 }
 
 function toError(error: unknown): Error {
@@ -84,8 +79,9 @@ async function connectBrokerSocket(): Promise<net.Socket> {
 export class IntercomClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
+  private _topicsSupported = false;
   private pendingSends = new Map<string, { resolve: (r: SendResult) => void; reject: (e: Error) => void }>();
-  private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
+  private pendingLists = new Map<string, { resolve: (snapshot: SessionSnapshot) => void; reject: (e: Error) => void; sessions: Map<string, SessionInfo>; receipts: SessionSnapshot["receipts"] }>();
   private connecting = false;
   private disconnecting = false;
   private disconnectError: Error | null = null;
@@ -112,6 +108,8 @@ export class IntercomClient extends EventEmitter {
   get sessionId(): string | null {
     return this._sessionId;
   }
+
+  get supportsTopics(): boolean { return this.isConnected() && this._topicsSupported; }
 
   isConnected(): boolean {
     const socket = this.socket;
@@ -147,7 +145,8 @@ export class IntercomClient extends EventEmitter {
     } finally {
       this.connecting = false;
     }
-    return new Promise((resolve, reject) => {
+    const { topics, subscriptions, ...identity } = session;
+    await new Promise<void>((resolve, reject) => {
       this.socket = socket;
       this.disconnectError = null;
       let settled = false;
@@ -247,7 +246,7 @@ export class IntercomClient extends EventEmitter {
       this.once("_registered", onRegistered);
 
       try {
-        writeMessage(socket, { type: "register", session, requestedId });
+        writeMessage(socket, { type: "register", session: identity, requestedId, topicFrames: true });
       } catch (error) {
         cleanupConnectionAttempt();
         cleanupSocketListeners();
@@ -258,6 +257,10 @@ export class IntercomClient extends EventEmitter {
         reject(toError(error));
       }
     });
+    if (this.supportsTopics) {
+      for (const topic of topics ?? []) await this.updateTopics({ action: "restore", topic });
+      for (const subscription of subscriptions ?? []) await this.updateTopics({ action: "restore", subscription });
+    }
   }
 
   private handleBrokerMessage(msg: unknown): void {
@@ -282,34 +285,47 @@ export class IntercomClient extends EventEmitter {
         }
 
         this._sessionId = brokerMessage.sessionId;
+        this._topicsSupported = brokerMessage.topicsSupported === true && brokerMessage.topicFrames === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
 
       case "sessions": {
-        const { requestId, sessions } = brokerMessage;
-        const normalizedSessions = Array.isArray(sessions)
-          ? sessions.map(normalizeSessionInfo).filter((session): session is SessionInfo => session !== null)
-          : null;
-        if (typeof requestId !== "string" || !normalizedSessions) {
-          throw new Error("Invalid sessions message");
-        }
-
+        const { requestId, sessions, receipts, more, error } = brokerMessage;
+        if (typeof requestId !== "string" || !Array.isArray(sessions) || (more !== undefined && typeof more !== "boolean")) throw new Error("Invalid sessions message");
         const pending = this.pendingLists.get(requestId);
-        if (!pending) {
-          // Late list responses can still arrive after the caller has already timed out.
-          return;
+        if (!pending) return;
+        if (typeof error === "string") {
+          this.pendingLists.delete(requestId);
+          pending.reject(new Error(error));
+          break;
         }
-
-        this.pendingLists.delete(requestId);
-        pending.resolve(normalizedSessions);
+        for (const row of sessions) {
+          if (!row || typeof row.id !== "string" || (row.topics !== undefined && !Array.isArray(row.topics)) || (row.subscriptions !== undefined && !Array.isArray(row.subscriptions))) throw new Error("Invalid session snapshot row");
+          const previous = pending.sessions.get(row.id);
+          const info = normalizeSessionInfo({ ...previous, ...row,
+            ...(row.topics ? { topics: [...(previous?.topics ?? []), ...row.topics] } : {}),
+            ...(row.subscriptions ? { subscriptions: [...(previous?.subscriptions ?? []), ...row.subscriptions] } : {}),
+          });
+          if (!info) throw new Error("Invalid session snapshot");
+          pending.sessions.set(info.id, info);
+        }
+        if (receipts !== undefined) {
+          if (!Array.isArray(receipts) || receipts.some((receipt) => !receipt || typeof receipt.to !== "string" || typeof receipt.id !== "string" || typeof receipt.accepted !== "boolean" || typeof receipt.delivered !== "boolean")) throw new Error("Invalid topic delivery receipts");
+          pending.receipts.push(...receipts);
+        }
+        if (more !== true) {
+          this.pendingLists.delete(requestId);
+          pending.resolve({ sessions: [...pending.sessions.values()], receipts: pending.receipts });
+        }
         break;
       }
 
       case "message": {
-        const { from, message } = brokerMessage;
+        const { from } = brokerMessage;
+        const message = normalizeMessage(brokerMessage.message);
         const normalizedFrom = normalizeSessionInfo(from);
-        if (!normalizedFrom || !isMessage(message)) {
+        if (!normalizedFrom || !message) {
           throw new Error("Invalid message event");
         }
 
@@ -426,6 +442,15 @@ export class IntercomClient extends EventEmitter {
   }
 
   listSessions(): Promise<SessionInfo[]> {
+    return this.requestSessions().then((snapshot) => snapshot.sessions);
+  }
+
+  updateTopics(change: TopicChange, onAccepted?: (snapshot: SessionSnapshot) => void): Promise<SessionSnapshot> {
+    if (!this.supportsTopics) return Promise.reject(new Error("This broker does not support topic snapshots."));
+    return this.requestSessions(change, onAccepted);
+  }
+
+  private requestSessions(change?: TopicChange, onAccepted?: (snapshot: SessionSnapshot) => void): Promise<SessionSnapshot> {
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
@@ -435,9 +460,13 @@ export class IntercomClient extends EventEmitter {
 
     return new Promise((resolve, reject) => {
       const requestId = randomUUID();
-      const wrappedResolve = (sessions: SessionInfo[]) => {
+      const wrappedResolve = (snapshot: SessionSnapshot) => {
         clearTimeout(timeout);
-        resolve(sessions);
+        try {
+          // Commit confirmed subscriptions before handling a following message in the same read.
+          onAccepted?.(snapshot);
+          resolve(snapshot);
+        } catch (error) { reject(toError(error)); }
       };
       const wrappedReject = (error: Error) => {
         clearTimeout(timeout);
@@ -450,9 +479,9 @@ export class IntercomClient extends EventEmitter {
         }
       }, this.listTimeoutMs);
       timeout.unref?.();
-      this.pendingLists.set(requestId, { resolve: wrappedResolve, reject: wrappedReject });
+      this.pendingLists.set(requestId, { resolve: wrappedResolve, reject: wrappedReject, sessions: new Map(), receipts: [] });
       try {
-        writeMessage(socket, { type: "list", requestId });
+        writeMessage(socket, { type: "list", requestId, stream: true, ...(change ? { change } : {}) });
       } catch (error) {
         clearTimeout(timeout);
         this.pendingLists.delete(requestId);
@@ -475,6 +504,8 @@ export class IntercomClient extends EventEmitter {
       timestamp: Date.now(),
       replyTo: options.replyTo,
       expectsReply: options.expectsReply,
+      ...(options.human ? { human: options.human } : {}),
+      ...(options.topic ? { topic: options.topic } : {}),
       delivery: options.delivery ?? (options.passive === true ? "passive" : options.expectsReply === true ? undefined : "steer"),
       queueMode: options.queueMode,
       threadId: options.threadId,
@@ -504,7 +535,7 @@ export class IntercomClient extends EventEmitter {
       this.pendingSends.set(messageId, { resolve: wrappedResolve, reject: wrappedReject });
 
       try {
-        writeMessage(socket, { type: "send", to, message });
+        writeMessage(socket, { type: "send", to, message: this._topicsSupported ? compactTopicMessage(message) : message });
       } catch (error) {
         clearTimeout(timeout);
         this.pendingSends.delete(messageId);
@@ -513,7 +544,7 @@ export class IntercomClient extends EventEmitter {
     });
   }
 
-  updatePresence(updates: { name?: string; status?: string; model?: string; pendingAsks?: number; acceptsAsks?: boolean; lastIntercomActivity?: number }): void {
+  updatePresence(updates: { name?: string; status?: string; model?: string; pendingAsks?: number; acceptsAsks?: boolean; lastIntercomActivity?: number; subscriptions?: SessionInfo["subscriptions"]; topics?: TopicUpdate[] }): void {
     if (this.disconnecting) {
       return;
     }

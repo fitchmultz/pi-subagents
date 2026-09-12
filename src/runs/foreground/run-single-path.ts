@@ -20,6 +20,8 @@ import {
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
+import { formatAgentProcessExit } from "../../shared/status-format.ts";
+import { acceptanceHumanAction } from "../shared/acceptance.ts";
 import { formatDetachedIntercomGuidance } from "../shared/intercom-detach.ts";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
 import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
@@ -370,11 +372,12 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 
 	if (r.interrupted) {
 		return {
-			content: [{ type: "text", text: `Run paused after interrupt (${params.agent}). Waiting for explicit next action.` }],
+			content: [{ type: "text", text: `Run paused after interrupt (${params.agent}). Waiting for explicit next action.\n${formatAgentProcessExit(r.agentProcessExit)}` }],
 			details,
 		};
 	}
 
+	if (r.exitCode === 0 && r.acceptance?.status === "blocked") return { content: [{ type: "text", text: `Needs your action — acceptance incomplete.\n${acceptanceHumanAction(r.acceptance)}` }], details };
 	if (r.exitCode !== 0) {
 		const resumeText = r.sessionFile ? `\n\nIf this was transient, continue without losing session context: ${formatRunAction("resume", runId, { message: "Continue from the failure and finish the task." }, Boolean(nestedResolutionScopeForExecutor(deps)))}` : "";
 		return {

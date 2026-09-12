@@ -223,6 +223,7 @@ export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig): st
 		"## Acceptance Contract",
 		"Completion is not accepted from prose alone. End the initial response with a structured acceptance report.",
 		"After the initial response, the runtime will continue this same session for a bounded self-review/repair loop before accepting the run.",
+		"For an observed human-only boundary (such as Touch ID or an unavailable MFA code), report the affected criterion as blocked with concrete evidence and a nonempty humanAction stating the exact user action. Retain completed evidence. This leaves acceptance incomplete and stops finalization/verification until explicit Continue. Do not use blocked for ordinary errors, missing unrelated evidence, or work you can fix.",
 		"",
 		"Criteria:",
 		...(acceptance.criteria.length ? acceptance.criteria.map((criterion) => `- ${criterion.id}: ${criterion.must}${criterion.evidence.length ? ` (evidence: ${criterion.evidence.join(", ")})` : ""}`) : ["- No explicit criteria were configured; satisfy the requested task and the required evidence/checks below."]),

@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import type { AgentProcessExit } from "./types.ts";
 
 interface PostExitStdioGuardOptions {
 	idleMs: number;
@@ -59,6 +60,7 @@ export function attachChildProcessLifecycle(child: ChildWithPipedStdio & ChildWi
 	let exited = false;
 	let stopping = false;
 	let settledCleanup = false;
+	let agentProcessExit: AgentProcessExit | undefined;
 	let drainTimer: NodeJS.Timeout | undefined;
 	let escalationTimer: NodeJS.Timeout | undefined;
 	const clearDrain = () => {
@@ -88,8 +90,9 @@ export function attachChildProcessLifecycle(child: ChildWithPipedStdio & ChildWi
 		signalTree();
 	};
 	const clearStdioGuard = attachPostExitStdioGuard(child, { idleMs: 2000, hardMs: 8000 });
-	child.on("exit", () => {
+	child.on("exit", (code, signal) => {
 		exited = true;
+		agentProcessExit = { pid: child.pid, code, signal, at: Date.now() };
 		clearTimers();
 		// The leader may exit before resistant descendants release inherited stdio.
 		trySignalChildTree(child, "SIGKILL");
@@ -104,6 +107,7 @@ export function attachChildProcessLifecycle(child: ChildWithPipedStdio & ChildWi
 	return {
 		terminate,
 		get stopping() { return stopping; },
+		get agentProcessExit() { return agentProcessExit; },
 		get settledCleanup() { return settledCleanup; },
 		observeEvent(type: string | undefined) {
 			if (closed || exited || stopping) return;

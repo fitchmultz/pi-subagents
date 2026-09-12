@@ -208,7 +208,7 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 	const stepCount = statusSteps.length || resultSteps.length || (result?.agent ? 1 : 0);
 	const requestedIndex = params.index;
 	if (requestedIndex !== undefined && !Number.isInteger(requestedIndex)) throw new Error(`Async run '${runId}' index must be an integer.`);
-	const terminalStepStatuses = new Set(["complete", "completed", "failed", "paused"]);
+	const terminalStepStatuses = new Set(["complete", "completed", "failed", "blocked", "paused"]);
 
 	if (state === "running") {
 		if (requestedIndex !== undefined) {
@@ -281,7 +281,7 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 	};
 }
 
-export function buildRevivedAsyncTask(target: Pick<AsyncResumeTarget, "runId" | "agent" | "sessionFile">, message: string): string {
+export function buildRevivedAsyncTask(target: Pick<AsyncResumeTarget, "runId" | "agent" | "sessionFile">, message: string, origin?: "human"): string {
 	return [
 		"You are reviving a previous subagent conversation.",
 		"",
@@ -289,7 +289,9 @@ export function buildRevivedAsyncTask(target: Pick<AsyncResumeTarget, "runId" | 
 		`Original agent: ${target.agent}`,
 		target.sessionFile ? `Original session file: ${target.sessionFile}` : undefined,
 		"",
-		"Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.",
+		origin === "human"
+			? "Use the stored session context as background. This is a direct user follow-up (human origin); respond in this conversation where the user can see it. Do not relay it to the parent."
+			: "Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.",
 		"",
 		"Follow-up:",
 		message,

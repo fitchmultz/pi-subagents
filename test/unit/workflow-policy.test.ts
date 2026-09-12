@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { addAbortListener } from "node:events";
 import { describe, it } from "node:test";
+import { evaluateAcceptance, resolveEffectiveAcceptance } from "../../src/runs/shared/acceptance.ts";
 import { renderChainTask } from "../../src/runs/shared/chain-outputs.ts";
 import { materializeDynamicParallelStep } from "../../src/runs/shared/dynamic-fanout.ts";
 import { isFailFastAbort } from "../../src/runs/shared/parallel-utils.ts";
@@ -48,13 +49,15 @@ describe("workflow policy", () => {
 	it("pause, detach and cancellation stop queued work without becoming fail-fast", async () => {
 		for (const reason of ["interrupted", "detached", "cancelled"] as const) {
 			const cancellation = new AbortController();
+			const interruption = new AbortController();
 			const started: number[] = [];
 			const results = await runParallelTasks({
-				tasks: [0, 1], concurrency: 1, failFast: true, signal: cancellation.signal,
+				tasks: [0, 1], concurrency: 1, failFast: true, signal: cancellation.signal, interruptSignal: interruption.signal,
 				runTask: async (_, index, failFastSignal) => {
 					started.push(index);
 					assert.equal(failFastSignal.aborted, false);
 					if (reason === "cancelled") cancellation.abort();
+					if (reason === "interrupted") interruption.abort();
 					return { ...success, ...(reason === "cancelled" ? {} : { [reason]: true }) };
 				},
 				stoppedTask: (_, index, stopped) => { assert.equal(index, 1); assert.equal(stopped, reason); return { ...success, exitCode: -1 }; },
@@ -62,6 +65,21 @@ describe("workflow policy", () => {
 			assert.deepEqual(started, [0]);
 			assert.equal(results[1].exitCode, -1);
 		}
+	});
+
+	it("a selected-child stop leaves queued and running independent siblings alone, even with fail-fast", async () => {
+		const started: number[] = [];
+		const results = await runParallelTasks({
+			tasks: [0, 1, 2], concurrency: 1, failFast: true,
+			runTask: async (_, index, signal) => {
+				started.push(index);
+				assert.equal(signal.aborted, false);
+				return { ...success, interrupted: index === 0 };
+			},
+			stoppedTask: () => { throw new Error("Independent sibling was skipped"); },
+		});
+		assert.deepEqual(started, [0, 1, 2]);
+		assert.equal(completeWorkflowStep({ stepIndex: 0, stepCount: 2, results, previousOutput: "" }).advance, false);
 	});
 
 	it("retains successful sibling outputs but cannot advance from any stopped group", () => {
@@ -77,6 +95,21 @@ describe("workflow policy", () => {
 		const mixed = completeWorkflowStep({ stepIndex: 0, stepCount: 1, previousOutput: "", results: [success, { ...success, exitCode: 1 }, { ...success, detached: true }] });
 		assert.deepEqual(mixed.failedIndices, [1]);
 		assert.equal(mixed.detachedIndex, 2);
+	});
+
+	it("a human-blocked child keeps independent siblings alive but cannot advance dependent work", async () => {
+		const acceptance = await evaluateAcceptance({ acceptance: resolveEffectiveAcceptance({ explicit: { criteria: ["Authenticate"] } }), cwd: process.cwd(),
+			output: '```acceptance-report\n{"criteriaSatisfied":[{"id":"criterion-1","status":"blocked","evidence":"Touch ID prompt is visible","humanAction":"Complete Touch ID"}]}\n```' });
+		const started: number[] = [];
+		const results = await runParallelTasks({ tasks: [0, 1], concurrency: 1, failFast: true,
+			runTask: async (_, index, signal) => { started.push(index); assert.equal(signal.aborted, false); return { ...success, ...(index === 0 ? { acceptance } : {}) }; },
+			stoppedTask: () => { throw new Error("Blocked authentication must not stop an independent sibling"); },
+		});
+		assert.deepEqual(started, [0, 1]);
+		const group = completeWorkflowStep({ stepIndex: 0, stepCount: 2, results, previousOutput: "", outputNames: ["blocked", "completed"] });
+		assert.equal(group.status, "blocked"); assert.equal(group.advance, false);
+		assert.equal(group.outputs.blocked, undefined); assert.equal(group.outputs.completed.text, "Evidence");
+		assert.equal(completeWorkflowStep({ stepIndex: 0, stepCount: 2, results: [results[0], { ...success, exitCode: 1 }], previousOutput: "" }).status, "failed");
 	});
 
 	it("a successful prefix is not a completed workflow", () => {

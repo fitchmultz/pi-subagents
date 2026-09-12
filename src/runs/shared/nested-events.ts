@@ -69,6 +69,8 @@ export interface NestedControlRequestRecord {
 	requestId: string;
 	targetRunId: string;
 	targetChildIndex?: number;
+	/** Child inside the target run; targetChildIndex above selects the outer owner. */
+	index?: number;
 	action: "interrupt" | "resume";
 	message?: string;
 }
@@ -187,7 +189,7 @@ function sanitizeTokenUsage(value: unknown): NestedRunSummary["totalTokens"] | u
 }
 
 function sanitizeState(value: unknown, fallback: NestedRunState): NestedRunState {
-	return value === "queued" || value === "running" || value === "complete" || value === "failed" || value === "paused"
+	return value === "queued" || value === "running" || value === "complete" || value === "failed" || value === "blocked" || value === "paused"
 		? value
 		: fallback;
 }
@@ -197,7 +199,7 @@ function sanitizeStep(input: unknown, depth: number): NestedStepSummary | undefi
 	const raw = input as Record<string, unknown>;
 	const agent = stringValue(raw.agent, 128);
 	if (!agent) return undefined;
-	const status = raw.status === "pending" || raw.status === "running" || raw.status === "complete" || raw.status === "completed" || raw.status === "failed" || raw.status === "paused"
+	const status = raw.status === "pending" || raw.status === "running" || raw.status === "complete" || raw.status === "completed" || raw.status === "failed" || raw.status === "blocked" || raw.status === "paused"
 		? raw.status
 		: "pending";
 	return {
@@ -235,6 +237,7 @@ export function sanitizeSummary(input: unknown, depth = 0): NestedRunSummary | u
 		depth: Math.min(Math.max(0, clampNumber(raw.depth) ?? 0), MAX_DEPTH),
 		path: pathParts,
 		state: sanitizeState(raw.state, "running"),
+		...(raw.indexedControl === true ? { indexedControl: true } : {}),
 		...(stringValue(raw.asyncDir, 2048) ? { asyncDir: stringValue(raw.asyncDir, 2048) } : {}),
 		...(clampNumber(raw.pid) !== undefined && clampNumber(raw.pid)! > 0 && Number.isInteger(clampNumber(raw.pid)) ? { pid: clampNumber(raw.pid) } : {}),
 		...(stringValue(raw.sessionId, 256) ? { sessionId: stringValue(raw.sessionId, 256) } : {}),
@@ -313,7 +316,7 @@ export function parseNestedEventRecords(content: string, route: NestedRoute): Ne
 }
 
 function terminal(state: NestedRunState): boolean {
-	return state === "complete" || state === "failed" || state === "paused";
+	return state === "complete" || state === "failed" || state === "blocked" || state === "paused";
 }
 
 function mergeSummary(existing: NestedRunSummary | undefined, event: NestedEventRecord): NestedRunSummary {
@@ -569,6 +572,7 @@ function parseControlRequest(content: string, route: NestedRoute): NestedControl
 	const ts = clampNumber(raw.ts);
 	if (ts === undefined) return undefined;
 	if (raw.targetChildIndex !== undefined && (typeof raw.targetChildIndex !== "number" || !Number.isInteger(raw.targetChildIndex) || raw.targetChildIndex < 0)) return undefined;
+	if (raw.index !== undefined && (typeof raw.index !== "number" || !Number.isSafeInteger(raw.index) || raw.index < 0)) return undefined;
 	return {
 		type: "subagent.nested.control-request",
 		ts,
@@ -577,6 +581,7 @@ function parseControlRequest(content: string, route: NestedRoute): NestedControl
 		requestId: raw.requestId,
 		targetRunId: raw.targetRunId,
 		...(typeof raw.targetChildIndex === "number" && Number.isInteger(raw.targetChildIndex) && raw.targetChildIndex >= 0 ? { targetChildIndex: raw.targetChildIndex } : {}),
+		...(typeof raw.index === "number" ? { index: raw.index } : {}),
 		action: raw.action,
 		...(stringValue(raw.message, 16_000) ? { message: stringValue(raw.message, 16_000) } : {}),
 	};
@@ -696,6 +701,7 @@ export function hasLiveNestedDescendants(children: NestedRunSummary[] | undefine
 export function nestedSummaryFromAsyncStatus(status: AsyncStatus, asyncDir: string, fallback: { id: string; parentRunId: string; parentStepIndex?: number; depth: number; path?: Array<{ runId: string; stepIndex?: number; agent?: string }>; mode?: SubagentRunMode; ts: number }): NestedRunSummary {
 	return {
 		id: status.runId || fallback.id,
+		indexedControl: status.indexedControl,
 		parentRunId: fallback.parentRunId,
 		...(fallback.parentStepIndex !== undefined ? { parentStepIndex: fallback.parentStepIndex } : {}),
 		depth: fallback.depth,

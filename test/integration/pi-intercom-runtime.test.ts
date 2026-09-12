@@ -334,7 +334,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
 }
 
 async function setupBroker() {
-  const broker = spawn(process.execPath, [path.join(repoDir, "src", "pi-intercom", "broker", "broker.ts")], {
+  const broker = spawn(process.execPath, [process.env.PI_INTERCOM_TEST_BROKER ?? path.join(repoDir, "src", "pi-intercom", "broker", "broker.ts")], {
     cwd: repoDir,
     detached: true,
     env: { ...process.env, HOME: sharedHomeDir, USERPROFILE: sharedHomeDir, PI_CODING_AGENT_DIR: sharedAgentDir },
@@ -3166,7 +3166,7 @@ test("supervisor tool registers only when child metadata is present", async () =
     const guidance = [supervisorTool?.description, supervisorTool?.promptSnippet, ...(supervisorTool?.promptGuidelines ?? [])].join("\n");
     assert.match(guidance, /cannot safely continue/i);
     assert.match(guidance, /interview_request.*multiple structured answers/i);
-    assert.match(guidance, /progress_update.*deferred and coalesced/is);
+    assert.match(guidance, /progress_update.*steers at the next tool boundary/is);
   });
 });
 
@@ -3241,9 +3241,9 @@ test("child supervisor tool resolves target and includes run metadata", { concur
       const updateResult = await supervisorTool.execute("update-1", { reason: "progress_update", message: "Found a schema mismatch." }, new AbortController().signal, undefined, harness.ctx);
       const [_updateFrom, updateMessage] = await updateReceived;
       assert.equal(updateMessage.expectsReply, undefined);
-      assert.equal(updateMessage.delivery, "queue");
-      assert.equal(updateMessage.queueMode, "replace");
-      assert.equal(updateMessage.threadId, "subagent-progress:78f659a3:worker:0");
+      assert.equal(updateMessage.delivery, "steer");
+      assert.equal(updateMessage.queueMode, undefined);
+      assert.equal(updateMessage.threadId, undefined);
       assert.match(updateMessage.content.text, /Subagent progress update/);
       assert.match(updateMessage.content.text, /Run: 78f659a3/);
       assert.match(updateMessage.content.text, /Agent: worker/);
@@ -3710,6 +3710,67 @@ test("foreground subagent result intercom events reach the current orchestrator 
   assert.deepEqual(deliveryAcks, [{ requestId: "result-foreground", delivered: true }]);
 });
 
+test("topic subscription acknowledgement takes effect before the next received blocker", async () => {
+  const previousDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = mkdtempSync(path.join(sharedHomeDir, "topic-ack-"));
+  const { prepareBrokerSocketPath } = await import("../../src/pi-intercom/broker/paths.ts");
+  const { createMessageReader } = await import("../../src/pi-intercom/broker/framing.ts");
+  const { default: extension } = await import("../../src/pi-intercom/index.ts");
+  const sockets = new Set<net.Socket>(), topic = "private/first-ack-blocker";
+  const server = net.createServer((socket) => {
+    sockets.add(socket); socket.on("close", () => sockets.delete(socket));
+    let session: SessionInfo;
+    socket.on("data", createMessageReader((input) => {
+      const request = input as { type: string; session: SessionInfo; requestId: string; change?: { action: string } };
+      if (request.type === "register") { session = { ...request.session, id: "ack-receiver" }; writeMessage(socket, { type: "registered", sessionId: session.id, topicsSupported: true, topicFrames: true }); }
+      else if (request.type === "list") {
+        const packets: unknown[] = [{ type: "sessions", requestId: request.requestId, sessions: [session] }];
+        if (request.change?.action === "subscribe") packets.push({ type: "message", from: { id: "ack-publisher", name: "Topic owner", cwd: repoDir, model: "fixture" }, message: { id: "first-live-topic-blocker", timestamp: Date.now(), delivery: "steer", content: { text: "First live blocker after subscription" }, topic: { topic, text: "First live blocker after subscription", event: "blocker", revision: 1, updatedAt: Date.now() } } });
+        // One socket write fixes the acknowledgement / following-message interleaving.
+        socket.write(Buffer.concat(packets.map((packet) => { const body = Buffer.from(JSON.stringify(packet)); const header = Buffer.alloc(4); header.writeUInt32BE(body.length); return Buffer.concat([header, body]); })));
+      } else if (request.type === "unregister") socket.end();
+    }, (error) => socket.destroy(error)));
+  });
+  const harness = createExtensionHarness("topic-ack-parent");
+  try {
+    await new Promise<void>((resolve) => server.listen(prepareBrokerSocketPath(), resolve));
+    extension(harness.pi as never); await harness.emitLifecycle("session_start");
+    const tool = harness.tools.find((tool) => tool.name === "intercom")!;
+    const result = await tool.execute("subscribe", { action: "subscribe", topic }, new AbortController().signal, undefined, harness.ctx);
+    assert.ok(!result.isError, result.content[0]?.text);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.sentMessages.filter((entry) => entry.message.content?.includes("First live blocker after subscription")).length, 1, "the first live blocker must not be dropped between broker confirmation and local subscription commit");
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    process.env.PI_CODING_AGENT_DIR = previousDir;
+  }
+});
+
+test("topic support is explicit and an older broker leaves direct messaging untouched", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const broker = await setupBroker(), peer = new IntercomClient(), harness = createExtensionHarness("topic-capability-parent", { hasUI: true });
+  const legacy = Boolean(process.env.PI_INTERCOM_TEST_BROKER);
+  try {
+    await connectClient(peer, "topic-capability-peer");
+    piIntercomExtension(harness.pi as never); await harness.emitLifecycle("session_start");
+    const parent = await waitForSessionByName(peer, "topic-capability-parent");
+    const tool = harness.tools.find((tool) => tool.name === "intercom")!;
+    for (const params of [{ action: "subscribe", topic: "capability/test" }, { action: "publish", topic: "capability/test", message: "Current state" }]) {
+      const result = await tool.execute("capability", params, new AbortController().signal, undefined, harness.ctx);
+      if (legacy) { assert.equal(result.isError, true); assert.match(result.content[0].text, /older broker/); assert.match(result.content[0].text, /close normally/); }
+      else assert.ok(!result.isError, result.content[0].text);
+    }
+    assert.equal(peer.supportsTopics, !legacy);
+    const message = once(peer, "message");
+    const sent = await tool.execute("direct", { action: "send", to: peer.sessionId, message: "Direct messages still work", delivery: "steer" }, new AbortController().signal, undefined, harness.ctx);
+    assert.ok(!sent.isError);
+    assert.equal((await message)[1].content.text, "Direct messages still work");
+    assert.equal((await waitForSessionByName(peer, "topic-capability-parent")).id, parent.id, "no disconnect, re-registration, or replacement runtime");
+  } finally { await harness.emitLifecycle("session_shutdown"); await peer.disconnect(); await stopBroker(broker); }
+});
+
 test("subagent live intercom events steer a registered child", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const broker = await setupBroker();
@@ -3735,7 +3796,8 @@ test("subagent live intercom events steer a registered child", { concurrency: fa
     assert.equal(message.content.text, "please report status");
     const deadline = Date.now() + 2000;
     while (deliveryAcks.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
-    assert.deepEqual(deliveryAcks, [{ requestId: "live-1", delivered: true }]);
+    assert.deepEqual(deliveryAcks, [{ requestId: "live-1", delivered: true, accepted: true, messageId: message.id, queued: undefined }]);
+    assert.equal(message.delivery, "steer");
   } finally {
     await harness.emitLifecycle("session_shutdown").catch(() => undefined);
     await child.disconnect().catch(() => undefined);

@@ -98,7 +98,7 @@ export async function evaluateRunAcceptance(input: {
 	const review = shouldRunAcceptanceFinalization(input.acceptance);
 	const selfReview = review ? acceptanceSelfReviewConfig(input.acceptance) : input.acceptance;
 	const initialLedger = await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: input.initialOutput, cwd: input.cwd, signal: input.signal });
-	if (!review || input.initial.exitCode !== 0 || input.initial.error || input.initial.interrupted || input.signal?.aborted) return initialLedger;
+	if (initialLedger.status === "blocked" || !review || input.initial.exitCode !== 0 || input.initial.error || input.initial.interrupted || input.signal?.aborted) return initialLedger;
 
 	const maxTurns = input.acceptance.finalization.maxTurns;
 	const turns: AcceptanceFinalizationTurn[] = [];
@@ -130,6 +130,7 @@ export async function evaluateRunAcceptance(input: {
 		}
 		if (input.nativeReport && authoritativeLedger.childReportParseError) authoritativeLedger.unconfirmedOutput = auditOutput;
 		turns.push(createFinalizationTurn({ turn, prompt, rawOutput: result.output, ledger: authoritativeLedger }));
+		if (authoritativeLedger.status === "blocked") return attachFinalizationToLedger({ initialLedger, authoritativeLedger, turns, status: "blocked", maxTurns });
 		const failure = acceptanceFailureMessage(authoritativeLedger);
 		if (!failure && !input.signal?.aborted) {
 			if (selfReview !== input.acceptance) authoritativeLedger = await evaluateAcceptance({ acceptance: input.acceptance, output: result.output, cwd: input.cwd, signal: input.signal });
@@ -170,7 +171,7 @@ export function formatAcceptanceFinalizationPrompt(input: {
 		`This is finalization turn ${input.turn} of ${input.maxTurns}. The run will be rejected if the contract is still not satisfied after turn ${input.maxTurns}.`,
 		"",
 		"If a criterion is incomplete and fixable in this session, keep working now before returning the final report.",
-		"If a criterion cannot be satisfied in this session, report it as not-satisfied, explain the blocker in residualRisks, and say what input would unblock progress.",
+		"Only an observed human-only boundary, such as Touch ID or an unavailable MFA code, may use criterion status blocked with concrete evidence and a nonempty humanAction describing the exact action needed. Preserve completed criteria/evidence; blocked acceptance is incomplete and stops further review and verification until explicit Continue. Ordinary errors, missing evidence, or fixable work remain not-satisfied, not blocked; explain the blocker in residualRisks.",
 		"Do not claim a criterion is satisfied unless the current work has concrete evidence from files, commands, validation output, or other inspectable artifacts.",
 		"Report cumulative evidence for the whole delegated task, not just this finalization turn. Retain still-valid changed files, tests, commands, and other evidence from the initial report; correct or remove evidence only when the final state invalidates it. No new edits during review does not mean changedFiles is empty.",
 		"",
@@ -271,7 +272,7 @@ export function attachFinalizationToLedger(input: {
 	initialLedger: AcceptanceLedger;
 	authoritativeLedger: AcceptanceLedger;
 	turns: AcceptanceFinalizationTurn[];
-	status: "completed" | "failed";
+	status: "completed" | "blocked" | "failed";
 	maxTurns: number;
 }): AcceptanceLedger {
 	return {

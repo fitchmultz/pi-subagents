@@ -61,6 +61,7 @@ test("client falls back to an owned live legacy socket without mutating it", asy
   try {
     await client.connect({ name: "legacy-client", cwd: "/tmp", model: "test", status: "idle" });
     assert.equal(client.sessionId, "legacy-session");
+    assert.equal(client.supportsTopics, false, "older registration replies do not claim topic support");
     assert.equal(fs.statSync(legacyPath).mode & 0o777, modeBefore);
   } finally {
     await client.disconnect().catch(() => undefined);

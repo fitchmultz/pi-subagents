@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { IntercomClient } from "./broker/client.ts";
 import type { SubagentIntercomConnection } from "../shared/types.ts";
 import { formatSessionTarget, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
+import { isAttachment, isHumanMessageOrigin, type Attachment, type HumanMessageOrigin } from "./types.ts";
 
 const SUBAGENT_LIVE_INTERCOM_EVENT = "subagent:live-intercom";
 const SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT = "subagent:live-intercom-delivery";
@@ -23,24 +24,28 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function emitLiveDelivery(events: PiEvents, requestId: string | undefined, delivered: boolean, reason?: string): void {
+function emitLiveDelivery(events: PiEvents, requestId: string | undefined, delivered: boolean, reason?: string, receipt?: { id: string; accepted: boolean; queued?: boolean }): void {
   if (!requestId) return;
   events.emit(SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT, {
     requestId,
     delivered,
+    ...(receipt ? { messageId: receipt.id, accepted: receipt.accepted, queued: receipt.queued } : {}),
     ...(reason ? { reason } : {}),
   });
 }
 
-function parseLiveMessagePayload(payload: unknown): { requestId: string; to: string; message: string; delivery: "queue" | "steer" } | undefined {
+function parseLiveMessagePayload(payload: unknown): { requestId: string; to: string; message: string; delivery: "queue" | "steer"; messageId?: string; human?: HumanMessageOrigin; attachments?: Attachment[] } | undefined {
   if (!payload || typeof payload !== "object") return undefined;
-  const parsed = payload as { requestId?: unknown; to?: unknown; message?: unknown; delivery?: unknown };
+  const parsed = payload as { requestId?: unknown; to?: unknown; message?: unknown; delivery?: unknown; messageId?: unknown; human?: unknown; attachments?: unknown };
   if (typeof parsed.requestId !== "string" || typeof parsed.to !== "string" || typeof parsed.message !== "string") return undefined;
   return {
     requestId: parsed.requestId,
     to: parsed.to,
     message: parsed.message,
     delivery: parsed.delivery === "queue" ? "queue" : "steer",
+    ...(typeof parsed.messageId === "string" ? { messageId: parsed.messageId } : {}),
+    ...(isHumanMessageOrigin(parsed.human) ? { human: parsed.human } : {}),
+    ...(Array.isArray(parsed.attachments) && parsed.attachments.every(isAttachment) ? { attachments: parsed.attachments } : {}),
   };
 }
 
@@ -65,8 +70,8 @@ function relayLiveSubagentMessage(payload: unknown, deps: LiveEventDeps): void {
       return;
     }
     try {
-      const result = await activeClient.send(target, { text: parsed.message, delivery: parsed.delivery });
-      if (isLive()) emitLiveDelivery(deps.events, parsed.requestId, result.delivered, result.reason);
+      const result = await activeClient.send(target, { text: parsed.message, delivery: parsed.delivery, messageId: parsed.messageId, human: parsed.human, attachments: parsed.attachments });
+      if (isLive()) emitLiveDelivery(deps.events, parsed.requestId, result.delivered, result.reason, result);
     } catch (error) {
       if (isLive()) emitLiveDelivery(deps.events, parsed.requestId, false, getErrorMessage(error));
     }

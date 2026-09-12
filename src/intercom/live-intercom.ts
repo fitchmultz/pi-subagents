@@ -1,4 +1,12 @@
 import { randomUUID } from "node:crypto";
+
+export interface LiveMessageReceipt {
+	delivered: boolean;
+	accepted?: boolean;
+	queued?: boolean;
+	messageId?: string;
+	reason?: string;
+}
 import {
 	SUBAGENT_INTERCOM_HEALTH_REQUEST_EVENT,
 	SUBAGENT_INTERCOM_HEALTH_RESPONSE_EVENT,
@@ -14,28 +22,37 @@ export async function sendLiveSubagentMessage(events: IntercomEventBus, input: {
 	message: string;
 	delivery?: "steer" | "queue";
 	timeoutMs?: number;
+	signal?: AbortSignal;
 	extra?: Record<string, unknown>;
-}): Promise<{ delivered: boolean; reason?: string }> {
+}): Promise<LiveMessageReceipt> {
 	if (typeof events.on !== "function" || typeof events.emit !== "function") return { delivered: false, reason: "pi-intercom bridge unavailable" };
 	const requestId = randomUUID();
 	return new Promise((resolve) => {
 		let settled = false;
 		let unsubscribe: (() => void) | undefined;
 		let timer: ReturnType<typeof setTimeout> | undefined;
-		const finish = (result: { delivered: boolean; reason?: string }) => {
+		const finish = (result: LiveMessageReceipt) => {
 			if (settled) return;
 			settled = true;
 			if (timer) clearTimeout(timer);
+			input.signal?.removeEventListener("abort", abort);
 			unsubscribe?.();
 			resolve(result);
 		};
+		const abort = () => finish({ delivered: false, reason: "Message view/session closed; delivery not confirmed." });
 		unsubscribe = events.on(SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT, (data) => {
 			if (!data || typeof data !== "object") return;
-			const payload = data as { requestId?: unknown; delivered?: unknown; reason?: unknown };
+			const payload = data as LiveMessageReceipt & { requestId?: unknown };
 			if (payload.requestId !== requestId) return;
-			finish({ delivered: payload.delivered === true, ...(typeof payload.reason === "string" ? { reason: payload.reason } : {}) });
+			finish({ delivered: payload.delivered === true,
+				...(typeof payload.accepted === "boolean" ? { accepted: payload.accepted } : {}),
+				...(typeof payload.queued === "boolean" ? { queued: payload.queued } : {}),
+				...(typeof payload.messageId === "string" ? { messageId: payload.messageId } : {}),
+				...(typeof payload.reason === "string" ? { reason: payload.reason } : {}) });
 		});
 		timer = setTimeout(() => finish({ delivered: false, reason: "pi-intercom bridge unavailable" }), input.timeoutMs ?? 500);
+		if (input.signal?.aborted) { abort(); return; }
+		input.signal?.addEventListener("abort", abort, { once: true });
 		try {
 			events.emit(SUBAGENT_LIVE_INTERCOM_EVENT, {
 				...input.extra,

@@ -127,6 +127,8 @@ export function createResultWatcher(
 					agent: result.agent ?? data.agent ?? `step-${index + 1}`,
 					status: resolveSubagentResultStatus({
 						success: result.success,
+						exitCode: result.exitCode ?? undefined,
+						acceptance: result.acceptance,
 						interrupted: result.interrupted,
 						state: result.interrupted || typeof result.success !== "boolean" ? data.state : undefined,
 					}),

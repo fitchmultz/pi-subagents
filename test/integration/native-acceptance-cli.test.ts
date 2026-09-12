@@ -9,6 +9,8 @@ import { createEventBus, createTempDir, makeAgent, removeTempDir } from "../supp
 const originalEnv = { ...process.env };
 const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
 const cli = fs.realpathSync(path.join(sdkRoot, "dist/bundle/cli.js"));
+const cliWorker = path.join(sdkRoot, "dist/bundle/cli-worker.js");
+const nativeEntry = fs.existsSync(cliWorker) ? fs.realpathSync(cliWorker) : cli;
 const root = fs.realpathSync(createTempDir("native-report-cli-"));
 for (const name of ["h", "a", "t", "j", "c", "d", "x", "bin", "pi-subagents-r"]) fs.mkdirSync(path.join(root, name), { mode: 0o700 });
 fs.symlinkSync(cli, path.join(root, "bin/pi"));
@@ -50,6 +52,33 @@ async function waitFor(check: () => boolean, label: string) {
 	while (!check()) { assert.ok(Date.now() < deadline, label); await delay(20); }
 }
 
+it("native stop records the agent process exit separately from real bash/descendant cleanup", { timeout: 30_000 }, async () => {
+	const cwd = path.join(root, "native-bash-stop"), id = `${path.basename(root)}-bash-stop`;
+	fs.mkdirSync(cwd);
+	process.env.PI_FINAL_REPORT_CLI_INPUT = path.join(cwd, "input.json");
+	fs.writeFileSync(process.env.PI_FINAL_REPORT_CLI_INPUT, JSON.stringify({ scenario: "bash-stop", pidDir: cwd }));
+	const agent = makeAgent("worker", { model: "report-cli-fixture/faux-1", extensions: [extension], output: false });
+	const stop = new AbortController(), sessionFile = path.join(cwd, "session.jsonl");
+	const pending = runSync(cwd, [agent], "worker", "Run the controlled native bash command", { runId: id, sessionFile, interruptSignal: stop.signal });
+	await waitFor(() => fs.existsSync(path.join(cwd, "ready")), "real native bash must publish its ready file");
+	const shellPid = Number(fs.readFileSync(path.join(cwd, "shell.pid"), "utf8")), descendantPid = Number(fs.readFileSync(path.join(cwd, "descendant.pid"), "utf8"));
+	assert.equal(questionProcessAlive({ pid: shellPid }), true);
+	assert.equal(questionProcessAlive({ pid: descendantPid }), true);
+	stop.abort();
+	const result = await pending;
+	assert.equal(result.exitCode, 0, "workflow pause keeps its existing normalized outcome");
+	assert.equal(result.interrupted, true);
+	assert.ok(result.agentProcessExit, "real process exit evidence must be retained");
+	assert.ok(result.agentProcessExit.code !== 0 || result.agentProcessExit.signal, "the stopped process outcome is not manufactured exit zero");
+	await waitFor(() => !questionProcessAlive({ pid: shellPid }) && !questionProcessAlive({ pid: descendantPid }), "the known test shell and descendant must exit");
+	const { NativeAgentHistory } = await import("../../src/tui/agent-history.ts");
+	const history = new NativeAgentHistory().read(sessionFile);
+	const command = history.items.find((item) => item.kind === "tool" && item.title.startsWith("bash"));
+	assert.ok(command);
+	if (command.title.includes("result not recorded")) assert.match(command.details!, /exit is unconfirmed/);
+	fs.writeFileSync(path.join(cwd, "stop-evidence.json"), JSON.stringify({ result, shellPid, descendantPid, knownPidsGone: true, history }, null, 2));
+});
+
 for (const background of [false, true]) for (const scenario of ["single", "retry", "linger", "process-exit", "final-error"]) {
 	it(`${background ? "background" : "foreground"} bundled native CLI finalization: ${scenario}`, { timeout: 30_000 }, async () => {
 		const name = `${background ? "bg" : "fg"}-${scenario}`;
@@ -81,7 +110,7 @@ for (const background of [false, true]) for (const scenario of ["single", "retry
 			providerCalls: native?.providerCalls, nativeExitCode: native?.exitCode, shutdownStarted: native?.shutdownStarted, shutdownFinished: native?.shutdownFinished });
 		assert.equal(receipts.length, 2, "only the initial and finalization CLI processes run");
 		for (const receipt of receipts) {
-			assert.equal(receipt.cli, cli, "run the actual bundled native CLI, not the mock launcher");
+			assert.equal(receipt.cli, nativeEntry, "run the actual bundled native CLI worker from the selected SDK, not a mock launcher");
 			assert.equal(receipt.networkRequests, 0);
 			assert.equal(questionProcessAlive({ pid: receipt.pid }), false, "owned native child must exit");
 		}

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import {
 	acceptanceFailureMessage,
@@ -246,6 +247,40 @@ describe("acceptance gates", () => {
 			cwd,
 		});
 		assert.equal(structured.status, "checked");
+	}));
+
+	it("human-blocked acceptance retains completed evidence but never hides real failures or malformed blockers", async () => withTempRepo(async (cwd) => {
+		const acceptance = resolveEffectiveAcceptance({ explicit: { criteria: [{ id: "done", must: "Keep the completed change" }, { id: "auth", must: "Verify through the browser", evidence: ["manual-notes"] }], verify: [{ id: "no-run", command: "exit 7" }] } });
+		const criteria = [{ id: "done", status: "satisfied", evidence: "The change is saved in src/file.ts" }, { id: "auth", status: "blocked", evidence: "The sign-in dialog displays Touch ID", humanAction: "Complete Touch ID on the Mac" }];
+		const blocked = await evaluateAcceptance({ acceptance, cwd, output: report({ criteriaSatisfied: criteria, manualNotes: "Touch ID is visible" }) });
+		assert.equal(blocked.status, "blocked");
+		assert.equal(blocked.runtimeChecks.find((check) => check.id === "criterion:done")?.status, "passed");
+		assert.equal(blocked.runtimeChecks.find((check) => check.id === "criterion:auth")?.status, "blocked");
+		assert.deepEqual(blocked.childReport?.changedFiles, ["src/file.ts"]);
+		assert.deepEqual(blocked.verifyRuns, []);
+		const failed = await evaluateAcceptance({ acceptance, cwd, output: report({ criteriaSatisfied: [{ ...criteria[0], status: "not-satisfied" }, criteria[1]] }) });
+		assert.equal(failed.status, "rejected");
+		for (const humanAction of [undefined, "", " ", 42]) assert.equal(parseAcceptanceReport(report({ criteriaSatisfied: [{ ...criteria[1], humanAction }] })).report, undefined);
+		assert.equal((await evaluateAcceptance({ acceptance, cwd, output: "Blocked on authentication" })).status, "rejected");
+	}));
+
+	it("blocked inherited evidence stays incomplete without repair turns, but an independent staged-file violation fails", async () => withTempRepo(async (cwd) => {
+		const criteriaSatisfied = [{ id: "done", status: "satisfied", evidence: "The completed change is retained" }, { id: "auth", status: "blocked", evidence: "Touch ID prompt is visible", humanAction: "Complete Touch ID" }];
+		const config = { criteria: [{ id: "done", must: "Retain work", evidence: ["changed-files"] }, { id: "auth", must: "Validate sign-in" }], evidence: ["validation-output"], verify: [{ id: "no-run", command: "exit 7" }] };
+		const acceptance = resolveEffectiveAcceptance({ explicit: config });
+		const output = report({ criteriaSatisfied, validationOutput: [] });
+		const { evaluateRunAcceptance } = await import("../../src/runs/shared/acceptance-finalization.ts");
+		let repairTurns = 0;
+		const ledger = await evaluateRunAcceptance({ acceptance, initial: { exitCode: 0 }, initialOutput: output, sessionFile: path.join(cwd, "session.jsonl"), cwd, runTurn: async () => { repairTurns++; return { output }; } });
+		assert.equal(ledger.status, "blocked");
+		assert.equal(repairTurns, 0);
+		assert.deepEqual(ledger.verifyRuns, []);
+		assert.equal(ledger.runtimeChecks.find((check) => check.id === "evidence:validation-output")?.status, "blocked");
+		for (const args of [["init", "--quiet"], ["add", "file.txt"]]) assert.equal(spawnSync("git", args, { cwd }).status, 0);
+		const staged = await evaluateAcceptance({ cwd, output, acceptance: resolveEffectiveAcceptance({ explicit: { ...config, evidence: ["validation-output", "no-staged-files"] } }) });
+		assert.equal(staged.status, "rejected");
+		assert.equal(staged.runtimeChecks.find((check) => check.id === "no-staged-files")?.status, "failed");
+		assert.deepEqual(staged.verifyRuns, []);
 	}));
 
 	it("checked acceptance rejects not-satisfied required criteria", async () => withTempRepo(async (cwd) => {

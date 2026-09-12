@@ -3,7 +3,7 @@
 Direct 1:1 messaging between pi sessions on the same machine. Send context, findings, or requests from one session to another — whether you're driving the conversation or letting agents coordinate.
 
 ```text
-User flow: press Alt+M or run /intercom to pick a session and send a message
+Your agents: Alt+M or /agents. Other peers: /intercom [all]. Quiet current state: /intercom topics.
 ```
 
 ## Why
@@ -16,11 +16,11 @@ Sometimes you're running multiple pi sessions — one researching, one executing
 
 Unlike pi-messenger (a shared chat room for multi-agent swarms), pi-intercom is for targeted 1:1 communication where you pick the recipient.
 
-Intercom is bundled with `pi-subagents`: delegated child agents get a child-only `contact_supervisor` tool when the subagent extension supplies bridge metadata. Use blocking `need_decision` or `interview_request` only when the ephemeral child cannot safely continue and must remain alive for the reply. Use `progress_update` only for a concise material update that may intentionally wait behind active supervisor work. Normal sessions only see the regular `intercom` tool.
+Intercom is bundled with `pi-subagents`: delegated child agents get a child-only `contact_supervisor` tool when the subagent extension supplies bridge metadata. Use blocking `need_decision` or `interview_request` only when the ephemeral child cannot safely continue and must remain alive for the reply. Use `progress_update` only for a discovery or change the supervisor needs while working. It steers at the next tool boundary; skip starts, redundant narration, and routine completion, and retain material findings in the final result. Normal sessions only see the regular `intercom` tool.
 
 ## In One Minute
 
-Each Pi session with the bundled intercom extension loaded connects to a tiny local broker over a local IPC transport. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `Alt+M`). Messages that do not request a reply default to steer: they wake idle recipients and reach active recipients after the current tool call. Explicit queue waits behind active work, and passive delivery is a discouraged opt-in for human-visible breadcrumbs only.
+Each Pi session with the bundled intercom extension loaded connects to a tiny local broker over a local IPC transport. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small peer overlay (`/intercom`); Alt+M opens owned agent conversations when `pi-subagents` is loaded. Messages that do not request a reply default to steer: they wake idle recipients and reach active recipients after the current tool call. Important steers also release an attached foreground subagent wait without stopping its child. Explicit queue waits behind active work, and passive delivery is a discouraged opt-in for human-visible breadcrumbs only. Quiet topic state uses native custom entries outside model context, not passive messages.
 
 ## Install
 
@@ -69,12 +69,30 @@ If a session is unnamed, pi-intercom now exposes a runtime-only fallback alias l
 
 ### From the Keyboard
 
-Press **Alt+M** or type `/intercom` to open the current-project session list overlay. Type `/intercom all` to include sessions in other projects:
+With `pi-subagents`, **Alt+M** opens your task-labelled agent conversations first. See [the agent-view controls](../README.md#try-this-first) for direct human messaging, context replies, saved drafts, unread history, pinning, selected-child stop and explicit continuation. The plain `/intercom` command remains the current-project peer list. Type `/intercom all` to include sessions in other projects:
 
 1. **Select a session** — Use arrow keys to pick a target session
 2. **Compose message** — Write your message in the compose overlay. Pasted multiline handoffs are preserved.
 3. **Choose mode** — Press Tab to toggle between Send and Request Reply mode. Request Reply marks the message as needing a reply and adds the recipient reply hint; the overlay itself does not wait for or collect that reply.
 4. **Send** — Press Enter to send, Escape to cancel
+
+### Quiet topics and resource owners
+
+Subscribe explicitly to an exact topic; there are no automatic subscriptions or wildcard broadcasts. Topics span connected local sessions, so use a project/resource-specific name unless cross-project coordination is intended. Publications are self-contained latest state, not deltas. Each sender has one current record per topic; older queued versions cannot replace a newer record. Same-session subscriptions, publications and received records use native session entries. Late subscribers read current published state without replaying earlier interruptions.
+
+```typescript
+intercom({ action: "subscribe", topic: "browser/shared-profile/tab-4", awaitRelease: true })
+intercom({ action: "publish", topic: "browser/shared-profile/tab-4", resource: "tab-4", ownership: "held", message: "Reviewing the sign-in flow; keep this tab open." })
+intercom({ action: "topics", topic: "browser/shared-profile/tab-4" })
+intercom({ action: "publish", topic: "browser/shared-profile/tab-4", event: "release", resource: "tab-4", ownership: "released", message: "Sign-in check complete; this tab is available." })
+intercom({ action: "unsubscribe", topic: "browser/shared-profile/tab-4" })
+```
+
+Routine `event: "update"` publications replace quiet inspectable state; they do not become passive conversation messages or wake a model. Use **`/intercom topics`** for the scrollable current records. A compact footer shows the latest declared resource owner. Ownership is advisory, not an exclusive lock; disconnect means **unavailable/disconnected**, never an implied release.
+
+`event: "blocker"` and `event: "decision"` steer subscribed sessions. An explicit `event: "release"` interrupts only subscriptions with `awaitRelease: true`; other subscribers get the quiet record. Direct messages, answers and stop acknowledgements bypass topic subscriptions. Keep routine status and browser handoff prose here rather than repeatedly sending it into conversations. The native raw entries remain available as history, but old topic records are not replayed as new work.
+
+Topics require an updated broker. If an older broker is still serving open sessions, topic actions report that they are unavailable; ordinary messaging and active work stay untouched. Let those sessions close normally. Once the old broker exits, reconnect with the updated package and retry. No broker or active session is stopped or restarted to enable topics.
 
 ### From the Agent
 
@@ -137,7 +155,7 @@ If Esc clears a steered or follow-up message before native handoff, it is re-del
 
 An omitted `ask` still honors recipient availability; use explicit steer only when the sender must remain alive for a busy recipient's reply. The recipient should incorporate relevant context and continue its active task unless the message explicitly replaces it. Use `delivery:"queue"` only when delay is intentional; `queueMode:"replace"` keeps only the latest undelivered thread update.
 
-Deferred subagent progress can arrive after its result. When the exact generated thread and sender match a known terminal child, it is labeled **Historical/deferred progress from completed child; not new work**, with original send and Pi handoff times. The full body and wake behavior are preserved. The association survives reload in the existing saved delivery/receipt metadata; detached siblings, successor runs, unknown peers, questions, and answers are not reclassified.
+Old queued subagent progress is discarded from pending delivery when its exact generated thread and sender match a proven finished child. Its original checkpoint stays in saved history, but it does not trigger another turn or late notification. Actual final results remain available as completed work. The association survives reload; detached siblings, live successors, unmatched peers, questions, answers, and unrelated explicit queues are unchanged.
 
 Pending delivery is checkpointed in the saved Pi session before native handoff. Reloading, or resuming that same saved session in a fresh process, restores undelivered messages, including lost native queues, and the latest unsuperseded milestones once; a fork or new session does not adopt them. Resuming again does not replay consumed messages, and passive-only recovery does not start a model turn. Accepted pending messages have no fixed-count backlog cap or age-based expiry. Ordinary peer asks still use the configured reply timeout. Attachment content is included in the agent-visible body and stored in Pi session history. Only passive `send` renders without waking the recipient model.
 
@@ -253,7 +271,7 @@ When both bundled extension entries are enabled, parent sessions can use `agent_
 |--------|----------|----------|
 | `need_decision` | Persists the question, steers the supervisor, and waits without the ordinary ask timeout | The ephemeral child cannot safely continue without one decision, approval, or product/API/scope clarification |
 | `interview_request` | Persists structured questions and waits without the ordinary ask timeout | The ephemeral child cannot safely continue until it receives multiple structured answers |
-| `progress_update` | Non-blocking, deferred/coalesced update to the supervisor | A concise material update may intentionally wait behind active supervisor work |
+| `progress_update` | Non-blocking steer at the next tool boundary | A discovery or change the supervisor needs while working |
 
 Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally through `pi-subagents`.
 
@@ -309,7 +327,7 @@ contact_supervisor({
   reason: "progress_update",
   message: "Discovered the bug is in the retry wrapper, not the API client. Fixing the wrapper will also close issue #42."
 })
-// → Progress update accepted for supervisor planner. Delivery is deferred and coalesced; this does not confirm the supervisor has read it.
+// → Progress update accepted for supervisor planner. Queued for the next tool boundary; broker acceptance does not confirm the supervisor has read or acted on it.
 ```
 
 ### What the Supervisor Sees
@@ -373,7 +391,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`interview_request`** — Use only when the ephemeral child cannot safely continue until it receives multiple structured answers. It sends a formatted, steered agent-readable interview to the supervisor and keeps the child alive until the reply arrives. Questions use a local pi-interview-like shape: `{ id, type, question, options?, context? }` where `type` is `single`, `multi`, `text`, `image`, or `info`. `info` questions are context-only and do not need responses. The supervisor reply should be JSON with `{ "responses": [{ "id": "...", "value": ... }] }`. Parsed JSON replies are returned in `details.structuredReply`.
 
-**`progress_update`** — Sends a non-blocking update through intentionally deferred, replace-mode delivery. Returns immediately after broker acceptance, not supervisor consumption. The recipient retains the latest queued milestone until delivered or superseded; waiting more than a minute does not discard it. Use only for a concise material update that may wait behind active supervisor work.
+**`progress_update`** — Steers a material discovery at the next native tool boundary without waiting for a reply. The receipt confirms broker acceptance, not model consumption or action. Send only what the supervisor needs while working; skip starts, redundant status, and routine completion. Keep material findings in the final result.
 
 ### intercom actions
 

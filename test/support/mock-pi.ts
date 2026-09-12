@@ -11,6 +11,7 @@ interface MockPiResponse {
 	stderr?: string;
 	exitCode?: number;
 	delay?: number;
+	waitForFile?: string;
 	waitForCalls?: number;
 	ignoreSignals?: boolean;
 	keepAliveAfterFinalMessageMs?: number;

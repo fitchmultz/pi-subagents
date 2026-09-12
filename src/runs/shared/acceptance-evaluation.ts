@@ -32,13 +32,14 @@ function checkCriteriaSatisfied(criteria: ResolvedAcceptanceGate[], report: Acce
 	for (const criterion of criteria.filter((item) => item.severity !== "recommended")) {
 		const item = reports.get(criterion.id);
 		if (!item) checks.push({ id: `criterion:${criterion.id}`, status: "failed", message: `Required criterion '${criterion.id}' was not reported.` });
+		else if (item.status === "blocked") checks.push({ id: `criterion:${criterion.id}`, status: "blocked", message: `Needs human action: ${item.humanAction}. Evidence: ${item.evidence}` });
 		else if (item.status !== "satisfied") checks.push({ id: `criterion:${criterion.id}`, status: "failed", message: `Required criterion '${criterion.id}' was reported as ${item.status}.` });
 		else checks.push({ id: `criterion:${criterion.id}`, status: "passed", message: `Required criterion '${criterion.id}' satisfied.` });
 		for (const kind of criterion.evidence ?? []) {
 			const present = reportEvidencePresent(report, kind);
 			checks.push({
 				id: `criterion:${criterion.id}:evidence:${kind}`,
-				status: present ? "passed" : "failed",
+				status: present ? "passed" : item?.status === "blocked" ? "blocked" : "failed",
 				message: present ? `${kind} evidence present for '${criterion.id}'.` : `${kind} evidence missing for required criterion '${criterion.id}'.`,
 			});
 		}
@@ -74,11 +75,17 @@ function checkNoStagedFiles(cwd: string): AcceptanceRuntimeCheck {
 function runStructuralChecks(acceptance: ResolvedAcceptanceConfig, report: AcceptanceReport, cwd: string): AcceptanceRuntimeCheck[] {
 	const checks: AcceptanceRuntimeCheck[] = [];
 	checks.push(...checkCriteriaSatisfied(acceptance.criteria, report));
+	if (!acceptance.criteria.length) for (const item of report.criteriaSatisfied ?? []) {
+		if (item.status === "blocked") checks.push({ id: `criterion:${item.id ?? "human-action"}`, status: "blocked", message: `Needs human action: ${item.humanAction}. Evidence: ${item.evidence}` });
+	}
+	const blockedCriteria = new Set((report.criteriaSatisfied ?? []).filter((criterion) => criterion.status === "blocked").map((criterion) => criterion.id));
+	const blockedEvidence = new Set(acceptance.criteria.filter((criterion) => blockedCriteria.has(criterion.id)).flatMap((criterion) => criterion.evidence));
 	for (const kind of acceptance.evidence) {
 		const present = reportEvidencePresent(report, kind);
+		const deferred = blockedEvidence.has(kind) || (!acceptance.criteria.length && blockedCriteria.size > 0);
 		checks.push({
 			id: `evidence:${kind}`,
-			status: present ? "passed" : "failed",
+			status: present ? "passed" : deferred ? "blocked" : "failed",
 			message: present ? `${kind} evidence present.` : `${kind} evidence missing from child report.`,
 		});
 	}
@@ -204,12 +211,13 @@ export async function evaluateAcceptance(input: {
 		return ledger;
 	}
 
-	if (LEVEL_RANK[acceptance.level] >= LEVEL_RANK.checked) {
+	if (LEVEL_RANK[acceptance.level] >= LEVEL_RANK.checked || parsed.report.criteriaSatisfied?.some((item) => item.status === "blocked")) {
 		ledger.runtimeChecks = runStructuralChecks(acceptance, parsed.report, input.cwd);
 		if (ledger.runtimeChecks.some((check) => check.status === "failed")) {
 			ledger.status = "rejected";
 			return ledger;
 		}
+		if (ledger.runtimeChecks.some((check) => check.status === "blocked")) { ledger.status = "blocked"; return ledger; }
 		ledger.status = "checked";
 	}
 
@@ -233,6 +241,12 @@ export async function evaluateAcceptance(input: {
 	return ledger;
 }
 
+
+export function acceptanceHumanAction(ledger: AcceptanceLedger | undefined): string | undefined {
+	if (ledger?.status !== "blocked") return undefined;
+	return ledger.childReport?.criteriaSatisfied?.filter((criterion) => criterion.status === "blocked")
+		.map((criterion) => `${criterion.id ?? "Criterion"}: ${criterion.humanAction}\nEvidence: ${criterion.evidence}`).join("\n");
+}
 
 export function acceptanceFailureMessage(ledger: AcceptanceLedger): string | undefined {
 	if (ledger.status !== "rejected") return undefined;

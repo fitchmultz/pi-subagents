@@ -21,6 +21,7 @@ import { asyncStatusToSummary, listAsyncRuns } from "./async-status.ts";
 import { isTuiContext } from "../../shared/ui-mode.ts";
 
 interface AsyncJobTrackerOptions {
+	render?: (ctx: ExtensionContext, jobs: AsyncJobState[]) => void;
 	completionRetentionMs?: number;
 	pollIntervalMs?: number;
 	resultsDir?: string;
@@ -42,7 +43,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	let restoreDiscoverySessionId: string | undefined;
 	let restoreDiscoveryDeadline = 0;
 	const rerenderWidget = (ctx: ExtensionContext, jobs = Array.from(state.asyncJobs.values())) => {
-		renderWidget(ctx, jobs);
+		(options.render ?? renderWidget)(ctx, jobs);
 		const uiWithRender: ExtensionContext["ui"] & { requestRender?: () => void } = ctx.ui;
 		uiWithRender.requestRender?.();
 	};
@@ -196,7 +197,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 						const summary = asyncStatusToSummary(job.asyncDir, status);
 						const previousStatus = job.status;
 						job.status = summary.state;
-						if (job.status !== "complete" && job.status !== "failed" && job.status !== "paused") cancelCleanup(job.asyncId);
+						if (job.status !== "complete" && job.status !== "failed" && job.status !== "blocked" && job.status !== "paused") cancelCleanup(job.asyncId);
 						job.sessionId = summary.sessionId ?? job.sessionId;
 						job.activityState = summary.activityState;
 						job.lastActivityAt = summary.lastActivityAt ?? job.lastActivityAt;
@@ -230,7 +231,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 						}
 						job.totalTokens = summary.totalTokens ?? job.totalTokens;
 						job.sessionFile = summary.sessionFile ?? job.sessionFile;
-						if ((job.status === "complete" || job.status === "failed" || job.status === "paused") && !nestedRefreshFailed && !hasLiveNestedDescendants(job.nestedChildren) && (previousStatus !== job.status || !state.cleanupTimers.has(job.asyncId))) {
+						if ((job.status === "complete" || job.status === "failed" || job.status === "blocked" || job.status === "paused") && !nestedRefreshFailed && !hasLiveNestedDescendants(job.nestedChildren) && (previousStatus !== job.status || !state.cleanupTimers.has(job.asyncId))) {
 							scheduleCleanup(job.asyncId);
 						}
 						if (widgetRenderKey(job) !== widgetStateBefore) widgetChanged = true;
@@ -299,7 +300,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		const job = state.asyncJobs.get(asyncId);
 		let nestedRefreshFailed = false;
 		if (job) {
-			job.status = result.state === "paused" ? "paused" : result.success ? "complete" : "failed";
+			job.status = result.state === "blocked" ? "blocked" : result.state === "paused" ? "paused" : result.success ? "complete" : "failed";
 			job.updatedAt = Date.now();
 			if (result.asyncDir) job.asyncDir = result.asyncDir;
 			try {
