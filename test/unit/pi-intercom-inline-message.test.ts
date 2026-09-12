@@ -95,6 +95,56 @@ test("registered subagent completion messages honor native collapse and expand w
         assert.deepEqual(peer.render(40), collapsed);
       }
     }
+    await t.test("compact previews reuse formatting until width, key hint or theme changes", () => {
+      const entry = {
+        role: "custom" as const, customType: "intercom_message", display: true, timestamp: 0,
+        content: message.content.text,
+        details: { from, message },
+      };
+      const options = { compactView: true, expanded: false, outputPad: 2 };
+      let colorCalls = 0;
+      let color = "\x1b[36m";
+      const fg = nativeTheme.fg;
+      const countingTheme = new Proxy(nativeTheme, {
+        get(target, property) {
+          if (property !== "fg") return Reflect.get(target, property);
+          return (...args: Parameters<typeof fg>) => {
+            colorCalls++;
+            return color + fg.apply(nativeTheme, args);
+          };
+        },
+      });
+      const component = renderer(entry, options, countingTheme);
+      assert.ok(component);
+      for (const width of [120, 40, 2, 1, 3, 80]) {
+        const lines = component.render(width);
+        const calls = colorCalls;
+        for (let frame = 0; frame < 10; frame++) assert.deepEqual(component.render(width), lines);
+        assert.equal(colorCalls, calls, "unchanged frames must not repeat styling and truncation");
+        assert.deepEqual(lines, renderer(entry, options, countingTheme)!.render(width));
+        assert.ok(lines.every((line) => visibleWidth(line) <= width));
+      }
+      const before = component.render(120);
+      setKeybindings(new KeybindingsManager({ "app.tools.expand": ["ctrl+e"] }));
+      try {
+        const newHint = component.render(120);
+        assert.notDeepEqual(newHint, before);
+        assert.match(newHint.map(stripVTControlCharacters).join("\n"), /ctrl\+e/i);
+        assert.deepEqual(newHint, renderer(entry, options, countingTheme)!.render(120));
+        color = "\x1b[35m";
+        component.invalidate();
+        const recolored = component.render(120);
+        assert.notDeepEqual(recolored, newHint);
+        assert.deepEqual(recolored.map(stripVTControlCharacters), newHint.map(stripVTControlCharacters));
+        assert.deepEqual(recolored, renderer(entry, options, countingTheme)!.render(120));
+        setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
+        const noHint = component.render(120);
+        assert.doesNotMatch(noHint.map(stripVTControlCharacters).join("\n"), /ctrl\+e/i);
+        assert.deepEqual(noHint, renderer(entry, options, countingTheme)!.render(120));
+      } finally {
+        setKeybindings(new KeybindingsManager());
+      }
+    });
     await t.test("direct compact Intercom previews preserve state, attachments and attention exceptions", () => {
       const bodyText = "Historical/deferred progress from completed child (completed); not new work.\nOriginally sent: earlier\nDelivered to Pi: later\n\nSubagent progress update.\n\n📎 notes.ts\nconst proof = 'café e\u0301 中文 👩🏽‍💻';\nLast attachment detail.";
       const received = {

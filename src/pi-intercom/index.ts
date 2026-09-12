@@ -1753,14 +1753,21 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           ? body.split("\n").slice(2, 6).join(" · ")
           : body.split("\n").find((line) => line.trim()) || "(no text)";
       const preview = `${sender}: ${summary}`.replace(/\s+/g, " ").trim();
+      let cachedWidth: number | undefined;
+      let cachedKey: string | undefined;
+      let cachedLines: string[] | undefined;
       return {
         render(width) {
           const key = keyText("app.tools.expand");
+          if (cachedLines && cachedWidth === width && cachedKey === key) return cachedLines;
           const hint = key ? theme.fg("dim", ` · ${key}`) : "";
           const text = `${" ".repeat(options.outputPad)}${theme.fg("accent", "📨 ")}${theme.fg("muted", preview)}`;
-          return [truncateToWidth(truncateToWidth(text, width - visibleWidth(hint)) + hint, width)];
+          cachedWidth = width;
+          cachedKey = key;
+          cachedLines = [truncateToWidth(truncateToWidth(text, width - visibleWidth(hint)) + hint, width)];
+          return cachedLines;
         },
-        invalidate() {},
+        invalidate() { cachedLines = undefined; },
       };
     }
     const expanded = options.expanded || details.from.id !== "subagent-result" || details.from.status === "needs_attention" || details.message.expectsReply === true || Boolean(details.replyCommand);
