@@ -12,6 +12,7 @@
  *   { "asyncByDefault": false, "maxSubagentDepth": 1, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
  */
 
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -23,7 +24,8 @@ import { ARTIFACT_CLEANUP_DAYS, cleanupAllArtifactDirs, cleanupOldArtifacts, get
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
 import { cleanupOldRunStorage, ensureSafeTempPath, ensureTempRoot } from "../shared/temp-root.ts";
-import { renderWidget, renderSubagentResult } from "../tui/render.ts";
+import { renderSubagentResult } from "../tui/render.ts";
+import { AgentViewController } from "../tui/agent-view.ts";
 import { AgentRunsParams, DelegateParams, SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
@@ -161,7 +163,7 @@ function createSlashResultComponent(
 function parseSubagentNotifyContent(content: string): SubagentNotifyDetails | undefined {
 	const lines = content.split("\n");
 	const header = lines[0] ?? "";
-	const match = header.match(/^Background task (completed|failed|paused): \*\*(.+?)\*\*(?:\s+(\([^)]*\)))?$/);
+	const match = header.match(/^Background task (completed|failed|blocked|paused): \*\*(.+?)\*\*(?:\s+(\([^)]*\)))?$/);
 	if (!match) return undefined;
 	const body = lines.slice(2);
 	let sessionIndex = -1;
@@ -250,6 +252,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const asyncByDefault = config.asyncByDefault !== false;
 	const tempArtifactsDir = getArtifactsDir(null);
 
+	let agentView: AgentViewController | undefined;
 	const state: SubagentState = {
 		baseCwd: "",
 		currentSessionId: null,
@@ -280,6 +283,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	);
 
 	const runtimeCleanup = () => {
+		agentView?.dispose();
 		stopResultWatcher();
 		clearPendingForegroundControlNotices(state);
 		if (state.poller) {
@@ -289,7 +293,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	};
 	globalStore[runtimeCleanupStoreKey] = runtimeCleanup;
 
-	const { ensurePoller, handleStarted, handleComplete, restoreJobs, resetJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
+	const { ensurePoller, handleStarted, handleComplete, restoreJobs, resetJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR, { render: () => agentView?.refresh() });
 	const executor = createSubagentExecutor({
 		pi,
 		state,
@@ -303,6 +307,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			if (state.currentSessionId !== resolveCurrentSessionId(ctx.sessionManager)) resetSessionState(ctx);
 		},
 	});
+
+	agentView = new AgentViewController(pi, state, (params, ctx) => executor.execute(randomUUID(), params, undefined, undefined, ctx));
+	state.onRunsChanged = () => agentView?.refresh(true);
 
 	pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
 		const details = resolveSlashMessageDetails(message.details);
@@ -328,7 +335,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			: new Text(content, 0, 0);
 		const icon = details.status === "completed"
 			? theme.fg("success", "✓")
-			: details.status === "paused"
+			: details.status === "paused" || details.status === "blocked"
 				? theme.fg("warning", "■")
 				: theme.fg("error", "✗");
 		const parts: string[] = [];
@@ -436,10 +443,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "agent_runs",
 		label: "Agent Runs",
-		description: "List your delegated runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; overrides apply only to a new continuation, never to live acceptance. profiles lists agents. Results arrive automatically; history survives reload.",
+		description: "List your delegated runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; async:false waits for its actual result. Wait attaches to an owned run without cancelling the child when the wait is interrupted. Overrides apply only to a new continuation, never to live acceptance. profiles lists agents. Results arrive automatically; history survives reload.",
 		parameters: AgentRunsParams,
 		async execute(id, params, signal, onUpdate, ctx) {
-			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list", questions: "questions", answer: "answer", review: "review" };
+			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", wait: "wait", profiles: "list", questions: "questions", answer: "answer", review: "review" };
 			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike({ ...params, action: actions[params.action] }), signal, onUpdate, ctx));
 		},
 		renderResult: renderSubagentResult,
@@ -558,7 +565,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			details: payload as SubagentControlMessageDetails,
 		});
 	};
-	const eventUnsubscribes = [
+	const subscribeEvents = () => [
 		pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (data) => {
 			handleStarted(data);
 			const started = data as import("../shared/types.ts").AsyncStartedEvent;
@@ -575,6 +582,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}),
 		pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler),
 	];
+	let eventUnsubscribes = subscribeEvents();
 	globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
 
 	pi.on("tool_result", (event, ctx) => {
@@ -582,7 +590,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		if (!isTuiContext(ctx)) return;
 		state.lastUiContext = ctx;
 		if (state.asyncJobs.size > 0) {
-			renderWidget(ctx, Array.from(state.asyncJobs.values()));
+			agentView?.refresh();
 			const uiWithRender: ExtensionContext["ui"] & { requestRender?: () => void } = ctx.ui;
 			uiWithRender.requestRender?.();
 			ensurePoller();
@@ -601,6 +609,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	};
 
 	function resetSessionState(ctx: ExtensionContext) {
+		agentView?.dispose();
 		ensureAccessibleDir(RESULTS_DIR);
 		ensureAccessibleDir(ASYNC_DIR);
 		state.baseCwd = ctx.cwd;
@@ -615,6 +624,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			resetJobs(ctx);
 		}
 		restoreOwnedRuns(state, ctx);
+		agentView?.start(ctx);
 		cleanupOldRunStorage();
 		cleanupOldChainDirs();
 		cleanupAllArtifactDirs(ARTIFACT_CLEANUP_DAYS);
@@ -625,10 +635,16 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		if (!eventUnsubscribes.length) {
+			eventUnsubscribes = subscribeEvents();
+			globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
+			registerSubagentNotify(pi);
+		}
 		resetSessionState(ctx);
 	});
 
 	pi.on("session_shutdown", () => {
+		agentView?.dispose();
 		for (const unsubscribe of eventUnsubscribes) {
 			try {
 				unsubscribe();
@@ -639,6 +655,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		if (globalStore[eventUnsubscribeStoreKey] === eventUnsubscribes) {
 			delete globalStore[eventUnsubscribeStoreKey];
 		}
+		eventUnsubscribes = [];
 		stopResultWatcher();
 		if (state.poller) clearInterval(state.poller);
 		state.poller = null;

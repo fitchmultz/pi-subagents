@@ -115,10 +115,10 @@ function nestedRunDisplayName(run: NestedRunSummary): string {
 	return run.id;
 }
 
-function normalizedState(state: AsyncStatus["state"] | NestedRunSummary["state"]): "live" | "completed" | "paused" | "failed" | "unknown" {
+function normalizedState(state: AsyncStatus["state"] | NestedRunSummary["state"]): "live" | "completed" | "paused" | "blocked" | "failed" | "unknown" {
 	if (state === "running" || state === "queued") return "live";
 	if (state === "complete") return "completed";
-	if (state === "paused" || state === "failed") return state;
+	if (state === "paused" || state === "blocked" || state === "failed") return state;
 	return "unknown";
 }
 

@@ -29,7 +29,7 @@ import { readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNe
 import { inspectSubagentStatus } from "../background/run-status.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
-import { buildManagementControl, formatLiveIntercomActionLines, formatRunAction } from "../../shared/status-format.ts";
+import { buildManagementControl, formatAgentProcessExit, formatLiveIntercomActionLines, formatRunAction } from "../../shared/status-format.ts";
 import { acceptanceInputFromResolved } from "../shared/acceptance.ts";
 import { ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun, saveForegroundRun } from "../shared/run-records.ts";
 import {
@@ -79,6 +79,12 @@ export function getForegroundControl(state: SubagentState, runId: string | undef
 		if (!newest || control.updatedAt > newest.updatedAt) newest = control;
 	}
 	return newest;
+}
+
+export function interruptForegroundChild(control: ForegroundControlState, index?: number): boolean {
+	const interrupt = index === undefined ? control.interrupt : control.activeChildren?.get(index)?.interrupt
+		?? (!control.activeChildren?.size && (control.currentIndex ?? 0) === index ? control.interrupt : undefined);
+	return interrupt?.() === true;
 }
 
 function formatForegroundActivity(control: ForegroundControlState): string | undefined {
@@ -211,8 +217,9 @@ function foregroundResultChildren(run: ForegroundResumeRun) {
 	return run.children.map((child) => ({ child, finalOutput: child.summary }));
 }
 
-function rememberedForegroundState(children: ReturnType<typeof foregroundResultChildren>): "completed" | "paused" | "failed" | "unknown" {
+function rememberedForegroundState(children: ReturnType<typeof foregroundResultChildren>): "completed" | "paused" | "blocked" | "failed" | "unknown" {
 	if (children.some(({ child }) => child.status === "failed" || child.status === "timed-out")) return "failed";
+	if (children.some(({ child }) => child.status === "blocked")) return "blocked";
 	if (children.some(({ child }) => child.status === "paused")) return "paused";
 	return children.some(({ child }) => child.status === "detached") ? "unknown" : "completed";
 }
@@ -267,7 +274,7 @@ type NestedResumeSourceTarget = {
 	kind: "revive";
 	source: "nested";
 	runId: string;
-	state: "complete" | "failed" | "paused";
+	state: "complete" | "failed" | "blocked" | "paused";
 	agent: string;
 	index: number;
 	intercomTarget: string;
@@ -382,16 +389,17 @@ function emitControlNotification(input: {
 	}
 }
 
-export function writeAsyncInterruptRequest(asyncDir: string, runId: string): void {
+export function writeAsyncInterruptRequest(asyncDir: string, runId: string, index?: number): void {
 	writeAtomicJson(path.join(asyncDir, ASYNC_CONTROL_REQUEST_FILE), {
 		requestId: randomUUID(),
 		runId,
 		action: "interrupt",
+		...(index !== undefined ? { index } : {}),
 		createdAt: Date.now(),
 	});
 }
 
-export function interruptAsyncRun(state: SubagentState, runId: string | undefined): SubagentExecutionResult | null {
+export function interruptAsyncRun(state: SubagentState, runId: string | undefined, index?: number): SubagentExecutionResult | null {
 	const target = getAsyncInterruptTarget(state, runId);
 	if (!target) return null;
 	const status = readStatus(target.asyncDir);
@@ -402,15 +410,21 @@ export function interruptAsyncRun(state: SubagentState, runId: string | undefine
 			details: { mode: "management", results: [] },
 		};
 	}
+	if (index !== undefined && !status.indexedControl && (status.steps?.length ?? 0) > 1) return {
+		content: [{ type: "text", text: "This older runner does not support selected-child stop. No stop was sent; whole-run stop remains an explicit separate action." }], isError: true, details: { mode: "management", results: [] },
+	};
+	if (index !== undefined && (!Number.isSafeInteger(index) || index < 0 || status.steps?.[index]?.status !== "running")) {
+		return { content: [{ type: "text", text: `Async run ${target.asyncId} has no running child at index ${index}. No siblings were stopped.` }], isError: true, details: { mode: "management", results: [] } };
+	}
 	try {
-		writeAsyncInterruptRequest(target.asyncDir, target.asyncId);
+		writeAsyncInterruptRequest(target.asyncDir, target.asyncId, index);
 		const tracked = state.asyncJobs.get(target.asyncId);
 		if (tracked) {
 			tracked.activityState = undefined;
 			tracked.updatedAt = Date.now();
 		}
 		return {
-			content: [{ type: "text", text: `Interrupt requested for async run ${target.asyncId}.` }],
+			content: [{ type: "text", text: `Interrupt requested for async run ${target.asyncId}${index !== undefined ? ` child ${index} only` : ""}. Agent and command exit are not yet confirmed.` }],
 			details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: target.asyncId }) },
 		};
 	} catch (error) {
@@ -464,7 +478,7 @@ function resolveNestedResumeTarget(match: ResolvedSubagentRunId & { kind: "neste
 	if (run.state === "running" || run.state === "queued") throw new Error(`Nested run '${run.id}' is live; route the follow-up to the owner process instead.`);
 	const agent = nestedRunAgent(run);
 	if (!agent) throw new Error(`Could not determine child agent for nested run '${run.id}'.`);
-	const state = run.state === "complete" || run.state === "failed" || run.state === "paused" ? run.state : "failed";
+	const state = run.state === "complete" || run.state === "failed" || run.state === "blocked" || run.state === "paused" ? run.state : "failed";
 	const asyncDir = resolveNestedAsyncDir(match.match.rootRunId, run);
 	const effectiveAcceptance = asyncDir ? readStatus(asyncDir)?.steps?.[0]?.acceptance?.effectiveAcceptance : undefined;
 	return {
@@ -491,7 +505,7 @@ async function waitForNestedControlResult(target: ResolvedSubagentRunId & { kind
 	return undefined;
 }
 
-async function sendNestedControlRequest(target: ResolvedSubagentRunId & { kind: "nested" }, action: "interrupt" | "resume", message?: string) {
+async function sendNestedControlRequest(target: ResolvedSubagentRunId & { kind: "nested" }, action: "interrupt" | "resume", message?: string, index?: number) {
 	const requestId = randomUUID();
 	const targetChildIndex = target.match.run.path?.[0]?.stepIndex ?? target.match.run.parentStepIndex;
 	writeNestedControlRequest(target.match.route, {
@@ -500,19 +514,22 @@ async function sendNestedControlRequest(target: ResolvedSubagentRunId & { kind: 
 		targetRunId: target.match.run.id,
 		...(targetChildIndex !== undefined ? { targetChildIndex } : {}),
 		action,
+		...(index !== undefined ? { index } : {}),
 		...(message ? { message } : {}),
 	});
 	return waitForNestedControlResult(target, requestId);
 }
 
-function directNestedAsyncInterrupt(target: ResolvedSubagentRunId & { kind: "nested" }): SubagentExecutionResult | undefined {
+function directNestedAsyncInterrupt(target: ResolvedSubagentRunId & { kind: "nested" }, index?: number): SubagentExecutionResult | undefined {
 	const run = target.match.run;
 	const asyncDir = resolveNestedAsyncDir(target.match.rootRunId, run);
 	if (!asyncDir) return undefined;
 	const status = readStatus(asyncDir);
 	if (!status || status.runId !== run.id || status.state !== "running") return undefined;
+	if (index !== undefined && !status.indexedControl && (status.steps?.length ?? 0) > 1) return undefined;
+	if (index !== undefined && status.steps?.[index]?.status !== "running") return { content: [{ type: "text", text: `No running nested child at index ${index}. No siblings were stopped.` }], isError: true, details: { mode: "management", results: [] } };
 	try {
-		writeAsyncInterruptRequest(asyncDir, run.id);
+		writeAsyncInterruptRequest(asyncDir, run.id, index);
 		return { content: [{ type: "text", text: `Interrupt requested for nested async run ${run.id}.` }], details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: run.id, intercomTarget: run.intercomTarget ?? run.leafIntercomTarget, canInterrupt: true }) } };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -520,12 +537,15 @@ function directNestedAsyncInterrupt(target: ResolvedSubagentRunId & { kind: "nes
 	}
 }
 
-export async function interruptNestedRun(target: ResolvedSubagentRunId & { kind: "nested" }): Promise<SubagentExecutionResult> {
+export async function interruptNestedRun(target: ResolvedSubagentRunId & { kind: "nested" }, index?: number): Promise<SubagentExecutionResult> {
 	const run = target.match.run;
 	if (run.state === "complete") return { content: [{ type: "text", text: `Nested run ${run.id} is already complete and cannot be interrupted.` }], isError: true, details: { mode: "management", results: [] } };
 	if (run.state === "failed") return { content: [{ type: "text", text: `Nested run ${run.id} has failed and cannot be interrupted.` }], isError: true, details: { mode: "management", results: [] } };
 	if (run.state === "paused") return { content: [{ type: "text", text: `Nested run ${run.id} is already paused.` }], isError: true, details: { mode: "management", results: [] } };
-	const result = await sendNestedControlRequest(target, "interrupt");
+	if (index !== undefined && run.indexedControl !== true) return directNestedAsyncInterrupt(target, index) ?? {
+		content: [{ type: "text", text: "This nested owner does not advertise selected-child stop. No stop was sent; inspect the child or explicitly stop the whole run." }], isError: true, details: { mode: "management", results: [] },
+	};
+	const result = await sendNestedControlRequest(target, "interrupt", undefined, index);
 	if (result?.ok) return {
 		content: [{ type: "text", text: result.message }],
 		details: {
@@ -533,7 +553,7 @@ export async function interruptNestedRun(target: ResolvedSubagentRunId & { kind:
 			managementControl: buildManagementControl({ state: "live", runId: run.id, intercomTarget: run.intercomTarget ?? run.leafIntercomTarget, canResume: true, canInterrupt: true }),
 		},
 	};
-	const direct = directNestedAsyncInterrupt(target);
+	const direct = directNestedAsyncInterrupt(target, index);
 	if (direct) return direct;
 	if (result) return { content: [{ type: "text", text: result.message }], isError: true, details: { mode: "management", results: [] } };
 	return { content: [{ type: "text", text: `Nested run ${run.id} owner is not reachable and no safe direct async interrupt fallback is available.` }], isError: true, details: { mode: "management", results: [] } };
@@ -610,6 +630,7 @@ export async function nudgeSubagentRun(input: {
 			const children = view.children.filter((child) => child.state === "live" && (input.params.index === undefined || input.params.index === child.index));
 			if (children.length !== 1) throw new Error(`Run '${owned.runId}' has ${children.length} matching live children. Provide index to choose one.`);
 			const child = children[0]!;
+			if (child.activity?.status === "pending") throw new Error(`Child ${child.index} is waiting to start in run ${owned.runId}. No message was sent and no continuation was started.`);
 			runId = owned.runId; agent = child.agent; index = child.index;
 			target = resolveSubagentIntercomTarget(runId, agent, index);
 		} else {
@@ -620,7 +641,7 @@ export async function nudgeSubagentRun(input: {
 		if (terminal) return terminal;
 		if (resolved?.kind === "nested") {
 			const run = resolved.match.run;
-			const state = run.state === "running" || run.state === "queued" ? "live" : run.state === "complete" ? "completed" : run.state === "paused" || run.state === "failed" ? run.state : "unknown";
+			const state = run.state === "running" || run.state === "queued" ? "live" : run.state === "complete" ? "completed" : run.state === "paused" || run.state === "blocked" || run.state === "failed" ? run.state : "unknown";
 			const intercomTarget = run.intercomTarget ?? run.leafIntercomTarget;
 			const childSafe = Boolean(nestedResolutionScopeForExecutor(input.deps));
 			const valid = [formatRunAction("status", run.id, {}, childSafe)];
@@ -871,7 +892,7 @@ export function reviveSavedSubagent(input: {
 		runId, ownerSessionId: input.ctx.sessionManager.getSessionId(), rootRunId: prior?.rootRunId ?? target.runId,
 		predecessorRunId: target.runId, predecessorIndex: target.index,
 		source: "async", mode: "single", cwd: effectiveCwd, task: followUp, startedAt: Date.now(),
-		children: [{ agent: selectedAgent, index: 0, sessionFile: target.sessionFile }],
+		children: [{ agent: selectedAgent, index: 0, task: followUp, label: prior?.children.find((child) => child.index === target.index)?.label, sessionFile: target.sessionFile }],
 	});
 	const native = !savedLaunch ? readNativeSessionConfiguration(target.sessionFile) : {};
 	const model = input.params.model ?? savedLaunch?.model ?? target.model ?? native.model;
@@ -881,7 +902,7 @@ export function reviveSavedSubagent(input: {
 	const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const result = executeAsyncSingle(runId, {
 		agent: selectedAgent,
-		task: buildRevivedAsyncTask(target, followUp),
+		task: buildRevivedAsyncTask(target, followUp, input.params.messageOrigin),
 		agentConfig,
 		ctx: {
 			pi: input.deps.pi,
@@ -941,6 +962,7 @@ export function reviveSavedSubagent(input: {
 }
 
 function resultSummaryForIntercom(result: SingleResult): string {
+	if (result.interrupted) return `${formatAgentProcessExit(result.agentProcessExit)}\n${getSingleResultOutput(result) || "Agent paused."}`;
 	const output = result.truncation?.truncated ? result.truncation.text : getSingleResultOutput(result);
 	if (result.exitCode !== 0 && result.error) {
 		return output ? `${result.error}\n\nOutput:\n${output}` : result.error;
@@ -973,6 +995,7 @@ async function emitForegroundResultIntercom(input: {
 		agent: result.agent,
 		status: resolveSubagentResultStatus({
 			exitCode: result.exitCode,
+			acceptance: result.acceptance,
 			interrupted: result.interrupted,
 			detached: result.detached,
 			timedOut: result.timedOut,
@@ -1073,7 +1096,7 @@ export function createDetachedCompletionGroup(input: {
 			const remembered = input.state.foregroundRuns?.get(input.runId);
 			const child = remembered?.children[index];
 			if (child) {
-				child.status = resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted, timedOut: result.timedOut });
+				child.status = resolveSubagentResultStatus({ exitCode: result.exitCode, acceptance: result.acceptance, interrupted: result.interrupted, timedOut: result.timedOut });
 				child.summary = resultSummaryForIntercom(result);
 				child.result = result;
 				child.artifactPath = result.artifactPaths?.outputPath;

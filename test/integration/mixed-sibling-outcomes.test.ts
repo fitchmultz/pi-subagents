@@ -106,6 +106,7 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 							if (host === "background") {
 								await waitFor(() => fs.existsSync(path.join(metadata, "result.json")), "durable background result");
 								terminal = readJson(path.join(metadata, "result.json"));
+								await waitFor(() => fs.existsSync(path.join(RESULTS_DIR, `${runId}.json`)), "notification file before the one-time scan");
 								watcher.primeExistingResults();
 								await waitFor(() => notifications.some((entry) => entry.runId === runId), "grouped background completion");
 							}

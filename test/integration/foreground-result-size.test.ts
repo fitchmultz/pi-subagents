@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import type { MockPi } from "../support/helpers.ts";
-import { createMockPi, createTempDir, removeTempDir, events } from "../support/helpers.ts";
+import { createEventBus, createMockPi, createTempDir, removeTempDir, events } from "../support/helpers.ts";
 
 function makeState(cwd: string) {
 	return {
@@ -25,7 +25,7 @@ function makeState(cwd: string) {
 function makeExecutor(cwd: string) {
 	return createSubagentExecutor({
 		pi: {
-			events: { emit: () => {} },
+			events: createEventBus(),
 			getSessionName: () => undefined,
 			setSessionName: () => {},
 		},

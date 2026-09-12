@@ -35,6 +35,7 @@ import { usesAgentDefaultOutput } from "./subagent-params.ts";
 import { createForegroundTimeoutExtensionRegistry, type ForegroundTimeoutExtensionRegistry } from "./timeout-extension.ts";
 import { buildChainSummary } from "../../shared/formatters.ts";
 import { compactForegroundDetails, getSingleResultOutput, resolveChildCwd } from "../../shared/utils.ts";
+import { acceptanceHumanAction } from "../shared/acceptance.ts";
 import { formatDetachedIntercomGuidance } from "../shared/intercom-detach.ts";
 import { recordRun } from "../shared/run-history.ts";
 import {
@@ -85,7 +86,7 @@ interface ChainExecutionDetailsInput {
 	outputs?: ChainOutputMap;
 	currentFlatIndex?: number;
 	dynamicChildren?: Record<number, Array<{ agent: string; label?: string; flatIndex: number; itemKey: string; outputName?: string; structured?: boolean; error?: string }>>;
-	dynamicGroupStatuses?: Record<number, { status: "pending" | "running" | "completed" | "failed" | "paused" | "detached" | "timed-out"; error?: string; acceptance?: SingleResult["acceptance"] }>;
+	dynamicGroupStatuses?: Record<number, { status: "pending" | "running" | "completed" | "failed" | "blocked" | "paused" | "detached" | "timed-out"; error?: string; acceptance?: SingleResult["acceptance"] }>;
 }
 
 interface ParallelChainRunInput {
@@ -812,6 +813,10 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					};
 				}
 
+				if (completion.status === "blocked") return {
+					content: [{ type: "text", text: appendWorktreeSummary("Needs human action — acceptance incomplete. Dependent steps did not run.\n" + parallelResults.map((result) => acceptanceHumanAction(result.acceptance)).filter(Boolean).join("\n"), worktreeSummary) }],
+					details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - step.parallel.length })),
+				};
 				if (!completion.advance) {
 					const errorMsg = `Parallel step ${stepIndex + 1} failed:\n${failureSummary}`;
 					const summary = buildChainSummary(chainSteps, results, chainDir, "failed", {
@@ -1010,6 +1015,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					})),
 				};
 			}
+			if (completion.status === "blocked") return { content: [{ type: "text", text: "Needs human action — acceptance incomplete. Dependent steps did not run.\n" + parallelResults.map((result) => acceptanceHumanAction(result.acceptance)).filter(Boolean).join("\n") }], details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - dynamicParallelStep.parallel.length })) };
 			if (!completion.advance) {
 				return buildChainExecutionErrorResult(completion.error!, makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - dynamicParallelStep.parallel.length }));
 			}
@@ -1217,6 +1223,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				};
 			}
 
+			if (completion.status === "blocked") return { content: [{ type: "text", text: appendCapturedWorktreeSummaries(`Needs human action — acceptance incomplete. Dependent steps did not run.\n${acceptanceHumanAction(r.acceptance)}`) }], details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - 1 })) };
 			if (!completion.advance) {
 				const summary = buildChainSummary(chainSteps, results, chainDir, "failed", {
 					index: stepIndex,

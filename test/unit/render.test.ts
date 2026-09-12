@@ -113,6 +113,21 @@ test("native async launch and revival cards collapse without changing their rece
 	}
 });
 
+test("blocked acceptance renders the human action instead of a completed chain step", async () => {
+	const { evaluateAcceptance, resolveEffectiveAcceptance } = await import("../../src/runs/shared/acceptance.ts");
+	const acceptance = await evaluateAcceptance({ cwd: process.cwd(), acceptance: resolveEffectiveAcceptance({ explicit: { criteria: ["Verify sign-in"] } }), output: '```acceptance-report\n{"criteriaSatisfied":[{"id":"criterion-1","status":"blocked","evidence":"Touch ID is visible","humanAction":"Complete Touch ID"}]}\n```' });
+	for (const mode of ["single", "parallel", "chain"] as const) {
+		const blocked = { ...result("authenticator", "Waiting for authentication"), acceptance };
+		const receipt: SubagentExecutionResult = { content: [{ type: "text", text: "Needs human action — acceptance incomplete" }], details: { mode, results: mode === "single" ? [blocked] : [result("worker", "Code retained"), blocked], ...(mode === "chain" ? { chainAgents: ["worker", "authenticator", "dependent"], currentStepIndex: 1, totalSteps: 3 } : {}) } };
+		const component = nativeTool("subagent", receipt);
+		assert.match(renderedText(component, 150), /Complete Touch ID/, "the compact result must name the required action");
+		component.setExpanded(true);
+		const expanded = renderedText(component, 150);
+		assert.match(expanded, /needs your action/);
+		assert.doesNotMatch(expanded, /done authenticator/);
+	}
+});
+
 test("async start rendering does not hide errors or management reports", () => {
 	const output = "Run: existing-run\nState: failed\nDiagnosis: runner could not start\nAction: inspect the saved log";
 	for (const details of [

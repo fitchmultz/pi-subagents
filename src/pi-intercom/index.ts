@@ -12,12 +12,13 @@ import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
 import { loadConfig, type IntercomConfig } from "./config.ts";
-import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode } from "./types.ts";
+import { isTopicSubscription, isTopicUpdate, type SessionInfo, type Message, type Attachment, type MessageDelivery, type QueueMode, type TopicUpdate } from "./types.ts";
+import { IntercomTopics } from "./topics.ts";
 import { isDurableSupervisorQuestion, ReplyTracker } from "./reply-tracker.ts";
 import { filterProjectSessions, formatPeerAwarenessHint, formatSessionTarget, formatTargetOptions, PEER_AWARENESS_HINT, resolveSessionProjectId, targetDisplayName, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
 import { registerSubagentLiveEventHandlers } from "./subagent-live-events.ts";
 import { formatRunAction } from "../shared/status-format.ts";
-import { cancelSupervisorQuestion, createSupervisorQuestion, readQuestionState, recordQuestionDelivery, saveQuestionAnswer, type SupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
+import { cancelSupervisorQuestion, createSupervisorQuestion, getRunMetadataDir, readRunJson, readQuestionState, recordQuestionDelivery, saveQuestionAnswer, type SupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -42,6 +43,7 @@ const SUBAGENT_CHILD_AGENT_ENV = "PI_SUBAGENT_CHILD_AGENT";
 const SUBAGENT_CHILD_INDEX_ENV = "PI_SUBAGENT_CHILD_INDEX";
 const SUBAGENT_INTERCOM_SESSION_NAME_ENV = "PI_SUBAGENT_INTERCOM_SESSION_NAME";
 const PACKAGE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+const TOPICS_UNAVAILABLE = "Intercom topics are unavailable while an older broker is still running. Direct messaging and active sessions are unchanged. Let its sessions close normally; after it exits, reconnect with the updated package and retry. Nothing was stopped or restarted.";
 
 interface ChildOrchestratorMetadata {
   orchestratorTarget: string;
@@ -120,7 +122,7 @@ function replyFailureReason(message: string): "no_pending_reply" | "ambiguous_re
 function inboundIdFromCustomMessage(message: unknown): string | undefined {
   if (typeof message !== "object" || message === null) return undefined;
   const record = message as Record<string, unknown>;
-  if (record.customType !== "intercom_message") return undefined;
+  if (record.customType !== "intercom_message" && record.customType !== "subagent-human-message") return undefined;
   const details = record.details;
   if (typeof details !== "object" || details === null) return undefined;
   const inboundId = (details as { message?: { id?: unknown } }).message?.id;
@@ -448,7 +450,7 @@ function parseSubagentIntercomPayload(payload: unknown): { to: string; message: 
     const child = value as Record<string, unknown>;
     return typeof child.agent === "string" && typeof child.index === "number" && Number.isSafeInteger(child.index) && child.index >= 0
       && typeof child.intercomTarget === "string" && child.intercomTarget.length > 0 && typeof child.status === "string"
-      && ["completed", "failed", "paused", "timed-out", "detached"].includes(child.status)
+      && ["completed", "failed", "blocked", "paused", "timed-out", "detached"].includes(child.status)
       ? [{ agent: child.agent, index: child.index, status: child.status, intercomTarget: child.intercomTarget }] : [];
   }) : [];
   const completion = source && typeof record.runId === "string" && typeof record.status === "string" && children.length
@@ -585,7 +587,7 @@ interface ContactSupervisorToolParams {
 }
 
 interface IntercomToolParams {
-  action: "list" | "send" | "ask" | "reply" | "pending" | "status";
+  action: "list" | "send" | "ask" | "reply" | "pending" | "status" | "subscribe" | "unsubscribe" | "publish" | "topics";
   scope?: IntercomSessionScope;
   to?: string;
   message?: string;
@@ -595,6 +597,11 @@ interface IntercomToolParams {
   queueMode?: QueueMode;
   threadId?: string;
   passive?: boolean;
+  topic?: string;
+  event?: TopicUpdate["event"];
+  resource?: string;
+  ownership?: TopicUpdate["ownership"];
+  awaitRelease?: boolean;
 }
 
 type ToolRenderTheme = ExtensionContext["ui"]["theme"];
@@ -667,6 +674,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let lastIntercomActivity = 0;
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker(config.askTimeoutMs);
+  const topics = new IntercomTopics(pi, () => getLiveContext());
   const pendingInbound = new Map<string, PendingInboundMessage>();
   const consumedInboundIds = new Set<string>();
   const completedChildren = new Map<string, SubagentCompletion["children"][number]>();
@@ -867,6 +875,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       lastSeen: Date.now(),
       status: currentStatus(),
       ...buildPresenceHealth(),
+      ...topics.presence(),
     };
   }
   function isRecipientIdle(ctx: ExtensionContext): boolean {
@@ -983,19 +992,19 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (child.status === "detached") completedChildren.delete(thread);
       else completedChildren.set(thread, child);
     }
+    for (const pending of queuedInbound()) discardObsoleteProgress(pending);
   }
-  function deliveredBody(entry: InboundMessageEntry, deliveredAt: number): string {
+  function discardObsoleteProgress(entry: InboundMessageEntry): boolean {
     const message = entry.message;
-    if (message.delivery !== "queue" || message.queueMode !== "replace" || !message.threadId || message.expectsReply || message.replyTo) return entry.bodyText;
+    if (message.delivery !== "queue" || message.queueMode !== "replace" || !message.threadId || message.expectsReply || message.replyTo) return false;
     const child = completedChildren.get(message.threadId);
-    if (!child || (entry.from.id !== child.intercomTarget && entry.from.name !== child.intercomTarget)) return entry.bodyText;
-    return [
-      `Historical/deferred progress from completed child (${child.status}); not new work.`,
-      `Originally sent: ${new Date(message.timestamp).toISOString()}`,
-      `Delivered to Pi: ${new Date(deliveredAt).toISOString()}`,
-      "",
-      entry.bodyText,
-    ].join("\n");
+    if (!child || (entry.from.id !== child.intercomTarget && entry.from.name !== child.intercomTarget)) return false;
+    // Keep the original checkpoint as history; obsolete progress is not another model turn.
+    if (!pendingInbound.has(message.id)) rememberInbound(entry, "queued", "auto");
+    pendingInbound.delete(message.id);
+    replyTracker.markReplied(message.id);
+    checkpointInbound({ messageId: message.id, stage: "discarded" });
+    return true;
   }
   function restoreInbound(ctx: ExtensionContext): void {
     consumedInboundIds.clear();
@@ -1026,7 +1035,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     reconciledLeafId = ctx.sessionManager.getLeafId();
     for (const entry of pendingInbound.values()) {
-      replyTracker.recordIncomingMessage(entry.from, entry.message, entry.receivedAt);
+      if (!discardObsoleteProgress(entry)) replyTracker.recordIncomingMessage(entry.from, entry.message, entry.receivedAt);
     }
   }
   function sendIncomingMessage(entry: InboundMessageEntry, delivery: InboundDelivery, generation = runtimeGeneration): void {
@@ -1034,13 +1043,15 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return;
     }
     if ("stage" in entry && pendingInbound.get(entry.message.id) !== entry) return;
+    if (discardObsoleteProgress(entry)) return;
     rememberInbound(entry, "native", delivery === "passive" ? "passive" : "auto");
     if (delivery !== "passive") {
       replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
     }
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
-    const bodyText = deliveredBody(entry, Date.now());
+    const bodyText = entry.bodyText;
     const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
+    const human = entry.message.human !== undefined;
     const options = delivery === "trigger"
       ? { triggerTurn: true }
       : delivery === "followUp" || delivery === "steer"
@@ -1048,8 +1059,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         : { triggerTurn: false };
     pi.sendMessage(
       {
-        customType: "intercom_message",
-        content: `**📨 From ${senderDisplay}** (Native session cwd: ${entry.from.cwd})${replyInstruction}\n\n${bodyText}`,
+        customType: human ? "subagent-human-message" : "intercom_message",
+        content: human
+          ? `Direct user message to this agent (human origin, not peer advice). Respond in this conversation; the user sees it directly. Do not ask the parent to relay or approve it.\n\n${bodyText}`
+          : `**📨 From ${senderDisplay}** (Native session cwd: ${entry.from.cwd})${replyInstruction}\n\n${bodyText}`,
         display: true,
         details: { ...entry, bodyText },
       },
@@ -1063,8 +1076,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return text.startsWith("Subagent needs a supervisor decision.")
       || text.startsWith("Subagent requests a structured supervisor interview.");
   }
-  async function requestSubagentDetachForBlockingSupervisorMessage(entry: InboundMessageEntry): Promise<boolean> {
-    if (!isBlockingSubagentSupervisorMessage(entry)) return false;
+  async function requestSubagentDetachForBlockingSupervisorMessage(entry: InboundMessageEntry, attention = false): Promise<boolean> {
+    if (!attention && !isBlockingSubagentSupervisorMessage(entry)) return false;
     const requestId = randomUUID();
     return await new Promise<boolean>((resolve) => {
       let settled = false;
@@ -1085,7 +1098,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         finish(response.accepted === true);
       });
       try {
-        pi.events.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId });
+        pi.events.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId, ...(attention ? { reason: "attention" } : {}) });
+        // Owned waits answer ordinary attention synchronously, so an unanswered probe can finish now.
+        if (attention) finish(false);
       } catch {
         finish(false);
       }
@@ -1155,12 +1170,20 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (pendingInbound.size === 0 || ctx.hasPendingMessages()) return;
     sendTriggerLast([...pendingInbound.values()].filter((entry) => entry.stage === "native"));
   }
+  function isOwnedHumanMessage(from: SessionInfo, message: Message): boolean {
+    const origin = message.human;
+    if (!origin || !childOrchestratorMetadata || origin.runId !== childOrchestratorMetadata.runId || origin.index !== Number(childOrchestratorMetadata.index)) return false;
+    const owner = readRunJson<{ sessionId?: string }>(path.join(getRunMetadataDir(origin.runId), "question-owner.json"));
+    return owner?.sessionId === origin.ownerSessionId && from.id === `pi-${createHash("sha256").update(origin.ownerSessionId).digest("hex").slice(0, 32)}`;
+  }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
     if (!liveContext) {
       return;
     }
+    if (topics.receive(from, message)) return;
+    if (message.topic) message = { ...message, content: { ...message.content, text: `Topic ${message.topic.topic} · ${message.topic.event}\n${message.content.text}` } };
     if (replyWaiter) {
       const senderTarget = from.name || from.id;
       const fromMatches = senderTarget.toLowerCase() === replyWaiter.from.toLowerCase()
@@ -1173,6 +1196,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
     }
+    if (message.human && !isOwnedHumanMessage(from, message)) message = { ...message, human: undefined };
     const attachmentText = message.content.attachments?.length
       ? formatAttachments(message.content.attachments)
       : "";
@@ -1184,6 +1208,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     markIntercomActivity();
     syncPresenceStatus();
     const entry = { from, message, replyCommand, bodyText };
+    if (discardObsoleteProgress(entry)) return;
     void (async () => {
       const activeContext = getLiveContext(liveContext, messageGeneration);
       if (!activeContext) {
@@ -1208,7 +1233,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           }
         }
         if (delivery === "steer") {
+          // Queue first, then release a delegated foreground wait so native Pi can consume the steer.
           sendIncomingMessage(entry, "steer", messageGeneration);
+          if (!isBlockingSubagentSupervisorMessage(entry)) await requestSubagentDetachForBlockingSupervisorMessage(entry, true);
           return;
         }
         if (delivery === "queue" && message.queueMode !== "replace") {
@@ -1262,6 +1289,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (client !== nextClient) {
         return;
       }
+      topics.disconnected(sessionId);
       rejectReplyWaiterForPeer(sessionId);
       replyTracker.expireSender(sessionId);
       for (const pending of queuedInbound()) {
@@ -1277,6 +1305,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       }
       if (!replyWaiter?.question) rejectReplyWaiter(new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }));
       client = null;
+      topics.disconnected();
       if (!disposed) {
         clearReconnectTimer();
         scheduleReconnect();
@@ -1336,6 +1365,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         }
         client = nextClient;
         reconnectAttempt = 0;
+        if (nextClient.supportsTopics) {
+          const sessions = await nextClient.listSessions();
+          if (getLiveContext(contextAtStart, generationAtStart)) topics.refresh(sessions);
+        } else topics.disconnected();
         return nextClient;
       } catch (error) {
         if (client === nextClient) {
@@ -1522,6 +1555,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         if (pendingInbound.delete(questionId)) checkpointInbound({ messageId: questionId, stage: "discarded" });
         syncPresenceStatus();
       }),
+      pi.events.on("intercom:open", () => {
+        const ctx = getLiveContext();
+        if (ctx?.mode === "tui") void openIntercomOverlay(ctx, "all");
+      }),
       pi.events.on(SUBAGENT_INTERCOM_IDENTITY_REQUEST_EVENT, (payload) => {
         const requestId = payload && typeof payload === "object" ? (payload as { requestId?: unknown }).requestId : undefined;
         if (typeof requestId === "string" && client?.isConnected() && client.sessionId) {
@@ -1563,6 +1600,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     clearStartupConnectTimer();
     runtimeContext = ctx;
     currentSessionId = ctx.sessionManager.getSessionId();
+    topics.start(ctx);
     currentModel = ctx.model?.id ?? "unknown";
     agentRunning = false;
     lastIntercomActivity = 0;
@@ -1739,6 +1777,11 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return { systemPrompt: `${event.systemPrompt}\n\n${hint}` };
   });
 
+  pi.registerMessageRenderer("subagent-human-message", (message, _options, theme) => {
+    const details = message.details as InboundMessageEntry | undefined;
+    return new Text(`${theme.fg("accent", theme.bold("User → this agent"))}\n${details?.bodyText ?? message.content}`, 0, 0);
+  });
+
   pi.registerMessageRenderer("intercom_message", (message, options, theme) => {
     const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string; subagentCompletion?: SubagentCompletion } | undefined;
     if (!details) return undefined;
@@ -1821,7 +1864,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     pi.appendEntry("intercom_received", { from: metadata.orchestratorTarget, questionId: question.questionId, message: { text: replyText, attachments: replyMessage.content.attachments }, messageId: replyMessage.id, timestamp: replyMessage.timestamp });
     recordQuestionDelivery(question, { kind: "live", runId: question.runId, deliveredAt: Date.now() });
     return {
-      content: [{ type: "text" as const, text: `**Reply from supervisor:**\n${replyText}${replyAttachments}` }],
+      content: [{ type: "text" as const, text: `**${readQuestionState(question).answer?.origin === "human" ? "Direct user answer (human origin)" : "Reply from supervisor"}:**\n${replyText}${replyAttachments}` }],
       isError: false,
       details: { questionId: question.questionId, ...(structuredReply?.value ? { structuredReply: structuredReply.value } : structuredReply?.error ? { structuredReplyParseError: structuredReply.error } : {}) },
     };
@@ -1831,17 +1874,17 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     pi.registerTool({
       name: "contact_supervisor",
       label: "Contact Supervisor",
-      description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision only when this child cannot safely continue without a decision, approval, or product/API/scope clarification; this steers the supervisor at its next tool boundary and keeps the child alive for the reply. Use interview_request only when multiple structured answers are all required before safe progress; this also steers and waits. Use progress_update only for a concise material update that may intentionally wait behind active supervisor work; this uses deferred delivery and does not wait. Do not use for routine completion handoffs.",
-      promptSnippet: "Subagent-only: steer the supervisor for blocking decisions or structured interviews; intentionally defer concise material updates. Do not use for routine completion handoffs.",
+      description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision only when this child cannot safely continue without a decision, approval, or product/API/scope clarification; this steers the supervisor at its next tool boundary and keeps the child alive for the reply. Use interview_request only when multiple structured answers are all required before safe progress; this also steers and waits. Use progress_update only for a discovery or change the supervisor needs while working; it steers at the next tool boundary without waiting for a reply. Skip starts, redundant status, and routine completion; retain material findings in the final result.",
+      promptSnippet: "Subagent-only: steer the supervisor for required decisions, structured interviews, or material discoveries needed during active work. Skip routine status and completion messages.",
       promptGuidelines: [
         "Use contact_supervisor with reason='need_decision' when a subagent cannot safely continue without a decision, approval, or product/API/scope clarification; it steers the supervisor and waits for the reply.",
         "Use contact_supervisor with reason='interview_request' only when the child cannot safely continue until it receives multiple structured answers in one blocking steered exchange.",
-        "Use contact_supervisor with reason='progress_update' only for a concise material update that may intentionally wait behind active supervisor work; delivery is deferred and coalesced.",
+        "Use contact_supervisor with reason='progress_update' only for a discovery or change the supervisor needs while working. It steers at the next tool boundary without waiting. Skip starts, redundant narration, and routine completion; keep material findings in the final result.",
         "Do not use contact_supervisor for routine completion handoffs; return the final subagent result normally.",
       ],
       parameters: Type.Object({
         reason: StringEnum(["need_decision", "progress_update", "interview_request"] as const, {
-          description: "Contact reason: 'need_decision' and 'interview_request' steer the supervisor and wait for a reply; 'progress_update' intentionally defers a non-blocking update",
+          description: "Contact reason: 'need_decision' and 'interview_request' steer the supervisor and wait for a reply; 'progress_update' steers a material discovery without waiting for a reply",
         }),
         message: Type.Optional(Type.String({
           description: "Decision request, optional interview note, or meaningful progress update for the supervisor",
@@ -1941,9 +1984,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         try {
           const result = await connectedClient.send(sendTo, {
             text: formatChildOrchestratorMessage("update", metadata, message),
-            delivery: "queue",
-            queueMode: "replace",
-            threadId: `subagent-progress:${metadata.runId}:${metadata.agent}:${metadata.index}`,
+            delivery: "steer",
           });
           if (!result.accepted) {
             const errorText = result.reason ?? "Session may not exist or has disconnected.";
@@ -1963,7 +2004,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
             subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
           });
           return {
-            content: [{ type: "text", text: `Progress update accepted for supervisor ${metadata.orchestratorTarget}. Delivery is deferred and coalesced; this does not confirm the supervisor has read it.` }],
+            content: [{ type: "text", text: `Progress update accepted for supervisor ${metadata.orchestratorTarget}. Queued for the next tool boundary; broker acceptance does not confirm the supervisor has read or acted on it.` }],
             isError: false,
             details: { messageId: result.id, accepted: result.accepted, delivered: result.delivered, queued: result.queued === true },
           };
@@ -2026,20 +2067,23 @@ Usage:
   intercom({ action: "ask", to: "session-name", delivery: "steer", message: "..." })   → Blocking wait only when sender must stay alive
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
-  intercom({ action: "status" })                  → Show connection status`,
+  intercom({ action: "status" })                  → Show connection status
+  intercom({ action: "subscribe", topic: "project/work", awaitRelease: true }) → Opt into a topic
+  intercom({ action: "publish", topic: "project/work", message: "Current self-contained state" }) → Quiet latest state
+  intercom({ action: "topics" }) → Inspect topics and current resource owners`,
     promptSnippet:
       "Coordinate with local Pi sessions. Non-blocking send defaults to steer for live agent guidance; queue only for intentional delay and ask only for a required blocking reply.",
     promptGuidelines: [
       "Intercom list/status defaults to the current Git repository and its worktrees. Use scope='all' only when intentionally discovering sessions in other projects.",
       "Action='send' defaults to delivery='steer' for agent-to-agent guidance, answers, corrections, blockers, or other context that may affect active work.",
-      "Use delivery='queue' only when delay is intentional, and passive only when the recipient model should not see the message now.",
+      "Use delivery='queue' only when delay is intentional. For routine status, explicitly subscribe/publish topics: updates replace quiet inspectable state outside model context, not passive conversation messages. Topic blockers/decisions and awaited ownership releases interrupt; direct messages always bypass subscriptions.",
       "Treat inbound steered messages as supplemental coordination within the active task: incorporate relevant context and continue; replace the task only when the message explicitly says so.",
       "Use action='reply' for an active inbound ask. Otherwise respond with send plus steer; use blocking ask only when this process must stay alive and cannot safely continue without the answer.",
     ],
 
     parameters: Type.Object({
-      action: StringEnum(["list", "send", "ask", "reply", "pending", "status"] as const, {
-        description: "Action: 'list', 'send', 'ask', 'reply', 'pending', or 'status'",
+      action: StringEnum(["list", "send", "ask", "reply", "pending", "status", "subscribe", "unsubscribe", "publish", "topics"] as const, {
+        description: "Direct messages: list/send/ask/reply/pending/status. Quiet state: subscribe/unsubscribe/publish/topics.",
       }),
       scope: Type.Optional(StringEnum(["project", "all"] as const, {
         description: "For list/status: 'project' (default) shows this Git repository and its worktrees; 'all' includes sessions in other projects.",
@@ -2047,8 +2091,13 @@ Usage:
       to: Type.Optional(Type.String({
         description: "Target session name or ID (for 'send', 'ask', or disambiguating 'reply')",
       })),
+      topic: Type.Optional(Type.String({ description: "Exact opt-in topic for subscribe/unsubscribe/publish/topics; no automatic subscriptions." })),
+      event: Type.Optional(StringEnum(["update", "blocker", "decision", "release"] as const, { description: "Publish: update is quiet current state. Blockers/decisions interrupt subscribers; release interrupts only those awaiting release." })),
+      resource: Type.Optional(Type.String({ description: "Publish: resource this session is using (advisory ownership, not a lock)." })),
+      ownership: Type.Optional(StringEnum(["held", "released"] as const, { description: "Publish: this session's declared resource state. Disconnect never implies released." })),
+      awaitRelease: Type.Optional(Type.Boolean({ description: "Subscribe: interrupt when this topic explicitly releases ownership." })),
       message: Type.Optional(Type.String({
-        description: "Message to send (for 'send', 'ask', or 'reply' action)",
+        description: "Message for send/ask/reply, or self-contained latest state for publish",
       })),
       attachments: Type.Optional(Type.Array(Type.Object({
         type: StringEnum(["file", "snippet", "context"] as const),
@@ -2079,6 +2128,7 @@ Usage:
       try {
         connectedClient = await ensureConnected("tool");
       } catch (error) {
+        if (params.action === "topics") { topics.disconnected(); return { content: [{ type: "text", text: `Broker unavailable; last saved records follow.\n${topics.inspect(params.topic)}` }], details: { connection: "disconnected" } }; }
         return {
           content: [{ type: "text", text: `Intercom not connected: ${getErrorMessage(error)}` }],
           isError: true,
@@ -2089,6 +2139,40 @@ Usage:
       syncPresenceIdentity(ctx.sessionManager.getSessionId());
 
       const { action, scope = "project", to, message, attachments, replyTo, delivery, queueMode, threadId, passive } = params;
+      if (["subscribe", "unsubscribe", "publish", "topics"].includes(action)) {
+        if (!connectedClient.supportsTopics) {
+          topics.disconnected();
+          return { content: [{ type: "text", text: `${TOPICS_UNAVAILABLE}${action === "topics" ? `\n\nLast saved records:\n${topics.inspect(params.topic)}` : ""}` }], isError: true, details: { topicsSupported: false } };
+        }
+        const generation = runtimeGeneration;
+        const topic = params.topic?.trim();
+        if (topic && !isTopicSubscription({ topic, awaitRelease: params.awaitRelease })) return { content: [{ type: "text", text: "Topic must be a plain nonempty label; awaitRelease must be boolean." }], isError: true, details: {} };
+        if (action !== "topics" && !topic) return { content: [{ type: "text", text: `${action} requires an exact topic.` }], isError: true, details: {} };
+        if (action === "subscribe") topics.subscribe(topic!, params.awaitRelease);
+        if (action === "unsubscribe") topics.unsubscribe(topic!);
+        if (action === "publish") {
+          const event = params.event ?? (params.ownership === "released" ? "release" : "update");
+          const update: TopicUpdate = { topic: topic!, text: message ?? "", event, resource: params.resource, ownership: params.ownership,
+            revision: (topics.published.get(topic!)?.revision ?? 0) + 1, updatedAt: Date.now() };
+          if (!update.text.trim() || !isTopicUpdate(update) || (event === "release" && (!update.resource || update.ownership !== "released"))) return { content: [{ type: "text", text: "Publish requires self-contained message text; ownership needs resource, and release needs ownership:'released'." }], isError: true, details: {} };
+          topics.publish(update, { id: connectedClient.sessionId!, name: pi.getSessionName() });
+          connectedClient.updatePresence(topics.presence());
+          const sessions = await connectedClient.listSessions();
+          if (!getLiveContext(ctx, generation)) return { content: [{ type: "text", text: "Session changed; no topic messages sent." }], isError: true, details: {} };
+          const subscribers = sessions.filter((session) => session.id !== connectedClient.sessionId && session.subscriptions?.some((entry) => entry.topic === topic));
+          const receipts = await Promise.all(subscribers.map(async (session) => {
+            const urgent = event === "blocker" || event === "decision" || event === "release" && session.subscriptions?.some((entry) => entry.topic === topic && entry.awaitRelease);
+            const receipt = await connectedClient.send(session.id, { text: update.text, topic: update, delivery: urgent ? "steer" : "queue", ...(urgent ? {} : { queueMode: "replace", threadId: `topic:${topic}` }) });
+            return { to: session.id, ...receipt };
+          }));
+          return { content: [{ type: "text", text: `Current state saved for ${topic}. ${receipts.filter((receipt) => receipt.accepted).length}/${receipts.length} subscribed deliveries accepted; this does not confirm reading or action. Routine updates stay outside conversation context.` }], details: { topic, receipts } };
+        }
+        connectedClient.updatePresence(topics.presence());
+        const sessions = await connectedClient.listSessions();
+        if (!getLiveContext(ctx, generation)) return { content: [{ type: "text", text: "Session changed." }], isError: true, details: {} };
+        topics.refresh(sessions);
+        return { content: [{ type: "text", text: `${action === "topics" ? "" : `${action === "subscribe" ? "Subscribed to" : "Unsubscribed from"} ${topic}.\n`}${topics.inspect(topic)}` }], details: { topic } };
+      }
       if (params.scope !== undefined && action !== "list" && action !== "status") {
         return {
           content: [{ type: "text", text: "'scope' is only valid for action='list' or action='status'" }],
@@ -2608,11 +2692,25 @@ Usage:
   }
 
   pi.registerCommand("intercom", {
-    description: "Open project intercom overlay; pass 'all' to include other projects",
+    description: "Open peer messaging; 'all' includes other projects, 'topics' inspects quiet topic/owner state",
     handler: async (args, ctx) => {
       const requestedScope = args.trim();
+      if (requestedScope === "topics") {
+        const generation = runtimeGeneration;
+        let notice: string | undefined;
+        try {
+          const active = await ensureConnected("overlay");
+          if (!active.supportsTopics) { notice = TOPICS_UNAVAILABLE; topics.disconnected(); }
+          else {
+            const sessions = await active.listSessions();
+            if (getLiveContext(ctx, generation)) topics.refresh(sessions);
+          }
+        } catch { if (getLiveContext(ctx, generation)) { topics.disconnected(); notice = "Broker unavailable; last saved topic records follow."; } }
+        if (getLiveContext(ctx, generation)) await topics.open(ctx, notice);
+        return;
+      }
       if (requestedScope && requestedScope !== "all") {
-        ctx.ui.notify("Usage: /intercom [all]", "warning");
+        ctx.ui.notify("Usage: /intercom [all|topics]", "warning");
         return;
       }
       await openIntercomOverlay(ctx, requestedScope === "all" ? "all" : "project");
@@ -2620,7 +2718,11 @@ Usage:
   });
 
   pi.registerShortcut("alt+m", {
-    description: "Open session intercom",
-    handler: async (ctx) => openIntercomOverlay(ctx),
+    description: "Open your agents, or connected sessions",
+    handler: async (ctx) => {
+      const request = { ctx, handled: false };
+      pi.events.emit("subagent:open-agents", request);
+      if (!request.handled) await openIntercomOverlay(ctx);
+    },
   });
 }

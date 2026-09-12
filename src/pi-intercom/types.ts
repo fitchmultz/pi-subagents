@@ -14,16 +14,63 @@ export interface SessionInfo {
   pendingAsks?: number;
   /** Whether this session is currently willing/able to answer asks. */
   acceptsAsks?: boolean;
+  subscriptions?: TopicSubscription[];
+  topics?: TopicUpdate[];
+}
+
+export interface TopicSubscription { topic: string; awaitRelease?: boolean }
+export interface TopicUpdate {
+  topic: string;
+  text: string;
+  event: "update" | "blocker" | "decision" | "release";
+  resource?: string;
+  ownership?: "held" | "released";
+  revision: number;
+  updatedAt: number;
+}
+
+export function isTopicSubscription(value: unknown): value is TopicSubscription {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.topic === "string" && safeLabel(item.topic.trim()) && (item.awaitRelease === undefined || typeof item.awaitRelease === "boolean");
+}
+export function isTopicUpdate(value: unknown): value is TopicUpdate {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.topic === "string" && safeLabel(item.topic.trim()) && typeof item.text === "string" && safeText(item.text)
+    && ["update", "blocker", "decision", "release"].includes(String(item.event))
+    && typeof item.revision === "number" && Number.isSafeInteger(item.revision) && item.revision > 0
+    && typeof item.updatedAt === "number" && Number.isFinite(item.updatedAt)
+    && (item.ownership !== "released" || item.event === "release")
+    && (item.resource === undefined || typeof item.resource === "string" && safeLabel(item.resource))
+    && (item.ownership === undefined || typeof item.resource === "string" && (item.ownership === "held" || item.ownership === "released"));
 }
 
 export type MessageDelivery = "queue" | "steer" | "passive";
 export type QueueMode = "stack" | "replace";
+
+export interface HumanMessageOrigin {
+  ownerSessionId: string;
+  runId: string;
+  index: number;
+}
+
+export function isHumanMessageOrigin(value: unknown): value is HumanMessageOrigin {
+  if (!value || typeof value !== "object") return false;
+  const origin = value as Record<string, unknown>;
+  return typeof origin.ownerSessionId === "string" && /^[a-zA-Z0-9_-]+$/.test(origin.ownerSessionId)
+    && typeof origin.runId === "string" && /^[a-zA-Z0-9_-]+$/.test(origin.runId)
+    && typeof origin.index === "number" && Number.isSafeInteger(origin.index) && origin.index >= 0;
+}
 
 export interface Message {
   id: string;
   timestamp: number;
   replyTo?: string;
   expectsReply?: boolean;
+  /** Only the owning parent's human UI sets this; recipients verify ownership before elevating it. */
+  human?: HumanMessageOrigin;
+  topic?: TopicUpdate;
   /** Active-recipient behavior. Omitted delivery defaults to steer unless expectsReply is true. */
   delivery?: MessageDelivery;
   /** For delivery="queue": stack normally, or replace older undelivered messages in the same thread. */
@@ -98,6 +145,9 @@ export function isMessage(value: unknown): value is Message {
     return false;
   }
 
+  if (message.human !== undefined && !isHumanMessageOrigin(message.human)) return false;
+  if (message.topic !== undefined && (!isTopicUpdate(message.topic) || message.human !== undefined || message.expectsReply || message.replyTo)) return false;
+
   if (message.expectsReply !== undefined && typeof message.expectsReply !== "boolean") {
     return false;
   }
@@ -170,11 +220,13 @@ export function isSessionRegistration(value: unknown): value is Omit<SessionInfo
   if (session.lastSeen !== undefined && (typeof session.lastSeen !== "number" || !Number.isFinite(session.lastSeen))) return false;
   if (session.lastIntercomActivity !== undefined && (typeof session.lastIntercomActivity !== "number" || !Number.isFinite(session.lastIntercomActivity))) return false;
   if (session.pendingAsks !== undefined && (typeof session.pendingAsks !== "number" || !Number.isInteger(session.pendingAsks) || session.pendingAsks < 0)) return false;
+  if (session.subscriptions !== undefined && (!Array.isArray(session.subscriptions) || !session.subscriptions.every(isTopicSubscription))) return false;
+  if (session.topics !== undefined && (!Array.isArray(session.topics) || !session.topics.every(isTopicUpdate))) return false;
   return session.acceptsAsks === undefined || typeof session.acceptsAsks === "boolean";
 }
 
 export type BrokerMessage =
-  | { type: "registered"; sessionId: string }
+  | { type: "registered"; sessionId: string; topicsSupported?: true }
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
   | { type: "message"; from: SessionInfo; message: Message }
   | { type: "session_left"; sessionId: string }

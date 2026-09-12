@@ -66,9 +66,10 @@ function readResultRepairData(resultPath: string): ResultRepairData | undefined 
 	return { state: data.terminalState, ...(Array.isArray(data.results) ? { results: data.results } : {}) };
 }
 
-function childState(overallState: ResultRepairData["state"], child: AsyncResultChild | undefined): "complete" | "failed" | "paused" {
+function childState(overallState: ResultRepairData["state"], child: AsyncResultChild | undefined): "complete" | "failed" | "blocked" | "paused" {
 	if (child?.success === true) return "complete";
 	if (child?.interrupted === true) return "paused";
+	if (child?.acceptance?.status === "blocked" && (child.exitCode === 0 || child.exitCode === undefined)) return "blocked";
 	if (child?.success === false) return "failed";
 	return overallState;
 }
@@ -96,12 +97,14 @@ function terminalStatusFromResult(status: AsyncStatus, resultPath: string, now: 
 			status: state === "complete" ? "complete" as const : state,
 			endedAt: step.endedAt ?? now,
 			durationMs: step.startedAt !== undefined && step.durationMs === undefined ? Math.max(0, now - step.startedAt) : step.durationMs,
-			exitCode: step.exitCode ?? (state === "complete" || state === "paused" ? 0 : 1),
+			exitCode: step.exitCode ?? (state === "complete" || state === "blocked" || state === "paused" ? 0 : 1),
 			error: state === "failed" ? step.error ?? child?.error : step.error,
 			sessionFile: step.sessionFile ?? child?.sessionFile,
 			model: step.model ?? child?.model,
 			attemptedModels: step.attemptedModels ?? child?.attemptedModels,
 			modelAttempts: step.modelAttempts ?? child?.modelAttempts,
+			acceptance: step.acceptance ?? child?.acceptance,
+			agentProcessExit: step.agentProcessExit ?? child?.agentProcessExit,
 		});
 	});
 	return withoutLiveActivity({
@@ -247,7 +250,7 @@ function writeFailedRepair(asyncDir: string, status: AsyncStatus, resultPath: st
 }
 
 function terminal(state: AsyncStatus["state"]): boolean {
-	return state === "complete" || state === "failed" || state === "paused";
+	return state === "complete" || state === "failed" || state === "blocked" || state === "paused";
 }
 
 function* nestedRuns(children: NestedRunSummary[] | undefined): Generator<NestedRunSummary> {

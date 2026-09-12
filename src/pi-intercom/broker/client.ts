@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.ts";
 import { getBrokerSocketPath, getLegacyBrokerSocketPath, isOwnedBrokerSocket } from "./paths.ts";
 import { isMessage, normalizeSessionInfo } from "../types.ts";
-import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode } from "../types.ts";
+import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode, HumanMessageOrigin, TopicUpdate } from "../types.ts";
 
 /** Default delivery-ack timeout for `send` (broker acknowledges quickly). */
 const DEFAULT_SEND_TIMEOUT_MS = 8000;
@@ -28,6 +28,8 @@ interface SendOptions {
   threadId?: string;
   passive?: boolean;
   messageId?: string;
+  human?: HumanMessageOrigin;
+  topic?: TopicUpdate;
 }
 
 export interface SendResult {
@@ -84,6 +86,7 @@ async function connectBrokerSocket(): Promise<net.Socket> {
 export class IntercomClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
+  private _topicsSupported = false;
   private pendingSends = new Map<string, { resolve: (r: SendResult) => void; reject: (e: Error) => void }>();
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
   private connecting = false;
@@ -112,6 +115,8 @@ export class IntercomClient extends EventEmitter {
   get sessionId(): string | null {
     return this._sessionId;
   }
+
+  get supportsTopics(): boolean { return this.isConnected() && this._topicsSupported; }
 
   isConnected(): boolean {
     const socket = this.socket;
@@ -282,6 +287,7 @@ export class IntercomClient extends EventEmitter {
         }
 
         this._sessionId = brokerMessage.sessionId;
+        this._topicsSupported = brokerMessage.topicsSupported === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -475,6 +481,8 @@ export class IntercomClient extends EventEmitter {
       timestamp: Date.now(),
       replyTo: options.replyTo,
       expectsReply: options.expectsReply,
+      ...(options.human ? { human: options.human } : {}),
+      ...(options.topic ? { topic: options.topic } : {}),
       delivery: options.delivery ?? (options.passive === true ? "passive" : options.expectsReply === true ? undefined : "steer"),
       queueMode: options.queueMode,
       threadId: options.threadId,
@@ -513,7 +521,7 @@ export class IntercomClient extends EventEmitter {
     });
   }
 
-  updatePresence(updates: { name?: string; status?: string; model?: string; pendingAsks?: number; acceptsAsks?: boolean; lastIntercomActivity?: number }): void {
+  updatePresence(updates: { name?: string; status?: string; model?: string; pendingAsks?: number; acceptsAsks?: boolean; lastIntercomActivity?: number; subscriptions?: SessionInfo["subscriptions"]; topics?: TopicUpdate[] }): void {
     if (this.disconnecting) {
       return;
     }

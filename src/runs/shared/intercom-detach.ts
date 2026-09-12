@@ -75,7 +75,7 @@ export function extractDetachedCoordinationRequest(result: Pick<SingleResult, "m
 export function formatDetachedIntercomGuidance(input: {
 	headline: string;
 	runId: string;
-	result: Pick<SingleResult, "agent" | "messages" | "toolCalls">;
+	result: Pick<SingleResult, "agent" | "messages" | "toolCalls" | "detachedReason">;
 	childIndex: number;
 }): string {
 	const request = extractDetachedCoordinationRequest(input.result);

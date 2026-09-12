@@ -8,6 +8,7 @@ export interface WorkflowOutcome extends ParallelTaskResult {
 	interrupted?: boolean;
 	detached?: boolean;
 	timedOut?: boolean;
+	acceptance?: import("../../shared/types.ts").AcceptanceLedger;
 	structuredOutput?: unknown;
 	artifactPaths?: ArtifactPaths;
 	savedOutputPath?: string;
@@ -15,11 +16,11 @@ export interface WorkflowOutcome extends ParallelTaskResult {
 
 export type ParallelStopReason = "cancelled" | "interrupted" | "fail-fast" | "detached" | "timed-out";
 
-type ChildOutcome = Pick<WorkflowOutcome, "exitCode" | "interrupted" | "detached" | "timedOut">;
-type WorkflowStepStatus = "completed" | "failed" | "paused" | "detached" | "timed-out";
+type ChildOutcome = Pick<WorkflowOutcome, "exitCode" | "interrupted" | "detached" | "timedOut" | "acceptance">;
+type WorkflowStepStatus = "completed" | "failed" | "blocked" | "paused" | "detached" | "timed-out";
 
 export function workflowChildSucceeded(result: ChildOutcome): boolean {
-	return result.exitCode === 0 && !result.interrupted && !result.detached && !result.timedOut;
+	return result.exitCode === 0 && !result.interrupted && !result.detached && !result.timedOut && result.acceptance?.status !== "blocked";
 }
 
 export async function runParallelTasks<T, R extends ChildOutcome>(input: {
@@ -37,10 +38,10 @@ export async function runParallelTasks<T, R extends ChildOutcome>(input: {
 		const reason = input.signal?.aborted ? "cancelled" : input.interruptSignal?.aborted ? "interrupted" : stopped;
 		if (reason) return input.stoppedTask(task, index, reason);
 		const result = await input.runTask(task, index, failFast.signal);
+		// A selected-child stop must not skip independent siblings; whole-group stops use interruptSignal.
 		if (result.detached) stopped ??= "detached";
-		else if (result.interrupted) stopped ??= "interrupted";
 		else if (result.timedOut) stopped ??= "timed-out";
-		else if (input.failFast && !workflowChildSucceeded(result)) {
+		else if (input.failFast && !result.interrupted && !(result.exitCode === 0 && result.acceptance?.status === "blocked") && !workflowChildSucceeded(result)) {
 			stopped ??= "fail-fast";
 			failFast.abort(FAIL_FAST_REASON);
 		}
@@ -74,16 +75,18 @@ export function completeWorkflowStep(input: {
 	const timedOutIndex = input.results.findIndex((result) => result.timedOut);
 	const interruptedIndex = input.results.findIndex((result) => result.interrupted);
 	const detachedIndex = input.results.findIndex((result) => result.detached);
+	const blocked = input.results.some((result) => result.exitCode === 0 && result.acceptance?.status === "blocked");
 	for (const [index, result] of input.results.entries()) {
 		if (workflowChildSucceeded(result)) {
 			const name = input.outputNames?.[index];
 			if (name) outputs[name] = outputEntryFromResult(result, input.stepIndex);
-		} else if (!result.timedOut && !result.interrupted && !result.detached) {
+		} else if (!result.timedOut && !result.interrupted && !result.detached && !(result.exitCode === 0 && result.acceptance?.status === "blocked")) {
 			failedIndices.push(index);
 		}
 	}
 	let status: WorkflowStepStatus = failedIndices.length > 0 ? "failed"
 		: timedOutIndex >= 0 ? "timed-out"
+		: blocked ? "blocked"
 		: interruptedIndex >= 0 ? "paused"
 		: detachedIndex >= 0 ? "detached" : "completed";
 	let error: string | undefined;

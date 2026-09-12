@@ -151,6 +151,19 @@ describe("nested control routing", () => {
 		}
 	});
 
+	for (const supported of [false, true]) it(`selected nested stop ${supported ? "preserves the inner child index" : "refuses an older index-ignorant owner"}`, async () => {
+		const route = createNestedRun("nested-selected", "running", { mode: "parallel", indexedControl: supported, agents: ["worker", "reviewer"] });
+		if (supported) setTimeout(() => {
+			const request = readNestedControlRequests(route)[0]!;
+			assert.equal(request.targetChildIndex, 0, "outer owner routing is separate from inner selection");
+			assert.equal(request.index, 1);
+			writeNestedControlResult(route, { ts: Date.now(), requestId: request.requestId, targetRunId: request.targetRunId, ok: true, message: "Selected child stop requested" });
+		}, 50);
+		const result = await createExecutor(stateWithNestedRoute(route)).execute("stop", { action: "interrupt", id: "nested-selected", index: 1 }, undefined, undefined, ctx(path.dirname(route.eventSink)));
+		if (supported) assert.equal(result.isError, undefined);
+		else { assert.equal(result.isError, true); assert.equal(readNestedControlRequests(route).length, 0); assert.match(text(result), /No stop was sent/); }
+	});
+
 	it("advertises only status and interrupt after a direct nested async interrupt", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-direct-interrupt-"));
 		const asyncDir = path.join(TEMP_ROOT_DIR, "nested-subagent-runs", "root-control", "nested-direct");

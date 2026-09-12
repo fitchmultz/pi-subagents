@@ -24,6 +24,8 @@ function normalizeStatus(status: string | undefined): WorkflowNodeStatus | undef
 			return "failed";
 		case "paused":
 			return "paused";
+		case "blocked":
+			return "blocked";
 		case "detached":
 			return "detached";
 		case "timed-out":
@@ -35,12 +37,12 @@ function normalizeStatus(status: string | undefined): WorkflowNodeStatus | undef
 	}
 }
 
-function resultStatus(result: Pick<SingleResult, "exitCode" | "detached" | "interrupted" | "timedOut"> | undefined): WorkflowNodeStatus | undefined {
+function resultStatus(result: Pick<SingleResult, "exitCode" | "detached" | "interrupted" | "timedOut" | "acceptance"> | undefined): WorkflowNodeStatus | undefined {
 	if (!result) return undefined;
 	if (result.detached) return "detached";
 	if (result.timedOut) return "timed-out";
 	if (result.interrupted) return "paused";
-	return result.exitCode === 0 ? "completed" : "failed";
+	return result.exitCode === 0 ? result.acceptance?.status === "blocked" ? "blocked" : "completed" : "failed";
 }
 
 function nodeStatus(input: WorkflowGraphBuildInput, flatIndex: number): WorkflowNodeStatus {
@@ -67,6 +69,7 @@ function summarizeParallelStatuses(statuses: WorkflowNodeStatus[]): WorkflowNode
 	if (statuses.some((status) => status === "running")) return "running";
 	if (statuses.some((status) => status === "failed")) return "failed";
 	if (statuses.some((status) => status === "timed-out")) return "timed-out";
+	if (statuses.some((status) => status === "blocked")) return "blocked";
 	if (statuses.some((status) => status === "paused")) return "paused";
 	if (statuses.some((status) => status === "detached")) return "detached";
 	if (statuses.length > 0 && statuses.every((status) => status === "completed")) return "completed";

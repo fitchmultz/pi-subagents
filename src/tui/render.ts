@@ -23,6 +23,8 @@ import { getDisplayItems, getSingleResultOutput } from "../shared/utils.ts";
 import { flatToLogicalStepIndex } from "../runs/background/parallel-groups.ts";
 import { formatNestedAggregate } from "../runs/shared/nested-render.ts";
 import { aggregateStepStatus, formatActivityLabel, formatAgentRunningLabel, formatParallelOutcome } from "../shared/status-format.ts";
+import { acceptanceHumanAction } from "../runs/shared/acceptance.ts";
+import { formatAgentProcessExit } from "../shared/status-format.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
 
 type Theme = ExtensionContext["ui"]["theme"];
@@ -225,6 +227,7 @@ function resultStatusLine(result: Details["results"][number], output: string): s
 	if (result.timedOut) return `Timed out${result.error ? `: ${result.error}` : ""}`;
 	if (result.interrupted) return "Paused";
 	if (result.exitCode !== 0) return `Error: ${result.error ?? (firstOutputLine(output) || `exit ${result.exitCode}`)}`;
+	if (result.acceptance?.status === "blocked") return `Needs your action · acceptance incomplete · ${acceptanceHumanAction(result.acceptance)?.split("\n")[0]}`;
 	const acceptance = formatAcceptanceStatus(result);
 	if (acceptance) return `Done · ${acceptance}`;
 	if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) return "Done (no text output)";
@@ -237,6 +240,7 @@ function resultGlyph(result: Details["results"][number], output: string, theme: 
 	if (result.timedOut) return theme.fg("error", "✗");
 	if (result.interrupted) return theme.fg("warning", "■");
 	if (result.exitCode !== 0) return theme.fg("error", "✗");
+	if (result.acceptance?.status === "blocked") return theme.fg("warning", "■");
 	if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) return theme.fg("warning", "✓");
 	return theme.fg("success", "✓");
 }
@@ -297,7 +301,7 @@ function widgetActivity(job: AsyncJobState, includeCounts = true): string {
 	if (includeCounts && job.turnCount !== undefined) facts.push(`${job.turnCount} turns`);
 	if (includeCounts && job.toolCount !== undefined) facts.push(`${job.toolCount} tools`);
 	if (job.status !== "running") {
-		const status = job.status === "queued" ? "queued…" : job.status === "paused" ? "Paused" : job.status === "failed" ? "Failed" : "Done";
+		const status = job.status === "queued" ? "queued…" : job.status === "paused" ? "Paused" : job.status === "failed" ? "Failed" : job.status === "blocked" ? "Needs your action" : "Done";
 		const error = job.status === "failed" ? job.steps?.find((step) => step.error)?.error : undefined;
 		return [status, error ? firstOutputLine(error) : "", ...facts].filter(Boolean).join(" · ");
 	}
@@ -351,6 +355,7 @@ function widgetStatusGlyph(job: AsyncJobState, theme: Theme): string {
 	if (job.status === "running") return theme.fg("accent", runningGlyph(widgetJobRunningSeed(job)));
 	if (job.status === "queued") return theme.fg("muted", "◦");
 	if (job.status === "complete") return theme.fg("success", "✓");
+	if (job.status === "blocked") return theme.fg("warning", "■");
 	if (job.status === "paused") return theme.fg("warning", "■");
 	return theme.fg("error", "✗");
 }
@@ -359,6 +364,7 @@ function widgetStepGlyph(status: AsyncJobStep["status"] | WorkflowNodeStatus, th
 	if (status === "running") return theme.fg("accent", runningGlyph(seed));
 	if (status === "complete" || status === "completed") return theme.fg("success", "✓");
 	if (status === "failed" || status === "timed-out") return theme.fg("error", "✗");
+	if (status === "blocked") return theme.fg("warning", "■");
 	if (status === "paused") return theme.fg("warning", "■");
 	return theme.fg("muted", "◦");
 }
@@ -368,6 +374,7 @@ function widgetStepStatus(status: AsyncJobStep["status"] | WorkflowNodeStatus, t
 	if (status === "complete" || status === "completed") return theme.fg("success", "complete");
 	if (status === "failed") return theme.fg("error", "failed");
 	if (status === "timed-out") return theme.fg("error", "timed out");
+	if (status === "blocked") return theme.fg("warning", "needs your action");
 	if (status === "paused") return theme.fg("warning", "paused");
 	return theme.fg("dim", status);
 }
@@ -502,7 +509,7 @@ function buildAsyncChainStepSpans(total: number, stepCount: number, parallelGrou
 }
 
 function isDoneResult(result: Details["results"][number]): boolean {
-	if (result.interrupted || result.detached || result.timedOut) return false;
+	if (result.interrupted || result.detached || result.timedOut || result.acceptance?.status === "blocked") return false;
 	const status = result.progress?.status;
 	if (status === "completed") return true;
 	if (status === "running" || status === "pending") return false;
@@ -593,7 +600,7 @@ function buildMultiProgressLabel(details: Pick<Details, "mode" | "results" | "pr
 					: result.interrupted || result.detached
 						? "detached"
 						: result.exitCode === 0
-							? "completed"
+							? result.acceptance?.status === "blocked" ? "blocked" : "completed"
 							: "failed");
 			statuses[index] = status;
 		}
@@ -601,7 +608,9 @@ function buildMultiProgressLabel(details: Pick<Details, "mode" | "results" | "pr
 		const succeeded = statuses.filter((status) => status === "completed").length;
 		const failed = statuses.filter((status) => status === "failed" || status === "timed-out").length;
 		const paused = statuses.filter((status) => status === "paused" || status === "detached").length;
+		const blockedCount = statuses.filter((status) => status === "blocked").length;
 		const parts = [`${succeeded}/${totalCount} succeeded`];
+		if (blockedCount) parts.push(`${blockedCount} need human action`);
 		if (hasRunning) parts.unshift(formatAgentRunningLabel(running));
 		if (failed > 0) parts.push(`${failed} failed`);
 		if (paused > 0) parts.push(`${paused} paused`);
@@ -619,6 +628,7 @@ function buildMultiProgressLabel(details: Pick<Details, "mode" | "results" | "pr
 		let succeeded = 0;
 		let failed = 0;
 		let paused = 0;
+		let blocked = 0;
 		for (let index = groupStart; index < groupEnd; index++) {
 			const progressEntry = details.progress?.find((progress) => progress.index === index);
 			const resultEntry = details.results.find((result, position) => (result.progress?.index ?? position) === index);
@@ -627,6 +637,7 @@ function buildMultiProgressLabel(details: Pick<Details, "mode" | "results" | "pr
 			else if (status === "failed" || status === "timed-out" || resultEntry?.timedOut) failed++;
 			else if (status === "paused" || status === "detached" || resultEntry?.interrupted || resultEntry?.detached) paused++;
 			else if (resultEntry && resultEntry.exitCode !== 0) failed++;
+			else if (status === "blocked" || resultEntry?.acceptance?.status === "blocked") blocked++;
 			else if (status === "completed" || (resultEntry && isDoneResult(resultEntry))) succeeded++;
 		}
 		const totalSteps = details.totalSteps ?? details.chainAgents?.length ?? 1;
@@ -634,6 +645,7 @@ function buildMultiProgressLabel(details: Pick<Details, "mode" | "results" | "pr
 		if (hasRunning) groupParts.unshift(formatAgentRunningLabel(running));
 		if (failed > 0) groupParts.push(`${failed} failed`);
 		if (paused > 0) groupParts.push(`${paused} paused`);
+		if (blocked > 0) groupParts.push(`${blocked} need human action`);
 		const headerLabel = `step ${currentStepIndex + 1}/${totalSteps} · parallel group: ${groupParts.join(" · ")}`;
 		return { headerLabel, itemTitle, totalCount: groupSize, hasParallelInChain, activeParallelGroup, groupStartIndex: groupStart, groupEndIndex: groupEnd, showActiveGroupOnly: true };
 	}
@@ -756,6 +768,7 @@ function nestedStatusGlyph(state: NestedRunSummary["state"] | NestedStepSummary[
 	if (state === "running") return theme.fg("accent", runningGlyph(seed));
 	if (state === "complete" || state === "completed") return theme.fg("success", "✓");
 	if (state === "failed") return theme.fg("error", "✗");
+	if (state === "blocked") return theme.fg("warning", "■");
 	if (state === "paused") return theme.fg("warning", "■");
 	return theme.fg("muted", "◦");
 }
@@ -777,6 +790,7 @@ function nestedActivity(input: Pick<NestedRunSummary | NestedStepSummary, "activ
 	if (facts.length) return facts.join(" · ");
 	if (state === "running") return "thinking…";
 	if (state === "queued" || state === "pending") return "queued…";
+	if (state === "blocked") return "Needs your action";
 	if (state === "paused") return "Paused";
 	if (state === "failed") return "Failed";
 	return "Done";
@@ -1062,6 +1076,7 @@ function renderMultiCompact(d: Details, theme: Theme, isError = false): Componen
 		|| workflowGraphHasStatus(d, ["running"]));
 	const failed = isError || d.results.some((r) => r.exitCode !== 0 && r.progress?.status !== "running")
 		|| workflowGraphHasStatus(d, ["failed", "timed-out"]);
+	const blocked = d.results.some((r) => r.acceptance?.status === "blocked" && r.exitCode === 0);
 	const paused = d.results.some((r) => (r.interrupted || r.detached) && r.progress?.status !== "running")
 		|| workflowGraphHasStatus(d, ["paused", "detached"]);
 	let totalSummary = d.progressSummary;
@@ -1085,7 +1100,7 @@ function renderMultiCompact(d: Details, theme: Theme, isError = false): Componen
 		? theme.fg("accent", runningGlyph(runningSeed(progressRunningSeed(totalSummary), d.currentStepIndex)))
 		: failed
 			? theme.fg("error", "✗")
-			: paused
+			: paused || blocked
 				? theme.fg("warning", "■")
 				: theme.fg("success", "✓");
 	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
@@ -1105,7 +1120,7 @@ function renderMultiCompact(d: Details, theme: Theme, isError = false): Componen
 		return { kind: "result", resultIndex: i, rowNumber, agentName: useResultsDirectly ? (r?.agent || `${fallbackLabel}-${rowNumber}`) : (d.chainAgents![i] || r?.agent || `${fallbackLabel}-${rowNumber}`) };
 	});
 	const maxCompactRows = 6;
-	const visibleEntries = hasRunning || failed || paused ? renderEntries : renderEntries.slice(0, maxCompactRows);
+	const visibleEntries = hasRunning || failed || paused || blocked ? renderEntries : renderEntries.slice(0, maxCompactRows);
 	let showLiveDetailHint = false;
 	for (const entry of visibleEntries) {
 		if (entry.kind === "placeholder") {
@@ -1140,7 +1155,7 @@ function renderMultiCompact(d: Details, theme: Theme, isError = false): Componen
 			const activity = compactCurrentActivity(rProg);
 			c.addChild(new Text(truncLine(theme.fg("dim", `    ⎿  ${activity}`), width), 0, 0));
 			showLiveDetailHint = true;
-		} else if (!rPending && (r.exitCode !== 0 || r.interrupted || r.detached || r.timedOut || hasEmptyTextOutputWithoutOutputTarget(r.task, output))) {
+		} else if (!rPending && (r.exitCode !== 0 || r.interrupted || r.detached || r.timedOut || r.acceptance?.status === "blocked" || hasEmptyTextOutputWithoutOutputTarget(r.task, output))) {
 			c.addChild(new TruncatedText(theme.fg(r.exitCode !== 0 ? "error" : "dim", `    ⎿  ${resultStatusLine(r, output)}`)));
 		}
 		const outputTarget = extractOutputTarget(r.task);
@@ -1187,9 +1202,10 @@ export function renderSubagentResult(
 
 	const expanded = options.expanded;
 	const hasWorkflowFailure = workflowGraphHasStatus(d, ["failed", "timed-out"]);
+	const hasWorkflowBlocked = d.results.some((r) => r.exitCode === 0 && r.acceptance?.status === "blocked") || workflowGraphHasStatus(d, ["blocked"]);
 	const hasWorkflowPause = d.results.some((r) => r.interrupted || r.detached)
 		|| workflowGraphHasStatus(d, ["paused", "detached"]);
-	const receiptText = expanded && (isError || hasWorkflowFailure || hasWorkflowPause || d.intercomDelivery?.delivered)
+	const receiptText = expanded && (isError || hasWorkflowFailure || hasWorkflowBlocked || hasWorkflowPause || d.intercomDelivery?.delivered)
 		? result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")
 		: undefined;
 	const mdTheme = getMarkdownTheme();
@@ -1205,7 +1221,7 @@ export function renderSubagentResult(
 				: r.detached || r.interrupted
 					? theme.fg("warning", r.detached ? "detached" : "paused")
 					: r.exitCode === 0
-						? theme.fg("success", "ok")
+						? r.acceptance?.status === "blocked" ? theme.fg("warning", "needs your action") : theme.fg("success", "ok")
 						: theme.fg("error", "failed");
 		const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 		const output = r.truncation?.text || getSingleResultOutput(r);
@@ -1221,7 +1237,7 @@ export function renderSubagentResult(
 		const toolCallLines = getToolCallLines(r, expanded);
 		const c = new Container();
 		c.addChild(new Text(fit(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${contextBadge}${progressInfo}`), 0, 0));
-		if ((isError || hasWorkflowFailure || hasWorkflowPause) && d.runId) c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
+		if ((isError || hasWorkflowFailure || hasWorkflowBlocked || hasWorkflowPause) && d.runId) c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
 		c.addChild(new Spacer(1));
 		const taskMaxLen = Math.max(20, w - 8);
 		const taskPreview = expanded || r.task.length <= taskMaxLen
@@ -1284,6 +1300,7 @@ export function renderSubagentResult(
 			c.addChild(new Text(fit(theme.fg("dim", `Fallbacks: ${r.attemptedModels.join(" → ")}`)), 0, 0));
 		}
 		c.addChild(new Text(fit(theme.fg("dim", formatUsage(r.usage, r.model))), 0, 0));
+		if (!isRunning) c.addChild(new Text(fit(theme.fg("dim", formatAgentProcessExit(r.agentProcessExit))), 0, 0));
 		if (r.sessionFile) {
 			c.addChild(new Text(fit(theme.fg("dim", `Session: ${shortenPath(r.sessionFile)}`)), 0, 0));
 		}
@@ -1312,6 +1329,8 @@ export function renderSubagentResult(
 		? theme.fg("warning", "running")
 		: hasFailure
 			? theme.fg("error", "failed")
+			: hasWorkflowBlocked
+				? theme.fg("warning", "needs your action")
 			: hasWorkflowPause
 				? theme.fg("warning", "paused")
 				: hasEmptyWithoutTarget
@@ -1352,13 +1371,15 @@ export function renderSubagentResult(
 				.map((agent, i) => {
 					const result = d.results[i];
 					const isFailed = result && result.exitCode !== 0 && result.progress?.status !== "running";
-					const isComplete = result && result.exitCode === 0 && result.progress?.status !== "running";
+					const isComplete = result && isDoneResult(result);
 					const isEmptyWithoutTarget = !d.intercomDelivery?.delivered && Boolean(result)
 						&& Boolean(isComplete)
 						&& hasEmptyTextOutputWithoutOutputTarget(result.task, getSingleResultOutput(result));
 					const isCurrent = i === (d.currentStepIndex ?? d.results.length);
 					const stepIcon = isFailed
 						? theme.fg("error", "failed")
+						: result?.acceptance?.status === "blocked" ? theme.fg("warning", "needs your action")
+						: result?.interrupted || result?.detached ? theme.fg("warning", result.detached ? "detached" : "paused")
 						: isEmptyWithoutTarget
 							? theme.fg("warning", "warning")
 							: isComplete
@@ -1381,7 +1402,7 @@ export function renderSubagentResult(
 			0,
 		),
 	);
-	if ((isError || hasWorkflowFailure || hasWorkflowPause) && d.runId) c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
+	if ((isError || hasWorkflowFailure || hasWorkflowBlocked || hasWorkflowPause) && d.runId) c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
 	if (chainVis) {
 		c.addChild(new Text(fit(`  ${chainVis}`), 0, 0));
 	}
@@ -1435,6 +1456,8 @@ export function renderSubagentResult(
 				? theme.fg("warning", r.detached ? "detached" : "paused")
 				: r.exitCode !== 0
 					? theme.fg("error", "failed")
+					: r.acceptance?.status === "blocked"
+					? theme.fg("warning", "needs your action")
 					: !d.intercomDelivery?.delivered && hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
 						? theme.fg("warning", "warning")
 						: theme.fg("success", "done");

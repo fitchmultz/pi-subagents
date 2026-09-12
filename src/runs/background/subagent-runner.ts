@@ -10,6 +10,7 @@ import { PI_CODING_AGENT_PACKAGE, getPiSpawnCommand, resolveInstalledPiPackageRo
 import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, findDuplicateOutputPath, formatConsumedOutputReference, formatSavedOutputReference, injectSingleOutputInstruction, resolveSingleOutput } from "../shared/single-output.ts";
 import {
 	type AcceptanceLedger,
+	type AgentProcessExit,
 	type AsyncResultFile,
 	type ActivityState,
 	type ArtifactPaths,
@@ -63,6 +64,7 @@ import { completeWorkflowStep, runParallelTasks, workflowChildSucceeded, type Pa
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { runModelAttempts, sumAttemptUsage } from "../shared/model-fallback.ts";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
+import { updateStreamingText } from "../shared/streaming-text.ts";
 import { pendingSupervisorQuestion, refreshQuestionLaunch, saveAsyncRunResult, saveRunStatus, saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
 import { hasCompletedMutationToolCall, resolveCompletionPolicy } from "../shared/completion-guard.ts";
@@ -95,6 +97,7 @@ import { namespaceParallelOutput, writeInitialProgressFile } from "../../shared/
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
 	evaluateRunAcceptance,
+	acceptanceHumanAction,
 	createFinalizationReportRuntime,
 	readFinalizationReport,
 	formatUnconfirmedFinalizationOutput,
@@ -154,6 +157,7 @@ interface StepResult {
 	acceptance?: AcceptanceLedger;
 	resourceLimitExceeded?: ResourceLimitExceeded;
 	interrupted?: boolean;
+	agentProcessExit?: AgentProcessExit;
 }
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = "SIGUSR2";
@@ -242,6 +246,7 @@ type ChildMessage = Message & {
 
 interface ChildEvent {
 	type?: string;
+	assistantMessageEvent?: Parameters<typeof updateStreamingText>[1]["assistantMessageEvent"];
 	message?: ChildMessage;
 	toolCallId?: string;
 	toolName?: string;
@@ -251,6 +256,7 @@ interface ChildEvent {
 
 interface RunPiStreamingResult {
 	stderr: string;
+	agentProcessExit?: AgentProcessExit;
 	exitCode: number | null;
 	messages: Message[];
 	usage: Usage;
@@ -265,6 +271,7 @@ interface RunPiStreamingResult {
 
 interface RunSingleStepResult {
 	agent: string;
+	agentProcessExit?: AgentProcessExit;
 	output: string;
 	exitCode: number;
 	error?: string;
@@ -539,6 +546,7 @@ function runPiStreaming(
 			const forcedDrainAfterFinalSuccess = lifecycle.settledCleanup && (cleanTerminalAssistantStopReceived || currentReport) && !finalError;
 			resolve({
 				stderr,
+				agentProcessExit: lifecycle.agentProcessExit,
 				exitCode: resourceLimitExceeded ? 1 : interrupted || forcedDrainAfterFinalSuccess ? 0 : lifecycle.stopping || exitSignal ? (exitCode ?? 1) : exitCode,
 				messages,
 				usage,
@@ -696,7 +704,7 @@ async function runSingleStep(
 	ctx: SingleStepContext,
 ): Promise<RunSingleStepResult> {
 	if (ctx.signal?.aborted) return { agent: step.agent, output: "", exitCode: 1, error: "Subagent cancelled." };
-	saveQuestionContract(ctx.id, ctx.flatIndex, { effectiveAcceptance: step.effectiveAcceptance, output: step.outputPath ?? false, outputMode: step.outputMode, outputSchema: step.structuredOutputSchema ?? step.structuredOutput?.schema, launch: step.launch ? { ...step.launch, cwd: step.cwd ?? ctx.cwd, output: step.outputPath ?? false, outputMode: step.outputMode ?? "inline", outputSchema: step.structuredOutputSchema ?? step.structuredOutput?.schema, model: step.model, thinking: step.thinking } : undefined, sessionFile: step.sessionFile });
+	saveQuestionContract(ctx.id, ctx.flatIndex, { task: step.task, label: step.label, effectiveAcceptance: step.effectiveAcceptance, output: step.outputPath ?? false, outputMode: step.outputMode, outputSchema: step.structuredOutputSchema ?? step.structuredOutput?.schema, launch: step.launch ? { ...step.launch, cwd: step.cwd ?? ctx.cwd, output: step.outputPath ?? false, outputMode: step.outputMode ?? "inline", outputSchema: step.structuredOutputSchema ?? step.structuredOutput?.schema, model: step.model, thinking: step.thinking } : undefined, sessionFile: step.sessionFile });
 	const interruptController = new AbortController();
 	ctx.registerInterrupt?.(() => interruptController.abort());
 	const interruptSignal = AbortSignal.any([ctx.interruptSignal, interruptController.signal].filter((signal) => signal !== undefined));
@@ -868,7 +876,7 @@ async function runSingleStep(
 	if (artifactPaths) {
 		fs.writeFileSync(artifactPaths.outputPath, output, "utf-8");
 		fs.writeFileSync(artifactPaths.metadataPath, JSON.stringify({
-			runId: ctx.id, agent: step.agent, task, exitCode: effectiveFinalExitCode, interrupted: outcome.interrupted,
+			runId: ctx.id, agent: step.agent, task, exitCode: effectiveFinalExitCode, interrupted: outcome.interrupted, agentProcessExit: execution.agentProcessExit,
 			error: outcome.error, acceptance, initialOutput: acceptance?.finalization ? initialOutput : undefined, usage,
 			model: initial.model, attemptedModels: attemptedModels.length ? attemptedModels : undefined, modelAttempts,
 			resourceLimitExceeded: outcome.resourceLimitExceeded, skills: step.skills, timestamp: Date.now(),
@@ -876,14 +884,16 @@ async function runSingleStep(
 	}
 	// Snapshot before a continuation can append different choices to this same session.
 	refreshQuestionLaunch(ctx.id, ctx.flatIndex, sessionFile);
-	return {
-		agent: step.agent, output: outputForSummary, exitCode: effectiveFinalExitCode, error: outcome.error,
+	const result: RunSingleStepResult = {
+		agent: step.agent, output: outputForSummary, exitCode: effectiveFinalExitCode, error: outcome.error, agentProcessExit: execution.agentProcessExit,
 		sessionFile, intercomTarget: ctx.childIntercomTarget, model: initial.model,
 		attemptedModels: attemptedModels.length ? attemptedModels : undefined, modelAttempts, artifactPaths,
 		interrupted: outcome.interrupted, completionGuardTriggered: initial.completionGuardTriggered,
 		structuredOutput: initial.structuredOutput, structuredOutputPath: effectiveStructuredOutput?.outputPath,
 		structuredOutputSchemaPath: effectiveStructuredOutput?.schemaPath, acceptance, resourceLimitExceeded: outcome.resourceLimitExceeded,
 	};
+	saveQuestionContract(ctx.id, ctx.flatIndex, { result: { ...result, task, usage, finalOutput: result.output }, updatedAt: Date.now() });
+	return result;
 }
 
 type RunnerStatusStep = NonNullable<AsyncStatus["steps"]>[number] & {
@@ -1117,6 +1127,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		|| flatSteps.some((step) => Boolean(step.sessionFile));
 	const statusPayload: RunnerStatusPayload = {
 		runId: id,
+		indexedControl: true,
 		...(config.sessionId ? { sessionId: config.sessionId } : {}),
 		mode: config.resultMode ?? (flatSteps.length > 1 ? "chain" : "single"),
 		state: "running",
@@ -1163,9 +1174,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const refreshWorkflowGraph = (): void => {
 		if (!config.workflowGraph) return;
 		const graph = structuredClone(statusPayload.workflowGraph ?? config.workflowGraph);
-		const normalize = (status: RunnerStatusStep["status"]): "pending" | "running" | "completed" | "failed" | "paused" | "detached" => {
+		const normalize = (status: RunnerStatusStep["status"]): "pending" | "running" | "completed" | "failed" | "blocked" | "paused" | "detached" => {
 			if (status === "complete" || status === "completed") return "completed";
-			if (status === "running" || status === "failed" || status === "paused" || status === "pending") return status;
+			if (status === "running" || status === "failed" || status === "blocked" || status === "paused" || status === "pending") return status;
 			return "pending";
 		};
 		const updateNode = (node: NonNullable<typeof graph.nodes>[number]): void => {
@@ -1183,6 +1194,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				if (node.children.every((child) => child.status === "completed")) node.status = "completed";
 				else if (node.children.some((child) => child.status === "running")) node.status = "running";
 				else if (node.children.some((child) => child.status === "failed")) node.status = "failed";
+				else if (node.children.some((child) => child.status === "blocked")) node.status = "blocked";
 				else if (node.children.some((child) => child.status === "paused")) node.status = "paused";
 			}
 			if (node.error) node.status = "failed";
@@ -1206,7 +1218,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		statusWriteTimer = setTimeout(writeStatusPayload, 200);
 		statusWriteTimer.unref?.();
 	};
-	const markDynamicGraphGroup = (stepIndex: number, status: "completed" | "failed" | "running" | "paused", error?: string, acceptance?: AcceptanceLedger): void => {
+	const markDynamicGraphGroup = (stepIndex: number, status: "completed" | "failed" | "blocked" | "running" | "paused", error?: string, acceptance?: AcceptanceLedger): void => {
 		const groupNode = statusPayload.workflowGraph?.nodes.find((node) => node.id === `step-${stepIndex}`);
 		if (!groupNode) return;
 		groupNode.status = status;
@@ -1283,6 +1295,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				? "needs_attention"
 				: undefined;
 		}
+		step.streamingText = updateStreamingText(step.streamingText, event);
 		if (event.type === "tool_execution_start" && event.toolName) {
 			const currentPath = resolveCurrentPath(event.toolName, event.args);
 			step.toolCount = (step.toolCount ?? 0) + 1;
@@ -1436,18 +1449,12 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		interrupted = true;
 		interruption.abort();
 		const now = Date.now();
-		statusPayload.state = "paused";
 		currentActivityState = undefined;
 		statusPayload.activityState = undefined;
 		statusPayload.lastUpdate = now;
-		for (const step of statusPayload.steps) {
-			if (step.status === "running") {
-				markStepPaused(step, now);
-			}
-		}
 		writeStatusPayload();
 		appendJsonl(eventsPath, JSON.stringify({
-			type: "subagent.run.paused",
+			type: "subagent.run.stop-requested",
 			ts: now,
 			runId: id,
 		}));
@@ -1457,7 +1464,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const controlRequestPath = path.join(asyncDir, ASYNC_CONTROL_REQUEST_FILE);
 	let lastControlRequestId: string | undefined;
 	controlRequestTimer = setInterval(() => {
-		let request: { requestId?: unknown; runId?: unknown; action?: unknown };
+		let request: { requestId?: unknown; runId?: unknown; action?: unknown; index?: unknown };
 		try {
 			if (!fs.existsSync(controlRequestPath)) return;
 			if (fs.statSync(controlRequestPath).size > 64 * 1024) throw new Error("control request exceeds 64 KiB");
@@ -1468,9 +1475,13 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			try { fs.rmSync(controlRequestPath, { force: true }); } catch {}
 			return;
 		}
-		if (request.action !== "interrupt" || request.runId !== id || typeof request.requestId !== "string" || !request.requestId || request.requestId === lastControlRequestId) return;
+		if ((request.action !== "interrupt" && request.action !== "cancel") || request.runId !== id || typeof request.requestId !== "string" || !request.requestId || request.requestId === lastControlRequestId) return;
 		lastControlRequestId = request.requestId;
-		interruptRunner();
+		if (request.action === "cancel") cancellation.abort();
+		else if (request.index === undefined) interruptRunner();
+		else if (typeof request.index === "number" && Number.isSafeInteger(request.index) && request.index >= 0) {
+			activeChildInterrupts.get(request.index)?.();
+		}
 	}, 100);
 	controlRequestTimer.unref?.();
 	appendJsonl(
@@ -1554,11 +1565,12 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		if (input.trackSession && task.sessionFile) latestSessionFile = task.sessionFile;
 
 		const taskEndTime = Date.now();
-		statusStep.status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
+		statusStep.status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? singleResult.acceptance?.status === "blocked" ? "blocked" : "complete" : "failed";
 		clearStepCurrentActivity(statusStep);
 		statusStep.endedAt = taskEndTime;
 		statusStep.durationMs = taskEndTime - taskStartTime;
 		statusStep.exitCode = singleResult.exitCode;
+		statusStep.agentProcessExit = singleResult.agentProcessExit;
 		statusStep.model = singleResult.model;
 		statusStep.thinking = resolveEffectiveThinking(singleResult.model, statusStep.thinking);
 		statusStep.attemptedModels = singleResult.attemptedModels;
@@ -1572,10 +1584,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		statusPayload.lastUpdate = taskEndTime;
 		writeStatusPayload();
 		appendJsonl(eventsPath, JSON.stringify({
-			type: singleResult.interrupted ? "subagent.step.paused" : singleResult.exitCode === 0 ? "subagent.step.completed" : "subagent.step.failed",
+			type: singleResult.interrupted ? "subagent.step.paused" : singleResult.exitCode !== 0 ? "subagent.step.failed" : singleResult.acceptance?.status === "blocked" ? "subagent.step.blocked" : "subagent.step.completed",
 			ts: taskEndTime, runId: id, stepIndex: fi, agent: task.agent,
 			exitCode: singleResult.exitCode, durationMs: taskEndTime - taskStartTime,
-			interrupted: singleResult.interrupted,
+			interrupted: singleResult.interrupted, agentProcessExit: singleResult.agentProcessExit,
 			resourceLimitExceeded: singleResult.resourceLimitExceeded,
 		}));
 		if (input.notifyCompletionGuard && singleResult.completionGuardTriggered) {
@@ -1767,6 +1779,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					acceptance: pr.acceptance,
 					resourceLimitExceeded: pr.resourceLimitExceeded,
 					interrupted: pr.interrupted,
+					agentProcessExit: pr.agentProcessExit,
 				});
 			}
 			const completion = completeWorkflowStep({ stepIndex, stepCount: steps.length, results: parallelResults, previousOutput, dynamic: { step, items: materialized.items } });
@@ -1779,7 +1792,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			previousOutput = completion.previousOutput;
 			workflowComplete = completion.complete;
 			const error = completion.error ?? parallelResults[completion.failedIndices[0]]?.error;
-			markDynamicGraphGroup(stepIndex, completion.status === "completed" ? "completed" : completion.status === "paused" ? "paused" : "failed", error);
+			markDynamicGraphGroup(stepIndex, completion.status === "completed" ? "completed" : completion.status === "blocked" ? "blocked" : completion.status === "paused" ? "paused" : "failed", error);
 			appendJsonl(eventsPath, JSON.stringify({
 				type: "subagent.dynamic.completed",
 				ts: Date.now(),
@@ -1924,6 +1937,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							acceptance: pr.acceptance,
 							resourceLimitExceeded: pr.resourceLimitExceeded,
 							interrupted: pr.interrupted,
+							agentProcessExit: pr.agentProcessExit,
 						});
 					}
 				const completion = completeWorkflowStep({
@@ -2016,7 +2030,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				structuredOutputSchemaPath: singleResult.structuredOutputSchemaPath,
 				acceptance: singleResult.acceptance,
 				resourceLimitExceeded: singleResult.resourceLimitExceeded,
-				interrupted: singleResult.interrupted,
+				interrupted: singleResult.interrupted, agentProcessExit: singleResult.agentProcessExit,
 			});
 			Object.assign(outputs, completion.outputs);
 			statusPayload.outputs = outputs;
@@ -2043,11 +2057,12 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}
 
 			const stepEndTime = Date.now();
-			statusPayload.steps[flatIndex].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
+			statusPayload.steps[flatIndex].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? singleResult.acceptance?.status === "blocked" ? "blocked" : "complete" : "failed";
 			clearStepCurrentActivity(statusPayload.steps[flatIndex]);
 			statusPayload.steps[flatIndex].endedAt = stepEndTime;
 			statusPayload.steps[flatIndex].durationMs = stepEndTime - stepStartTime;
 			statusPayload.steps[flatIndex].exitCode = singleResult.exitCode;
+			statusPayload.steps[flatIndex].agentProcessExit = singleResult.agentProcessExit;
 			statusPayload.steps[flatIndex].model = singleResult.model;
 			statusPayload.steps[flatIndex].thinking = resolveEffectiveThinking(singleResult.model, statusPayload.steps[flatIndex].thinking);
 			statusPayload.steps[flatIndex].attemptedModels = singleResult.attemptedModels;
@@ -2066,14 +2081,14 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			writeStatusPayload();
 
 			appendJsonl(eventsPath, JSON.stringify({
-				type: singleResult.interrupted ? "subagent.step.paused" : singleResult.exitCode === 0 ? "subagent.step.completed" : "subagent.step.failed",
+				type: singleResult.interrupted ? "subagent.step.paused" : singleResult.exitCode !== 0 ? "subagent.step.failed" : singleResult.acceptance?.status === "blocked" ? "subagent.step.blocked" : "subagent.step.completed",
 				ts: stepEndTime,
 				runId: id,
 				stepIndex: flatIndex,
 				agent: seqStep.agent,
 				exitCode: singleResult.exitCode,
 				durationMs: stepEndTime - stepStartTime,
-				interrupted: singleResult.interrupted,
+				interrupted: singleResult.interrupted, agentProcessExit: singleResult.agentProcessExit,
 				tokens: stepTokens,
 				resourceLimitExceeded: singleResult.resourceLimitExceeded,
 			}));
@@ -2175,6 +2190,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const hasFailedSteps = statusPayload.steps.some((step) => step.status === "failed");
 	const hasPausedSteps = statusPayload.steps.some((step) => step.status === "paused");
 	const finalRunState: AsyncStatus["state"] = hasFailedSteps || statusPayload.error || cancellation.signal.aborted ? "failed"
+		: statusPayload.steps.some((step) => step.status === "blocked") ? "blocked"
 		: interrupted || hasPausedSteps ? "paused" : workflowComplete ? "complete" : "failed";
 	statusPayload.state = finalRunState;
 	statusPayload.activityState = undefined;
@@ -2232,7 +2248,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			mode: resultMode,
 			success: finalRunState === "complete",
 			state: finalRunState,
-			summary: finalRunState === "paused" ? "Paused after interrupt. Waiting for explicit next action." : summary,
+			summary: finalRunState === "blocked" ? `Needs your action — acceptance incomplete.\n${results.map((result) => acceptanceHumanAction(result.acceptance)).filter(Boolean).join("\n")}` : finalRunState === "paused" ? "Paused after interrupt. Waiting for explicit next action." : summary,
 			results: results.map((r) => {
 				const childOutput = truncateOutput(r.output, outputLimits, r.artifactPaths?.outputPath);
 				return {
@@ -2255,6 +2271,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					acceptance: r.acceptance,
 					resourceLimitExceeded: r.resourceLimitExceeded,
 					interrupted: r.interrupted,
+					agentProcessExit: r.agentProcessExit,
 				};
 			}),
 			outputs,

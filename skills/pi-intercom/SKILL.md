@@ -53,11 +53,15 @@ Coordinate named Pi sessions on the same machine with the least context loss and
 7. Treat inbound steers as coordination within the active task: incorporate relevant context and continue. Replace the task only when the message explicitly says so. Reply to an active ask with `reply`; otherwise respond with default-steered `send`.
 8. Use blocking `ask` only when this process must stay alive and cannot safely continue without the answer. After any tool result, handle the reply or error; do not assume delivery after failure.
 
+## Quiet current state
+
+Use explicit `subscribe` / `unsubscribe` with an exact `topic`, and `publish` with a self-contained `message`. Routine `event: "update"` replaces one inspectable record per sender/topic without entering model context or waking a turn; inspect with `topics` or `/intercom topics`. Use resource-specific names for browser/tab ownership. `resource` + `ownership: "held" | "released"` is advisory state, not a lock; disconnection means unavailable, not released. Blocker/decision events steer subscribers; release events steer only subscriptions using `awaitRelease: true`. Direct messages always bypass subscriptions. Skip redundant status prose and keep material findings in the final task result.
+
 ## Supervisor escalations from pi-subagents
 
 When present, child sessions get a child-only `contact_supervisor` tool; normal sessions use `intercom`. Do not assume `contact_supervisor` exists unless the tool is listed.
 
-Child-side reasons only: blocking `need_decision` or `interview_request` when the ephemeral child cannot safely continue and must remain alive for the reply, or an intentionally deferred `progress_update` for a concise material update.
+Child-side reasons only: blocking `need_decision` or `interview_request` when the ephemeral child cannot safely continue and must remain alive for the reply, or a non-blocking `progress_update` for a discovery or change the supervisor needs while working. Progress steers at the next tool boundary; skip starts, redundant status, and routine completion, and retain material findings in the final result.
 
 Supervisor-side: while connected, `intercom` `reply` answers formatted child escalations. After reload/reconnect, resume the same saved supervisor session, list `agent_runs({ action: "questions" })`, and use `agent_runs({ action: "answer", id, questionId, message })`. These questions do not use the ordinary ask timeout. A nudge is not an answer. Saved answers reach a live waiter or revive an exited child's saved session; a receipt does not mean the work completed. Use `agent_runs({ action: "stop", id })` to cancel a pending question and its live waiter.
 
@@ -65,7 +69,7 @@ Supervisor-side: while connected, `intercom` `reply` answers formatted child esc
 | --- | --- | --- |
 | `need_decision` | Child cannot safely continue without one decision or approval | Reply promptly with a clear decision |
 | `interview_request` | Child cannot safely continue without multiple structured answers | Reply with JSON using the requested ids |
-| `progress_update` | Child intentionally deferred a concise material update | Read it; reply only if redirecting |
+| `progress_update` | Child steers a material discovery needed during active work | Read it; reply only if redirecting |
 
 Interview replies use plain JSON or a fenced JSON block. `info` questions are context only and need no response entries:
 

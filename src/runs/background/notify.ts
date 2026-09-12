@@ -14,7 +14,7 @@ interface ChainStepResult {
 
 export interface SubagentNotifyDetails {
 	agent: string;
-	status: "completed" | "failed" | "paused";
+	status: "completed" | "failed" | "blocked" | "paused";
 	taskInfo?: string;
 	resultPreview: string;
 	durationMs?: number;
@@ -70,7 +70,7 @@ export default function registerSubagentNotify(pi: ExtensionAPI): void {
 			|| result.state === "paused"
 			|| summary.startsWith("Paused after interrupt.")
 		);
-		const status = paused ? "paused" : result.success ? "completed" : "failed";
+		const status = result.state === "blocked" ? "blocked" : paused ? "paused" : result.success ? "completed" : "failed";
 
 		const taskInfo =
 			result.taskIndex !== undefined && result.totalTasks !== undefined

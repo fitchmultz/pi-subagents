@@ -19,6 +19,7 @@ const report = (prose = handoff, satisfied = true) => `${prose}\n\n\`\`\`accepta
 })}\n\`\`\``;
 const fullReport = report();
 const initialReport = report(`Initial task report\n${details}`);
+const blockedReport = `Waiting for the user's Touch ID.\n\n\`\`\`acceptance-report\n${JSON.stringify({ criteriaSatisfied: [{ id: "criterion-1", status: "blocked", evidence: "The native sign-in dialog requests Touch ID on this machine.", humanAction: "Complete Touch ID in the sign-in dialog." }], changedFiles: ["fixture.ts"], residualRisks: ["Human authentication is incomplete."], diffSummary: "Completed code is retained; authentication needs the user." })}\n\`\`\``;
 
 async function waitFor(check: () => boolean, label: string) {
 	const deadline = Date.now() + 20_000;
@@ -50,17 +51,17 @@ for (const background of [false, true]) describe(`${background ? "background" : 
 
 	async function run(scenario: string, options: {
 		maxTurns?: number; retry?: string; laterReport?: string; outputMode?: "inline" | "file-only"; generated?: boolean;
-		publicSchema?: boolean; verify?: boolean; handoff?: string; initialHandoff?: string;
+		publicSchema?: boolean; verify?: boolean; handoff?: string; initialHandoff?: string; initialReport?: string; finalReport?: string;
 	} = {}) {
 		const outputPath = options.outputMode ? path.join(cwd, "requested.md") : undefined;
 		const schema = { type: "object", properties: { items: { type: "array", items: { type: "string" } } }, required: ["items"] };
 		const structured = options.publicSchema && !background ? createStructuredOutputRuntime(schema, cwd) : undefined;
-		mock.onCall({ output: initialReport, delay: options.initialHandoff ? 300 : undefined,
+		mock.onCall({ output: options.initialReport ?? initialReport, delay: options.initialHandoff ? 300 : undefined,
 			...(options.publicSchema ? { structuredOutput: { items: ["original payload"] } } : {}) });
 		for (const name of [scenario, ...(options.retry ? [options.retry] : [])]) {
 			const receiptPath = path.join(cwd, `native-${receipts.length}.json`);
 			receipts.push(receiptPath);
-			mock.onCall({ nativeReport: { scenario: name, report: fullReport, laterReport: options.laterReport,
+			mock.onCall({ nativeReport: { scenario: name, report: options.finalReport ?? fullReport, laterReport: options.laterReport,
 				receiptPath, handoffPath: outputPath, handoff: options.handoff } });
 		}
 		const agent = makeAgent("worker", { model: "report-fixture/faux-1", tools: ["fixture_work"], extensions: [],
@@ -114,6 +115,42 @@ for (const background of [false, true]) describe(`${background ? "background" : 
 		const savedOutput = readQuestionContract(id, 0)?.launch?.output;
 		return { result, native, outputPath: typeof savedOutput === "string" ? savedOutput : outputPath, artifact: fs.readFileSync(result.artifactPaths.outputPath, "utf8") };
 	}
+
+	it("an initial explicit human blocker stops before repair turns or verification", async () => {
+		const { result, native } = await run("single", { initialReport: blockedReport, maxTurns: 3, verify: true });
+		assert.equal(result.exitCode, 0, result.error);
+		assert.equal(result.acceptance.status, "blocked");
+		assert.equal(result.acceptance.finalization, undefined);
+		assert.deepEqual(result.acceptance.verifyRuns, []);
+		assert.deepEqual(result.acceptance.childReport.changedFiles, ["fixture.ts"]);
+		assert.match(result.acceptance.childReport.criteriaSatisfied[0].humanAction, /Touch ID/);
+		assert.equal(native.length, 0);
+		assert.equal(mock.callCount(), 1);
+		if (background) {
+			const data = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "result.json"), "utf8"));
+			assert.equal(data.state, "blocked"); assert.equal(data.success, false);
+			assert.equal(JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8")).steps[0].status, "blocked");
+			const events = fs.readFileSync(path.join(ASYNC_DIR, id, "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+			assert.ok(events.some((event) => event.type === "subagent.step.blocked"));
+			assert.equal(events.some((event) => event.type === "subagent.step.completed"), false);
+		}
+	});
+
+	it("a current native blocked submission stops remaining finalization and verification", async () => {
+		const { result } = await run("not-satisfied", { laterReport: blockedReport, maxTurns: 3, verify: true, retry: "single" });
+		assert.equal(result.acceptance.status, "blocked");
+		assert.equal(result.acceptance.finalization.status, "blocked");
+		assert.equal(result.acceptance.finalization.turns.length, 1);
+		assert.deepEqual(result.acceptance.verifyRuns, []);
+		assert.equal(mock.callCount(), 2);
+	});
+
+	it("an obsolete native blocked submission is audit evidence, not the current outcome", async () => {
+		const { result } = await run("plain", { finalReport: blockedReport });
+		assert.equal(result.acceptance.status, "rejected");
+		assert.equal(result.acceptance.childReport, undefined);
+		assert.equal(result.acceptance.unconfirmedOutput, blockedReport);
+	});
 
 	it("uses the current explicit resubmission after queued coordination without an extra pass", async () => {
 		const { result, native, artifact } = await run("resubmit");

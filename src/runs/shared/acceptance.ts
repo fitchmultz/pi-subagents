@@ -12,6 +12,7 @@ export {
 } from "./acceptance-reports.ts";
 export {
 	acceptanceFailureMessage,
+	acceptanceHumanAction,
 	evaluateAcceptance,
 } from "./acceptance-evaluation.ts";
 export {

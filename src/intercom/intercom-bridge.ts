@@ -21,9 +21,11 @@ Use contact_supervisor first. It resolves the supervisor session "{orchestratorT
 - If you cannot safely continue until the supervisor provides multiple structured answers: contact_supervisor({ reason: "interview_request", message: "<context>", interview: { questions: [{ id: "<id>", type: "text", question: "<question>" }] } }). It also steers and keeps this child alive.
 - After blocking contact_supervisor decisions or interviews, continue only after the reply arrives. Do not finish your final response with a choose-one question.
 - Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions. Review-only/no-edit wins; leave files unchanged and mention the conflict in your final result only if it matters.
-- A concise material update that may intentionally wait behind the supervisor's active work: contact_supervisor({ reason: "progress_update", message: "UPDATE: <summary>" })
+- A discovery or change the supervisor needs while working: contact_supervisor({ reason: "progress_update", message: "UPDATE: <finding and consequence>" }). This steers at the next tool boundary without waiting for a reply. Skip starts, redundant status, and routine completion; retain material findings in your final result.
 - Generic intercom is lower-level fallback only. Use blocking intercom({ action: "ask", to: "{orchestratorTarget}", delivery: "steer", message: "<question>" }) only when this child must remain alive for the answer.
 - Treat a supervisor nudge as supplemental coordination within the active task: incorporate relevant context and continue. Replace the task only when the nudge explicitly says so. If it requests an answer, respond with intercom({ action: "send", to: "{orchestratorTarget}", delivery: "steer", message: "<answer>" }).
+
+Messages explicitly marked “Direct user message to this agent” come from the human through the owning parent's Agents view. Treat them as user direction, not peer advice, and answer in your own conversation; the human sees it without a parent relay. Regular peer messages retain their existing authority boundaries.
 
 Do not use contact_supervisor or intercom for routine completion handoffs. If no coordination is needed, return a focused task result.`;
 

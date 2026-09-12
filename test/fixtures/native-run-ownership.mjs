@@ -11,7 +11,7 @@ Object.assign(process.env, { HOME: root, TMPDIR: root, PI_CODING_AGENT_DIR: agen
 fs.writeFileSync(path.join(root, "bin/pi"), `#!/bin/sh\nexec "${process.execPath}" "${path.join(repo, "test/fixtures/native-ownership-cli.mjs")}" "$@"\n`, { mode: 0o755 });
 process.env.PATH = `${path.join(root, "bin")}${path.delimiter}${process.env.PATH}`;
 const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
-const { QUESTIONS_DIR, getRunMetadataDir, readQuestionContract, questionProcessAlive } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
+const { QUESTIONS_DIR, getRunMetadataDir, readQuestionContract, saveQuestionContract, questionProcessAlive } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
 const evidence = { nativeProviderRequests: 0, failures: [], checks: [], root, parentPid: process.pid, nodeVersion: process.version, sdkRoot };
 const check = (name, run) => { run(); evidence.checks.push(name); };
 const profilePath = path.join(cwd, ".pi/agents/probe.md");
@@ -304,6 +304,9 @@ async function runJourney() {
 	assert.equal((await inspect(failedId)).details.run.state, "failed");
 	const unknownId = batch[0].details.runId;
 	fs.rmSync(path.join(getRunMetadataDir(unknownId), "foreground.json"));
+	saveQuestionContract(unknownId, 0, { result: undefined });
+	const childEvidenceId = batch[3].details.runId;
+	fs.rmSync(path.join(getRunMetadataDir(childEvidenceId), "foreground.json"));
 	const unknownOwnership = session.sessionManager.getEntries().findLast((entry) => entry.type === "custom" && entry.customType === "subagent-run" && entry.data.runId === unknownId).data;
 	session.sessionManager.appendCustomEntry("subagent-run", { ...unknownOwnership, children: [] });
 	const missingId = batch[1].details.runId;
@@ -321,6 +324,9 @@ async function runJourney() {
 	assert.equal(recovered.children[0].result.finalOutput, "FIRST_SESSION_TOKEN");
 	assert.equal((await inspect(continuedId)).details.run.children[0].result.finalOutput, "RECALLED FIRST_SESSION_TOKEN");
 	assert.equal((await inspect(unknownId)).details.run.state, "unknown");
+	const fromChildEvidence = (await inspect(childEvidenceId)).details.run;
+	assert.equal(fromChildEvidence.state, "completed", "a persisted child result remains authoritative without the aggregate file");
+	assert.equal(fromChildEvidence.children[0].result.finalOutput, "FIRST_SESSION_TOKEN");
 	assert.equal((await inspect(missingId)).details.run.children[0].missingSession, true);
 	const missingSession = await invoke("agent_runs", { action: "continue", id: missingId, message: "Do not invent a missing session." });
 	assert.equal(missingSession.isError, true);

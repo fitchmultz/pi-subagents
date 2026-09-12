@@ -161,7 +161,7 @@ export async function runChainPath(data: ExecutionContextData, deps: ExecutorDep
 			...chainResult,
 			content: [{ type: "text", text: appendWorktreeSummary(intercomReceipt.text, worktreeSummary) }],
 			details: intercomReceipt.details,
-			...(intercomReceipt.status !== "completed" ? { isError: true } : {}),
+			...(intercomReceipt.status === "failed" || intercomReceipt.status === "timed-out" ? { isError: true } : {}),
 		};
 	}
 

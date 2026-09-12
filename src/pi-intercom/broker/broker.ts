@@ -146,7 +146,7 @@ class IntercomBroker {
           this.shutdownTimer = null;
         }
 
-        writeMessage(socket, { type: "registered", sessionId: id });
+        writeMessage(socket, { type: "registered", sessionId: id, topicsSupported: true });
         break;
       }
 
@@ -258,6 +258,8 @@ class IntercomBroker {
             ...(clientMessage.pendingAsks !== undefined ? { pendingAsks: clientMessage.pendingAsks } : {}),
             ...(clientMessage.acceptsAsks !== undefined ? { acceptsAsks: clientMessage.acceptsAsks } : {}),
             ...(clientMessage.lastIntercomActivity !== undefined ? { lastIntercomActivity: clientMessage.lastIntercomActivity } : {}),
+            ...(clientMessage.subscriptions !== undefined ? { subscriptions: clientMessage.subscriptions } : {}),
+            ...(clientMessage.topics !== undefined ? { topics: clientMessage.topics } : {}),
             lastSeen: Date.now(),
           });
           if (!nextInfo) throw new Error("Invalid presence update");

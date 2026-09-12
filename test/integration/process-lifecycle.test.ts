@@ -193,6 +193,31 @@ describe("process lifecycle regressions", { timeout: 40_000 }, () => {
 		});
 	}
 
+	it("background stop stays live until the resistant agent process actually exits", async () => {
+		const id = `resistant-stop-${process.pid}-${Date.now()}`;
+		asyncIds.push(id);
+		mock.onCall({ ignoreSignals: true, steps: [{ jsonl: [events.toolStart("bash", { command: "controlled resistant agent" })] }, { delay: 10_000, jsonl: [events.assistantMessage("Too late")] }] });
+		const started = executeAsyncSingle(id, { agent: "worker", task: "Inspect", agentConfig: makeAgent("worker"), ctx: { pi: { events: { emit() {} } }, cwd, currentSessionId: "lifecycle" }, shareEnabled: false, maxSubagentDepth: 2 });
+		const statusFile = path.join(started.details.asyncDir!, "status.json");
+		await waitForFile(statusFile);
+		const deadline = Date.now() + 10_000;
+		const status = () => JSON.parse(fs.readFileSync(statusFile, "utf8"));
+		while (status().steps?.[0]?.currentTool !== "bash") { assert.ok(Date.now() < deadline); await delay(20); }
+		const { writeAsyncInterruptRequest } = await import("../../src/runs/foreground/foreground-control.ts");
+		writeAsyncInterruptRequest(started.details.asyncDir!, id);
+		await delay(300);
+		assert.equal(status().state, "running", "stop requested is not a terminal process receipt");
+		assert.equal(status().steps[0].currentTool, "bash");
+		assert.equal(status().steps[0].endedAt, undefined);
+		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
+		await waitForFile(resultPath);
+		const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+		assert.equal(result.state, "paused");
+		assert.equal(result.results[0].exitCode, 0);
+		assert.equal(result.results[0].agentProcessExit.signal, "SIGKILL");
+		assert.deepEqual(status().steps[0].agentProcessExit, result.results[0].agentProcessExit);
+	});
+
 	it("does not start verification commands when already cancelled", async () => {
 		const marker = path.join(cwd, "unexpected-command");
 		const acceptance = resolveEffectiveAcceptance({ explicit: { verify: [{ id: "cancelled", command: `touch '${marker}'`, allowFailure: true }] } });

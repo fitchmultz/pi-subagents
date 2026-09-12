@@ -29,6 +29,7 @@ export function maxParallelTasksMessage(maxParallelTasks: number): string {
 export interface TaskParam {
 	agent: string;
 	task: string;
+	label?: string;
 	cwd?: string;
 	count?: number;
 	outputSchema?: JsonSchemaObject;
@@ -84,7 +85,10 @@ export interface SubagentParamsLike {
 	index?: number;
 	agent?: string;
 	task?: string;
+	label?: string;
 	message?: string;
+	/** Internal human-view provenance; not accepted by the model tool schema. */
+	messageOrigin?: "human";
 	chain?: ChainStep[];
 	tasks?: TaskParam[];
 	concurrency?: number;
@@ -221,6 +225,7 @@ export function normalizeSubagentParamsLike(params: RawSubagentParamsLike): Suba
 		index: numberValue(params, "index"),
 		agent: stringValue(params, "agent"),
 		task: stringValue(params, "task"),
+		label: stringValue(params, "label"),
 		message: stringValue(params, "message"),
 		concurrency: numberValue(params, "concurrency"),
 		timeoutMs: numberValue(params, "timeoutMs"),

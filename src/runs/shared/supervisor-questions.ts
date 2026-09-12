@@ -5,12 +5,15 @@ import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { formatRunAction } from "../../shared/status-format.ts";
 import { buildSessionContext, parseSessionEntries } from "../../shared/native-session.ts";
 import { getAgentDir } from "../../shared/utils.ts";
-import { ASYNC_DIR, TEMP_ROOT_DIR, type AsyncStatus, type AsyncResultFile, type ResolvedAcceptanceConfig, type JsonSchemaObject, type OutputMode, type SavedLaunchConfig } from "../../shared/types.ts";
+import { ASYNC_DIR, TEMP_ROOT_DIR, type AsyncStatus, type AsyncResultFile, type ResolvedAcceptanceConfig, type JsonSchemaObject, type OutputMode, type SavedLaunchConfig, type SingleResult } from "../../shared/types.ts";
 
 export const LEGACY_QUESTIONS_DIR = path.join(TEMP_ROOT_DIR, "supervisor-questions");
 export const QUESTIONS_DIR = path.join(getAgentDir(), "sessions", "subagent-runs");
 
 export interface SupervisorRunContract {
+	task?: string;
+	label?: string;
+	result?: SingleResult;
 	effectiveAcceptance?: ResolvedAcceptanceConfig;
 	output?: string | false;
 	outputMode?: OutputMode;
@@ -42,6 +45,7 @@ export interface SupervisorQuestion extends SupervisorRunContract {
 export interface QuestionAnswer {
 	message: string;
 	answeredAt: number;
+	origin?: "human";
 }
 
 export interface QuestionDelivery {
@@ -221,11 +225,11 @@ export function listSupervisorQuestions(ownerSessionId: string, runId?: string, 
 	return questions.sort((a, b) => a.createdAt - b.createdAt);
 }
 
-export function saveQuestionAnswer(question: SupervisorQuestion, message: string, root = QUESTIONS_DIR): QuestionAnswer {
+export function saveQuestionAnswer(question: SupervisorQuestion, message: string, root = QUESTIONS_DIR, origin?: "human"): QuestionAnswer {
 	if (typeof message !== "string" || !message.trim()) throw new Error("action='answer' requires a non-empty message.");
 	const state = readQuestionState(question, root);
 	if (state.state === "cancelled") throw new Error(`Question ${question.questionId} was cancelled. Use continue for a new follow-up.`);
-	const answer = { message: message.trim(), answeredAt: state.answer?.answeredAt ?? Date.now() };
+	const answer: QuestionAnswer = { message: message.trim(), answeredAt: state.answer?.answeredAt ?? Date.now(), ...(state.answer?.origin ?? origin ? { origin: state.answer?.origin ?? origin } : {}) };
 	if (state.answer && state.answer.message !== answer.message) throw new Error(`Question ${question.questionId} already has a different saved answer. The original answer was retained.`);
 	if (writeQuestionStateOnce(question, "answer.json", answer, root)) return answer;
 	const existing = readQuestionState(question, root).answer!;

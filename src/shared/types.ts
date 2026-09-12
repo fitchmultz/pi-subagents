@@ -31,7 +31,7 @@ export interface ChainOutputMapEntry {
 
 export type ChainOutputMap = Record<string, ChainOutputMapEntry>;
 
-export type WorkflowNodeStatus = "pending" | "running" | "completed" | "complete" | "failed" | "paused" | "detached" | "timed-out";
+export type WorkflowNodeStatus = "pending" | "running" | "completed" | "complete" | "failed" | "blocked" | "paused" | "detached" | "timed-out";
 
 export interface WorkflowGraphNode {
 	id: string;
@@ -136,7 +136,7 @@ export interface ControlEvent {
 	supervisorQuestion?: { questionId: string; state: "awaiting_input" | "answer_pending"; answer?: string };
 }
 
-export type SubagentResultStatus = "completed" | "failed" | "paused" | "detached" | "timed-out";
+export type SubagentResultStatus = "completed" | "failed" | "blocked" | "paused" | "detached" | "timed-out";
 export type SubagentRunMode = "single" | "parallel" | "chain";
 
 export type PublicNestedStepSummary = Pick<
@@ -194,7 +194,7 @@ export interface SubagentResultIntercomPayload {
 export interface AgentProgress {
 	index: number;
 	agent: string;
-	status: "pending" | "running" | "completed" | "complete" | "failed" | "paused" | "detached" | "timed-out";
+	status: "pending" | "running" | "completed" | "complete" | "failed" | "blocked" | "paused" | "detached" | "timed-out";
 	activityState?: ActivityState;
 	task: string;
 	skills?: string[];
@@ -203,6 +203,7 @@ export interface AgentProgress {
 	currentToolArgs?: string;
 	currentToolStartedAt?: number;
 	currentPath?: string;
+	streamingText?: string;
 	recentTools: Array<{ tool: string; args: string; endMs: number }>;
 	recentOutput: string[];
 	toolCount: number;
@@ -301,8 +302,9 @@ export interface ResolvedAcceptanceConfig {
 export interface AcceptanceReport {
 	criteriaSatisfied?: Array<{
 		id?: string;
-		status: "satisfied" | "not-satisfied" | "not-applicable";
+		status: "satisfied" | "not-satisfied" | "not-applicable" | "blocked";
 		evidence: string;
+		humanAction?: string;
 	}>;
 	changedFiles?: string[];
 	testsAddedOrUpdated?: string[];
@@ -320,7 +322,7 @@ export interface AcceptanceReport {
 	notes?: string;
 }
 
-export type AcceptanceRuntimeCheckStatus = "passed" | "failed" | "not-applicable";
+export type AcceptanceRuntimeCheckStatus = "passed" | "failed" | "blocked" | "not-applicable";
 
 export interface AcceptanceRuntimeCheck {
 	id: string;
@@ -346,6 +348,7 @@ export type AcceptanceLedgerStatus =
 	| "checked"
 	| "verified"
 	| "accepted"
+	| "blocked"
 	| "rejected";
 
 export interface AcceptanceFinalizationTurn {
@@ -363,7 +366,7 @@ export interface AcceptanceFinalizationTurn {
 
 export interface AcceptanceFinalizationLedger {
 	mode: "self-review-loop";
-	status: "not-run" | "completed" | "failed";
+	status: "not-run" | "completed" | "blocked" | "failed";
 	maxTurns: number;
 	turns: AcceptanceFinalizationTurn[];
 }
@@ -392,8 +395,16 @@ export interface ResourceLimitExceeded {
 	message: string;
 }
 
+export interface AgentProcessExit {
+	pid?: number;
+	code: number | null;
+	signal: NodeJS.Signals | null;
+	at: number;
+}
+
 export interface SingleResult {
 	agent: string;
+	agentProcessExit?: AgentProcessExit;
 	task: string;
 	exitCode: number;
 	detached?: boolean;
@@ -429,8 +440,8 @@ export interface SingleResult {
 	acceptance?: AcceptanceLedger;
 }
 
-export type ManagementRunState = "live" | "completed" | "paused" | "failed" | "unknown";
-export type ManagementAction = "status" | "nudge" | "resume" | "interrupt" | "extend" | "review";
+export type ManagementRunState = "live" | "completed" | "paused" | "blocked" | "failed" | "unknown";
+export type ManagementAction = "status" | "nudge" | "resume" | "wait" | "interrupt" | "extend" | "review";
 
 export interface SavedLaunchConfig {
 	agent: import("../agents/agents.ts").AgentConfig;
@@ -478,7 +489,7 @@ export interface OwnedRun {
 	predecessorIndex?: number;
 	asyncDir?: string;
 	pid?: number;
-	children: Array<{ agent: string; index: number; sessionFile?: string }>;
+	children: Array<{ agent: string; index: number; task?: string; label?: string; sessionFile?: string }>;
 	review?: ParentRunReview;
 	delivery?: { notifiedAt: number; intercomDelivered: boolean };
 	legacy?: boolean;
@@ -495,6 +506,7 @@ export interface OwnedRunView extends OwnedRun {
 		launch?: SavedLaunchConfig;
 		configuration: "saved" | "legacy-partial";
 		missingSession?: boolean;
+		activity?: Partial<Pick<AgentProgress, "status" | "currentTool" | "currentToolArgs" | "currentPath" | "recentOutput" | "lastActivityAt" | "streamingText">>;
 	}>;
 	continuations: Array<{ runId: string; predecessorRunId: string; predecessorIndex?: number }>;
 	resultPath?: string;
@@ -531,6 +543,7 @@ export interface Details {
 	managementControl?: ManagementControl;
 	managementControls?: ManagementControl[];
 	questions?: import("../runs/shared/supervisor-questions.ts").SupervisorQuestionView[];
+	wait?: { runId: string; index?: number; status: "completed" | "cancelled" | "yielded" | "awaiting_input" | "unavailable" };
 	run?: OwnedRunView;
 	runs?: Array<Pick<OwnedRunView, "runId" | "source" | "mode" | "cwd" | "task" | "state" | "updatedAt" | "attention" | "review" | "rootRunId" | "predecessorRunId" | "predecessorIndex"> & { summary?: string; continuations?: string[] }>;
 	runList?: { total: number; offset: number; limit: number; nextOffset?: number };
@@ -583,10 +596,11 @@ export interface AsyncParallelGroupStatus {
 	stepIndex: number;
 }
 
-export type AsyncResultTerminalState = "complete" | "failed" | "paused";
+export type AsyncResultTerminalState = "complete" | "failed" | "blocked" | "paused";
 
 export interface AsyncResultChild {
 	agent?: string;
+	agentProcessExit?: AgentProcessExit;
 	exitCode?: number | null;
 	output?: string;
 	error?: string;
@@ -637,7 +651,7 @@ export interface AsyncResultFile {
 	nestedChildren?: unknown;
 }
 
-export type NestedRunState = "queued" | "running" | "complete" | "failed" | "paused";
+export type NestedRunState = "queued" | "running" | "complete" | "failed" | "blocked" | "paused";
 export type NestedOwnerState = "live" | "gone" | "unknown";
 
 export interface NestedRunAddress {
@@ -651,7 +665,7 @@ export interface NestedRunAddress {
 
 export interface NestedStepSummary {
 	agent: string;
-	status: "pending" | "running" | "complete" | "completed" | "failed" | "paused" | "timed-out";
+	status: "pending" | "running" | "complete" | "completed" | "failed" | "blocked" | "paused" | "timed-out";
 	sessionFile?: string;
 	activityState?: ActivityState;
 	lastActivityAt?: number;
@@ -667,6 +681,7 @@ export interface NestedStepSummary {
 }
 
 export interface NestedRunSummary extends NestedRunAddress {
+	indexedControl?: boolean;
 	asyncDir?: string;
 	pid?: number;
 	sessionId?: string;
@@ -724,9 +739,10 @@ export interface AsyncStartedEvent {
 
 export interface AsyncStatus {
 	runId: string;
+	indexedControl?: boolean;
 	sessionId?: string;
 	mode: SubagentRunMode;
-	state: "queued" | "running" | "complete" | "failed" | "paused";
+	state: "queued" | "running" | "complete" | "failed" | "blocked" | "paused";
 	activityState?: ActivityState;
 	lastActivityAt?: number;
 	currentTool?: string;
@@ -749,13 +765,14 @@ export interface AsyncStatus {
 		label?: string;
 		outputName?: string;
 		structured?: boolean;
-		status: "pending" | "running" | "complete" | "completed" | "failed" | "paused" | "timed-out";
+		status: "pending" | "running" | "complete" | "completed" | "failed" | "blocked" | "paused" | "timed-out";
 		children?: NestedRunSummary[];
 		sessionFile?: string;
 		activityState?: ActivityState;
 		lastActivityAt?: number;
 		currentTool?: string;
 		currentToolArgs?: string;
+		streamingText?: string;
 		currentToolStartedAt?: number;
 		currentPath?: string;
 		recentTools?: Array<{ tool: string; args: string; endMs: number }>;
@@ -766,6 +783,7 @@ export interface AsyncStatus {
 		endedAt?: number;
 		durationMs?: number;
 		exitCode?: number | null;
+		agentProcessExit?: AgentProcessExit;
 		tokens?: TokenUsage;
 		skills?: string[];
 		model?: string;
@@ -793,7 +811,7 @@ export type AsyncJobStep = NonNullable<AsyncStatus["steps"]>[number] & {
 export interface AsyncJobState {
 	asyncId: string;
 	asyncDir: string;
-	status: "queued" | "running" | "complete" | "failed" | "paused";
+	status: "queued" | "running" | "complete" | "failed" | "blocked" | "paused";
 	pid?: number;
 	sessionId?: string;
 	activityState?: ActivityState;
@@ -876,6 +894,7 @@ export interface ForegroundControlState {
 	nestedRoute?: NestedRouteInfo;
 	nestedChildren?: NestedRunSummary[];
 	activeChildren?: Map<number, ForegroundActiveChildControl>;
+	progress?: AgentProgress[];
 	timeoutAt?: number;
 	extendTimeout?: TimeoutExtensionCallback;
 	interrupt?: () => boolean;
@@ -888,6 +907,7 @@ export interface SubagentState {
 	foregroundRuns?: Map<string, ForegroundResumeRun>;
 	ownedRuns?: Map<string, OwnedRun>;
 	persistOwnedRun?: (run: OwnedRun) => void;
+	onRunsChanged?: () => void;
 	foregroundControls: Map<string, ForegroundControlState>;
 	lastForegroundControlId: string | null;
 	pendingForegroundControlNotices?: Map<string, ReturnType<typeof setTimeout>>;
@@ -1133,7 +1153,7 @@ export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
 export const POLL_INTERVAL_MS = 1000;
 export const MAX_WIDGET_JOBS = 4;
 export const DEFAULT_SUBAGENT_MAX_DEPTH = 1;
-export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "questions", "answer", "review", "doctor"] as const;
+export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "wait", "nudge", "questions", "answer", "review", "doctor"] as const;
 
 export const DEFAULT_FORK_PREAMBLE =
 	"You are a delegated subagent running from a fork of the parent session. " +

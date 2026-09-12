@@ -23,8 +23,8 @@ function isNotFoundError(error: unknown): boolean {
 
 export function deriveAsyncResultTerminalState(input: Pick<AsyncResultFile, "success" | "state" | "exitCode">): AsyncResultTerminalState {
 	if (input.success === true) return "complete";
-	if (input.success === false) return input.state === "paused" ? "paused" : "failed";
-	if (input.state === "complete" || input.state === "failed" || input.state === "paused") return input.state;
+	if (input.success === false) return input.state === "blocked" ? "blocked" : input.state === "paused" ? "paused" : "failed";
+	if (input.state === "complete" || input.state === "failed" || input.state === "blocked" || input.state === "paused") return input.state;
 	if (input.exitCode === 0) return "paused";
 	return "failed";
 }

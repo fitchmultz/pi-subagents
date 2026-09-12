@@ -1,4 +1,9 @@
-import type { ActivityState, AsyncJobStep, ManagementAction, ManagementControl, ManagementRunState, SubagentLiveIntercomHealth } from "./types.ts";
+import type { AgentProcessExit, ActivityState, AsyncJobStep, ManagementAction, ManagementControl, ManagementRunState, SubagentLiveIntercomHealth } from "./types.ts";
+
+export function formatAgentProcessExit(exit: AgentProcessExit | undefined): string {
+	return exit ? `Agent process exited (${exit.signal ? `signal ${exit.signal}` : `code ${exit.code ?? "unrecorded"}`}). Command and descendant exit are not implied.`
+		: "Agent process exit not recorded. Command exit is unconfirmed.";
+}
 
 export function formatRunAction(action: ManagementAction | "questions" | "answer", id: string, fields: Record<string, string | number | boolean> = {}, childSafe = false): string {
 	const parentAction = { status: "inspect", resume: "continue", interrupt: "stop" };
@@ -69,6 +74,7 @@ function isCompletedStepStatus(status: AsyncJobStep["status"]): boolean {
 export function aggregateStepStatus(steps: StepStatusLike[]): AsyncJobStep["status"] {
 	if (steps.some((step) => step.status === "running")) return "running";
 	if (steps.some((step) => step.status === "failed")) return "failed";
+	if (steps.some((step) => step.status === "blocked")) return "blocked";
 	if (steps.some((step) => step.status === "paused")) return "paused";
 	if (steps.length > 0 && steps.every((step) => isCompletedStepStatus(step.status))) return "complete";
 	return "pending";
@@ -105,9 +111,11 @@ export function formatParallelOutcome(steps: StepStatusLike[], total: number, op
 	const succeeded = steps.filter((step) => isCompletedStepStatus(step.status)).length;
 	const failed = steps.filter((step) => step.status === "failed").length;
 	const paused = steps.filter((step) => step.status === "paused").length;
+	const blocked = steps.filter((step) => step.status === "blocked").length;
 	const parts = [`${succeeded}/${total} succeeded`];
 	if (options.showRunning !== false && running > 0) parts.unshift(formatAgentRunningLabel(running));
 	if (failed > 0) parts.push(`${failed} failed`);
 	if (paused > 0) parts.push(`${paused} paused`);
+	if (blocked > 0) parts.push(`${blocked} need human action`);
 	return parts.join(" · ");
 }

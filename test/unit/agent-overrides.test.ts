@@ -82,10 +82,11 @@ describe("builtin agent overrides", () => {
 		assert.match(watcher?.systemPrompt ?? "", /never use a tight loop/);
 		assert.match(watcher?.systemPrompt ?? "", /suppress unchanged heartbeats/);
 		assert.match(watcher?.systemPrompt ?? "", /reason: "progress_update"/);
-		assert.match(watcher?.systemPrompt ?? "", /deferred and coalesced/);
+		assert.match(watcher?.systemPrompt ?? "", /steers at the next tool boundary/);
 		assert.match(watcher?.systemPrompt ?? "", /do not send a duplicate completion update/);
 		const effectiveWatcher = applyIntercomBridgeToAgent(watcher!, resolveIntercomBridge("main"));
-		assert.match(effectiveWatcher.systemPrompt, /concise material update/);
+		assert.match(effectiveWatcher.systemPrompt, /steers at the next tool boundary without waiting for a reply/);
+		assert.match(effectiveWatcher.systemPrompt, /Skip starts, redundant status, and routine completion/);
 		for (const agent of builtins) {
 			assert.equal(agent.allowSubagents, false, `${agent.name} must not delegate to nested subagents`);
 			assert.equal(agent.maxSubagentDepth, 0, `${agent.name} must block child delegation`);

@@ -103,6 +103,7 @@ export const AcceptanceOverride = Type.Unsafe({
 const TaskItem = Type.Object({
 	agent: Type.String({ minLength: 1 }),
 	task: Type.String({ minLength: 1 }),
+	label: Type.Optional(Type.String({ minLength: 1, description: "Short task label for the Agents strip and conversation." })),
 	cwd: Type.Optional(Type.String()),
 	count: Type.Optional(Type.Integer({ minimum: 1, description: "Repeat this parallel task N times." })),
 	outputSchema: Type.Optional(JsonSchemaObject),
@@ -240,6 +241,7 @@ const ControlOverrides = Type.Object({
 export const DelegateParams = Type.Object({
 	agent: TaskItem.properties.agent,
 	task: TaskItem.properties.task,
+	label: TaskItem.properties.label,
 	cwd: TaskItem.properties.cwd,
 	model: TaskItem.properties.model,
 	context: Type.Optional(Type.Enum(["fresh", "fork"] as const, { type: "string", description: "Override the profile's context policy." })),
@@ -250,9 +252,10 @@ export const DelegateParams = Type.Object({
 }, { additionalProperties: false });
 
 export const AgentRunsParams = Type.Object({
-	action: Type.Enum(["list", "inspect", "nudge", "stop", "continue", "profiles", "questions", "answer", "review"] as const, { type: "string" }),
+	action: Type.Enum(["list", "inspect", "nudge", "stop", "continue", "wait", "profiles", "questions", "answer", "review"] as const, { type: "string" }),
 	id: Type.Optional(Type.String({ minLength: 1, description: "Run ID or unambiguous prefix." })),
 	questionId: Type.Optional(Type.String({ minLength: 1, description: "Durable supervisor question ID for answer." })),
+	async: Type.Optional(Type.Boolean({ description: "Continue/answer: false waits for the actual continuation result. Explicit wait attaches without stopping the child when cancelled." })),
 	index: Type.Optional(Type.Integer({ minimum: 0, description: "Child index for a multi-child run." })),
 	message: Type.Optional(Type.String({ minLength: 1, description: "Guidance, follow-up, answer, or optional parent-only review note. Review notes are not sent to the child; put actionable instructions in continue/nudge. Only continue/answer can start a saved child." })),
 	decision: Type.Optional(Type.Enum(["accepted", "needs_changes"] as const, { type: "string", description: "Parent-only review outcome; not sent to the child. Separate from execution and runtime acceptance checks." })),
@@ -267,11 +270,11 @@ export const AgentRunsParams = Type.Object({
 }, {
 	additionalProperties: false,
 	allOf: [
-		{ if: { properties: { action: { enum: ["inspect", "nudge", "stop", "continue", "answer", "review"] } } }, then: requiredObject("id") },
+		{ if: { properties: { action: { enum: ["inspect", "nudge", "stop", "continue", "wait", "answer", "review"] } } }, then: requiredObject("id") },
 		{ if: { properties: { action: { enum: ["nudge", "continue", "answer"] } } }, then: requiredObject("message") },
 		{ if: { properties: { action: { enum: ["answer"] } } }, then: requiredObject("questionId") },
 		{ if: { properties: { action: { enum: ["review"] } } }, then: requiredObject("decision") },
-		{ if: { anyOf: [requiredObject("agent"), requiredObject("model"), requiredObject("cwd"), requiredObject("output"), requiredObject("acceptance")] }, then: { properties: { action: { enum: ["continue", "answer"] } } } },
+		{ if: { anyOf: [requiredObject("async"), requiredObject("agent"), requiredObject("model"), requiredObject("cwd"), requiredObject("output"), requiredObject("acceptance")] }, then: { properties: { action: { enum: ["continue", "answer"] } } } },
 		{ if: { anyOf: [requiredObject("offset"), requiredObject("limit")] }, then: { properties: { action: { enum: ["list"] } } } },
 		{ if: requiredObject("decision"), then: { properties: { action: { enum: ["review"] } } } },
 		{ if: requiredObject("full"), then: { properties: { action: { enum: ["inspect"] } } } },
@@ -281,6 +284,7 @@ export const AgentRunsParams = Type.Object({
 export const SubagentParams = Type.Object({
 	agent: Type.Optional(Type.String({ minLength: 1, description: "Agent name for single mode/definition management; on resume/answer, explicitly select a current profile instead of the saved profile." })),
 	task: Type.Optional(Type.String({ minLength: 1, description: "Task (SINGLE mode, optional for self-contained agents)" })),
+	label: TaskItem.properties.label,
 	// Management action (when present, tool operates in management mode)
 	action: Type.Optional(Type.Enum([...SUBAGENT_ACTIONS] as const, {
 		type: "string",
@@ -360,6 +364,7 @@ export const SubagentParams = Type.Object({
 	allOf: [
 		{ if: { ...requiredObject("action"), properties: { action: { enum: ["answer"] } } }, then: { allOf: [requiredObject("questionId", "message"), { anyOf: [requiredObject("id"), requiredObject("runId")] }] } },
 		{ if: { ...requiredObject("action"), properties: { action: { enum: ["review"] } } }, then: { allOf: [requiredObject("decision"), { anyOf: [requiredObject("id"), requiredObject("runId")] }] } },
+		{ if: { ...requiredObject("action"), properties: { action: { enum: ["wait"] } } }, then: { anyOf: [requiredObject("id"), requiredObject("runId")] } },
 		{ not: { anyOf: [
 			requiredObject("agent", "tasks"),
 			requiredObject("agent", "chain"),

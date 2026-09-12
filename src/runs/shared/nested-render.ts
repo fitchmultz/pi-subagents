@@ -8,11 +8,12 @@ export interface NestedRunCounts {
 	paused: number;
 	complete: number;
 	failed: number;
+	blocked: number;
 	queued: number;
 }
 
 export function countNestedRuns(children: NestedRunSummary[] | undefined): NestedRunCounts {
-	const counts: NestedRunCounts = { total: 0, running: 0, paused: 0, complete: 0, failed: 0, queued: 0 };
+	const counts: NestedRunCounts = { total: 0, running: 0, paused: 0, complete: 0, failed: 0, blocked: 0, queued: 0 };
 	for (const child of children ?? []) {
 		counts.total++;
 		counts[child.state]++;
@@ -22,6 +23,7 @@ export function countNestedRuns(children: NestedRunSummary[] | undefined): Neste
 		counts.paused += nested.paused;
 		counts.complete += nested.complete;
 		counts.failed += nested.failed;
+		counts.blocked += nested.blocked;
 		counts.queued += nested.queued;
 	}
 	return counts;
@@ -34,6 +36,7 @@ export function formatNestedAggregate(children: NestedRunSummary[] | undefined):
 		counts.running > 0 ? `${counts.running} running` : "",
 		counts.paused > 0 ? `${counts.paused} paused` : "",
 		counts.failed > 0 ? `${counts.failed} failed` : "",
+		counts.blocked > 0 ? `${counts.blocked} need human action` : "",
 		counts.complete > 0 ? `${counts.complete} complete` : "",
 		counts.queued > 0 ? `${counts.queued} queued` : "",
 	].filter(Boolean);

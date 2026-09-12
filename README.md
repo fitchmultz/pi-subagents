@@ -108,7 +108,24 @@ node scripts/run-tests.mjs integration --timeout-ms 600000
 
 ## Try this first
 
-For ordinary work, use the compact tools; the full workflow schema stays unloaded:
+The quiet **Agents [Alt+M]** strip above the editor shows your agents by task. Press **Alt+M** or run **`/agents`** to open a live conversation; one child opens directly, while several use a task picker. Your own children come first across working directories and worktrees. **Other connected sessions** keeps ordinary peer messaging available.
+
+Inside an agent conversation, use the native multiline editor to message that child directly. **Tab** switches between writing and selecting history; **Page Up/Down** scroll without following new output. **F2** lists all actions, including contextual Reply, full tool details/diff, working-tree changes, Keep visible, Stop, and Continue. **Esc** returns to the parent without interrupting either agent or changing the parent draft. Child drafts, unread position and one optional pin survive returning to the same saved parent. In native fullscreen mode, clicking a task opens it; regular terminals use the keyboard.
+
+| Agent-view shortcut | Action |
+| --- | --- |
+| Enter | Send to the named child, or answer its real waiting question |
+| Alt+R | Reply with the selected message, tool result or change attached |
+| Alt+D | Inspect full details while reading; native word deletion while composing |
+| Alt+G / Alt+L | Working-tree diff / jump to latest activity |
+| Alt+Q / Alt+P | Remove quoted context / pin or unpin this child |
+| Alt+S / Alt+C | Stop only this child / explicitly continue with the draft |
+
+Queued children say **waiting to start**. Their drafts stay available until they run; messaging or Continue never launches a duplicate queued child. Viewing finished work never launches it. If a child finishes while you compose or send, the draft remains available for **Continue**. An older multi-child runner that cannot target one child is reported as unavailable rather than stopping its siblings. A saved conversation or launch profile that is missing is likewise not invented. Native selection/copy covers visible fullscreen text; cross-page drag selection is not provided.
+
+Human messages are marked as user direction in the child's own conversation. Broker acceptance means **waiting**, not read or acted upon; a native receipt confirms delivery to the conversation, and an actual subsequent response is separate. The parent receives one small informational breadcrumb with the direction, not an approval or relay request. Working-tree diffs are explicitly workspace-wide, not attributed to one child when agents share a directory.
+
+For ordinary work from the model, use the compact tools; the full workflow schema stays unloaded:
 
 ```typescript
 agent_runs({ action: "profiles" })
@@ -117,13 +134,18 @@ agent_runs({ action: "list" })
 agent_runs({ action: "inspect", id: "<run-id>" })
 agent_runs({ action: "inspect", id: "<run-id>", full: true }) // Full task and launch configuration
 agent_runs({ action: "nudge", id: "<run-id>", message: "Keep the public API unchanged." })
-agent_runs({ action: "continue", id: "<run-id>", message: "Now check the edge case." })
+agent_runs({ action: "continue", id: "<run-id>", message: "Now check the edge case.", async: false })
+agent_runs({ action: "wait", id: "<run-id>" }) // Attach to existing work without launching it
 agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "Checked the result." })
 ```
 
 `delegate` uses the same execution and acceptance paths as `subagent`; `worktree: true` runs one isolated writer through the existing worktree path. `agent_runs` keeps the saved parent's work discoverable across working directories, reloads, and restarts. A nudge never restarts completed work; `continue` explicitly revives its saved session. Use `load_subagent` for parallel groups, chains, detailed overrides, and profile administration. Existing `subagent` calls remain supported.
 
 ### Owned runs, review, and continuation
+
+`continue` and `answer` accept `async: false` to wait for the actual new or redirected run's saved result. Explicit `wait` accepts an owned `id` and optional child `index`; cancelling or yielding that wait leaves the child alive. Cancelling a newly launched `async: false` continuation requests cancellation of that new run, not an older sibling. Important steered Intercom messages release a foreground subagent wait so the parent can respond while the child keeps working; attach again with `wait` on the returned run ID. Explicit queue/passive messages do not release waits.
+
+Stop receipts mean **requested**, not process exit. Saved results separately record the actual agent-process exit code/signal when observed. A returned tool result is not proof that every command descendant exited, and an unrecorded command result means **exit unconfirmed**, not “still running” or exit zero.
 
 `agent_runs({ action: "list" })` puts unanswered questions first, then failures, interrupted or unconfirmed work, live work, completed-but-unreviewed results, and other runs. It returns 20 runs by default. Use `offset` and `limit` (1–100) to page; `details.runList.nextOffset` points to the next page. Paging never discards history or disables exact-ID lookup. After the first read, unchanged finished runs reuse compact ordering facts instead of reloading every result and launch contract. Live or unconfirmed work, questions, and the displayed page stay fresh. `inspect` shows a concise task/result summary, acceptance outcome, questions, errors, paths, review, continuation links, and available live diagnostics. Use `full: true` for the full task and saved launch configuration (also supported by exact `subagent` status). Stored details and history are unchanged. Explicit continuation links identify separate work; a successor's result or review never satisfies the predecessor automatically.
 
@@ -225,7 +247,7 @@ The extension ships with builtin agents you can use immediately.
 | `scout` | Fast codebase recon and a compressed handoff. |
 | `context-builder` | Requirements and codebase analysis that produces implementation-ready context. |
 | `researcher` | Evidence-driven research for consequential technical decisions. |
-| `watcher` | Read-only background monitoring with deferred, coalesced material-change updates to the parent. |
+| `watcher` | Read-only background monitoring with timely material-change updates to the parent. |
 | `planner` | A concrete implementation plan without edits. |
 | `worker` | End-to-end implementation of an approved, bounded task. |
 | `debugger` | Root-cause diagnosis with reproduction and repair evidence. |
@@ -290,7 +312,7 @@ Background runs are the default and keep working after control returns to you. C
 
 When a Codex-style Pi goal is active, set `async: false` for child evidence that must arrive before the next goal step. Ending the parent turn after launching async work can let goal prompting continue before the child evidence is available.
 
-They also show a compact async widget and send completion notifications. Parallel background runs show per-agent progress instead of fake chain steps. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. Nested child delegation is disabled by default; keep fanout in the parent session.
+Foreground and background children share the task-labelled Agents strip and send completion notifications. Parallel background runs show per-agent progress instead of fake chain steps. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. Nested child delegation is disabled by default; keep fanout in the parent session.
 
 You can also ask naturally:
 
@@ -367,7 +389,7 @@ Ask oracle to review this plan. If it sees a decision I need to make, have it as
 
 The child can use one dedicated coordination tool:
 
-- `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` only when the ephemeral child cannot safely continue and must remain alive for one steered supervisor reply. Use `reason: "interview_request"` only when it cannot safely continue until it receives multiple structured answers. Use `reason: "progress_update"` for concise material updates with intentionally deferred/coalesced delivery that may wait behind active supervisor work. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
+- `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` only when the ephemeral child cannot safely continue and must remain alive for one steered supervisor reply. Use `reason: "interview_request"` only when it cannot safely continue until it receives multiple structured answers. Use `reason: "progress_update"` only for discoveries or changes the parent needs while working. These steer at the next tool boundary; skip starts, redundant status, and routine completion, and retain material findings in the final result. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
 
 Child-side routine completion handoffs are still not expected. Parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested child summaries under the parent child that launched them.
 
@@ -1122,7 +1144,7 @@ Spawn-count and per-agent child-concurrency quotas are not part of this release;
 
 Intercom wiring is always on and bundled with `pi-subagents`. Children receive fixed default bridge instructions and parent-side result/control delivery uses the resolved orchestrator target automatically. If an agent sets an explicit `extensions` allowlist, include `pi-intercom` so child-side `intercom` and `contact_supervisor` tools stay available.
 
-The injected guidance tells children to use steered blocking `contact_supervisor` decisions or structured interviews only when the ephemeral child cannot safely continue and must remain alive for the answer, intentionally deferred/coalesced `progress_update` for concise material updates, and generic intercom only as fallback plumbing. Supervisor nudges supplement the active task unless they explicitly replace it; routine completion still returns through normal child results.
+The injected guidance tells children to use steered blocking `contact_supervisor` decisions or structured interviews only when the ephemeral child cannot safely continue and must remain alive for the answer, non-blocking steered `progress_update` for material discoveries needed during active work, and generic intercom only as fallback plumbing. Supervisor nudges supplement the active task unless they explicitly replace it; routine completion still returns through normal child results.
 
 ### `worktreeSetupHook`
 
@@ -1241,11 +1263,17 @@ subagent({
 })
 ```
 
+## Human-only acceptance blockers
+
+A real human-only boundary, such as Touch ID or an unavailable MFA code, is **blocked**, not success or a generic failed review. Report the affected criterion with `status: "blocked"`, concrete `evidence`, and a nonempty `humanAction` stating the exact action needed. Retain completed criteria and evidence. The first valid initial or current native blocked report stops further finalization and verification, keeps acceptance incomplete, and prevents dependent workflow steps from starting. Independent siblings continue; real failures still take precedence. Plain “blocked” prose, stale submissions, malformed reports and ordinary fixable failures do not get this treatment.
+
+The Agents view keeps these tasks visible as **Needs your action — acceptance incomplete**. After doing the requested action, use explicit Continue on the saved conversation. Inspecting, reviewing or restoring it does not retry authentication, and a blocked report does not fabricate a waiting question.
+
 ## Live progress
 
 Foreground runs show compact live progress for single, chain, and parallel modes: current tool, recent output, token counts, duration, activity freshness, current-tool duration, and chain graph metadata when available.
 
-Delegation receipts, completed responses, and completion messages show compact summaries by default. Press `Ctrl+O` to expand their full responses and details, or the full streaming view with output per step. The background async widget stays at one line per run until then. Collapsing these views does not shorten the content sent to the model.
+Delegation receipts, completed responses, and completion messages show compact summaries by default. Press `Ctrl+O` to expand their full responses and details, or the full streaming view with output per step. The quiet Agents strip replaces the routine async widget; Ctrl+O still exposes its advanced background details. Collapsing these views does not shorten the content sent to the model.
 
 Sequential chains show a flow line like `done scout → running planner`. Chains with parallel steps show per-step cards instead. Chain status uses `label` and `phase` metadata when present, while falling back to agent names for older chains.
 
