@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { createRequire } from "node:module";
 
-import { createEventBus, createExtensionRuntime, CustomMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { createEventBus, createExtensionRuntime, CustomEditor, CustomMessageComponent, getSelectListTheme, initTheme } from "@earendil-works/pi-coding-agent";
+import { TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
+import { createTestTerminal } from "../support/terminal.ts";
 import registerIntercomExtension from "../../src/pi-intercom/index.ts";
 import { buildSubagentResultIntercomPayload } from "../../src/intercom/result-intercom.ts";
 import { InlineMessageComponent } from "../../src/pi-intercom/ui/inline-message.ts";
@@ -227,6 +228,50 @@ test("registered subagent completion messages honor native collapse and expand w
       } finally {
         setKeybindings(new KeybindingsManager());
       }
+    });
+    await t.test("native pointer input expands only the clicked Intercom row and preserves global expansion and selection", async () => {
+      const terminal = createTestTerminal(90, 70), copied: string[] = [];
+      const tui = new TuiAltScreen(terminal, false, undefined, { copySelection: async (text) => { copied.push(text); return true; } });
+      const entry = (id: string, text: string, extra = {}) => ({
+        role: "custom" as const, customType: "intercom_message", display: true, timestamp: 0, content: text,
+        details: { from, message: { ...message, id, content: { text } }, ...extra },
+      });
+      const entries = [entry("first", "FULL-REPORT-ONE\nFirst report detail.\nFIRST-END"), entry("second", "FULL-REPORT-TWO\nSecond report detail.\nSECOND-END"),
+        entry("attention", "ATTENTION-BODY\nAction remains visible.", { replyCommand: "intercom reply", from: { ...from, status: "needs_attention" } })];
+      const original = structuredClone(entries);
+      // Explicit renderer input keeps this test at the same compact-message boundary on both SDK packages.
+      const components = entries.map((entry) => new CustomMessageComponent(entry, (message, options, theme) => renderer(message, { ...options, compactView: true }, theme)));
+      for (const component of components) tui.addChild(component);
+      const editor = new CustomEditor(tui, { borderColor: (text) => text, selectList: getSelectListTheme() }, new KeybindingsManager());
+      editor.setText("Unsent parent draft");
+      let expanded = false;
+      editor.onAction("app.tools.expand", () => { expanded = !expanded; for (const component of components) component.setExpanded(expanded); tui.requestRender(); });
+      tui.addChild(editor); tui.setFocus(editor); tui.start(); tui.renderNow();
+      const text = (component) => component.render(90).map(stripVTControlCharacters).join("\n");
+      const secondBefore = text(components[1]), attentionBefore = text(components[2]);
+      try {
+        assert.doesNotMatch(text(components[0]), /FIRST-END/);
+        terminal.click(4, 1); tui.renderNow();
+        assert.match(text(components[0]), /FIRST-END/);
+        assert.equal(text(components[1]), secondBefore, "a row click is not global expansion");
+        components[0].invalidate(); tui.renderNow();
+        assert.match(text(components[0]), /FIRST-END/, "theme invalidation retains the local expansion choice");
+        terminal.input("\x1b[<0;3;3M"); terminal.input("\x1b[<32;14;3M"); terminal.input("\x1b[<0;14;3m"); tui.renderNow();
+        assert.equal(tui.hasActiveSelection(), true);
+        await tui.copyActiveSelectionToClipboard();
+        assert.ok(copied.some((text) => text.includes("REPORT")), "drag selection remains native and does not toggle the row");
+        assert.match(text(components[0]), /FIRST-END/);
+        terminal.click(4, 1); tui.renderNow();
+        assert.doesNotMatch(text(components[0]), /FIRST-END/, "a second click collapses that message");
+        terminal.input("\x0f"); tui.renderNow();
+        assert.match(text(components[0]), /FIRST-END/); assert.match(text(components[1]), /SECOND-END/);
+        terminal.click(4, 1); tui.renderNow();
+        assert.doesNotMatch(text(components[0]), /FIRST-END/); assert.match(text(components[1]), /SECOND-END/);
+        terminal.input("\x0f"); tui.renderNow();
+        assert.doesNotMatch(text(components[0]), /FIRST-END/); assert.equal(text(components[1]), secondBefore);
+        assert.equal(text(components[2]), attentionBefore, "reply and attention contents stay visible");
+        assert.equal(editor.getText(), "Unsent parent draft"); assert.deepEqual(entries, original);
+      } finally { tui.stop(); }
     });
   } finally {
     runtime.invalidate();

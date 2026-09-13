@@ -7,8 +7,9 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { initTheme, getSelectListTheme } from "@earendil-works/pi-coding-agent";
-import { Editor, TuiMainScreen, TuiAltScreen, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
+import { Container, CURSOR_MARKER, Editor, ScrollView, Spacer, Text, TuiMainScreen, TuiAltScreen, VStack, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { createEventBus, createMockPi, makeAgent, makeMinimalCtx } from "../support/helpers.ts";
+import { createTestTerminal } from "../support/terminal.ts";
 import type { OwnedRun, SubagentState } from "../../src/shared/types.ts";
 
 const root = fs.mkdtempSync(path.join(process.env.PI_AGENT_VIEW_EVIDENCE_DIR ?? os.tmpdir(), "agent-interaction-"));
@@ -24,9 +25,21 @@ const { createSubagentExecutor } = await import("../../src/runs/foreground/subag
 const { createAsyncJobTracker } = await import("../../src/runs/background/async-job-tracker.ts");
 const { ASYNC_DIR } = await import("../../src/shared/types.ts");
 initTheme("dark", false);
+const { theme: uiTheme } = await import(new URL("./modes/interactive/theme/theme.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 }, turns: 0 };
 function assistant(manager, text: string) { return manager.appendMessage({ role: "assistant", content: [{ type: "text", text }], provider: "fixture", model: "fixture", api: "openai-responses", stopReason: "stop", usage, timestamp: Date.now() }); }
 const plain = (component, width = 90) => component.render(width).map(stripTerminalSequences).join("\n");
+function readDetails(view, width = 90): string {
+	view.handleInput("\x1b[H");
+	const pages: string[] = [];
+	let previous = -1;
+	while (view.scroll.scrollTop !== previous) {
+		previous = view.scroll.scrollTop;
+		pages.push(plain(view, width));
+		view.handleInput("\x1b[6~");
+	}
+	return pages.join("\n").replace(/\s/g, "");
+}
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 async function until(check: () => boolean, reason: string) { const deadline = Date.now() + 10_000; while (!check()) { assert.ok(Date.now() < deadline, reason); await delay(10); } }
 function nativeChild(cwd: string, scenario: "streaming" | "tool" | "question") {
@@ -59,24 +72,30 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1) {
 	state.foregroundControls.set(run.runId, { runId: run.runId, mode: run.mode, startedAt: run.startedAt, updatedAt: run.startedAt,
 		activeChildren: new Map(run.children.map((child) => [child.index, { agent: child.agent, interrupt: () => { interrupts[child.index]++; return true; } }])),
 		currentAgent: "worker", currentIndex: 0, interrupt: () => { throw new Error("Unexpected whole-group interrupt"); } });
-	const terminal = { columns: 90, rows: 28, kittyProtocolActive: false, start() {}, stop() {}, write() {}, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, async drainInput() {} };
+	const terminal = createTestTerminal();
 	const tui = mode === "fullscreen" ? new TuiAltScreen(terminal) : new TuiMainScreen(terminal);
 	const events = createEventBus(), commands = new Map(), sent = [], calls = [];
-	let overlay, strip;
+	let overlay, strip, overlayHandle;
 	const pi = { events, getSessionName: () => "test-parent", registerCommand(name, command) { commands.set(name, command); }, registerMessageRenderer() {},
 		appendEntry: (type, data) => parent.appendCustomEntry(type, structuredClone(data)),
 		sendMessage(message, options) { sent.push({ message, options }); parent.appendCustomMessageEntry(message.customType, message.content, message.display, message.details); },
 	};
-	const uiTheme = { fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text, italic: (text) => text };
 	const mainEditor = new Editor(tui, { borderColor: (text) => text, selectList: getSelectListTheme() });
 	mainEditor.setText("Unsent parent draft\nDo not replace this");
-	tui.addChild(mainEditor); tui.setFocus(mainEditor);
+	const document = new Text("Parent context stays unchanged", 0, 0), widgets = new Container(), footer = new Text("Parent footer", 0, 0);
+	for (const component of [document, widgets, mainEditor, footer]) tui.addChild(component);
+	if (tui instanceof TuiAltScreen) tui.setLayoutRoot(new VStack([
+		{ component: new ScrollView(document, { follow: "end", primary: true }), basis: 0, grow: 1, minSize: 1 },
+		new VStack([widgets, mainEditor, footer]),
+	]));
+	tui.setFocus(mainEditor);
 	const ctx = { ...makeMinimalCtx(cwd), mode: "tui", hasUI: true, sessionManager: parent, ui: { theme: uiTheme, getToolsExpanded: () => false,
-		setWidget(_key, factory) { strip = factory?.(tui, uiTheme); },
+		setWidget(_key, factory) { strip = factory?.(tui, uiTheme); widgets.clear(); widgets.addChild(new Spacer(1)); if (strip) widgets.addChild(strip); },
 		custom(factory, options) { return new Promise((resolve) => {
 			let handle;
 			overlay = factory(tui, uiTheme, undefined, (value) => { handle?.hide(); overlay?.dispose?.(); resolve(value); });
-			handle = tui.showOverlay(overlay, options.overlayOptions);
+			handle = tui.showOverlay(overlay, typeof options.overlayOptions === "function" ? options.overlayOptions() : options.overlayOptions);
+			overlayHandle = handle;
 		}); },
 	} };
 	state.lastUiContext = ctx;
@@ -89,14 +108,14 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1) {
 	controller.start(ctx);
 	t.after(() => { controller.dispose(); tui.stop(); if (state.poller) clearInterval(state.poller); for (const timer of state.cleanupTimers.values()) clearTimeout(timer); });
 	return { cwd, parent, run, state, childSessions, interrupts, controller, executor, ctx, pi, tui, terminal, mainEditor, sent, calls, commands,
-		get overlay() { return overlay; }, get strip() { return strip; }, key: `${run.runId}:0`,
+		get overlay() { return overlay; }, get overlayBounds() { return overlayHandle?.getBounds(); }, get strip() { return strip; }, key: `${run.runId}:0`,
 		complete() { state.foregroundControls.clear(); saveForegroundRun({ ...run, results: run.children.map((child) => ({ agent: child.agent, task: child.task!, exitCode: 0, finalOutput: "Finished", sessionFile: child.sessionFile, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } })) }); controller.refresh(true); },
 	};
 }
 
 for (const mode of ["regular", "fullscreen"] as const) test(`Agents strip and single-child open are native, read-only, and preserve the parent (${mode})`, async (t) => {
 	const f = fixture(t, mode);
-	assert.match(plain(f.strip, 90), /^Agents \[Alt\+M\].*Fix login/);
+	assert.match(plain(f.strip, 90), /^Agents.*1 running[\s\S]*Fix login/);
 	assert.doesNotMatch(plain(f.strip), /tokens|Combined tasks/);
 	assert.match(plain(f.strip, 12), /^Agents/);
 	const opening = f.controller.open();
@@ -127,9 +146,9 @@ test("live multiple-child picker and fullscreen task click target the exact chil
 	await f.controller.stop(f.overlay.key);
 	assert.deepEqual(f.interrupts, [0, 1]);
 	f.overlay.handleInput("\x1b"); await opening;
-	const line = plain(f.strip, 140);
-	const x = line.indexOf("Review changes") + 2;
-	f.strip.handleMouse({ type: "click", button: "left", x, y: 0, screenX: x, screenY: 0, width: 140, height: 1, shift: false, alt: false, ctrl: false });
+	const rows = f.strip.render(140).map(stripTerminalSequences);
+	const y = rows.findIndex((line) => line.includes("Review changes")), x = rows[y].indexOf("Review changes") + 2;
+	f.strip.handleMouse({ type: "click", button: "left", x, y, screenX: x, screenY: y, width: 140, height: rows.length, shift: false, alt: false, ctrl: false });
 	assert.equal(f.overlay.key, `${f.run.runId}:1`);
 	f.overlay.handleInput("\x1b"); await turn();
 });
@@ -156,7 +175,7 @@ test("full native history, tool details and contextual reply survive streaming a
 	// The last native message follows the edit result, so Up selects that result.
 	view.handleInput("\x1b[A"); view.render(90);
 	view.handleInput("\x1bd");
-	assert.match(plain(view), /FULL-DETAIL-END/);
+	assert.match(readDetails(view), /FULL-DETAIL-END/);
 	assert.equal(f.calls.length, 0);
 	view.handleInput("\x1br"); view.render(90);
 	assert.match(f.controller.visit(f.key).quote!.text, /FULL-DETAIL-END/);
@@ -188,6 +207,370 @@ test("full native history, tool details and contextual reply survive streaming a
 	assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
 	assert.ok(narrow.length <= 18, `view must fit the native overlay: ${narrow.length}`);
 	view.handleInput("\x1b"); await opening;
+});
+
+for (const nativeAnswer of [false, true]) test(`completed structured-output history opens at the readable report without duplicates (native answer: ${nativeAnswer})`, async (t) => {
+	const f = fixture(t), manager = f.childSessions[0];
+	const report = "**The login fix is ready.**\n\n## Verification\n" + Array.from({ length: 40 }, (_, index) => `- Checked behavior ${index + 1}.`).join("\n");
+	const submitted = `${report}\n\n\`\`\`acceptance-report\n${JSON.stringify({ criteriaSatisfied: [{ id: "login", status: "satisfied", evidence: "ACCEPTANCE-DETAIL-END" }], noStagedFiles: true })}\n\`\`\``;
+	if (nativeAnswer) assistant(manager, submitted);
+	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "final-report", name: "structured_output", arguments: { value: { report: submitted } } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
+	manager.appendMessage({ role: "toolResult", toolCallId: "final-report", toolName: "structured_output", content: [{ type: "text", text: "Structured output captured." }], details: { stored: true }, isError: false, timestamp: Date.now() });
+	const original = fs.readFileSync(manager.getSessionFile(), "utf8");
+	f.state.foregroundControls.clear();
+	saveForegroundRun({ ...f.run, results: [{ agent: "worker", task: f.run.children[0].task!, exitCode: 0, finalOutput: report, sessionFile: manager.getSessionFile(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } }] });
+	f.controller.refresh(true);
+	const opening = f.controller.open(), view = f.overlay;
+	const first = plain(view);
+	assert.match(first, /The login fix is ready\./, "a long finished report opens at its beginning, not its tail or serialized submission");
+	assert.doesNotMatch(first, /criteriaSatisfied|\\n|"value"|"report"/);
+	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(90);
+	view.handleInput("\x1b[A"); view.render(90);
+	view.handleInput("\r");
+	assert.match(readDetails(view), /ACCEPTANCE-DETAIL-END/, "the recorded structured payload is still inspectable in full details");
+	view.handleInput("\x1br");
+	assert.match(f.controller.visit(f.key).quote!.text, /ACCEPTANCE-DETAIL-END/, "replying to the submission retains its actual recorded data");
+	view.handleInput("\x1bq");
+	view.handleInput("\x1b"); await opening;
+	const reopen = f.controller.open();
+	f.terminal.rows = 150;
+	f.overlay.handleInput("\x1bl");
+	const all = plain(f.overlay, 120);
+	assert.equal(all.match(/The login fix is ready\./g)?.length, 1, "only one visible final answer, even when native history already contains it");
+	assert.doesNotMatch(all, /ACCEPTANCE-DETAIL-END|criteriaSatisfied/);
+	assert.equal(fs.readFileSync(manager.getSessionFile(), "utf8"), original, "viewing must not rewrite the native history");
+	assert.equal(f.calls.length, 0);
+	f.overlay.handleInput("\x1b"); await reopen;
+});
+
+test("native grouped tools retain recorded diffs, full context and old result-entry reading positions", async (t) => {
+	const f = fixture(t), manager = f.childSessions[0];
+	for (let index = 0; index < 25; index++) assistant(manager, `Earlier history ${index}`);
+	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "saved-bash", name: "bash", arguments: { command: "printf NATIVE-BASH-RESULT", timeout: 15 } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
+	const resultId = manager.appendMessage({ role: "toolResult", toolCallId: "saved-bash", toolName: "bash", content: [{ type: "text", text: "NATIVE-BASH-RESULT" }], details: { receipt: "BASH-RAW-DETAIL" }, isError: false, timestamp: Date.now() });
+	const file = path.join(f.cwd, "login.ts"); fs.writeFileSync(file, "Today's file is different from this old edit.\n");
+	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "saved-edit", name: "edit", arguments: { path: file, oldText: "before", newText: "after" } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
+	manager.appendMessage({ role: "toolResult", toolCallId: "saved-edit", toolName: "edit", content: [{ type: "text", text: "Edited login.ts" }], details: { diff: "-before\n+after", receipt: "EDIT-RAW-DETAIL" }, isError: false, timestamp: Date.now() });
+	for (let index = 0; index < 25; index++) assistant(manager, `Later history ${index}`);
+	f.controller.refresh(true);
+	const visit = f.controller.visit(f.key);
+	visit.readThrough = f.controller.task(f.key)!.history.at(-1)!.id;
+	visit.anchor = { id: resultId, line: 0 };
+	const opening = f.controller.open(), view = f.overlay;
+	assert.match(plain(view), /\$ printf NATIVE-BASH-RESULT/, "restoring an old standalone result ID opens its grouped native tool card");
+	assert.doesNotMatch(plain(view), /"command"|"timeout"|BASH-RAW-DETAIL|Today's file|Could not find/);
+	view.handleInput("\t"); view.render(90); view.handleInput("\r");
+	assert.match(readDetails(view), /BASH-RAW-DETAIL/);
+	view.handleInput("\x1br");
+	assert.match(visit.quote!.text, /printf NATIVE-BASH-RESULT/);
+	assert.match(visit.quote!.text, /BASH-RAW-DETAIL/);
+	view.handleInput("\x1bq"); view.handleInput("\t"); view.render(90);
+	view.handleInput("\x1b[B"); view.render(90); view.handleInput("\r");
+	assert.match(readDetails(view), /-before[\s\S]*\+after/);
+	view.handleInput("\x1br");
+	assert.match(visit.quote!.text, /EDIT-RAW-DETAIL/);
+	assert.match(visit.quote!.text, /-before\n\+after/);
+	assert.equal(fs.readFileSync(file, "utf8"), "Today's file is different from this old edit.\n");
+	assert.equal(f.calls.length, 0);
+	view.handleInput("\x1b"); await opening;
+});
+
+test("paired tool details show recorded diff on physical lines before raw metadata", async (t) => {
+	const f = fixture(t, "fullscreen"), manager = f.childSessions[0];
+	f.terminal.resize(64, 78);
+	const file = path.join(f.cwd, "history-only.ts"), current = "Today's file does not match the old edit.\n";
+	fs.writeFileSync(file, current);
+	const diff = "--- history-only.ts\n+++ history-only.ts\n@@ -1 +1 @@\n-return before;\n+return after;";
+	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "saved-apply", name: "apply_edits", arguments: { path: file, rewrite: "return after;\n" } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
+	manager.appendMessage({ role: "toolResult", toolCallId: "saved-apply", toolName: "apply_edits", content: [{ type: "text", text: "Rewrote history-only.ts." }], details: { diff, diffTruncated: false, warnings: ["RECORDED-WARNING"] }, isError: false, timestamp: Date.now() });
+	const original = fs.readFileSync(manager.getSessionFile(), "utf8");
+	f.controller.refresh(true);
+	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
+	const view = f.overlay, width = f.overlayBounds.width;
+	assert.doesNotMatch(plain(view, width), /return before|RECORDED-WARNING|"rewrite"/, "ordinary cards stay compact");
+	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(width); view.handleInput("\r"); view.handleInput("\x1b[H");
+	const lines = view.render(width).map(stripTerminalSequences).map((line) => line.trim());
+	const removed = lines.indexOf("-return before;"), metadata = lines.indexOf('"call": {');
+	assert.ok(removed >= 0, "the recorded removal is a physical diff line, not an escaped JSON substring");
+	assert.equal(lines[removed + 1], "+return after;", "the recorded addition follows on its own line");
+	assert.ok(metadata > removed + 1, "readable diff appears before raw metadata");
+	const full = readDetails(view, width);
+	assert.match(full, /"rewrite"/); assert.match(full, /RECORDED-WARNING/);
+	view.handleInput("\x1br");
+	assert.ok(f.controller.visit(f.key).quote!.text.startsWith(`${diff}\n\n`));
+	assert.match(f.controller.visit(f.key).quote!.text, /"rewrite"[\s\S]*RECORDED-WARNING/);
+	assert.equal(fs.readFileSync(file, "utf8"), current); assert.equal(fs.readFileSync(manager.getSessionFile(), "utf8"), original);
+	assert.equal(f.calls.length, 0);
+	view.handleInput("\x1b"); await opening;
+});
+
+test("a newly paired custom-tool result stays unread and supports native expansion without losing raw details", async (t) => {
+	const f = fixture(t, "fullscreen"), manager = f.childSessions[0];
+	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "custom-call", name: "custom_check", arguments: { check: "login", payload: { retained: "RAW-ARGUMENT" } } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
+	f.controller.refresh(true);
+	const pending = f.controller.open();
+	assert.match(plain(f.overlay), /result not recorded/);
+	f.overlay.handleInput("\x1b"); await pending;
+	const resultId = manager.appendMessage({ role: "toolResult", toolCallId: "custom-call", toolName: "custom_check", content: [{ type: "text", text: `Checks completed\n${"Checked a behavior\n".repeat(20)}FINAL-TOOL-LINE` }], details: { receipt: "RAW-RESULT" }, isError: false, timestamp: Date.now() });
+	f.controller.refresh(true);
+	assert.equal(f.controller.task(f.key)!.unread, true, "a result is new activity even though it joins an existing tool card");
+	const opening = f.controller.open(), view = f.overlay;
+	f.terminal.rows = 60;
+	const collapsed = view.render(90).map(stripTerminalSequences);
+	assert.match(collapsed.join("\n"), /Checks completed/);
+	assert.doesNotMatch(collapsed.join("\n"), /RAW-ARGUMENT|RAW-RESULT|FINAL-TOOL-LINE/);
+	assert.equal(f.controller.visit(f.key).readThrough, resultId, "reading the paired card acknowledges the original result ID");
+	const y = collapsed.findIndex((line) => line.includes("custom_check"));
+	view.handleMouse({ type: "click", button: "left", x: 4, y, screenX: 4, screenY: y, width: 90, height: collapsed.length, shift: false, alt: false, ctrl: false });
+	assert.match(plain(view), /FINAL-TOOL-LINE/, "fullscreen tool clicks expand the native tool output");
+	view.handleInput("\x0f"); view.handleInput("\x0f");
+	assert.doesNotMatch(plain(view), /FINAL-TOOL-LINE/, "native tool expansion keys can collapse it again");
+	view.handleInput("\r");
+	const details = readDetails(view);
+	assert.match(details, /RAW-ARGUMENT/); assert.match(details, /RAW-RESULT/); assert.match(details, /FINAL-TOOL-LINE/);
+	view.handleInput("\x1br");
+	assert.match(f.controller.visit(f.key).quote!.text, /RAW-ARGUMENT[\s\S]*RAW-RESULT/);
+	assert.equal(f.calls.length, 0);
+	view.handleInput("\x1b"); await opening;
+});
+
+test("twenty-task picker is framed, width-aware and searchable by the full assignment", async (t) => {
+	const f = fixture(t, "regular", 20);
+	f.terminal.columns = 140; f.terminal.rows = 40;
+	const label = "Fix authentication for team memberships across regions";
+	for (const child of f.run.children) {
+		child.label = child.index === 0 ? label : `Review behavior ${child.index}`;
+		saveQuestionContract(f.run.runId, child.index, { task: `Assignment ${child.index}\n${child.index === 19 ? "Distinctive assignment needle" : "Other work"}\nFULL-ASSIGNMENT-END` });
+	}
+	f.controller.refresh(true);
+	const opening = f.controller.open(), picker = f.overlay;
+	const wide = picker.render(140).map(stripTerminalSequences);
+	assert.match(wide[0], /─{20}/, "the picker has a visible themed boundary");
+	assert.match(wide.at(-1)!, /─{20}/);
+	assert.ok(wide.some((line) => line.includes("→") && line.includes(label)), "the task column uses available width instead of clipping at 30 characters");
+	assert.match(wide.join("\n"), /worker/);
+	picker.handleInput("Distinctive assignment needle");
+	const filtered = plain(picker, 140);
+	assert.match(filtered, /Review behavior 19/); assert.doesNotMatch(filtered, /Review behavior 18/);
+	assert.equal(picker.focused, true, "native filter input owns focus without touching the parent editor");
+	f.terminal.columns = 24; f.terminal.rows = 18;
+	const narrow = picker.render(24);
+	assert.ok(narrow.length <= 18); assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
+	picker.handleInput("\r"); await turn();
+	assert.equal(f.overlay.key, `${f.run.runId}:19`);
+	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
+	assert.equal(f.calls.length, 0);
+	f.overlay.handleInput("\x1b"); await opening;
+});
+
+test("active Agents rows distinguish running, queued and needs-action work, then disappear after completion", async (t) => {
+	const f = fixture(t, "fullscreen", 4);
+	for (const [index, label] of ["Fix login", "Queued docs", "Approve change", "Finished report"].entries()) f.run.children[index].label = label;
+	const control = f.state.foregroundControls.get(f.run.runId)!;
+	for (const index of [1, 2, 3]) control.activeChildren!.delete(index);
+	const { resolveEffectiveAcceptance } = await import("../../src/runs/shared/acceptance.ts");
+	const effectiveAcceptance = resolveEffectiveAcceptance({ explicit: { criteria: ["Confirm the user action"] } })!;
+	const result = { agent: "worker", task: "Saved assignment", exitCode: 0, finalOutput: "Saved report", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } };
+	saveQuestionContract(f.run.runId, 2, { result: { ...result, acceptance: { status: "blocked", explicit: true, effectiveAcceptance, criteria: effectiveAcceptance.criteria, runtimeChecks: [], verifyRuns: [], childReport: { criteriaSatisfied: [{ id: "criterion-1", status: "blocked", evidence: "The approval control requires a person.", humanAction: "Confirm the approval control." }] } } } });
+	saveQuestionContract(f.run.runId, 3, { result });
+	f.controller.visit(`${f.run.runId}:3`).readThrough = null;
+	f.controller.refresh(true);
+	const raw = f.strip.render(90), rows = raw.map(stripTerminalSequences);
+	assert.match(rows[0], /1 running/);
+	for (const label of ["Fix login", "Queued docs", "Approve change"]) assert.equal(rows.filter((line) => line.includes(label)).length, 1);
+	assert.notEqual(rows.findIndex((line) => line.includes("Fix login")), rows.findIndex((line) => line.includes("Queued docs")), "agents have distinct compact rows");
+	assert.match(rows.join("\n"), /queued|waiting to start/); assert.match(rows.join("\n"), /needs.*action|action required/);
+	assert.doesNotMatch(rows.join("\n"), /Finished report|done.*new/);
+	const codes = (label: string) => raw[rows.findIndex((line) => line.includes(label))].match(/\x1b\[[\d;]+m/g);
+	assert.ok(codes("Fix login")?.length); assert.notDeepEqual(codes("Fix login"), codes("Approve change"), "native status colors distinguish work from needs-action states");
+	assert.ok(f.strip.render(24).every((line) => visibleWidth(line) <= 24));
+	const messageId = randomUUID(), visit = f.controller.visit(f.key);
+	visit.lastSentId = messageId;
+	visit.readThrough = f.childSessions[0].appendCustomMessageEntry("subagent-human-message", "Please check the API", true, { bodyText: "Please check the API", message: { id: messageId } });
+	assistant(f.childSessions[0], "The API is unchanged.");
+	f.controller.refresh(true);
+	assert.match(plain(f.strip).split("\n").find((line) => line.includes("Fix login"))!, /replied/, "an actual child response retains its existing distinction from other unread activity");
+	f.controller.pin(f.key); f.controller.visit(f.key).draft = "Retained private draft";
+	f.complete();
+	assert.equal(plain(f.strip), "", "no Agents area, results badge, completed row or finished pin remains when all work finishes");
+	f.controller.start(f.ctx);
+	assert.equal(plain(f.strip), ""); assert.equal(f.controller.pinned, f.key); assert.equal(f.controller.visit(f.key).draft, "Retained private draft");
+	assert.equal(f.controller.task(`${f.run.runId}:3`)!.unread, true, "hiding the area does not discard unread completed history");
+	const opening = f.commands.get("agents").handler("", f.ctx);
+	assert.ok(f.tui.hasOverlay(), "/agents still opens saved completed conversations");
+	f.overlay.handleInput("\x1b"); await opening;
+	assert.equal(f.calls.length, 0);
+});
+
+for (const [children, columns, rows] of [[1, 90, 28], [2, 90, 28], [2, 24, 18]]) test(`native entrance pointer toggles the same spot for ${children === 1 ? "a conversation" : "the picker and a conversation"} (${columns}×${rows})`, async (t) => {
+	const f = fixture(t, "fullscreen", children);
+	f.terminal.resize(columns, rows);
+	for (let index = 0; index < 25; index++) assistant(f.childSessions[0], `Prior history ${index}\n${"Readable earlier detail. ".repeat(6)}`);
+	f.controller.refresh(true); f.tui.start(); f.tui.renderNow();
+	const width = f.terminal.columns;
+	// The native fixed dock contains this widget, the four-row parent draft, and a one-row footer.
+	const y = f.terminal.rows - f.strip.render(width).length - f.mainEditor.render(width).length - 1, x = 5;
+	f.terminal.click(x, y); await turn(); f.tui.renderNow();
+	assert.equal(f.tui.hasOverlay(), true, "native SGR input opens the view");
+	const openingBounds = f.overlayBounds;
+	assert.ok(f.overlay.render(openingBounds.width).length <= openingBounds.height, "the picker keeps its controls within the available native rectangle");
+	f.terminal.click(x, y); await turn(); f.tui.renderNow();
+	assert.equal(f.tui.hasOverlay(), false, "the same real pointer coordinate closes it");
+	assert.ok(openingBounds.row + openingBounds.height <= y, "the original entrance stays outside the modal pointer rectangle");
+	f.terminal.click(x, y); await turn(); f.tui.renderNow();
+	if (children > 1) { f.terminal.input("\r"); await turn(); f.tui.renderNow(); }
+	assert.ok(f.overlay instanceof AgentConversation);
+	const draft = "DRAFT-ONE\nDRAFT-TWO\nDRAFT-THREE\nDRAFT-FOUR\nDRAFT-FIVE";
+	f.terminal.input(`\x1b[200~${draft}\x1b[201~`); f.tui.renderNow();
+	const rendered = f.overlay.render(f.overlayBounds.width);
+	assert.ok(rendered.length <= f.overlayBounds.height, "a multiline draft cannot clip its native editor or controls");
+	assert.ok(rendered.some((line) => line.includes(CURSOR_MARKER)), "the native editor cursor remains visible in a short view");
+	const lastLine = rendered.map(stripTerminalSequences).findIndex((line) => line.includes("DRAFT-FIVE"));
+	assert.ok(lastLine >= 0);
+	f.terminal.click(f.overlayBounds.col + 1, f.overlayBounds.row + lastLine); f.terminal.input("!"); f.tui.renderNow();
+	assert.equal(f.controller.visit(f.key).draft, draft.replace("DRAFT-FIVE", "!DRAFT-FIVE"), "native mouse placement follows the clipped editor offset");
+	for (let index = 0; index < 4; index++) f.terminal.input("\x1b[A");
+	f.tui.renderNow();
+	assert.match(plain(f.overlay, f.overlayBounds.width), /DRAFT-ONE/, "moving the native cursor up reveals earlier draft lines");
+	f.terminal.input("\x1b[5~"); f.tui.renderNow();
+	const anchor = f.controller.visit(f.key).anchor;
+	f.terminal.click(x, y); await turn();
+	assert.equal(f.tui.hasOverlay(), false);
+	assert.equal(f.controller.visit(f.key).draft, draft.replace("DRAFT-FIVE", "!DRAFT-FIVE"));
+	assert.deepEqual(f.controller.visit(f.key).anchor, anchor);
+	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
+	f.tui.renderNow();
+	f.terminal.click(x, y + 1); await turn(); f.tui.renderNow();
+	assert.equal(f.overlay.key, f.key, "the individual task row opens its exact conversation");
+	f.terminal.click(x, y + 1); await turn(); f.tui.renderNow();
+	assert.equal(f.tui.hasOverlay(), false, "clicking the same task row closes its conversation too");
+	assert.deepEqual(f.interrupts, Array(children).fill(0)); assert.equal(f.calls.length, 0);
+});
+
+test("short native conversation keeps reply, pending-send notice, draft and actions visible after pinning", async (t) => {
+	const f = fixture(t, "fullscreen", 4), draft = "Please keep the API unchanged.", deliveries = [];
+	f.terminal.resize(24, 18);
+	const opening = f.controller.open(f.key);
+	f.tui.start(); f.tui.renderNow();
+	f.pi.events.on("subagent:live-intercom", (payload) => {
+		deliveries.push(payload);
+		f.pi.events.emit("subagent:live-intercom-delivery", { requestId: payload.requestId, accepted: true, delivered: true, messageId: payload.messageId });
+	});
+	f.terminal.input(draft); f.terminal.input("\x1br"); f.tui.renderNow();
+	f.terminal.input("\r"); await turn();
+	f.terminal.input("\r"); await turn();
+	f.terminal.input("\x1bp"); f.tui.renderNow();
+	const visit = f.controller.visit(f.key), quote = structuredClone(visit.quote), notice = visit.notice;
+	assert.equal(deliveries.length, 1, "duplicate Enter cannot resend the accepted message");
+	assert.equal(deliveries[0].human.index, 0);
+	assert.equal(quote?.text, "I found the relevant code.");
+	assert.match(notice!, /already waiting/);
+	assert.equal(f.controller.pinned, f.key);
+	const frame = () => {
+		f.tui.renderNow();
+		const bounds = f.overlayBounds, raw = f.overlay.render(bounds.width), lines = raw.map(stripTerminalSequences);
+		assert.ok(raw.length <= bounds.height, `required rows must fit the native rectangle: ${raw.length} > ${bounds.height}`);
+		assert.ok(raw.every((line) => visibleWidth(line) <= bounds.width));
+		return { bounds, raw, lines };
+	};
+	const initial = frame();
+	t.diagnostic(JSON.stringify({ bounds: initial.bounds, renderedRows: initial.raw.length, cursorRow: initial.raw.findIndex((line) => line.includes(CURSOR_MARKER)), controlsRow: initial.lines.findIndex((line) => line.includes("F2")) }));
+	assert.match(initial.lines.join("\n"), /Quote/); assert.match(initial.lines.join("\n"), /This message/);
+	assert.ok(initial.raw.some((line) => line.includes(CURSOR_MARKER)), "the draft caret is inside the visible native rectangle");
+	assert.match(initial.lines.join("\n"), /F2/);
+	f.terminal.input("\x1bOQ");
+	assert.match(frame().lines.join("\n"), /Reply/);
+	f.terminal.input("\x1b[B");
+	assert.match(frame().lines.join("\n"), /Full details/);
+	f.terminal.input("\x1b");
+	const composed = frame(), cursorRow = composed.raw.findIndex((line) => line.includes(CURSOR_MARKER));
+	assert.ok(cursorRow >= 0);
+	f.terminal.click(composed.bounds.col + 1, composed.bounds.row + cursorRow); f.terminal.input("!");
+	assert.equal(visit.draft, draft.replace("API unchanged.", "!API unchanged."), "mouse placement follows the clipped native editor row");
+	f.terminal.input("\x1b[A"); assert.match(frame().lines.join("\n"), /Please keep/);
+	f.terminal.input("\x1b[5~"); frame();
+	const anchor = structuredClone(visit.anchor), savedDraft = visit.draft;
+	const y = f.terminal.rows - f.strip.render(f.terminal.columns).length - f.mainEditor.render(f.terminal.columns).length - 1;
+	assert.ok(f.overlayBounds.row + f.overlayBounds.height <= y, "the entrance stays outside the modal rectangle");
+	f.terminal.click(5, y); await opening;
+	assert.equal(f.tui.hasOverlay(), false);
+	f.terminal.click(5, y + 1); await turn(); frame();
+	assert.equal(f.overlay.key, f.key); assert.equal(f.overlay.editor.getText(), savedDraft);
+	assert.deepEqual(visit.quote, quote); assert.equal(visit.notice, notice); assert.deepEqual(visit.anchor, anchor);
+	f.terminal.click(5, y + 1); await turn();
+	assert.equal(f.tui.hasOverlay(), false, "the same task point closes the fully composed view");
+	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
+	assert.equal(deliveries.length, 1); assert.equal(f.calls.length, 0); assert.deepEqual(f.interrupts, [0, 0, 0, 0]);
+});
+
+test("configured Agents shortcut registration, hint and native overlay closing use one setting", async (t) => {
+	const configPath = path.join(process.env.PI_CODING_AGENT_DIR!, "intercom", "config.json");
+	fs.mkdirSync(path.dirname(configPath), { recursive: true });
+	const previous = fs.existsSync(configPath) ? fs.readFileSync(configPath) : undefined;
+	fs.writeFileSync(configPath, JSON.stringify({ shortcut: "ctrl+shift+k" }));
+	t.after(() => { if (previous) fs.writeFileSync(configPath, previous); else fs.rmSync(configPath); });
+	const f = fixture(t, "fullscreen", 2);
+	const { createExtensionRuntime } = await import("@earendil-works/pi-coding-agent");
+	const { loadExtensionFromFactory } = await import(new URL("./core/extensions/loader.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+	const { default: registerIntercom } = await import("../../src/pi-intercom/index.ts");
+	const runtime = createExtensionRuntime(); t.after(() => runtime.invalidate());
+	const extension = await loadExtensionFromFactory(registerIntercom, f.cwd, f.pi.events, runtime);
+	const shortcut = extension.shortcuts.get("ctrl+shift+k");
+	assert.ok(shortcut); assert.equal(extension.shortcuts.has("alt+m"), false);
+	assert.match(plain(f.strip), /ctrl\+shift\+k/i);
+	f.tui.start();
+	await shortcut.handler(f.ctx); await turn(); f.tui.renderNow();
+	assert.ok(f.tui.hasOverlay());
+	f.terminal.input("\x1b[107;6u"); await turn();
+	assert.equal(f.tui.hasOverlay(), false, "configured chord closes the picker through focused native input");
+	await shortcut.handler(f.ctx); await turn(); f.tui.renderNow();
+	f.terminal.input("\r"); await turn(); f.tui.renderNow();
+	assert.ok(f.overlay instanceof AgentConversation);
+	f.terminal.input("Saved draft");
+	f.terminal.input("\x1b[107;6u"); await turn();
+	assert.equal(f.tui.hasOverlay(), false);
+	assert.equal(f.controller.visit(f.key).draft, "Saved draft");
+	assert.equal(f.calls.length, 0); assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
+});
+
+for (const surface of ["widget", "picker"]) test(`64-column ${surface} keeps task identity, full state and unread badges ahead of activity`, async (t) => {
+	const f = fixture(t, "fullscreen", 2), control = f.state.foregroundControls.get(f.run.runId)!;
+	f.terminal.resize(64, 78);
+	f.run.children[0].label = "Build native Agents experience";
+	f.run.children[1].label = "Review current UX changes and preserve every public interface";
+	f.run.children[1].agent = "reviewer"; control.activeChildren!.get(1)!.agent = "reviewer";
+	control.progress = f.run.children.map((child) => ({ index: child.index, agent: child.agent, task: child.task!, status: "running" as const, recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 1,
+		...(child.index === 0 ? { currentTool: "bash", currentToolArgs: "export VERY_VERBOSE_COMMAND_PREVIEW=the_command_must_not_replace_task_identity; printf finished" } : {}) }));
+	for (const child of f.run.children) f.controller.visit(`${f.run.runId}:${child.index}`).readThrough = null;
+	f.controller.refresh(true); f.tui.start();
+	const opening = surface === "picker" ? f.controller.open() : undefined;
+	f.tui.renderNow();
+	const component = surface === "picker" ? f.overlay : f.strip, width = surface === "picker" ? f.overlayBounds.width : 64;
+	const rows = component.render(width).map(stripTerminalSequences);
+	const writer = rows.find((line) => line.includes("Build")) ?? "", reviewer = rows.find((line) => line.includes("Review current")) ?? "";
+	assert.match(writer, /Build native Agents experience/); assert.match(writer, /working · new/);
+	assert.match(reviewer, /Review current UX changes/); assert.match(reviewer, /working · new/);
+	assert.doesNotMatch(writer, /export|VERY_VERBOSE/);
+	if (surface === "picker") {
+		assert.match(writer, /worker/); assert.match(reviewer, /reviewer/);
+		assert.match(plain(component, width), /bash export/, "selected preview retains activity detail");
+		control.progress![0].currentToolArgs = "export UPDATED_ACTIVITY_PROOF=1";
+		f.controller.refresh(true); f.tui.renderNow();
+		assert.match(plain(component, width), /UPDATED_ACTIVITY_PROOF/, "selected activity stays fresh when state and badge have not changed");
+	} else assert.match(rows[0], /2 running/);
+	const messageId = randomUUID(), visit = f.controller.visit(f.key);
+	visit.lastSentId = messageId;
+	visit.readThrough = f.childSessions[0].appendCustomMessageEntry("subagent-human-message", "Keep the API", true, { bodyText: "Keep the API", message: { id: messageId } });
+	assistant(f.childSessions[0], "The API is preserved."); f.controller.refresh(true); f.tui.renderNow();
+	const repliedRows = component.render(width).map(stripTerminalSequences);
+	assert.match(repliedRows.find((line) => line.includes("Build")) ?? "", /Build native Agents[\s\S]*working · replied/);
+	assert.match(repliedRows.find((line) => line.includes("Review current")) ?? "", /Review current UX[\s\S]*working · new/);
+	assert.ok(component.render(width).every((line) => visibleWidth(line) <= width));
+	if (opening) { f.overlay.handleInput("\x1b"); await opening; }
+	const conversation = f.controller.open(f.key); f.tui.renderNow();
+	assert.match(plain(f.overlay, f.overlayBounds.width), /bash export/, "conversation retains activity detail");
+	f.overlay.handleInput("\x1b"); await conversation;
+	assert.equal(f.calls.length, 0); assert.deepEqual(f.interrupts, [0, 0]);
 });
 
 test("native delivery clears an obsolete saved duplicate notice after reload, not unrelated notices", (t) => {
@@ -226,7 +609,7 @@ test("a first foreground launch updates the strip without a manual open", async 
 	const pending = f.executor.execute("first-launch", { agent: "worker", task: "A first foreground task", label: "Fresh foreground", async: false, artifacts: false, output: false }, undefined, undefined, f.ctx);
 	t.after(async () => { await pending; });
 	await new Promise((resolve) => setTimeout(resolve, 650));
-	assert.match(plain(f.strip), /Fresh foreground: working/);
+	assert.match(plain(f.strip), /Fresh foreground.*working/);
 	assert.equal(f.controller.tasks[0]?.child.state, "live");
 	await pending;
 });
@@ -297,7 +680,7 @@ test("the first native streaming response is readable before its session file ex
 	f.controller.start(f.ctx);
 	assert.equal(f.controller.task(task.key)!.unavailable, undefined);
 	assert.equal(f.controller.task(task.key)!.unread, true, "visiting before native message_end must retain the before-first-saved-entry boundary after completion and reload");
-	assert.match(plain(f.strip), /new/);
+	assert.equal(plain(f.strip), "", "completed unread history and a saved pin do not keep the active area visible");
 	assert.equal(f.controller.pinned, task.key);
 	const reopen = f.controller.open(task.key);
 	assert.match(plain(f.overlay), /Second live text block continues before message end\./, "reopening must show the first finished reply, not the tail of later history");
@@ -586,7 +969,8 @@ test("reopen starts at the first real unread reply rather than already-read hist
 	assert.equal(f.controller.visit(f.key).anchor?.id, `${first}:0`);
 	f.overlay.handleInput("\x1b"); await reopen;
 	f.controller.pin(f.key); f.complete();
-	assert.match(plain(f.strip), /Finished/, "pin shows a readable saved result after completion");
+	assert.equal(plain(f.strip), "", "finished agents and pins do not keep the live widget visible");
+	assert.equal(f.controller.pinned, f.key, "the explicit pin is retained for reopening, not deleted");
 });
 
 test("same-parent restore retains drafts/pin and a replaced session ignores late delivery", async (t) => {

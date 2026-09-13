@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { MouseRegion, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { IntercomClient, type SendResult } from "./broker/client.ts";
 import { isBrokerRunning, spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import { SessionListOverlay } from "./ui/session-list.ts";
@@ -1804,39 +1804,55 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return new Text(`${theme.fg("accent", theme.bold("User → this agent"))}\n${details?.bodyText ?? message.content}`, 0, 0);
   });
 
+  const messageExpansion = new WeakMap<object, { expanded: boolean; globalExpanded: boolean }>();
   pi.registerMessageRenderer("intercom_message", (message, options, theme) => {
     const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string; subagentCompletion?: SubagentCompletion } | undefined;
     if (!details) return undefined;
-    if ("compactView" in options && options.compactView === true && !options.expanded
-      && details.from.id !== "subagent-control" && details.from.status !== "needs_attention"
-      && !details.message.expectsReply && !details.replyCommand) {
-      const sender = details.from.name || details.from.id.slice(0, 8);
-      const body = details.bodyText || details.message.content.text;
-      const summary = details.subagentCompletion
-        ? `${details.subagentCompletion.status} [${details.subagentCompletion.runId.slice(0, 8)}]`
-        : details.from.id === "subagent-result"
-          ? body.split("\n").slice(2, 6).join(" · ")
-          : body.split("\n").find((line) => line.trim()) || "(no text)";
-      const preview = `${sender}: ${summary}`.replace(/\s+/g, " ").trim();
-      let cachedWidth: number | undefined;
-      let cachedKey: string | undefined;
-      let cachedLines: string[] | undefined;
-      return {
-        render(width) {
-          const key = keyText("app.tools.expand");
-          if (cachedLines && cachedWidth === width && cachedKey === key) return cachedLines;
-          const hint = key ? theme.fg("dim", ` · ${key}`) : "";
-          const text = `${" ".repeat(options.outputPad)}${theme.fg("accent", "📨 ")}${theme.fg("muted", preview)}`;
-          cachedWidth = width;
-          cachedKey = key;
-          cachedLines = [truncateToWidth(truncateToWidth(text, width - visibleWidth(hint)) + hint, width)];
-          return cachedLines;
-        },
-        invalidate() { cachedLines = undefined; },
-      };
+    const compact = "compactView" in options && options.compactView === true;
+    const attention = details.from.id === "subagent-control" || details.from.status === "needs_attention" || details.message.expectsReply === true || Boolean(details.replyCommand);
+    const renderContent = (expanded: boolean) => {
+      if (compact && !expanded && !attention) {
+        const sender = details.from.name || details.from.id.slice(0, 8);
+        const body = details.bodyText || details.message.content.text;
+        const summary = details.subagentCompletion
+          ? `${details.subagentCompletion.status} [${details.subagentCompletion.runId.slice(0, 8)}]`
+          : details.from.id === "subagent-result"
+            ? body.split("\n").slice(2, 6).join(" · ")
+            : body.split("\n").find((line) => line.trim()) || "(no text)";
+        const preview = `${sender}: ${summary}`.replace(/\s+/g, " ").trim();
+        let cachedWidth: number | undefined;
+        let cachedKey: string | undefined;
+        let cachedLines: string[] | undefined;
+        return {
+          render(width: number) {
+            const key = keyText("app.tools.expand");
+            if (cachedLines && cachedWidth === width && cachedKey === key) return cachedLines;
+            const hint = key ? theme.fg("dim", ` · ${key}`) : "";
+            const text = `${" ".repeat(options.outputPad)}${theme.fg("accent", "📨 ")}${theme.fg("muted", preview)}`;
+            cachedWidth = width;
+            cachedKey = key;
+            cachedLines = [truncateToWidth(truncateToWidth(text, width - visibleWidth(hint)) + hint, width)];
+            return cachedLines;
+          },
+          invalidate() { cachedLines = undefined; },
+        };
+      }
+      return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, expanded || details.from.id !== "subagent-result" || attention);
+    };
+    if (attention || (!compact && details.from.id !== "subagent-result")) return renderContent(options.expanded);
+    let state = messageExpansion.get(message);
+    if (!state || state.globalExpanded !== options.expanded) {
+      state = { expanded: options.expanded, globalExpanded: options.expanded };
+      messageExpansion.set(message, state);
     }
-    const expanded = options.expanded || details.from.id !== "subagent-result" || details.from.status === "needs_attention" || details.message.expectsReply === true || Boolean(details.replyCommand);
-    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, expanded);
+    const expansion = state;
+    let component = renderContent(expansion.expanded);
+    return new MouseRegion({ render: (width) => component.render(width), invalidate: () => component.invalidate() }, (event) => {
+      if (event.type !== "click" || event.button !== "left") return;
+      expansion.expanded = !expansion.expanded;
+      component = renderContent(expansion.expanded);
+      return { handled: true };
+    });
   });
 
   async function requestSupervisorDecision(reason: "need_decision" | "interview_request", message: string | undefined, interview: SupervisorInterviewRequest | undefined, signal: AbortSignal | undefined, ctx: ExtensionContext) {
@@ -2753,8 +2769,8 @@ Usage:
     },
   });
 
-  pi.registerShortcut("alt+m", {
-    description: "Open your agents, or connected sessions",
+  pi.registerShortcut(config.shortcut, {
+    description: "Toggle your agents, or open connected sessions",
     handler: async (ctx) => {
       const request = { ctx, handled: false };
       pi.events.emit("subagent:open-agents", request);
