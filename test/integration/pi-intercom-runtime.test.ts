@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter, once } from "node:events";
+import { createRequire } from "node:module";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import net from "node:net";
 import type { Readable } from "node:stream";
@@ -465,7 +466,13 @@ function waitForSessionModel(client: InstanceType<typeof IntercomClient>, name: 
     (sessions) => `Timed out waiting for ${name} model ${model}; saw ${JSON.stringify(sessions.map((session) => ({ name: session.name, model: session.model })))}`);
 }
 
-test("intercom tool renders compact call and result rows", async () => {
+test("intercom tool renders compact call and result rows", async (t) => {
+  const sdk = import.meta.resolve("@earendil-works/pi-coding-agent");
+  const { KeybindingsManager } = await import(new URL("./core/keybindings.js", sdk).href);
+  const { getKeybindings, setKeybindings } = await import(createRequire(sdk).resolve("@earendil-works/pi-tui"));
+  const previous = getKeybindings();
+  setKeybindings(new KeybindingsManager());
+  t.after(() => setKeybindings(previous));
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const harness = createExtensionHarness();
 
@@ -497,7 +504,7 @@ test("intercom tool renders compact call and result rows", async () => {
     renderTheme,
     { isError: false, expanded: false, args: { action: "list" } },
   ));
-  assert.match(collapsedListText, /✓ 12 sessions .*Ctrl\+O.*to expand/);
+  assert.match(collapsedListText, /✓ 12 sessions .*ctrl\+o.*to expand/);
   assert.doesNotMatch(collapsedListText, /busy-worker/);
 
   const expandedListText = renderToText(intercomTool.renderResult(

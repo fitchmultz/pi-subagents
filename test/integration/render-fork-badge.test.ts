@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { createRequire } from "node:module";
 
 const { KeybindingsManager } = await import(new URL("./core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+const { setKeybindings } = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
 setKeybindings(new KeybindingsManager());
 
 type RenderSubagentResult = (

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -26,6 +27,12 @@ const { createAsyncJobTracker } = await import("../../src/runs/background/async-
 const { ASYNC_DIR } = await import("../../src/shared/types.ts");
 initTheme("dark", false);
 const { theme: uiTheme } = await import(new URL("./modes/interactive/theme/theme.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+const sdkTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
+function setTestKeybindings(t, keys) {
+	const previous = getKeybindings(), sdkPrevious = sdkTui.getKeybindings();
+	setKeybindings(keys); sdkTui.setKeybindings(keys);
+	t.after(() => { setKeybindings(previous); sdkTui.setKeybindings(sdkPrevious); });
+}
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 }, turns: 0 };
 function assistant(manager, text: string) { return manager.appendMessage({ role: "assistant", content: [{ type: "text", text }], provider: "fixture", model: "fixture", api: "openai-responses", stopReason: "stop", usage, timestamp: Date.now() }); }
 const plain = (component, width = 90) => component.render(width).map(stripTerminalSequences).join("\n");
@@ -248,8 +255,7 @@ test("clickable Agents hints: latest leaves a scrolled reading position only on 
 
 for (const binding of ["ctrl+o", "ctrl+e"]) test(`clickable Agents hints: direct-user breadcrumb uses native custom-message expansion (${binding})`, async (t) => {
 	const { KeybindingsManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/keybindings.js")).href);
-	const previous = getKeybindings(); setKeybindings(new KeybindingsManager({ "app.tools.expand": binding }));
-	t.after(() => setKeybindings(previous));
+	setTestKeybindings(t, new KeybindingsManager({ "app.tools.expand": binding }));
 	const f = fixture(t, "fullscreen");
 	const message = { customType: "subagent-human-direction", content: "Informational only", details: { label: "Fix login", text: "Preserve the API", quote: { title: "Recorded change", text: "FULL-QUOTED-CONTEXT" } } };
 	let card, done;
@@ -404,9 +410,7 @@ test("clickable Agents hints: Back unwinds details and its menu without losing r
 
 test("clickable Agents hints: configured native selection and submit keys keep matching their labels", async (t) => {
 	const { KeybindingsManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/keybindings.js")).href);
-	const previous = getKeybindings();
-	setKeybindings(new KeybindingsManager({ "tui.select.down": "ctrl+e", "tui.select.confirm": "ctrl+g", "tui.select.cancel": "ctrl+q", "tui.input.submit": "alt+enter" }));
-	t.after(() => setKeybindings(previous));
+	setTestKeybindings(t, new KeybindingsManager({ "tui.select.down": "ctrl+e", "tui.select.confirm": "ctrl+g", "tui.select.cancel": "ctrl+q", "tui.input.submit": "alt+enter" }));
 	const f = fixture(t, "fullscreen", 2), deliveries = [], opening = f.controller.open();
 	f.tui.start(); f.tui.renderNow();
 	await clickHint(f, "ctrl+e Choose");
@@ -444,8 +448,7 @@ test("clickable Agents hints: quoted shell tabs keep native text and remove-cont
 
 test("clickable Agents hints: remapped picker Up owns its displayed cell, not a letter in Type to filter", async (t) => {
 	const { KeybindingsManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/keybindings.js")).href);
-	const previous = getKeybindings(); setKeybindings(new KeybindingsManager({ "tui.select.up": "p" }));
-	t.after(() => setKeybindings(previous));
+	setTestKeybindings(t, new KeybindingsManager({ "tui.select.up": "p" }));
 	const f = fixture(t, "fullscreen", 2), opening = f.controller.open();
 	f.tui.start(); f.tui.renderNow();
 	f.terminal.input("\x1b[B"); f.tui.renderNow();
