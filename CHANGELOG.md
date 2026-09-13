@@ -3,19 +3,24 @@
 ## [Unreleased]
 
 ### Added
-- A quiet task-labelled Agents strip, Alt+M and `/agents`, with native-editor conversations, full saved history, contextual replies, tool details/diffs, unread navigation, preserved drafts and one optional pin. Fullscreen task clicks open the selected child; viewing finished work never starts it.
+- A task-labelled Agents area, configurable Option+Shift+M (Alt+Shift+M) and `/agents`, with native-editor conversations, full saved history, contextual replies, tool details/diffs, unread navigation, preserved drafts and one optional pin. Fullscreen task clicks open the selected child; viewing finished work never starts it.
 - Verified human-origin direct messages to owned children, distinct broker and native-conversation receipts, and small parent information breadcrumbs. Waiting questions use the existing durable answer path.
 - Interruptible `agent_runs({ action: "wait", id, index? })` and `async: false` continuation/answer waits that follow the actual run identity and preserve saved launch choices. Important steers release foreground waits while their children keep working.
 - Explicit human-only `blocked` acceptance with concrete evidence and `humanAction`. It retains incomplete acceptance and completed evidence, stops repeated finalization/verification, blocks dependents and leaves independent siblings running.
 - Opt-in Intercom topics with quiet current-state records, self-contained coalesced updates and advisory resource-owner display. Only blockers, decisions, awaited explicit releases and direct messages interrupt; disconnect never implies release.
 
 ### Fixed
+- Restore colored per-agent rows and an exact running count, distinguishing queued and needs-action work. Budget task names, complete states and unread/replied badges before verbose activity in the widget and picker. Hide the entire Agents area when no work is active, while retaining saved drafts, unread results and pins.
+- Let repeated fullscreen clicks on the Agents entrance or selected task close its picker or conversation without changing drafts or stopping work. Clicking a collapsed Intercom message expands that row; a second click collapses it, while native global expansion and text selection remain available.
+- Open completed agent conversations on the readable saved report instead of serialized submission data, without repeating an existing native answer. Group tools with Pi's native renderers while retaining full recorded details, contextual replies, and saved reading positions. Show recorded custom-tool diffs readably in explicit Details before raw metadata.
+- Frame and pad the Agents picker and conversation in both terminal modes. Give task labels the available width, filter across full assignments, and keep the original assignment directly inspectable.
 - Stop only the selected child across supported foreground/background/nested control paths; older multi-child runners without indexed control refuse instead of stopping siblings. Publish terminal pause only after child settlement, and preserve observed agent-process exit evidence separately from normalized workflow and command outcomes.
 - Consume native JSON streaming deltas in both foreground and background live views, preserving multiple text blocks before message completion.
 - Steer material supervisor progress at the next tool boundary and suppress obsolete undelivered legacy progress from proven terminal children without removing raw history or genuine results.
 - Preserve native editing shortcuts, prevent repeated submission of an accepted pending message, clear its warning after native delivery, preserve the reading message across terminal reflow, keep unread history boundaries monotonic, and clean up UI state and pending operations at session replacement.
 - Keep queued children visibly waiting to start, retain parallel siblings' unfinished output, scope answer waits to the answered child, and cancel an exited child's durable question without stopping its siblings.
 - Report topic support truthfully when an older live broker is still connected. Ordinary messaging continues; topics become available after the older broker's sessions close normally and it exits.
+- Correct local runtime install/rebuild guidance to use the existing `npm install --omit=dev` lifecycle, avoiding development Pi copies without claiming a loader fix.
 
 ## [0.37.2] - 2026-09-09
 

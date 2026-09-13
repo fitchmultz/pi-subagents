@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { getMarkdownTheme, getSelectListTheme, renderDiff, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { Container, Editor, Markdown, MouseRegion, ScrollView, SelectList, Text, matchesKey, truncateToWidth, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { AssistantMessageComponent, UserMessageComponent, ToolExecutionComponent, DynamicBorder, createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition, createLsToolDefinition, createPowerShellToolDefinition, createReadToolDefinition, createWriteToolDefinition, getMarkdownTheme, getSelectListTheme, rawKeyHint, renderDiff, type ExtensionAPI, type ExtensionContext, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
+import { Box, Container, CURSOR_MARKER, Editor, Input, MouseRegion, ScrollView, SelectList, Spacer, Text, fuzzyFilter, getKeybindings, matchesKey, truncateToWidth, visibleWidth, type Component, type OverlayOptions, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
+import { loadConfig as loadIntercomConfig } from "../pi-intercom/config.ts";
 import { sendLiveSubagentMessage } from "../intercom/live-intercom.ts";
 import { ownedRunView } from "../runs/shared/run-records.ts";
 import { listRunQuestions, getRunMetadataDir, questionProcessAlive, type SupervisorQuestionView } from "../runs/shared/supervisor-questions.ts";
@@ -9,10 +11,11 @@ import type { SubagentParamsLike } from "../runs/foreground/subagent-params.ts";
 import { getSingleResultOutput } from "../shared/utils.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
 import { acceptanceHumanAction } from "../runs/shared/acceptance.ts";
+import { stripAcceptanceReport } from "../runs/shared/acceptance-reports.ts";
 import { formatAgentProcessExit } from "../shared/status-format.ts";
 import { WIDGET_KEY, type OwnedRun, type OwnedRunView, type SubagentExecutionResult, type SubagentState } from "../shared/types.ts";
 import { buildWidgetLines } from "./render.ts";
-import { NativeAgentHistory, readableText, type AgentHistoryItem } from "./agent-history.ts";
+import { NativeAgentHistory, readableText, withFinalResult, type AgentHistoryItem } from "./agent-history.ts";
 
 const VIEW_ENTRY = "subagent-view";
 const DIRECTION_MESSAGE = "subagent-human-direction";
@@ -50,6 +53,8 @@ export interface AgentTask {
 	child: OwnedRunView["children"][number];
 	question?: SupervisorQuestionView;
 	history: AgentHistoryItem[];
+	historyIds: string[];
+	finalId?: string;
 	unavailable?: string;
 	unread: boolean;
 	replied: boolean;
@@ -58,7 +63,7 @@ export interface AgentTask {
 const short = (text: string, width = 48) => truncateToWidth(readableText(text).replace(/\s+/g, " ").trim(), width);
 const resultText = (result: SubagentExecutionResult) => result.content.map((part) => part.type === "text" ? part.text : "").join("\n");
 export function agentTaskLabel(child: OwnedRunView["children"][number]): string {
-	return short(child.label || child.task?.split("\n").find((line) => line.trim()) || `${child.agent} · assignment unavailable`, 42);
+	return readableText(child.label || child.task?.split("\n").find((line) => line.trim()) || `${child.agent} · assignment unavailable`).replace(/\s+/g, " ").trim();
 }
 function activity(task: AgentTask): string {
 	if (task.child.identityUnavailable) return "assignment unavailable";
@@ -69,6 +74,16 @@ function activity(task: AgentTask): string {
 	if (live?.status === "pending") return "waiting to start";
 	return live?.currentTool ? short(`${live.currentTool} ${live.currentToolArgs || live.currentPath || ""}`, 42)
 		: live?.streamingText ? short(live.streamingText, 42) : "working";
+}
+
+function taskSummary(task: AgentTask): { status: string; badge: string } {
+	let status: string;
+	if (task.child.identityUnavailable) status = "unavailable";
+	else if (task.question) status = task.question.state === "answer_pending" ? "answer pending" : "needs answer";
+	else if (task.child.state === "blocked") status = "needs action";
+	else if (task.child.state === "live") status = task.child.activity?.status === "pending" ? "queued" : "working";
+	else status = task.child.state === "completed" ? "done" : task.child.state;
+	return { status, badge: task.unread ? task.replied ? " · replied" : " · new" : "" };
 }
 
 /** One UI controller over the existing owned runs, session files, and executor. */
@@ -86,7 +101,9 @@ export class AgentViewController {
 	private busy = new Set<string>();
 	private lastSaved = "";
 	private render?: () => void;
-	private closeOverlay?: () => void;
+	private closeOverlay?: (next?: string) => void;
+	private widget?: Component;
+	readonly shortcut = loadIntercomConfig().shortcut;
 	private overlay?: AgentConversation | AgentPicker;
 	tasks: AgentTask[] = [];
 	pinned?: string;
@@ -130,40 +147,53 @@ export class AgentViewController {
 		ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => {
 			this.render = () => tui.requestRender();
 			let hits: Array<{ start: number; end: number; key?: string; unpin?: boolean; row: number }> = [];
-			return new MouseRegion({
+			const widget = new MouseRegion({
 				invalidate() {},
 				render: (width) => {
-					const entrance = "Agents [Alt+M]";
-					let line = entrance;
-					hits = [{ start: 0, end: entrance.length, row: 0 }];
-					const visible = this.tasks.filter((task) => task.child.state === "live" || task.child.state === "blocked" || task.question || task.unread);
-					for (const [index, task] of visible.entries()) {
-						const text = `  ${task.label}: ${activity(task)}${task.unread ? task.replied ? " · replied" : " · new" : ""}`;
-						const start = visibleWidth(line);
-						if (start + visibleWidth(text) > width && index > 0) { line += `  +${visible.length - index}`; break; }
-						line += text;
-						hits.push({ start, end: visibleWidth(line), row: 0, key: task.key });
+					hits = [];
+					const active = this.tasks.filter((task) => task.child.state === "live" || task.child.state === "blocked" || task.question)
+						.map((task) => ({ task, state: task.child.state === "blocked" || task.question?.state === "awaiting_input" ? "needs action" : task.child.activity?.status === "pending" || task.question?.state === "answer_pending" ? "waiting" : "running" }));
+					if (!active.length) return [];
+					const running = active.filter((row) => row.state === "running").length;
+					const waiting = active.filter((row) => row.state === "waiting").length;
+					const needsAction = active.filter((row) => row.state === "needs action").length;
+					const counts = `${running} running${waiting ? ` · ${waiting} waiting` : ""}${needsAction ? ` · ${needsAction} needs action` : ""}`;
+					const hint = readableText(rawKeyHint(this.shortcut, "")).trim();
+					const entrance = `${theme.fg("accent", theme.bold("Agents"))} · ${theme.fg(running ? "success" : "muted", counts)} ${theme.fg("dim", `[${hint}]`)}`;
+					const lines = [truncateToWidth(entrance, width)];
+					hits.push({ start: 0, end: Math.min(width, visibleWidth(entrance)), row: 0 });
+					const visible = active.slice(0, Math.max(1, Math.min(4, Math.floor(tui.terminal.rows / 5))));
+					for (const { task, state } of visible) {
+						const color = state === "running" ? "success" : state === "waiting" ? "dim" : "warning";
+						const symbol = state === "running" ? "●" : state === "waiting" ? "◷" : "!";
+						const { status, badge } = taskSummary(task);
+						const label = short(task.label, Math.max(1, width - visibleWidth(status + badge) - 7));
+						hits.push({ start: 0, end: width, row: lines.length, key: task.key });
+						lines.push(truncateToWidth(`${theme.fg(color, `  ${symbol} `)}${theme.bold(label)} ${theme.fg(color, `· ${status}`)}${theme.fg("accent", badge)}`, width));
 					}
-					if (!visible.length && this.tasks.length) line += `  ${this.tasks.length} saved`;
-					const lines = [theme.fg("muted", truncateToWidth(line, width))];
+					if (visible.length < active.length) lines.push(theme.fg("dim", truncateToWidth(`  +${active.length - visible.length} more · /agents`, width)));
 					const pinned = this.tasks.find((task) => task.key === this.pinned);
 					if (pinned) {
 						const last = pinned.history.findLast((item) => item.kind === "assistant")?.text;
 						const preview = pinned.child.identityUnavailable ? UNAVAILABLE_ASSIGNMENT : pinned.child.state === "live" ? activity(pinned) : (pinned.child.result && getSingleResultOutput(pinned.child.result)) || last || activity(pinned);
-						const unpin = "[Unpin] ";
-						lines.push(theme.fg("dim", truncateToWidth(`${unpin}${pinned.label}: ${short(preview, width)}`, width)));
-						hits.push({ start: 0, end: unpin.length, row: 1, unpin: true }, { start: unpin.length, end: width, row: 1, key: pinned.key });
+						const unpin = "[Unpin] ", row = lines.length;
+						lines.push(theme.fg("dim", truncateToWidth(`${unpin}Pinned · ${pinned.child.state === "completed" ? "finished · " : ""}${short(pinned.label, 30)}: ${short(preview, width)}`, width)));
+						hits.push({ start: 0, end: unpin.length, row, unpin: true }, { start: unpin.length, end: width, row, key: pinned.key });
 					}
 					if (ctx.ui.getToolsExpanded()) lines.push(...buildWidgetLines([...this.state.asyncJobs.values()], theme, width, true));
 					return lines;
 				},
 			}, (event) => {
-				if (tui.mode !== "fullscreen" || event.type !== "click" || event.button !== "left" || !this.live()) return;
+				if (tui.mode !== "fullscreen" || event.button !== "left" || !this.live()) return;
 				const hit = hits.find((hit) => hit.row === event.y && event.x >= hit.start && event.x < hit.end);
 				if (!hit) return;
+				if (event.type === "press") return { handled: true };
+				if (event.type !== "click") return;
 				if (hit.unpin) this.pin(undefined); else void this.open(hit.key);
 				return { handled: true };
 			});
+			this.widget = widget;
+			return widget;
 		});
 		this.refresh(true);
 	}
@@ -209,8 +239,10 @@ export class AgentViewController {
 				const prior = tasks.get(key);
 				if (prior && prior.run.startedAt > run.startedAt) continue;
 				const visit = this.visits.get(key);
-				const history = child.identityUnavailable ? { items: [], unavailable: UNAVAILABLE_ASSIGNMENT } : this.history.read(child.sessionFile, child.state === "live");
-				const readIndex = visit?.readThrough ? history.items.findIndex((item) => item.id === visit.readThrough) : -1;
+				const nativeHistory = child.identityUnavailable ? { items: [], entryIds: [], unavailable: UNAVAILABLE_ASSIGNMENT } : this.history.read(child.sessionFile, child.state === "live");
+				const history = !child.identityUnavailable && child.state !== "live" && child.result
+					? withFinalResult(nativeHistory, getSingleResultOutput(child.result), run.runId, view.updatedAt) : nativeHistory;
+				const readIndex = visit?.readThrough ? history.entryIds.indexOf(visit.readThrough) : -1;
 				const lastSent = visit?.lastSentId ? history.items.findIndex((item) => item.messageId === visit.lastSentId) : -1;
 				if (visit) {
 					if (lastSent >= 0 && visit.notice === PENDING_MESSAGE_NOTICE) visit.notice = undefined;
@@ -220,9 +252,9 @@ export class AgentViewController {
 					}
 					visit.outbox = visit.outbox.filter((sent) => !history.items.some((item) => item.messageId === sent.id));
 				}
-				tasks.set(key, { key, label: child.identityUnavailable ? "Saved assignment unavailable" : prior?.label ?? agentTaskLabel(child), run: view, child, history: history.items, unavailable: history.unavailable ?? view.diagnosis,
+				tasks.set(key, { key, label: child.identityUnavailable ? "Saved assignment unavailable" : prior?.label ?? agentTaskLabel(child), run: view, child, history: history.items, historyIds: history.entryIds, finalId: history.finalId, unavailable: history.unavailable ?? view.diagnosis,
 					question: child.identityUnavailable ? undefined : questions.findLast((question) => question.index === child.index && (question.state === "awaiting_input" || question.state === "answer_pending")),
-					unread: !child.identityUnavailable && Boolean(visit && ((visit.readThrough !== undefined && readIndex < history.items.length - 1) || (child.activity?.lastActivityAt ?? 0) > (visit.seenActivityAt ?? 0))),
+					unread: !child.identityUnavailable && Boolean(visit && ((visit.readThrough !== undefined && readIndex < history.entryIds.length - 1) || (child.activity?.lastActivityAt ?? 0) > (visit.seenActivityAt ?? 0))),
 					replied: lastSent >= 0 && history.items.slice(lastSent + 1).some((item) => item.kind === "assistant") });
 			}
 		}
@@ -232,7 +264,7 @@ export class AgentViewController {
 			if (!run) continue;
 			tasks.set(key, { key, label: "Saved assignment unavailable", run,
 				child: { agent: "unknown", index: -1, state: "unknown", configuration: "legacy-partial", identityUnavailable: true },
-				history: [], unavailable: UNAVAILABLE_ASSIGNMENT, unread: false, replied: false });
+				history: [], historyIds: [], unavailable: UNAVAILABLE_ASSIGNMENT, unread: false, replied: false });
 		}
 		this.tasks = [...tasks.values()].sort((a, b) => Number(Boolean(b.question)) - Number(Boolean(a.question)) || Number(b.child.state === "live") - Number(a.child.state === "live") || Number(b.unread) - Number(a.unread) || b.run.startedAt - a.run.startedAt);
 		this.overlay?.refresh();
@@ -266,21 +298,39 @@ export class AgentViewController {
 
 	pin(key: string | undefined): void { this.pinned = key; this.save(); this.render?.(); }
 
+	availableHeight(tui: TUI): number {
+		if (tui.mode !== "fullscreen" || !this.widget) return Math.max(1, tui.terminal.rows - 2);
+		// Public children work across Pi's loader module boundaries; preserve the existing dock below the view.
+		const parent = tui.children.find((child): child is Component & Pick<Container, "children"> => "children" in child && Array.isArray(child.children) && child.children.includes(this.widget));
+		if (!parent) return Math.max(1, tui.terminal.rows - 2);
+		const below = [...parent.children.slice(parent.children.indexOf(this.widget)), ...tui.children.slice(tui.children.indexOf(parent) + 1)];
+		const dock = below.reduce((height, child) => height + child.render(tui.terminal.columns).length, 0);
+		return Math.max(1, tui.terminal.rows - dock - 1);
+	}
+
 	async open(key?: string, ctx = this.ctx): Promise<void> {
 		if (!ctx || !isTuiContext(ctx)) return;
 		if (!this.ctx || this.ctx.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()) this.start(ctx);
-		if (!this.live() || this.overlay) return;
+		if (!this.live()) return;
+		if (this.overlay) {
+			this.closeOverlay?.(this.overlay instanceof AgentConversation && this.overlay.key === key ? undefined : key);
+			return;
+		}
 		const generation = this.generation;
 		this.refresh(true);
 		let selected = key ?? (this.tasks.length === 1 ? this.tasks[0]!.key : undefined);
 		while (this.live(generation)) {
-			const result = await ctx.ui.custom<string | undefined>((tui, theme, _keys, done) => {
-				this.closeOverlay = () => done(undefined);
+			let height: (() => number) | undefined;
+			const overlayOptions: OverlayOptions = { width: "96%", margin: 1, anchor: "center", get maxHeight() { return height?.(); } };
+			const result = await ctx.ui.custom<string | undefined>((tui, theme, keys, done) => {
+				height = () => this.availableHeight(tui);
+				if (tui.mode === "fullscreen") overlayOptions.anchor = "top-center";
+				this.closeOverlay = (next) => done(next);
 				this.overlay = selected && this.task(selected)
-					? new AgentConversation(tui, theme, this, selected, done)
+					? new AgentConversation(tui, theme, this, selected, done, keys)
 					: new AgentPicker(tui, theme, this, done);
 				return this.overlay;
-			}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" } });
+			}, { overlay: true, overlayOptions });
 			if (!this.live(generation)) return;
 			this.overlay = undefined;
 			this.closeOverlay = undefined;
@@ -293,9 +343,10 @@ export class AgentViewController {
 	}
 
 	private breadcrumb(task: AgentTask, text: string, quote?: Quote): void {
+		const label = short(task.label, 42);
 		this.pi.sendMessage({ customType: DIRECTION_MESSAGE, display: true,
-			content: `For context only: the user sent this directly to ${task.label} (run ${task.run.runId}, child ${task.child.index}). No relay or approval is needed.\n\n${text}${quote ? `\n\nRegarding ${quote.title}:\n${quote.text}` : ""}`,
-			details: { label: task.label, text, quote, runId: task.run.runId, index: task.child.index } }, { triggerTurn: false });
+			content: `For context only: the user sent this directly to ${label} (run ${task.run.runId}, child ${task.child.index}). No relay or approval is needed.\n\n${text}${quote ? `\n\nRegarding ${quote.title}:\n${quote.text}` : ""}`,
+			details: { label, text, quote, runId: task.run.runId, index: task.child.index } }, { triggerTurn: false });
 	}
 
 	async send(key: string, text: string, continueExplicitly = false): Promise<void> {
@@ -404,6 +455,7 @@ export class AgentViewController {
 		if (this.saveTimer) clearTimeout(this.saveTimer);
 		this.timer = this.saveTimer = undefined;
 		this.render = undefined;
+		this.widget = undefined;
 		this.ctx = undefined;
 		this.ownerSessionId = undefined;
 		this.tasks = [];
@@ -414,7 +466,9 @@ export class AgentViewController {
 
 class AgentPicker extends Container {
 	private list?: SelectList;
+	private search: Input;
 	private signature = "";
+	private hasFocus = false;
 	private tui: TUI;
 	private theme: Theme;
 	private controller: AgentViewController;
@@ -422,27 +476,69 @@ class AgentPicker extends Container {
 	constructor(tui: TUI, theme: Theme, controller: AgentViewController, done: (key?: string) => void) {
 		super();
 		this.tui = tui; this.theme = theme; this.controller = controller; this.done = done;
-		this.refresh();
+		this.search = new Input({ placeholder: "Filter agents or assignments…", placeholderStyle: (text) => theme.fg("dim", text) });
+		this.render(tui.terminal.columns);
 	}
-	refresh(): void {
-		const items = [...this.controller.tasks.map((task) => ({ value: task.key, label: task.label, description: `${activity(task)}${task.unread ? " · new activity" : ""}` })), { value: "peers", label: "Other connected sessions", description: "Peer messaging · all projects" }];
-		const signature = JSON.stringify(items);
-		if (signature === this.signature) return;
-		this.signature = signature;
+	get focused(): boolean { return this.hasFocus; }
+	set focused(value: boolean) { this.hasFocus = value; this.search.focused = value; }
+	refresh(): void { this.tui.requestRender(); }
+	render(width: number): string[] {
+		const height = this.controller.availableHeight(this.tui);
+		const query = this.search.getValue();
+		const tasks = fuzzyFilter(this.controller.tasks, query, (task) => `${task.label} ${task.child.agent} ${task.child.task ?? ""}`);
+		const items = tasks.map((task) => {
+			const { status, badge } = taskSummary(task);
+			return { value: task.key, label: `${task.child.agent} · ${task.label}`, description: status + badge };
+		});
+		if (!query) items.push({ value: "peers", label: "Other connected sessions", description: "All projects" });
 		const selected = this.list?.getSelectedItem()?.value;
-		this.list = new SelectList(items, Math.max(1, this.tui.terminal.rows - 7), getSelectListTheme());
-		this.list.setSelectedIndex(Math.max(0, items.findIndex((item) => item.value === selected)));
-		this.list.onSelect = (item) => this.done(item.value);
-		this.list.onCancel = () => this.done();
-		this.clear();
-		this.addChild(new Text(this.theme.bold("Agents · your delegated work"), 0, 0));
-		if (!this.controller.tasks.length) this.addChild(new Text("No agents owned by this session yet.", 0, 0));
-		this.addChild(this.list);
-		this.addChild(new Text("Enter Open · Esc Back", 0, 0));
+		const selectedIndex = Math.max(0, items.findIndex((item) => item.value === selected));
+		const task = this.controller.task(items[selectedIndex]?.value ?? "");
+		const signature = JSON.stringify([items, query, width, height, items[selectedIndex]?.value, task && activity(task), task?.child.task, task?.run.runId]);
+		if (signature !== this.signature) {
+			const innerWidth = Math.max(1, width - 2);
+			const compact = height < 16;
+			const header = new Container();
+			header.addChild(new Text(this.theme.fg("accent", this.theme.bold(truncateToWidth(`Agents · ${this.controller.tasks.length} delegated tasks`, innerWidth))), 0, 0));
+			header.addChild(this.search);
+			if (!compact) header.addChild(new Spacer(1));
+			const footer = new Container();
+			if (!compact) footer.addChild(new Spacer(1));
+			if (task && !compact) {
+				footer.addChild(new Text(this.theme.fg("muted", short(`${task.child.agent} · ${activity(task)} · ${task.run.runId.slice(0, 8)}`, innerWidth)), 0, 0));
+				const assignment = new Text(readableText(task.child.task ?? "Original assignment unavailable."), 0, 0).render(innerWidth);
+				footer.addChild(new Text(assignment.slice(0, 3).join("\n"), 0, 0));
+			}
+			footer.addChild(new Text(this.theme.fg("dim", compact ? "↑↓ · Enter · Esc" : width < 60 ? "↑↓ Choose · Enter Open\nEsc Back · Type to filter" : "Type to filter · ↑↓ Choose · Enter Open · Esc Back"), 0, 0));
+			const visible = Math.max(1, height - 3 - header.render(innerWidth).length - footer.render(innerWidth).length);
+			// Native SelectList needs more than ten cells to show its description column.
+			const descriptionWidth = Math.max(11, ...items.map((item) => visibleWidth(item.description ?? "")));
+			const primaryWidth = Math.max(1, innerWidth - descriptionWidth - 4);
+			this.list = new SelectList(items, visible, getSelectListTheme(), { minPrimaryColumnWidth: Math.min(24, primaryWidth), maxPrimaryColumnWidth: primaryWidth, truncatePrimary: ({ text, maxWidth }) => truncateToWidth(text, maxWidth) });
+			this.list.setSelectedIndex(selectedIndex);
+			this.list.onSelect = (item) => this.done(item.value);
+			this.list.onCancel = () => this.done();
+			const body = new Box(1, 0, (text) => this.theme.bg("customMessageBg", text));
+			body.addChild(header);
+			body.addChild(items.length ? this.list : new Text(query ? "No matching agents." : "No agents owned by this session yet.", 0, 0));
+			body.addChild(footer);
+			this.clear();
+			this.addChild(new DynamicBorder((text) => this.theme.fg("borderAccent", text)));
+			this.addChild(body);
+			this.addChild(new DynamicBorder((text) => this.theme.fg("borderAccent", text)));
+			this.signature = signature;
+		}
+		return super.render(width);
+	}
+	invalidate(): void { this.signature = ""; super.invalidate(); }
+	syncDraft(): void {}
+	handleInput(data: string): void {
+		if (matchesKey(data, this.controller.shortcut)) { this.done(); return; }
+		const keys = getKeybindings();
+		if ((["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"] as const).some((key) => keys.matches(data, key))) this.list?.handleInput(data);
+		else this.search.handleInput(data);
 		this.tui.requestRender();
 	}
-	syncDraft(): void {}
-	handleInput(data: string): void { this.list?.handleInput(data); }
 	dispose(): void {}
 }
 
@@ -451,6 +547,8 @@ export class AgentConversation extends Container {
 	readonly editor: Editor;
 	readonly scroll: ScrollView;
 	private viewport: Component;
+	private editorViewport: Component;
+	private editorHeight = Infinity;
 	private editorFocus = true;
 	private hasFocus = false;
 	private closed = false;
@@ -460,13 +558,17 @@ export class AgentConversation extends Container {
 	private selectedId?: string;
 	private detail?: AgentHistoryItem;
 	private menu?: SelectList;
-	private lines: Array<{ id: string; start: number; end: number }> = [];
+	private lines: Array<{ id: string; entryIds: string[]; start: number; contentStart: number; end: number }> = [];
 	private components = new Map<string, { signature: string; component: Component }>();
 	private initialPosition = true;
 	private restoreAnchor?: Anchor;
 	private conversationAnchor?: Anchor;
 	private contentItems: AgentHistoryItem[] = [];
 	private pendingDetail = false;
+	private toolsExpanded = false;
+	private toolExpansion = new Map<string, boolean>();
+	private toolDefinitions: Map<string, ConstructorParameters<typeof ToolExecutionComponent>[4]>;
+	private keys?: KeybindingsManager;
 
 	private tui: TUI;
 	private theme: Theme;
@@ -474,15 +576,30 @@ export class AgentConversation extends Container {
 	readonly key: string;
 	private done: (key?: string) => void;
 
-	constructor(tui: TUI, theme: Theme, controller: AgentViewController, key: string, done: (key?: string) => void) {
+	constructor(tui: TUI, theme: Theme, controller: AgentViewController, key: string, done: (key?: string) => void, keys?: KeybindingsManager) {
 		super();
-		this.tui = tui; this.theme = theme; this.controller = controller; this.key = key; this.done = done;
+		this.tui = tui; this.theme = theme; this.controller = controller; this.key = key; this.done = done; this.keys = keys;
+		const cwd = this.task?.child.launch?.cwd ?? this.task?.run.cwd ?? process.cwd();
+		this.toolDefinitions = new Map([createReadToolDefinition, createBashToolDefinition, createEditToolDefinition, createWriteToolDefinition, createFindToolDefinition, createGrepToolDefinition, createLsToolDefinition, createPowerShellToolDefinition].map((create) => { const definition = create(cwd); return [definition.name, definition]; }));
 		this.editor = new Editor(tui, { borderColor: (text) => theme.fg("accent", text), selectList: getSelectListTheme() }, { paddingX: 0 });
 		this.editor.setText(this.visit.draft);
 		this.editor.onChange = () => { if (this.closed) return; this.visit.draft = this.editor.getExpandedText(); this.controller.changed(); };
 		this.editor.onSubmit = (text) => {
 			this.editor.setText(this.beforeInput);
 			void this.controller.send(this.key, text);
+		};
+		let editorOffset = 0;
+		this.editorViewport = {
+			invalidate: () => this.editor.invalidate(),
+			render: (width) => {
+				const lines = this.editor.render(width);
+				// Native overlays do not allocate editor height; keep Pi's cursor and input handling intact when space is short.
+				const cursor = lines.findIndex((line) => line.includes(CURSOR_MARKER));
+				if (cursor >= 0) editorOffset = Math.max(0, cursor - this.editorHeight + 1);
+				editorOffset = Math.max(0, Math.min(editorOffset, lines.length - this.editorHeight));
+				return lines.slice(editorOffset, editorOffset + this.editorHeight);
+			},
+			handleMouse: (event) => this.editor.handleMouse({ ...event, y: event.y + editorOffset }),
 		};
 		this.scroll = new ScrollView({ render: (width) => this.renderHistory(width), invalidate() {} }, { follow: "end", scrollbar: "hidden" });
 		this.viewport = { invalidate: () => this.scroll.invalidate(), render: (width) => {
@@ -492,12 +609,18 @@ export class AgentConversation extends Container {
 			this.scroll.updateLayout(lines.length, this.height, () => this.tui.requestRender());
 			if (this.initialPosition) {
 				this.initialPosition = false;
-				const readIndex = this.contentItems.findIndex((item) => item.id === this.visit.readThrough);
-				const unread = this.visit.readThrough === null ? this.task?.history[0] : readIndex >= 0 ? this.contentItems[readIndex + 1] : undefined;
-				this.restoreAnchor = unread ? { id: unread.id, line: 0 } : this.visit.anchor;
+				const ids = this.task?.historyIds ?? [];
+				const readIndex = this.visit.readThrough ? ids.indexOf(this.visit.readThrough) : -1;
+				const unread = this.visit.readThrough === null ? ids[0] : readIndex >= 0 ? ids[readIndex + 1] : undefined;
+				this.restoreAnchor = unread ? { id: unread, line: 0 } : this.visit.anchor;
+				if (!this.restoreAnchor && this.task?.finalId) {
+					this.restoreAnchor = { id: this.task.finalId, line: 0 };
+					// The finished report is the starting point; earlier activity stays available above it.
+					this.visit.readThrough ??= ids[ids.indexOf(this.task.finalId) - 1] ?? null;
+				}
 			}
 			if (this.restoreAnchor) {
-				const line = this.lines.find((line) => line.id === this.restoreAnchor?.id);
+				const line = this.lines.find((line) => line.entryIds.includes(this.restoreAnchor!.id));
 				if (line) this.scroll.scrollTo(line.start + Math.min(this.restoreAnchor.line, Math.max(0, line.end - line.start - 1)), { disableFollow: true });
 				this.restoreAnchor = undefined;
 			}
@@ -505,9 +628,10 @@ export class AgentConversation extends Container {
 			while (visible.length < this.height) visible.push("");
 			if (!this.detail) {
 				this.visit.anchor = this.scroll.isFollowingEnd ? undefined : this.anchor();
-				const history = this.task?.history ?? [];
-				const last = this.lines.findLast((line) => line.end <= this.scroll.scrollTop + this.height && history.some((item) => item.id === line.id));
-				if (last && history.findIndex((item) => item.id === last.id) > history.findIndex((item) => item.id === this.visit.readThrough)) this.visit.readThrough = last.id;
+				const ids = this.task?.historyIds ?? [];
+				const seen = this.lines.filter((line) => line.end > this.scroll.scrollTop && line.end <= this.scroll.scrollTop + this.height).flatMap((line) => line.entryIds);
+				const last = ids.findLastIndex((id) => seen.includes(id));
+				if (last > (this.visit.readThrough ? ids.indexOf(this.visit.readThrough) : -1)) this.visit.readThrough = ids[last];
 				this.visit.readThrough ??= null;
 				if (this.scroll.isFollowingEnd) this.visit.seenActivityAt = this.task?.child.activity?.lastActivityAt ?? Date.now();
 			}
@@ -530,12 +654,16 @@ export class AgentConversation extends Container {
 	}
 	syncDraft(): void { if (!this.closed && this.editor.getExpandedText() !== this.visit.draft) this.editor.setText(this.visit.draft); }
 
+	private assignment(): AgentHistoryItem {
+		const task = this.task!;
+		return { id: "assignment", kind: "notice", title: task.child.identityUnavailable ? "Assignment unavailable" : `Assignment · ${task.child.agent}`, text: task.child.identityUnavailable ? UNAVAILABLE_ASSIGNMENT : task.child.task ?? "The original per-child assignment was not saved for this older run.", timestamp: task.run.startedAt };
+	}
+
 	private items(): AgentHistoryItem[] {
 		const task = this.task;
 		if (!task) return [{ id: "unavailable", kind: "notice", title: "Agent unavailable", text: "The owning session or run is no longer available.", timestamp: 0 }];
 		if (this.detail) return [this.detail];
-		const assignment: AgentHistoryItem = { id: "assignment", kind: "notice", title: task.child.identityUnavailable ? "Assignment unavailable" : `Assignment · ${task.child.agent}`, text: task.child.identityUnavailable ? UNAVAILABLE_ASSIGNMENT : task.child.task ?? "The original per-child assignment was not saved for this older run.", timestamp: task.run.startedAt };
-		const items = [assignment, ...(!task.child.identityUnavailable && task.child.state !== "live" ? [{ id: "process-exit", kind: "notice" as const, title: `Agent: ${task.child.state}`, text: formatAgentProcessExit(task.child.result?.agentProcessExit), timestamp: task.run.updatedAt }] : []), ...task.history];
+		const items = [this.assignment(), ...(!task.child.identityUnavailable && task.child.state !== "live" ? [{ id: "process-exit", kind: "notice" as const, title: `Agent: ${task.child.state}`, text: formatAgentProcessExit(task.child.result?.agentProcessExit), timestamp: task.run.updatedAt }] : []), ...task.history];
 		const humanAction = acceptanceHumanAction(task.child.result?.acceptance);
 		if (humanAction && !task.child.identityUnavailable) items.push({ id: "human-action", kind: "notice", title: "Needs your action — acceptance incomplete", text: humanAction, timestamp: task.run.updatedAt });
 		if (task.unavailable && !task.child.identityUnavailable) items.push({ id: "unavailable", kind: "notice", title: "Conversation unavailable", text: task.unavailable, timestamp: 0 });
@@ -552,63 +680,112 @@ export class AgentConversation extends Container {
 		const lines: string[] = [];
 		for (const item of this.contentItems) {
 			const selected = item.id === this.selectedId && !this.editorFocus;
-			const signature = JSON.stringify([item, selected, Boolean(this.detail)]);
+			const expanded = Boolean(this.detail) || (this.toolExpansion.get(item.id) ?? this.toolsExpanded);
+			const signature = JSON.stringify([item, expanded, Boolean(this.detail)]);
 			let cached = this.components.get(item.id);
 			if (cached?.signature !== signature) {
 				const component = new Container();
-				component.addChild(new Text(this.theme.fg(selected ? "accent" : "muted", `${selected ? "› " : ""}${readableText(item.title)}`), 0, 0));
-				component.addChild(item.kind === "assistant" || item.kind === "user"
-					? new Markdown(item.text, 0, 0, getMarkdownTheme()) : new Text(item.text, 0, 0));
-				if (item.diff) component.addChild(new Text(renderDiff(item.diff), 0, 0));
-				if (this.detail && item.details) component.addChild(new Text(item.details, 0, 0));
-				component.addChild(new Text("", 0, 0));
+				if (item.call || item.result) {
+					const name = item.call?.name ?? item.result!.toolName;
+					const definition = (item.call && this.toolDefinitions.get(name)) || { renderCall: () => new Text(this.theme.fg("toolTitle", this.theme.bold(readableText(item.title))), 0, 0) };
+					const options = { compactView: true, showImages: false };
+					const tool = new ToolExecutionComponent(name, item.call?.id ?? item.result!.toolCallId, item.call?.arguments ?? {}, options, definition, this.tui, this.task?.child.launch?.cwd ?? this.task?.run.cwd ?? process.cwd());
+					// Replay only saved data: execution/args-complete hooks would invent timing or re-read today's file for an edit preview.
+					if (item.result) tool.updateResult(item.result);
+					tool.setExpanded(expanded);
+					component.addChild(tool);
+					// Native edit cards already show their recorded diff.
+					if (this.detail && item.diff && item.call?.name !== "edit") component.addChild(new Text(renderDiff(item.diff), 0, 0));
+					if (!item.result) component.addChild(new Text(this.theme.fg("dim", "Result not recorded · exit unconfirmed"), 1, 0));
+				} else if (item.kind === "assistant" || item.kind === "thinking") {
+					// Live text and canonical reports are display-only, never saved as synthetic model messages.
+					const message: AssistantMessage = item.assistant ?? { role: "assistant", content: [{ type: "text", text: item.text }], timestamp: item.timestamp,
+						api: "", provider: "", model: "", stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+					component.addChild(new AssistantMessageComponent(this.detail ? message : { ...message, content: message.content.map((part) => part.type === "text" ? { ...part, text: stripAcceptanceReport(readableText(part.text)) } : part) }, !this.detail, getMarkdownTheme(), "Thinking · open details to read"));
+				} else if (item.kind === "user") {
+					if (item.id.startsWith("outgoing:") || item.messageId) component.addChild(new Text(this.theme.fg("muted", item.title), 0, 0));
+					component.addChild(new UserMessageComponent(item.text, getMarkdownTheme(), 1));
+				} else {
+					component.addChild(new Text(this.theme.fg("muted", readableText(item.title)), 0, 0));
+					component.addChild(new Text(item.text, 0, 0));
+					if (item.diff) component.addChild(new Text(renderDiff(item.diff), 0, 0));
+				}
+				if (this.detail && item.details) component.addChild(new Text(item.details, 0, 1));
+				component.addChild(new Spacer(1));
 				cached = { signature, component }; this.components.set(item.id, cached);
 			}
 			const start = lines.length;
+			if (selected) lines.push(this.theme.fg("accent", short(`› ${item.title}`, width)));
+			const contentStart = lines.length;
 			lines.push(...cached.component.render(width));
-			this.lines.push({ id: item.id, start, end: lines.length });
+			this.lines.push({ id: item.id, entryIds: item.entryIds ?? [item.id], start, contentStart, end: lines.length });
 		}
 		return lines;
 	}
 
 	render(width: number): string[] {
-		const task = this.task;
-		this.clear();
-		this.addChild(new Text(this.theme.bold(truncateToWidth(`Agents › ${task?.label ?? "unavailable"}${this.detail ? " › details" : ""}`, width)), 0, 0));
-		this.addChild(new Text(this.theme.fg("dim", truncateToWidth(`${task?.unread && !this.scroll.isFollowingEnd ? "New activity · Alt+L latest · " : ""}${task ? activity(task) : "Unavailable"}`, width)), 0, 0));
-		if (this.menu) {
-			this.addChild(this.menu);
-			this.addChild(new Text("Enter Choose · Esc Back to conversation", 0, 0));
-			return super.render(width);
-		}
-		const bottom = new Container();
-		if (!this.detail) {
-			if (this.visit.notice) bottom.addChild(new Text(this.theme.fg("warning", short(this.visit.notice, width)), 0, 0));
-			if (this.visit.quote) bottom.addChild(new Text(this.theme.fg("dim", truncateToWidth(`Quote · Alt+Q remove: ${this.visit.quote.title}`, width)), 0, 0));
-			bottom.addChild(new Text(this.theme.fg("accent", truncateToWidth(`${task?.question ? "Answer" : "Message"} ${task?.label ?? "agent"}${this.controller.isBusy(this.key) ? " · sending" : ""}`, width)), 0, 0));
-			bottom.addChild(this.editor);
-		}
+		const task = this.task, innerWidth = Math.max(1, width - 2);
+		const height = this.controller.availableHeight(this.tui), compact = height < 16;
 		const terminal = task?.child.state !== "live" && !task?.question;
 		const actionHint = task?.child.identityUnavailable ? "Assignment unavailable · draft kept" : task?.child.activity?.status === "pending" ? "Waiting to start · draft kept" : terminal ? width < 60 ? "Alt+C Continue" : "Alt+C Continue with message" : "Enter Send";
-		bottom.addChild(new Text(this.theme.fg("dim", width < 60 ? `F2 Actions · Esc Back\n${actionHint} · Tab Read/write` : this.detail ? "Alt+R Reply · F2 Actions · Esc Back" : `${actionHint} · F2 Actions · Tab Read/write · Esc Back`), 0, 0));
-		const fixedHeight = this.children.reduce((total, child) => total + child.render(width).length, 0) + bottom.render(width).length;
-		this.height = Math.max(1, this.tui.terminal.rows - fixedHeight - 1);
-		this.addChild(this.viewport); this.addChild(bottom);
+		const controls = this.menu ? compact ? "Enter · Esc" : "Enter Choose · Esc Back to conversation" : compact ? "F2 · Tab · Esc" : this.detail ? "Alt+R Reply · F2 Actions · Esc Back" : width < 60 ? `F2 Actions · Esc Back\n${actionHint} · Tab Read/write` : `${actionHint} · F2 Actions · Tab Read/write · Esc Back`;
+		const footer = new Text(this.menu ? controls : this.theme.fg("dim", controls), 0, 0);
+		// Reserve title, controls and required content before spending rows on status or borders.
+		const contentRows = this.menu ? this.menu.render(innerWidth).length : 1 + (this.detail ? 0 : 1 + Number(!compact) + Number(Boolean(this.visit.notice)) + Number(Boolean(this.visit.quote)));
+		const requiredRows = 1 + footer.render(innerWidth).length + contentRows;
+		const showStatus = height > requiredRows;
+		const framed = height >= requiredRows + Number(showStatus) + 2;
+		this.clear();
+		const body = new Box(1, 0, (text) => this.theme.bg("customMessageBg", text));
+		const header = new Container();
+		header.addChild(new Text(this.theme.fg("accent", this.theme.bold(truncateToWidth(`Agents › ${task?.label ?? "unavailable"}${this.detail ? " › details" : ""}`, innerWidth))), 0, 0));
+		if (showStatus) header.addChild(new Text(this.theme.fg("dim", truncateToWidth(`${task?.unread && !this.scroll.isFollowingEnd ? "New activity · Alt+L latest · " : ""}${task ? `${task.child.agent} · ${activity(task)}` : "Unavailable"}`, innerWidth)), 0, 0));
+		body.addChild(header);
+		if (this.menu) {
+			body.addChild(this.menu);
+			body.addChild(footer);
+		} else {
+			const bottom = new Container();
+			if (!this.detail) {
+				if (this.visit.notice) bottom.addChild(new Text(this.theme.fg("warning", short(this.visit.notice, innerWidth)), 0, 0));
+				if (this.visit.quote) bottom.addChild(new Text(this.theme.fg("dim", truncateToWidth(`Quote · Alt+Q remove: ${this.visit.quote.title}`, innerWidth)), 0, 0));
+				if (!compact) bottom.addChild(new Text(this.theme.fg("accent", truncateToWidth(`${task?.question ? "Answer" : "Message"} ${task?.label ?? "agent"}${this.controller.isBusy(this.key) ? " · sending" : ""}`, innerWidth)), 0, 0));
+				bottom.addChild(this.editorViewport);
+			}
+			bottom.addChild(footer);
+			const space = height - (framed ? 2 : 0) - header.render(innerWidth).length;
+			this.editorHeight = Infinity;
+			const bottomHeight = bottom.render(innerWidth).length;
+			if (!this.detail) this.editorHeight = Math.max(1, space - (bottomHeight - this.editor.render(innerWidth).length) - 1);
+			this.height = Math.max(1, space - bottom.render(innerWidth).length);
+			body.addChild(this.viewport); body.addChild(bottom);
+		}
+		if (framed) this.addChild(new DynamicBorder((text) => this.theme.fg("borderAccent", text)));
+		this.addChild(body);
+		if (framed) this.addChild(new DynamicBorder((text) => this.theme.fg("borderAccent", text)));
 		this.focused = this.hasFocus;
 		return super.render(width);
 	}
 
+	invalidate(): void { this.components.clear(); super.invalidate(); }
+
 	handleMouse(event: TuiMouseEvent) {
 		const result = super.handleMouse(event);
-		if (result?.target.component === this.editor) { this.editorFocus = true; this.focused = this.hasFocus; }
+		if (result?.target.component === this.editorViewport) { this.editorFocus = true; this.focused = this.hasFocus; }
 		return result;
 	}
 
 	private historyMouse(event: TuiMouseEvent) {
 		if (event.type === "wheel") { this.scroll.scrollBy(event.wheelDelta ?? 0); this.restoreAnchor = this.anchor(); return { handled: true }; }
 		if (event.type !== "click" || event.button !== "left") return;
+		const line = this.lines.find((line) => line.start <= event.y + this.scroll.scrollTop && line.end > event.y + this.scroll.scrollTop);
+		if (!line) return;
+		this.restoreAnchor = this.anchor();
 		this.editorFocus = false;
-		this.selectedId = this.lines.find((line) => line.start <= event.y + this.scroll.scrollTop && line.end > event.y + this.scroll.scrollTop)?.id;
+		this.selectedId = line.id;
+		const item = this.selected();
+		if ((item?.call || item?.result) && !this.detail) this.toolExpansion.set(line.id, !(this.toolExpansion.get(line.id) ?? this.toolsExpanded));
+		else this.components.get(line.id)?.component.handleMouse?.({ ...event, y: event.y + this.scroll.scrollTop - line.contentStart, height: line.end - line.contentStart });
 		return { handled: true, focus: true };
 	}
 
@@ -631,7 +808,7 @@ export class AgentConversation extends Container {
 	private reply(): void {
 		const item = this.selected();
 		if (!item) return;
-		this.visit.quote = { title: item.title, text: [item.text, item.diff, item.details].filter(Boolean).join("\n\n") };
+		this.visit.quote = { title: item.title, text: (item.call || item.result ? [item.diff, item.details ?? item.text] : [item.text, item.diff, item.details]).filter(Boolean).join("\n\n") };
 		this.detail = undefined; this.menu = undefined; this.editorFocus = true;
 		this.restoreAnchor = this.conversationAnchor; this.controller.changed();
 	}
@@ -640,6 +817,8 @@ export class AgentConversation extends Container {
 		const choices = [
 			{ value: "reply", label: "Reply to selected message / tool / change" },
 			{ value: "details", label: "Full details / diff" },
+			{ value: "expand", label: this.toolsExpanded ? "Collapse tool output" : "Expand tool output" },
+			{ value: "assignment", label: "Full original assignment" },
 			{ value: "changes", label: "Inspect working tree changes" },
 			{ value: "latest", label: "Jump to latest activity" },
 			{ value: "pin", label: this.controller.pinned === this.key ? "Unpin this agent" : "Keep this agent visible" },
@@ -647,13 +826,18 @@ export class AgentConversation extends Container {
 			...(task?.child.identityUnavailable || task?.child.activity?.status === "pending" ? [] : task?.child.state === "live" || task?.question ? [{ value: "stop", label: "Stop this agent only" }] : [{ value: "continue", label: "Continue with this message" }]),
 			{ value: "picker", label: "Your other agents" }, { value: "peers", label: "Other connected sessions" },
 		];
-		this.menu = new SelectList(choices, Math.max(1, this.tui.terminal.rows - 5), getSelectListTheme());
+		this.menu = new SelectList(choices, Math.max(1, this.controller.availableHeight(this.tui) - 7), getSelectListTheme());
 		this.menu.onSelect = (item) => { this.menu = undefined; this.act(item.value); };
 		this.menu.onCancel = () => { this.menu = undefined; };
 	}
 	private act(action: string): void {
 		if (action === "reply") this.reply();
 		else if (action === "details") { const item = this.selected(); if (item) this.inspect(item); }
+		else if (action === "assignment" && this.task) this.inspect(this.assignment());
+		else if (action === "expand") {
+			if (!this.scroll.isFollowingEnd) this.restoreAnchor = this.anchor();
+			this.toolsExpanded = !this.toolsExpanded; this.toolExpansion.clear();
+		}
 		else if (action === "changes" && !this.pendingDetail) {
 			this.pendingDetail = true;
 			void this.controller.changes(this.key).then((item) => { if (!this.closed && item) { this.inspect(item); this.tui.requestRender(); } })
@@ -669,11 +853,13 @@ export class AgentConversation extends Container {
 
 	handleInput(data: string): void {
 		if (this.closed) return;
+		if (matchesKey(data, this.controller.shortcut)) { this.finish(); return; }
 		if (this.menu) { this.menu.handleInput(data); this.tui.requestRender(); return; }
 		if (matchesKey(data, "escape")) {
 			if (this.detail) { this.detail = undefined; this.editorFocus = true; this.restoreAnchor = this.conversationAnchor; if (!this.restoreAnchor) this.scroll.scrollToEnd(); }
 			else this.finish();
-		} else if (matchesKey(data, "f2")) this.actions();
+		} else if (this.keys?.matches(data, "app.tools.expand") ?? matchesKey(data, "ctrl+o")) this.act("expand");
+		else if (matchesKey(data, "f2")) this.actions();
 		else if (matchesKey(data, "alt+r")) this.act("reply");
 		else if (matchesKey(data, "alt+d") && (!this.editorFocus || this.detail)) this.act("details");
 		else if (matchesKey(data, "alt+g")) this.act("changes");

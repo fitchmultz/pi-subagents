@@ -6,6 +6,8 @@
 
 Full durable-runtime support requires a corrected native [`fitchmultz/pi` build containing `952c27cd628ac742653f1fe4093685bdbe3a8444`](https://github.com/fitchmultz/pi/commit/952c27cd628ac742653f1fe4093685bdbe3a8444) ([native PR #16](https://github.com/fitchmultz/pi/pull/16)). It fixes prompt-admission ownership and settlement, including busy user startup, and includes the earlier custom steering/follow-up queue reporting, code-update restart notice, and `--session-cwd` support. Stock Pi 0.84.x and published 0.85.1 lack these contracts. The corrected fork also reports 0.85.1, so `pi --version` alone does not prove support. This package does not install the corrected native build.
 
+Compact tool cards in Agents also require [native compact-view support](https://github.com/fitchmultz/pi/commit/17cb62faade465700692b0d474ec5652e8df3aed).
+
 With that native build available, install from GitHub:
 
 ```bash
@@ -16,14 +18,16 @@ This package is not published to npm and does not provide an `npx` installer. Us
 
 To restart the bundled broker too, close every Pi session using the same agent directory and wait at least five seconds before reopening Pi.
 
-Local checkout installs remain available for development:
+To load a local checkout into Pi, build it as a runtime-only package:
 
 ```bash
-npm install   # builds dist/, which the pi manifest loads
+npm install --omit=dev   # prepare builds dist/ and removes development dependencies
 pi install /absolute/path/to/pi-subagents
 ```
 
-Local path installs do not run npm for you, and the manifest points at compiled `dist/` output, so run `npm install` (or `npm run build` after source edits) before installing or the extensions will not load.
+Local path registration does not run npm for you. Run `npm install --omit=dev` before loading the checkout and again after source edits; the existing prepare lifecycle obtains build dependencies, builds `dist/`, and leaves only runtime dependencies. This also works after a normal development install. A bare `npm run build` is not the runtime rebuild recipe because TypeScript is removed afterward.
+
+Use the normal development workflow below for editing and validation, then rerun `npm install --omit=dev` before loading that checkout into Pi. Leaving the development Pi packages present can load their UI instead of the running Pi's UI. The runtime-only recipe avoids that mismatch; it does not repair Pi's loader when development packages remain installed.
 
 Supported platforms: **macOS and Linux**. Termux on Android is unverified; Windows is not supported.
 
@@ -108,9 +112,15 @@ node scripts/run-tests.mjs integration --timeout-ms 600000
 
 ## Try this first
 
-The quiet **Agents [Alt+M]** strip above the editor shows your agents by task. Press **Alt+M** or run **`/agents`** to open a live conversation; one child opens directly, while several use a task picker. Your own children come first across working directories and worktrees. **Other connected sessions** keeps ordinary peer messaging available.
+The **Agents** area above the editor shows active tasks on separate colored rows, with a running count and distinct waiting and needs-action states. Task names, states and unread/replied badges take priority over activity previews; activity detail remains in the conversation and selected picker preview. Queued work does not count as running. The whole area disappears when no agents are active, even with unread results or a saved pin; completed conversations remain available through **Option+Shift+M** (**Alt+Shift+M**) or **`/agents`**. One child opens directly, while several use a task picker. Your own children come first across working directories and worktrees. **Other connected sessions** keeps ordinary peer messaging available.
 
-Inside an agent conversation, use the native multiline editor to message that child directly. **Tab** switches between writing and selecting history; **Page Up/Down** scroll without following new output. **F2** lists all actions, including contextual Reply, full tool details/diff, working-tree changes, Keep visible, Stop, and Continue. **Esc** returns to the parent without interrupting either agent or changing the parent draft. Child drafts, unread position and one optional pin survive returning to the same saved parent. In native fullscreen mode, clicking a task opens it; regular terminals use the keyboard.
+The shortcut also closes the open Agents view. Change `shortcut` in the existing [Intercom config](docs/intercom.md#config); the entrance hint follows that setting.
+
+The framed picker uses the available terminal width and shows each agent's role and state beside its task. Type to filter by task, agent, or any part of the original assignment. When space allows, the selected assignment is previewed below the list. Open its conversation and choose **F2 → Full original assignment** to read it without shortening it.
+
+Finished conversations open at the beginning of their readable saved report, not the structured submission payload. Existing native answers are not repeated. Messages and grouped tool activity use Pi's native presentation; tool output expands through Pi's configured expand-tools key or a fullscreen click. **Full details / diff** shows recorded diffs as readable lines before raw arguments, results and acceptance data; contextual replies carry the selected evidence. Viewing a saved edit shows its recorded diff, not a new comparison against today's file.
+
+Inside an agent conversation, use the native multiline editor to message that child directly. **Tab** switches between writing and selecting history; **Page Up/Down** scroll without following new output. **F2** lists all actions, including contextual Reply, full tool details/diff, working-tree changes, Keep visible, Stop, and Continue. **Esc** returns to the parent without interrupting either agent or changing the parent draft. Child drafts, unread position and one optional pin survive returning to the same saved parent. In native fullscreen mode, clicking a task opens it; clicking the same task or the **Agents** entrance again closes the view. Regular terminals use the keyboard.
 
 | Agent-view shortcut | Action |
 | --- | --- |

@@ -3,7 +3,7 @@
 Direct 1:1 messaging between pi sessions on the same machine. Send context, findings, or requests from one session to another — whether you're driving the conversation or letting agents coordinate.
 
 ```text
-Your agents: Alt+M or /agents. Other peers: /intercom [all]. Quiet current state: /intercom topics.
+Your agents: Option+Shift+M (Alt+Shift+M) or /agents. Other peers: /intercom [all]. Quiet current state: /intercom topics.
 ```
 
 ## Why
@@ -20,7 +20,7 @@ Intercom is bundled with `pi-subagents`: delegated child agents get a child-only
 
 ## In One Minute
 
-Each Pi session with the bundled intercom extension loaded connects to a tiny local broker over a local IPC transport. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small peer overlay (`/intercom`); Alt+M opens owned agent conversations when `pi-subagents` is loaded. Messages that do not request a reply default to steer: they wake idle recipients and reach active recipients after the current tool call. Important steers also release an attached foreground subagent wait without stopping its child. Explicit queue waits behind active work, and passive delivery is a discouraged opt-in for human-visible breadcrumbs only. Quiet topic state uses native custom entries outside model context, not passive messages.
+Each Pi session with the bundled intercom extension loaded connects to a tiny local broker over a local IPC transport. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small peer overlay (`/intercom`); Option+Shift+M (Alt+Shift+M) toggles owned agent conversations when `pi-subagents` is loaded. Messages that do not request a reply default to steer: they wake idle recipients and reach active recipients after the current tool call. Important steers also release an attached foreground subagent wait without stopping its child. Explicit queue waits behind active work, and passive delivery is a discouraged opt-in for human-visible breadcrumbs only. Quiet topic state uses native custom entries outside model context, not passive messages.
 
 ## Install
 
@@ -28,7 +28,7 @@ Each Pi session with the bundled intercom extension loaded connects to a tiny lo
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-That one package includes both extension entries and both skills. For local development, build the checkout before `pi install /absolute/path/to/pi-subagents`. Before rebuilding or updating an in-use Pi checkout or extension, checkpoint work and fully quit every Pi session using that installation. Update from a separate terminal, then restart Pi and resume the same saved parent session to retain ownership and pending coordination. `/reload` refreshes supported settings, skills, and prompts but is not a reliable code-update boundary.
+That one package includes both extension entries and both skills. For a local checkout, follow the [runtime-only install and rebuild recipe](../README.md#installation): run `npm install --omit=dev` before registering or loading it, including after development validation. Before rebuilding or updating an in-use Pi checkout or extension, checkpoint work and fully quit every Pi session using that installation. Update from a separate terminal, then restart Pi and resume the same saved parent session to retain ownership and pending coordination. `/reload` refreshes supported settings, skills, and prompts but is not a reliable code-update boundary.
 
 To restart the shared broker too, close every Pi session using the same agent directory and wait at least five seconds before reopening Pi.
 
@@ -69,7 +69,7 @@ If a session is unnamed, pi-intercom now exposes a runtime-only fallback alias l
 
 ### From the Keyboard
 
-With `pi-subagents`, **Alt+M** opens your task-labelled agent conversations first. See [the agent-view controls](../README.md#try-this-first) for direct human messaging, context replies, saved drafts, unread history, pinning, selected-child stop and explicit continuation. The plain `/intercom` command remains the current-project peer list. Type `/intercom all` to include sessions in other projects:
+With `pi-subagents`, **Option+Shift+M** (**Alt+Shift+M**) opens your task-labelled agent conversations first; press it again to close. The shortcut is configurable below. In native fullscreen mode, clicking the **Agents** entrance again also closes the open view. See [the agent-view controls](../README.md#try-this-first) for direct human messaging, context replies, saved drafts, unread history, pinning, selected-child stop and explicit continuation. The plain `/intercom` command remains the current-project peer list. Type `/intercom all` to include sessions in other projects:
 
 1. **Select a session** — Use arrow keys to pick a target session
 2. **Compose message** — Write your message in the compose overlay. Pasted multiline handoffs are preserved.
@@ -136,7 +136,7 @@ intercom({
 
 ### Receiving Messages
 
-With native [compact view](../README.md#compact-view) enabled, ordinary incoming messages use one content row plus Pi's blank line; the configured expansion key reveals the full message and attachments. Questions, reply guidance, and needs-attention notices stay prominent. The mode defaults off and does not change delivery or model-visible content.
+With native [compact view](../README.md#compact-view) enabled, ordinary incoming messages use one content row plus Pi's blank line. In native fullscreen mode, click a collapsed row to reveal its full message and attachments; click it again to collapse. Ctrl+O (or the configured tool-expansion key) still expands all messages. Questions, reply guidance, and needs-attention notices stay prominent. The mode defaults off and does not change delivery or model-visible content.
 
 When a message arrives, it appears inline in your chat with the sender's info. The cwd label is the sender's **Native session cwd**, not proof of a command's physical directory. Messages sent with `ask` include a reply hint:
 
@@ -411,7 +411,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 | Key | Action |
 |-----|--------|
-| Alt+M | Open session list overlay |
+| Option+Shift+M (Alt+Shift+M), configurable | Toggle owned agent conversations; open peer messaging when the agent view is unavailable |
 | ↑/↓ | Navigate session list |
 | Tab | Toggle Send / Request Reply mode in the compose overlay |
 | Enter | Select session / Send or ask |
@@ -423,6 +423,7 @@ Create `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/config.json`:
 
 ```json
 {
+  "shortcut": "alt+shift+m",
   "confirmSend": false,
   "replyHint": true,
   "askTimeoutMs": 120000,
@@ -434,6 +435,7 @@ Create `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/config.json`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
+| `shortcut` | `"alt+shift+m"` | Native Pi key identifier for the Agents/Intercom shortcut, for example `"ctrl+shift+k"`. The Agents entrance hint uses the same setting. |
 | `brokerCommand` | current Node executable | Command used to start the local broker process when you override the default |
 | `brokerArgs` | `[]` | Arguments passed to `brokerCommand` before the broker script path. The built-in default runs the bundled TypeScript broker directly with Node. |
 | `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
@@ -442,6 +444,8 @@ Create `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/config.json`:
 | `sendTimeoutMs` | `8000` | Broker delivery-ack timeout for sends/asks |
 | `listTimeoutMs` | `5000` | Session-list response timeout |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
+
+The default shortcut requires a terminal that reports combined modifiers through Kitty keyboard protocol or xterm modifyOtherKeys. Pi negotiates these automatically on supported terminals. `/agents` is also available. Restart Pi after changing the shortcut.
 
 Use `pi config` to enable or disable the bundled intercom extension. The former `config.json` `enabled` key is no longer read; in particular, an existing `"enabled": false` does not disable intercom after this migration.
 

@@ -1,8 +1,12 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { Key, type KeyId } from "@earendil-works/pi-tui";
 import { getPiAgentDir } from "./agent-dir.ts";
 
 export interface IntercomConfig {
+  /** Toggle owned agents, or open peer messaging when the agent view is unavailable. */
+  shortcut: KeyId;
+
   /** Broker command used to spawn the broker process (for example, Node or Bun) */
   brokerCommand: string;
 
@@ -33,6 +37,7 @@ function getConfigPath(): string {
 }
 
 const defaults: IntercomConfig = {
+  shortcut: Key.altShift("m"),
   brokerCommand: process.execPath,
   brokerArgs: [],
   confirmSend: false,
@@ -41,6 +46,14 @@ const defaults: IntercomConfig = {
   sendTimeoutMs: 8000,
   listTimeoutMs: 5000,
 };
+
+const namedKeys = new Set<string>(Object.values(Key).filter((key) => typeof key === "string"));
+function isShortcut(value: string): value is KeyId {
+  const prefix = value.match(/^(?:(?:ctrl|shift|alt|super)\+)+/)?.[0] ?? "";
+  const modifiers = prefix.split("+").filter(Boolean);
+  const key = value.slice(prefix.length);
+  return new Set(modifiers).size === modifiers.length && (namedKeys.has(key) || /^[a-z0-9]$/.test(key));
+}
 
 export function loadConfig(): IntercomConfig {
   const configPath = getConfigPath();
@@ -57,6 +70,13 @@ export function loadConfig(): IntercomConfig {
 
     const parsedConfig = parsed as Record<string, unknown>;
     const config: IntercomConfig = { ...defaults };
+
+    if (Object.hasOwn(parsedConfig, "shortcut")) {
+      if (typeof parsedConfig.shortcut !== "string") throw new Error('"shortcut" must be a native key identifier');
+      const shortcut = parsedConfig.shortcut.trim();
+      if (!isShortcut(shortcut)) throw new Error('"shortcut" must be a native key identifier, for example alt+shift+m');
+      config.shortcut = shortcut;
+    }
 
     if (Object.hasOwn(parsedConfig, "brokerCommand")) {
       if (typeof parsedConfig.brokerCommand !== "string") {
