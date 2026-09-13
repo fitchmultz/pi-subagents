@@ -9,6 +9,7 @@ import { ASYNC_DIR } from "../../src/shared/types.ts";
 const SLASH_RESULT_TYPE = "subagent-slash-result";
 const SLASH_SUBAGENT_REQUEST_EVENT = "subagent:slash:request";
 const SLASH_SUBAGENT_STARTED_EVENT = "subagent:slash:started";
+const SLASH_SUBAGENT_UPDATE_EVENT = "subagent:slash:update";
 const SLASH_SUBAGENT_RESPONSE_EVENT = "subagent:slash:response";
 
 interface EventBus {
@@ -266,6 +267,7 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
 			const requestId = (data as { requestId: string }).requestId;
 			events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
+			events.emit(SLASH_SUBAGENT_UPDATE_EVENT, { requestId, toolCount: 2, currentTool: "read" });
 			events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
 				requestId,
 				result: {
@@ -304,7 +306,7 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		assert.equal((sent[1] as { display?: boolean }).display, false);
 		assert.match((sent[1] as { content?: string }).content ?? "", /Scout finished/);
 		assert.match((sent[1] as { content?: string }).content ?? "", /Child session exports\n\n- `\/tmp\/child-session\.jsonl`/);
-		assert.deepEqual(log, ["send:visible", "status:running...", "send:hidden", "status:clear"]);
+		assert.deepEqual(log, ["send:visible", "status:running...", "status:2 tools read", "send:hidden", "status:clear"]);
 
 		const visibleDetails = resolveSlashMessageDetails!((sent[0] as { details?: unknown }).details);
 		assert.ok(visibleDetails);

@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ScrollView, Text, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { Container, ScrollView, Text, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { actionHints } from "../tui/action-hints.ts";
 import { isTopicSubscription, isTopicUpdate, type Message, type SessionInfo, type TopicSubscription, type TopicUpdate } from "./types.ts";
 
 interface TopicRecord { from: Pick<SessionInfo, "id" | "name">; update: TopicUpdate; connected: boolean; notifiedRevision?: number }
@@ -110,12 +111,23 @@ export class IntercomTopics {
 			const scroll = new ScrollView(text, { follow: "none", scrollbar: "hidden" });
 			const render = () => tui.requestRender();
 			this.render = render;
-			return {
+			let closed = false;
+			const act = (delta?: number) => { if (closed) return; if (delta === undefined) done(undefined); else scroll.scrollBy(delta); tui.requestRender(); };
+			const view = new Container();
+			view.addChild({
 				invalidate() { scroll.invalidate(); },
-				dispose: () => { if (this.render === render) this.render = undefined; },
-				render: (width) => { text.setText([notice, this.inspect()].filter(Boolean).join("\n\n")); const lines = scroll.render(width); const height = Math.max(1, tui.terminal.rows - 2); scroll.updateLayout(lines.length, height, () => tui.requestRender()); return [...lines.slice(scroll.scrollTop, scroll.scrollTop + height), truncateToWidth("↑/↓ PgUp/PgDn Read · Esc Back", width)]; },
-				handleInput(data) { if (matchesKey(data, "escape")) done(undefined); else { scroll.scrollBy(matchesKey(data, "pageUp") ? -scroll.viewportHeight : matchesKey(data, "pageDown") ? scroll.viewportHeight : matchesKey(data, "up") ? -1 : matchesKey(data, "down") ? 1 : 0); tui.requestRender(); } },
-				handleMouse(event) { if (event.type === "wheel") { scroll.scrollBy(event.wheelDelta ?? 0); return { handled: true }; } },
+				render: (width) => { text.setText([notice, this.inspect()].filter(Boolean).join("\n\n")); const lines = scroll.render(width); const height = Math.max(1, tui.terminal.rows - 2); scroll.updateLayout(lines.length, height, render); return lines.slice(scroll.scrollTop, scroll.scrollTop + height); },
+			});
+			view.addChild(actionHints([
+				{ text: "↑", run: () => act(-1) }, "/", { text: "↓", run: () => act(1) }, " ", { text: "PgUp", run: () => act(-scroll.viewportHeight) }, "/",
+				{ text: "PgDn Read", run: () => act(scroll.viewportHeight) }, " · ", { text: "Esc Back", run: () => act() },
+			], undefined, "..."));
+			return {
+				invalidate() { view.invalidate(); },
+				dispose: () => { closed = true; if (this.render === render) this.render = undefined; },
+				render: (width) => view.render(width),
+				handleInput(data) { act(matchesKey(data, "escape") ? undefined : matchesKey(data, "pageUp") ? -scroll.viewportHeight : matchesKey(data, "pageDown") ? scroll.viewportHeight : matchesKey(data, "up") ? -1 : matchesKey(data, "down") ? 1 : 0); },
+				handleMouse(event) { if (event.type === "wheel") { act(event.wheelDelta ?? 0); return { handled: true }; } return view.handleMouse(event); },
 			};
 		}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" } });
 	}

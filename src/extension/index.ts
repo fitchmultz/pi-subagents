@@ -26,6 +26,7 @@ import { cleanupOldChainDirs } from "../shared/settings.ts";
 import { cleanupOldRunStorage, ensureSafeTempPath, ensureTempRoot } from "../shared/temp-root.ts";
 import { renderSubagentResult } from "../tui/render.ts";
 import { AgentViewController } from "../tui/agent-view.ts";
+import { withMouseExpansion } from "../tui/action-hints.ts";
 import { AgentRunsParams, DelegateParams, SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
@@ -311,13 +312,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	agentView = new AgentViewController(pi, state, (params, ctx) => executor.execute(randomUUID(), params, undefined, undefined, ctx));
 	state.onRunsChanged = () => agentView?.refresh(true);
 
-	pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
+	pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, withMouseExpansion((message, options, theme) => {
 		const details = resolveSlashMessageDetails(message.details);
 		if (!details) return undefined;
 		return createSlashResultComponent(details, options, theme);
-	});
+	}));
 
-	pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", (message, options, theme) => {
+	pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", withMouseExpansion((message, options, theme) => {
 		const content = typeof message.content === "string" ? message.content : "";
 		const details = (message.details as SubagentNotifyDetails | undefined) ?? parseSubagentNotifyContent(content);
 		const compact = "compactView" in options && options.compactView === true && !options.expanded;
@@ -351,8 +352,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		for (const line of previewLines.length > 0 ? previewLines : ["(no output)"]) {
 			text += `\n  ${theme.fg("dim", `⎿  ${line}`)}`;
 		}
-		if (!options.expanded) {
-			text += `\n  ${theme.fg("dim", "Ctrl+O full notification")}`;
+		const expandKey = keyText("app.tools.expand");
+		if (!options.expanded && expandKey) {
+			text += `\n  ${theme.fg("dim", `${expandKey} full notification`)}`;
 		}
 		if (details.sessionLabel && details.sessionValue) {
 			text += `\n  ${theme.fg("muted", `${details.sessionLabel}: ${shortenPath(details.sessionValue)}`)}`;
@@ -362,7 +364,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			render: (width) => text.split("\n").map((line) => truncateToWidth(line, width)),
 			invalidate() {},
 		};
-	});
+	}));
 
 	pi.registerMessageRenderer<SubagentControlMessageDetails>(SUBAGENT_CONTROL_MESSAGE_TYPE, (message, _options, theme) => {
 		const details = message.details as SubagentControlMessageDetails | undefined;

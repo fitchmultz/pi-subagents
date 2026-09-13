@@ -2,8 +2,9 @@ import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { createRequire } from "node:module";
-import { createEventBus, createExtensionRuntime, CustomMessageComponent, initTheme, ToolExecutionComponent, type MessageRenderer } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { createEventBus, createExtensionRuntime, CustomEditor, CustomMessageComponent, getSelectListTheme, initTheme, ToolExecutionComponent, type MessageRenderer } from "@earendil-works/pi-coding-agent";
+import { TuiAltScreen, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { createTestTerminal } from "../support/terminal.ts";
 
 import registerSubagentExtension from "../../src/extension/index.ts";
 import { formatAsyncStartedMessage } from "../../src/runs/background/async-execution.ts";
@@ -25,10 +26,10 @@ const { KeybindingsManager } = await import(new URL("./core/keybindings.js", imp
 const { setKeybindings } = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
 setKeybindings(new KeybindingsManager());
 
-function nativeTool(name: string, result: SubagentExecutionResult, args: Record<string, unknown> = { agent: "worker" }): ToolExecutionComponent {
+function nativeTool(name: string, result: SubagentExecutionResult, args: Record<string, unknown> = { agent: "worker" }, tui?: TUI): ToolExecutionComponent {
 	const tool = extension.tools.get(name)?.definition;
 	assert.ok(tool, `${name} must use its registered renderer`);
-	const component = new ToolExecutionComponent(name, "render-test", args, {}, tool, { requestRender() {} } as never, process.cwd());
+	const component = new ToolExecutionComponent(name, "render-test", args, {}, tool, tui ?? { requestRender() {} } as never, process.cwd());
 	component.updateResult({ ...result, isError: result.isError ?? false });
 	return component;
 }
@@ -76,6 +77,74 @@ function result(agent: string, output: string) {
 		finalOutput: output,
 	};
 }
+
+function interactiveCard(t, create: (tui: TUI) => ToolExecutionComponent | CustomMessageComponent) {
+	const keys = new KeybindingsManager({ "app.tools.expand": "alt+o" }); setKeybindings(keys);
+	const terminal = createTestTerminal(120, 100), tui = new TuiAltScreen(terminal);
+	const card = create(tui), editor = new CustomEditor(tui, { borderColor: (text) => text, selectList: getSelectListTheme() }, keys);
+	editor.setText("Unsent parent draft");
+	let expanded = false;
+	editor.onAction("app.tools.expand", () => { expanded = !expanded; card.setExpanded(expanded); tui.requestRender(); });
+	tui.addChild(card); tui.addChild(editor); tui.setFocus(editor); tui.start(); tui.renderNow();
+	t.after(() => { tui.stop(); setKeybindings(new KeybindingsManager()); });
+	return {
+		card, tui, terminal, keys, editor,
+		text: () => renderedText(card, 120),
+		click(text: string) {
+			const lines = card.render(120).map(stripVTControlCharacters), y = lines.findIndex((line) => line.toLowerCase().includes(text.toLowerCase()));
+			assert.ok(y >= 0 && y < terminal.rows, `visible native card hint ${text}:\n${lines.join("\n")}`);
+			const end = lines[y].toLowerCase().indexOf(text.toLowerCase()) + text.length;
+			terminal.click(visibleWidth(lines[y].slice(0, end)) - 1, y); tui.renderNow();
+		},
+	};
+}
+
+test("native result expansion hints use configured keys, native clicks and no unbound shortcut", async (t) => {
+	const live = (agent: string) => ({ ...result(agent, ""), progress: { index: 0, agent, task: `${agent} task`, status: "running" as const, currentTool: "read", currentToolArgs: "saved.ts", recentTools: [], recentOutput: ["NATIVE-DETAIL-END"], toolCount: 1, tokens: 0, durationMs: 10 } });
+	const cases: Array<[string, SubagentExecutionResult, string]> = [
+		["live single", { content: [], details: { mode: "single", results: [live("worker")] } }, "NATIVE-DETAIL-END"],
+		["live parallel", { content: [], details: { mode: "parallel", results: [live("worker"), live("reviewer")] } }, "NATIVE-DETAIL-END"],
+		["completed group", { content: [], details: { mode: "parallel", results: Array.from({ length: 8 }, (_, i) => result(`worker-${i}`, "NATIVE-DETAIL-END")) } }, "NATIVE-DETAIL-END"],
+		["multiline management", { content: [{ type: "text", text: Array.from({ length: 14 }, (_, i) => `line ${i + 1}`).join("\n") }], details: { mode: "management", results: [] } }, "line 14"],
+	];
+	for (const [name, receipt, tail] of cases) await t.test(name, (t) => {
+		const f = interactiveCard(t, (tui) => nativeTool("subagent", receipt, undefined, tui));
+		const key = process.platform === "darwin" ? "option+o" : "alt+o";
+		assert.ok(f.text().includes(key)); assert.doesNotMatch(f.text(), /Ctrl\+O/);
+		assert.ok(!f.text().includes(tail));
+		f.terminal.input("\x1bo"); f.tui.renderNow();
+		assert.ok(f.text().includes(tail), "the configured keyboard action expands the native card");
+		f.terminal.input("\x1bo"); f.tui.renderNow();
+		assert.ok(!f.text().includes(tail));
+		f.click(key); assert.ok(f.text().includes(tail), "the visible key hint is handled by native ToolExecutionComponent");
+		if (name.startsWith("live")) f.click(key);
+		else { f.card.setExpanded(false); f.tui.renderNow(); }
+		assert.ok(!f.text().includes(tail));
+		f.keys.setUserBindings({ "app.tools.expand": [] }); f.card.invalidate(); f.tui.renderNow();
+		assert.ok(!f.text().includes(key)); assert.doesNotMatch(f.text(), /Ctrl\+O|Press\s+(for|to)/);
+		f.terminal.input("\x1bo"); f.tui.renderNow(); assert.ok(!f.text().includes(tail));
+		assert.equal(f.editor.getText(), "Unsent parent draft");
+	});
+});
+
+test("owned slash and notification hints expand through the native custom-message mouse route", async (t) => {
+	for (const kind of ["subagent-slash-result", "subagent-notify"]) for (const compactView of [false, true]) await t.test(`${kind} compact=${compactView}`, (t) => {
+		const receipt = { content: [{ type: "text" as const, text: "FIRST-LINE\nCUSTOM-CARD-END" }], details: { mode: "single" as const, results: [result("worker", "FIRST-LINE\nCUSTOM-CARD-END")] } };
+		const message = { role: "custom" as const, customType: kind, display: true, timestamp: 0,
+			content: kind === "subagent-notify" ? "Background task completed: **worker**\n\nFIRST-LINE\nCUSTOM-CARD-END" : receipt.content,
+			details: kind === "subagent-slash-result" ? { requestId: `click-${compactView}`, result: receipt } : undefined };
+		const original = structuredClone(message), renderer = extension.messageRenderers.get(kind)!;
+		const f = interactiveCard(t, () => new CustomMessageComponent(message, (entry, options, theme) => renderer(entry, { ...options, compactView }, theme)));
+		assert.doesNotMatch(f.text(), /CUSTOM-CARD-END/);
+		f.click(process.platform === "darwin" ? "option+o" : "alt+o");
+		assert.match(f.text(), /CUSTOM-CARD-END/);
+		f.card.invalidate(); f.tui.renderNow(); assert.match(f.text(), /CUSTOM-CARD-END/, "invalidation keeps local expansion");
+		f.click("FIRST-LINE"); assert.doesNotMatch(f.text(), /CUSTOM-CARD-END/);
+		f.terminal.input("\x1bo"); f.tui.renderNow(); assert.match(f.text(), /CUSTOM-CARD-END/);
+		f.terminal.input("\x1bo"); f.tui.renderNow(); assert.doesNotMatch(f.text(), /CUSTOM-CARD-END/);
+		assert.equal(f.editor.getText(), "Unsent parent draft"); assert.deepEqual(message, original);
+	});
+});
 
 test("native async launch and revival cards collapse without changing their receipts", async (t) => {
 	const id = "f5b4b221-5c64-4bc7-9862-70a35d94dc9b";
@@ -470,7 +539,7 @@ test("empty-result management output collapses long reports", () => {
 	};
 
 	const compact = componentText(renderSubagentResult(result, { expanded: false }, theme as any));
-	assert.match(compact, /line 12\n\+2 more · Ctrl\+O expands$/);
+	assert.match(compact, /line 12\n\+2 more · ctrl\+o expands$/);
 	assert.doesNotMatch(compact, /line 13/);
 	assert.equal(componentText(renderSubagentResult(result, { expanded: true }, theme as any)), output);
 });

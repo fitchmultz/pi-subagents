@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { createRequire } from "node:module";
 
-import { createEventBus, createExtensionRuntime, CustomEditor, CustomMessageComponent, getSelectListTheme, initTheme } from "@earendil-works/pi-coding-agent";
+import { createEventBus, createExtensionRuntime, CustomEditor, CustomMessageComponent, getSelectListTheme, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { createTestTerminal } from "../support/terminal.ts";
 import registerIntercomExtension from "../../src/pi-intercom/index.ts";
@@ -96,6 +96,24 @@ test("registered subagent completion messages honor native collapse and expand w
         assert.deepEqual(peer.render(40), collapsed);
       }
     }
+    await t.test("native Intercom list-tool hint follows configured and unbound expansion keys", () => {
+      const keys = new KeybindingsManager({ "app.tools.expand": "alt+o" }); setKeybindings(keys);
+      const terminal = createTestTerminal(90, 40), tui = new TuiAltScreen(terminal);
+      const definition = extension.tools.get("intercom")?.definition;
+      assert.ok(definition);
+      const card = new ToolExecutionComponent("intercom", "list-hint", { action: "list" }, {}, definition, tui, process.cwd());
+      card.updateResult({ content: [{ type: "text", text: "Full listing\nINTERCOM-PEER-END" }], details: { sessionCount: 2 }, isError: false });
+      tui.addChild(card); tui.start(); tui.renderNow();
+      try {
+        const key = process.platform === "darwin" ? "option+o" : "alt+o";
+        const lines = card.render(90).map(stripVTControlCharacters), y = lines.findIndex((line) => line.includes(key));
+        assert.ok(y >= 0, "the registered list result shows the actual native expansion shortcut");
+        terminal.click(visibleWidth(lines[y].slice(0, lines[y].indexOf(key) + key.length)) - 1, y); tui.renderNow();
+        assert.match(card.render(90).map(stripVTControlCharacters).join("\n"), /INTERCOM-PEER-END/);
+        card.setExpanded(false); keys.setUserBindings({ "app.tools.expand": [] }); card.invalidate(); tui.renderNow();
+        assert.doesNotMatch(card.render(90).map(stripVTControlCharacters).join("\n"), /to expand|Ctrl\+O|option\+o|alt\+o/);
+      } finally { tui.stop(); setKeybindings(new KeybindingsManager()); }
+    });
     await t.test("compact previews reuse formatting until width, key hint or theme changes", () => {
       const entry = {
         role: "custom" as const, customType: "intercom_message", display: true, timestamp: 0,
