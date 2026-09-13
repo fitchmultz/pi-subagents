@@ -18,13 +18,9 @@ export function formatTokens(n: number): string {
 
 export function formatModelThinking(model?: string, thinking?: string): string {
 	const parsed = model ? splitKnownThinkingSuffix(model) : undefined;
-	let displayModel = parsed?.baseModel ?? model;
+	const displayModel = parsed?.baseModel ?? model;
 	const explicitThinking = THINKING_LEVELS.find((level) => level === thinking?.trim());
 	const displayThinking = parsed?.thinkingSuffix ? parsed.thinkingSuffix.slice(1) : explicitThinking;
-	if (displayModel) {
-		const slashIdx = displayModel.lastIndexOf("/");
-		if (slashIdx !== -1) displayModel = displayModel.slice(slashIdx + 1);
-	}
 	return [displayModel, displayThinking ? `thinking ${displayThinking}` : undefined].filter(Boolean).join(" · ");
 }
 

@@ -72,7 +72,7 @@ function nativeChild(cwd: string, scenario: "streaming" | "tool" | "question") {
 	return { release, restore() { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } } };
 }
 
-function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, executeControl?) {
+function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, executeControl?, profiles = ["worker", "reviewer"].map((name) => makeAgent(name, { completionGuard: false }))) {
 	const cwd = path.join(root, randomUUID()); fs.mkdirSync(cwd);
 	const parent = SessionManager.create(cwd, path.join(cwd, "parent"));
 	assistant(parent, "Parent context stays unchanged");
@@ -121,9 +121,9 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, ex
 		}); },
 	} };
 	state.lastUiContext = ctx;
-	const tracker = createAsyncJobTracker(pi, state, ASYNC_DIR);
+	const tracker = createAsyncJobTracker(pi, state, ASYNC_DIR, { render: () => controller.refresh() });
 	pi.events.on("subagent:async-started", tracker.handleStarted);
-	const executor = createSubagentExecutor({ pi, state, config: {}, asyncByDefault: true, tempArtifactsDir: cwd, getSubagentSessionRoot: () => cwd, expandTilde: (value) => value, discoverAgents: () => ({ agents: ["worker", "reviewer"].map((name) => makeAgent(name, { completionGuard: false })) }) });
+	const executor = createSubagentExecutor({ pi, state, config: {}, asyncByDefault: true, tempArtifactsDir: cwd, getSubagentSessionRoot: () => cwd, expandTilde: (value) => value, discoverAgents: () => ({ agents: profiles }) });
 	const controller = new AgentViewController(pi, state, async (params, context) => { calls.push(params); return executeControl ? executeControl(params, context) : executor.execute(randomUUID(), params, undefined, undefined, context); });
 	state.onRunsChanged = () => controller.refresh(true);
 	state.persistOwnedRun = (owned) => parent.appendCustomEntry(OWNED_RUN_ENTRY, structuredClone(owned));
@@ -134,6 +134,182 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, ex
 		complete() { state.foregroundControls.clear(); saveForegroundRun({ ...run, results: run.children.map((child) => ({ agent: child.agent, task: child.task!, exitCode: 0, finalOutput: "Finished", sessionFile: child.sessionFile, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } })) }); controller.refresh(true); },
 	};
 }
+
+test("Agents model identity follows native branch settings and tool-only messages, not requested routes", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-01-01T00:00:00Z") });
+	const f = fixture(t, "regular", 2), control = f.state.foregroundControls.get(f.run.runId)!;
+	t.mock.timers.tick(10);
+	control.progress = f.run.children.map((child) => ({ index: child.index, agent: child.agent, task: child.task!, status: "running", model: `requested-${child.index}/vendor/model:low`, modelStartedAt: Date.now(), recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 0 }));
+	f.controller.refresh(true);
+	assert.match(plain(f.strip, 160), /Fix login.*selected: requested-0\/vendor\/model · thinking low/);
+	assert.equal(f.controller.task(f.key)!.model.summary, "selected: requested-0/vendor/model · thinking low", "old native history is not the current attempt");
+	t.mock.timers.tick(10);
+	const first = f.childSessions[0], second = f.childSessions[1];
+	first.appendModelChange("openrouter", "vendor/model:7b");
+	const branch = first.appendThinkingLevelChange("high");
+	second.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "native-model-tool", name: "read", arguments: { path: "login.ts" } }], provider: "vertex", model: "google/gemini-test", api: "openai-responses", stopReason: "toolUse", usage, timestamp: Date.now() });
+	f.controller.refresh(true);
+	assert.equal(f.controller.task(f.key)!.model.summary, "session: openrouter/vendor/model:7b · thinking high");
+	assert.equal(f.controller.task(`${f.run.runId}:1`)!.model.summary, "session: vertex/google/gemini-test", "tool-only assistants carry model data without inventing a thinking level");
+	const strip = plain(f.strip, 160);
+	assert.match(strip.split("\n").find((row) => row.includes("Fix login"))!, /openrouter\/vendor\/model:7b · thinking high/);
+	assert.match(strip.split("\n").find((row) => row.includes("Review changes"))!, /vertex\/google\/gemini-test/);
+	const picker = f.controller.open();
+	assert.match(plain(f.overlay, 160), /openrouter\/vendor\/model:7b/);
+	assert.match(plain(f.overlay, 160), /vertex\/google\/gemini-test/);
+	f.overlay.handleInput("\x1b"); await picker;
+	const opening = f.controller.open(`${f.run.runId}:1`), view = f.overlay;
+	assert.match(plain(view, 160), /worker · working · session: vertex\/google\/gemini-test/);
+	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160); view.handleInput("\r");
+	assert.match(readDetails(view, 160), /Messagemodel:vertex\/google\/gemini-test/);
+	view.handleInput("\x1b"); view.handleInput("\x1b"); await opening;
+	t.mock.timers.tick(10);
+	first.appendModelChange("abandoned", "wrong-route");
+	first.branch(branch); first.appendCustomEntry("branch-marker", {});
+	first.appendThinkingLevelChange("medium");
+	const saved = fs.readFileSync(first.getSessionFile(), "utf8");
+	f.controller.refresh(true);
+	assert.equal(f.controller.task(f.key)!.model.summary, "session: openrouter/vendor/model:7b · thinking medium", "native branch traversal ignores a later abandoned model change");
+	assert.equal(fs.readFileSync(first.getSessionFile(), "utf8"), saved, "reading configuration never rewrites native history");
+	fs.writeFileSync(path.join(f.cwd, "model-frames.txt"), strip);
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
+});
+
+for (const [columns, rows] of [[110, 38], [24, 18]]) test(`Agents model identity remains fully accessible with native compact controls (${columns}×${rows})`, async (t) => {
+	const f = fixture(t, "fullscreen", 2), control = f.state.foregroundControls.get(f.run.runId)!;
+	const model = "openrouter/vendor/very-long-model-namespace/long-model-name-with-full-identity-ENDROUTE:high";
+	control.progress = [{ index: 0, agent: "worker", task: "Fix login", status: "running", model, modelStartedAt: Date.now() + 1, recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 0 }];
+	f.controller.visit(f.key).readThrough = null;
+	f.controller.refresh(true);
+	f.terminal.resize(columns, rows);
+	const opening = f.controller.open(f.key); f.tui.start(); f.tui.renderNow();
+	f.terminal.input("Keep the child draft"); f.tui.renderNow();
+	const compact = f.controller.availableHeight(f.tui) < 16;
+	await clickHint(f, compact ? "F2" : "F2 Actions");
+	for (let index = 0; index < 3; index++) f.terminal.input("\x1b[B");
+	f.tui.renderNow(); await clickHint(f, "Enter");
+	const width = f.overlayBounds.width, full = readDetails(f.overlay, width);
+	assert.match(full, /openrouter/); assert.match(full, /ENDROUTE/);
+	const content = f.overlay.scroll.render(width - 2).map(stripTerminalSequences).join("\n").replace(/\s/g, "");
+	assert.ok(content.includes(model.replace(":high", "")), "the full route is wrapped, not shortened, in the existing assignment details");
+	assert.match(content, /thinkinghigh/); assert.match(content, /Fixtheloginregression\./); assert.match(content, /KeeptheAPIunchanged\./);
+	const frame = f.overlay.render(width);
+	assert.ok(frame.length <= f.overlayBounds.height); assert.ok(frame.every((line) => visibleWidth(line) <= width));
+	await clickHint(f, compact ? "Esc" : "Esc Back");
+	assert.equal(f.overlay.editor.getText(), "Keep the child draft");
+	await clickHint(f, compact ? "Esc" : "Esc Back"); await opening;
+	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
+	assert.equal(f.calls.length, 0); assert.deepEqual(f.interrupts, [0, 0]);
+});
+
+test("Agents model identity leaves bare selections and unavailable metadata honest", (t) => {
+	const f = fixture(t), control = f.state.foregroundControls.get(f.run.runId)!;
+	f.ctx.model = { provider: "not-evidence", id: "qwen2.5-coder:7b" };
+	control.progress = [{ index: 0, agent: "worker", task: "Fix login", status: "running", model: "qwen2.5-coder:7b", modelStartedAt: Date.now() + 1, recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 0 }];
+	f.controller.refresh(true);
+	assert.match(plain(f.strip, 160), /selected: qwen2\.5-coder:7b/);
+	assert.equal(f.controller.task(f.key)!.model.summary, "selected: qwen2.5-coder:7b");
+	assert.doesNotMatch(plain(f.strip, 160), /not-evidence|ollama/);
+	control.progress[0].model = undefined;
+	f.run.children[0].sessionFile = undefined;
+	saveQuestionContract(f.run.runId, 0, { sessionFile: undefined });
+	f.controller.refresh(true);
+	assert.equal(f.controller.task(f.key)!.model.summary, "model unavailable");
+});
+
+for (const [background, nativeReply] of [[false, true], [false, false], [true, true], [true, false]]) test(`Agents model identity follows the ${background ? "background" : "foreground"} fallback before its first response and freezes ${nativeReply ? "native" : "selection-only"} completion`, async (t) => {
+	const primary = "requested/vendor/primary:high", fallback = "backup/vendor/fallback:low";
+	const f = fixture(t, "regular", 1, undefined, [makeAgent("worker", { model: primary, fallbackModels: [fallback], completionGuard: false })]);
+	const mock = createMockPi(); mock.install();
+	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
+	const releasePrimary = path.join(f.cwd, "release-primary"), releaseFallback = path.join(f.cwd, "release-fallback");
+	mock.onCall({ matchArgsIncludes: primary, waitForFile: releasePrimary, stderr: "quota exceeded", exitCode: 1 });
+	mock.onCall({ matchArgsIncludes: fallback, waitForFile: releaseFallback, output: "Fallback finished" });
+	const pending = f.executor.execute("model-fallback-view", { agent: "worker", task: "Verify the model display", async: background, artifacts: false, output: false }, undefined, undefined, f.ctx);
+	let runId: string | undefined;
+	t.after(async () => {
+		fs.writeFileSync(releasePrimary, "released"); fs.writeFileSync(releaseFallback, "released"); await pending;
+		if (background && runId) await until(() => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "model fallback runner cleanup");
+		if (process.env.PI_AGENT_VIEW_EVIDENCE_DIR) fs.cpSync(mock.dir, path.join(f.cwd, "mock-receipts"), { recursive: true });
+		mock.uninstall();
+	});
+	await until(() => mock.callCount() === 1, "primary attempt starts");
+	f.controller.refresh(true);
+	const task = f.controller.tasks[0]!; runId = task.run.runId;
+	assert.match(plain(f.strip, 160), /selected: requested\/vendor\/primary · thinking high/);
+	assert.equal(task.model.summary, "selected: requested/vendor/primary · thinking high");
+	const native = SessionManager.open(task.child.sessionFile!, undefined, f.cwd);
+	native.appendMessage({ role: "assistant", content: [{ type: "text", text: "Prior attempt" }], provider: "observed-primary", model: "vendor/native-primary", api: "openai-responses", stopReason: "error", errorMessage: "quota exceeded", usage, timestamp: Date.now() });
+	fs.writeFileSync(releasePrimary, "released");
+	await until(() => mock.callCount() === 2, "fallback starts without a saved response");
+	f.controller.refresh(true);
+	assert.equal(f.controller.task(task.key)!.model.summary, "selected: backup/vendor/fallback · thinking low", "old native history and the initial launch cannot mask the selected fallback");
+	assert.match(f.controller.task(task.key)!.model.details, /Last saved session model \(may precede this attempt\): observed-primary\/vendor\/native-primary/);
+	if (nativeReply) {
+		native.appendThinkingLevelChange("high");
+		native.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fallback finished" }], provider: "observed-fallback", model: "vendor/native-final", api: "openai-responses", stopReason: "stop", usage, timestamp: Date.now() });
+		f.controller.refresh(true);
+		assert.equal(f.controller.task(task.key)!.model.summary, "session: observed-fallback/vendor/native-final · thinking high");
+	}
+	fs.writeFileSync(releaseFallback, "released"); await pending;
+	if (background) await until(() => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "fallback completion is saved");
+	f.controller.refresh(true);
+	const completed = f.controller.task(task.key)!;
+	assert.equal(completed.child.state, "completed");
+	assert.equal(completed.model.summary, nativeReply ? "saved: observed-fallback/vendor/native-final · thinking high" : "selected: backup/vendor/fallback · thinking low");
+	assert.equal(completed.child.result?.model, fallback, "candidate-first execution results and routing stay unchanged");
+	assert.deepEqual(completed.child.result?.attemptedModels, [primary, fallback]);
+	assert.equal(mock.callCount(), 2);
+	native.appendModelChange("later-session", "vendor/continuation");
+	f.controller.start(f.ctx);
+	assert.equal(f.controller.task(task.key)!.model.summary, completed.model.summary, "completed display uses the frozen per-run snapshot, not later shared-file choices");
+	const owned = f.state.ownedRuns!.get(runId!)!, successorId = randomUUID(), startedAt = Date.now() + 1;
+	const successor = { ...owned, runId: successorId, source: "foreground" as const, asyncDir: undefined, pid: undefined, predecessorRunId: runId, predecessorIndex: 0, startedAt };
+	f.state.ownedRuns!.set(successorId, successor);
+	saveQuestionContract(successorId, 0, { task: "New continuation", sessionFile: task.child.sessionFile, launch: completed.child.launch });
+	f.state.foregroundControls.set(successorId, { runId: successorId, mode: "single", startedAt, updatedAt: startedAt, currentAgent: "worker", currentIndex: 0,
+		progress: [{ index: 0, agent: "worker", task: "New continuation", status: "running", model: "next-provider/vendor/model", modelStartedAt: startedAt, recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 0 }] });
+	f.controller.refresh(true);
+	assert.equal(f.controller.tasks.length, 1);
+	assert.equal(f.controller.task(task.key)!.run.runId, successorId);
+	assert.equal(f.controller.task(task.key)!.model.summary, "selected: next-provider/vendor/model", "the successor must not claim the predecessor's frozen or last saved model as current");
+	assert.equal(ownedRunView(owned, f.state).children[0]!.launch?.model, nativeReply ? "observed-fallback/vendor/native-final" : "observed-primary/vendor/native-primary", "display metadata does not rewrite continuation routing choices");
+	fs.writeFileSync(path.join(f.cwd, "model-boundaries.json"), JSON.stringify({ background, completed: completed.model, successor: f.controller.task(task.key)!.model }, null, 2));
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
+});
+
+test("Agents model identity does not reuse an earlier native remap after response-less foreground finalization", async (t) => {
+	const requested = "requested/vendor/finalization:low";
+	const f = fixture(t, "regular", 1, undefined, [makeAgent("worker", { model: requested, completionGuard: false })]);
+	const mock = createMockPi(); mock.install();
+	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
+	const initial = path.join(f.cwd, "release-initial"), review = path.join(f.cwd, "release-review");
+	mock.onCall({ matchArgsIncludes: "Original model task", waitForFile: initial, output: "Initial report" });
+	mock.onCall({ matchArgsIncludes: "Acceptance Finalization", waitForFile: review, stderr: "quota exceeded", exitCode: 1 });
+	const pending = f.executor.execute("finalization-model-view", { agent: "worker", task: "Original model task", async: false, artifacts: false, output: false,
+		acceptance: { criteria: ["Complete the original task"], maxFinalizationTurns: 1 } }, undefined, undefined, f.ctx);
+	t.after(async () => {
+		fs.writeFileSync(initial, "released"); fs.writeFileSync(review, "released"); await pending;
+		if (process.env.PI_AGENT_VIEW_EVIDENCE_DIR) fs.cpSync(mock.dir, path.join(f.cwd, "mock-receipts"), { recursive: true });
+		mock.uninstall();
+	});
+	await until(() => mock.callCount() === 1, "initial model attempt starts");
+	f.controller.refresh(true);
+	const task = f.controller.tasks[0]!, native = SessionManager.open(task.child.sessionFile!, undefined, f.cwd);
+	native.appendMessage({ role: "assistant", content: [{ type: "text", text: "Initial report" }], provider: "observed", model: "vendor/earlier-remap", api: "openai-responses", stopReason: "stop", usage, timestamp: Date.now() });
+	fs.writeFileSync(initial, "released");
+	await until(() => mock.callCount() === 2, "foreground finalization starts");
+	f.controller.refresh(true);
+	assert.equal(f.controller.task(task.key)!.model.summary, "selected: requested/vendor/finalization · thinking low");
+	fs.writeFileSync(review, "released");
+	const result = await pending; f.controller.start(f.ctx);
+	assert.equal(result.details.results[0].model, requested);
+	assert.equal(f.controller.task(task.key)!.child.state, "failed");
+	const opening = f.controller.open(task.key);
+	assert.match(plain(f.overlay, 160), /selected: requested\/vendor\/finalization · thinking low/, "the completed snapshot must keep the latest selected attempt when finalization saves no native response");
+	f.overlay.handleInput("\x1b"); await opening;
+	assert.equal(mock.callCount(), 2); assert.equal(f.calls.length, 0);
+});
 
 for (const mode of ["regular", "fullscreen"] as const) test(`Agents strip and single-child open are native, read-only, and preserve the parent (${mode})`, async (t) => {
 	const f = fixture(t, mode);
@@ -1054,12 +1230,14 @@ test("new async chain preserves its launch identity, draft and pin through first
 test("the first native streaming response is readable before its session file exists", async (t) => {
 	const f = fixture(t), native = nativeChild(f.cwd, "streaming"), { release } = native;
 	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
-	const pending = f.executor.execute("initial-stream", { agent: "worker", task: "Read initial streaming output", async: false, artifacts: false, output: false }, undefined, undefined, f.ctx);
+	const requested = "requested/vendor/streaming:high";
+	const pending = f.executor.execute("initial-stream", { agent: "worker", model: requested, task: "Read initial streaming output", async: false, artifacts: false, output: false }, undefined, undefined, f.ctx);
 	t.after(async () => { fs.writeFileSync(release, "released"); await pending; native.restore(); });
 	const deadline = Date.now() + 10_000;
 	while (!f.controller.tasks.some((task) => task.child.activity?.streamingText?.includes("First live text"))) { assert.ok(Date.now() < deadline, "initial native text must arrive"); await delay(10); }
 	const task = f.controller.tasks[0]!;
 	assert.equal(fs.existsSync(task.child.sessionFile!), false, "native Pi defers saving the first response until message_end");
+	assert.match(plain(f.strip, 160), /selected: requested\/vendor\/streaming · thinking high/);
 	const receipt = JSON.parse(fs.readFileSync(`${release}.json`, "utf8"));
 	assert.equal(receipt.events.some((event) => event.type === "message_end" && event.role === "assistant"), false);
 	const opening = f.controller.open(task.key);
@@ -1074,6 +1252,8 @@ test("the first native streaming response is readable before its session file ex
 	for (let index = 0; index < 30; index++) assistant(completed, `Later response ${index}\n${"Later detail ".repeat(15)}`);
 	f.controller.start(f.ctx);
 	assert.equal(f.controller.task(task.key)!.unavailable, undefined);
+	assert.match(f.controller.task(task.key)!.model.summary, /^saved: feedback-fixture\/faux-1\b/, "native saved choices replace requested display without rereading a later continuation");
+	assert.equal((await pending).details.results[0].model, requested, "display must not change the candidate-first execution result");
 	assert.equal(f.controller.task(task.key)!.unread, true, "visiting before native message_end must retain the before-first-saved-entry boundary after completion and reload");
 	assert.equal(plain(f.strip), "", "completed unread history and a saved pin do not keep the active area visible");
 	assert.equal(f.controller.pinned, task.key);
@@ -1199,9 +1379,9 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 	mock.onCall({ matchArgsIncludes: "Review beta", waitForFile: reviews, output: "Beta review complete" });
 	mock.onCall({ matchArgsIncludes: "Finalize from", waitForFile: final, output: "Finalized" });
 	const pending = f.executor.execute("dynamic-view", { chain: [
-		{ agent: "worker", task: "Discover two targets", label: "Discover files", as: "targets", output: false, outputSchema: { type: "object", properties: { items: { type: "array", items: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } } }, required: ["items"] } },
-		{ expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/name", maxItems: 2 }, parallel: { agent: "reviewer", task: "Review {target.name}", label: "Review {target.name}", output: false }, collect: { as: "reviews" } },
-		{ agent: "worker", task: "Finalize from {outputs.reviews}", label: "Finalize", output: false },
+		{ agent: "worker", model: "discovery/model", task: "Discover two targets", label: "Discover files", as: "targets", output: false, outputSchema: { type: "object", properties: { items: { type: "array", items: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } } }, required: ["items"] } },
+		{ expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/name", maxItems: 2 }, parallel: { agent: "reviewer", model: "reviews/model", task: "Review {target.name}", label: "Review {target.name}", output: false }, collect: { as: "reviews" } },
+		{ agent: "worker", model: "final/model", task: "Finalize from {outputs.reviews}", label: "Finalize", output: false },
 	], async: background, artifacts: false }, undefined, undefined, f.ctx);
 	let runId: string | undefined;
 	t.after(async () => {
@@ -1231,6 +1411,8 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 	assert.equal(f.controller.task(later.key)!.child.activity?.status, "pending");
 	assert.match(plain(view), /Agents › Finalize/);
 	assert.deepEqual(f.controller.tasks.filter((task) => task.child.agent === "reviewer").map((task) => task.label).sort(), ["Review alpha", "Review beta"]);
+	for (const reviewer of f.controller.tasks.filter((task) => task.child.agent === "reviewer")) assert.equal(reviewer.model?.summary, "selected: reviews/model");
+	assert.doesNotMatch(f.controller.task(later.key)!.model.summary, /reviews\/model/, "the shifted pending assignment must not inherit a reviewer's model");
 	view.handleInput("\x1b"); await opening;
 	restoreOwnedRuns(f.state, f.ctx); f.controller.start(f.ctx);
 	assert.equal(f.controller.pinned, later.key);
@@ -1240,6 +1422,7 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 	f.controller.refresh(true);
 	const active = f.controller.task(later.key)!;
 	assert.equal(active.child.agent, "worker"); assert.match(active.child.task!, /^Finalize from/);
+	assert.equal(active.model.summary, "selected: final/model", "model metadata follows the workflow node after its child index changes");
 	await f.controller.send(later.key, f.controller.visit(later.key).draft);
 	assert.equal(deliveries.length, 1);
 	assert.equal(deliveries[0].human.index, active.child.index);

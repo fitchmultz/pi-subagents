@@ -292,11 +292,14 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 			: live || pending ? "live"
 			: step && !["running", "pending"].includes(step.status) ? normalizedState(step.status) : "unknown";
 		const task = contract?.task ?? declared?.task ?? fg?.result?.task ?? (run.children.length === 1 ? run.task : undefined);
+		const progress = control?.progress?.find((progress) => progress.index === index);
+		const selection = contract?.modelSelection ?? progress ?? step ?? fg?.result?.progress;
 		return {
 			agent: fg?.agent ?? bg?.agent ?? step?.agent ?? contract?.launch?.agent.name ?? declared?.agent ?? "unknown", index, workflowNodeId: declared?.workflowNodeId, sessionFile,
 			task, label: contract?.label ?? step?.label ?? declared?.label,
 			...(run.mode === "chain" && !declared?.workflowNodeId && (!boundSession || sessionUses.get(boundSession) !== 1) ? { identityUnavailable: true } : {}),
-			activity: childState === "live" ? control?.progress?.find((progress) => progress.index === index) ?? (pending ? { status: "pending" as const } : step) : undefined,
+			modelSelection: selection ? { model: selection.model, thinking: selection.thinking, modelStartedAt: selection.modelStartedAt } : undefined,
+			activity: childState === "live" ? progress ?? (pending ? { status: "pending" as const } : step) : undefined,
 			state: childState, result: fg?.status !== "detached" && fg?.result ? fg.result : bg ? asyncChildResult(bg, task ?? "Original child assignment unavailable") : contract?.result ?? fg?.result,
 			launch: contract?.launch, configuration: contract?.launch ? "saved" : "legacy-partial",
 			...(sessionFile && !fs.existsSync(sessionFile) ? { missingSession: true } : {}),

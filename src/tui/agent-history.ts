@@ -3,6 +3,8 @@ import type { AssistantMessage, ToolCall, ToolResultMessage } from "@earendil-wo
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { stripAcceptanceReport } from "../runs/shared/acceptance-reports.ts";
+import { readNativeSessionConfiguration } from "../runs/shared/supervisor-questions.ts";
+import { providerQualifiedModelId } from "../shared/model-info.ts";
 import { parseSessionEntries } from "../shared/native-session.ts";
 import { extractToolArgsPreview } from "../shared/utils.ts";
 
@@ -16,6 +18,7 @@ export interface AgentHistoryItem {
 	details?: string;
 	diff?: string;
 	assistant?: AssistantMessage;
+	model?: string;
 	call?: ToolCall;
 	result?: ToolResultMessage;
 	messageId?: string;
@@ -27,6 +30,7 @@ export interface AgentHistory {
 	/** Original entry order, independent of where paired tool results are drawn. */
 	entryIds: string[];
 	finalId?: string;
+	configuration?: ReturnType<typeof readNativeSessionConfiguration>;
 	unavailable?: string;
 }
 
@@ -61,14 +65,15 @@ export function historyItems(entries: SessionEntry[]): AgentHistory {
 		} else if (entry.type === "message") {
 			const message = entry.message;
 			if (message.role === "assistant") {
+				const model = providerQualifiedModelId(message.provider, message.model);
 				const messageIds = message.content.flatMap((part, index) => part.type === "text" && part.text || part.type === "thinking" && part.thinking ? [`${entry.id}:${index}`] : []);
 				if (messageIds.length) items.push({ ...base, id: messageIds[0]!, entryIds: messageIds,
 					kind: message.content.some((part) => part.type === "text" && part.text) ? "assistant" : "thinking",
-					title: "Agent", text: contentText(message.content), assistant: message });
+					title: "Agent", text: contentText(message.content), assistant: message, model });
 				for (const [index, part] of message.content.entries()) {
 					const id = `${entry.id}:${index}`;
 					if (part.type === "toolCall") {
-						const item: AgentHistoryItem = { ...base, id, entryIds: [id], kind: "tool", title: `${part.name} ${extractToolArgsPreview(part.arguments)}`.trim(), text: readableText(part.arguments), call: part };
+						const item: AgentHistoryItem = { ...base, id, entryIds: [id], kind: "tool", title: `${part.name} ${extractToolArgsPreview(part.arguments)}`.trim(), text: readableText(part.arguments), call: part, model };
 						append(item); calls.set(part.id, item);
 					} else if (messageIds.includes(id)) entryIds.push(id);
 				}
@@ -124,7 +129,7 @@ export class NativeAgentHistory {
 			if (cached?.stamp === stamp) return cached;
 			const entries = parseSessionEntries(fs.readFileSync(sessionFile, "utf8"));
 			if (entries[0]?.type !== "session") return { items: [], entryIds: [], unavailable: `Saved conversation is not a readable native Pi session: ${sessionFile}` };
-			const history = historyItems(entries.filter((entry): entry is SessionEntry => entry.type !== "session"));
+			const history = { ...historyItems(entries.filter((entry): entry is SessionEntry => entry.type !== "session")), configuration: readNativeSessionConfiguration(undefined, entries) };
 			this.cache.set(sessionFile, { stamp, ...history });
 			return history;
 		} catch (error) {

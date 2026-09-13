@@ -1,11 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import type { FileEntry } from "@earendil-works/pi-coding-agent";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { formatRunAction } from "../../shared/status-format.ts";
-import { buildSessionContext, parseSessionEntries } from "../../shared/native-session.ts";
+import { buildSessionContext, parseSessionEntries, SessionManager } from "../../shared/native-session.ts";
 import { getAgentDir } from "../../shared/utils.ts";
-import { ASYNC_DIR, TEMP_ROOT_DIR, type AsyncStatus, type AsyncResultFile, type ResolvedAcceptanceConfig, type JsonSchemaObject, type OutputMode, type SavedLaunchConfig, type SingleResult } from "../../shared/types.ts";
+import { ASYNC_DIR, TEMP_ROOT_DIR, type AsyncStatus, type AsyncResultFile, type ResolvedAcceptanceConfig, type JsonSchemaObject, type OutputMode, type SavedLaunchConfig, type SingleResult, type AgentProgress } from "../../shared/types.ts";
 
 export const LEGACY_QUESTIONS_DIR = path.join(TEMP_ROOT_DIR, "supervisor-questions");
 export const QUESTIONS_DIR = path.join(getAgentDir(), "sessions", "subagent-runs");
@@ -19,6 +20,8 @@ export interface SupervisorRunContract {
 	outputMode?: OutputMode;
 	outputSchema?: JsonSchemaObject;
 	launch?: SavedLaunchConfig;
+	/** Kept independently of progress, which is compacted away or stops streaming after detachment. */
+	modelSelection?: Pick<AgentProgress, "model" | "thinking" | "modelStartedAt">;
 	sessionFile?: string;
 	pid?: number;
 	updatedAt?: number;
@@ -119,12 +122,13 @@ export function readQuestionContract(runId: string, index: number, root = QUESTI
 	return readRunJson<SupervisorRunContract>(path.join(root, safeId(runId), "contracts", `${index}.json`));
 }
 
-export function readNativeSessionConfiguration(sessionFile: string | undefined): { model?: string; thinking?: string } {
-	if (!sessionFile || !fs.existsSync(sessionFile)) return {};
-	const entries = parseSessionEntries(fs.readFileSync(sessionFile, "utf8"));
+export function readNativeSessionConfiguration(sessionFile: string | undefined, cachedEntries?: FileEntry[]): { model?: string; thinking?: string; modelRecordedAt?: number } {
+	const entries = cachedEntries ?? (sessionFile && fs.existsSync(sessionFile) ? parseSessionEntries(fs.readFileSync(sessionFile, "utf8")) : []);
 	if (entries[0]?.type !== "session") return {};
 	const context = buildSessionContext(entries.filter((entry) => entry.type !== "session"));
-	return { ...(context.model ? { model: `${context.model.provider}/${context.model.modelId}` } : {}), ...(entries.some((entry) => entry.type === "thinking_level_change") ? { thinking: context.thinkingLevel } : {}) };
+	const modelEntry = SessionManager.inMemory(undefined, undefined, entries).getBranch().findLast((entry) => entry.type === "model_change" || entry.type === "message" && entry.message.role === "assistant");
+	return { ...(context.model ? { model: `${context.model.provider}/${context.model.modelId}` } : {}), ...(entries.some((entry) => entry.type === "thinking_level_change") ? { thinking: context.thinkingLevel } : {}),
+		...(modelEntry ? { modelRecordedAt: Date.parse(modelEntry.timestamp) } : {}) };
 }
 
 export function refreshQuestionLaunch(runId: string, index: number, sessionFile: string | undefined): void {
