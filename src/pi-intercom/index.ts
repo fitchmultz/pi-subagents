@@ -2657,7 +2657,8 @@ Usage:
         const summary = details?.sessionCount === undefined
           ? "Sessions listed"
           : `${details.sessionCount} session${details.sessionCount === 1 ? "" : "s"}`;
-        return new Text(`${theme.fg("success", "✓ ")}${theme.fg("text", summary)} ${theme.fg("dim", "(Ctrl+O to expand)")}`, 0, 0);
+        const key = keyText("app.tools.expand");
+        return new Text(`${theme.fg("success", "✓ ")}${theme.fg("text", summary)}${key ? ` ${theme.fg("dim", `(${key} to expand)`)}` : ""}`, 0, 0);
       }
       let text = failed ? theme.fg("error", "✗ ") : theme.fg("success", "✓ ");
       text += theme.fg(failed ? "error" : "text", firstTextContent(result));

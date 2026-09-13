@@ -1,5 +1,6 @@
-import type { Component, TUI } from "@earendil-works/pi-tui";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Box, Container, Text, sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { actionHints } from "../../tui/action-hints.ts";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import type { IntercomClient } from "../broker/client.ts";
 import type { SessionInfo } from "../types.ts";
@@ -17,7 +18,7 @@ export interface ComposeResult {
   expectsReply?: boolean;
 }
 
-export class ComposeOverlay implements Component {
+export class ComposeOverlay extends Container {
   private tui: TUI;
   private theme: Theme;
   private keybindings: KeybindingsManager;
@@ -43,6 +44,7 @@ export class ComposeOverlay implements Component {
     client: IntercomClient,
     done: (result: ComposeResult) => void,
   ) {
+    super();
     this.tui = tui;
     this.theme = theme;
     this.keybindings = keybindings;
@@ -52,13 +54,29 @@ export class ComposeOverlay implements Component {
     this.done = done;
   }
 
-  invalidate(): void {}
-
-  private finish(result: ComposeResult): void {
-    if (this.completed) return;
+  dispose(): void {
     this.completed = true;
     if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
     this.pasteIdleTimer = null;
+  }
+
+  handleMouse(event: TuiMouseEvent) {
+    const width = Math.min(event.width, 72);
+    if (this.sending || this.completed || this.pasteBuffer !== null || this.pasteStartPrefix || event.x >= width) return;
+    return super.handleMouse({ ...event, width });
+  }
+
+  private act(action: "close" | "mode" | "send"): void {
+    if (this.sending || this.completed || this.pasteBuffer !== null || this.pasteStartPrefix) return;
+    if (action === "close") this.finish({ sent: false });
+    else if (action === "mode") { this.mode = this.mode === "send" ? "ask" : "send"; this.error = null; }
+    else if (this.inputBuffer.trim()) void this.sendMessage();
+    this.tui.requestRender();
+  }
+
+  private finish(result: ComposeResult): void {
+    if (this.completed) return;
+    this.dispose();
     this.done(result);
   }
 
@@ -133,25 +151,21 @@ export class ComposeOverlay implements Component {
     if (!data) return;
 
     if (!pasted && this.keybindings.matches(data, "tui.select.cancel")) {
-      this.finish({ sent: false });
+      this.act("close");
       return;
     }
 
     if (!pasted && data === "\t") {
-      this.mode = this.mode === "send" ? "ask" : "send";
-      this.error = null;
-      this.tui.requestRender();
-      return;
-    }
-
-    if (!pasted && data.startsWith("\x1b")) {
+      this.act("mode");
       return;
     }
 
     if (!pasted && this.keybindings.matches(data, "tui.select.confirm")) {
-      if (this.inputBuffer.trim().length > 0) {
-        void this.sendMessage();
-      }
+      this.act("send");
+      return;
+    }
+
+    if (!pasted && data.startsWith("\x1b")) {
       return;
     }
 
@@ -230,10 +244,16 @@ export class ComposeOverlay implements Component {
   }
 
   render(width: number): string[] {
+    this.clear();
     if (width < 3) return [truncateToWidth("Intercom", width)];
     const innerWidth = Math.min(width, 72);
     const contentWidth = Math.max(1, innerWidth - 2);
-    const footer = `${this.keybindings.getKeys("tui.select.confirm").join("/")}: ${this.mode === "ask" ? "Request reply" : "Send"} • Tab: ${this.mode === "ask" ? "Send mode" : "Request-reply mode"} • ${this.keybindings.getKeys("tui.select.cancel").join("/")}: Close`;
+    const send = [this.keybindings.getKeys("tui.select.confirm").join("/"), this.mode === "ask" ? "Request reply" : "Send"].filter(Boolean).join(": ");
+    const mode = `Tab: ${this.mode === "ask" ? "Send mode" : "Request-reply mode"}`;
+    const close = [this.keybindings.getKeys("tui.select.cancel").join("/"), "Close"].filter(Boolean).join(": ");
+    const footer = this.sending ? ["Sending…"] : this.pasteBuffer !== null || this.pasteStartPrefix ? ["Pasting…"] : [
+      { text: send, run: () => this.act("send") }, " • ", { text: mode, run: () => this.act("mode") }, " • ", { text: close, run: () => this.act("close") },
+    ];
     const border = (text: string) => this.theme.fg("accent", text);
     const row = (text = "") => {
       const clipped = truncateToWidth(text, contentWidth, "…", true);
@@ -259,9 +279,11 @@ export class ComposeOverlay implements Component {
 
     lines.push(row());
     lines.push(border(`├${"─".repeat(contentWidth)}┤`));
-    lines.push(row(this.theme.fg("dim", ` ${footer}`)));
-    lines.push(border(`╰${"─".repeat(contentWidth)}╯`));
-
-    return lines;
+    this.addChild(new Text(lines.join("\n"), 0, 0));
+    const controls = new Box(1, 0, (line) => row(sliceByColumn(line, 1, contentWidth)));
+    controls.addChild(actionHints([" ", ...footer], (text) => this.theme.fg("dim", text), "…"));
+    this.addChild(controls);
+    this.addChild(new Text(border(`╰${"─".repeat(contentWidth)}╯`), 0, 0));
+    return super.render(innerWidth);
   }
 }

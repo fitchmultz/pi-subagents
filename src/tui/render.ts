@@ -1033,6 +1033,7 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 }
 
 function renderSingleCompact(d: Details, r: Details["results"][number], theme: Theme, isError = false): Component {
+	const expandKey = keyText("app.tools.expand");
 	const output = r.truncation?.text || getSingleResultOutput(r);
 	const statusOutput = output || (d.intercomDelivery?.delivered ? d.intercomDelivery.summary : "");
 	const progress = r.progress || r.progressSummary;
@@ -1053,7 +1054,7 @@ function renderSingleCompact(d: Details, r: Details["results"][number], theme: T
 		c.addChild(new Text(truncLine(theme.fg("dim", `  ⎿  ${activity}`), width), 0, 0));
 		const liveStatus = buildLiveStatusLine(r.progress, progressSnapshotNow);
 		if (liveStatus && liveStatus !== activity) c.addChild(new Text(truncLine(theme.fg("dim", `     ${liveStatus}`), width), 0, 0));
-		c.addChild(new Text(truncLine(theme.fg("accent", "  Press Ctrl+O for live detail"), width), 0, 0));
+		if (expandKey) c.addChild(new Text(truncLine(theme.fg("accent", `  Press ${expandKey} for live detail`), width), 0, 0));
 		if (r.artifactPaths) c.addChild(new Text(truncLine(theme.fg("dim", `  output: ${shortenPath(r.artifactPaths.outputPath)}`), width), 0, 0));
 		return c;
 	}
@@ -1071,6 +1072,7 @@ function renderSingleCompact(d: Details, r: Details["results"][number], theme: T
 }
 
 function renderMultiCompact(d: Details, theme: Theme, isError = false): Component {
+	const expandKey = keyText("app.tools.expand");
 	const hasRunning = !isError && (d.progress?.some((p) => p.status === "running")
 		|| d.results.some((r) => r.progress?.status === "running")
 		|| workflowGraphHasStatus(d, ["running"]));
@@ -1162,8 +1164,8 @@ function renderMultiCompact(d: Details, theme: Theme, isError = false): Componen
 		if (outputTarget) c.addChild(new TruncatedText(theme.fg("dim", `    output: ${outputTarget}`)));
 		if (r.artifactPaths) c.addChild(new TruncatedText(theme.fg("dim", `    output: ${shortenPath(r.artifactPaths.outputPath)}`)));
 	}
-	if (renderEntries.length > visibleEntries.length) c.addChild(new Text(theme.fg("dim", `  +${renderEntries.length - visibleEntries.length} more · Ctrl+O expands`), 0, 0));
-	if (showLiveDetailHint) c.addChild(new Text(theme.fg("accent", "  Press Ctrl+O for live detail"), 0, 0));
+	if (renderEntries.length > visibleEntries.length) c.addChild(new Text(theme.fg("dim", `  +${renderEntries.length - visibleEntries.length} more${expandKey ? ` · ${expandKey} expands` : ""}`), 0, 0));
+	if (showLiveDetailHint && expandKey) c.addChild(new Text(theme.fg("accent", `  Press ${expandKey} for live detail`), 0, 0));
 	if (d.artifacts) c.addChild(new TruncatedText(theme.fg("dim", `  artifacts: ${shortenPath(d.artifacts.dir)}`)));
 	if (!hasRunning) c.addChild(new TruncatedText(theme.fg("dim", `  ${keyText("app.tools.expand")} ${d.intercomDelivery?.delivered ? "receipt details" : "full response"}`)));
 	return c;
@@ -1179,6 +1181,7 @@ export function renderSubagentResult(
 	context?: { isError: boolean },
 ): Component {
 	const isError = context?.isError ?? result.isError;
+	const expandKey = keyText("app.tools.expand");
 	const d = result.details;
 	if (!d || !d.results.length) {
 		const t = result.content[0];
@@ -1196,7 +1199,7 @@ export function renderSubagentResult(
 		const lines = text.replace(/\n+$/, "").split("\n");
 		if (lines.length === 1) return new Text(truncLine(`${contextPrefix}${lines[0]}`, getTermWidth() - 4), 0, 0);
 		const visibleLines = lines.slice(0, maxCompactLines);
-		if (lines.length > visibleLines.length) visibleLines.push(theme.fg("dim", `+${lines.length - visibleLines.length} more · Ctrl+O expands`));
+		if (lines.length > visibleLines.length) visibleLines.push(theme.fg("dim", `+${lines.length - visibleLines.length} more${expandKey ? ` · ${expandKey} expands` : ""}`));
 		return new Text(`${contextPrefix}${visibleLines.join("\n")}`, 0, 0);
 	}
 
@@ -1258,7 +1261,7 @@ export function renderSubagentResult(
 			if (liveStatusLine) {
 				c.addChild(new Text(fit(theme.fg("accent", liveStatusLine)), 0, 0));
 			}
-			c.addChild(new Text(fit(theme.fg("accent", "Press Ctrl+O for live detail")), 0, 0));
+			if (expandKey) c.addChild(new Text(fit(theme.fg("accent", `Press ${expandKey} for live detail`)), 0, 0));
 			if (r.artifactPaths) {
 				c.addChild(new Text(fit(theme.fg("dim", `Artifacts: ${shortenPath(r.artifactPaths.outputPath)}`)), 0, 0));
 			}
@@ -1504,7 +1507,7 @@ export function renderSubagentResult(
 			if (liveStatusLine) {
 				c.addChild(new Text(fit(theme.fg("accent", `    ${liveStatusLine}`)), 0, 0));
 			}
-			c.addChild(new Text(fit(theme.fg("accent", "    Press Ctrl+O for live detail")), 0, 0));
+			if (expandKey) c.addChild(new Text(fit(theme.fg("accent", `    Press ${expandKey} for live detail`)), 0, 0));
 			if (r.artifactPaths) {
 				c.addChild(new Text(fit(theme.fg("dim", `    artifacts: ${shortenPath(r.artifactPaths.outputPath)}`)), 0, 0));
 			}

@@ -3,11 +3,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { initTheme, getSelectListTheme } from "@earendil-works/pi-coding-agent";
-import { Container, CURSOR_MARKER, Editor, ScrollView, Spacer, Text, TuiMainScreen, TuiAltScreen, VStack, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
+import { CustomMessageComponent, initTheme, getSelectListTheme } from "@earendil-works/pi-coding-agent";
+import { Container, CURSOR_MARKER, Editor, ScrollView, Spacer, Text, TuiMainScreen, TuiAltScreen, VStack, getKeybindings, setKeybindings, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { createEventBus, createMockPi, makeAgent, makeMinimalCtx } from "../support/helpers.ts";
 import { createTestTerminal } from "../support/terminal.ts";
 import type { OwnedRun, SubagentState } from "../../src/shared/types.ts";
@@ -26,9 +27,16 @@ const { createAsyncJobTracker } = await import("../../src/runs/background/async-
 const { ASYNC_DIR } = await import("../../src/shared/types.ts");
 initTheme("dark", false);
 const { theme: uiTheme } = await import(new URL("./modes/interactive/theme/theme.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+const sdkTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
+function setTestKeybindings(t, keys) {
+	const previous = getKeybindings(), sdkPrevious = sdkTui.getKeybindings();
+	setKeybindings(keys); sdkTui.setKeybindings(keys);
+	t.after(() => { setKeybindings(previous); sdkTui.setKeybindings(sdkPrevious); });
+}
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 }, turns: 0 };
 function assistant(manager, text: string) { return manager.appendMessage({ role: "assistant", content: [{ type: "text", text }], provider: "fixture", model: "fixture", api: "openai-responses", stopReason: "stop", usage, timestamp: Date.now() }); }
 const plain = (component, width = 90) => component.render(width).map(stripTerminalSequences).join("\n");
+const altLabel = process.platform === "darwin" ? "option" : "Alt";
 function readDetails(view, width = 90): string {
 	view.handleInput("\x1b[H");
 	const pages: string[] = [];
@@ -42,6 +50,20 @@ function readDetails(view, width = 90): string {
 }
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 async function until(check: () => boolean, reason: string) { const deadline = Date.now() + 10_000; while (!check()) { assert.ok(Date.now() < deadline, reason); await delay(10); } }
+function hintPoint(f, text: string) {
+	f.tui.renderNow();
+	const bounds = f.overlayBounds, lines = f.overlay.render(bounds.width).map(stripTerminalSequences);
+	const y = lines.findIndex((line) => line.toLowerCase().includes(text.toLowerCase()));
+	assert.ok(y >= 0 && y < bounds.height, `displayed hint ${JSON.stringify(text)} must be inside the overlay:\n${lines.join("\n")}`);
+	const x = visibleWidth(lines[y].slice(0, lines[y].toLowerCase().indexOf(text.toLowerCase()) + text.length)) - 1;
+	assert.ok(x < bounds.width);
+	return { x: bounds.col + x, y: bounds.row + y };
+}
+async function clickHint(f, text: string) {
+	const { x, y } = hintPoint(f, text);
+	f.terminal.click(x, y); await turn(); f.tui.renderNow();
+}
+
 function nativeChild(cwd: string, scenario: "streaming" | "tool" | "question") {
 	const release = path.join(cwd, "release"), bin = path.join(cwd, "bin"); fs.mkdirSync(bin);
 	fs.writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${fileURLToPath(new URL("../fixtures/native-feedback-child.mjs", import.meta.url))}" "$@"\n`, { mode: 0o700 });
@@ -50,7 +72,7 @@ function nativeChild(cwd: string, scenario: "streaming" | "tool" | "question") {
 	return { release, restore() { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } } };
 }
 
-function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1) {
+function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, executeControl?) {
 	const cwd = path.join(root, randomUUID()); fs.mkdirSync(cwd);
 	const parent = SessionManager.create(cwd, path.join(cwd, "parent"));
 	assistant(parent, "Parent context stays unchanged");
@@ -72,11 +94,11 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1) {
 	state.foregroundControls.set(run.runId, { runId: run.runId, mode: run.mode, startedAt: run.startedAt, updatedAt: run.startedAt,
 		activeChildren: new Map(run.children.map((child) => [child.index, { agent: child.agent, interrupt: () => { interrupts[child.index]++; return true; } }])),
 		currentAgent: "worker", currentIndex: 0, interrupt: () => { throw new Error("Unexpected whole-group interrupt"); } });
-	const terminal = createTestTerminal();
-	const tui = mode === "fullscreen" ? new TuiAltScreen(terminal) : new TuiMainScreen(terminal);
-	const events = createEventBus(), commands = new Map(), sent = [], calls = [];
+	const terminal = createTestTerminal(), copied: string[] = [];
+	const tui = mode === "fullscreen" ? new TuiAltScreen(terminal, false, undefined, { copySelection: async (text) => { copied.push(text); return true; } }) : new TuiMainScreen(terminal);
+	const events = createEventBus(), commands = new Map(), renderers = new Map(), sent = [], calls = [];
 	let overlay, strip, overlayHandle;
-	const pi = { events, getSessionName: () => "test-parent", registerCommand(name, command) { commands.set(name, command); }, registerMessageRenderer() {},
+	const pi = { events, getSessionName: () => "test-parent", registerCommand(name, command) { commands.set(name, command); }, registerMessageRenderer(name, renderer) { renderers.set(name, renderer); },
 		appendEntry: (type, data) => parent.appendCustomEntry(type, structuredClone(data)),
 		sendMessage(message, options) { sent.push({ message, options }); parent.appendCustomMessageEntry(message.customType, message.content, message.display, message.details); },
 	};
@@ -102,12 +124,12 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1) {
 	const tracker = createAsyncJobTracker(pi, state, ASYNC_DIR);
 	pi.events.on("subagent:async-started", tracker.handleStarted);
 	const executor = createSubagentExecutor({ pi, state, config: {}, asyncByDefault: true, tempArtifactsDir: cwd, getSubagentSessionRoot: () => cwd, expandTilde: (value) => value, discoverAgents: () => ({ agents: ["worker", "reviewer"].map((name) => makeAgent(name, { completionGuard: false })) }) });
-	const controller = new AgentViewController(pi, state, async (params, context) => { calls.push(params); return executor.execute(randomUUID(), params, undefined, undefined, context); });
+	const controller = new AgentViewController(pi, state, async (params, context) => { calls.push(params); return executeControl ? executeControl(params, context) : executor.execute(randomUUID(), params, undefined, undefined, context); });
 	state.onRunsChanged = () => controller.refresh(true);
 	state.persistOwnedRun = (owned) => parent.appendCustomEntry(OWNED_RUN_ENTRY, structuredClone(owned));
 	controller.start(ctx);
 	t.after(() => { controller.dispose(); tui.stop(); if (state.poller) clearInterval(state.poller); for (const timer of state.cleanupTimers.values()) clearTimeout(timer); });
-	return { cwd, parent, run, state, childSessions, interrupts, controller, executor, ctx, pi, tui, terminal, mainEditor, sent, calls, commands,
+	return { cwd, parent, run, state, childSessions, interrupts, controller, executor, ctx, pi, tui, terminal, mainEditor, sent, calls, commands, renderers, copied,
 		get overlay() { return overlay; }, get overlayBounds() { return overlayHandle?.getBounds(); }, get strip() { return strip; }, key: `${run.runId}:0`,
 		complete() { state.foregroundControls.clear(); saveForegroundRun({ ...run, results: run.children.map((child) => ({ agent: child.agent, task: child.task!, exitCode: 0, finalOutput: "Finished", sessionFile: child.sessionFile, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } })) }); controller.refresh(true); },
 	};
@@ -133,6 +155,379 @@ for (const mode of ["regular", "fullscreen"] as const) test(`Agents strip and si
 	const reopen = f.controller.open();
 	assert.equal(f.overlay.editor.getExpandedText(), "first line\nsecond line 日本語");
 	f.overlay.handleInput("\x1b"); await reopen;
+});
+
+test("clickable Agents hints: Esc Back closes the native conversation and preserves both drafts", async (t) => {
+	const f = fixture(t, "fullscreen"), opening = f.controller.open();
+	f.tui.start(); f.tui.renderNow();
+	f.terminal.input("Keep this child draft"); f.tui.renderNow();
+	const bounds = f.overlayBounds, lines = f.overlay.render(bounds.width).map(stripTerminalSequences);
+	const y = lines.findIndex((line) => line.includes("Esc Back"));
+	assert.ok(y >= 0, "Esc Back is actually displayed");
+	const x = lines[y].indexOf("Esc Back") + "Esc ".length;
+	f.terminal.click(bounds.col + x, bounds.row + y); await turn();
+	assert.equal(f.tui.hasOverlay(), false, "clicking Back must close the same view as Escape");
+	await opening;
+	assert.equal(f.controller.visit(f.key).draft, "Keep this child draft");
+	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
+	assert.equal(f.mainEditor.focused, true);
+	assert.equal(f.calls.length, 0); assert.deepEqual(f.interrupts, [0]);
+});
+
+for (const [columns, rows] of [[110, 38], [56, 38], [24, 18]]) test(`clickable Agents hints: actions, read/write, details, reply and quote (${columns}×${rows})`, async (t) => {
+	const f = fixture(t, "fullscreen"), opening = f.controller.open();
+	f.terminal.resize(columns, rows); f.tui.start(); f.tui.renderNow();
+	f.terminal.input("Unsent child draft"); f.tui.renderNow();
+	const compact = f.controller.availableHeight(f.tui) < 16;
+	await clickHint(f, compact ? "Tab" : "Read/write");
+	assert.equal(f.overlay.editor.focused, false);
+	if (!compact) {
+		assert.match(plain(f.overlay, f.overlayBounds.width), /Enter Details/);
+		assert.doesNotMatch(plain(f.overlay, f.overlayBounds.width), /Enter Send/);
+		await clickHint(f, "Details");
+	} else {
+		await clickHint(f, "F2");
+		assert.match(plain(f.overlay, f.overlayBounds.width), /Reply/);
+		f.terminal.input("\x1b[B"); f.tui.renderNow();
+		await clickHint(f, "Enter");
+	}
+	assert.ok(plain(f.overlay, f.overlayBounds.width).includes(compact ? `${altLabel}+R · F2` : "details"));
+	assert.ok(!f.overlay.render(f.overlayBounds.width).some((line) => line.includes(CURSOR_MARKER)), "details hide the composer");
+	assert.doesNotMatch(plain(f.overlay, f.overlayBounds.width), /Tab/);
+	await clickHint(f, compact ? `${altLabel}+R` : "Reply");
+	assert.equal(f.overlay.editor.focused, true);
+	assert.ok(f.controller.visit(f.key).quote?.text);
+	assert.equal(f.overlay.editor.getText(), "Unsent child draft");
+	await clickHint(f, `${altLabel}+Q`);
+	assert.equal(f.controller.visit(f.key).quote, undefined);
+	await clickHint(f, compact ? "F2" : "Actions");
+	assert.match(plain(f.overlay, f.overlayBounds.width), /Reply/);
+	await clickHint(f, compact ? "Esc" : "Back to conversation");
+	assert.equal(f.tui.hasOverlay(), true);
+	assert.equal(f.overlay.editor.focused, true);
+	assert.equal(f.overlay.editor.getText(), "Unsent child draft");
+	await clickHint(f, compact ? "Esc" : "Back"); await opening;
+	assert.equal(f.tui.hasOverlay(), false);
+	assert.equal(f.calls.length, 0); assert.deepEqual(f.interrupts, [0]);
+});
+
+for (const [columns, rows] of [[110, 38], [56, 38], [24, 18]]) test(`clickable Agents hints: picker navigation, filter, open and back (${columns}×${rows})`, async (t) => {
+	const f = fixture(t, "fullscreen", 2), opening = f.controller.open();
+	f.terminal.resize(columns, rows); f.tui.start(); f.tui.renderNow();
+	await clickHint(f, "↓");
+	assert.match(plain(f.overlay, f.overlayBounds.width), /→.*Revi/);
+	await clickHint(f, "↑");
+	assert.match(plain(f.overlay, f.overlayBounds.width), /→.*Fix/);
+	if (f.controller.availableHeight(f.tui) >= 16) await clickHint(f, "Type to filter");
+	f.terminal.input("Review"); f.tui.renderNow();
+	assert.doesNotMatch(plain(f.overlay, f.overlayBounds.width), /Fix login/);
+	await clickHint(f, "Enter");
+	assert.equal(f.overlay.key, `${f.run.runId}:1`);
+	await clickHint(f, "Esc"); await opening;
+	assert.equal(f.tui.hasOverlay(), false);
+	const again = f.controller.open(); f.tui.renderNow();
+	await clickHint(f, "Esc"); await again;
+	assert.equal(f.tui.hasOverlay(), false, "picker Back closes without choosing another child");
+	assert.equal(f.calls.length, 0);
+});
+
+test("clickable Agents hints: latest leaves a scrolled reading position only on activation", async (t) => {
+	const f = fixture(t, "fullscreen"), manager = f.childSessions[0];
+	for (let i = 0; i < 30; i++) assistant(manager, `Saved message ${i}`);
+	f.controller.refresh(true);
+	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
+	f.terminal.input("Keep my draft"); f.terminal.input("\x1b[5~"); f.tui.renderNow();
+	const anchor = structuredClone(f.controller.visit(f.key).anchor);
+	assistant(manager, "New activity arrived"); f.controller.refresh(true); f.tui.renderNow();
+	assert.deepEqual(f.controller.visit(f.key).anchor, anchor);
+	await clickHint(f, "Actions");
+	assert.ok(!plain(f.overlay, f.overlayBounds.width).includes(`${altLabel}+L`), "menus do not advertise a shortcut they ignore");
+	await clickHint(f, "Back to conversation");
+	const point = hintPoint(f, `${altLabel}+L latest`);
+	f.terminal.input(`\x1b[<0;${point.x + 1};${point.y + 1}M`); f.tui.renderNow();
+	assert.equal(f.overlay.scroll.isFollowingEnd, false, "press cannot activate a hint");
+	f.terminal.input(`\x1b[<0;${point.x + 1};${point.y + 1}m`); await turn(); f.tui.renderNow();
+	assert.equal(f.overlay.scroll.isFollowingEnd, true);
+	assert.match(plain(f.overlay, f.overlayBounds.width), /New activity arrived/);
+	assert.equal(f.overlay.editor.getText(), "Keep my draft");
+	await clickHint(f, "Esc Back"); await opening;
+});
+
+for (const binding of ["ctrl+o", "ctrl+e"]) test(`clickable Agents hints: direct-user breadcrumb uses native custom-message expansion (${binding})`, async (t) => {
+	const { KeybindingsManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/keybindings.js")).href);
+	setTestKeybindings(t, new KeybindingsManager({ "app.tools.expand": binding }));
+	const f = fixture(t, "fullscreen");
+	const message = { customType: "subagent-human-direction", content: "Informational only", details: { label: "Fix login", text: "Preserve the API", quote: { title: "Recorded change", text: "FULL-QUOTED-CONTEXT" } } };
+	let card, done;
+	const opening = f.ctx.ui.custom((_tui, _theme, _keys, close) => {
+		done = close;
+		card = new CustomMessageComponent(message, f.renderers.get("subagent-human-direction"));
+		return card;
+	}, { overlayOptions: { width: "90%", margin: 1 } });
+	f.tui.start(); f.tui.renderNow();
+	assert.doesNotMatch(plain(card), /FULL-QUOTED-CONTEXT/);
+	await clickHint(f, binding);
+	assert.match(plain(card), /FULL-QUOTED-CONTEXT/);
+	card.setExpanded(true); card.setExpanded(false); f.tui.renderNow();
+	assert.doesNotMatch(plain(card), /FULL-QUOTED-CONTEXT/, "native global expansion changes override the local click state");
+	await clickHint(f, binding);
+	assert.match(plain(card), /FULL-QUOTED-CONTEXT/);
+	done(); await opening;
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
+});
+
+for (const columns of [100, 24]) test(`clickable Agents hints: Send keeps a draft until native receipt and cannot duplicate (${columns} columns)`, async (t) => {
+	const f = fixture(t, "fullscreen"); f.terminal.resize(columns, 48);
+	const deliveries = [], opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
+	f.pi.events.on("subagent:live-intercom", (payload) => {
+		deliveries.push(payload);
+		f.pi.events.emit("subagent:live-intercom-delivery", { requestId: payload.requestId, accepted: true, delivered: true, messageId: payload.messageId });
+	});
+	const draft = "  Keep the API\n日本語  ";
+	f.terminal.input(`\x1b[200~${draft}\x1b[201~`); f.tui.renderNow();
+	await clickHint(f, "Send");
+	assert.equal(deliveries.length, 1);
+	assert.equal(deliveries[0].message, draft.trim());
+	assert.equal(deliveries[0].human.index, 0);
+	assert.equal(deliveries[0].to, `subagent-worker-${f.run.runId}-1`);
+	assert.equal(f.overlay.editor.getText(), draft);
+	await clickHint(f, "Send");
+	assert.equal(deliveries.length, 1);
+	assert.equal(f.sent.length, 1); assert.equal(f.sent[0].options.triggerTurn, false);
+	f.childSessions[0].appendCustomMessageEntry("subagent-human-message", draft.trim(), true, { bodyText: draft.trim(), message: { id: deliveries[0].messageId } });
+	f.controller.refresh(true); f.tui.renderNow();
+	assert.equal(f.overlay.editor.getText(), "");
+	assert.equal(f.controller.visit(f.key).outbox.length, 0);
+	await clickHint(f, "Esc"); await opening;
+	assert.equal(f.calls.length, 0);
+});
+
+for (const surface of ["footer", "notice", "menu"]) test(`clickable Agents hints: explicit Continue from ${surface} uses the saved assignment`, async (t) => {
+	let release;
+	const f = fixture(t, "fullscreen", 1, () => new Promise((resolve) => { release = () => resolve({ content: [{ type: "text", text: "Continued" }], details: { mode: "single", results: [] } }); }));
+	const agent = makeAgent("worker", { completionGuard: false });
+	saveQuestionContract(f.run.runId, 0, { launch: { agent, systemPrompt: "Saved instructions", skills: [], cwd: f.cwd, context: "fresh", artifacts: false, output: false, outputMode: "inline", share: false } });
+	f.complete(); f.terminal.resize(180, 42);
+	let opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
+	f.terminal.input("Continue with this exact draft"); f.tui.renderNow();
+	assert.equal(f.calls.length, 0);
+	if (surface === "notice") {
+		f.terminal.input("\r"); f.tui.renderNow();
+		assert.equal(f.calls.length, 0, "Enter cannot restart a completed child");
+		await clickHint(f, "Esc Back"); await opening;
+		f.controller.dispose(); f.controller.start(f.ctx);
+		opening = f.controller.open(); f.tui.renderNow();
+		await clickHint(f, "Continue with this message (");
+	} else if (surface === "menu") {
+		await clickHint(f, "Actions");
+		assert.equal(f.calls.length, 0);
+		await clickHint(f, "Continue with this message");
+	} else await clickHint(f, "Continue with message");
+	assert.deepEqual(f.calls, [{ action: "resume", id: f.run.runId, index: 0, message: "Continue with this exact draft", messageOrigin: "human" }]);
+	assert.equal(f.overlay.editor.getText(), "Continue with this exact draft", "draft stays while continuation is pending");
+	release(); await turn(); f.tui.renderNow();
+	assert.equal(f.overlay.editor.getText(), "");
+	assert.match(plain(f.overlay, f.overlayBounds.width), /Continuation started on the saved conversation/);
+	assert.equal(f.sent.length, 1);
+	await clickHint(f, "Esc Back"); await opening;
+});
+
+test("clickable Agents hints: native menu Stop remains explicit and targets only the selected child", async (t) => {
+	const f = fixture(t, "fullscreen", 2); f.terminal.resize(100, 48);
+	const opening = f.controller.open(`${f.run.runId}:1`); f.tui.start(); f.tui.renderNow();
+	await clickHint(f, "Actions");
+	assert.deepEqual(f.interrupts, [0, 0]);
+	await clickHint(f, "Stop this agent only");
+	assert.deepEqual(f.interrupts, [0, 1]);
+	assert.deepEqual(f.calls, [{ action: "interrupt", id: f.run.runId, index: 1 }]);
+	assert.match(plain(f.overlay, f.overlayBounds.width), /Stop requested for this child only/);
+	await clickHint(f, "Esc Back"); await opening;
+});
+
+test("clickable Agents hints: more-agents command opens the picker without choosing a child", async (t) => {
+	const f = fixture(t, "fullscreen", 6); f.tui.start(); f.tui.renderNow();
+	const rows = f.strip.render(f.terminal.columns).map(stripTerminalSequences), row = rows.findIndex((line) => line.includes("/agents"));
+	assert.ok(row >= 0);
+	const dockTop = f.terminal.rows - rows.length - f.mainEditor.render(f.terminal.columns).length - 1;
+	f.terminal.click(rows[row].indexOf("/agents") + 2, dockTop + row); await turn(); f.tui.renderNow();
+	assert.equal(f.tui.hasOverlay(), true);
+	assert.ok(!(f.overlay instanceof AgentConversation));
+	await clickHint(f, "Esc");
+	assert.equal(f.tui.hasOverlay(), false);
+	assert.equal(f.calls.length, 0);
+});
+
+test("clickable Agents hints: native Option labels preserve Alt bindings and clipped quote actions", async (t) => {
+	const f = fixture(t, "fullscreen"), opening = f.controller.open();
+	f.terminal.resize(100, 48); f.tui.start(); f.tui.renderNow();
+	const draft = "Literal Alt+R stays in my draft";
+	f.terminal.input(draft); f.terminal.input("\x1br"); f.tui.renderNow();
+	assert.ok(plain(f.overlay, f.overlayBounds.width).includes(`Quote · ${altLabel}+Q remove`));
+	f.terminal.input("\t"); f.terminal.input("\r"); f.tui.renderNow();
+	assert.ok(plain(f.overlay, f.overlayBounds.width).includes(`${altLabel}+R Reply`));
+	f.terminal.input("\x1br"); f.tui.renderNow();
+	assert.equal(f.overlay.editor.getText(), draft, "display formatting cannot rewrite draft text or bindings");
+	f.terminal.resize(24, 48); f.tui.renderNow();
+	await clickHint(f, `${altLabel}+Q`);
+	assert.equal(f.controller.visit(f.key).quote, undefined, "the longer native label remains clickable after clipping");
+	assert.equal(f.overlay.editor.getText(), draft);
+	await clickHint(f, "Esc"); await opening;
+	assert.equal(f.calls.length, 0);
+});
+
+test("clickable Agents hints: Back unwinds details and its menu without losing read position or native selection", async (t) => {
+	const f = fixture(t, "fullscreen");
+	for (let i = 0; i < 30; i++) assistant(f.childSessions[0], `Historical message ${i}\nRecorded detail ${i}`);
+	f.controller.refresh(true);
+	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
+	f.terminal.input("Unsent draft"); f.terminal.input("\x1b[5~"); f.tui.renderNow();
+	const anchor = f.controller.visit(f.key).anchor?.id;
+	assert.ok(anchor);
+	await clickHint(f, "Read/write");
+	await clickHint(f, "Enter Details");
+	await clickHint(f, "F2 Actions");
+	await clickHint(f, "Back to details");
+	assert.ok(plain(f.overlay, f.overlayBounds.width).includes("› details"));
+	assert.equal(f.overlay.editor.focused, false);
+	await clickHint(f, "Esc Back");
+	assert.equal(f.controller.visit(f.key).anchor?.id, anchor);
+	assert.equal(f.overlay.editor.getText(), "Unsent draft");
+	assert.equal(f.overlay.editor.focused, true);
+	const word = "Historical", point = hintPoint(f, word), x = point.x - word.length + 1;
+	f.terminal.input(`\x1b[<0;${x + 1};${point.y + 1}M`);
+	f.terminal.input(`\x1b[<32;${point.x + 1};${point.y + 1}M`);
+	f.terminal.input(`\x1b[<0;${point.x + 1};${point.y + 1}m`); await turn(); f.tui.renderNow();
+	assert.deepEqual(f.copied, [word], "non-hint transcript drags still use native selection");
+	const action = hintPoint(f, "F2 Actions"), back = hintPoint(f, "Esc Back");
+	f.terminal.input(`\x1b[<0;${action.x + 1};${action.y + 1}M`);
+	f.terminal.input(`\x1b[<32;${back.x + 1};${back.y + 1}M`);
+	f.terminal.input(`\x1b[<0;${back.x + 1};${back.y + 1}m`); await turn(); f.tui.renderNow();
+	assert.doesNotMatch(plain(f.overlay, f.overlayBounds.width), /Reply to selected/);
+	assert.equal(f.tui.hasOverlay(), true, "a drag between hints activates neither end");
+	await clickHint(f, "Esc Back"); await opening;
+	assert.equal(f.calls.length, 0);
+});
+
+test("clickable Agents hints: configured native selection and submit keys keep matching their labels", async (t) => {
+	const { KeybindingsManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/keybindings.js")).href);
+	setTestKeybindings(t, new KeybindingsManager({ "tui.select.down": "ctrl+e", "tui.select.confirm": "ctrl+g", "tui.select.cancel": "ctrl+q", "tui.input.submit": "alt+enter" }));
+	const f = fixture(t, "fullscreen", 2), deliveries = [], opening = f.controller.open();
+	f.tui.start(); f.tui.renderNow();
+	await clickHint(f, "ctrl+e Choose");
+	await clickHint(f, "ctrl+g Open");
+	assert.equal(f.overlay.key, `${f.run.runId}:1`);
+	f.pi.events.on("subagent:live-intercom", (payload) => {
+		deliveries.push(payload);
+		f.pi.events.emit("subagent:live-intercom-delivery", { requestId: payload.requestId, accepted: true, delivered: true, messageId: payload.messageId });
+	});
+	f.terminal.input("Configured send"); f.terminal.input("\x1b[13;3u"); await turn(); f.tui.renderNow();
+	assert.equal(deliveries.length, 1, "the actual configured native submit key still sends");
+	await clickHint(f, `${altLabel.toLowerCase()}+enter Send`);
+	assert.equal(deliveries.length, 1, "click uses the same pending-delivery guard");
+	await clickHint(f, "Actions");
+	await clickHint(f, "ctrl+q Back to conversation");
+	await clickHint(f, "Esc Back"); await opening;
+	assert.equal(f.calls.length, 0);
+});
+
+test("clickable Agents hints: quoted shell tabs keep native text and remove-control coordinates aligned", async (t) => {
+	const f = fixture(t, "fullscreen"); f.terminal.resize(120, 48);
+	f.childSessions[0].appendMessage({ role: "bashExecution", command: "printf\tquote", output: "Recorded output", exitCode: 0, cancelled: false, timestamp: Date.now() });
+	f.controller.refresh(true);
+	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
+	f.terminal.input("\t"); f.terminal.input("\x1b[F"); f.tui.renderNow();
+	f.terminal.input("\x1br"); f.terminal.input("Unsent draft"); f.tui.renderNow();
+	assert.ok(f.controller.visit(f.key).quote?.title.includes("printf\tquote"));
+	assert.match(plain(f.overlay, f.overlayBounds.width), /Shell: printf   quote/);
+	await clickHint(f, `${altLabel}+Q remove`);
+	assert.equal(f.controller.visit(f.key).quote, undefined);
+	assert.equal(f.overlay.editor.getText(), "Unsent draft");
+	await clickHint(f, "Esc Back"); await opening;
+	assert.equal(f.calls.length, 0);
+});
+
+test("clickable Agents hints: remapped picker Up owns its displayed cell, not a letter in Type to filter", async (t) => {
+	const { KeybindingsManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/keybindings.js")).href);
+	setTestKeybindings(t, new KeybindingsManager({ "tui.select.up": "p" }));
+	const f = fixture(t, "fullscreen", 2), opening = f.controller.open();
+	f.tui.start(); f.tui.renderNow();
+	f.terminal.input("\x1b[B"); f.tui.renderNow();
+	assert.match(plain(f.overlay, f.overlayBounds.width), /→.*Review changes/);
+	const up = hintPoint(f, "p/↓ Choose");
+	f.terminal.click(up.x - visibleWidth("/↓ Choose"), up.y); await turn(); f.tui.renderNow();
+	assert.match(plain(f.overlay, f.overlayBounds.width), /→.*Fix login/, "the displayed p performs Up");
+	f.terminal.input("\x1b[B"); f.tui.renderNow();
+	const filter = hintPoint(f, "Type");
+	f.terminal.click(filter.x - 1, filter.y); await turn(); f.tui.renderNow();
+	assert.match(plain(f.overlay, f.overlayBounds.width), /→.*Review changes/, "the p inside Type to filter only focuses the filter");
+	f.terminal.input("p"); f.tui.renderNow();
+	assert.match(plain(f.overlay, f.overlayBounds.width), /→.*Fix login/, "the configured key still performs Up");
+	await clickHint(f, "Esc Back"); await opening;
+	assert.equal(f.calls.length, 0);
+});
+
+test("clickable Agents hints: ordinary activity stays literal and cannot jump to latest", async (t) => {
+	const f = fixture(t, "fullscreen"); f.terminal.resize(120, 48);
+	for (let i = 0; i < 30; i++) assistant(f.childSessions[0], `Saved message ${i}`);
+	f.state.foregroundControls.get(f.run.runId).progress = [{ index: 0, agent: "worker", task: "fixture", status: "running", streamingText: "Alt+L latest is the old label", toolCount: 0, tokens: 0, durationMs: 0, lastActivityAt: 0, recentTools: [] }];
+	f.controller.refresh(true);
+	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
+	assert.equal(f.overlay.scroll.isFollowingEnd, true);
+	assert.match(plain(f.overlay, f.overlayBounds.width), /worker · Alt\+L latest is the old label/, "activity is not an owned keyboard label");
+	f.terminal.input("Keep my draft"); f.terminal.input("\x1b[5~"); f.tui.renderNow();
+	f.controller.refresh(true); f.tui.renderNow();
+	assert.equal(f.controller.task(f.key).unread, false);
+	const anchor = structuredClone(f.controller.visit(f.key).anchor);
+	await clickHint(f, "latest");
+	assert.equal(f.overlay.scroll.isFollowingEnd, false, "clicking ordinary activity cannot activate Latest");
+	assert.deepEqual(f.controller.visit(f.key).anchor, anchor);
+	assert.equal(f.overlay.editor.getText(), "Keep my draft");
+	await clickHint(f, "Esc Back"); await opening;
+	assert.equal(f.calls.length, 0);
+});
+
+test("clickable Agents hints: more-agents excludes clipping dots and padding but keeps visible command clicks", async (t) => {
+	const f = fixture(t, "fullscreen", 6); f.tui.start();
+	for (const columns of [18, 100]) {
+		f.terminal.resize(columns, 48); f.tui.renderNow();
+		const rows = f.strip.render(columns).map(stripTerminalSequences), row = rows.findIndex((line) => line.includes("more"));
+		assert.ok(row >= 0);
+		const dockTop = f.terminal.rows - rows.length - f.mainEditor.render(columns).length - 1;
+		const dots = rows[row].indexOf("...");
+		if (columns === 18) assert.ok(dots >= 0, `narrow command must be clipped: ${rows[row]}`);
+		for (const x of dots >= 0 ? [dots, dots + 1, dots + 2, 0, 1] : [0, 1, visibleWidth(rows[row]) + 1]) {
+			f.terminal.click(x, dockTop + row); await turn(); f.tui.renderNow();
+			assert.equal(f.tui.hasOverlay(), false, "clipping markers and padding are not command text");
+		}
+		f.terminal.click(rows[row].indexOf("more"), dockTop + row); await turn(); f.tui.renderNow();
+		assert.equal(f.tui.hasOverlay(), true, "the visible command still opens the picker");
+		assert.ok(!(f.overlay instanceof AgentConversation));
+		await clickHint(f, "Esc");
+		assert.equal(f.tui.hasOverlay(), false);
+	}
+	assert.equal(f.calls.length, 0);
+});
+
+test("clickable Agents hints: a returned notice cannot declare a Continue action, even after reload", async (t) => {
+	const notice = "This agent has finished. Your draft is kept. Choose Continue with this message (Alt+C).";
+	const f = fixture(t, "fullscreen", 1, async () => ({ isError: true, content: [{ type: "text", text: notice }], details: { mode: "single", results: [] } }));
+	f.terminal.resize(180, 48);
+	let opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
+	f.terminal.input("Keep my draft");
+	await clickHint(f, "Actions"); await clickHint(f, "Stop this agent only");
+	for (const restored of [false, true]) {
+		if (restored) {
+			f.controller.dispose(); f.controller.start(f.ctx);
+			opening = f.controller.open(); f.tui.renderNow();
+		}
+		assert.ok(plain(f.overlay, f.overlayBounds.width).includes(notice), "returned text stays literal even when it exactly matches an old generated notice");
+		await clickHint(f, "Continue with this message (");
+		assert.equal(f.calls.length, 1, "returned data must not start a continuation");
+		assert.equal(f.calls[0].action, "interrupt");
+		assert.equal(f.sent.length, 0); assert.equal(f.controller.visit(f.key).outbox.length, 0);
+		assert.equal(f.overlay.editor.getText(), "Keep my draft");
+		await clickHint(f, "Esc Back"); await opening;
+	}
 });
 
 test("live multiple-child picker and fullscreen task click target the exact child", async (t) => {
@@ -591,7 +986,7 @@ test("completion during compose keeps the draft, and viewing a finished child ne
 	view.handleInput("\r"); await turn();
 	assert.equal(f.calls.length, 0);
 	assert.equal(view.editor.getExpandedText(), "Follow up after completion");
-	assert.match(plain(view), /Alt\+C Continue/);
+	assert.ok(plain(view).includes(`${altLabel}+C Continue`));
 	view.handleInput("\x1b"); await opening;
 	const reopening = f.controller.open();
 	assert.equal(f.calls.length, 0);

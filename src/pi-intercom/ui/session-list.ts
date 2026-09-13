@@ -1,5 +1,6 @@
-import type { Component, SelectItem, TUI } from "@earendil-works/pi-tui";
-import { SelectList, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { Component, SelectItem, TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Box, Container, SelectList, Text, sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { actionHints } from "../../tui/action-hints.ts";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import type { SessionInfo } from "../types.ts";
 import { formatSessionTarget } from "../session-targets.ts";
@@ -8,7 +9,8 @@ function sessionTitle(session: SessionInfo, allSessions: SessionInfo[], suffix?:
   return `${session.name || "Unnamed session"} (${formatSessionTarget(session, allSessions)})${suffix ? ` [${suffix}]` : ""}`;
 }
 
-export class SessionListOverlay implements Component {
+export class SessionListOverlay extends Container {
+  private completed = false;
   private selectList: SelectList;
   private allSessions: SessionInfo[];
   private tui: TUI;
@@ -29,6 +31,7 @@ export class SessionListOverlay implements Component {
     hiddenSessionCount = 0,
     allSessions = [currentSession, ...sessions],
   ) {
+    super();
     this.tui = tui;
     this.theme = theme;
     this.keybindings = keybindings;
@@ -49,17 +52,28 @@ export class SessionListOverlay implements Component {
       scrollInfo: (text) => theme.fg("dim", text),
       noMatch: (text) => theme.fg("dim", text),
     });
-    this.selectList.onSelect = (item) => done(sessions.find((session) => session.id === item.value));
-    this.selectList.onCancel = () => done(undefined);
+    this.selectList.onSelect = (item) => this.finish(sessions.find((session) => session.id === item.value));
+    this.selectList.onCancel = () => this.finish();
   }
 
-  invalidate(): void {
-    this.selectList.invalidate();
+  private finish(result?: SessionInfo): void {
+    if (this.completed) return;
+    this.completed = true;
+    this.done(result);
+  }
+
+  dispose(): void { this.completed = true; }
+
+  handleMouse(event: TuiMouseEvent) {
+    const width = Math.min(event.width, 88);
+    if (this.completed || event.x >= width) return;
+    return super.handleMouse({ ...event, width });
   }
 
   handleInput(data: string): void {
+    if (this.completed) return;
     if (this.sessions.length === 0) {
-      if (this.keybindings.matches(data, "tui.select.cancel")) this.done(undefined);
+      if (this.keybindings.matches(data, "tui.select.cancel")) this.finish();
     } else {
       this.selectList.handleInput(data);
     }
@@ -67,18 +81,23 @@ export class SessionListOverlay implements Component {
   }
 
   render(width: number): string[] {
+    this.clear();
     if (width < 3) return [truncateToWidth("Intercom", width)];
     const innerWidth = Math.min(width, 88);
     const contentWidth = Math.max(1, innerWidth - 2);
-    const footer = this.sessions.length === 0
-      ? `${this.keybindings.getKeys("tui.select.cancel").join("/")}: Close`
-      : `${this.keybindings.getKeys("tui.select.confirm").join("/")}: Message • ${this.keybindings.getKeys("tui.select.cancel").join("/")}: Close`;
+    const message = [this.keybindings.getKeys("tui.select.confirm").join("/"), "Message"].filter(Boolean).join(": ");
+    const close = [this.keybindings.getKeys("tui.select.cancel").join("/"), "Close"].filter(Boolean).join(": ");
     const border = (text: string) => this.theme.fg("accent", text);
     const row = (text = "") => {
       const clipped = truncateToWidth(text, contentWidth, "", true);
       return `${border("│")}${clipped}${" ".repeat(Math.max(0, contentWidth - visibleWidth(clipped)))}${border("│")}`;
     };
 
+    const framed = (component: Component) => {
+      const box = new Box(1, 0, (line) => row(sliceByColumn(line, 1, contentWidth)));
+      box.addChild(component);
+      return box;
+    };
     const lines = [
       border(`╭${"─".repeat(contentWidth)}╮`),
       row(this.theme.bold(" Current Session")),
@@ -89,8 +108,9 @@ export class SessionListOverlay implements Component {
       row(this.theme.bold(" Other Sessions")),
     ];
 
+    this.addChild(new Text(lines.join("\n"), 0, 0));
     if (this.sessions.length === 0) {
-      lines.push(...(this.hiddenSessionCount > 0
+      this.addChild(new Text((this.hiddenSessionCount > 0
         ? [
             row(this.theme.fg("dim", " No other sessions in this project")),
             row(this.theme.fg("dim", ` ${this.hiddenSessionCount} in other project${this.hiddenSessionCount === 1 ? "" : "s"} hidden`)),
@@ -100,19 +120,20 @@ export class SessionListOverlay implements Component {
             row(this.theme.fg("dim", " No other intercom-connected sessions")),
             row(this.theme.fg("dim", " Start another session with: pi --name worker")),
             row(this.theme.fg("dim", " Then run intercom({ action: \"list\" }) again")),
-          ]));
+          ]).join("\n"), 0, 0));
     } else {
-      lines.push(...this.selectList.render(contentWidth).map(row));
+      this.addChild(framed(this.selectList));
       if (this.hiddenSessionCount > 0) {
-        lines.push(row(this.theme.fg("dim", ` ${this.hiddenSessionCount} other-project session${this.hiddenSessionCount === 1 ? "" : "s"} hidden · /intercom all`)));
+        this.addChild(new Text(row(this.theme.fg("dim", ` ${this.hiddenSessionCount} other-project session${this.hiddenSessionCount === 1 ? "" : "s"} hidden · /intercom all`)), 0, 0));
       }
     }
 
-    lines.push(
-      border(`├${"─".repeat(contentWidth)}┤`),
-      row(this.theme.fg("dim", ` ${footer}`)),
-      border(`╰${"─".repeat(contentWidth)}╯`),
-    );
-    return lines;
+    this.addChild(new Text(border(`├${"─".repeat(contentWidth)}┤`), 0, 0));
+    this.addChild(framed(actionHints([
+      " ", ...(this.sessions.length ? [{ text: message, run: () => { const item = this.selectList.getSelectedItem(); if (item) this.selectList.onSelect?.(item); } }, " • "] : []),
+      { text: close, run: () => this.finish() },
+    ], (text) => this.theme.fg("dim", text), "")));
+    this.addChild(new Text(border(`╰${"─".repeat(contentWidth)}╯`), 0, 0));
+    return super.render(innerWidth);
   }
 }

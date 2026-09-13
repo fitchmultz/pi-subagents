@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { AssistantMessageComponent, UserMessageComponent, ToolExecutionComponent, DynamicBorder, createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition, createLsToolDefinition, createPowerShellToolDefinition, createReadToolDefinition, createWriteToolDefinition, getMarkdownTheme, getSelectListTheme, rawKeyHint, renderDiff, type ExtensionAPI, type ExtensionContext, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Container, CURSOR_MARKER, Editor, Input, MouseRegion, ScrollView, SelectList, Spacer, Text, fuzzyFilter, getKeybindings, matchesKey, truncateToWidth, visibleWidth, type Component, type OverlayOptions, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { AssistantMessageComponent, UserMessageComponent, ToolExecutionComponent, DynamicBorder, createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition, createLsToolDefinition, createPowerShellToolDefinition, createReadToolDefinition, createWriteToolDefinition, getMarkdownTheme, getSelectListTheme, keyText, rawKeyHint, renderDiff, type ExtensionAPI, type ExtensionContext, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
+import { Box, Container, CURSOR_MARKER, Editor, Input, MouseRegion, ScrollView, SelectList, Spacer, Text, fuzzyFilter, getKeybindings, matchesKey, truncateToWidth, visibleWidth, type Component, type Keybinding, type OverlayOptions, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
 import { loadConfig as loadIntercomConfig } from "../pi-intercom/config.ts";
 import { sendLiveSubagentMessage } from "../intercom/live-intercom.ts";
@@ -16,11 +16,17 @@ import { formatAgentProcessExit } from "../shared/status-format.ts";
 import { WIDGET_KEY, type OwnedRun, type OwnedRunView, type SubagentExecutionResult, type SubagentState } from "../shared/types.ts";
 import { buildWidgetLines } from "./render.ts";
 import { NativeAgentHistory, readableText, withFinalResult, type AgentHistoryItem } from "./agent-history.ts";
+import { actionHints, withMouseExpansion } from "./action-hints.ts";
 
 const VIEW_ENTRY = "subagent-view";
 const DIRECTION_MESSAGE = "subagent-human-direction";
 const UNAVAILABLE_ASSIGNMENT = "Assignment identity unavailable. Your draft is kept; no message or Stop was sent. Inspect the run and choose a verified assignment before sending it.";
 const PENDING_MESSAGE_NOTICE = "This message is already waiting for the child. You can keep working or write a different message.";
+const CONTINUE_HINT = "Continue with this message (Alt+C)";
+const CONTINUE_NOTICES = {
+	finished: "This agent has finished. Your draft is kept. Choose ",
+	blocked: "This agent needs your action; acceptance is incomplete. Your draft is kept. Choose ",
+};
 type ExecuteControl = (params: SubagentParamsLike, ctx: ExtensionContext) => Promise<SubagentExecutionResult>;
 type Quote = { title: string; text: string };
 type Anchor = { id: string; line: number };
@@ -44,7 +50,7 @@ export interface AgentVisit {
 	seenActivityAt?: number;
 	outbox: OutgoingMessage[];
 	lastSentId?: string;
-	notice?: string;
+	notice?: string | { continue: keyof typeof CONTINUE_NOTICES };
 }
 export interface AgentTask {
 	key: string;
@@ -62,6 +68,10 @@ export interface AgentTask {
 
 const short = (text: string, width = 48) => truncateToWidth(readableText(text).replace(/\s+/g, " ").trim(), width);
 const resultText = (result: SubagentExecutionResult) => result.content.map((part) => part.type === "text" ? part.text : "").join("\n");
+function primaryKey(action: Keybinding): string {
+	const key = getKeybindings().getKeys(action)[0];
+	return ({ enter: "Enter", escape: "Esc", up: "↑", down: "↓" } as Record<string, string>)[key ?? ""] ?? readableText(rawKeyHint(key ?? "", "")).trim();
+}
 export function agentTaskLabel(child: OwnedRunView["children"][number]): string {
 	return readableText(child.label || child.task?.split("\n").find((line) => line.trim()) || `${child.agent} · assignment unavailable`).replace(/\s+/g, " ").trim();
 }
@@ -115,11 +125,17 @@ export class AgentViewController {
 	constructor(pi: ExtensionAPI, state: SubagentState, execute: ExecuteControl) {
 		this.pi = pi; this.state = state; this.execute = execute;
 		pi.registerCommand("agents", { description: "View, message, answer, stop, or continue your agents", handler: async (_args, ctx) => this.open(undefined, ctx) });
-		pi.registerMessageRenderer(DIRECTION_MESSAGE, (message, options, theme) => {
+		pi.registerMessageRenderer(DIRECTION_MESSAGE, withMouseExpansion((message, options, theme) => {
 			const details = message.details as { label: string; text: string; quote?: Quote };
-			return new Text(options.expanded ? `User → ${details.label}\n${details.text}${details.quote ? `\n\nReplying to ${details.quote.title}:\n${details.quote.text}` : ""}`
-				: theme.fg("dim", `User → ${details.label}: ${short(details.text, 100)} · sent directly · Ctrl+O`), 0, 0);
-		});
+			return {
+				render(width) {
+					const key = keyText("app.tools.expand");
+					return new Text(options.expanded ? `User → ${details.label}\n${details.text}${details.quote ? `\n\nReplying to ${details.quote.title}:\n${details.quote.text}` : ""}`
+						: theme.fg("dim", `User → ${details.label}: ${short(details.text, 100)} · sent directly${key ? ` · ${key}` : ""}`), 0, 0).render(width);
+				},
+				invalidate() {},
+			};
+		}));
 	}
 
 	start(ctx: ExtensionContext): void {
@@ -171,7 +187,11 @@ export class AgentViewController {
 						hits.push({ start: 0, end: width, row: lines.length, key: task.key });
 						lines.push(truncateToWidth(`${theme.fg(color, `  ${symbol} `)}${theme.bold(label)} ${theme.fg(color, `· ${status}`)}${theme.fg("accent", badge)}`, width));
 					}
-					if (visible.length < active.length) lines.push(theme.fg("dim", truncateToWidth(`  +${active.length - visible.length} more · /agents`, width)));
+					if (visible.length < active.length) {
+						const more = `  +${active.length - visible.length} more · /agents`, line = truncateToWidth(more, width, "...");
+						hits.push({ start: 2, end: visibleWidth(line) - (visibleWidth(more) > width ? 3 : 0), row: lines.length });
+						lines.push(theme.fg("dim", line));
+					}
 					const pinned = this.tasks.find((task) => task.key === this.pinned);
 					if (pinned) {
 						const last = pinned.history.findLast((item) => item.kind === "assistant")?.text;
@@ -359,7 +379,7 @@ export class AgentViewController {
 		const question = task.question;
 		const liveQuestion = question && questionProcessAlive(question);
 		if (task.child.state !== "live" && !liveQuestion && !continueExplicitly) {
-			visit.notice = `${task.child.state === "blocked" ? "This agent needs your action; acceptance is incomplete." : "This agent has finished."} Your draft is kept. Choose Continue with this message (Alt+C).`;
+			visit.notice = { continue: task.child.state === "blocked" ? "blocked" : "finished" };
 			this.changed(); return;
 		}
 		if (!liveQuestion && task.child.state !== "live" && (task.child.missingSession || (!task.child.sessionFile && continueExplicitly))) {
@@ -466,6 +486,8 @@ export class AgentViewController {
 
 class AgentPicker extends Container {
 	private list?: SelectList;
+	private itemKeys: string[] = [];
+	private closed = false;
 	private search: Input;
 	private signature = "";
 	private hasFocus = false;
@@ -491,6 +513,7 @@ class AgentPicker extends Container {
 			return { value: task.key, label: `${task.child.agent} · ${task.label}`, description: status + badge };
 		});
 		if (!query) items.push({ value: "peers", label: "Other connected sessions", description: "All projects" });
+		this.itemKeys = items.map((item) => item.value);
 		const selected = this.list?.getSelectedItem()?.value;
 		const selectedIndex = Math.max(0, items.findIndex((item) => item.value === selected));
 		const task = this.controller.task(items[selectedIndex]?.value ?? "");
@@ -509,7 +532,14 @@ class AgentPicker extends Container {
 				const assignment = new Text(readableText(task.child.task ?? "Original assignment unavailable."), 0, 0).render(innerWidth);
 				footer.addChild(new Text(assignment.slice(0, 3).join("\n"), 0, 0));
 			}
-			footer.addChild(new Text(this.theme.fg("dim", compact ? "↑↓ · Enter · Esc" : width < 60 ? "↑↓ Choose · Enter Open\nEsc Back · Type to filter" : "Type to filter · ↑↓ Choose · Enter Open · Esc Back"), 0, 0));
+			const up = primaryKey("tui.select.up"), down = primaryKey("tui.select.down");
+			const choose = [{ text: up, run: () => this.act("up") }, up && down ? "/" : "", { text: `${down}${compact ? "" : " Choose"}`, run: () => this.act("down") }];
+			const open = { text: `${primaryKey("tui.select.confirm")}${compact ? "" : " Open"}`.trim(), run: () => this.act("open") };
+			const back = { text: `${primaryKey("tui.select.cancel")}${compact ? "" : " Back"}`.trim(), run: () => this.act("back") };
+			const filter = { text: "Type to filter", run: () => this.act("filter") };
+			const controls = compact ? [...choose, " · ", open, " · ", back]
+				: width < 60 ? [...choose, " · ", open, "\n", back, " · ", filter] : [filter, " · ", ...choose, " · ", open, " · ", back];
+			footer.addChild(actionHints(controls, (text) => this.theme.fg("dim", text)));
 			const visible = Math.max(1, height - 3 - header.render(innerWidth).length - footer.render(innerWidth).length);
 			// Native SelectList needs more than ten cells to show its description column.
 			const descriptionWidth = Math.max(11, ...items.map((item) => visibleWidth(item.description ?? "")));
@@ -517,7 +547,7 @@ class AgentPicker extends Container {
 			this.list = new SelectList(items, visible, getSelectListTheme(), { minPrimaryColumnWidth: Math.min(24, primaryWidth), maxPrimaryColumnWidth: primaryWidth, truncatePrimary: ({ text, maxWidth }) => truncateToWidth(text, maxWidth) });
 			this.list.setSelectedIndex(selectedIndex);
 			this.list.onSelect = (item) => this.done(item.value);
-			this.list.onCancel = () => this.done();
+			this.list.onCancel = () => this.act("back");
 			const body = new Box(1, 0, (text) => this.theme.bg("customMessageBg", text));
 			body.addChild(header);
 			body.addChild(items.length ? this.list : new Text(query ? "No matching agents." : "No agents owned by this session yet.", 0, 0));
@@ -532,14 +562,26 @@ class AgentPicker extends Container {
 	}
 	invalidate(): void { this.signature = ""; super.invalidate(); }
 	syncDraft(): void {}
+	private act(action: "up" | "down" | "open" | "back" | "filter"): void {
+		if (this.closed) return;
+		if (action === "back") this.done();
+		else if (action === "filter") this.tui.setFocus(this);
+		else if (action === "open") { const item = this.list?.getSelectedItem(); if (item) this.list?.onSelect?.(item); }
+		else if (this.itemKeys.length) {
+			const index = this.itemKeys.indexOf(this.list?.getSelectedItem()?.value ?? "");
+			this.list?.setSelectedIndex((index + (action === "up" ? -1 : 1) + this.itemKeys.length) % this.itemKeys.length);
+		}
+		this.tui.requestRender();
+	}
 	handleInput(data: string): void {
+		if (this.closed) return;
 		if (matchesKey(data, this.controller.shortcut)) { this.done(); return; }
 		const keys = getKeybindings();
 		if ((["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"] as const).some((key) => keys.matches(data, key))) this.list?.handleInput(data);
 		else this.search.handleInput(data);
 		this.tui.requestRender();
 	}
-	dispose(): void {}
+	dispose(): void { this.closed = true; }
 }
 
 /** Native ScrollView owns follow/scroll state; overlays only need a bounded render adapter. */
@@ -727,9 +769,17 @@ export class AgentConversation extends Container {
 		const task = this.task, innerWidth = Math.max(1, width - 2);
 		const height = this.controller.availableHeight(this.tui), compact = height < 16;
 		const terminal = task?.child.state !== "live" && !task?.question;
-		const actionHint = task?.child.identityUnavailable ? "Assignment unavailable · draft kept" : task?.child.activity?.status === "pending" ? "Waiting to start · draft kept" : terminal ? width < 60 ? "Alt+C Continue" : "Alt+C Continue with message" : "Enter Send";
-		const controls = this.menu ? compact ? "Enter · Esc" : "Enter Choose · Esc Back to conversation" : compact ? "F2 · Tab · Esc" : this.detail ? "Alt+R Reply · F2 Actions · Esc Back" : width < 60 ? `F2 Actions · Esc Back\n${actionHint} · Tab Read/write` : `${actionHint} · F2 Actions · Tab Read/write · Esc Back`;
-		const footer = new Text(this.menu ? controls : this.theme.fg("dim", controls), 0, 0);
+		const primary = task?.child.identityUnavailable || task?.child.activity?.status === "pending" ? undefined : terminal ? "continue" : this.editorFocus ? "send" : "details";
+		const actionHint = task?.child.identityUnavailable ? "Assignment unavailable · draft kept" : task?.child.activity?.status === "pending" ? "Waiting to start · draft kept" : terminal ? width < 60 ? "Alt+C Continue" : "Alt+C Continue with message" : this.editorFocus ? `${primaryKey("tui.input.submit")} Send`.trim() : "Enter Details";
+		const primaryHint = primary ? { text: actionHint, run: () => this.act(primary) } : actionHint;
+		const actions = { text: compact ? "F2" : "F2 Actions", run: () => this.act("actions") };
+		const focus = { text: compact ? "Tab" : "Tab Read/write", run: () => this.act("focus") };
+		const reply = { text: compact ? "Alt+R" : "Alt+R Reply", run: () => this.act("reply") };
+		const back = { text: this.menu ? `${primaryKey("tui.select.cancel")}${compact ? "" : this.detail ? " Back to details" : " Back to conversation"}`.trim() : compact ? "Esc" : "Esc Back", run: () => this.act("back") };
+		const choose = { text: `${primaryKey("tui.select.confirm")}${compact ? "" : " Choose"}`.trim(), run: () => this.act("choose") };
+		const controls = this.menu ? [choose, " · ", back] : this.detail ? [reply, " · ", actions, " · ", back] : compact ? [actions, " · ", focus, " · ", back]
+			: width < 60 ? [actions, " · ", back, "\n", primaryHint, " · ", focus] : [primaryHint, " · ", actions, " · ", focus, " · ", back];
+		const footer = actionHints(controls, this.menu ? undefined : (text) => this.theme.fg("dim", text));
 		// Reserve title, controls and required content before spending rows on status or borders.
 		const contentRows = this.menu ? this.menu.render(innerWidth).length : 1 + (this.detail ? 0 : 1 + Number(!compact) + Number(Boolean(this.visit.notice)) + Number(Boolean(this.visit.quote)));
 		const requiredRows = 1 + footer.render(innerWidth).length + contentRows;
@@ -739,7 +789,10 @@ export class AgentConversation extends Container {
 		const body = new Box(1, 0, (text) => this.theme.bg("customMessageBg", text));
 		const header = new Container();
 		header.addChild(new Text(this.theme.fg("accent", this.theme.bold(truncateToWidth(`Agents › ${task?.label ?? "unavailable"}${this.detail ? " › details" : ""}`, innerWidth))), 0, 0));
-		if (showStatus) header.addChild(new Text(this.theme.fg("dim", truncateToWidth(`${task?.unread && !this.scroll.isFollowingEnd ? "New activity · Alt+L latest · " : ""}${task ? `${task.child.agent} · ${activity(task)}` : "Unavailable"}`, innerWidth)), 0, 0));
+		if (showStatus) header.addChild(actionHints([
+			...(task?.unread && !this.scroll.isFollowingEnd ? ["New activity · ", ...(this.menu ? [] : [{ text: "Alt+L latest", run: () => this.act("latest") }, " · "])] : []),
+			task ? `${task.child.agent} · ${activity(task)}` : "Unavailable",
+		], (text) => this.theme.fg("dim", text), "..."));
 		body.addChild(header);
 		if (this.menu) {
 			body.addChild(this.menu);
@@ -747,8 +800,10 @@ export class AgentConversation extends Container {
 		} else {
 			const bottom = new Container();
 			if (!this.detail) {
-				if (this.visit.notice) bottom.addChild(new Text(this.theme.fg("warning", short(this.visit.notice, innerWidth)), 0, 0));
-				if (this.visit.quote) bottom.addChild(new Text(this.theme.fg("dim", truncateToWidth(`Quote · Alt+Q remove: ${this.visit.quote.title}`, innerWidth)), 0, 0));
+				const notice = this.visit.notice;
+				if (notice) bottom.addChild(actionHints(typeof notice === "string" ? [readableText(notice).replace(/\s+/g, " ").trim()]
+					: [CONTINUE_NOTICES[notice.continue], { text: CONTINUE_HINT, run: () => this.act("continue") }, "."], (text) => this.theme.fg("warning", text), "..."));
+				if (this.visit.quote) bottom.addChild(actionHints(["Quote · ", { text: "Alt+Q remove", run: () => this.act("unquote") }, ": ", this.visit.quote.title], (text) => this.theme.fg("dim", text), "..."));
 				if (!compact) bottom.addChild(new Text(this.theme.fg("accent", truncateToWidth(`${task?.question ? "Answer" : "Message"} ${task?.label ?? "agent"}${this.controller.isBusy(this.key) ? " · sending" : ""}`, innerWidth)), 0, 0));
 				bottom.addChild(this.editorViewport);
 			}
@@ -831,7 +886,16 @@ export class AgentConversation extends Container {
 		this.menu.onCancel = () => { this.menu = undefined; };
 	}
 	private act(action: string): void {
-		if (action === "reply") this.reply();
+		if (this.closed) return;
+		if (action === "back") {
+			if (this.menu) this.menu.onCancel?.();
+			else if (this.detail) { this.detail = undefined; this.editorFocus = true; this.restoreAnchor = this.conversationAnchor; if (!this.restoreAnchor) this.scroll.scrollToEnd(); }
+			else this.finish();
+		} else if (action === "choose") { const item = this.menu?.getSelectedItem(); if (item) this.menu?.onSelect?.(item); }
+		else if (action === "actions") this.actions();
+		else if (action === "focus" && !this.detail) { this.editorFocus = !this.editorFocus; if (!this.editorFocus) this.select(0); }
+		else if (action === "send") void this.controller.send(this.key, this.editor.getExpandedText().trim());
+		else if (action === "reply") this.reply();
 		else if (action === "details") { const item = this.selected(); if (item) this.inspect(item); }
 		else if (action === "assignment" && this.task) this.inspect(this.assignment());
 		else if (action === "expand") {
@@ -848,6 +912,7 @@ export class AgentConversation extends Container {
 		else if (action === "stop") void this.controller.stop(this.key);
 		else if (action === "continue") void this.controller.send(this.key, this.editor.getExpandedText(), true);
 		else if (action === "picker" || action === "peers") this.finish(action);
+		this.focused = this.hasFocus;
 		this.tui.requestRender();
 	}
 
@@ -855,11 +920,9 @@ export class AgentConversation extends Container {
 		if (this.closed) return;
 		if (matchesKey(data, this.controller.shortcut)) { this.finish(); return; }
 		if (this.menu) { this.menu.handleInput(data); this.tui.requestRender(); return; }
-		if (matchesKey(data, "escape")) {
-			if (this.detail) { this.detail = undefined; this.editorFocus = true; this.restoreAnchor = this.conversationAnchor; if (!this.restoreAnchor) this.scroll.scrollToEnd(); }
-			else this.finish();
-		} else if (this.keys?.matches(data, "app.tools.expand") ?? matchesKey(data, "ctrl+o")) this.act("expand");
-		else if (matchesKey(data, "f2")) this.actions();
+		if (matchesKey(data, "escape")) this.act("back");
+		else if (this.keys?.matches(data, "app.tools.expand") ?? matchesKey(data, "ctrl+o")) this.act("expand");
+		else if (matchesKey(data, "f2")) this.act("actions");
 		else if (matchesKey(data, "alt+r")) this.act("reply");
 		else if (matchesKey(data, "alt+d") && (!this.editorFocus || this.detail)) this.act("details");
 		else if (matchesKey(data, "alt+g")) this.act("changes");
@@ -868,7 +931,7 @@ export class AgentConversation extends Container {
 		else if (matchesKey(data, "alt+q")) this.act("unquote");
 		else if (matchesKey(data, "alt+s")) this.act("stop");
 		else if (matchesKey(data, "alt+c")) this.act("continue");
-		else if (matchesKey(data, "tab") && !this.detail) { this.editorFocus = !this.editorFocus; if (!this.editorFocus) this.select(0); }
+		else if (matchesKey(data, "tab") && !this.detail) this.act("focus");
 		else if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) { this.scroll.scrollBy(matchesKey(data, "pageUp") ? -this.height : this.height); this.restoreAnchor = this.anchor(); }
 		else if (!this.editorFocus || this.detail) {
 			if (matchesKey(data, "up")) this.select(-1);
