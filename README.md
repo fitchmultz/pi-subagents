@@ -6,6 +6,8 @@
 
 Full durable-runtime support requires a corrected native [`fitchmultz/pi` build containing `952c27cd628ac742653f1fe4093685bdbe3a8444`](https://github.com/fitchmultz/pi/commit/952c27cd628ac742653f1fe4093685bdbe3a8444) ([native PR #16](https://github.com/fitchmultz/pi/pull/16)). It fixes prompt-admission ownership and settlement, including busy user startup, and includes the earlier custom steering/follow-up queue reporting, code-update restart notice, and `--session-cwd` support. Stock Pi 0.84.x and published 0.85.1 lack these contracts. The corrected fork also reports 0.85.1, so `pi --version` alone does not prove support. This package does not install the corrected native build.
 
+Compact tool cards in Agents also require [native compact-view support](https://github.com/fitchmultz/pi/commit/17cb62faade465700692b0d474ec5652e8df3aed).
+
 With that native build available, install from GitHub:
 
 ```bash
