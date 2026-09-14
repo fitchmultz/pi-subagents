@@ -4,7 +4,6 @@ import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { stripAcceptanceReport } from "../runs/shared/acceptance-reports.ts";
 import { readNativeSessionConfiguration } from "../runs/shared/supervisor-questions.ts";
-import { providerQualifiedModelId } from "../shared/model-info.ts";
 import { parseSessionEntries } from "../shared/native-session.ts";
 import { extractToolArgsPreview } from "../shared/utils.ts";
 
@@ -65,7 +64,7 @@ export function historyItems(entries: SessionEntry[]): AgentHistory {
 		} else if (entry.type === "message") {
 			const message = entry.message;
 			if (message.role === "assistant") {
-				const model = providerQualifiedModelId(message.provider, message.model);
+				const model = message.model ? (message.provider ? `${message.provider}/${message.model}` : message.model) : undefined;
 				const messageIds = message.content.flatMap((part, index) => part.type === "text" && part.text || part.type === "thinking" && part.thinking ? [`${entry.id}:${index}`] : []);
 				if (messageIds.length) items.push({ ...base, id: messageIds[0]!, entryIds: messageIds,
 					kind: message.content.some((part) => part.type === "text" && part.text) ? "assistant" : "thinking",
@@ -80,7 +79,7 @@ export function historyItems(entries: SessionEntry[]): AgentHistory {
 				if (message.errorMessage) {
 					const id = `${entry.id}:error`;
 					if (messageIds.length && !message.content.some((part) => part.type === "toolCall") && ["error", "aborted"].includes(message.stopReason)) { messageIds.push(id); entryIds.push(id); }
-					else append({ ...base, id, kind: "notice", title: "Agent error", text: readableText(message.errorMessage) });
+					else append({ ...base, id, kind: "notice", title: "Agent error", text: readableText(message.errorMessage), model });
 				}
 			} else if (message.role === "user") {
 				append({ ...base, kind: "user", title: "User / assignment", text: contentText(message.content) });

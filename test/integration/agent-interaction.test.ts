@@ -175,6 +175,49 @@ test("Agents model identity follows native branch settings and tool-only message
 	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
 });
 
+test("Agents model details preserve a provider-matching model namespace in assistant and tool cards", async (t) => {
+	const f = fixture(t), manager = f.childSessions[0];
+	const catalog = JSON.parse(fs.readFileSync(new URL("./providers/data/openrouter.json", import.meta.resolve("@earendil-works/pi-ai")), "utf8"));
+	const model = catalog["openai-completions"]["openrouter/free"];
+	assert.equal(model.provider, "openrouter"); assert.equal(model.id, "openrouter/free");
+	manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Namespaced reply" }, { type: "toolCall", id: "namespace-read", name: "read", arguments: { path: "namespace.txt" } }], provider: model.provider, model: model.id, api: model.api, stopReason: "toolUse", usage, timestamp: Date.now() });
+	const saved = fs.readFileSync(manager.getSessionFile(), "utf8");
+	f.controller.refresh(true);
+	const opening = f.controller.open(), view = f.overlay;
+	view.render(160); view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160); view.handleInput("\r");
+	const toolDetail = readDetails(view, 160);
+	assert.match(toolDetail, /namespace\.txt/);
+	assert.match(toolDetail, /Messagemodel:openrouter\/openrouter\/free/, "tool details keep the entire native model ID, not just the provider prefix");
+	view.handleInput("\x1b"); view.render(160); view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160);
+	view.handleInput("\x1b[A"); view.render(160); view.handleInput("\r");
+	const detail = readDetails(view, 160);
+	assert.match(detail, /Namespacedreply/);
+	assert.match(detail, /Messagemodel:openrouter\/openrouter\/free/, "assistant details use the same full catalog identity");
+	view.handleInput("\x1b"); view.handleInput("\x1b"); await opening;
+	assert.equal(fs.readFileSync(manager.getSessionFile(), "utf8"), saved);
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
+});
+
+test("Agents model details retain an empty-content error model after fallback", async (t) => {
+	const f = fixture(t), manager = f.childSessions[0];
+	const catalog = JSON.parse(fs.readFileSync(new URL("./providers/data/openrouter.json", import.meta.resolve("@earendil-works/pi-ai")), "utf8"));
+	const failed = catalog["anthropic-messages"]["anthropic/claude-3-haiku"], fallback = catalog["openai-completions"]["openrouter/free"];
+	assert.equal(failed.provider, "openrouter"); assert.equal(failed.id, "anthropic/claude-3-haiku");
+	manager.appendMessage({ role: "assistant", content: [], provider: failed.provider, model: failed.id, api: failed.api, stopReason: "error", errorMessage: "quota exceeded", usage, timestamp: Date.now() });
+	manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fallback completed" }], provider: fallback.provider, model: fallback.id, api: fallback.api, stopReason: "stop", usage, timestamp: Date.now() });
+	const saved = fs.readFileSync(manager.getSessionFile(), "utf8");
+	f.controller.refresh(true);
+	const opening = f.controller.open(), view = f.overlay;
+	assert.match(plain(view, 160), /saved: openrouter\/openrouter\/free/, "the conversation status has moved to the fallback");
+	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160); view.handleInput("\x1b[A"); view.render(160); view.handleInput("\r");
+	const detail = readDetails(view, 160);
+	assert.match(detail, /Agenterror[\s\S]*quotaexceeded/);
+	assert.match(detail, /Messagemodel:openrouter\/anthropic\/claude-3-haiku/, "the empty error still identifies the failed message's own provider/model");
+	view.handleInput("\x1b"); view.handleInput("\x1b"); await opening;
+	assert.equal(fs.readFileSync(manager.getSessionFile(), "utf8"), saved);
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
+});
+
 for (const [columns, rows] of [[110, 38], [24, 18]]) test(`Agents model identity remains fully accessible with native compact controls (${columns}×${rows})`, async (t) => {
 	const f = fixture(t, "fullscreen", 2), control = f.state.foregroundControls.get(f.run.runId)!;
 	const model = "openrouter/vendor/very-long-model-namespace/long-model-name-with-full-identity-ENDROUTE:high";
