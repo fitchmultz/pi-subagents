@@ -120,7 +120,17 @@ function agentModel(child: AgentTask["child"], native?: AgentHistory["configurat
 	const details = [`Model (${source}): ${formatted}`];
 	if (selectedText && selectedText !== formatted) details.push(`Selected model: ${selectedText}`);
 	if (live && nativeText && nativeText !== formatted) details.push(`Last saved session model (may precede this attempt): ${nativeText}`);
-	return { summary: `${source}: ${formatted}`, details: details.join("\n") };
+	return { summary: source === "session" ? formatted : `${source}: ${formatted}`, details: details.join("\n") };
+}
+
+function runningIndicator(theme: Theme): string {
+	// Six seconds, sampled by the existing 500 ms refresh; typing cannot speed up the pulse.
+	const phase = Math.floor(Date.now() / 500) % 12;
+	const ansi = theme.getFgAnsi("success");
+	const rgb = theme.getColorMode() === "truecolor" && /^\x1b\[38;2;(\d+);(\d+);(\d+)m$/.exec(ansi);
+	if (!rgb) return theme.fg("success", phase < 6 ? theme.bold("●") : "●");
+	const brightness = 0.9 + 0.1 * Math.cos(phase * Math.PI / 6);
+	return theme.fg("success", "●").replace(ansi, `\x1b[38;2;${rgb.slice(1).map((value) => Math.round(Number(value) * brightness)).join(";")}m`);
 }
 
 /** One UI controller over the existing owned runs, session files, and executor. */
@@ -209,13 +219,15 @@ export class AgentViewController {
 					for (const { task, state } of visible) {
 						const color = state === "running" ? "success" : state === "waiting" ? "dim" : "warning";
 						const symbol = state === "running" ? "●" : state === "waiting" ? "◷" : "!";
+						const indicator = state === "running" ? runningIndicator(theme) : theme.fg(color, symbol);
 						const { status, badge } = taskSummary(task);
-						const available = width - visibleWidth(status + badge) - 7;
+						const statusText = status === "working" ? "" : theme.fg(color, ` · ${status}`);
+						const available = width - visibleWidth(statusText + badge) - 4;
 						const modelWidth = available - Math.min(30, visibleWidth(task.label)) - 3;
 						const model = modelWidth >= 16 ? ` · ${short(task.model.summary, modelWidth)}` : "";
 						const label = short(task.label, Math.max(1, available - visibleWidth(model)));
 						hits.push({ start: 0, end: width, row: lines.length, key: task.key });
-						lines.push(truncateToWidth(`${theme.fg(color, `  ${symbol} `)}${theme.bold(label)} ${theme.fg(color, `· ${status}`)}${theme.fg("accent", badge)}${theme.fg("dim", model)}`, width));
+						lines.push(truncateToWidth(`  ${indicator} ${theme.bold(label)}${statusText}${theme.fg("accent", badge)}${theme.fg("dim", model)}`, width));
 					}
 					if (visible.length < active.length) {
 						const more = `  +${active.length - visible.length} more · /agents`, line = truncateToWidth(more, width, "...");
