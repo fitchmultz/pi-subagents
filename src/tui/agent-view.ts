@@ -120,7 +120,17 @@ function agentModel(child: AgentTask["child"], native?: AgentHistory["configurat
 	const details = [`Model (${source}): ${formatted}`];
 	if (selectedText && selectedText !== formatted) details.push(`Selected model: ${selectedText}`);
 	if (live && nativeText && nativeText !== formatted) details.push(`Last saved session model (may precede this attempt): ${nativeText}`);
-	return { summary: `${source}: ${formatted}`, details: details.join("\n") };
+	return { summary: source === "session" ? formatted : `${source}: ${formatted}`, details: details.join("\n") };
+}
+
+function runningIndicator(theme: Theme): string {
+	// Six seconds, sampled by the existing 500 ms refresh; typing cannot speed up the pulse.
+	const phase = Math.floor(Date.now() / 500) % 12;
+	const ansi = theme.getFgAnsi("success");
+	const rgb = theme.getColorMode() === "truecolor" && /^\x1b\[38;2;(\d+);(\d+);(\d+)m$/.exec(ansi);
+	if (!rgb) return theme.fg("success", phase < 6 ? theme.bold("●") : "●");
+	const brightness = 0.9 + 0.1 * Math.cos(phase * Math.PI / 6);
+	return theme.fg("success", "●").replace(ansi, `\x1b[38;2;${rgb.slice(1).map((value) => Math.round(Number(value) * brightness)).join(";")}m`);
 }
 
 /** One UI controller over the existing owned runs, session files, and executor. */
@@ -206,23 +216,29 @@ export class AgentViewController {
 					const lines = [truncateToWidth(entrance, width)];
 					hits.push({ start: 0, end: Math.min(width, visibleWidth(entrance)), row: 0 });
 					const visible = active.slice(0, Math.max(1, Math.min(4, Math.floor(tui.terminal.rows / 5))));
-					for (const { task, state } of visible) {
+					const pinned = this.tasks.find((task) => task.key === this.pinned);
+					const details = ctx.ui.getToolsExpanded() ? buildWidgetLines([...this.state.asyncJobs.values()], theme, width, true) : [];
+					// MainScreen repaints all scrollback if an offscreen row's ANSI changes.
+					const pulseFrom = tui.mode === "regular" ? visible.length + details.length + Number(Boolean(pinned)) + Number(visible.length < active.length)
+						+ (this.componentsBelowWidget(tui) ?? []).reduce((height, child) => height + child.render(width).length, 0) - tui.terminal.rows : 0;
+					for (const [index, { task, state }] of visible.entries()) {
 						const color = state === "running" ? "success" : state === "waiting" ? "dim" : "warning";
 						const symbol = state === "running" ? "●" : state === "waiting" ? "◷" : "!";
+						const indicator = state === "running" && index >= pulseFrom ? runningIndicator(theme) : theme.fg(color, symbol);
 						const { status, badge } = taskSummary(task);
-						const available = width - visibleWidth(status + badge) - 7;
+						const statusText = status === "working" ? "" : theme.fg(color, ` · ${status}`);
+						const available = width - visibleWidth(statusText + badge) - 4;
 						const modelWidth = available - Math.min(30, visibleWidth(task.label)) - 3;
 						const model = modelWidth >= 16 ? ` · ${short(task.model.summary, modelWidth)}` : "";
 						const label = short(task.label, Math.max(1, available - visibleWidth(model)));
 						hits.push({ start: 0, end: width, row: lines.length, key: task.key });
-						lines.push(truncateToWidth(`${theme.fg(color, `  ${symbol} `)}${theme.bold(label)} ${theme.fg(color, `· ${status}`)}${theme.fg("accent", badge)}${theme.fg("dim", model)}`, width));
+						lines.push(truncateToWidth(`  ${indicator} ${theme.bold(label)}${statusText}${theme.fg("accent", badge)}${theme.fg("dim", model)}`, width));
 					}
 					if (visible.length < active.length) {
 						const more = `  +${active.length - visible.length} more · /agents`, line = truncateToWidth(more, width, "...");
 						hits.push({ start: 2, end: visibleWidth(line) - (visibleWidth(more) > width ? 3 : 0), row: lines.length });
 						lines.push(theme.fg("dim", line));
 					}
-					const pinned = this.tasks.find((task) => task.key === this.pinned);
 					if (pinned) {
 						const last = pinned.history.findLast((item) => item.kind === "assistant")?.text;
 						const preview = pinned.child.identityUnavailable ? UNAVAILABLE_ASSIGNMENT : pinned.child.state === "live" ? activity(pinned) : (pinned.child.result && getSingleResultOutput(pinned.child.result)) || last || activity(pinned);
@@ -230,7 +246,7 @@ export class AgentViewController {
 						lines.push(theme.fg("dim", truncateToWidth(`${unpin}Pinned · ${pinned.child.state === "completed" ? "finished · " : ""}${short(pinned.label, 30)}: ${short(preview, width)}`, width)));
 						hits.push({ start: 0, end: unpin.length, row, unpin: true }, { start: unpin.length, end: width, row, key: pinned.key });
 					}
-					if (ctx.ui.getToolsExpanded()) lines.push(...buildWidgetLines([...this.state.asyncJobs.values()], theme, width, true));
+					lines.push(...details);
 					return lines;
 				},
 			}, (event) => {
@@ -348,13 +364,18 @@ export class AgentViewController {
 
 	pin(key: string | undefined): void { this.pinned = key; this.save(); this.render?.(); }
 
+	private componentsBelowWidget(tui: TUI): Component[] | undefined {
+		if (!this.widget) return undefined;
+		// Public children work across loader boundaries; never render the parent history to measure the dock.
+		const parent = tui.children.find((child): child is Component & Pick<Container, "children"> => "children" in child && Array.isArray(child.children) && child.children.includes(this.widget));
+		return parent && [...parent.children.slice(parent.children.indexOf(this.widget) + 1), ...tui.children.slice(tui.children.indexOf(parent) + 1)];
+	}
+
 	availableHeight(tui: TUI): number {
 		if (tui.mode !== "fullscreen" || !this.widget) return Math.max(1, tui.terminal.rows - 2);
-		// Public children work across Pi's loader module boundaries; preserve the existing dock below the view.
-		const parent = tui.children.find((child): child is Component & Pick<Container, "children"> => "children" in child && Array.isArray(child.children) && child.children.includes(this.widget));
-		if (!parent) return Math.max(1, tui.terminal.rows - 2);
-		const below = [...parent.children.slice(parent.children.indexOf(this.widget)), ...tui.children.slice(tui.children.indexOf(parent) + 1)];
-		const dock = below.reduce((height, child) => height + child.render(tui.terminal.columns).length, 0);
+		const below = this.componentsBelowWidget(tui);
+		if (!below) return Math.max(1, tui.terminal.rows - 2);
+		const dock = [this.widget, ...below].reduce((height, child) => height + child.render(tui.terminal.columns).length, 0);
 		return Math.max(1, tui.terminal.rows - dock - 1);
 	}
 

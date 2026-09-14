@@ -21,12 +21,12 @@ const sdkRoot = process.env.PI_OWNERSHIP_TEST_PACKAGE_ROOT ?? path.dirname(path.
 const { SessionManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/session-manager.js")).href);
 const { AgentViewController, AgentConversation } = await import("../../src/tui/agent-view.ts");
 const { restoreOwnedRuns, ownedRunView, saveForegroundRun, OWNED_RUN_ENTRY } = await import("../../src/runs/shared/run-records.ts");
-const { getRunMetadataDir, readQuestionState, saveQuestionOwner, saveQuestionContract } = await import("../../src/runs/shared/supervisor-questions.ts");
+const { getRunMetadataDir, readQuestionState, saveQuestionOwner, saveQuestionContract, createSupervisorQuestion } = await import("../../src/runs/shared/supervisor-questions.ts");
 const { createSubagentExecutor } = await import("../../src/runs/foreground/subagent-executor.ts");
 const { createAsyncJobTracker } = await import("../../src/runs/background/async-job-tracker.ts");
 const { ASYNC_DIR } = await import("../../src/shared/types.ts");
 initTheme("dark", false);
-const { theme: uiTheme } = await import(new URL("./modes/interactive/theme/theme.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+const { theme: uiTheme, loadThemeFromPath } = await import(new URL("./modes/interactive/theme/theme.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
 const sdkTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
 function setTestKeybindings(t, keys) {
 	const previous = getKeybindings(), sdkPrevious = sdkTui.getKeybindings();
@@ -72,7 +72,7 @@ function nativeChild(cwd: string, scenario: "streaming" | "tool" | "question") {
 	return { release, restore() { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } } };
 }
 
-function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, executeControl?, profiles = ["worker", "reviewer"].map((name) => makeAgent(name, { completionGuard: false }))) {
+function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, executeControl?, profiles = ["worker", "reviewer"].map((name) => makeAgent(name, { completionGuard: false })), theme = uiTheme) {
 	const cwd = path.join(root, randomUUID()); fs.mkdirSync(cwd);
 	const parent = SessionManager.create(cwd, path.join(cwd, "parent"));
 	assistant(parent, "Parent context stays unchanged");
@@ -111,11 +111,11 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, ex
 		new VStack([widgets, mainEditor, footer]),
 	]));
 	tui.setFocus(mainEditor);
-	const ctx = { ...makeMinimalCtx(cwd), mode: "tui", hasUI: true, sessionManager: parent, ui: { theme: uiTheme, getToolsExpanded: () => false,
-		setWidget(_key, factory) { strip = factory?.(tui, uiTheme); widgets.clear(); widgets.addChild(new Spacer(1)); if (strip) widgets.addChild(strip); },
+	const ctx = { ...makeMinimalCtx(cwd), mode: "tui", hasUI: true, sessionManager: parent, ui: { theme, getToolsExpanded: () => false,
+		setWidget(_key, factory) { strip = factory?.(tui, theme); widgets.clear(); widgets.addChild(new Spacer(1)); if (strip) widgets.addChild(strip); },
 		custom(factory, options) { return new Promise((resolve) => {
 			let handle;
-			overlay = factory(tui, uiTheme, undefined, (value) => { handle?.hide(); overlay?.dispose?.(); resolve(value); });
+			overlay = factory(tui, theme, undefined, (value) => { handle?.hide(); overlay?.dispose?.(); resolve(value); });
 			handle = tui.showOverlay(overlay, typeof options.overlayOptions === "function" ? options.overlayOptions() : options.overlayOptions);
 			overlayHandle = handle;
 		}); },
@@ -149,9 +149,12 @@ test("Agents model identity follows native branch settings and tool-only message
 	const branch = first.appendThinkingLevelChange("high");
 	second.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "native-model-tool", name: "read", arguments: { path: "login.ts" } }], provider: "vertex", model: "google/gemini-test", api: "openai-responses", stopReason: "toolUse", usage, timestamp: Date.now() });
 	f.controller.refresh(true);
-	assert.equal(f.controller.task(f.key)!.model.summary, "session: openrouter/vendor/model:7b · thinking high");
-	assert.equal(f.controller.task(`${f.run.runId}:1`)!.model.summary, "session: vertex/google/gemini-test", "tool-only assistants carry model data without inventing a thinking level");
+	assert.equal(f.controller.task(f.key)!.model.summary, "openrouter/vendor/model:7b · thinking high");
+	assert.equal(f.controller.task(`${f.run.runId}:1`)!.model.summary, "vertex/google/gemini-test", "tool-only assistants carry model data without inventing a thinking level");
+	assert.match(f.controller.task(f.key)!.model.details, /Model \(session\): openrouter\/vendor\/model:7b · thinking high/);
+	assert.match(f.controller.task(f.key)!.model.details, /Selected model: requested-0\/vendor\/model · thinking low/);
 	const strip = plain(f.strip, 160);
+	assert.doesNotMatch(strip, /session:|· working/);
 	assert.match(strip.split("\n").find((row) => row.includes("Fix login"))!, /openrouter\/vendor\/model:7b · thinking high/);
 	assert.match(strip.split("\n").find((row) => row.includes("Review changes"))!, /vertex\/google\/gemini-test/);
 	const picker = f.controller.open();
@@ -159,7 +162,7 @@ test("Agents model identity follows native branch settings and tool-only message
 	assert.match(plain(f.overlay, 160), /vertex\/google\/gemini-test/);
 	f.overlay.handleInput("\x1b"); await picker;
 	const opening = f.controller.open(`${f.run.runId}:1`), view = f.overlay;
-	assert.match(plain(view, 160), /worker · working · session: vertex\/google\/gemini-test/);
+	assert.match(plain(view, 160), /worker · working · vertex\/google\/gemini-test/);
 	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160); view.handleInput("\r");
 	assert.match(readDetails(view, 160), /Messagemodel:vertex\/google\/gemini-test/);
 	view.handleInput("\x1b"); view.handleInput("\x1b"); await opening;
@@ -169,10 +172,114 @@ test("Agents model identity follows native branch settings and tool-only message
 	first.appendThinkingLevelChange("medium");
 	const saved = fs.readFileSync(first.getSessionFile(), "utf8");
 	f.controller.refresh(true);
-	assert.equal(f.controller.task(f.key)!.model.summary, "session: openrouter/vendor/model:7b · thinking medium", "native branch traversal ignores a later abandoned model change");
+	assert.equal(f.controller.task(f.key)!.model.summary, "openrouter/vendor/model:7b · thinking medium", "native branch traversal ignores a later abandoned model change");
 	assert.equal(fs.readFileSync(first.getSessionFile(), "utf8"), saved, "reading configuration never rewrites native history");
 	fs.writeFileSync(path.join(f.cwd, "model-frames.txt"), strip);
 	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
+});
+
+test("Agents strip spends reclaimed status space on the model at screenshot and narrow widths", (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-01-01T00:00:00Z") });
+	const f = fixture(t, "fullscreen", 2), control = f.state.foregroundControls.get(f.run.runId)!;
+	f.run.children[0].label = "Live fallback diagnosis";
+	f.run.children[1].label = "Fix streamed-credit failover";
+	control.progress = f.run.children.map((child) => ({ index: child.index, agent: child.agent, task: child.task!, status: "running", model: "openai-codex/gpt-6", modelStartedAt: Date.now(), recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 0 }));
+	t.mock.timers.tick(10);
+	for (const manager of f.childSessions) manager.appendModelChange("openai-codex", "gpt-6");
+	f.controller.refresh(true);
+	const frames = [];
+	for (const width of [90, 64, 56, 24]) {
+		const rows = f.strip.render(width).map(stripTerminalSequences);
+		assert.doesNotMatch(rows.join("\n"), /session:|working/);
+		assert.ok(rows.every((row) => visibleWidth(row) <= width));
+		if (width >= 56) {
+			assert.equal(rows[1], "  ● Live fallback diagnosis · openai-codex/gpt-6");
+			assert.equal(rows[2], "  ● Fix streamed-credit failover · openai-codex/gpt-6");
+		} else assert.match(rows[1], /Live fallback/);
+		frames.push(`${width} columns\n${rows.join("\n")}`);
+	}
+	fs.writeFileSync(path.join(f.cwd, "strip-widths.txt"), frames.join("\n\n"));
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
+});
+
+for (const [name, mode, success] of [["dark", "truecolor", "#a0c880"], ["light", "truecolor", "#408060"], ["dark", "256color", "#a0c880"], ["dark", "truecolor", 112], ["dark", "truecolor", ""]]) test(`Agents running dot pulses slowly without changing theme, attention or pending rows (${name}/${mode}/${success})`, (t) => {
+	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2030-01-01T00:00:00Z") });
+	const intervals = t.mock.method(globalThis, "setInterval");
+	const data = JSON.parse(fs.readFileSync(new URL(`./modes/interactive/theme/${name}.json`, import.meta.resolve("@earendil-works/pi-coding-agent")), "utf8"));
+	data.colors.success = success;
+	const themeFile = path.join(root, `pulse-${randomUUID()}.json`); fs.writeFileSync(themeFile, JSON.stringify(data));
+	const theme = loadThemeFromPath(themeFile, mode), f = fixture(t, "regular", 3, undefined, undefined, theme);
+	f.state.foregroundControls.get(f.run.runId)!.activeChildren!.delete(1);
+	createSupervisorQuestion({ runId: f.run.runId, index: 2, agent: "worker", ownerTarget: "fixture-owner", childTarget: "fixture-child", childSessionId: f.childSessions[2].getSessionId(), sessionFile: f.childSessions[2].getSessionFile(), cwd: f.cwd, pid: process.pid, reason: "need_decision", message: "Which fixture choice?" });
+	f.controller.refresh(true);
+	const frames = [f.strip.render(90)];
+	for (let step = 0; step < 12; step++) { t.mock.timers.tick(500); frames.push(f.strip.render(90)); }
+	const runningRow = frames[0].findIndex((row) => row.includes("●"));
+	assert.ok(runningRow > 0);
+	const truecolor = mode === "truecolor" && typeof success === "string" && success.startsWith("#");
+	if (truecolor || theme.bold("●") !== "●") assert.notEqual(frames[0][runningRow], frames[6][runningRow], "running dot changes over half a six-second cycle");
+	else assert.equal(frames[0][runningRow], frames[6][runningRow], "respect native suppression of emphasis when styling is disabled");
+	assert.equal(frames[0][runningRow], frames[12][runningRow], "a full slow cycle returns to its starting appearance");
+	for (const frame of frames) {
+		assert.deepEqual(frame.map(stripTerminalSequences), frames[0].map(stripTerminalSequences), "animation never changes labels, symbols, badges or widths");
+		for (let row = 0; row < frame.length; row++) if (row !== runningRow) assert.equal(frame[row], frames[0][row], "header, yellow needs-answer and queued rows remain steady");
+		assert.ok(frame.some((row) => row.includes(theme.getFgAnsi("warning")) && /!.*needs answer/.test(stripTerminalSequences(row))));
+		assert.ok(frame.some((row) => row.includes("◷") && row.includes("queued")));
+		assert.equal(frame[runningRow].slice(frame[runningRow].indexOf("Fix login")), frames[0][runningRow].slice(frames[0][runningRow].indexOf("Fix login")), "task and model styling stays steady");
+	}
+	if (truecolor) {
+		assert.ok(new Set(frames.map((frame) => frame[runningRow])).size >= 5, "truecolor brightness changes gradually, not as a blink");
+		assert.ok(frames[0][runningRow].includes(theme.fg("success", "●")), "pulse peaks at the user's exact success color");
+	} else for (const frame of frames) assert.ok(frame[runningRow].includes(theme.getFgAnsi("success")), "palette and default colors stay native");
+	assert.deepEqual(intervals.mock.calls.map((call) => call.arguments[1]), [500], "only the existing refresh timer runs");
+	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
+	fs.writeFileSync(path.join(f.cwd, "pulse-frames.json"), JSON.stringify(frames));
+});
+
+test("regular Agents pulse leaves offscreen history alone and resumes when the row returns", (t) => {
+	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2030-01-01T00:00:00Z") });
+	const theme = loadThemeFromPath(new URL("./modes/interactive/theme/dark.json", import.meta.resolve("@earendil-works/pi-coding-agent")).pathname, "truecolor");
+	const f = fixture(t, "regular", 1, undefined, undefined, theme), document = f.tui.children[0] as Text;
+	document.setText(Array.from({ length: 1440 }, (_, i) => `PARENT-HISTORY-${i}`).join("\n"));
+	const historyRender = t.mock.method(document, "render");
+	let expanded = true;
+	t.mock.method(f.ctx.ui, "getToolsExpanded", () => expanded);
+	const asyncId = randomUUID();
+	f.state.asyncJobs.set(asyncId, { asyncId, asyncDir: f.cwd, status: "running", mode: "parallel", agents: Array(4).fill("worker"), stepsTotal: 4, activeParallelGroup: true, runningSteps: 4, completedSteps: 0, startedAt: 1, updatedAt: 2,
+		steps: Array.from({ length: 4 }, (_, index) => ({ index, agent: "worker", status: "running", task: `Independent async work ${index}` })) });
+	const writes: string[] = [], frames = [];
+	t.mock.method(f.terminal, "write", (data: string) => { writes.push(data); });
+	f.terminal.resize(90, 18); f.tui.start(); f.tui.renderNow();
+	const details = plain(f.strip, 90);
+	assert.match(details, /Agent 4\/4/);
+	const cycle = (visible: boolean) => {
+		writes.length = 0;
+		const redraws = f.tui.fullRedraws, traversals = historyRender.mock.callCount();
+		for (let tick = 0; tick < 12; tick++) { t.mock.timers.tick(500); f.tui.renderNow(); }
+		assert.equal(f.tui.fullRedraws, redraws, "a pulse must never repaint offscreen parent history");
+		assert.doesNotMatch(writes.join(""), /PARENT-HISTORY|\x1b\[(?:2|3)J/);
+		assert.equal(writes.some((write) => write.includes("Fix login")), visible, "only a visible running row should produce pulse updates");
+		const native = f.tui.captureRenderState();
+		assert.equal(native.previousLines.slice(native.previousViewportTop, native.previousViewportTop + f.terminal.rows).some((line) => stripTerminalSequences(line).includes("Fix login")), visible);
+		assert.equal(historyRender.mock.callCount() - traversals, 12, "visibility calculation must not render the parent transcript again");
+		frames.push({ visible, rows: f.terminal.rows, writes: [...writes], strip: plain(f.strip, 90) });
+	};
+	cycle(false);
+	f.terminal.input("!"); f.tui.renderNow();
+	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this!");
+	f.terminal.input("\x7f"); f.tui.renderNow();
+	f.terminal.resize(90, 42); f.tui.renderNow(); cycle(true);
+	assert.equal(plain(f.strip, 90), details, "expanded content is retained, not clipped to hide the pulse");
+	// Another ordinary widget below Agents can hide the row even with async details collapsed.
+	expanded = false;
+	const dock = f.tui.children.find((child) => child instanceof Container && child.children.includes(f.strip)) as Container;
+	const below = new Text("Other widget\n".repeat(18).trimEnd(), 0, 0); dock.addChild(below);
+	f.terminal.resize(90, 18); f.tui.renderNow(); cycle(false);
+	dock.removeChild(below); f.terminal.resize(90, 42); f.tui.renderNow(); cycle(true);
+	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0); assert.deepEqual(f.interrupts, [0]);
+	fs.writeFileSync(path.join(f.cwd, "offscreen-pulse.json"), JSON.stringify(frames));
 });
 
 test("Agents model details preserve a provider-matching model namespace in assistant and tool cards", async (t) => {
@@ -292,7 +399,7 @@ for (const [background, nativeReply] of [[false, true], [false, false], [true, t
 		native.appendThinkingLevelChange("high");
 		native.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fallback finished" }], provider: "observed-fallback", model: "vendor/native-final", api: "openai-responses", stopReason: "stop", usage, timestamp: Date.now() });
 		f.controller.refresh(true);
-		assert.equal(f.controller.task(task.key)!.model.summary, "session: observed-fallback/vendor/native-final · thinking high");
+		assert.equal(f.controller.task(task.key)!.model.summary, "observed-fallback/vendor/native-final · thinking high");
 	}
 	fs.writeFileSync(releaseFallback, "released"); await pending;
 	if (background) await until(() => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "fallback completion is saved");
@@ -978,6 +1085,7 @@ test("twenty-task picker is framed, width-aware and searchable by the full assig
 });
 
 test("active Agents rows distinguish running, queued and needs-action work, then disappear after completion", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-01-01T00:00:00Z") });
 	const f = fixture(t, "fullscreen", 4);
 	for (const [index, label] of ["Fix login", "Queued docs", "Approve change", "Finished report"].entries()) f.run.children[index].label = label;
 	const control = f.state.foregroundControls.get(f.run.runId)!;
@@ -998,6 +1106,9 @@ test("active Agents rows distinguish running, queued and needs-action work, then
 	const codes = (label: string) => raw[rows.findIndex((line) => line.includes(label))].match(/\x1b\[[\d;]+m/g);
 	assert.ok(codes("Fix login")?.length); assert.notDeepEqual(codes("Fix login"), codes("Approve change"), "native status colors distinguish work from needs-action states");
 	assert.ok(f.strip.render(24).every((line) => visibleWidth(line) <= 24));
+	t.mock.timers.tick(3000);
+	const attentionRow = rows.findIndex((line) => line.includes("Approve change"));
+	assert.equal(f.strip.render(90)[attentionRow], raw[attentionRow], "needs-action indicator and text stay steady across the pulse");
 	const messageId = randomUUID(), visit = f.controller.visit(f.key);
 	visit.lastSentId = messageId;
 	visit.readThrough = f.childSessions[0].appendCustomMessageEntry("subagent-human-message", "Please check the API", true, { bodyText: "Please check the API", message: { id: messageId } });
@@ -1162,8 +1273,9 @@ for (const surface of ["widget", "picker"]) test(`64-column ${surface} keeps tas
 	const component = surface === "picker" ? f.overlay : f.strip, width = surface === "picker" ? f.overlayBounds.width : 64;
 	const rows = component.render(width).map(stripTerminalSequences);
 	const writer = rows.find((line) => line.includes("Build")) ?? "", reviewer = rows.find((line) => line.includes("Review current")) ?? "";
-	assert.match(writer, /Build native Agents experience/); assert.match(writer, /working · new/);
-	assert.match(reviewer, /Review current UX changes/); assert.match(reviewer, /working · new/);
+	assert.match(writer, /Build native Agents experience/); assert.match(writer, surface === "picker" ? /working · new/ : /· new/);
+	assert.match(reviewer, /Review current UX changes/); assert.match(reviewer, surface === "picker" ? /working · new/ : /· new/);
+	if (surface === "widget") assert.doesNotMatch(writer + reviewer, /working/);
 	assert.doesNotMatch(writer, /export|VERY_VERBOSE/);
 	if (surface === "picker") {
 		assert.match(writer, /worker/); assert.match(reviewer, /reviewer/);
@@ -1177,8 +1289,8 @@ for (const surface of ["widget", "picker"]) test(`64-column ${surface} keeps tas
 	visit.readThrough = f.childSessions[0].appendCustomMessageEntry("subagent-human-message", "Keep the API", true, { bodyText: "Keep the API", message: { id: messageId } });
 	assistant(f.childSessions[0], "The API is preserved."); f.controller.refresh(true); f.tui.renderNow();
 	const repliedRows = component.render(width).map(stripTerminalSequences);
-	assert.match(repliedRows.find((line) => line.includes("Build")) ?? "", /Build native Agents[\s\S]*working · replied/);
-	assert.match(repliedRows.find((line) => line.includes("Review current")) ?? "", /Review current UX[\s\S]*working · new/);
+	assert.match(repliedRows.find((line) => line.includes("Build")) ?? "", surface === "picker" ? /Build native Agents[\s\S]*working · replied/ : /Build native Agents[\s\S]*· replied/);
+	assert.match(repliedRows.find((line) => line.includes("Review current")) ?? "", surface === "picker" ? /Review current UX[\s\S]*working · new/ : /Review current UX[\s\S]*· new/);
 	assert.ok(component.render(width).every((line) => visibleWidth(line) <= width));
 	if (opening) { f.overlay.handleInput("\x1b"); await opening; }
 	const conversation = f.controller.open(f.key); f.tui.renderNow();
@@ -1223,7 +1335,7 @@ test("a first foreground launch updates the strip without a manual open", async 
 	const pending = f.executor.execute("first-launch", { agent: "worker", task: "A first foreground task", label: "Fresh foreground", async: false, artifacts: false, output: false }, undefined, undefined, f.ctx);
 	t.after(async () => { await pending; });
 	await new Promise((resolve) => setTimeout(resolve, 650));
-	assert.match(plain(f.strip), /Fresh foreground.*working/);
+	assert.match(plain(f.strip), /1 running[\s\S]*● Fresh foreground/);
 	assert.equal(f.controller.tasks[0]?.child.state, "live");
 	await pending;
 });
