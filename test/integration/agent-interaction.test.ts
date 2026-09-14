@@ -237,6 +237,51 @@ for (const [name, mode, success] of [["dark", "truecolor", "#a0c880"], ["light",
 	fs.writeFileSync(path.join(f.cwd, "pulse-frames.json"), JSON.stringify(frames));
 });
 
+test("regular Agents pulse leaves offscreen history alone and resumes when the row returns", (t) => {
+	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2030-01-01T00:00:00Z") });
+	const theme = loadThemeFromPath(new URL("./modes/interactive/theme/dark.json", import.meta.resolve("@earendil-works/pi-coding-agent")).pathname, "truecolor");
+	const f = fixture(t, "regular", 1, undefined, undefined, theme), document = f.tui.children[0] as Text;
+	document.setText(Array.from({ length: 1440 }, (_, i) => `PARENT-HISTORY-${i}`).join("\n"));
+	const historyRender = t.mock.method(document, "render");
+	let expanded = true;
+	t.mock.method(f.ctx.ui, "getToolsExpanded", () => expanded);
+	const asyncId = randomUUID();
+	f.state.asyncJobs.set(asyncId, { asyncId, asyncDir: f.cwd, status: "running", mode: "parallel", agents: Array(4).fill("worker"), stepsTotal: 4, activeParallelGroup: true, runningSteps: 4, completedSteps: 0, startedAt: 1, updatedAt: 2,
+		steps: Array.from({ length: 4 }, (_, index) => ({ index, agent: "worker", status: "running", task: `Independent async work ${index}` })) });
+	const writes: string[] = [], frames = [];
+	t.mock.method(f.terminal, "write", (data: string) => { writes.push(data); });
+	f.terminal.resize(90, 18); f.tui.start(); f.tui.renderNow();
+	const details = plain(f.strip, 90);
+	assert.match(details, /Agent 4\/4/);
+	const cycle = (visible: boolean) => {
+		writes.length = 0;
+		const redraws = f.tui.fullRedraws, traversals = historyRender.mock.callCount();
+		for (let tick = 0; tick < 12; tick++) { t.mock.timers.tick(500); f.tui.renderNow(); }
+		assert.equal(f.tui.fullRedraws, redraws, "a pulse must never repaint offscreen parent history");
+		assert.doesNotMatch(writes.join(""), /PARENT-HISTORY|\x1b\[(?:2|3)J/);
+		assert.equal(writes.some((write) => write.includes("Fix login")), visible, "only a visible running row should produce pulse updates");
+		const native = f.tui.captureRenderState();
+		assert.equal(native.previousLines.slice(native.previousViewportTop, native.previousViewportTop + f.terminal.rows).some((line) => stripTerminalSequences(line).includes("Fix login")), visible);
+		assert.equal(historyRender.mock.callCount() - traversals, 12, "visibility calculation must not render the parent transcript again");
+		frames.push({ visible, rows: f.terminal.rows, writes: [...writes], strip: plain(f.strip, 90) });
+	};
+	cycle(false);
+	f.terminal.input("!"); f.tui.renderNow();
+	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this!");
+	f.terminal.input("\x7f"); f.tui.renderNow();
+	f.terminal.resize(90, 42); f.tui.renderNow(); cycle(true);
+	assert.equal(plain(f.strip, 90), details, "expanded content is retained, not clipped to hide the pulse");
+	// Another ordinary widget below Agents can hide the row even with async details collapsed.
+	expanded = false;
+	const dock = f.tui.children.find((child) => child instanceof Container && child.children.includes(f.strip)) as Container;
+	const below = new Text("Other widget\n".repeat(18).trimEnd(), 0, 0); dock.addChild(below);
+	f.terminal.resize(90, 18); f.tui.renderNow(); cycle(false);
+	dock.removeChild(below); f.terminal.resize(90, 42); f.tui.renderNow(); cycle(true);
+	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0); assert.deepEqual(f.interrupts, [0]);
+	fs.writeFileSync(path.join(f.cwd, "offscreen-pulse.json"), JSON.stringify(frames));
+});
+
 test("Agents model details preserve a provider-matching model namespace in assistant and tool cards", async (t) => {
 	const f = fixture(t), manager = f.childSessions[0];
 	const catalog = JSON.parse(fs.readFileSync(new URL("./providers/data/openrouter.json", import.meta.resolve("@earendil-works/pi-ai")), "utf8"));
