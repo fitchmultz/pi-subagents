@@ -192,6 +192,19 @@ describe("saved output choices", () => {
 		});
 	}
 
+	it("revive retains the recorded root identity rather than substituting the current parent ID", async () => {
+		mockPi.onCall({ output: "Original report" });
+		const original = await run({ ...writer, output: false, outputMode: "inline" });
+		const id = original.details.runId!;
+		saveQuestionContract(id, 0, { launch: { ...savedLaunch(id), rootSessionId: "recorded-delegation-root" } });
+		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ROOT_SESSION_ID"] });
+		const continued = await run({ action: "resume", id, message: "Continue", output: false, outputMode: "inline" });
+		const successorId = continued.details.asyncId!;
+		assert.equal(savedLaunch(successorId).rootSessionId, "recorded-delegation-root");
+		const payload = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, `${successorId}.json`), "utf8")) as AsyncResultFile;
+		assert.match(payload.results![0]!.output!, /recorded-delegation-root/);
+	});
+
 	it("an inline continuation consumes only its new generated file", async () => {
 		mockPi.onCall({ output: "Predecessor report" });
 		const original = await run({ ...writer, async: true });

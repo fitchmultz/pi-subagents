@@ -211,6 +211,19 @@ describe("async execution utilities", () => {
 		}
 	});
 
+	it("carries root identity through detached runner configuration and child spawn", async () => {
+		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ROOT_SESSION_ID"] });
+		const id = `itest-ae-${process.pid}-root-${Date.now().toString(36)}`;
+		executeAsyncSingle(id, {
+			agent: "worker", task: "Check root", agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "/owner/session.jsonl", rootSessionId: "durable-root-uuid" },
+			shareEnabled: false, maxSubagentDepth: 2,
+		});
+		const resultPath = await waitForAsyncResultFile(id);
+		assert.equal(JSON.parse(fs.readFileSync(resultPath, "utf8")).success, true);
+		assert.equal(readMockPiRecord(mockPi, 0).env?.PI_SUBAGENT_ROOT_SESSION_ID, "durable-root-uuid");
+	});
+
 	it("async launch messages tell the parent not to sleep-poll", async () => {
 		const commonParams = {
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },

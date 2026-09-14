@@ -109,6 +109,7 @@ import {
 } from "../shared/acceptance.ts";
 
 interface SubagentRunConfig {
+	rootSessionId?: string;
 	id: string;
 	steps: RunnerStep[];
 	chainDir?: string;
@@ -679,6 +680,7 @@ function writeRunLog(
 
 /** Context for running a single step */
 interface SingleStepContext {
+	rootSessionId?: string;
 	cwd: string;
 	sessionEnabled: boolean;
 	sessionDir?: string;
@@ -769,7 +771,7 @@ async function runSingleStep(
 					tools: step.tools, allowSubagents: step.allowSubagents, extensions: step.extensions,
 					systemPrompt: step.systemPrompt, systemPromptMode: step.systemPromptMode, mcpDirectTools: step.mcpDirectTools,
 					cwd: step.cwd ?? ctx.cwd, intercomSessionName: ctx.childIntercomTarget, orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
-					runId: ctx.id, childAgentName: step.agent, childIndex: ctx.flatIndex,
+					runId: ctx.id, childAgentName: step.agent, childIndex: ctx.flatIndex, rootSessionId: ctx.rootSessionId,
 					parentEventSink: ctx.nestedRoute?.eventSink, parentControlInbox: ctx.nestedRoute?.controlInbox,
 					parentRootRunId: ctx.nestedRoute?.rootRunId, parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
 					structuredOutput: structuredRuntime, projectTrust: ctx.projectTrust,
@@ -1539,6 +1541,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			orchestratorIntercomTarget: config.childIntercomTargets?.[fi] ? config.controlIntercomTarget : undefined,
 			nestedRoute: config.nestedRoute,
 			projectTrust: config.projectTrust,
+			rootSessionId: config.rootSessionId,
 			signal: cancellation.signal,
 			interruptSignal: input.interruptSignal,
 			registerInterrupt: (interrupt) => {
@@ -1984,6 +1987,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				orchestratorIntercomTarget: config.childIntercomTargets?.[flatIndex] ? config.controlIntercomTarget : undefined,
 				nestedRoute: config.nestedRoute,
 				projectTrust: config.projectTrust,
+				rootSessionId: config.rootSessionId,
 				signal: cancellation.signal,
 				registerInterrupt: (interrupt) => {
 					if (interrupt) activeChildInterrupts.set(flatIndex, interrupt);

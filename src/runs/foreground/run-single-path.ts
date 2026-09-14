@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { resolveRootSessionId } from "../../shared/session-identity.ts";
 import { formatRunAction } from "../../shared/status-format.ts";
 import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
 import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
@@ -139,6 +140,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 				pi: deps.pi,
 				cwd: ctx.cwd,
 				currentSessionId: deps.state.currentSessionId!,
+				rootSessionId: resolveRootSessionId(ctx.sessionManager),
 				currentModelProvider: ctx.model?.provider,
 				projectTrusted: ctx.isProjectTrusted(),
 			};
@@ -244,6 +246,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ExecutorDe
 		onResultsSettled: (results) => data.onDetachedResultsSettled?.("single", results),
 	});
 	const r = await runSync(ctx.cwd, agents, params.agent!, task, {
+		rootSessionId: resolveRootSessionId(ctx.sessionManager),
 		cwd: effectiveCwd,
 		signal,
 		interruptSignal: interruptController.signal,

@@ -678,8 +678,8 @@ describe("fork context execution wiring", () => {
 
 	it("applies paired intercom wiring to fresh and fork parallel children", async () => {
 		mockPi.reset();
-		mockPi.onCall({ output: "fresh child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
-		mockPi.onCall({ output: "fork child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
+		mockPi.onCall({ output: "fresh child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET", "PI_SUBAGENT_ROOT_SESSION_ID"] });
+		mockPi.onCall({ output: "fork child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET", "PI_SUBAGENT_ROOT_SESSION_ID"] });
 		const parentSessionFile = path.join(tempDir, "parent.jsonl");
 		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
@@ -705,6 +705,8 @@ describe("fork context execution wiring", () => {
 		assert.equal(toolsArg(forkCall.args), "read,intercom,contact_supervisor");
 		assert.equal(freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
 		assert.equal(forkCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
+		assert.equal(freshCall.env?.PI_SUBAGENT_ROOT_SESSION_ID, manager.getSessionId());
+		assert.equal(forkCall.env?.PI_SUBAGENT_ROOT_SESSION_ID, manager.getSessionId());
 	});
 
 	it("keeps explicit fresh context over top-level parallel agent defaultContext fork", async () => {
@@ -1298,8 +1300,8 @@ describe("fork context execution wiring", () => {
 
 	it("applies paired intercom wiring to fresh and fork async children", async () => {
 		mockPi.reset();
-		mockPi.onCall({ output: "async fresh child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
-		mockPi.onCall({ output: "async fork child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
+		mockPi.onCall({ output: "async fresh child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET", "PI_SUBAGENT_ROOT_SESSION_ID"] });
+		mockPi.onCall({ output: "async fork child", echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET", "PI_SUBAGENT_ROOT_SESSION_ID"] });
 		const parentSessionFile = path.join(tempDir, "parent.jsonl");
 		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
@@ -1334,6 +1336,8 @@ describe("fork context execution wiring", () => {
 		assert.equal(toolsArg(forkCall.args), "read,intercom,contact_supervisor");
 		assert.equal(freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
 		assert.equal(forkCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
+		assert.equal(freshCall.env?.PI_SUBAGENT_ROOT_SESSION_ID, manager.getSessionId());
+		assert.equal(forkCall.env?.PI_SUBAGENT_ROOT_SESSION_ID, manager.getSessionId());
 	});
 
 	it("runs async chain requests in the background when clarify is omitted", async () => {
