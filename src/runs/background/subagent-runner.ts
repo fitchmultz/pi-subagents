@@ -1277,6 +1277,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		if (!step) return;
 		step.model = model;
 		step.thinking = thinking;
+		step.modelStartedAt = now;
 		statusPayload.lastUpdate = now;
 		writeStatusPayload();
 	};

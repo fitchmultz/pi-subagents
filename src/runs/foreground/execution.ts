@@ -51,7 +51,7 @@ import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.
 import { pendingSupervisorQuestion, refreshQuestionLaunch, saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { updateStreamingText } from "../shared/streaming-text.ts";
 import { saveForegroundLaunch } from "../shared/run-records.ts";
-import { providerQualifiedModelId } from "../../shared/model-info.ts";
+import { providerQualifiedModelId, resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
 	appendClaudeCodeMessage,
@@ -373,6 +373,9 @@ async function runSingleAttempt(
 		agent: agent.name,
 		status: "running",
 		task,
+		model: modelArg,
+		thinking: resolveEffectiveThinking(modelArg, agent.thinking),
+		modelStartedAt: startTime,
 		skills: shared.resolvedSkillNames,
 		recentTools: [],
 		recentOutput: [...shared.attemptNotes],
@@ -395,7 +398,8 @@ async function runSingleAttempt(
 			stdio: ["ignore", "pipe", "pipe"],
 			detached: true,
 		});
-		if (proc.pid && options.runId) saveQuestionContract(options.runId, options.index ?? 0, { pid: proc.pid, sessionFile: options.sessionFile, updatedAt: Date.now() });
+		if (proc.pid && options.runId) saveQuestionContract(options.runId, options.index ?? 0, { pid: proc.pid, sessionFile: options.sessionFile, updatedAt: Date.now(),
+			modelSelection: { model: progress.model, thinking: progress.thinking, modelStartedAt: startTime } });
 		let buf = "";
 		let processClosed = false;
 		let settled = false;
@@ -566,6 +570,9 @@ async function runSingleAttempt(
 			progress.durationMs = Date.now() - startTime;
 			emitUpdateSnapshot(getFinalOutput(result.messages ?? []) || "(running...)");
 		};
+
+		// Publish each attempt's selection before its first saved response or streaming event.
+		fireUpdate();
 
 		const processLine = (line: string) => {
 			if (!line.trim()) return;

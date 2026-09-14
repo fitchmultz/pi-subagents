@@ -10,6 +10,7 @@
 - Opt-in Intercom topics with quiet current-state records, self-contained coalesced updates and advisory resource-owner display. Only blockers, decisions, awaited explicit releases and direct messages interrupt; disconnect never implies release.
 
 ### Fixed
+- Restore per-child provider/model visibility in Agents, retain provider and model namespaces, and keep full identities available in assignment and message details at narrow sizes. Distinguish selected attempts from native saved choices, including fallbacks and completed conversations later continued on the same session.
 - Make Agents and bundled Intercom action hints clickable in native fullscreen, including Back, Send, Continue, focus, replies, quoted context, topic navigation and parent result-card expansion. Keep drafts, reading positions, native selection and explicit-send boundaries intact; show the action that matches the current focus and use native Option labels on macOS.
 - Restore colored per-agent rows and an exact running count, distinguishing queued and needs-action work. Budget task names, complete states and unread/replied badges before verbose activity in the widget and picker. Hide the entire Agents area when no work is active, while retaining saved drafts, unread results and pins.
 - Let repeated fullscreen clicks on the Agents entrance or selected task close its picker or conversation without changing drafts or stopping work. Clicking a collapsed Intercom message expands that row; a second click collapses it, while native global expansion and text selection remain available.

@@ -195,6 +195,10 @@ export interface AgentProgress {
 	index: number;
 	agent: string;
 	status: "pending" | "running" | "completed" | "complete" | "failed" | "blocked" | "paused" | "detached" | "timed-out";
+	model?: string;
+	thinking?: string;
+	/** Display boundary: earlier native history belongs to a previous attempt. */
+	modelStartedAt?: number;
 	activityState?: ActivityState;
 	task: string;
 	skills?: string[];
@@ -447,6 +451,8 @@ export interface SavedLaunchConfig {
 	agent: import("../agents/agents.ts").AgentConfig;
 	model?: string;
 	thinking?: string;
+	/** Timestamp of the native model entry captured with this frozen launch. */
+	modelRecordedAt?: number;
 	modelCandidates: string[];
 	artifacts: boolean;
 	artifactsDir?: string;
@@ -507,6 +513,7 @@ export interface OwnedRunView extends OwnedRun {
 		configuration: "saved" | "legacy-partial";
 		missingSession?: boolean;
 		identityUnavailable?: boolean;
+		modelSelection?: Pick<AgentProgress, "model" | "thinking" | "modelStartedAt">;
 		activity?: Partial<Pick<AgentProgress, "status" | "currentTool" | "currentToolArgs" | "currentPath" | "recentOutput" | "lastActivityAt" | "streamingText">>;
 	}>;
 	continuations: Array<{ runId: string; predecessorRunId: string; predecessorIndex?: number }>;
@@ -790,6 +797,7 @@ export interface AsyncStatus {
 		skills?: string[];
 		model?: string;
 		thinking?: string;
+		modelStartedAt?: number;
 		attemptedModels?: string[];
 		modelAttempts?: ModelAttempt[];
 		error?: string;

@@ -9,13 +9,14 @@ import { ownedRunView } from "../runs/shared/run-records.ts";
 import { listRunQuestions, getRunMetadataDir, questionProcessAlive, type SupervisorQuestionView } from "../runs/shared/supervisor-questions.ts";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-params.ts";
 import { getSingleResultOutput } from "../shared/utils.ts";
+import { formatModelThinking } from "../shared/formatters.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
 import { acceptanceHumanAction } from "../runs/shared/acceptance.ts";
 import { stripAcceptanceReport } from "../runs/shared/acceptance-reports.ts";
 import { formatAgentProcessExit } from "../shared/status-format.ts";
 import { WIDGET_KEY, type OwnedRun, type OwnedRunView, type SubagentExecutionResult, type SubagentState } from "../shared/types.ts";
 import { buildWidgetLines } from "./render.ts";
-import { NativeAgentHistory, readableText, withFinalResult, type AgentHistoryItem } from "./agent-history.ts";
+import { NativeAgentHistory, readableText, withFinalResult, type AgentHistory, type AgentHistoryItem } from "./agent-history.ts";
 import { actionHints, withMouseExpansion } from "./action-hints.ts";
 
 const VIEW_ENTRY = "subagent-view";
@@ -57,6 +58,7 @@ export interface AgentTask {
 	label: string;
 	run: OwnedRunView;
 	child: OwnedRunView["children"][number];
+	model: { summary: string; details: string };
 	question?: SupervisorQuestionView;
 	history: AgentHistoryItem[];
 	historyIds: string[];
@@ -94,6 +96,31 @@ function taskSummary(task: AgentTask): { status: string; badge: string } {
 	else if (task.child.state === "live") status = task.child.activity?.status === "pending" ? "queued" : "working";
 	else status = task.child.state === "completed" ? "done" : task.child.state;
 	return { status, badge: task.unread ? task.replied ? " · replied" : " · new" : "" };
+}
+
+const unavailableModel = { summary: "model unavailable", details: "Model unavailable. No provider/model was recorded for this assignment." };
+
+function agentModel(child: AgentTask["child"], native?: AgentHistory["configuration"]): AgentTask["model"] {
+	if (child.identityUnavailable) return unavailableModel;
+	const live = child.state === "live", selected = child.modelSelection;
+	// A continuation shares its file with the finished run; only the latter's frozen snapshot belongs to it.
+	const recorded = live ? native : child.launch;
+	const current = selected?.modelStartedAt !== undefined && (recorded?.modelRecordedAt ?? 0) > selected.modelStartedAt;
+	let source = "selected", value: { model?: string; thinking?: string } | undefined = selected;
+	if (recorded?.model && (current || !live && selected?.modelStartedAt === undefined)) {
+		value = recorded; source = live ? "session" : "saved";
+	} else if (!value?.model) {
+		value = live && native?.model ? native : child.launch?.model ? child.launch : child.result;
+		source = "saved";
+	}
+	if (!value?.model) return unavailableModel;
+	const formatted = readableText(formatModelThinking(value.model, value.thinking));
+	const selectedText = selected?.model && readableText(formatModelThinking(selected.model, selected.thinking));
+	const nativeText = native?.model && readableText(formatModelThinking(native.model, native.thinking));
+	const details = [`Model (${source}): ${formatted}`];
+	if (selectedText && selectedText !== formatted) details.push(`Selected model: ${selectedText}`);
+	if (live && nativeText && nativeText !== formatted) details.push(`Last saved session model (may precede this attempt): ${nativeText}`);
+	return { summary: `${source}: ${formatted}`, details: details.join("\n") };
 }
 
 /** One UI controller over the existing owned runs, session files, and executor. */
@@ -183,9 +210,12 @@ export class AgentViewController {
 						const color = state === "running" ? "success" : state === "waiting" ? "dim" : "warning";
 						const symbol = state === "running" ? "●" : state === "waiting" ? "◷" : "!";
 						const { status, badge } = taskSummary(task);
-						const label = short(task.label, Math.max(1, width - visibleWidth(status + badge) - 7));
+						const available = width - visibleWidth(status + badge) - 7;
+						const modelWidth = available - Math.min(30, visibleWidth(task.label)) - 3;
+						const model = modelWidth >= 16 ? ` · ${short(task.model.summary, modelWidth)}` : "";
+						const label = short(task.label, Math.max(1, available - visibleWidth(model)));
 						hits.push({ start: 0, end: width, row: lines.length, key: task.key });
-						lines.push(truncateToWidth(`${theme.fg(color, `  ${symbol} `)}${theme.bold(label)} ${theme.fg(color, `· ${status}`)}${theme.fg("accent", badge)}`, width));
+						lines.push(truncateToWidth(`${theme.fg(color, `  ${symbol} `)}${theme.bold(label)} ${theme.fg(color, `· ${status}`)}${theme.fg("accent", badge)}${theme.fg("dim", model)}`, width));
 					}
 					if (visible.length < active.length) {
 						const more = `  +${active.length - visible.length} more · /agents`, line = truncateToWidth(more, width, "...");
@@ -259,7 +289,7 @@ export class AgentViewController {
 				const prior = tasks.get(key);
 				if (prior && prior.run.startedAt > run.startedAt) continue;
 				const visit = this.visits.get(key);
-				const nativeHistory = child.identityUnavailable ? { items: [], entryIds: [], unavailable: UNAVAILABLE_ASSIGNMENT } : this.history.read(child.sessionFile, child.state === "live");
+				const nativeHistory: AgentHistory = child.identityUnavailable ? { items: [], entryIds: [], unavailable: UNAVAILABLE_ASSIGNMENT } : this.history.read(child.sessionFile, child.state === "live");
 				const history = !child.identityUnavailable && child.state !== "live" && child.result
 					? withFinalResult(nativeHistory, getSingleResultOutput(child.result), run.runId, view.updatedAt) : nativeHistory;
 				const readIndex = visit?.readThrough ? history.entryIds.indexOf(visit.readThrough) : -1;
@@ -272,7 +302,7 @@ export class AgentViewController {
 					}
 					visit.outbox = visit.outbox.filter((sent) => !history.items.some((item) => item.messageId === sent.id));
 				}
-				tasks.set(key, { key, label: child.identityUnavailable ? "Saved assignment unavailable" : prior?.label ?? agentTaskLabel(child), run: view, child, history: history.items, historyIds: history.entryIds, finalId: history.finalId, unavailable: history.unavailable ?? view.diagnosis,
+				tasks.set(key, { key, label: child.identityUnavailable ? "Saved assignment unavailable" : prior?.label ?? agentTaskLabel(child), run: view, child, model: agentModel(child, nativeHistory.configuration), history: history.items, historyIds: history.entryIds, finalId: history.finalId, unavailable: history.unavailable ?? view.diagnosis,
 					question: child.identityUnavailable ? undefined : questions.findLast((question) => question.index === child.index && (question.state === "awaiting_input" || question.state === "answer_pending")),
 					unread: !child.identityUnavailable && Boolean(visit && ((visit.readThrough !== undefined && readIndex < history.entryIds.length - 1) || (child.activity?.lastActivityAt ?? 0) > (visit.seenActivityAt ?? 0))),
 					replied: lastSent >= 0 && history.items.slice(lastSent + 1).some((item) => item.kind === "assistant") });
@@ -284,7 +314,7 @@ export class AgentViewController {
 			if (!run) continue;
 			tasks.set(key, { key, label: "Saved assignment unavailable", run,
 				child: { agent: "unknown", index: -1, state: "unknown", configuration: "legacy-partial", identityUnavailable: true },
-				history: [], historyIds: [], unavailable: UNAVAILABLE_ASSIGNMENT, unread: false, replied: false });
+				model: unavailableModel, history: [], historyIds: [], unavailable: UNAVAILABLE_ASSIGNMENT, unread: false, replied: false });
 		}
 		this.tasks = [...tasks.values()].sort((a, b) => Number(Boolean(b.question)) - Number(Boolean(a.question)) || Number(b.child.state === "live") - Number(a.child.state === "live") || Number(b.unread) - Number(a.unread) || b.run.startedAt - a.run.startedAt);
 		this.overlay?.refresh();
@@ -505,7 +535,7 @@ class AgentPicker extends Container {
 	set focused(value: boolean) { this.hasFocus = value; this.search.focused = value; }
 	refresh(): void { this.tui.requestRender(); }
 	render(width: number): string[] {
-		const height = this.controller.availableHeight(this.tui);
+		const height = this.controller.availableHeight(this.tui), innerWidth = Math.max(1, width - 2);
 		const query = this.search.getValue();
 		const tasks = fuzzyFilter(this.controller.tasks, query, (task) => `${task.label} ${task.child.agent} ${task.child.task ?? ""}`);
 		const items = tasks.map((task) => {
@@ -513,13 +543,17 @@ class AgentPicker extends Container {
 			return { value: task.key, label: `${task.child.agent} · ${task.label}`, description: status + badge };
 		});
 		if (!query) items.push({ value: "peers", label: "Other connected sessions", description: "All projects" });
+		const labelWidth = Math.min(Math.max(0, ...items.map((item) => visibleWidth(item.label))), Math.max(40, Math.floor(innerWidth / 2)));
+		for (const [index, task] of tasks.entries()) {
+			const item = items[index]!, modelWidth = innerWidth - labelWidth - visibleWidth(item.description) - 7;
+			if (modelWidth >= 16) item.description += ` · ${short(task.model.summary, modelWidth)}`;
+		}
 		this.itemKeys = items.map((item) => item.value);
 		const selected = this.list?.getSelectedItem()?.value;
 		const selectedIndex = Math.max(0, items.findIndex((item) => item.value === selected));
 		const task = this.controller.task(items[selectedIndex]?.value ?? "");
-		const signature = JSON.stringify([items, query, width, height, items[selectedIndex]?.value, task && activity(task), task?.child.task, task?.run.runId]);
+		const signature = JSON.stringify([items, query, width, height, items[selectedIndex]?.value, task && activity(task), task?.model, task?.child.task, task?.run.runId]);
 		if (signature !== this.signature) {
-			const innerWidth = Math.max(1, width - 2);
 			const compact = height < 16;
 			const header = new Container();
 			header.addChild(new Text(this.theme.fg("accent", this.theme.bold(truncateToWidth(`Agents · ${this.controller.tasks.length} delegated tasks`, innerWidth))), 0, 0));
@@ -529,6 +563,7 @@ class AgentPicker extends Container {
 			if (!compact) footer.addChild(new Spacer(1));
 			if (task && !compact) {
 				footer.addChild(new Text(this.theme.fg("muted", short(`${task.child.agent} · ${activity(task)} · ${task.run.runId.slice(0, 8)}`, innerWidth)), 0, 0));
+				footer.addChild(new Text(this.theme.fg("dim", short(task.model.summary, innerWidth)), 0, 0));
 				const assignment = new Text(readableText(task.child.task ?? "Original assignment unavailable."), 0, 0).render(innerWidth);
 				footer.addChild(new Text(assignment.slice(0, 3).join("\n"), 0, 0));
 			}
@@ -691,6 +726,7 @@ export class AgentConversation extends Container {
 	}
 	refresh(): void {
 		if (this.closed) return;
+		if (this.detail?.id === "assignment" && this.task) this.detail = this.assignment();
 		if (!this.scroll.isFollowingEnd) this.restoreAnchor = this.anchor();
 		this.tui.requestRender();
 	}
@@ -698,7 +734,7 @@ export class AgentConversation extends Container {
 
 	private assignment(): AgentHistoryItem {
 		const task = this.task!;
-		return { id: "assignment", kind: "notice", title: task.child.identityUnavailable ? "Assignment unavailable" : `Assignment · ${task.child.agent}`, text: task.child.identityUnavailable ? UNAVAILABLE_ASSIGNMENT : task.child.task ?? "The original per-child assignment was not saved for this older run.", timestamp: task.run.startedAt };
+		return { id: "assignment", kind: "notice", title: task.child.identityUnavailable ? "Assignment unavailable" : `Assignment · ${task.child.agent}`, text: task.child.identityUnavailable ? UNAVAILABLE_ASSIGNMENT : `${task.model.details}\n\n${task.child.task ?? "The original per-child assignment was not saved for this older run."}`, timestamp: task.run.startedAt };
 	}
 
 	private items(): AgentHistoryItem[] {
@@ -727,6 +763,7 @@ export class AgentConversation extends Container {
 			let cached = this.components.get(item.id);
 			if (cached?.signature !== signature) {
 				const component = new Container();
+				if (this.detail && item.model) component.addChild(new Text(this.theme.fg("muted", `Message model: ${readableText(formatModelThinking(item.model))}`), 0, 0));
 				if (item.call || item.result) {
 					const name = item.call?.name ?? item.result!.toolName;
 					const definition = (item.call && this.toolDefinitions.get(name)) || { renderCall: () => new Text(this.theme.fg("toolTitle", this.theme.bold(readableText(item.title))), 0, 0) };
@@ -791,7 +828,7 @@ export class AgentConversation extends Container {
 		header.addChild(new Text(this.theme.fg("accent", this.theme.bold(truncateToWidth(`Agents › ${task?.label ?? "unavailable"}${this.detail ? " › details" : ""}`, innerWidth))), 0, 0));
 		if (showStatus) header.addChild(actionHints([
 			...(task?.unread && !this.scroll.isFollowingEnd ? ["New activity · ", ...(this.menu ? [] : [{ text: "Alt+L latest", run: () => this.act("latest") }, " · "])] : []),
-			task ? `${task.child.agent} · ${activity(task)}` : "Unavailable",
+			task ? `${task.child.agent} · ${activity(task)} · ${task.model.summary}` : "Unavailable",
 		], (text) => this.theme.fg("dim", text), "..."));
 		body.addChild(header);
 		if (this.menu) {
