@@ -993,6 +993,7 @@ export interface SubagentLiveIntercomHealth {
 // ============================================================================
 
 export interface RunSyncOptions {
+	rootSessionId?: string;
 	cwd?: string;
 	signal?: AbortSignal;
 	interruptSignal?: AbortSignal;

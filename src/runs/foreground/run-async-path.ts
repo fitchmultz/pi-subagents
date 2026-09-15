@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { resolveRootSessionId } from "../../shared/session-identity.ts";
 import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { resolveStepBehavior, type ChainStep } from "../../shared/settings.ts";
@@ -78,6 +79,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 		pi: deps.pi,
 		cwd: ctx.cwd,
 		currentSessionId: deps.state.currentSessionId!,
+		rootSessionId: resolveRootSessionId(ctx.sessionManager),
 		currentModelProvider: ctx.model?.provider,
 		projectTrusted: ctx.isProjectTrusted(),
 	};

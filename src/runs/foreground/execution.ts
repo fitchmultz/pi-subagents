@@ -304,6 +304,7 @@ async function runSingleAttempt(
 				cwd: options.cwd ?? runtimeCwd,
 				intercomSessionName: options.intercomSessionName,
 				orchestratorIntercomTarget: options.orchestratorIntercomTarget,
+				rootSessionId: options.rootSessionId,
 				runId: options.runId,
 				childAgentName: agent.name,
 				childIndex: options.index ?? 0,

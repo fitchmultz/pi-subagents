@@ -86,6 +86,7 @@ function resolveAsyncOutput(params: {
 }
 
 interface AsyncExecutionContext {
+	rootSessionId?: string;
 	pi: ExtensionAPI;
 	cwd: string;
 	currentSessionId: string;
@@ -508,6 +509,7 @@ export function executeAsyncChain(
 				sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
 				asyncDir,
 				sessionId: ctx.currentSessionId,
+				rootSessionId: ctx.rootSessionId,
 				piPackageRoot,
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
@@ -759,6 +761,7 @@ export function executeAsyncSingle(
 				sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
 				asyncDir,
 				sessionId: ctx.currentSessionId,
+				rootSessionId: ctx.rootSessionId,
 				piPackageRoot,
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,

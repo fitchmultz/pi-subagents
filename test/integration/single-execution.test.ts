@@ -22,6 +22,7 @@ import {
 } from "../../src/runs/shared/pi-args.ts";
 import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT } from "../../src/shared/types.ts";
 import { getFinalOutput } from "../../src/shared/utils.ts";
+
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createMockPi,
@@ -1049,6 +1050,16 @@ describe("single sync execution", () => {
 		assert.equal(result.exitCode, 0);
 		assert.equal(result.finalOutput, "fresh assistant output");
 		assert.equal(fs.existsSync(outputPath), false);
+	});
+
+	it("passes the owning Pi root through foreground spawn", async () => {
+		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ROOT_SESSION_ID"] });
+		const executor = makeExecutor([makeAgent("echo")]);
+		const ctx = makeMinimalCtx(tempDir);
+		ctx.sessionManager.getSessionId = () => "actual-owner-uuid";
+		const result = await executor.execute("root-inheritance", { agent: "echo", task: "Check root", output: false }, new AbortController().signal, undefined, ctx) as any;
+		assert.equal(result.isError, undefined, JSON.stringify(result.content));
+		assert.equal(readLastCall().env?.PI_SUBAGENT_ROOT_SESSION_ID, "actual-owner-uuid");
 	});
 
 	it("keeps explicit single output paths in the workspace", async () => {

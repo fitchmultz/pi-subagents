@@ -1,4 +1,5 @@
 import { toModelInfo } from "../../shared/model-info.ts";
+import { resolveRootSessionId } from "../../shared/session-identity.ts";
 import { executeChain } from "./chain-execution.ts";
 import { isDynamicParallelStep, type ChainStep } from "../../shared/settings.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
@@ -95,6 +96,7 @@ export async function runChainPath(data: ExecutionContextData, deps: ExecutorDep
 			pi: deps.pi,
 			cwd: ctx.cwd,
 			currentSessionId: deps.state.currentSessionId!,
+			rootSessionId: resolveRootSessionId(ctx.sessionManager),
 			currentModelProvider: ctx.model?.provider,
 			projectTrusted: ctx.isProjectTrusted(),
 		};

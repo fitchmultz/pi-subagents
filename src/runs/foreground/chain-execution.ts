@@ -3,6 +3,7 @@
  */
 
 import * as fs from "node:fs";
+import { resolveRootSessionId } from "../../shared/session-identity.ts";
 import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
@@ -276,6 +277,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				if (input.foregroundControl && activeChildren.size === 0) input.foregroundControl.interrupt = undefined;
 			};
 			const result = await runSync(input.ctx.cwd, input.agents, task.agent, taskStr, {
+				rootSessionId: resolveRootSessionId(input.ctx.sessionManager),
 				cwd: taskCwd,
 				signal: input.signal,
 				interruptSignal: AbortSignal.any([interruptController.signal, groupInterrupt.signal, failFastSignal]),
@@ -1100,6 +1102,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			let unregisterTimeoutExtension: (() => void) | undefined;
 			const runIntercomTarget = childIntercomTarget?.(seqStep.agent, childIndex);
 			const r = await runSync(ctx.cwd, agents, seqStep.agent, stepTask, {
+				rootSessionId: resolveRootSessionId(ctx.sessionManager),
 				cwd: resolveChildCwd(cwd ?? ctx.cwd, seqStep.cwd),
 				signal,
 				interruptSignal: interruptController.signal,

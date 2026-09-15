@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Carry the authoritative root Pi session ID through existing foreground/background launch and nested delegation without changing the parent's process environment. Saved children inherit the reviving parent's root.
 - A task-labelled Agents area, configurable Option+Shift+M (Alt+Shift+M) and `/agents`, with native-editor conversations, full saved history, contextual replies, tool details/diffs, unread navigation, preserved drafts and one optional pin. Fullscreen task clicks open the selected child; viewing finished work never starts it.
 - Verified human-origin direct messages to owned children, distinct broker and native-conversation receipts, and small parent information breadcrumbs. Waiting questions use the existing durable answer path.
 - Interruptible `agent_runs({ action: "wait", id, index? })` and `async: false` continuation/answer waits that follow the actual run identity and preserve saved launch choices. Important steers release foreground waits while their children keep working.
