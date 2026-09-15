@@ -4,7 +4,7 @@ description: Background watcher for changing external state with timely material
 model: cloudflare-ai-gateway/gpt-5.6-sol
 fallbackModels: openai/gpt-5.6-sol, fireworks/accounts/fireworks/routers/kimi-k3-fast
 thinking: high
-systemPromptMode: replace
+systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh

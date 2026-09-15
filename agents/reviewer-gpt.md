@@ -4,7 +4,7 @@ description: Maintainability and correctness reviewer for completed changes
 model: openai/gpt-6-astra
 fallbackModels: openai/gpt-6-astra
 thinking: xhigh
-systemPromptMode: replace
+systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh

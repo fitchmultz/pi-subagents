@@ -642,6 +642,7 @@ export function handleCreate(params: ManagementParams, ctx: ManagementContext): 
 		systemPromptMode: defaultSystemPromptMode(name),
 		inheritProjectContext: defaultInheritProjectContext(name),
 		inheritSkills: defaultInheritSkills(),
+		maxSubagentDepth: 0,
 	};
 	const applyError = applyAgentConfig(agent, cfg);
 	if (applyError) return result(applyError, true);

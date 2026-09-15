@@ -10,6 +10,9 @@
 - Explicit human-only `blocked` acceptance with concrete evidence and `humanAction`. It retains incomplete acceptance and completed evidence, stops repeated finalization/verification, blocks dependents and leaves independent siblings running.
 - Opt-in Intercom topics with quiet current-state records, self-contained coalesced updates and advisory resource-owner display. Only blockers, decisions, awaited explicit releases and direct messages interrupt; disconnect never implies release.
 
+### Changed
+- Preserve Pi's base prompt, project instructions, and discovered skills for agents by default while keeping fresh conversation context and nested delegation disabled. Bundled profiles now follow the same policy.
+
 ### Fixed
 - Remove the public `wait` action from `agent_runs` and `subagent`. Parents continue useful work or end the turn for automatic completion delivery, including when child evidence gates an incomplete goal; explicitly chosen foreground execution remains available.
 - Give Agents strip models more room by omitting redundant `session:` and `working` labels. Pulse only the visible running dot slowly on the existing refresh loop; keep attention indicators steady, theme colors, other states and unread/replied badges intact. Keep offscreen regular-mode dots steady without hiding expanded details.

@@ -4,7 +4,7 @@ description: Fast codebase recon that returns compressed context for handoff
 model: cloudflare-ai-gateway/gpt-5.6-sol
 fallbackModels: openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
 thinking: high
-systemPromptMode: replace
+systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh

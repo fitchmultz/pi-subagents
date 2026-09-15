@@ -593,18 +593,18 @@ Set `disabled: true` to hide a builtin from runtime discovery and agent-facing `
 
 ### Prompt assembly
 
-Subagents are designed to be narrow by default. Custom agents start with a clean system prompt and only the context you intentionally give them. They do not automatically inherit Pi’s whole base prompt, project instruction files, or discovered skills catalog.
+Subagents start with fresh conversation context while preserving Pi's operating environment by default: the base prompt, project instruction files, and discovered skills catalog. This avoids copying parent conversation noise without silently dropping the rules and capabilities needed to do the work.
 
-Use these fields when an agent should see more:
+Use these fields only when an agent needs stricter isolation or inherited conversation:
 
 | Field | Effect |
 |-------|--------|
-| `systemPromptMode: append` | Append the agent prompt to Pi’s normal base prompt. |
-| `inheritProjectContext: true` | Keep inherited project instructions from files like `AGENTS.md` and `CLAUDE.md`. |
-| `inheritSkills: true` | Let the child see Pi’s discovered skills catalog. |
+| `systemPromptMode: replace` | Replace Pi's normal base prompt with the agent prompt. |
+| `inheritProjectContext: false` | Suppress project instructions from files like `AGENTS.md` and `CLAUDE.md`. |
+| `inheritSkills: false` | Strip Pi's discovered skills catalog. |
 | `defaultContext: fork` | Use forked session context when a launch omits `context`; explicit `context: "fresh"` still wins. |
 
-Builtin agents opt into project instruction inheritance by default so they follow repo-specific rules out of the box. `delegate` also uses append mode because its job is orchestration inside the parent workflow.
+Bundled agents use the same prompt, project-context, and skill inheritance defaults. `oracle` alone opts into forked conversation context; the other profiles remain fresh.
 
 Pi task arguments stay inline through 900 UTF-8 bytes, including the `Task: ` prefix; larger tasks use Pi's native `@file` input. System instructions use a separate temporary file, including for agents named `task`. This transport applies to foreground and background Pi runs; Claude Code transport is unchanged.
 
@@ -623,9 +623,9 @@ extensions:
 model: claude-haiku-4-5
 fallbackModels: openai/gpt-5-mini, anthropic/claude-sonnet-4
 thinking: high
-systemPromptMode: replace
-inheritProjectContext: false
-inheritSkills: false
+systemPromptMode: append
+inheritProjectContext: true
+inheritSkills: true
 skills: safe-bash, chrome-devtools
 allowSubagents: false
 output: context.md
@@ -652,7 +652,7 @@ Important fields:
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. |
 | `fallbackModels` | Ordered backup models for provider/model failures such as quota, usage limit, auth, timeout, or unavailable model. Foreground and async subagents first retry the same model once for recoverable transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, then fall back when appropriate. Ordinary task failures do not trigger retry or fallback. |
 | `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present. |
-| `systemPromptMode` | `replace` by default; `append` keeps Pi’s base prompt. |
+| `systemPromptMode` | `append` by default; `replace` discards Pi's base prompt. |
 | `inheritProjectContext` | Uses Pi's native context-file loading policy; `false` passes `--no-context-files`. |
 | `inheritSkills` | Keeps or strips Pi’s discovered skills catalog. |
 | `defaultContext` | Optional `fresh` or `fork` launch context default for this agent. |
@@ -662,7 +662,7 @@ Important fields:
 | `defaultProgress` | Maintain `progress.md`. |
 | `completionGuard` | Opt in with `true` to require an observed successful mutating tool result. Disabled by default; task wording never determines success. An explicit `acceptance` contract takes precedence and can allow valid no-op outcomes. |
 | `interactive` | Parsed for compatibility but not enforced in v1. |
-| `maxSubagentDepth` | Tightens nested delegation for this agent’s children; use `0` to block delegation even if the tool is present. |
+| `maxSubagentDepth` | Defaults to `0`; raise it explicitly for an agent allowed to delegate, subject to the inherited global limit. |
 | `maxExecutionTimeMs` | Stops each foreground or async child run for this agent after the given number of milliseconds. |
 | `maxTokens` | Stops each foreground or async child run for this agent when observed input plus output tokens reach the limit. Token enforcement is best-effort because usage is reported after model events arrive. |
 
@@ -673,12 +673,12 @@ All bundled agents omit `tools` and `extensions` allowlists. If `tools` is omitt
 Examples:
 
 - `tools` omitted and `extensions` omitted: configured builtins and normal extensions, including their tools.
-- `allowSubagents: true` with `tools` omitted: normal tools plus the child-safe `subagent` tool, but nested calls remain blocked unless the installation explicitly raises `maxSubagentDepth` above its default.
+- `allowSubagents: true` with `tools` omitted: normal tools plus the child-safe `subagent` tool, but nested calls remain blocked until both the agent and installation raise `maxSubagentDepth` above their defaults.
 - `tools: mcp:chrome-devtools`: normal builtins plus direct Chrome DevTools MCP tools.
 - `tools: read, bash, mcp:chrome-devtools`: only `read` and `bash` as builtins, plus direct Chrome DevTools MCP tools.
-- `tools: subagent, read`: a child-safe `subagent` tool is available inside that child, but nested calls remain blocked unless the installation explicitly raises `maxSubagentDepth` above its default.
+- `tools: subagent, read`: a child-safe `subagent` tool is available inside that child, but nested calls remain blocked until both the agent and installation raise `maxSubagentDepth` above their defaults.
 
-Direct MCP tools require [pi-mcp-adapter](https://github.com/fitchmultz/pi-mcp-adapter). By default, children preserve the adapter’s configured direct tools and any inherited `MCP_DIRECT_TOOLS` setting. Explicit `mcp:` entries override that selection; explicit `tools` and `extensions` allowlists still apply. The generic `mcp` and `mcp_script` tools remain available when enabled by the adapter and not excluded by an explicit allowlist. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. An `mcp:` entry named `subagent` does not authorize nested fanout; explicit opt-in requires `allowSubagents: true` or the builtin `subagent` tool name plus a global depth limit above the default.
+Direct MCP tools require [pi-mcp-adapter](https://github.com/fitchmultz/pi-mcp-adapter). By default, children preserve the adapter’s configured direct tools and any inherited `MCP_DIRECT_TOOLS` setting. Explicit `mcp:` entries override that selection; explicit `tools` and `extensions` allowlists still apply. The generic `mcp` and `mcp_script` tools remain available when enabled by the adapter and not excluded by an explicit allowlist. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. An `mcp:` entry named `subagent` does not authorize nested fanout; explicit opt-in requires `allowSubagents: true` or the builtin `subagent` tool name plus both agent and global depth limits above `0`.
 
 `extensions` controls child extension loading:
 
@@ -1141,6 +1141,8 @@ Controls project-trust flags for non-interactive child `pi` processes. Child run
 ```
 
 Controls nested delegation when no inherited `PI_SUBAGENT_MAX_DEPTH` is already in effect. The default is `1`, which allows the main session to launch subagents and blocks those children from delegating again. Per-agent `maxSubagentDepth` can tighten the limit for that agent’s child runs, but cannot relax an inherited stricter limit.
+
+Agent profiles separately default `maxSubagentDepth` to `0`. Nested orchestration therefore requires explicitly raising both the installation limit and that orchestrator profile's limit.
 
 ### Agent resource limits
 

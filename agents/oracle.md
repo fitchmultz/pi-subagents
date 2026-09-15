@@ -4,7 +4,7 @@ description: High-context decision-consistency oracle that protects inherited st
 model: openai-codex/gpt-6-astra
 fallbackModels: openai/gpt-6-astra
 thinking: xhigh
-systemPromptMode: replace
+systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fork

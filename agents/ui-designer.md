@@ -4,7 +4,7 @@ description: Visual/UI design specialist for rendered UX, layout, accessibility,
 model: openai/gpt-6-astra
 fallbackModels: cloudflare-ai-gateway/claude-fable-5-1, anthropic/claude-opus-5, openai-codex/gpt-6-astra, openai/gpt-6-astra
 thinking: xhigh
-systemPromptMode: replace
+systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh

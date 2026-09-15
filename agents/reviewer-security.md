@@ -4,7 +4,7 @@ description: Security and data-safety reviewer for changed code, dependencies, a
 model: xai/grok-4.6
 fallbackModels: openai/gpt-6-astra, openai-codex/gpt-6-astra
 thinking: max
-systemPromptMode: replace
+systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh

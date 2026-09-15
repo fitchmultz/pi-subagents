@@ -21,16 +21,16 @@ export type AgentSource = "builtin" | "user" | "project";
 type SystemPromptMode = "append" | "replace";
 export type AgentDefaultContext = "fresh" | "fork";
 
-export function defaultSystemPromptMode(name: string): SystemPromptMode {
-	return name === "delegate" ? "append" : "replace";
+export function defaultSystemPromptMode(_name: string): SystemPromptMode {
+	return "append";
 }
 
-export function defaultInheritProjectContext(name: string): boolean {
-	return name === "delegate";
+export function defaultInheritProjectContext(_name: string): boolean {
+	return true;
 }
 
 export function defaultInheritSkills(): boolean {
-	return false;
+	return true;
 }
 
 interface BuiltinAgentOverrideConfig {
@@ -649,7 +649,7 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			maxSubagentDepth:
 				Number.isInteger(parsedMaxSubagentDepth) && parsedMaxSubagentDepth >= 0
 					? parsedMaxSubagentDepth
-					: undefined,
+					: 0,
 			maxExecutionTimeMs:
 				Number.isInteger(parsedMaxExecutionTimeMs) && parsedMaxExecutionTimeMs >= 1
 					? parsedMaxExecutionTimeMs

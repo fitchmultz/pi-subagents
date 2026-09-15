@@ -4,7 +4,7 @@ description: Independent cross-model reviewer for assumptions, edge cases, and p
 model: anthropic/claude-fable-5-1
 fallbackModels: anthropic/claude-opus-5, cloudflare-ai-gateway/claude-fable-5-1
 thinking: high
-systemPromptMode: replace
+systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh

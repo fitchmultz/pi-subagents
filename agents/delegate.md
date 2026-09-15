@@ -3,7 +3,7 @@ name: delegate
 description: Lightweight subagent that inherits the parent model with no default reads
 systemPromptMode: append
 inheritProjectContext: true
-inheritSkills: false
+inheritSkills: true
 allowSubagents: false
 maxSubagentDepth: 0
 ---
