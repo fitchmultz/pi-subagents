@@ -1517,7 +1517,8 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 	f.controller.refresh(true);
 	assert.doesNotMatch(plain(view), /waiting to start/i, "a prior pending action must not leave a stale state notice once B starts");
 	fs.writeFileSync(releaseB, "released"); await pending;
-	const result = await f.executor.execute("collect-queued", { action: "wait", id: task.run.runId }, AbortSignal.timeout(5_000), undefined, f.ctx);
+	if (background) await until(() => fs.existsSync(path.join(getRunMetadataDir(task.run.runId), "result.json")), "queued workflow publishes its result");
+	const result = await f.executor.execute("inspect-queued", { action: "status", id: task.run.runId }, undefined, undefined, f.ctx);
 	assert.deepEqual(result.details.run?.children.map((child) => child.state), ["completed", "completed"]);
 	assert.equal(f.state.ownedRuns!.size, 1);
 	assert.equal(view.editor.getText(), "Keep this draft for B");

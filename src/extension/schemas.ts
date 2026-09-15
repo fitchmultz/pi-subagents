@@ -252,10 +252,10 @@ export const DelegateParams = Type.Object({
 }, { additionalProperties: false });
 
 export const AgentRunsParams = Type.Object({
-	action: Type.Enum(["list", "inspect", "nudge", "stop", "continue", "wait", "profiles", "questions", "answer", "review"] as const, { type: "string" }),
+	action: Type.Enum(["list", "inspect", "nudge", "stop", "continue", "profiles", "questions", "answer", "review"] as const, { type: "string" }),
 	id: Type.Optional(Type.String({ minLength: 1, description: "Run ID or unambiguous prefix." })),
 	questionId: Type.Optional(Type.String({ minLength: 1, description: "Durable supervisor question ID for answer." })),
-	async: Type.Optional(Type.Boolean({ description: "Continue/answer: false waits for the actual continuation result. Explicit wait attaches without stopping the child when cancelled." })),
+	async: Type.Optional(Type.Boolean({ description: "Continue/answer: false waits for the actual continuation result." })),
 	index: Type.Optional(Type.Integer({ minimum: 0, description: "Child index for a multi-child run." })),
 	message: Type.Optional(Type.String({ minLength: 1, description: "Guidance, follow-up, answer, or optional parent-only review note. Review notes are not sent to the child; put actionable instructions in continue/nudge. Only continue/answer can start a saved child." })),
 	decision: Type.Optional(Type.Enum(["accepted", "needs_changes"] as const, { type: "string", description: "Parent-only review outcome; not sent to the child. Separate from execution and runtime acceptance checks." })),
@@ -270,7 +270,7 @@ export const AgentRunsParams = Type.Object({
 }, {
 	additionalProperties: false,
 	allOf: [
-		{ if: { properties: { action: { enum: ["inspect", "nudge", "stop", "continue", "wait", "answer", "review"] } } }, then: requiredObject("id") },
+		{ if: { properties: { action: { enum: ["inspect", "nudge", "stop", "continue", "answer", "review"] } } }, then: requiredObject("id") },
 		{ if: { properties: { action: { enum: ["nudge", "continue", "answer"] } } }, then: requiredObject("message") },
 		{ if: { properties: { action: { enum: ["answer"] } } }, then: requiredObject("questionId") },
 		{ if: { properties: { action: { enum: ["review"] } } }, then: requiredObject("decision") },
@@ -364,7 +364,6 @@ export const SubagentParams = Type.Object({
 	allOf: [
 		{ if: { ...requiredObject("action"), properties: { action: { enum: ["answer"] } } }, then: { allOf: [requiredObject("questionId", "message"), { anyOf: [requiredObject("id"), requiredObject("runId")] }] } },
 		{ if: { ...requiredObject("action"), properties: { action: { enum: ["review"] } } }, then: { allOf: [requiredObject("decision"), { anyOf: [requiredObject("id"), requiredObject("runId")] }] } },
-		{ if: { ...requiredObject("action"), properties: { action: { enum: ["wait"] } } }, then: { anyOf: [requiredObject("id"), requiredObject("runId")] } },
 		{ not: { anyOf: [
 			requiredObject("agent", "tasks"),
 			requiredObject("agent", "chain"),

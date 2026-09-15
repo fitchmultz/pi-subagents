@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx } from "../support/helpers.ts";
+import { waitForOwnedRun } from "../../src/runs/foreground/wait-run.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../../src/runs/background/async-job-tracker.ts";
 import { ownedRunView, saveForegroundRun } from "../../src/runs/shared/run-records.ts";
@@ -27,11 +28,21 @@ function setup(t, allowLaunch = false) {
 	const events = createEventBus(), pi = { events, getSessionName: () => "wait-parent" };
 	const tracker = createAsyncJobTracker(pi, state, ASYNC_DIR);
 	events.on("subagent:async-started", tracker.handleStarted);
-	const executor = createSubagentExecutor({ pi, state, config: {}, asyncByDefault: true, tempArtifactsDir: cwd, getSubagentSessionRoot: () => cwd, expandTilde: (value) => value, discoverAgents: () => { if (allowLaunch) return { agents: [agent] }; throw new Error("Saved continuation must not rediscover current profiles"); } });
+	const deps = { pi, state, config: {}, asyncByDefault: true, tempArtifactsDir: cwd, getSubagentSessionRoot: () => cwd, expandTilde: (value) => value, discoverAgents: () => { if (allowLaunch) return { agents: [agent] }; throw new Error("Saved continuation must not rediscover current profiles"); } };
+	const executor = createSubagentExecutor(deps);
 	const mock = createMockPi(); mock.install();
 	t.after(() => { if (state.poller) clearInterval(state.poller); for (const timer of state.cleanupTimers.values()) clearTimeout(timer); mock.uninstall(); });
-	return { cwd, runId, state, events, mock, invoke: (params, signal?, update?) => executor.execute(randomUUID(), params, signal, update, makeMinimalCtx(cwd)) };
+	return { cwd, runId, state, events, mock, deps, invoke: (params, signal?, update?) => executor.execute(randomUUID(), params, signal, update, makeMinimalCtx(cwd)) };
 }
+
+test("removed wait action is rejected without starting or attaching to work", async (t) => {
+	const f = setup(t);
+	const result = await f.invoke({ action: "wait", id: f.runId });
+	assert.equal(result.isError, true);
+	assert.match(result.content[0]!.text, /Unknown action: wait/);
+	assert.equal(result.details.wait, undefined);
+	assert.equal(f.mock.callCount(), 0);
+});
 
 test("continue async:false waits for the new saved-launch result, not the original completed handle", async (t) => {
 	const f = setup(t);
@@ -47,20 +58,21 @@ test("continue async:false waits for the new saved-launch result, not the origin
 	assert.equal(f.mock.callCount(), 1);
 });
 
-for (const exit of ["cancel", "attention"] as const) test(`explicit wait ${exit} detaches only the waiter; re-wait collects the same child's result`, async (t) => {
+test("important steering releases a foreground continuation without stopping it or requiring reattachment", async (t) => {
 	const f = setup(t);
 	f.mock.onCall({ output: "CHILD-CONTINUED", delay: 600 });
-	const started = await f.invoke({ action: "resume", id: f.runId, message: "Continue", async: true });
-	const id = started.details.asyncId!, controller = new AbortController();
-	const pending = f.invoke({ action: "wait", id }, controller.signal);
-	await delay(50);
-	if (exit === "cancel") controller.abort(); else f.events.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: randomUUID(), reason: "attention" });
+	const pending = f.invoke({ action: "resume", id: f.runId, message: "Continue", async: false });
+	await until(() => f.mock.callCount() > 0, "continuation must start");
+	const run = [...f.state.ownedRuns!.values()].find((run) => run.runId !== f.runId)!;
+	f.events.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: randomUUID(), reason: "attention" });
 	const detached = await pending;
-	assert.equal(detached.details.wait?.status, exit === "cancel" ? "cancelled" : "yielded");
-	assert.equal(fs.existsSync(path.join(started.details.asyncDir!, "control-request.json")), false, "attaching wait cannot stop the child");
-	const done = await f.invoke({ action: "wait", id });
+	assert.equal(detached.details.wait?.status, "yielded");
+	assert.match(detached.content[0]!.text, /end the turn; completion will arrive automatically/);
+	assert.doesNotMatch(detached.content[0]!.text, /use wait|reattach/);
+	assert.equal(fs.existsSync(path.join(run.asyncDir!, "control-request.json")), false, "steering cannot stop the child");
+	await until(() => fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json")), "continuation publishes its result after yielding");
+	const done = await f.invoke({ action: "status", id: run.runId });
 	assert.match(done.content[0]!.text, /CHILD-CONTINUED/);
-	assert.equal(done.details.wait?.runId, id);
 	assert.equal(f.mock.callCount(), 1);
 });
 
@@ -85,7 +97,7 @@ test("cancelling only a newly launched async:false continuation requests runner 
 	assert.equal(f.state.ownedRuns!.size, 2, "launch lineage survives cancellation");
 });
 
-for (const background of [false, true]) test(`${background ? "background" : "foreground"} indexed wait reads a finished child before its sibling; selected stop still runs queued siblings`, async (t) => {
+for (const background of [false, true]) test(`${background ? "background" : "foreground"} status reads a finished child before its sibling; selected stop still runs queued siblings`, async (t) => {
 	const f = setup(t, true);
 	f.mock.onCall({ matchArgsIncludes: "FIRST_CHILD", output: "FIRST_SAVED_RESULT" });
 	f.mock.onCall({ matchArgsIncludes: "HELD_CHILD", steps: [{ jsonl: [events.toolStart("bash", { command: "held child work" })] }, { delay: 10_000, jsonl: [events.assistantMessage("Should be stopped")] }] });
@@ -95,17 +107,16 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 	const run = [...f.state.ownedRuns!.values()].find((run) => run.runId !== f.runId)!;
 	try {
 		await until(() => ownedRunView(run, f.state).children[1]?.activity?.currentTool === "bash", "second child must be running");
-		const first = await f.invoke({ action: "wait", id: run.runId, index: 0 }, AbortSignal.timeout(3_000));
-		assert.equal(first.details.wait?.status, "completed");
+		const first = await f.invoke({ action: "status", id: run.runId });
 		assert.match(first.content[0]!.text, /FIRST_SAVED_RESULT/);
-		assert.equal(first.details.run?.state, "live", "index wait does not await unrelated siblings");
+		assert.equal(first.details.run?.state, "live", "inspection does not await unrelated siblings");
 		assert.equal(f.mock.callCount(), 2, "third child is still queued");
 		const stopped = await f.invoke({ action: "interrupt", id: run.runId, index: 1 });
 		assert.equal(stopped.isError, undefined, stopped.content[0]?.text);
 		assert.match(stopped.content[0]!.text, /child 1 only/);
 		await pending;
-		const completed = await f.invoke({ action: "wait", id: run.runId }, AbortSignal.timeout(5_000));
-		assert.equal(completed.details.wait?.status, "completed");
+		if (background) await until(() => fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json")), "workflow publishes its result");
+		const completed = await f.invoke({ action: "status", id: run.runId });
 		assert.deepEqual(completed.details.run?.children.map((child) => child.state), ["completed", "paused", "completed"]);
 		assert.match(completed.content[0]!.text, /QUEUED_SIBLING_COMPLETED/);
 		assert.equal(f.mock.callCount(), 3);
@@ -186,14 +197,14 @@ test("an older multi-child runner cannot receive an index it would ignore", (t) 
 	assert.equal(fs.existsSync(path.join(asyncDir, "control-request.json")), false);
 });
 
-test("terminal status before durable publication cannot masquerade as a final wait result", async (t) => {
+test("foreground result collection requires durable publication, not an early terminal status", async (t) => {
 	const f = setup(t), id = randomUUID(), asyncDir = path.join(f.cwd, "write-gap");
 	fs.mkdirSync(asyncDir);
 	const original = f.state.ownedRuns!.get(f.runId)!;
 	f.state.ownedRuns!.set(id, { ...original, runId: id, rootRunId: id, source: "async", asyncDir, pid: process.pid });
 	fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: id, mode: "single", state: "complete", startedAt: 1, pid: process.pid, steps: [{ agent: "worker", status: "complete" }] }));
 	let returned = false;
-	const pending = f.invoke({ action: "wait", id }).then((result) => { returned = true; return result; });
+	const pending = waitForOwnedRun({ id, deps: f.deps, ctx: makeMinimalCtx(f.cwd) }).then((result) => { returned = true; return result; });
 	await delay(160); assert.equal(returned, false);
 	fs.mkdirSync(getRunMetadataDir(id), { recursive: true });
 	fs.writeFileSync(path.join(getRunMetadataDir(id), "result.json"), JSON.stringify({ id, mode: "single", success: true, state: "complete", results: [{ agent: "worker", output: "DURABLE-AFTER-GAP", exitCode: 0, success: true }] }));

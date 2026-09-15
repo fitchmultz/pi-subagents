@@ -90,7 +90,8 @@ describe("subagent extension child mode", () => {
 			if (!loaderText.includes('action: "list"')) throw new Error("missing list-before-execute guidance");
 			if (!loaderText.includes("parent session responsible")) throw new Error("missing parent-owns-final-decision guidance");
 			if (!loaderText.includes("review-only tasks") || !loaderText.includes("omit acceptance")) throw new Error("missing lightweight-review guidance");
-			if (!loaderText.includes("incomplete active Pi goal") || !loaderText.includes("async:false")) throw new Error("missing foreground-exception guidance");
+			if (!loaderText.includes("incomplete active Pi goal") || !loaderText.includes("yield, then continue the goal after automatic completion delivery")) throw new Error("missing async goal guidance");
+			if (!loaderText.includes("async:false only for explicitly chosen foreground execution")) throw new Error("missing deliberate foreground guidance");
 			if (!loaderText.includes("non-blocking steer") || !loaderText.includes("supplements the active task")) throw new Error("missing steer-first guidance");
 			const activeSetCount = activeSets.length;
 			const repeatedLoad = await loader.execute("load-again", {}, new AbortController().signal);
