@@ -916,7 +916,7 @@ export function reviveSavedSubagent(input: {
 		controlIntercomTarget: intercomBridge.orchestratorTarget,
 		childIntercomTarget: (agent, index) => resolveSubagentIntercomTarget(runId, agent, index),
 		availableModels, savedLaunch, modelOverride,
-		skills: skill === false ? [] : skill,
+		skills: skill,
 		acceptance: input.params.acceptance ?? acceptanceInputFromResolved(contract.effectiveAcceptance ?? savedLaunch?.effectiveAcceptance),
 		output: input.params.output ?? (generatedOutputFilename ? true : savedLaunch?.output ?? contract.output),
 		generatedOutputFilename,

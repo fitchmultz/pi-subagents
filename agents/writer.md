@@ -4,7 +4,7 @@ description: Human-facing writing specialist for documentation, announcements, g
 model: cloudflare-ai-gateway/claude-fable-5-1
 fallbackModels: anthropic/claude-fable-5-1, cloudflare-ai-gateway/claude-opus-5
 thinking: high
-systemPromptMode: replace
+systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh

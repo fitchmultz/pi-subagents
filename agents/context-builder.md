@@ -4,7 +4,7 @@ description: Analyzes requirements and codebase, generates context and meta-prom
 model: openai-codex/gpt-6-astra
 fallbackModels: cloudflare-ai-gateway/claude-fable-5-1, anthropic/claude-opus-5, cloudflare-ai-gateway/claude-fable-5-1, openai-codex/gpt-6-astra
 thinking: high
-systemPromptMode: replace
+systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh

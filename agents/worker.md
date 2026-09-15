@@ -4,7 +4,7 @@ description: End-to-end implementation specialist for bounded tasks
 model: openai-codex/gpt-6-astra
 fallbackModels: cloudflare-ai-gateway/claude-opus-5, openai/gpt-6-astra
 thinking: xhigh
-systemPromptMode: replace
+systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh

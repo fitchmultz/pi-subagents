@@ -409,7 +409,7 @@ Do work
 });
 
 describe("agent frontmatter prompt assembly defaults", () => {
-	it("defaults ordinary agents to replace mode with no inherited context or skills", () => {
+	it("preserves Pi's prompt, project context, and skills while blocking nested delegation", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-agent-default-prompt-settings-"));
 		tempDirs.push(dir);
 		const agentsDir = path.join(dir, ".pi", "agents");
@@ -424,9 +424,10 @@ Do work
 
 		const result = discoverAgents(dir, "project");
 		const worker = result.agents.find((agent) => agent.name === "worker");
-		assert.equal(worker?.systemPromptMode, "replace");
-		assert.equal(worker?.inheritProjectContext, false);
-		assert.equal(worker?.inheritSkills, false);
+		assert.equal(worker?.systemPromptMode, "append");
+		assert.equal(worker?.inheritProjectContext, true);
+		assert.equal(worker?.inheritSkills, true);
+		assert.equal(worker?.maxSubagentDepth, 0);
 	});
 
 	it("builtin agents inherit project context by default", () => {
@@ -482,7 +483,7 @@ Do work
 		}
 	});
 
-	it("defaults delegate to append mode with inherited project context", () => {
+	it("uses the same prompt inheritance defaults for delegate", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-agent-delegate-default-prompt-settings-"));
 		tempDirs.push(dir);
 		const agentsDir = path.join(dir, ".pi", "agents");
@@ -499,7 +500,8 @@ Do work
 		const delegate = result.agents.find((agent) => agent.name === "delegate");
 		assert.equal(delegate?.systemPromptMode, "append");
 		assert.equal(delegate?.inheritProjectContext, true);
-		assert.equal(delegate?.inheritSkills, false);
+		assert.equal(delegate?.inheritSkills, true);
+		assert.equal(delegate?.maxSubagentDepth, 0);
 	});
 });
 

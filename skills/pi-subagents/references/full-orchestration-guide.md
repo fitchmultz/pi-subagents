@@ -596,18 +596,12 @@ A minimal agent file looks like this:
 name: my-agent
 package: code-analysis
 description: What this agent does
-model: openai-codex/gpt-5.4
-thinking: high
-tools: read, grep, find, ls, bash
-systemPromptMode: replace
-inheritProjectContext: true
-inheritSkills: false
 ---
 
 Your system prompt here.
 ```
 
-That is only a starting point. Omit `package` for the traditional unqualified runtime name. Common optional fields include:
+This defaults to fresh conversation context while appending the prompt to Pi's base prompt, inheriting project context and skills, preserving normal tools and extensions, and blocking nested delegation. Omit `package` for the traditional unqualified runtime name. Common optional fields include:
 - `defaultProgress`
 - `defaultReads`
 - `output`

@@ -4,7 +4,7 @@ description: Over-engineering and slop review for diffs, gated on preserving int
 model: openai/gpt-6-astra
 fallbackModels: cloudflare-ai-gateway/claude-fable-5-1, anthropic/claude-opus-5, openai-codex/gpt-6-astra, openai/gpt-6-astra
 thinking: xhigh
-systemPromptMode: replace
+systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 skills: ponytail

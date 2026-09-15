@@ -252,6 +252,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			availableModels: input.availableModels,
 			preferredModelProvider: input.ctx.model?.provider,
 			skills: effectiveSkills === false ? [] : effectiveSkills,
+			inheritSkills: effectiveSkills === false ? false : undefined,
 			acceptance: task.acceptance,
 			projectTrust: input.projectTrust,
 			projectTrusted: input.ctx.isProjectTrusted(),

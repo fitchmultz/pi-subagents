@@ -1033,6 +1033,8 @@ export interface RunSyncOptions {
 	preferredModelProvider?: string;
 	/** Skills to inject (overrides agent default if provided) */
 	skills?: string[];
+	/** Override whether the child inherits the runtime's discovered skills. */
+	inheritSkills?: boolean;
 	structuredOutput?: {
 		schema: JsonSchemaObject;
 		schemaPath: string;

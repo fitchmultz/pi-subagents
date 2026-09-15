@@ -224,6 +224,47 @@ describe("async execution utilities", () => {
 		assert.equal(readMockPiRecord(mockPi, 0).env?.PI_SUBAGENT_ROOT_SESSION_ID, "durable-root-uuid");
 	});
 
+	it("makes skill: false disable inherited skills in detached runs", async () => {
+		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INHERIT_SKILLS"] });
+		const id = `itest-ae-${process.pid}-no-inherited-skills-${Date.now().toString(36)}`;
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Run without skills",
+			agentConfig: makeAgent("worker", { inheritSkills: true }),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-no-skills" },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+			skills: false,
+		});
+		await waitForAsyncResultFile(id);
+		const call = readMockPiRecord(mockPi, 0);
+		assert.equal(call.env?.PI_SUBAGENT_INHERIT_SKILLS, "0");
+		assert.ok(call.args.includes("--no-skills"));
+	});
+
+	it("propagates top-level skill: false through detached parallel chains", async () => {
+		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INHERIT_SKILLS"] });
+		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INHERIT_SKILLS"] });
+		const id = `itest-ae-${process.pid}-chain-no-inherited-skills-${Date.now().toString(36)}`;
+		executeAsyncChain(id, {
+			chain: [{ parallel: [{ agent: "worker" }, { agent: "reviewer" }] }],
+			agents: [
+				makeAgent("worker", { inheritSkills: true }),
+				makeAgent("reviewer", { inheritSkills: true }),
+			],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-chain-no-skills" },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+			chainSkills: false,
+		});
+		await waitForAsyncResultFile(id);
+		for (const index of [0, 1]) {
+			const call = readMockPiRecord(mockPi, index);
+			assert.equal(call.env?.PI_SUBAGENT_INHERIT_SKILLS, "0");
+			assert.ok(call.args.includes("--no-skills"));
+		}
+	});
+
 	it("async launch messages tell the parent not to sleep-poll", async () => {
 		const commonParams = {
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },

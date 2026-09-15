@@ -88,6 +88,9 @@ describe("builtin agent overrides", () => {
 		assert.match(effectiveWatcher.systemPrompt, /steers at the next tool boundary without waiting for a reply/);
 		assert.match(effectiveWatcher.systemPrompt, /Skip starts, redundant status, and routine completion/);
 		for (const agent of builtins) {
+			assert.equal(agent.systemPromptMode, "append", `${agent.name} must preserve Pi's base prompt`);
+			assert.equal(agent.inheritProjectContext, true, `${agent.name} must inherit project context`);
+			assert.equal(agent.inheritSkills, true, `${agent.name} must inherit discovered skills`);
 			assert.equal(agent.allowSubagents, false, `${agent.name} must not delegate to nested subagents`);
 			assert.equal(agent.maxSubagentDepth, 0, `${agent.name} must block child delegation`);
 			assert.ok(!agent.tools?.includes("subagent"), `${agent.name} must not expose nested delegation`);

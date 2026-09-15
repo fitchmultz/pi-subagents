@@ -1250,6 +1250,22 @@ describe("single sync execution", () => {
 		});
 	});
 
+	it("makes skill: false disable inherited skills", async () => {
+		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INHERIT_SKILLS"] });
+		const executor = makeExecutor([makeAgent("echo", { inheritSkills: true })]);
+		const result = await executor.execute(
+			"disable-inherited-skills",
+			{ agent: "echo", task: "Run without skills", skill: false, output: false },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		) as any;
+
+		assert.equal(result.isError, undefined, JSON.stringify(result.content));
+		assert.equal(readLastCall().env?.PI_SUBAGENT_INHERIT_SKILLS, "0");
+		assert.ok(readCallArgs().includes("--no-skills"));
+	});
+
 	it("passes fanout routing env only when subagents are allowed", async () => {
 		const envKeys = [
 			SUBAGENT_FANOUT_CHILD_ENV,

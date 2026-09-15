@@ -165,6 +165,8 @@ export function buildClaudeCodeInvocation(input: {
 	tools?: string[];
 	mcpDirectTools?: string[];
 	allowSubagents?: boolean;
+	inheritProjectContext?: boolean;
+	inheritSkills?: boolean;
 	outputSchema?: JsonSchemaObject;
 }): ClaudeCodeInvocation {
 	const parsed = parseClaudeCodeModel(input.model);
@@ -182,6 +184,14 @@ export function buildClaudeCodeInvocation(input: {
 		args.push(input.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", input.systemPrompt);
 	}
 	if (input.allowSubagents) throw new Error("Claude Code backend does not support nested subagent fanout. Use a Pi-backed model for allowSubagents.");
+	const inheritProjectContext = input.inheritProjectContext ?? true;
+	const inheritSkills = input.inheritSkills ?? true;
+	if (!inheritProjectContext && inheritSkills) {
+		throw new Error("Claude Code cannot disable project setting sources while preserving their skills. Set inheritSkills: false or use a Pi-backed model.");
+	}
+	if (!inheritProjectContext) args.push("--setting-sources", "");
+	if (!inheritSkills) args.push("--disable-slash-commands");
+	args.push("--disallowedTools=Agent");
 	const mappedTools = mapClaudeCodeTools(input.tools, input.mcpDirectTools);
 	if (input.outputSchema) args.push("--json-schema", JSON.stringify(input.outputSchema));
 	args.push(input.task);
