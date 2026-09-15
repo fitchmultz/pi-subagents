@@ -309,6 +309,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				availableModels: input.availableModels,
 				preferredModelProvider: input.ctx.model?.provider,
 				skills: behavior.skills === false ? [] : behavior.skills,
+				inheritSkills: behavior.skills === false ? false : undefined,
 				structuredOutput: structuredRuntime,
 				acceptance: task.acceptance,
 				projectTrust: input.projectTrust,
@@ -389,7 +390,7 @@ interface ChainExecutionParams {
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	orchestratorIntercomTarget?: string;
 	foregroundControl?: ForegroundControlState;
-	chainSkills?: string[];
+	chainSkills?: string[] | false;
 	chainDir?: string;
 	dynamicFanoutMaxItems?: number;
 	maxSubagentDepth: number;
@@ -408,7 +409,7 @@ interface ChainExecutionResult {
 	/** User requested async execution via TUI - caller should dispatch to executeAsyncChain */
 	requestedAsync?: {
 		chain: ChainStep[];
-		chainSkills: string[];
+		chainSkills: string[] | false;
 	};
 }
 
@@ -1140,6 +1141,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				availableModels,
 				preferredModelProvider: ctx.model?.provider,
 				skills: behavior.skills === false ? [] : behavior.skills,
+				inheritSkills: behavior.skills === false ? false : undefined,
 				structuredOutput: structuredRuntime,
 				acceptance: seqStep.acceptance,
 				projectTrust: params.projectTrust,

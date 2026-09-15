@@ -760,7 +760,8 @@ async function runSingleStep(
 			if (model && isClaudeCodeModel(model)) {
 				claudeCodeInvocation = buildClaudeCodeInvocation({ model, task: prompt, systemPrompt: step.systemPrompt ?? undefined,
 					systemPromptMode: step.systemPromptMode, sessionFile, sessionName: ctx.childIntercomTarget,
-					tools: step.tools, mcpDirectTools: step.mcpDirectTools, allowSubagents: step.allowSubagents, outputSchema: structuredRuntime?.schema });
+					tools: step.tools, mcpDirectTools: step.mcpDirectTools, allowSubagents: step.allowSubagents,
+					inheritProjectContext: step.inheritProjectContext, inheritSkills: step.inheritSkills, outputSchema: structuredRuntime?.schema });
 				args = claudeCodeInvocation.args;
 				env = claudeCodeInvocation.env;
 			} else {

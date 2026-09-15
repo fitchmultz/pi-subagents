@@ -212,7 +212,7 @@ export function resolveChainTemplates(
 export function resolveStepBehavior(
 	agentConfig: AgentConfig,
 	stepOverrides: StepOverrides,
-	chainSkills?: string[],
+	chainSkills?: string[] | false,
 ): ResolvedStepBehavior {
 	// Output: step override > frontmatter > false (no output)
 	const stepOutput = normalizeOutputOverride(stepOverrides.output);
@@ -234,7 +234,7 @@ export function resolveStepBehavior(
 			: agentConfig.defaultProgress ?? false;
 
 	let skills: string[] | false;
-	if (stepOverrides.skills === false) {
+	if (chainSkills === false || stepOverrides.skills === false) {
 		skills = false;
 	} else if (stepOverrides.skills !== undefined) {
 		skills = [...stepOverrides.skills];
@@ -349,7 +349,7 @@ export function resolveParallelBehaviors(
 	tasks: ParallelTaskItem[],
 	agentConfigs: AgentConfig[],
 	stepIndex: number,
-	chainSkills?: string[],
+	chainSkills?: string[] | false,
 ): ResolvedStepBehavior[] {
 	return tasks.map((task, taskIndex) => {
 		const config = agentConfigs.find((a) => a.name === task.agent);

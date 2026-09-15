@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-09-15
+
 ### Added
 - Carry the authoritative root Pi session ID through existing foreground/background launch and nested delegation without changing the parent's process environment. Saved children inherit the reviving parent's root.
 - A task-labelled Agents area, configurable Option+Shift+M (Alt+Shift+M) and `/agents`, with native-editor conversations, full saved history, contextual replies, tool details/diffs, unread navigation, preserved drafts and one optional pin. Fullscreen task clicks open the selected child; viewing finished work never starts it.
@@ -11,9 +13,11 @@
 - Opt-in Intercom topics with quiet current-state records, self-contained coalesced updates and advisory resource-owner display. Only blockers, decisions, awaited explicit releases and direct messages interrupt; disconnect never implies release.
 
 ### Changed
-- Preserve Pi's base prompt, project instructions, and discovered skills for agents by default while keeping fresh conversation context and nested delegation disabled. Bundled profiles now follow the same policy.
+- **Breaking:** Preserve the backend base prompt, project instructions, and discovered skills for agents by default while keeping fresh conversation context and nested delegation disabled. Custom profiles can explicitly restore the previous isolated prompt policy.
 
 ### Fixed
+- Make `skill: false` disable inherited skills across foreground, async, parallel, chain, and resumed runs.
+- Keep Claude Code children leaf-only and map supported project-context and skill isolation settings to Claude Code CLI flags.
 - Remove the public `wait` action from `agent_runs` and `subagent`. Parents continue useful work or end the turn for automatic completion delivery, including when child evidence gates an incomplete goal; explicitly chosen foreground execution remains available.
 - Give Agents strip models more room by omitting redundant `session:` and `working` labels. Pulse only the visible running dot slowly on the existing refresh loop; keep attention indicators steady, theme colors, other states and unread/replied badges intact. Keep offscreen regular-mode dots steady without hiding expanded details.
 - Restore per-child provider/model visibility in Agents, retain provider and model namespaces, and keep full identities available in assignment and message details at narrow sizes. Distinguish selected attempts from native saved choices, including fallbacks and completed conversations later continued on the same session.

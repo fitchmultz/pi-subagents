@@ -173,6 +173,11 @@ describe("resolveStepBehavior", () => {
 		assert.equal(behavior.reads, false);
 		assert.equal(behavior.progress, false);
 	});
+
+	it("lets top-level skill: false disable agent and step skills", () => {
+		assert.equal(resolveStepBehavior({ name: "test", skills: ["agent-skill"] }, {}, false).skills, false);
+		assert.equal(resolveStepBehavior({ name: "test" }, { skills: ["step-skill"] }, false).skills, false);
+	});
 });
 
 describe("resolveParallelBehaviors", () => {
@@ -184,6 +189,17 @@ describe("resolveParallelBehaviors", () => {
 		);
 
 		assert.equal(behaviors[0]?.output, false);
+	});
+
+	it("propagates top-level skill: false to parallel tasks", () => {
+		const behaviors = resolveParallelBehaviors(
+			[{ agent: "reviewer", task: "Review", skill: "task-skill" }],
+			[{ name: "reviewer", skills: ["agent-skill"] }],
+			0,
+			false,
+		);
+
+		assert.equal(behaviors[0]?.skills, false);
 	});
 });
 

@@ -43,7 +43,7 @@ export async function runChainPath(data: ExecutionContextData, deps: ExecutorDep
 	const childIntercomTarget = (id: string, agent: string, index: number) => resolveSubagentIntercomTarget(id, agent, index);
 	const foregroundControl = deps.state.foregroundControls.get(runId);
 	const normalized = normalizeSkillInput(params.skill);
-	const chainSkills = normalized === false ? [] : (normalized ?? []);
+	const chainSkills = normalized ?? [];
 	const chain = wrapChainTasksForAgentContext(params.chain as ChainStep[], params.context, agents);
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth);
 	const detachedCompletions = createDetachedCompletionGroup({

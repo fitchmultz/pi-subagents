@@ -99,6 +99,10 @@ describe("Claude Code child backend", () => {
 		assert.deepEqual(firstCall.args.slice(firstCall.args.indexOf("--model"), firstCall.args.indexOf("--model") + 2), ["--model", "sonnet"]);
 		assert.deepEqual(firstCall.args.slice(firstCall.args.indexOf("--effort"), firstCall.args.indexOf("--effort") + 2), ["--effort", "high"]);
 		assert.ok(firstCall.args.includes("--session-id"));
+		assert.deepEqual(firstCall.args.slice(firstCall.args.indexOf("--setting-sources"), firstCall.args.indexOf("--setting-sources") + 2), ["--setting-sources", ""]);
+		assert.ok(firstCall.args.includes("--disable-slash-commands"));
+		assert.ok(firstCall.args.includes("--disallowedTools=Agent"));
+		assert.ok(firstCall.args.indexOf("--disallowedTools=Agent") < firstCall.args.indexOf("start"));
 		assert.equal(firstCall.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "300000");
 
 		const second = await runSync(tempDir, [agent], "echo", "continue", { cwd: tempDir, sessionFile });
@@ -157,6 +161,11 @@ describe("Claude Code child backend", () => {
 			assert.deepEqual(JSON.parse(fs.readFileSync(result.structuredOutputPath, "utf8")), { ok: true });
 			const calls = readCalls(mock.callsDir);
 			assert.equal(calls.length, 2);
+			for (const call of calls) {
+				assert.deepEqual(call.args.slice(call.args.indexOf("--setting-sources"), call.args.indexOf("--setting-sources") + 2), ["--setting-sources", ""]);
+				assert.ok(call.args.includes("--disable-slash-commands"));
+				assert.ok(call.args.includes("--disallowedTools=Agent"));
+			}
 			assert.equal(calls[0].args[calls[0].args.indexOf("--json-schema") + 1], JSON.stringify(schema));
 			assert.ok(!calls[1].args.includes("--json-schema"));
 			assert.doesNotMatch(calls[1].args.at(-1)!, /sole `structured_output`/);

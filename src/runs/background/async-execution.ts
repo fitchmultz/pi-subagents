@@ -107,7 +107,7 @@ interface AsyncChainParams {
 	artifactsDir?: string;
 	shareEnabled: boolean;
 	sessionRoot?: string;
-	chainSkills?: string[];
+	chainSkills?: string[] | false;
 	sessionFilesByFlatIndex?: (string | undefined)[];
 	dynamicFanoutMaxItems?: number;
 	maxSubagentDepth: number;
@@ -131,7 +131,7 @@ interface AsyncSingleParams {
 	shareEnabled: boolean;
 	sessionRoot?: string;
 	sessionFile?: string;
-	skills?: string[];
+	skills?: string[] | false;
 	output?: string | boolean;
 	outputFromAgentDefault?: boolean;
 	generatedOutputFilename?: string;
@@ -335,6 +335,7 @@ export function executeAsyncChain(
 		const stepCwd = resolveChildCwd(runnerCwd, s.cwd);
 		const instructionCwd = behaviorCwd ?? (resultMode === "chain" ? chainDir : stepCwd);
 		const behavior = suppressProgressForReadOnlyTask(resolvedBehavior ?? resolveStepBehavior(a, buildStepOverrides(s), chainSkills), s.task, originalTask);
+		const launchAgent = behavior.skills === false ? { ...a, inheritSkills: false } : a;
 		const outputUsesAgentDefault = usesAgentDefaultOutput(s.output) || s.outputFromAgentDefault === true;
 		const output = outputUsesAgentDefault && resultMode !== "chain"
 			? materializeAsyncDefaultOutput({ output: behavior.output, artifactsDir, asyncDir, runId: id, agent: s.agent, index: outputIndex })
@@ -382,7 +383,7 @@ export function executeAsyncChain(
 			systemPrompt,
 			systemPromptMode: a.systemPromptMode,
 			inheritProjectContext: a.inheritProjectContext,
-			inheritSkills: a.inheritSkills,
+			inheritSkills: launchAgent.inheritSkills,
 			skills: resolvedSkills.map((r) => r.name),
 			outputPath,
 			output: behavior.output,
@@ -395,7 +396,7 @@ export function executeAsyncChain(
 			effectiveAcceptance: resolveEffectiveAcceptance({ explicit: s.acceptance }),
 			...(s.outputSchema ? { structuredOutputSchema: s.outputSchema } : {}),
 			...(s.outputSchema ? { structuredOutput: createStructuredOutputRuntime(s.outputSchema, path.join(asyncDir, "structured-output")) } : {}),
-		}, a, params);
+		}, launchAgent, params);
 	};
 
 	let flatStepIndex = 0;
@@ -663,7 +664,8 @@ export function executeAsyncSingle(
 	} = params;
 	const task = params.task ?? "";
 	const runnerCwd = resolveChildCwd(ctx.cwd, cwd);
-	const skillNames = params.skills ?? agentConfig.skills ?? [];
+	const skillNames = params.skills === false ? [] : params.skills ?? agentConfig.skills ?? [];
+	const launchAgent = params.skills === false ? { ...agentConfig, inheritSkills: false } : agentConfig;
 	const availableModels = params.availableModels;
 	const { resolved: resolvedSkills, missing: missingSkills } = params.savedLaunch && params.skills === undefined
 		? { resolved: [], missing: [] }
@@ -738,7 +740,7 @@ export function executeAsyncSingle(
 						systemPrompt,
 						systemPromptMode: agentConfig.systemPromptMode,
 						inheritProjectContext: agentConfig.inheritProjectContext,
-						inheritSkills: agentConfig.inheritSkills,
+						inheritSkills: launchAgent.inheritSkills,
 						skills: params.savedLaunch && params.skills === undefined ? params.savedLaunch.skills : resolvedSkills.map((r) => r.name),
 						outputPath,
 						outputMode,
@@ -750,7 +752,7 @@ export function executeAsyncSingle(
 						maxExecutionTimeMs: agentConfig.maxExecutionTimeMs,
 						maxTokens: agentConfig.maxTokens,
 						effectiveAcceptance: resolveEffectiveAcceptance({ explicit: params.acceptance }),
-					}, agentConfig, params, params.generatedOutputFilename),
+					}, launchAgent, params, params.generatedOutputFilename),
 				],
 				resultPath: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : path.join(RESULTS_DIR, `${id}.json`),
 				cwd: runnerCwd,

@@ -606,7 +606,11 @@ Use these fields only when an agent needs stricter isolation or inherited conver
 
 Bundled agents use the same prompt, project-context, and skill inheritance defaults. `oracle` alone opts into forked conversation context; the other profiles remain fresh.
 
-Pi task arguments stay inline through 900 UTF-8 bytes, including the `Task: ` prefix; larger tasks use Pi's native `@file` input. System instructions use a separate temporary file, including for agents named `task`. This transport applies to foreground and background Pi runs; Claude Code transport is unchanged.
+For `claude-code/*` models, append mode preserves Claude Code's native base prompt and its native `CLAUDE.md` and `.claude/skills` discovery. `inheritSkills: false` passes `--disable-slash-commands`, which disables Claude Code skills and commands. Setting both inheritance flags to `false` also disables Claude Code setting sources; Claude Code rejects `inheritProjectContext: false` with `inheritSkills: true` because its setting sources bundle project instructions and skills. Claude Code children never support nested delegation, regardless of depth settings.
+
+This changes the behavior of custom agents that omitted these fields before v0.38.0. To preserve the old isolated policy, set `systemPromptMode: replace`, `inheritProjectContext: false`, and `inheritSkills: false` explicitly. Profiles that intentionally delegate must now also set `maxSubagentDepth: 2` or higher, with an installation limit at least as high.
+
+Pi task arguments stay inline through 900 UTF-8 bytes, including the `Task: ` prefix; larger tasks use Pi's native `@file` input. System instructions use a separate temporary file, including for agents named `task`. This transport applies to foreground and background Pi runs; Claude Code receives its task as positional input.
 
 ### Agent frontmatter
 
@@ -673,12 +677,12 @@ All bundled agents omit `tools` and `extensions` allowlists. If `tools` is omitt
 Examples:
 
 - `tools` omitted and `extensions` omitted: configured builtins and normal extensions, including their tools.
-- `allowSubagents: true` with `tools` omitted: normal tools plus the child-safe `subagent` tool, but nested calls remain blocked until both the agent and installation raise `maxSubagentDepth` above their defaults.
+- `allowSubagents: true` with `tools` omitted: normal tools plus the child-safe `subagent` tool, but a first-level child remains blocked until both the agent and installation set `maxSubagentDepth` to at least `2`.
 - `tools: mcp:chrome-devtools`: normal builtins plus direct Chrome DevTools MCP tools.
 - `tools: read, bash, mcp:chrome-devtools`: only `read` and `bash` as builtins, plus direct Chrome DevTools MCP tools.
-- `tools: subagent, read`: a child-safe `subagent` tool is available inside that child, but nested calls remain blocked until both the agent and installation raise `maxSubagentDepth` above their defaults.
+- `tools: subagent, read`: a child-safe `subagent` tool is available inside that child, but a first-level child remains blocked until both the agent and installation set `maxSubagentDepth` to at least `2`.
 
-Direct MCP tools require [pi-mcp-adapter](https://github.com/fitchmultz/pi-mcp-adapter). By default, children preserve the adapter’s configured direct tools and any inherited `MCP_DIRECT_TOOLS` setting. Explicit `mcp:` entries override that selection; explicit `tools` and `extensions` allowlists still apply. The generic `mcp` and `mcp_script` tools remain available when enabled by the adapter and not excluded by an explicit allowlist. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. An `mcp:` entry named `subagent` does not authorize nested fanout; explicit opt-in requires `allowSubagents: true` or the builtin `subagent` tool name plus both agent and global depth limits above `0`.
+Direct MCP tools require [pi-mcp-adapter](https://github.com/fitchmultz/pi-mcp-adapter). By default, children preserve the adapter’s configured direct tools and any inherited `MCP_DIRECT_TOOLS` setting. Explicit `mcp:` entries override that selection; explicit `tools` and `extensions` allowlists still apply. The generic `mcp` and `mcp_script` tools remain available when enabled by the adapter and not excluded by an explicit allowlist. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. An `mcp:` entry named `subagent` does not authorize nested fanout; explicit opt-in requires `allowSubagents: true` or the builtin `subagent` tool name plus both agent and global depth limits of at least `2`.
 
 `extensions` controls child extension loading:
 
@@ -823,7 +827,7 @@ Use agent defaults, override them at runtime, or disable them:
 { agent: "scout", task: "...", skill: false }
 ```
 
-For chains, `skill` at the top level is additive. A step-level `skill` overrides that step; `false` disables skills for that step.
+For chains, named `skill` values at the top level are additive. Top-level `skill: false` disables inherited, agent, and step skills for every step. A step-level `skill` otherwise overrides that step; step-level `false` disables all skills for that step.
 
 Injected skills use this shape:
 
@@ -1142,7 +1146,7 @@ Controls project-trust flags for non-interactive child `pi` processes. Child run
 
 Controls nested delegation when no inherited `PI_SUBAGENT_MAX_DEPTH` is already in effect. The default is `1`, which allows the main session to launch subagents and blocks those children from delegating again. Per-agent `maxSubagentDepth` can tighten the limit for that agent’s child runs, but cannot relax an inherited stricter limit.
 
-Agent profiles separately default `maxSubagentDepth` to `0`. Nested orchestration therefore requires explicitly raising both the installation limit and that orchestrator profile's limit.
+Agent profiles separately default `maxSubagentDepth` to `0`. A first-level child runs at depth `1`, so nested orchestration requires both the installation and that orchestrator profile to set `maxSubagentDepth` to at least `2`.
 
 ### Agent resource limits
 

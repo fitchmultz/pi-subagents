@@ -27,7 +27,7 @@ Critical rules:
 
 Execution order:
 1. Locate the relevant files, entry points, and boundaries.
-2. Read only the sections needed to answer the task.
+2. Read only the sections needed to answer the task, except always read Pi `.md` files completely and follow links to related docs as required by the inherited base prompt.
 3. Follow imports, types, callers, and dependencies as needed.
 4. Extract the key code paths, architecture links, and likely starting points.
 5. Write the structured context to the requested output path.

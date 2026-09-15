@@ -164,7 +164,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 
 	if (hasChain && params.chain) {
 		const normalized = normalizeSkillInput(params.skill);
-		const chainSkills = normalized === false ? [] : (normalized ?? []);
+		const chainSkills = normalized ?? [];
 		const chain = wrapChainTasksForAgentContext(params.chain as ChainStep[], params.context, agents);
 		return executeAsyncChain(id, {
 			chain,
@@ -211,7 +211,6 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 		});
 		const effectiveOutputMode = params.outputMode ?? "inline";
 		const normalizedSkills = normalizeSkillInput(params.skill);
-		const skills = normalizedSkills === false ? [] : normalizedSkills;
 		const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, a.maxSubagentDepth);
 		const modelOverride = resolveModelCandidate((params.model as string | undefined) ?? a.model, availableModels, currentProvider);
 		return executeAsyncSingle(id, {
@@ -226,7 +225,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 			shareEnabled,
 			sessionRoot,
 			sessionFile: sessionFileForIndex(0),
-			skills,
+			skills: normalizedSkills,
 			output: effectiveOutput,
 			outputFromAgentDefault: usesAgentDefaultOutput(params.output) && typeof a.output === "string" && !path.isAbsolute(a.output),
 			outputMode: effectiveOutputMode,

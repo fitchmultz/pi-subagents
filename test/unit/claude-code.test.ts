@@ -18,6 +18,41 @@ describe("Claude Code backend model mapping", () => {
 		assert.equal(invocation.model.context, "300k");
 	});
 
+	it("blocks Claude Code's native Agent tool", () => {
+		const args = buildClaudeCodeInvocation({ model: "claude-code/sonnet", task: "hi" }).args;
+		assert.ok(args.includes("--disallowedTools=Agent"));
+		assert.equal(args.at(-1), "hi");
+	});
+
+	it("maps context and skill isolation to Claude Code flags", () => {
+		const noSkills = buildClaudeCodeInvocation({
+			model: "claude-code/sonnet",
+			task: "hi",
+			inheritProjectContext: true,
+			inheritSkills: false,
+		}).args;
+		assert.ok(noSkills.includes("--disable-slash-commands"));
+		assert.ok(!noSkills.includes("--setting-sources"));
+
+		const isolated = buildClaudeCodeInvocation({
+			model: "claude-code/sonnet",
+			task: "hi",
+			inheritProjectContext: false,
+			inheritSkills: false,
+		}).args;
+		assert.deepEqual(isolated.slice(isolated.indexOf("--setting-sources"), isolated.indexOf("--setting-sources") + 2), ["--setting-sources", ""]);
+		assert.ok(isolated.includes("--disable-slash-commands"));
+		assert.throws(
+			() => buildClaudeCodeInvocation({
+				model: "claude-code/sonnet",
+				task: "hi",
+				inheritProjectContext: false,
+				inheritSkills: true,
+			}),
+			/cannot disable project setting sources while preserving their skills/,
+		);
+	});
+
 	it("maps 1m aliases to Claude Code's [1m] syntax where needed", () => {
 		assert.equal(parseClaudeCodeModel("claude-code/opus@1m").cliModel, "opus[1m]");
 		assert.equal(parseClaudeCodeModel("claude-code/sonnet@1m").cliModel, "sonnet[1m]");

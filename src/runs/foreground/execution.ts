@@ -280,6 +280,8 @@ async function runSingleAttempt(
 				tools: agent.tools,
 				mcpDirectTools: agent.mcpDirectTools,
 				allowSubagents: agent.allowSubagents,
+				inheritProjectContext: agent.inheritProjectContext,
+				inheritSkills: agent.inheritSkills,
 				outputSchema: options.structuredOutput?.schema,
 			});
 			args = claudeCodeInvocation.args;
@@ -1115,8 +1117,8 @@ async function runToCompletion(
 	task: string,
 	options: AttemptOptions,
 ): Promise<SingleResult> {
-	const agent = agents.find((a) => a.name === agentName);
-	if (!agent) {
+	const configuredAgent = agents.find((a) => a.name === agentName);
+	if (!configuredAgent) {
 		return {
 			agent: agentName,
 			task,
@@ -1126,6 +1128,9 @@ async function runToCompletion(
 			error: `Unknown agent: ${agentName}`,
 		};
 	}
+	const agent = options.inheritSkills === undefined
+		? configuredAgent
+		: { ...configuredAgent, inheritSkills: options.inheritSkills };
 	const outputModeValidationError = validateFileOnlyOutputMode(options.outputMode, options.outputPath, `Single run (${agentName})`);
 	if (outputModeValidationError) {
 		return {
