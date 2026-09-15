@@ -69,7 +69,6 @@ export function saveForegroundLaunch(agent: AgentConfig, task: string, systemPro
 	saveQuestionContract(options.runId, options.index ?? 0, {
 		task, sessionFile: options.sessionFile,
 		launch: {
-			rootSessionId: options.rootSessionId,
 			agent, systemPrompt, skills, model, thinking: resolveEffectiveThinking(model, agent.thinking),
 			artifacts: options.artifactsDir !== undefined, artifactsDir: options.artifactsDir, share: options.share === true,
 			modelCandidates: models.map((candidate) => applyThinkingSuffix(candidate, agent.thinking)!),

@@ -899,7 +899,7 @@ export function reviveSavedSubagent(input: {
 			pi: input.deps.pi,
 			cwd: input.requestCwd,
 			currentSessionId: input.deps.state.currentSessionId,
-			rootSessionId: savedLaunch?.rootSessionId ?? resolveRootSessionId(input.ctx.sessionManager),
+			rootSessionId: resolveRootSessionId(input.ctx.sessionManager),
 			currentModelProvider: input.ctx.model?.provider,
 			projectTrusted: input.ctx.isProjectTrusted(),
 		},

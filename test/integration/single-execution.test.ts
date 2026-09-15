@@ -22,7 +22,6 @@ import {
 } from "../../src/runs/shared/pi-args.ts";
 import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT } from "../../src/shared/types.ts";
 import { getFinalOutput } from "../../src/shared/utils.ts";
-import { readQuestionContract } from "../../src/runs/shared/supervisor-questions.ts";
 
 import type { MockPi } from "../support/helpers.ts";
 import {
@@ -1053,7 +1052,7 @@ describe("single sync execution", () => {
 		assert.equal(fs.existsSync(outputPath), false);
 	});
 
-	it("passes the owning Pi root through foreground spawn and its durable revive contract", async () => {
+	it("passes the owning Pi root through foreground spawn", async () => {
 		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ROOT_SESSION_ID"] });
 		const executor = makeExecutor([makeAgent("echo")]);
 		const ctx = makeMinimalCtx(tempDir);
@@ -1061,7 +1060,6 @@ describe("single sync execution", () => {
 		const result = await executor.execute("root-inheritance", { agent: "echo", task: "Check root", output: false }, new AbortController().signal, undefined, ctx) as any;
 		assert.equal(result.isError, undefined, JSON.stringify(result.content));
 		assert.equal(readLastCall().env?.PI_SUBAGENT_ROOT_SESSION_ID, "actual-owner-uuid");
-		assert.equal(readQuestionContract(result.details.runId, 0)?.launch?.rootSessionId, "actual-owner-uuid");
 	});
 
 	it("keeps explicit single output paths in the workspace", async () => {

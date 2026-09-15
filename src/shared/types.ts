@@ -448,7 +448,6 @@ export type ManagementRunState = "live" | "completed" | "paused" | "blocked" | "
 export type ManagementAction = "status" | "nudge" | "resume" | "wait" | "interrupt" | "extend" | "review";
 
 export interface SavedLaunchConfig {
-	rootSessionId?: string;
 	agent: import("../agents/agents.ts").AgentConfig;
 	model?: string;
 	thinking?: string;
