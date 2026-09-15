@@ -154,7 +154,6 @@ interface AsyncSingleParams {
 
 function withSavedLaunch(step: RunnerSubagentStep, agent: AgentConfig, params: AsyncChainParams | AsyncSingleParams, generatedOutputFilename?: string): RunnerSubagentStep {
 	return { ...step, launch: {
-		rootSessionId: params.ctx.rootSessionId,
 		agent, model: step.model, thinking: step.thinking, modelCandidates: step.modelCandidates ?? [],
 		artifacts: params.artifactsDir !== undefined, artifactsDir: params.artifactsDir, share: params.shareEnabled,
 		systemPrompt: step.systemPrompt ?? "", skills: step.skills ?? [], cwd: step.cwd ?? params.ctx.cwd,

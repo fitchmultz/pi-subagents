@@ -67,7 +67,11 @@ describe("saved output choices", () => {
 		discoveries = 0;
 		runIds = new Set();
 		mockPi.reset();
-		executor = createSubagentExecutor({
+		executor = createExecutor();
+	});
+
+	function createExecutor() {
+		return createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 			config: {},
@@ -77,7 +81,7 @@ describe("saved output choices", () => {
 			expandTilde: (value: string) => value,
 			discoverAgents: () => { discoveries++; return { agents: [profile, makeAgent("producer")] }; },
 		});
-	});
+	}
 
 	afterEach(() => {
 		for (const runId of runIds) {
@@ -192,18 +196,32 @@ describe("saved output choices", () => {
 		});
 	}
 
-	it("revive retains the recorded root identity rather than substituting the current parent ID", async () => {
-		mockPi.onCall({ output: "Original report" });
-		const original = await run({ ...writer, output: false, outputMode: "inline" });
-		const id = original.details.runId!;
-		saveQuestionContract(id, 0, { launch: { ...savedLaunch(id), rootSessionId: "recorded-delegation-root" } });
-		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ROOT_SESSION_ID"] });
-		const continued = await run({ action: "resume", id, message: "Continue", output: false, outputMode: "inline" });
-		const successorId = continued.details.asyncId!;
-		assert.equal(savedLaunch(successorId).rootSessionId, "recorded-delegation-root");
-		const payload = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, `${successorId}.json`), "utf8")) as AsyncResultFile;
-		assert.match(payload.results![0]!.output!, /recorded-delegation-root/);
-	});
+	for (const reviverRoot of ["root-A", "root-B"]) {
+		it(`saved revival belongs to ${reviverRoot} after root-A's executor exits`, async () => {
+			ctx.sessionManager.getSessionId = () => "root-A";
+			mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ROOT_SESSION_ID"] });
+			const original = await run({ ...writer, async: true, output: false, outputMode: "inline" });
+			const id = original.details.asyncId!;
+			const originalPayload = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, `${id}.json`), "utf8")) as AsyncResultFile;
+			assert.equal(JSON.parse(originalPayload.results![0]!.output!).PI_SUBAGENT_ROOT_SESSION_ID, "root-A");
+			// Older persisted contracts may still carry the original root.
+			const contractPath = path.join(getRunMetadataDir(id), "contracts", "0.json");
+			const contract = JSON.parse(fs.readFileSync(contractPath, "utf8"));
+			contract.launch.rootSessionId = "root-A";
+			fs.writeFileSync(contractPath, JSON.stringify(contract));
+			const receipt = contractBytes(id);
+
+			ctx = makeMinimalCtx(tempDir);
+			ctx.sessionManager.getSessionId = () => reviverRoot;
+			executor = createExecutor();
+			mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ROOT_SESSION_ID"] });
+			const continued = await run({ action: "resume", id, message: "Continue", output: false, outputMode: "inline" });
+			const successorId = continued.details.asyncId!;
+			const payload = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, `${successorId}.json`), "utf8")) as AsyncResultFile;
+			assert.equal(JSON.parse(payload.results![0]!.output!).PI_SUBAGENT_ROOT_SESSION_ID, reviverRoot);
+			assert.deepEqual(contractBytes(id), receipt, "revival must not rewrite the old contract");
+		});
+	}
 
 	it("an inline continuation consumes only its new generated file", async () => {
 		mockPi.onCall({ output: "Predecessor report" });
