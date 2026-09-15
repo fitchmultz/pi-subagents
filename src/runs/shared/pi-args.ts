@@ -49,6 +49,7 @@ interface BuildPiArgsInput {
 	cwd?: string;
 	intercomSessionName?: string;
 	orchestratorIntercomTarget?: string;
+	rootSessionId?: string;
 	runId?: string;
 	childAgentName?: string;
 	childIndex?: number;
@@ -213,6 +214,7 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 
 	const env: Record<string, string | undefined> = {};
 	env[SUBAGENT_CHILD_ENV] = "1";
+	env.PI_SUBAGENT_ROOT_SESSION_ID = input.rootSessionId ?? (process.env[SUBAGENT_CHILD_ENV] === "1" ? process.env.PI_SUBAGENT_ROOT_SESSION_ID : undefined);
 	env[SUBAGENT_FANOUT_CHILD_ENV] = fanoutAuthorized ? "1" : "0";
 	const inheritedNestedRoute = Boolean(process.env[SUBAGENT_PARENT_EVENT_SINK_ENV] && process.env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV] && process.env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV]);
 	const parentRunId = input.parentRunId ?? input.runId ?? (inheritedNestedRoute ? process.env[SUBAGENT_RUN_ID_ENV] : undefined) ?? process.env[SUBAGENT_PARENT_RUN_ID_ENV] ?? "";

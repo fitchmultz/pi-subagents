@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolveRootSessionId } from "../../shared/session-identity.ts";
 import { writeAsyncInterruptRequest } from "../background/async-control.ts";
 import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readNativeSessionConfiguration, readQuestionContract, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
 import * as fs from "node:fs";
@@ -898,6 +899,7 @@ export function reviveSavedSubagent(input: {
 			pi: input.deps.pi,
 			cwd: input.requestCwd,
 			currentSessionId: input.deps.state.currentSessionId,
+			rootSessionId: savedLaunch?.rootSessionId ?? resolveRootSessionId(input.ctx.sessionManager),
 			currentModelProvider: input.ctx.model?.provider,
 			projectTrusted: input.ctx.isProjectTrusted(),
 		},

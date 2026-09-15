@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { resolveRootSessionId } from "../../shared/session-identity.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AgentConfig } from "../../agents/agents.ts";
 import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
@@ -217,6 +218,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			if (input.foregroundControl && activeChildren.size === 0) input.foregroundControl.interrupt = undefined;
 		};
 		return runSync(input.ctx.cwd, input.agents, task.agent, taskText, {
+			rootSessionId: resolveRootSessionId(input.ctx.sessionManager),
 			cwd: taskCwd,
 			signal: input.signal,
 			interruptSignal: AbortSignal.any([interruptController.signal, groupInterrupt.signal, failFastSignal]),
@@ -436,6 +438,7 @@ export async function runParallelPath(data: ExecutionContextData, deps: Executor
 				pi: deps.pi,
 				cwd: ctx.cwd,
 				currentSessionId: deps.state.currentSessionId!,
+				rootSessionId: resolveRootSessionId(ctx.sessionManager),
 				currentModelProvider: ctx.model?.provider,
 				projectTrusted: ctx.isProjectTrusted(),
 			};

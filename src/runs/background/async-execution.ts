@@ -86,6 +86,7 @@ function resolveAsyncOutput(params: {
 }
 
 interface AsyncExecutionContext {
+	rootSessionId?: string;
 	pi: ExtensionAPI;
 	cwd: string;
 	currentSessionId: string;
@@ -153,6 +154,7 @@ interface AsyncSingleParams {
 
 function withSavedLaunch(step: RunnerSubagentStep, agent: AgentConfig, params: AsyncChainParams | AsyncSingleParams, generatedOutputFilename?: string): RunnerSubagentStep {
 	return { ...step, launch: {
+		rootSessionId: params.ctx.rootSessionId,
 		agent, model: step.model, thinking: step.thinking, modelCandidates: step.modelCandidates ?? [],
 		artifacts: params.artifactsDir !== undefined, artifactsDir: params.artifactsDir, share: params.shareEnabled,
 		systemPrompt: step.systemPrompt ?? "", skills: step.skills ?? [], cwd: step.cwd ?? params.ctx.cwd,
@@ -508,6 +510,7 @@ export function executeAsyncChain(
 				sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
 				asyncDir,
 				sessionId: ctx.currentSessionId,
+				rootSessionId: ctx.rootSessionId,
 				piPackageRoot,
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
@@ -759,6 +762,7 @@ export function executeAsyncSingle(
 				sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
 				asyncDir,
 				sessionId: ctx.currentSessionId,
+				rootSessionId: ctx.rootSessionId,
 				piPackageRoot,
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
