@@ -197,7 +197,7 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		const actionSchema = SubagentParams?.properties?.action;
 		assert.ok(actionSchema, "action schema should exist");
 		assert.equal(actionSchema.type, "string");
-		assert.deepEqual(actionSchema.enum, ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "wait", "nudge", "questions", "answer", "review", "doctor"]);
+		assert.deepEqual(actionSchema.enum, ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "questions", "answer", "review", "doctor"]);
 		const description = String(actionSchema.description ?? "");
 		assert.match(description, /Management\/control action/);
 		assert.match(description, /Omit for execution mode/);
@@ -426,6 +426,16 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.equal(legacy.Check({ action: "review", id: "run", decision: "accepted", limit: 20 }), false);
 		assert.equal(compact.Check({ action: "continue", id: "run", message: "Continue", model: "openai/gpt-6-astra:high", cwd: "/repo" }), true);
 		assert.equal(legacy.Check({ action: "resume", id: "run", message: "Continue", model: "openai/gpt-6-astra:high", output: false }), true);
+	});
+
+	it("rejects public wait actions while retaining explicit foreground continuation and answers", { skip: !CompileSchema ? "typebox compiler not available" : undefined }, () => {
+		for (const [name, continuation] of [["AgentRunsParams", "continue"], ["SubagentParams", "resume"]]) {
+			const validator = CompileSchema!(schemas[name]);
+			assert.equal(validator.Check({ action: "wait", id: "run" }), false, `${name} must reject wait`);
+			assert.equal(validator.Check({ action: "wait", id: "run", index: 0 }), false);
+			assert.equal(validator.Check({ action: continuation, id: "run", message: "Continue", async: false }), true);
+			assert.equal(validator.Check({ action: "answer", id: "run", questionId: "question", message: "Proceed", async: false }), true);
+		}
 	});
 
 	it("validates representative flexible field values with TypeBox compiler", { skip: !CompileSchema ? "typebox compiler not available" : undefined }, () => {

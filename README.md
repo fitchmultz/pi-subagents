@@ -148,8 +148,7 @@ agent_runs({ action: "list" })
 agent_runs({ action: "inspect", id: "<run-id>" })
 agent_runs({ action: "inspect", id: "<run-id>", full: true }) // Full task and launch configuration
 agent_runs({ action: "nudge", id: "<run-id>", message: "Keep the public API unchanged." })
-agent_runs({ action: "continue", id: "<run-id>", message: "Now check the edge case.", async: false })
-agent_runs({ action: "wait", id: "<run-id>" }) // Attach to existing work without launching it
+agent_runs({ action: "continue", id: "<run-id>", message: "Now check the edge case." })
 agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "Checked the result." })
 ```
 
@@ -157,7 +156,7 @@ agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "C
 
 ### Owned runs, review, and continuation
 
-`continue` and `answer` accept `async: false` to wait for the actual new or redirected run's saved result. Explicit `wait` accepts an owned `id` and optional child `index`; cancelling or yielding that wait leaves the child alive. Cancelling a newly launched `async: false` continuation requests cancellation of that new run, not an older sibling. Important steered Intercom messages release a foreground subagent wait so the parent can respond while the child keeps working; attach again with `wait` on the returned run ID. Explicit queue/passive messages do not release waits.
+`continue` and `answer` accept `async: false` to wait for the actual new or redirected run's saved result. Cancelling a newly launched `async: false` continuation requests cancellation of that new run, not an older sibling. Important steered Intercom messages release a foreground subagent wait so the parent can respond while the child keeps working. Continue useful work or end the turn; completion arrives automatically. Explicit queue/passive messages do not release waits.
 
 Stop receipts mean **requested**, not process exit. Saved results separately record the actual agent-process exit code/signal when observed. A returned tool result is not proof that every command descendant exited, and an unrecorded command result means **exit unconfirmed**, not “still running” or exit zero.
 
@@ -326,7 +325,7 @@ Foreground runs stream progress in the conversation while they run. Set `async: 
 
 Background runs are the default and keep working after control returns to you. Continue useful parent work while they run; if none remains, end the turn and wait for automatic completion delivery instead of polling. Use `subagent({ action: "status" })` only for diagnostics, or inspect a specific run with `subagent({ action: "status", id: "..." })`.
 
-When a Codex-style Pi goal is active, set `async: false` for child evidence that must arrive before the next goal step. Ending the parent turn after launching async work can let goal prompting continue before the child evidence is available.
+An incomplete active Pi goal does not require foreground execution. If child evidence gates the next step, end the current turn and continue the goal after automatic completion delivery; do not advance past the missing evidence.
 
 Foreground and background children share the task-labelled Agents strip and send completion notifications. Parallel background runs show per-agent progress instead of fake chain steps. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. Nested child delegation is disabled by default; keep fanout in the parent session.
 
@@ -528,7 +527,7 @@ You can combine either execution override with `--fork`:
 /run oracle "review this decision" --fork --bg
 ```
 
-Background runs are detached. Prefer separate single-agent runs for independent fanout so each completion wakes the parent instead of waiting for every child. The parent should continue useful work; if none remains, it should end the turn and wait instead of running sleep or status-polling loops. Pi will deliver each completion. When an active goal is incomplete and child evidence gates its next step, set `async: false`. Non-interactive one-shot Pi callers should also set `async: false` when stdout must contain the child result; omitted `async` returns only the launch receipt.
+Background runs are detached. Prefer separate single-agent runs for independent fanout so each completion wakes the parent instead of waiting for every child. The parent should continue useful work; if none remains, it should end the turn and wait instead of running sleep or status-polling loops. Pi will deliver each completion. This also applies when child evidence gates an incomplete active goal. Non-interactive one-shot Pi callers should set `async: false` when stdout must contain the child result; omitted `async` returns only the launch receipt.
 
 The `oracle` and `worker` builtins are designed for an explicit decision loop. A typical pattern is to ask `oracle` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
 
@@ -878,7 +877,7 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
   { agent: "worker" }
 ]}
 
-// Foreground escape for same-turn evidence
+// Explicitly chosen foreground execution
 { chain: [...], async: false }
 
 // Chain with fan-out/fan-in
@@ -1258,7 +1257,7 @@ When delegating implementation from a plan or spec, keep the task focused on wha
 ```ts
 subagent({
   agent: "worker",
-  // Async is the default; set async: false only when this result must arrive in the same turn.
+  // Async is the default; set async: false for explicitly chosen foreground execution.
   task: "Implement the plan at /Users/me/docs/mcp-alignment-plan.md. Use scout artifacts in ./handoff/ as context. Do not commit the scout artifacts.",
   acceptance: {
     criteria: [

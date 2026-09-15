@@ -28,7 +28,7 @@ import { resolveControlConfig } from "../shared/subagent-control.ts";
 import { createNestedRoute, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
-import { buildManagementControl, formatRunAction } from "../../shared/status-format.ts";
+import { buildManagementControl } from "../../shared/status-format.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
 import { queryLiveIntercomHealth, queryLiveIntercomStatus } from "../../intercom/live-intercom.ts";
 import { saveQuestionOwner } from "../shared/supervisor-questions.ts";
@@ -113,7 +113,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
-			if (params.action === "wait") return waitForOwnedRun({ params, deps, ctx, signal, onUpdate });
 			if (params.action === "review") {
 				try {
 					if (!(params.id ?? params.runId) || (params.decision !== "accepted" && params.decision !== "needs_changes")) throw new Error("action='review' requires id and decision ('accepted' or 'needs_changes').");
@@ -696,7 +695,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				if (request.reason !== "attention" || typeof request.requestId !== "string" || !deps.state.foregroundControls.get(runId)?.currentAgent) return;
 				unsubscribe?.();
 				deps.pi.events.emit(INTERCOM_DETACH_RESPONSE_EVENT, { requestId: request.requestId, accepted: true });
-				attention.resolve({ content: [{ type: "text", text: `Released the foreground wait for an incoming Intercom message. Run ${runId} continues unchanged, including queued and dependent steps. Collect the saved result with ${formatRunAction("wait", runId, {}, Boolean(nestedResolutionScopeForExecutor(deps)))}. No stop was requested.` }],
+				attention.resolve({ content: [{ type: "text", text: `Released the foreground wait for an incoming Intercom message. Run ${runId} continues unchanged, including queued and dependent steps. Continue useful work or end the turn; completion will arrive automatically. No stop was requested.` }],
 					details: { mode: "management", results: [], runId, managementControl: buildManagementControl({ state: "live", runId, canInterrupt: true }) } });
 			});
 		});
@@ -708,7 +707,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			const id = result.details.asyncId ?? result.details.managementControl?.runId ?? question?.delivery?.runId ?? question?.runId ?? params.id ?? params.runId;
 			const index = result.details.asyncId || question?.delivery?.kind === "revive" ? 0
 				: result.details.managementControl?.nextActions.find((action) => action.index !== undefined)?.index ?? question?.index ?? params.index;
-			if (id) return waitForOwnedRun({ params: { action: "wait", id, index }, deps, ctx, signal, onUpdate, cancelNewRun: !before?.has(id) });
+			if (id) return waitForOwnedRun({ id, index, deps, ctx, signal, onUpdate, cancelNewRun: !before?.has(id) });
 		}
 		if (args[1].action === "interrupt") return cancelSupervisorInput(result, args[1], args[4].sessionManager.getSessionId(), deps.pi.events);
 		if (args[1].action !== "status" || result.details.runList) return result;
