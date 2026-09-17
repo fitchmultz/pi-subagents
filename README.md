@@ -8,7 +8,14 @@ Full durable-runtime support requires a corrected native [`fitchmultz/pi` build 
 
 Compact tool cards in Agents also require [native compact-view support](https://github.com/fitchmultz/pi/commit/17cb62faade465700692b0d474ec5652e8df3aed).
 
-With that native build available, install from GitHub:
+Official Pi 0.85.1 and upstream source [`5a3a03a7f`](https://github.com/earendil-works/pi/commit/5a3a03a7f5db43692915d6ae45e6d96497ea248d) can load this package and use profile discovery, tool activation, and ordinary Intercom delivery, but have two verified host limitations:
+
+- Cancelling a turn may automatically resume work from retained queued messages.
+- An automatic incoming message may start a turn while Pi is still preparing a user prompt, before that preparation finishes.
+
+The corrected fork linked above fixes both. Updating this extension alone does not fix these host behaviors; official Pi and the fork do not have complete runtime parity.
+
+Install from GitHub:
 
 ```bash
 pi install git:github.com/fitchmultz/pi-subagents
