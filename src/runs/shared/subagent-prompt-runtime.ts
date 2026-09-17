@@ -179,6 +179,9 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 				};
 			},
 		});
+		pi.on("session_start", () => {
+			pi.setActiveTools([...new Set([...pi.getActiveTools(), "structured_output"])]);
+		});
 	}
 
 	const onRuntimeEvent = pi.on as unknown as (event: string, handler: (event: unknown) => unknown) => void;
