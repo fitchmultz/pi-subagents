@@ -37,6 +37,10 @@ describe("result contracts", () => {
 		mock.reset();
 	});
 	afterEach(() => {
+		if (process.env.PI_INTERCOM_TEST_EVIDENCE_DIR) {
+			fs.writeFileSync(path.join(cwd, "mock-calls.json"), JSON.stringify(calls(), null, 2));
+			return; // Keep synthetic journals and run history for native-host qualification.
+		}
 		removeTempDir(cwd);
 		removeTempDir(path.join(ASYNC_DIR, id));
 		fs.rmSync(path.join(RESULTS_DIR, `${id}.json`), { force: true });
@@ -164,7 +168,10 @@ describe("result contracts", () => {
 				for (const call of attempts) {
 					assert.equal(call.cwd, fs.realpathSync(childCwd));
 					assert.equal(call.args[call.args.indexOf("--session") + 1], path.join(cwd, "child.jsonl"));
-					assert.equal(call.args[call.args.indexOf("--session-cwd") + 1], childCwd);
+					// This mock creates an empty file, not a native session header. Initial launch
+					// inherits spawn cwd; the later unreadable header conservatively needs an override.
+					assert.equal(call.args.includes("--session-cwd"), call !== attempts[0]);
+					if (call !== attempts[0]) assert.equal(call.args[call.args.indexOf("--session-cwd") + 1], childCwd);
 				}
 			});
 		}

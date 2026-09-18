@@ -1,6 +1,6 @@
 // Credential-free CLI double: real detached launcher, runner, child, and broker processes.
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -22,7 +22,13 @@ const role = args[0];
 const record = (event, extra = {}) => appendFileSync(join(evidence, "events.jsonl"), `${JSON.stringify({ event, role, pid: process.pid, time: Date.now(), ...extra })}\n`);
 const resourcesPresent = () => ({ auth: existsSync(join(agentDir, "auth.json")), models: existsSync(join(agentDir, "models.json")), artifacts: existsSync(asyncDir) });
 const launch = (kind, detached = true) => spawn(process.execPath, [fixture, kind], { detached, stdio: "ignore", env: process.env });
-const save = (path, value) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value)); };
+const save = (path, value) => {
+	mkdirSync(dirname(path), { recursive: true });
+	// Readers use existence as readiness; publish only a complete JSON record.
+	const temporary = `${path}.${process.pid}.tmp`;
+	writeFileSync(temporary, JSON.stringify(value));
+	renameSync(temporary, path);
+};
 
 if (["launcher", "runner", "child", "broker"].includes(role)) {
 	record("started");

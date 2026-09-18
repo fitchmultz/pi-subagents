@@ -46,6 +46,7 @@ interface BuildPiArgsInput {
 	extensions?: string[];
 	systemPrompt?: string | null;
 	mcpDirectTools?: string[];
+	/** Actual child spawn cwd; a new --session file inherits this directory natively. */
 	cwd?: string;
 	intercomSessionName?: string;
 	orchestratorIntercomTarget?: string;
@@ -128,6 +129,33 @@ function inheritedRuntimeExtensionPaths(env: NodeJS.ProcessEnv = process.env): s
 	}
 }
 
+// Read only through the header, not the potentially large transcript. Decode after
+// joining chunks so a UTF-8 character split across reads is preserved.
+function readSessionHeaderLine(file: string): string | undefined {
+	let fd: number;
+	try {
+		fd = fs.openSync(file, "r");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT" && !fs.lstatSync(file, { throwIfNoEntry: false })) return undefined;
+		throw error;
+	}
+	try {
+		const chunks: Buffer[] = [];
+		const buffer = Buffer.alloc(4096);
+		while (true) {
+			const length = fs.readSync(fd, buffer, 0, buffer.length, null);
+			if (!length) break;
+			const chunk = buffer.subarray(0, length);
+			const newline = chunk.indexOf(10);
+			chunks.push(Buffer.from(newline < 0 ? chunk : chunk.subarray(0, newline)));
+			if (newline >= 0) break;
+		}
+		return Buffer.concat(chunks).toString("utf8");
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
 export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	const args = [...input.baseArgs];
 	args.push(...resolveChildProjectTrustArgs(input.projectTrust));
@@ -135,7 +163,25 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	if (input.sessionFile) {
 		fs.mkdirSync(path.dirname(input.sessionFile), { recursive: true });
 		args.push("--session", input.sessionFile);
-		if (input.cwd) args.push("--session-cwd", input.cwd);
+		if (input.cwd) {
+			let needsOverride = true;
+			try {
+				const line = readSessionHeaderLine(input.sessionFile);
+				if (line === undefined) {
+					// Preassigned new sessions (including acceptance) inherit the actual spawn cwd.
+					needsOverride = false;
+				} else {
+					const header: unknown = JSON.parse(line);
+					if (header && typeof header === "object" && "type" in header && header.type === "session"
+						&& "cwd" in header && typeof header.cwd === "string" && path.isAbsolute(header.cwd)) {
+						needsOverride = fs.realpathSync.native(header.cwd) !== fs.realpathSync.native(input.cwd);
+					}
+				}
+			} catch { /* Unknown headers or unavailable directories still need the native override. */ }
+			// Official Pi rejects --session-cwd. Omit only a redundant override, including
+			// symlink/trailing-slash spellings; never rewrite history or silently change cwd.
+			if (needsOverride) args.push("--session-cwd", input.cwd);
+		}
 	} else {
 		if (!input.sessionEnabled) {
 			args.push("--no-session");

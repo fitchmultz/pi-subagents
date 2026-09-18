@@ -119,7 +119,7 @@ afterEach(() => {
 });
 
 describe("buildPiArgs session wiring", () => {
-	for (const cwd of [undefined, "/requested project"]) it(`uses --session with ${cwd ? "an explicit" : "no"} cwd override`, () => {
+	for (const cwd of [undefined, "/requested project"]) it(`uses a new --session file with ${cwd ? "an explicit" : "no"} spawn cwd`, () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-args-session-"));
 		try {
 			const sessionFile = path.join(tempDir, "nested", "session.jsonl");
@@ -136,8 +136,8 @@ describe("buildPiArgs session wiring", () => {
 
 			assert.ok(args.includes("--session"));
 			assert.ok(args.includes(sessionFile));
-			if (cwd) assert.deepEqual(args.slice(args.indexOf("--session-cwd"), args.indexOf("--session-cwd") + 2), ["--session-cwd", cwd]);
-			else assert.ok(!args.includes("--session-cwd"));
+			assert.ok(!args.includes("--session-cwd"), "a missing session inherits the child spawn cwd");
+			assert.ok(!fs.existsSync(sessionFile), "argument construction must not create a journal");
 			assert.ok(fs.existsSync(path.dirname(sessionFile)));
 			assert.ok(!args.includes("--session-dir"), "--session-dir should not be emitted with --session");
 			assert.ok(!args.includes("--no-session"), "--no-session should not be emitted with --session");
