@@ -135,7 +135,17 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	if (input.sessionFile) {
 		fs.mkdirSync(path.dirname(input.sessionFile), { recursive: true });
 		args.push("--session", input.sessionFile);
-		if (input.cwd) args.push("--session-cwd", input.cwd);
+		if (input.cwd) {
+			let savedCwd: string | undefined;
+			try {
+				const header: unknown = JSON.parse(fs.readFileSync(input.sessionFile, "utf8").split("\n", 1)[0]);
+				if (header && typeof header === "object" && "type" in header && header.type === "session"
+					&& "cwd" in header && typeof header.cwd === "string") savedCwd = header.cwd;
+			} catch { /* A new or unreadable session still needs the explicit native override. */ }
+			// Official Pi already resumes in the saved cwd, but rejects --session-cwd.
+			// Keep real overrides native; never rewrite the journal or silently use another cwd.
+			if (savedCwd !== input.cwd) args.push("--session-cwd", input.cwd);
+		}
 	} else {
 		if (!input.sessionEnabled) {
 			args.push("--no-session");

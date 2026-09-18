@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Omit redundant `--session-cwd` overrides when a saved child already records the requested directory, allowing ordinary official-Pi resumes. Real directory changes still use the native override without rewriting history.
+
 ## [0.38.0] - 2026-09-15
 
 ### Added

@@ -8,12 +8,14 @@ Full durable-runtime support requires a corrected native [`fitchmultz/pi` build 
 
 Compact tool cards in Agents also require [native compact-view support](https://github.com/fitchmultz/pi/commit/17cb62faade465700692b0d474ec5652e8df3aed).
 
-Official Pi 0.85.1 and upstream source [`5a3a03a7f`](https://github.com/earendil-works/pi/commit/5a3a03a7f5db43692915d6ae45e6d96497ea248d) can load this package and use profile discovery, tool activation, and ordinary Intercom delivery, but have two verified host limitations:
+Official Pi 0.85.1 and upstream source [`e4ce7b449`](https://github.com/earendil-works/pi/commit/e4ce7b449f4d91589c8760d6fbfa6eaaf82b05fe) can load this package and use profile discovery, tool activation, and ordinary Intercom delivery, but have two verified host limitations:
 
 - Cancelling a turn may automatically resume work from retained queued messages.
 - An automatic incoming message may start a turn while Pi is still preparing a user prompt, before that preparation finishes.
 
 The corrected fork linked above fixes both. Updating this extension alone does not fix these host behaviors; official Pi and the fork do not have complete runtime parity.
+
+Saved-child resumes in the same directory use native `--session` without the redundant fork-only `--session-cwd` flag, so ordinary resumes also work on official Pi. Moving a saved child to another directory still requires native `--session-cwd` support; the extension never rewrites the saved session header or silently ignores a requested cwd override. Structured-output startup preserves the host's active tools and enables its capture tool. Official hosts can restore default built-ins before extension startup when resuming without an explicit tool selection; use the saved launch's explicit tool policy for restricted child runs.
 
 Install from GitHub:
 
