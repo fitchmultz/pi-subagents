@@ -4,7 +4,7 @@
 
 ### Fixed
 - Activate the structured-output capture tool after a saved session resumes, preserving the host's active tool selection.
-- Omit redundant `--session-cwd` overrides when a saved child already records the requested directory, allowing ordinary official-Pi resumes. Real directory changes still use the native override without rewriting history.
+- Omit redundant `--session-cwd` overrides for preassigned new child sessions (including acceptance contracts) and saved children in the same physical directory, including symlink/trailing-slash spellings, allowing ordinary official-Pi launches and resumes. Real directory changes and uncertain existing headers still use the native override without rewriting history. Read only the session header rather than the full transcript when checking its directory.
 
 ## [0.38.0] - 2026-09-15
 
