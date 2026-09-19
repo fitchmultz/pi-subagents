@@ -24,7 +24,7 @@ Each Pi session with the bundled intercom extension loaded connects to a tiny lo
 
 ## Install
 
-Official released Pi **v0.85.1** supports ordinary Intercom delivery: idle wakeups, steering at tool boundaries, queued follow-ups, and passive messages. A fork is optional for these paths.
+Intercom works with official Pi **0.85.1**. No Pi fork is required.
 
 ```bash
 pi install git:github.com/fitchmultz/pi-subagents
@@ -34,11 +34,9 @@ That one package includes both extension entries and both skills. For a local ch
 
 To restart the shared broker too, close every Pi session using the same agent directory and wait at least five seconds before reopening Pi.
 
-Stronger delivery guarantees require a corrected native [`fitchmultz/pi` build containing `952c27cd628ac742653f1fe4093685bdbe3a8444`](https://github.com/fitchmultz/pi/commit/952c27cd628ac742653f1fe4093685bdbe3a8444). It preserves prompt-admission ownership and true settlement and includes the earlier custom steering/follow-up queue reporting, restart notice, and `--session-cwd` fixes. On published 0.85.1, retained queues can resume work after cancellation, incoming messages can start a turn during user-prompt preparation, custom queues are absent from pending-message state, and idle wakeups bypass `before_agent_start` guidance. Stock Pi 0.84.x also lacks the stronger fork contracts. The corrected fork reports 0.85.1 too, so version output alone does not identify these fixes. See [released support and additional fork guarantees](../README.md#installation) for the full boundary.
-
 ## Development
 
-The [full local completion gate](../README.md#local-validation) includes the stronger fork guarantees; it is not an ordinary released-host compatibility gate. Set all four SDK overrides to the corrected fork build's `packages/coding-agent` directory and point this checkout's CLI link at its `dist/bundle/cli.js` before `npm run ci`. Keep the custom-queue visibility and busy-user-preparation regressions intact; those stronger cases are expected to fail on published 0.85.1.
+Follow the [local validation instructions](../README.md#local-validation). Keep the custom-queue visibility and busy-user-preparation regressions intact and report the known failures on published Pi 0.85.1.
 
 `ci` runs typechecking, package and install smokes, and the full subagent/intercom test suite. The native intercom regression uses real SDK sessions, a controlled provider, and private runtime directories without credentials or model-service calls. To run just that regression:
 
@@ -46,7 +44,7 @@ The [full local completion gate](../README.md#local-validation) includes the str
 PI_INTERCOM_TEST_SDK=/path/to/pi/packages/coding-agent node --test test/integration/pi-intercom-native-replay.test.ts
 ```
 
-The real-Pi smoke installs the single checkout into an isolated temporary Pi home, verifies `pi list`, and loads both bundled extension entries. Use direct `node` with the corrected CLI first on `PATH`; npm scripts may otherwise select the stock development CLI. With the checkout-only link from the completion gate in place:
+The real-Pi smoke installs the single checkout into an isolated temporary Pi home, verifies `pi list`, and loads both bundled extension entries. Use direct `node` with the intended CLI first on `PATH`:
 
 ```bash
 export PATH="$PWD/node_modules/.bin:$PATH"
@@ -543,6 +541,8 @@ pi-subagents/
 ```
 
 ## Limitations
+
+On Pi 0.85.1, retained queues can resume work after cancellation, incoming messages can start a turn during user-prompt preparation, custom queues are absent from pending-message state, and idle wakeups bypass `before_agent_start` guidance. Updating this extension does not change those host behaviors.
 
 - **Same machine only** — Uses local Unix sockets, no network support
 - **No dedicated intercom log** — Messages are kept in Pi session history, but there is no separate intercom transcript or inbox
