@@ -170,8 +170,8 @@ describe("result contracts", () => {
 					assert.equal(call.args[call.args.indexOf("--session") + 1], path.join(cwd, "child.jsonl"));
 					// This mock creates an empty file, not a native session header. Initial launch
 					// inherits spawn cwd; the later unreadable header conservatively needs an override.
-					assert.equal(call.args.includes("--session-cwd"), call !== attempts[0]);
-					if (call !== attempts[0]) assert.equal(call.args[call.args.indexOf("--session-cwd") + 1], childCwd);
+					assert.equal(call.args.includes("--session-cwd"), false);
+					assert.equal(call.sessionCwd?.cwd, call !== attempts[0] ? childCwd : undefined);
 				}
 			});
 		}

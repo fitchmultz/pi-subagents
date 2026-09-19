@@ -85,13 +85,19 @@ export default function(pi) {
 	}
 });
 
-it("native Pi applies the saved-session cwd before extension execution and preserves the session on repeat opens", () => {
-	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-session-cwd-")));
+it("native Pi applies the saved-session cwd before extension execution and preserves the session on repeat opens", (t) => {
+	const evidence = process.env.PI_SESSION_CWD_EVIDENCE_DIR;
+	if (evidence) fs.mkdirSync(evidence, { recursive: true });
+	const root = fs.realpathSync(fs.mkdtempSync(path.join(evidence ?? os.tmpdir(), "pi-native-session-cwd-")));
 	const originalCwd = path.join(root, "original");
 	const replacementCwd = path.join(root, "replacement project");
 	const launchCwd = path.join(root, "launch");
 	try {
 		for (const name of ["original", "replacement project", "launch", "home", "agent", "tmp", "jiti"]) fs.mkdirSync(path.join(root, name), { mode: 0o700 });
+		fs.writeFileSync(path.join(replacementCwd, "AGENTS.md"), "REPLACEMENT_PROJECT_CONTEXT");
+		const schema = { type: "object" };
+		const schemaPath = path.join(root, "schema.json");
+		fs.writeFileSync(schemaPath, JSON.stringify(schema));
 		const sessionFile = path.join(root, "saved.jsonl");
 		const timestamp = "2026-01-01T00:00:00.000Z";
 		const header = { type: "session", version: 3, id: "01234567-89ab-4cde-8012-3456789abcde", timestamp, cwd: originalCwd };
@@ -106,6 +112,7 @@ it("native Pi applies the saved-session cwd before extension execution and prese
 		const observer = path.join(root, "observe.ts");
 		fs.writeFileSync(observer, `import { writeFileSync } from "node:fs";
 import { fauxProvider } from "@earendil-works/pi-ai";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 export default async function(pi) {
 	// No cwd option: observe the native execution context before session_start.
 	const executed = await pi.exec(process.execPath, ["-p", "process.cwd()"]);
@@ -117,6 +124,11 @@ export default async function(pi) {
 			sessionId: ctx.sessionManager.getSessionId(), sessionFile: ctx.sessionManager.getSessionFile(),
 			header: ctx.sessionManager.getHeader(), entries: ctx.sessionManager.getEntries(),
 			model: { provider: ctx.model?.provider, id: ctx.model?.id },
+			tools: pi.getActiveTools(), trusted: ctx.isProjectTrusted(), prompt: ctx.getSystemPrompt(),
+			rootId: process.env.PI_SUBAGENT_ROOT_SESSION_ID, nodeOptions: process.env.NODE_OPTIONS,
+			overrideEnvironment: process.env.PI_SUBAGENT_SESSION_CWD,
+			// The one-launch override must not affect later SDK opens.
+			reopenedCwd: SessionManager.open(${JSON.stringify(sessionFile)}).getCwd(),
 		}));
 		ctx.shutdown();
 	});
@@ -124,17 +136,21 @@ export default async function(pi) {
 }`);
 
 		function probe(label: string, saved: boolean, cwd: string | undefined, expectedCwd: string) {
+			const replacement = cwd === replacementCwd && saved;
 			const output = path.join(root, `${label}.json`);
 			const shutdownPath = path.join(root, `${label}-shutdown.json`);
 			const built = buildPiArgs({ baseArgs: ["--offline", "--mode", "rpc", "--no-prompt-templates", "--no-themes"],
 				task: "Do not invoke a model", sessionEnabled: saved, sessionFile: saved ? sessionFile : undefined, cwd,
-				model: saved ? undefined : "faux/faux-1", inheritProjectContext: false, inheritSkills: false, extensions: [observer], projectTrust: "no-approve" });
+				model: saved ? undefined : "faux/faux-1", inheritProjectContext: replacement, inheritSkills: false, extensions: [observer],
+				tools: ["read", "bash"], rootSessionId: "owning-parent",
+				structuredOutput: { schema, schemaPath, outputPath: path.join(root, "capture.json") },
+				projectTrust: replacement ? "approve" : "no-approve" });
 			const command = [path.join(packageRoot, "dist/bundle/cli.js"), ...built.args];
 			try {
 				const child = spawnSync(process.execPath, command, { cwd: launchCwd, input: "", encoding: "utf8", timeout: 15_000,
 					env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HOME: path.join(root, "home"), USERPROFILE: path.join(root, "home"),
 						PI_CODING_AGENT_DIR: path.join(root, "agent"), TMPDIR: path.join(root, "tmp"), TMP: path.join(root, "tmp"), TEMP: path.join(root, "tmp"),
-						JITI_FS_CACHE: path.join(root, "jiti"), PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", ...built.env,
+						JITI_FS_CACHE: path.join(root, "jiti"), PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", NODE_OPTIONS: process.env.NODE_OPTIONS, ...built.env,
 						SESSION_CWD_PROBE_OUTPUT: output, SESSION_CWD_PROBE_SHUTDOWN: shutdownPath } });
 				const observation = fs.existsSync(output) ? JSON.parse(fs.readFileSync(output, "utf8")) : undefined;
 				const shutdown = fs.existsSync(shutdownPath) ? JSON.parse(fs.readFileSync(shutdownPath, "utf8")) : undefined;
@@ -154,6 +170,13 @@ export default async function(pi) {
 				assert.equal(observation.processCwd, launchCwd);
 				assert.deepEqual(observation.model, { provider: "faux", id: "faux-1" });
 				assert.deepEqual(shutdown, { providerCalls: 0 });
+				assert.deepEqual(observation.tools.sort(), ["bash", "read", "structured_output"]);
+				assert.equal(observation.trusted, replacement);
+				assert.equal(observation.prompt.includes("REPLACEMENT_PROJECT_CONTEXT"), replacement);
+				assert.equal(observation.rootId, "owning-parent");
+				assert.equal(observation.nodeOptions, process.env.NODE_OPTIONS);
+				assert.equal(observation.overrideEnvironment, undefined);
+				assert.equal(observation.reopenedCwd, originalCwd);
 				assert.equal(savedBytes, bytes);
 				if (saved) {
 					assert.equal(observation.sessionFile, sessionFile);
@@ -171,6 +194,7 @@ export default async function(pi) {
 		fs.rmdirSync(originalCwd);
 		for (let turn = 0; turn < 2; turn++) probe(`replacement-${turn}`, true, replacementCwd, replacementCwd);
 	} finally {
-		fs.rmSync(root, { recursive: true, force: true });
+		// Keep the synthetic session and observations as resume evidence.
+		t.diagnostic(`Host: ${packageRoot}; saved-session evidence: ${root}`);
 	}
 });

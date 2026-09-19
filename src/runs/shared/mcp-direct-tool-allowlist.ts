@@ -27,6 +27,7 @@ type ImportKind = keyof typeof IMPORT_PATHS;
 interface ServerEntry {
 	command?: string;
 	args?: string[];
+	socket?: string;
 	env?: Record<string, string>;
 	cwd?: string;
 	url?: string;
@@ -36,6 +37,9 @@ interface ServerEntry {
 	bearerTokenEnv?: string;
 	exposeResources?: boolean;
 	excludeTools?: string[];
+	includeTools?: string[];
+	toolPrefix?: ToolPrefix;
+	disabled?: boolean;
 }
 
 interface McpConfig {
@@ -70,18 +74,23 @@ interface MetadataCache {
 export function resolveMcpDirectToolNames(mcpDirectTools: string[] | undefined, cwd = process.cwd()): string[] {
 	if (!mcpDirectTools?.length) return [];
 
-	try {
-		const config = loadMcpConfig(cwd);
-		const cache = loadMetadataCache();
-		if (!cache) return [];
-		return resolveDirectToolNames(config, cache, getToolPrefix(config.settings?.toolPrefix), mcpDirectTools);
-	} catch {
-		return [];
+	const names = new Set<string>();
+	// Keep pre-v5 and independent Fitch configs paired with their own caches.
+	for (const directory of ["", "fitch-mcp-adapter"]) {
+		try {
+			const config = loadMcpConfig(cwd, directory);
+			const cache = loadMetadataCache(directory);
+			if (!cache) continue;
+			for (const name of resolveDirectToolNames(config, cache, getToolPrefix(config.settings?.toolPrefix), mcpDirectTools)) {
+				names.add(name);
+			}
+		} catch { /* An unavailable adapter does not hide the other adapter's tools. */ }
 	}
+	return [...names];
 }
 
-function loadMetadataCache(): MetadataCache | null {
-	const cachePath = path.join(getAgentDir(), "mcp-cache.json");
+function loadMetadataCache(directory: string): MetadataCache | null {
+	const cachePath = path.join(getAgentDir(), directory, "mcp-cache.json");
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(fs.readFileSync(cachePath, "utf-8"));
@@ -97,9 +106,9 @@ function loadMetadataCache(): MetadataCache | null {
 	return raw as unknown as MetadataCache;
 }
 
-function loadMcpConfig(cwd: string): McpConfig {
+function loadMcpConfig(cwd: string, directory: string): McpConfig {
 	let config: McpConfig = { mcpServers: {} };
-	for (const sourcePath of getConfigPaths(cwd)) {
+	for (const sourcePath of getConfigPaths(cwd, directory)) {
 		const loaded = readConfig(sourcePath);
 		if (!loaded) continue;
 		config = mergeConfigs(config, expandImports(loaded, cwd));
@@ -107,10 +116,10 @@ function loadMcpConfig(cwd: string): McpConfig {
 	return config;
 }
 
-function getConfigPaths(cwd: string): string[] {
-	const piGlobalPath = path.join(getAgentDir(), "mcp.json");
+function getConfigPaths(cwd: string, directory: string): string[] {
+	const piGlobalPath = path.join(getAgentDir(), directory, "mcp.json");
 	const projectPath = path.resolve(cwd, ".mcp.json");
-	const projectPiPath = path.resolve(cwd, ".pi", "mcp.json");
+	const projectPiPath = path.resolve(cwd, ".pi", directory, "mcp.json");
 	const sources: string[] = [];
 	if (GENERIC_GLOBAL_CONFIG_PATH !== piGlobalPath) sources.push(GENERIC_GLOBAL_CONFIG_PATH);
 	sources.push(piGlobalPath);
@@ -193,14 +202,16 @@ function extractServers(config: unknown, kind: ImportKind): Record<string, Serve
 	return servers && typeof servers === "object" && !Array.isArray(servers) ? servers as Record<string, ServerEntry> : {};
 }
 
-function resolveDirectToolNames(config: McpConfig, cache: MetadataCache, prefix: ToolPrefix, envOverride: string[]): string[] {
+function resolveDirectToolNames(config: McpConfig, cache: MetadataCache, defaultPrefix: ToolPrefix, envOverride: string[]): string[] {
 	const names: string[] = [];
 	const seenNames = new Set<string>();
 	const { servers: selectedServers, tools: selectedTools } = parseSelections(envOverride);
 
 	for (const [serverName, definition] of Object.entries(config.mcpServers)) {
+		if (definition.disabled) continue;
 		const serverCache = cache.servers[serverName];
 		if (!isServerCacheValid(serverCache, definition)) continue;
+		const prefix = definition.toolPrefix ?? defaultPrefix;
 
 		const toolFilter = selectedServers.has(serverName)
 			? true
@@ -220,7 +231,7 @@ function resolveDirectToolNames(config: McpConfig, cache: MetadataCache, prefix:
 		if (definition.exposeResources === false) continue;
 		for (const resource of Array.isArray(serverCache.resources) ? serverCache.resources : []) {
 			if (typeof resource?.name !== "string" || !resource.name || typeof resource.uri !== "string" || !resource.uri) continue;
-			const baseName = `get_${resourceNameToToolName(resource.name)}`;
+			const baseName = `read_${resourceNameToToolName(resource.name)}`;
 			if (toolFilter !== true && !toolFilter.has(baseName)) continue;
 			if (isToolExcluded(baseName, serverName, prefix, definition.excludeTools)) continue;
 			const prefixedName = formatToolName(baseName, serverName, prefix);
@@ -263,14 +274,16 @@ export function computeMcpServerHash(definition: ServerEntry): string {
 	const identity: Record<string, unknown> = {
 		command: definition.command,
 		args: definition.args,
+		socket: resolveConfigPath(definition.socket),
 		env: interpolateEnvRecord(definition.env),
 		cwd: resolveConfigPath(definition.cwd),
-		url: definition.url,
+		url: definition.url ? interpolateEnvVars(definition.url) : definition.url,
 		headers: interpolateEnvRecord(definition.headers),
 		auth: definition.auth,
 		bearerToken: resolveBearerToken(definition),
 		bearerTokenEnv: definition.bearerTokenEnv,
 		exposeResources: definition.exposeResources,
+		includeTools: definition.includeTools,
 		excludeTools: definition.excludeTools,
 	};
 	return createHash("sha256").update(stableStringify(identity)).digest("hex");

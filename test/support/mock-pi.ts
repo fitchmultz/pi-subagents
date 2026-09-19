@@ -67,7 +67,8 @@ export function createMockPi(): MockPi {
 	ensureDir(binDir);
 
 	const shellScriptPath = path.join(binDir, "pi");
-	writeExecutable(shellScriptPath, `#!/bin/sh\nexec "${process.execPath}" "${SCRIPT_PATH}" "$@"\n`);
+	// Native startup/preloads are covered by the native CLI tests; this stub records launch intent only.
+	writeExecutable(shellScriptPath, `#!/bin/sh\nunset NODE_OPTIONS\nexec "${process.execPath}" "${SCRIPT_PATH}" "$@"\n`);
 
 	let installed = false;
 	let nextSequence = 0;

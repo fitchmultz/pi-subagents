@@ -12,6 +12,7 @@ import type { ChildProjectTrustPolicy, JsonSchemaObject } from "../../shared/typ
 const TASK_ARG_LIMIT_BYTES = 900;
 // Resolve sibling extensions in both layouts: TypeScript sources (tests, jiti) and compiled dist output.
 const MODULE_EXTENSION = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+const SESSION_CWD_PRELOAD_URL = new URL(`session-cwd-preload${MODULE_EXTENSION}`, import.meta.url).href;
 const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), `subagent-prompt-runtime${MODULE_EXTENSION}`);
 const FANOUT_CHILD_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "extension", `fanout-child${MODULE_EXTENSION}`);
 export const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
@@ -158,6 +159,7 @@ function readSessionHeaderLine(file: string): string | undefined {
 
 export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	const args = [...input.baseArgs];
+	const env: Record<string, string | undefined> = {};
 	args.push(...resolveChildProjectTrustArgs(input.projectTrust));
 
 	if (input.sessionFile) {
@@ -178,9 +180,14 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 					}
 				}
 			} catch { /* Unknown headers or unavailable directories still need the native override. */ }
-			// Official Pi rejects --session-cwd. Omit only a redundant override, including
-			// symlink/trailing-slash spellings; never rewrite history or silently change cwd.
-			if (needsOverride) args.push("--session-cwd", input.cwd);
+			// Pi's SDK supports cwdOverride; its CLI has no --session-cwd flag.
+			// Keep normal resumes untouched and supply only a needed override before startup.
+			if (needsOverride) {
+				env.PI_SUBAGENT_SESSION_CWD = JSON.stringify({
+					sessionFile: path.resolve(input.cwd, input.sessionFile), cwd: input.cwd, nodeOptions: process.env.NODE_OPTIONS,
+				});
+				env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} --import=${SESSION_CWD_PRELOAD_URL}`.trim();
+			}
 		}
 	} else {
 		if (!input.sessionEnabled) {
@@ -258,7 +265,6 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 		args.push(taskArg);
 	}
 
-	const env: Record<string, string | undefined> = {};
 	env[SUBAGENT_CHILD_ENV] = "1";
 	env.PI_SUBAGENT_ROOT_SESSION_ID = input.rootSessionId ?? (process.env[SUBAGENT_CHILD_ENV] === "1" ? process.env.PI_SUBAGENT_ROOT_SESSION_ID : undefined);
 	env[SUBAGENT_FANOUT_CHILD_ENV] = fanoutAuthorized ? "1" : "0";

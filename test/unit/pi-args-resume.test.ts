@@ -13,10 +13,14 @@ test("same-cwd resumes omit the redundant fork-only flag without changing saved 
 	const bytes = `${JSON.stringify({ type: "session", version: 3, id: "fixture", cwd: root })}\n`;
 	writeFileSync(sessionFile, bytes);
 	for (const cwd of [root, `${root}/`, join(root, "alias"), join(root, "replacement")]) {
-		const { args } = buildPiArgs({ baseArgs: ["-p"], task: "resume", sessionEnabled: true, sessionFile, cwd,
+		const { args, env } = buildPiArgs({ baseArgs: ["-p"], task: "resume", sessionEnabled: true, sessionFile, cwd,
 			inheritProjectContext: false, inheritSkills: false });
-		assert.equal(args.includes("--session-cwd"), cwd === join(root, "replacement"),
-			"only an actual cwd change needs the native override; ordinary upstream resumes must not receive an unknown flag");
+		assert.equal(args.includes("--session-cwd"), false);
+		assert.equal(Boolean(env.PI_SUBAGENT_SESSION_CWD), cwd === join(root, "replacement"));
+		if (env.PI_SUBAGENT_SESSION_CWD) {
+			assert.equal(JSON.parse(env.PI_SUBAGENT_SESSION_CWD).cwd, cwd);
+			assert.match(env.NODE_OPTIONS!, /--import=.*session-cwd-preload/);
+		} else assert.equal(env.NODE_OPTIONS, undefined);
 		assert.equal(args[args.indexOf("--session") + 1], sessionFile);
 		assert.equal(readFileSync(sessionFile, "utf8"), bytes);
 	}
@@ -44,9 +48,10 @@ test("uncertain existing headers and unavailable original directories retain the
 	const dangling = join(root, "dangling.jsonl");
 	symlinkSync(join(root, "absent.jsonl"), dangling);
 	for (const sessionFile of [...sessionFiles, root, dangling]) {
-		const { args } = buildPiArgs({ baseArgs: [], task: "resume", sessionEnabled: true, sessionFile, cwd: root,
+		const { args, env } = buildPiArgs({ baseArgs: [], task: "resume", sessionEnabled: true, sessionFile, cwd: root,
 			inheritProjectContext: false, inheritSkills: false });
-		assert.deepEqual(args.slice(args.indexOf("--session-cwd"), args.indexOf("--session-cwd") + 2), ["--session-cwd", root]);
+		assert.equal(args.includes("--session-cwd"), false);
+		assert.equal(JSON.parse(env.PI_SUBAGENT_SESSION_CWD!).cwd, root);
 	}
 	fixtures.forEach((bytes, index) => assert.equal(readFileSync(sessionFiles[index], "utf8"), bytes));
 });

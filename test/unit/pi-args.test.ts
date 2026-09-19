@@ -530,7 +530,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
 			mcpDirectTools: ["browser-mcp"],
 		});
 
-		assert.equal(args[args.indexOf("--tools") + 1], "read,browser_mcp_navigate,browser_mcp_get_console_logs");
+		assert.equal(args[args.indexOf("--tools") + 1], "read,browser_mcp_navigate,browser_mcp_read_console_logs");
 	});
 
 	it("falls back to explicit builtins when direct MCP cache or config is missing or invalid", () => {

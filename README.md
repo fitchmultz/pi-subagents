@@ -4,20 +4,9 @@
 
 ## Installation
 
-Official released Pi **v0.85.1** supports ordinary `pi-subagents` use: profile discovery, tool activation, ordinary Intercom delivery, acceptance-contract launches, and same-directory saved-child resumes. The release's immutable source commit is [`d981de1229ef899957bbe968bc8dcda02a21f477`](https://github.com/earendil-works/pi/commit/d981de1229ef899957bbe968bc8dcda02a21f477). These paths have been verified on the published 0.85.1 packages; a fork is optional for ordinary use.
+`pi-subagents` works with official Pi **0.85.1**, including saved-child continuation in a different directory. No Pi fork is required. Known Intercom host limitations are listed in the [Intercom guide](docs/intercom.md#limitations).
 
-Earlier verification also covered unreleased upstream source [`e4ce7b449`](https://github.com/earendil-works/pi/commit/e4ce7b449f4d91589c8760d6fbfa6eaaf82b05fe). Those results are additional source-host evidence, not verification of the release commit. Verified released-host limitations remain:
-
-- Cancelling a turn may automatically resume work from retained queued messages.
-- An automatic incoming message may start a turn while Pi is still preparing a user prompt, before that preparation finishes.
-- Retained custom messages are absent from the extension context's pending-message state.
-- An incoming message that wakes an idle session bypasses `before_agent_start` guidance.
-
-For stronger durable-runtime guarantees, use a corrected native [`fitchmultz/pi` build containing `952c27cd628ac742653f1fe4093685bdbe3a8444`](https://github.com/fitchmultz/pi/commit/952c27cd628ac742653f1fe4093685bdbe3a8444) ([native PR #16](https://github.com/fitchmultz/pi/pull/16)). It fixes prompt-admission ownership and settlement, including busy user startup, and includes the earlier custom steering/follow-up queue reporting, code-update restart notice, and `--session-cwd` support. Stock Pi 0.84.x and published 0.85.1 lack these stronger contracts. The corrected fork also reports 0.85.1, so `pi --version` alone does not identify these fixes. This package does not install that build, and updating the extension alone does not supply those guarantees.
-
-Compact tool cards in Agents additionally require [native compact-view support](https://github.com/fitchmultz/pi/commit/17cb62faade465700692b0d474ec5652e8df3aed).
-
-New child sessions with a preassigned file (including acceptance-contract launches) inherit the child process's working directory. Saved-child resumes in the same physical directory—including symlink and trailing-slash spellings—use native `--session` without the redundant fork-only `--session-cwd` flag, so ordinary launches and resumes also work on official Pi. Moving a saved child to another directory, or requesting a cwd when its saved header cannot establish the same physical directory, still requires native `--session-cwd` support; the extension never rewrites the saved session header or silently ignores a requested cwd override. Structured-output startup preserves the host's active tools and enables its capture tool. Official hosts can restore default built-ins before extension startup when resuming without an explicit tool selection; use the saved launch's explicit tool policy for restricted child runs.
+New sessions inherit the child process's working directory. Saved sessions retain their file, identity, header, and history; a requested directory change uses Pi's native SDK cwd override before startup. Same-directory resumes, including symlink and trailing-slash spellings, need no override. Structured-output startup preserves active tools and enables its capture tool. Use an explicit tool policy for restricted child runs; Pi can restore default built-ins when resuming without one.
 
 Install from GitHub:
 
@@ -42,27 +31,22 @@ Use the normal development workflow below for editing and validation, then rerun
 
 Supported platforms: **macOS and Linux**. Termux on Android is unverified; Windows is not supported.
 
-Pi core packages remain optional wildcard peers. Development dependencies are pinned to Pi 0.85.1 for compilation and package checks; those pins do not supply the native fixes above.
+Pi core packages remain optional wildcard peers. Development dependencies are pinned to Pi 0.85.1 for compilation and package checks.
 
 ## Local validation
 
-The full completion gate covers the additional fork guarantees as well as ordinary extension behavior. Use a built checkout of the corrected fork revision linked above for that gate; a full-suite pass is not expected on released Pi because its known host limitations remain:
+Use the locked published Pi dependencies:
 
 ```bash
 npm ci
-export PI_INTERCOM_TEST_SDK=/absolute/path/to/pi/packages/coding-agent
-export PI_OWNERSHIP_TEST_PACKAGE_ROOT="$PI_INTERCOM_TEST_SDK"
-export PI_CONTEXT_TEST_PACKAGE_ROOT="$PI_INTERCOM_TEST_SDK"
-export PI_PACKAGE_DIR="$PI_INTERCOM_TEST_SDK"
-ln -sf "$PI_INTERCOM_TEST_SDK/dist/bundle/cli.js" node_modules/.bin/pi
 npm run ci
 ```
 
-All SDK overrides point at the built `packages/coding-agent` directory, not the monorepo root. The CLI link changes only this checkout's `node_modules/.bin/pi`; repeat it after `npm ci`, which restores the stock development CLI.
+Some native queue and prompt-preparation regressions still expose the [known host limitations](docs/intercom.md#limitations) on Pi 0.85.1. Retain those checks and report their failures; a focused passing check does not establish a full-suite pass.
 
 That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
-For a credential-free Linux gate against committed `HEAD`, Docker and `PI_LINUX_PI_ARCHIVE` are required. Supply an absolute path to a `.tar.gz` containing one top-level `pi/`: the corrected fork checkout, its Linux `node_modules` (including workspace dependencies), and all built `dist/` output. It must include `pi/packages/coding-agent/dist/index.js` and `pi/packages/coding-agent/dist/bundle/cli.js`.
+For a credential-free Linux gate against committed `HEAD`, Docker and `PI_LINUX_PI_ARCHIVE` are required. Supply an absolute path to a `.tar.gz` containing one top-level `pi/`: a Pi 0.85.1 source checkout, its Linux `node_modules` (including workspace dependencies), and all built `dist/` output. It must include `pi/packages/coding-agent/dist/index.js` and `pi/packages/coding-agent/dist/bundle/cli.js`.
 
 Prepare that checkout in a clean Linux build environment matching the image's CPU architecture and Node version. Install locked dependencies and complete Pi's workspace build, including its generated model data, before archiving. Do not copy host `node_modules`, Pi user state, `auth.json`, secret `.env` files, or credential-bearing npm/Git configuration. From the Linux build environment:
 
@@ -87,11 +71,11 @@ The archive is mounted read-only and extracted to `/native-pi`. The unprivileged
 The default local gate includes real SDK reload/reopen and native child-session ownership checks with a controlled CLI and no model calls. Other execution tests stay mock-heavy and deterministic. When you need to verify the actual local file-path Pi package boundary, run the opt-in real smoke:
 
 ```bash
-export PATH="$PWD/node_modules/.bin:$PATH" # corrected checkout-only CLI link from above
+export PATH="$PWD/node_modules/.bin:$PATH"
 node scripts/real-pi-smoke.mjs
 ```
 
-Use direct `node` invocation with the corrected `pi` first on `PATH`. npm scripts prepend `node_modules/.bin` and may select the stock development CLI if its link has not been changed after dependency installation.
+Use direct `node` invocation with the intended `pi` first on `PATH`. npm scripts prepend `node_modules/.bin`.
 
 It installs this checkout into an isolated temporary Pi home, runs `pi list`, and loads the bundled subagent and intercom extensions. It does not install pi-fitch-kit, publish to npm, or use GitHub Actions.
 
@@ -177,7 +161,7 @@ Stop receipts mean **requested**, not process exit. Saved results separately rec
 
 Children also receive `PI_SUBAGENT_ROOT_SESSION_ID`: the owning root's actual Pi session ID, inherited unchanged through fresh/forked children, nested delegation, and detached runner configuration. Saved children inherit the reviving parent's root. This is independent of cwd, transcript file paths, run IDs, and ordinary Pi fork/clone ancestry. Extensions such as pi-agent-browser-native use it to share one browser within the parent/descendant group while keeping unrelated roots independent. The parent process environment is not changed; opening a child transcript as an unrelated standalone root does not adopt that group.
 
-Continuation and exited-question revival reuse the resolved provider/model, thinking level, profile, selected skill injection, tool/extension and context policies, output settings, limits, and acceptance contract. Changed profile defaults are not substituted. `agent_runs` accepts explicit `model`, `cwd`, `output`, and `acceptance` overrides on `continue`/`answer`; `agent` explicitly selects a current profile. Detailed overrides remain available through `subagent({ action: "resume", ... })`. Launch overrides apply when starting a continuation, not when delivering a follow-up or answer to a still-live child. In particular, live `continue`/`answer` acceptance overrides do **not** amend that child's acceptance contract. A missing worktree can be replaced with an explicit `cwd`; a missing child session cannot be invented. New acceptance sessions inherit their launch cwd; saved-session launches, including acceptance finalization, use the header cwd directly when it resolves to the same existing directory as the requested cwd. A different effective cwd is passed through native `--session-cwd` before extensions start, without rewriting the saved session header, identity, or history. If the same saved child already has a live continuation, another `continue` sends it the follow-up instead of starting a second process. Status labels distinguish **Launch cwd** from intercom's **Native session cwd**; neither proves a shell command's physical directory. The **Saved session header cwd** remains unchanged by the native override.
+Continuation and exited-question revival reuse the resolved provider/model, thinking level, profile, selected skill injection, tool/extension and context policies, output settings, limits, and acceptance contract. Changed profile defaults are not substituted. `agent_runs` accepts explicit `model`, `cwd`, `output`, and `acceptance` overrides on `continue`/`answer`; `agent` explicitly selects a current profile. Detailed overrides remain available through `subagent({ action: "resume", ... })`. Launch overrides apply when starting a continuation, not when delivering a follow-up or answer to a still-live child. In particular, live `continue`/`answer` acceptance overrides do **not** amend that child's acceptance contract. A missing worktree can be replaced with an explicit `cwd`; a missing child session cannot be invented. New acceptance sessions inherit their launch cwd; saved-session launches, including acceptance finalization, use the header cwd directly when it resolves to the same existing directory as the requested cwd. A different effective cwd is supplied to native `SessionManager.open` by a launch-scoped Node preload before Pi creates tools, project resources, or extensions, without rewriting the saved session header, identity, or history. If the same saved child already has a live continuation, another `continue` sends it the follow-up instead of starting a second process. Status labels distinguish **Launch cwd** from intercom's **Native session cwd**; neither proves a shell command's physical directory. The **Saved session header cwd** remains unchanged by the native override.
 
 When the saved launch records that an output path was generated from a relative profile default, continuation and exited-question revival generate a new path for the successor using that saved filename, leaving the predecessor file untouched. Selecting a current profile with `agent` preserves the saved filename independently of that profile's current default; an explicit `output` override changes the output choice. Explicit paths, absolute profile defaults, and `output: false` retain their saved choices unless overridden. Older snapshots without output-origin information keep their saved paths; supply an explicit `output` override to choose a different path.
 
@@ -360,7 +344,7 @@ Check whether subagents and intercom are set up correctly.
 
 Doctor checks the loaded intercom bridge and the current broker registration without requesting a reconnect. Connected, disconnected, connecting, and unknown states are distinct; a missing bridge response is not reported as a healthy connection.
 
-The report identifies the running Node process, Pi's loaded version and reported resource directory, and the loaded extension build. Its SHA-256 fingerprint is embedded at build time from the emitted JavaScript, excluding the stamp itself; replacing files on disk does not change that loaded identity. Direct source loads report an unknown build. Pi's version and resource path alone do not prove the additional native fork patches.
+The report identifies the running Node process, Pi's loaded version and reported resource directory, and the loaded extension build. Its SHA-256 fingerprint is embedded at build time from the emitted JavaScript, excluding the stamp itself; replacing files on disk does not change that loaded identity. Direct source loads report an unknown build.
 
 ## Recommended orchestration pattern (scaffolding)
 
