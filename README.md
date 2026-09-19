@@ -4,20 +4,20 @@
 
 ## Installation
 
-Full durable-runtime support requires a corrected native [`fitchmultz/pi` build containing `952c27cd628ac742653f1fe4093685bdbe3a8444`](https://github.com/fitchmultz/pi/commit/952c27cd628ac742653f1fe4093685bdbe3a8444) ([native PR #16](https://github.com/fitchmultz/pi/pull/16)). It fixes prompt-admission ownership and settlement, including busy user startup, and includes the earlier custom steering/follow-up queue reporting, code-update restart notice, and `--session-cwd` support. Stock Pi 0.84.x and published 0.85.1 lack these contracts. The corrected fork also reports 0.85.1, so `pi --version` alone does not prove support. This package does not install the corrected native build.
+Official released Pi **v0.85.1** supports ordinary `pi-subagents` use: profile discovery, tool activation, ordinary Intercom delivery, acceptance-contract launches, and same-directory saved-child resumes. The release's immutable source commit is [`d981de1229ef899957bbe968bc8dcda02a21f477`](https://github.com/earendil-works/pi/commit/d981de1229ef899957bbe968bc8dcda02a21f477). These paths have been verified on the published 0.85.1 packages; a fork is optional for ordinary use.
 
-Compact tool cards in Agents also require [native compact-view support](https://github.com/fitchmultz/pi/commit/17cb62faade465700692b0d474ec5652e8df3aed).
-
-Official Pi 0.85.1 and upstream source [`e4ce7b449`](https://github.com/earendil-works/pi/commit/e4ce7b449f4d91589c8760d6fbfa6eaaf82b05fe) support profile discovery, tool activation, ordinary Intercom delivery, acceptance-contract launches, and same-directory saved-child resumes. Verified host limitations remain:
+Earlier verification also covered unreleased upstream source [`e4ce7b449`](https://github.com/earendil-works/pi/commit/e4ce7b449f4d91589c8760d6fbfa6eaaf82b05fe). Those results are additional source-host evidence, not verification of the release commit. Verified released-host limitations remain:
 
 - Cancelling a turn may automatically resume work from retained queued messages.
 - An automatic incoming message may start a turn while Pi is still preparing a user prompt, before that preparation finishes.
 - Retained custom messages are absent from the extension context's pending-message state.
 - An incoming message that wakes an idle session bypasses `before_agent_start` guidance.
 
-The corrected fork linked above provides these native guarantees. Updating this extension alone does not fix these host behaviors; official Pi and the fork do not have complete runtime parity.
+For stronger durable-runtime guarantees, use a corrected native [`fitchmultz/pi` build containing `952c27cd628ac742653f1fe4093685bdbe3a8444`](https://github.com/fitchmultz/pi/commit/952c27cd628ac742653f1fe4093685bdbe3a8444) ([native PR #16](https://github.com/fitchmultz/pi/pull/16)). It fixes prompt-admission ownership and settlement, including busy user startup, and includes the earlier custom steering/follow-up queue reporting, code-update restart notice, and `--session-cwd` support. Stock Pi 0.84.x and published 0.85.1 lack these stronger contracts. The corrected fork also reports 0.85.1, so `pi --version` alone does not identify these fixes. This package does not install that build, and updating the extension alone does not supply those guarantees.
 
-New child sessions with a preassigned file (including acceptance-contract launches) inherit the child process's working directory. Saved-child resumes in the same physical directory—including symlink and trailing-slash spellings—use native `--session` without the redundant fork-only `--session-cwd` flag, so ordinary launches and resumes also work on official Pi. Moving a saved child to another directory still requires native `--session-cwd` support; the extension never rewrites the saved session header or silently ignores a requested cwd override. Structured-output startup preserves the host's active tools and enables its capture tool. Official hosts can restore default built-ins before extension startup when resuming without an explicit tool selection; use the saved launch's explicit tool policy for restricted child runs.
+Compact tool cards in Agents additionally require [native compact-view support](https://github.com/fitchmultz/pi/commit/17cb62faade465700692b0d474ec5652e8df3aed).
+
+New child sessions with a preassigned file (including acceptance-contract launches) inherit the child process's working directory. Saved-child resumes in the same physical directory—including symlink and trailing-slash spellings—use native `--session` without the redundant fork-only `--session-cwd` flag, so ordinary launches and resumes also work on official Pi. Moving a saved child to another directory, or requesting a cwd when its saved header cannot establish the same physical directory, still requires native `--session-cwd` support; the extension never rewrites the saved session header or silently ignores a requested cwd override. Structured-output startup preserves the host's active tools and enables its capture tool. Official hosts can restore default built-ins before extension startup when resuming without an explicit tool selection; use the saved launch's explicit tool policy for restricted child runs.
 
 Install from GitHub:
 
@@ -46,7 +46,7 @@ Pi core packages remain optional wildcard peers. Development dependencies are pi
 
 ## Local validation
 
-Use a built checkout of the required native Pi revision for the completion gate:
+The full completion gate covers the additional fork guarantees as well as ordinary extension behavior. Use a built checkout of the corrected fork revision linked above for that gate; a full-suite pass is not expected on released Pi because its known host limitations remain:
 
 ```bash
 npm ci
@@ -62,7 +62,7 @@ All SDK overrides point at the built `packages/coding-agent` directory, not the 
 
 That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
-For a credential-free Linux gate against committed `HEAD`, Docker and `PI_LINUX_PI_ARCHIVE` are required. Supply an absolute path to a `.tar.gz` containing one top-level `pi/`: the required native checkout, its Linux `node_modules` (including workspace dependencies), and all built `dist/` output. It must include `pi/packages/coding-agent/dist/index.js` and `pi/packages/coding-agent/dist/bundle/cli.js`.
+For a credential-free Linux gate against committed `HEAD`, Docker and `PI_LINUX_PI_ARCHIVE` are required. Supply an absolute path to a `.tar.gz` containing one top-level `pi/`: the corrected fork checkout, its Linux `node_modules` (including workspace dependencies), and all built `dist/` output. It must include `pi/packages/coding-agent/dist/index.js` and `pi/packages/coding-agent/dist/bundle/cli.js`.
 
 Prepare that checkout in a clean Linux build environment matching the image's CPU architecture and Node version. Install locked dependencies and complete Pi's workspace build, including its generated model data, before archiving. Do not copy host `node_modules`, Pi user state, `auth.json`, secret `.env` files, or credential-bearing npm/Git configuration. From the Linux build environment:
 
@@ -360,7 +360,7 @@ Check whether subagents and intercom are set up correctly.
 
 Doctor checks the loaded intercom bridge and the current broker registration without requesting a reconnect. Connected, disconnected, connecting, and unknown states are distinct; a missing bridge response is not reported as a healthy connection.
 
-The report identifies the running Node process, Pi's loaded version and reported resource directory, and the loaded extension build. Its SHA-256 fingerprint is embedded at build time from the emitted JavaScript, excluding the stamp itself; replacing files on disk does not change that loaded identity. Direct source loads report an unknown build. Pi's version and resource path alone do not prove the required native fork patches.
+The report identifies the running Node process, Pi's loaded version and reported resource directory, and the loaded extension build. Its SHA-256 fingerprint is embedded at build time from the emitted JavaScript, excluding the stamp itself; replacing files on disk does not change that loaded identity. Direct source loads report an unknown build. Pi's version and resource path alone do not prove the additional native fork patches.
 
 ## Recommended orchestration pattern (scaffolding)
 
