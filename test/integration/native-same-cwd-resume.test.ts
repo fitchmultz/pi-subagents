@@ -12,7 +12,7 @@ const { buildPiArgs } = await import(process.env.PI_ARGS_TEST_MODULE
 
 const host = process.env.PI_CONTEXT_TEST_PACKAGE_ROOT ?? dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
 
-for (const scenario of ["saved", "symlink", "trailing-slash", "missing"] as const) test(`native CLI session cwd: ${scenario}`, async (t) => {
+for (const scenario of ["saved", "symlink", "trailing-slash", "missing", "different"] as const) test(`native CLI session cwd: ${scenario}`, async (t) => {
 	const evidence = process.env.PI_INTERCOM_TEST_EVIDENCE_DIR;
 	if (evidence) mkdirSync(evidence, { recursive: true });
 	const root = realpathSync(mkdtempSync(join(evidence ?? tmpdir(), "pi-same-cwd-cli-")));
@@ -30,7 +30,7 @@ for (const scenario of ["saved", "symlink", "trailing-slash", "missing"] as cons
 	if (scenario !== "missing") writeFileSync(sessionFile, bytes);
 	const alias = join(root, "alias");
 	if (scenario === "symlink") symlinkSync(root, alias, "dir");
-	const cwd = scenario === "symlink" ? alias : scenario === "trailing-slash" ? `${root}/` : root;
+	const cwd = scenario === "different" ? join(root, "launch") : scenario === "symlink" ? alias : scenario === "trailing-slash" ? `${root}/` : root;
 	const extension = join(root, "observer.ts");
 	writeFileSync(extension, `import { writeFileSync } from "node:fs";
 import { fauxProvider } from "@earendil-works/pi-ai";
@@ -47,7 +47,7 @@ export default function (pi) {
 		const built = buildPiArgs({ baseArgs: ["--mode", "rpc", "--offline", "--no-prompt-templates", "--no-themes"],
 			task: "No model request", sessionEnabled: true, sessionFile, cwd,
 			inheritProjectContext: false, inheritSkills: false, extensions: [extension], projectTrust: "no-approve" });
-		const child = spawnSync(process.execPath, [join(host, "dist/cli.js"), ...built.args], {
+		const child = spawnSync(process.execPath, [join(host, JSON.parse(readFileSync(join(host, "package.json"), "utf8")).bin.pi), ...built.args], {
 			// Production callers spawn in the requested cwd. The saved case additionally proves native header restoration.
 			cwd: scenario === "saved" ? join(root, "launch") : cwd, input: "", encoding: "utf8", timeout: 15_000,
 			env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HOME: root, USERPROFILE: root,
@@ -59,7 +59,7 @@ export default function (pi) {
 		return JSON.parse(readFileSync(output, "utf8"));
 	}
 	const observed = launch();
-	assert.equal(observed.cwd, root);
+	assert.equal(observed.cwd, scenario === "different" ? cwd : root);
 	assert.equal(observed.file, sessionFile);
 	if (scenario === "missing") {
 		assert.ok(observed.id);

@@ -218,7 +218,8 @@ async function main() {
 	const jsonMode = isJsonMode(args);
 	const response = claimNextResponse(queueDir, args) ?? defaultResponse();
 	writeSessionFile(args);
-	const callRecord = { args, expandedArgs: args.map(expandedArg), cwd: process.cwd() };
+	const callRecord = { args, expandedArgs: args.map(expandedArg), cwd: process.cwd(),
+		sessionCwd: process.env.PI_SUBAGENT_SESSION_CWD ? JSON.parse(process.env.PI_SUBAGENT_SESSION_CWD) : undefined };
 	if (Array.isArray(response.echoEnv) && response.echoEnv.length > 0) {
 		callRecord.env = Object.fromEntries(response.echoEnv.map((key) => [key, process.env[key] ?? null]));
 	}

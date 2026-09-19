@@ -508,7 +508,8 @@ describe("saved output choices", () => {
 		for (const call of attempts) {
 			assert.equal(call.cwd, fs.realpathSync(replacementCwd));
 			assert.equal(call.args[call.args.indexOf("--session") + 1], contract.sessionFile);
-			assert.equal(call.args[call.args.indexOf("--session-cwd") + 1], replacementCwd);
+			assert.equal(call.args.includes("--session-cwd"), false);
+			assert.equal(call.sessionCwd.cwd, replacementCwd);
 		}
 	});
 
