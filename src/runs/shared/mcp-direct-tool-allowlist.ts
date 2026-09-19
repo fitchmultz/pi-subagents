@@ -75,13 +75,13 @@ export function resolveMcpDirectToolNames(mcpDirectTools: string[] | undefined, 
 	if (!mcpDirectTools?.length) return [];
 
 	const names = new Set<string>();
-	// Keep the adapters' configs and caches separate; either adapter may be installed.
+	// Keep pre-v5 and independent Fitch configs paired with their own caches.
 	for (const directory of ["", "fitch-mcp-adapter"]) {
 		try {
 			const config = loadMcpConfig(cwd, directory);
 			const cache = loadMetadataCache(directory);
 			if (!cache) continue;
-			for (const name of resolveDirectToolNames(config, cache, getToolPrefix(config.settings?.toolPrefix), mcpDirectTools, directory)) {
+			for (const name of resolveDirectToolNames(config, cache, getToolPrefix(config.settings?.toolPrefix), mcpDirectTools)) {
 				names.add(name);
 			}
 		} catch { /* An unavailable adapter does not hide the other adapter's tools. */ }
@@ -202,7 +202,7 @@ function extractServers(config: unknown, kind: ImportKind): Record<string, Serve
 	return servers && typeof servers === "object" && !Array.isArray(servers) ? servers as Record<string, ServerEntry> : {};
 }
 
-function resolveDirectToolNames(config: McpConfig, cache: MetadataCache, defaultPrefix: ToolPrefix, envOverride: string[], directory: string): string[] {
+function resolveDirectToolNames(config: McpConfig, cache: MetadataCache, defaultPrefix: ToolPrefix, envOverride: string[]): string[] {
 	const names: string[] = [];
 	const seenNames = new Set<string>();
 	const { servers: selectedServers, tools: selectedTools } = parseSelections(envOverride);
@@ -231,7 +231,7 @@ function resolveDirectToolNames(config: McpConfig, cache: MetadataCache, default
 		if (definition.exposeResources === false) continue;
 		for (const resource of Array.isArray(serverCache.resources) ? serverCache.resources : []) {
 			if (typeof resource?.name !== "string" || !resource.name || typeof resource.uri !== "string" || !resource.uri) continue;
-			const baseName = `${directory ? "read" : "get"}_${resourceNameToToolName(resource.name)}`;
+			const baseName = `read_${resourceNameToToolName(resource.name)}`;
 			if (toolFilter !== true && !toolFilter.has(baseName)) continue;
 			if (isToolExcluded(baseName, serverName, prefix, definition.excludeTools)) continue;
 			const prefixedName = formatToolName(baseName, serverName, prefix);
@@ -265,29 +265,27 @@ function parseSelections(selections: string[]): { servers: Set<string>; tools: M
 }
 
 function isServerCacheValid(entry: ServerCacheEntry | undefined, definition: ServerEntry): entry is ServerCacheEntry {
-	if (!entry || (entry.configHash !== computeMcpServerHash(definition) && entry.configHash !== computeMcpServerHash(definition, true))) return false;
+	if (!entry || entry.configHash !== computeMcpServerHash(definition)) return false;
 	if (!entry.cachedAt || typeof entry.cachedAt !== "number") return false;
 	return Date.now() - entry.cachedAt <= CACHE_MAX_AGE_MS;
 }
 
-export function computeMcpServerHash(definition: ServerEntry, current = false): string {
+export function computeMcpServerHash(definition: ServerEntry): string {
 	const identity: Record<string, unknown> = {
 		command: definition.command,
 		args: definition.args,
+		socket: resolveConfigPath(definition.socket),
 		env: interpolateEnvRecord(definition.env),
 		cwd: resolveConfigPath(definition.cwd),
-		url: current && definition.url ? interpolateEnvVars(definition.url) : definition.url,
+		url: definition.url ? interpolateEnvVars(definition.url) : definition.url,
 		headers: interpolateEnvRecord(definition.headers),
 		auth: definition.auth,
 		bearerToken: resolveBearerToken(definition),
 		bearerTokenEnv: definition.bearerTokenEnv,
 		exposeResources: definition.exposeResources,
+		includeTools: definition.includeTools,
 		excludeTools: definition.excludeTools,
 	};
-	if (current) {
-		identity.socket = resolveConfigPath(definition.socket);
-		identity.includeTools = definition.includeTools;
-	}
 	return createHash("sha256").update(stableStringify(identity)).digest("hex");
 }
 

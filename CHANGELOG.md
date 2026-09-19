@@ -4,7 +4,7 @@
 
 ### Fixed
 - Resume saved children in a different directory on released Pi through its native SDK cwd override, preserving session identity and history. Normal launches and same-directory resumes remain unchanged.
-- Resolve explicitly selected direct MCP tools from the independent Fitch adapter's configuration and metadata namespace while retaining legacy adapter support. Default configured tool and extension inheritance remains unchanged.
+- Resolve explicitly selected direct MCP tools from the independent Fitch adapter's configuration and metadata namespace while retaining pre-v5 Fitch state support. Default configured tool and extension inheritance remains unchanged.
 
 ## [0.38.1] - 2026-09-18
 

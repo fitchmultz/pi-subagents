@@ -46,7 +46,7 @@ function resolveNames(root: string, agentDir: string): string[] {
 	}));
 }
 
-test("reads independently named Fitch config and native metadata without changing upstream selection", () => {
+test("reads native metadata from pre-v5 and independent Fitch state", () => {
 	fixture((root, agentDir) => {
 		const fitch = join(agentDir, "fitch-mcp-adapter");
 		writeConfig(fitch, "fitch-fixture");
@@ -55,7 +55,7 @@ test("reads independently named Fitch config and native metadata without changin
 		writeConfig(agentDir, "upstream-fixture");
 		writeCache(agentDir, "upstream-fixture", "upstream_echo");
 		assert.deepEqual(resolveNames(root, agentDir), [
-			"demo_upstream_echo", "demo_get_notes", "demo_fitch_echo", "demo_read_notes",
+			"demo_upstream_echo", "demo_read_notes", "demo_fitch_echo",
 		]);
 	});
 });
