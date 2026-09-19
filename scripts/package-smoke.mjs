@@ -149,11 +149,14 @@ try {
 	const marker = join(home, "native-started.json");
 	const observer = join(home, "observe.ts");
 	writeFileSync(observer, `import { writeFileSync, writeSync } from "node:fs";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 export default function (pi) {
+	const faux = fauxProvider();
+	pi.registerProvider("faux", { api: faux.api, baseUrl: faux.getModel().baseUrl, apiKey: "fixture-key", models: faux.models, streamSimple: faux.provider.streamSimple });
 	pi.on("session_start", (_event, ctx) => {
 		pi.appendEntry("package-probe", { nativeSession: true });
-		writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ sessionFile: ctx.sessionManager.getSessionFile() }));
-		const message = { role: "assistant", provider: "openai", model: "gpt-6-astra", stopReason: "stop", content: [{ type: "text", text: "PACKED_NATIVE_COMPLETE" }], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+		writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ sessionFile: ctx.sessionManager.getSessionFile(), model: { provider: ctx.model?.provider, id: ctx.model?.id }, modelCalls: faux.state.callCount }));
+		const message = fauxAssistantMessage("PACKED_NATIVE_COMPLETE");
 		// Pi redirects extension stdout to stderr; this fixture emits controlled wire records.
 		writeSync(1, JSON.stringify({ type: "message_end", message }) + "\\n" + JSON.stringify({ type: "agent_settled" }) + "\\n");
 		process.exit(0);
@@ -173,11 +176,13 @@ export default function (pi) {
 	delete nativeEnv.PI_PACKAGE_DIR;
 	const configPath = join(home, "config.json");
 	const resultPath = join(home, "result.json");
-	writeFileSync(configPath, JSON.stringify({ id: "packed-native", cwd: home, asyncDir, resultPath, piPackageRoot, placeholder: "{previous}", resultMode: "single", sessionDir: home, steps: [{ agent: "probe", task: "Controlled package startup check; no model call", sessionFile, extensions: [observer], inheritProjectContext: false, inheritSkills: false }] }));
+	writeFileSync(configPath, JSON.stringify({ id: "packed-native", cwd: home, asyncDir, resultPath, piPackageRoot, placeholder: "{previous}", resultMode: "single", sessionDir: home, steps: [{ agent: "probe", task: "Controlled package startup check; no model call", model: "faux/faux-1", sessionFile, extensions: [observer], inheritProjectContext: false, inheritSkills: false }] }));
 	run(process.execPath, [join(gitPackageRoot, "dist/runs/background/subagent-runner-launcher.js"), join(gitPackageRoot, "dist/runs/background/subagent-runner.js"), configPath], home, nativeEnv);
 	const result = JSON.parse(readFileSync(resultPath, "utf8"));
 	if (result.success !== true || result.results?.[0]?.output !== "PACKED_NATIVE_COMPLETE") throw new Error(`Packed detached runner did not complete its controlled native Pi child: ${JSON.stringify({ nativeStarted: existsSync(marker), children: result.results?.map(({ exitCode, error, output }) => ({ exitCode, error, output })) })}`);
-	if (JSON.parse(readFileSync(marker, "utf8")).sessionFile !== sessionFile) throw new Error("Packed child did not bind the requested native Pi session");
+	const observed = JSON.parse(readFileSync(marker, "utf8"));
+	if (observed.sessionFile !== sessionFile) throw new Error("Packed child did not bind the requested native Pi session");
+	if (observed.model?.provider !== "faux" || observed.model?.id !== "faux-1" || observed.modelCalls !== 0) throw new Error("Packed child must select the native faux model without invoking it");
 	console.log("[package-smoke] packed detached Node runner completed a controlled native Pi startup (no model call)");
 } catch (error) {
 	productionImportError = error;
