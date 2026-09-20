@@ -1,0 +1,100 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-contract:
+    name: Native working-session contract (pinned c3)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fitchmultz/pi
+          ref: c3f449637e4b2acb4524c7e58107e4a4adb5c01d
+          path: .native-pi
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.9.0'
+      - name: Build the locked native source host
+        working-directory: .native-pi
+        shell: bash
+        run: |
+          isolation="$(mktemp -d /tmp/pi-native-build.XXXXXX)"
+          env -i HOME="$isolation" TMPDIR="$isolation" \
+            PATH="$(dirname "$(command -v node)"):/usr/bin:/bin" PI_OFFLINE=1 \
+            bash -euo pipefail -c '
+              # Same locked install policy as the host CI; no dependency lifecycle scripts.
+              npm ci --ignore-scripts
+              # Public catalog metadata only; no credentials or inference requests.
+              npm run hydrate:model-data
+              npm run build:offline
+            '
+      - name: Build, typecheck, package, install, unit and full native integration
+        shell: bash
+        env:
+          PI_NATIVE_ROOT: ${{ github.workspace }}/.native-pi
+        run: |
+          isolation="$(mktemp -d /tmp/pi-subagents-native.XXXXXX)"
+          # Variables in the quoted script expand inside the isolated shell.
+          # shellcheck disable=SC2016
+          env -i HOME="$isolation" TMPDIR="$isolation" \
+            PATH="$(dirname "$(command -v node)"):/usr/bin:/bin" PI_OFFLINE=1 \
+            PI_NATIVE_ROOT="$PI_NATIVE_ROOT" bash -euo pipefail -c '
+              npm ci
+              npm run build
+              npm run typecheck
+              sdk="$PI_NATIVE_ROOT/packages/coding-agent"
+              mkdir "$HOME/bin"
+              ln -s "$sdk/dist/bundle/cli.js" "$HOME/bin/pi"
+              export PATH="$HOME/bin:$PATH"
+              export PI_PACKAGE_DIR="$sdk" PI_INTERCOM_TEST_SDK="$sdk"
+              export PI_OWNERSHIP_TEST_PACKAGE_ROOT="$sdk" PI_CONTEXT_TEST_PACKAGE_ROOT="$sdk"
+              export PI_CHECKPOINT_TEST_SDK="$sdk" PI_CHECKPOINT_TEST_REQUIRED=1
+              pi --version
+              # Do not use npm run ci here: npm prepends the published CLI to PATH.
+              node scripts/package-smoke.mjs
+              node scripts/local-install-smoke.mjs
+              node scripts/run-tests.mjs all
+            '
+
+  published-compatibility:
+    name: Official Pi 0.85.1 (types, unit, package and install only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.9.0'
+      - name: Published compatibility (not the full native contract)
+        shell: bash
+        run: |
+          isolation="$(mktemp -d /tmp/pi-subagents-published.XXXXXX)"
+          env -i HOME="$isolation" TMPDIR="$isolation" \
+            PATH="$(dirname "$(command -v node)"):/usr/bin:/bin" PI_OFFLINE=1 \
+            bash -euo pipefail -c '
+              npm ci
+              npm run build
+              npm run typecheck
+              npm run smoke:package
+              npm run smoke:install
+              npm run test:unit
+            '

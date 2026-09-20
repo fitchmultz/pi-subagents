@@ -11,6 +11,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Opt in: released Pi does not yet expose the additive checkpoint API.
 const sdkRoot = process.env.PI_CHECKPOINT_TEST_SDK;
+if (process.env.PI_CHECKPOINT_TEST_REQUIRED === "1") {
+  assert.ok(sdkRoot, "PI_CHECKPOINT_TEST_REQUIRED=1 requires PI_CHECKPOINT_TEST_SDK; native checkpoint controls must not skip");
+}
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const runtimeRepo = process.env.PI_CHECKPOINT_TEST_PACKAGE ?? repo;
 const root = realpathSync(mkdtempSync(path.join(process.env.PI_CHECKPOINT_TEST_EVIDENCE ?? tmpdir(), "checkpoint-idle-")));
