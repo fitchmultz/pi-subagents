@@ -85,6 +85,19 @@ async function nativeSession(t: TestContext, name: string, options: { waitForCon
   return { session, invoke, capture, close, sdk, cwd, eventBus };
 }
 
+test("real broker startup writes a backward-readable PID identity and stays protected", async () => {
+  const { stopUnhealthyBrokerBeforeSpawn } = await import("../../src/pi-intercom/broker/spawn.ts");
+  const pidPath = path.join(agentDir, "intercom/broker.pid");
+  const record = readFileSync(pidPath, "utf8");
+  assert.equal(Number.parseInt(record, 10), broker.pid);
+  if (process.platform === "linux") assert.match(record, /^\d+\nlinux-v1 /);
+  // An unhealthy-socket observation must not override a matching live identity.
+  await assert.rejects(stopUnhealthyBrokerBeforeSpawn(pidPath, async () => false), /refusing to spawn a second broker/);
+  assert.equal(readFileSync(pidPath, "utf8"), record);
+  assert.equal(keeper.isConnected(), true);
+  await keeper.listSessions();
+});
+
 // Kept as counterexamples to unsafe disconnect/stop approaches, not proposed fixes.
 test("unchanged protocol: accepted replace delivery is lost on recipient disconnect", async () => {
   const recipient = new IntercomClient(); let received = 0;

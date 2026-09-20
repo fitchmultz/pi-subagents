@@ -64,10 +64,11 @@ if (["launcher", "runner", "child", "broker"].includes(role)) {
 			writeFileSync(join(evidence, "delayed-child-write"), "orphan wrote after the smoke ended\n");
 		}, 6000);
 	} else {
+		const { brokerPidRecord } = await import("../../src/pi-intercom/broker/pid.ts");
 		save(join(evidence, "broker-ready"), { pid: process.pid });
 		if (scenario.startsWith("startup-")) await delay(10000); // Detached before publishing broker.pid, like slow module startup.
 		mkdirSync(join(agentDir, "intercom"), { recursive: true });
-		writeFileSync(join(agentDir, "intercom", "broker.pid"), `${process.pid}\n`);
+		writeFileSync(join(agentDir, "intercom", "broker.pid"), brokerPidRecord());
 	}
 	setInterval(() => {}, 1000);
 } else if (role === "install") {

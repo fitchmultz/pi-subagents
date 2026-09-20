@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import net from "net";
 import { getPiAgentDir } from "../agent-dir.ts";
 import { getBrokerSocketPath, getLegacyBrokerSocketPath, isOwnedBrokerSocket } from "./paths.ts";
+import { isBrokerPidReused } from "./pid.ts";
 
 const INTERCOM_DIR = join(getPiAgentDir(), "intercom");
 const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -138,10 +139,10 @@ function readLivePid(pidPath = BROKER_PID, kill: typeof process.kill = process.k
   if (!Number.isFinite(pid) || pid <= 0) return null;
   try {
     kill(pid, 0);
-    return pid;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM" ? pid : null;
   }
+  return isBrokerPidReused(pid, raw) ? null : pid;
 }
 
 export async function stopUnhealthyBrokerBeforeSpawn(
@@ -152,7 +153,7 @@ export async function stopUnhealthyBrokerBeforeSpawn(
   if (await socketConnectable()) return;
   const pid = readLivePid(pidPath, kill);
   if (pid === null) return;
-  throw new Error(`Intercom broker PID ${pid} is alive but socket is unhealthy; refusing to spawn a second broker. Stop that process or remove the stale pid file, then retry.`);
+  throw new Error(`Intercom broker PID ${pid} may still own accepted work but its socket is unhealthy; refusing to spawn a second broker. Let the broker exit normally, then retry.`);
 }
 
 async function checkSocketConnectable(): Promise<boolean> {
