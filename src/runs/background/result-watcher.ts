@@ -216,13 +216,30 @@ export function createResultWatcher(
 		void tail.finally(() => inFlight.delete(tail));
 	}, 50);
 
+	const invalidatePendingResults = (event: NativeCheckpointEvent) => {
+		for (const file of fsApi.readdirSync(resultsDir).filter((name) => name.endsWith(".json"))) {
+			const data = fsApi === fs ? readAsyncResultFile(path.join(resultsDir, file)) : parseAsyncResultFileContent(fsApi.readFileSync(path.join(resultsDir, file), "utf-8"), file);
+			const runId = data.runId ?? data.id ?? file.replace(/\.json$/i, "");
+			if (data.sessionId ? data.sessionId === state.currentSessionId : state.ownedRuns?.has(runId)) {
+				event.invalidate();
+				break;
+			}
+		}
+	};
+
 	const primeExistingResults = () => {
-		if (checkpoint) return;
 		try {
+			if (checkpoint) {
+				// Polling must observe arrivals while held, without processing them.
+				// Reuse the acquisition ownership gate so foreign files do not block idle.
+				invalidatePendingResults(checkpoint);
+				return;
+			}
 			fsApi.readdirSync(resultsDir)
 				.filter((f) => f.endsWith(".json"))
 				.forEach((file) => state.resultFileCoalescer.schedule(file, 0));
 		} catch (error) {
+			checkpoint?.invalidate(); // An unreadable scan cannot establish a safe hold.
 			if (isNotFoundError(error)) return;
 			console.error(`Failed to scan subagent result directory '${resultsDir}':`, error);
 		}
@@ -345,14 +362,7 @@ export function createResultWatcher(
 			// Do not capture the gap between notification and a failed unlink:
 			// completionSeen is only a runtime deduper. Finish ordinary delivery
 			// before qualifying idle instead of inventing another persisted queue.
-			for (const file of fsApi.readdirSync(resultsDir).filter((name) => name.endsWith(".json"))) {
-				const data = fsApi === fs ? readAsyncResultFile(path.join(resultsDir, file)) : parseAsyncResultFileContent(fsApi.readFileSync(path.join(resultsDir, file), "utf-8"), file);
-				const runId = data.runId ?? data.id ?? file.replace(/\.json$/i, "");
-				if (data.sessionId ? data.sessionId === state.currentSessionId : state.ownedRuns?.has(runId)) {
-					event.invalidate();
-					break;
-				}
-			}
+			invalidatePendingResults(event);
 		}
 	};
 

@@ -53,7 +53,6 @@ async function relayLiveSubagentMessage(payload: unknown, deps: LiveEventDeps): 
   const parsed = parseLiveMessagePayload(payload);
   if (!parsed) return;
   const isLive = deps.getLivenessCheck();
-  await (async () => {
     if (!isLive()) return;
     let activeClient: IntercomClient;
     let target: string;
@@ -75,7 +74,6 @@ async function relayLiveSubagentMessage(payload: unknown, deps: LiveEventDeps): 
     } catch (error) {
       if (isLive()) emitLiveDelivery(deps.events, parsed.requestId, false, getErrorMessage(error));
     }
-  })();
 }
 
 function parseHealthPayload(payload: unknown): { requestId: string; targets: string[] } | undefined {
@@ -97,7 +95,6 @@ async function answerLiveIntercomHealth(payload: unknown, deps: LiveEventDeps): 
   const respond = (health: unknown[], connection: SubagentIntercomConnection) => {
     if (isLive()) deps.events.emit(SUBAGENT_INTERCOM_HEALTH_RESPONSE_EVENT, { requestId: parsed.requestId, health, connection });
   };
-  await (async () => {
     if (!isLive()) return;
     try {
       // An empty target list is a read-only check of this bridge, not a reconnect request.
@@ -126,7 +123,6 @@ async function answerLiveIntercomHealth(payload: unknown, deps: LiveEventDeps): 
     } catch (error) {
       respond(parsed.targets.map((target) => ({ target, status: "missing" })), { ...connectionSnapshot(), reason: getErrorMessage(error) });
     }
-  })();
 }
 
 export function registerSubagentLiveEventHandlers(deps: LiveEventDeps): Array<() => void> {

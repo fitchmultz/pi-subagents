@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import * as fs from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
@@ -42,7 +43,7 @@ after(async () => {
   else rmSync(root, { recursive: true, force: true });
 });
 
-async function nativeSession(t: TestContext, name: string, options: { waitForConnection?: boolean; beforeAgentStart?: () => Promise<void> } = {}) {
+async function nativeSession(t: TestContext, name: string, options: { waitForConnection?: boolean; beforeAgentStart?: () => Promise<void>; extensionFactory?: (pi: any) => void } = {}) {
   const sdkEntry = pathToFileURL(path.join(sdkRoot!, "dist/index.js"));
   const sdk = await import(sdkEntry.href);
   const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry)!);
@@ -59,6 +60,7 @@ async function nativeSession(t: TestContext, name: string, options: { waitForCon
   let providerCalls = 0;
   const errors: unknown[] = [];
   const loader = new sdk.DefaultResourceLoader({ cwd, agentDir, settingsManager, eventBus, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, additionalExtensionPaths: [path.join(runtimeRepo, "src/extension/index.ts"), path.join(runtimeRepo, "src/pi-intercom/index.ts")], extensionFactories: [(pi: any) => {
+    options.extensionFactory?.(pi);
     pi.on("session_start", () => pi.setSessionName(name));
     if (options.beforeAgentStart) pi.on("before_agent_start", options.beforeAgentStart);
     pi.on("before_provider_request", () => { providerCalls++; throw new Error("No model calls permitted"); });
@@ -227,6 +229,88 @@ test("native result arrival invalidates the hold before result handling", { skip
   await waitFor(() => hold.signal.aborted, "result arrival invalidation");
   assert.equal(existsSync(file), true); hold.release();
 });
+
+for (const code of ["EMFILE", "ENOSPC"]) {
+  test(`native polling checkpoint invalidates owned arrivals after ${code} without adopting foreign results`, { skip: !sdkRoot }, async (t) => {
+    const { createResultWatcher } = await import("../../src/runs/background/result-watcher.ts");
+    const dir = path.join(root, `polling-${code}`); mkdirSync(dir);
+    const state = { currentSessionId: "poll-owner", ownedRuns: new Map([["foreign", {}], ["legacy", {}]]), completionSeen: new Map() } as any;
+    const foreign = path.join(dir, "foreign.json"), owned = path.join(dir, "owned.json"), legacy = path.join(dir, "legacy.json");
+    const foreignContent = JSON.stringify({ id: "foreign", sessionId: "other-owner", summary: "retain", success: true, nestedChildren: [] });
+    writeFileSync(foreign, foreignContent);
+    let watcher: ReturnType<typeof createResultWatcher>;
+    let checkpointSignal: AbortSignal;
+    let polls = 0;
+    let failUnlink = true;
+    const completed: string[] = [];
+    const host = await nativeSession(t, `poll-${code}`, { extensionFactory: (pi) => {
+      // Inject only the OS watch failure. Files, coalescing, polling timers and
+      // checkpoint event/invalidation/release all use their real implementations.
+      watcher = createResultWatcher({ events: { on: () => () => {}, emit: (event, data: any) => {
+        if (event !== "subagent:async-complete") return;
+        assert.equal(checkpointSignal.aborted, true, "invalidate before notification or unlink");
+        completed.push(data.id);
+        pi.appendEntry("polling-completion", data);
+      } } }, state, dir, 60000, {
+        fs: { ...fs, watch: code === "EMFILE" ? () => { throw Object.assign(new Error(code), { code }); } : fs.watch, unlinkSync: (file) => {
+          if (file === owned && failUnlink) { failUnlink = false; throw Object.assign(new Error("fixture unlink failure"), { code: "EBUSY" }); }
+          fs.unlinkSync(file);
+        } },
+        timers: { setTimeout, clearTimeout, clearInterval, setInterval: (handler: () => void, ms?: number) => setInterval(() => { handler(); polls++; }, ms) },
+      });
+      pi.on("session_checkpoint", async (event: any) => {
+        checkpointSignal = event.signal;
+        await watcher.holdCheckpoint(event);
+        event.signal.throwIfAborted();
+        return { sleepReady: true };
+      });
+    } });
+    watcher!.startResultWatcher();
+    if (code === "ENOSPC") state.watcher.emit("error", Object.assign(new Error(code), { code }));
+    assert.equal(state.watcher, null);
+    assert.ok(state.watcherRestartTimer);
+    // No timeout signal: a deadline must not masquerade as arrival invalidation.
+    const capture = () => host.session.acquireCheckpoint({ quiesce: () => () => {} });
+    let hold: any;
+    try {
+      hold = await capture(); assert.equal(hold.sleepReady, true);
+      let before = polls;
+      await waitFor(() => polls > before, "real foreign-only polling tick");
+      assert.equal(hold.signal.aborted, false, "foreign files must not permanently block idle, even with a copied run id");
+      assert.equal(readFileSync(foreign, "utf8"), foreignContent);
+      assert.deepEqual(completed, []);
+      let atInvalidation: unknown;
+      hold.signal.addEventListener("abort", () => { atInvalidation = { completed: [...completed], fileExists: existsSync(owned), seen: state.completionSeen.size }; }, { once: true });
+      writeFileSync(owned, JSON.stringify({ id: "owned", sessionId: "poll-owner", summary: "arrived after cut", success: true, nestedChildren: [] }));
+      before = polls;
+      await waitFor(() => polls > before, "real owned-result polling tick");
+      const observation = { code, polls, sleepReady: hold.sleepReady, invalidated: hold.signal.aborted, fileExists: existsSync(owned), completed: [...completed], capturedCompletion: hold.checkpoint.entries.some((e: any) => e.customType === "polling-completion") };
+      writeFileSync(path.join(root, `polling-${code}.json`), JSON.stringify(observation, null, 2));
+      assert.equal(hold.signal.aborted, true, JSON.stringify(observation));
+      assert.deepEqual(atInvalidation, { completed: [], fileExists: true, seen: 0 });
+      hold.release();
+      await waitFor(() => completed.length === 1, "ordinary completion after invalidation");
+      assert.deepEqual(completed, ["owned"]); assert.equal(existsSync(owned), true);
+      // The runtime deduper must not certify the notification/failed-unlink gap.
+      await assert.rejects(capture(), /Checkpoint cancelled/);
+      await waitFor(() => !existsSync(owned), "ordinary dedupe/unlink after cancelled acquisition");
+      assert.deepEqual(completed, ["owned"]);
+
+      // Existing legacy-owned pending files also block acquisition.
+      writeFileSync(legacy, JSON.stringify({ id: "legacy", summary: "pending before cut", success: true, nestedChildren: [] }));
+      await assert.rejects(capture(), /Checkpoint cancelled/);
+      await waitFor(() => completed.length === 2, "existing owned completion after cancelled acquisition");
+      assert.deepEqual(completed, ["owned", "legacy"]); assert.equal(existsSync(legacy), false);
+      hold = await capture(); assert.equal(hold.sleepReady, true);
+      assert.equal(hold.checkpoint.entries.filter((e: any) => e.customType === "polling-completion").length, 2);
+      before = polls;
+      await waitFor(() => polls > before, "foreign-only polling after delivery");
+      assert.equal(hold.signal.aborted, false);
+      assert.deepEqual(completed, ["owned", "legacy"]);
+      assert.equal(readFileSync(foreign, "utf8"), foreignContent);
+    } finally { hold?.release(); watcher!.stopResultWatcher(); }
+  });
+}
 
 test("native ordinary ask blocks sleep without answering or disconnecting it", { skip: !sdkRoot }, async (t) => {
   const host = await nativeSession(t, "ask");

@@ -1218,7 +1218,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     syncPresenceStatus();
     const entry = { from, message, replyCommand, bodyText };
     if (discardObsoleteProgress(entry)) return;
-    await (async () => {
       const activeContext = getLiveContext(liveContext, messageGeneration);
       if (!activeContext) {
         return;
@@ -1284,7 +1283,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (getLiveContext(liveContext, messageGeneration)) {
         sendIncomingMessage(entry, delivery === "passive" ? "passive" : "trigger", messageGeneration);
       }
-    })();
   }
   function attachClientHandlers(nextClient: IntercomClient): void {
     nextClient.on("message", (from, message) => {
@@ -1513,7 +1511,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (!parsed) return;
 
     const relayGeneration = runtimeGeneration;
-    await (async () => {
       const relayStillLive = () => !runtimeStarted || Boolean(getLiveContext(runtimeContext, relayGeneration));
       if (!relayStillLive()) {
         return;
@@ -1568,7 +1565,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, false, error);
       }
-    })();
   }
   // Subagent event bridges (live/health/control/result) are torn down on session_shutdown.
   // Re-register them on session_start so they survive an in-process restart; the guard skips
