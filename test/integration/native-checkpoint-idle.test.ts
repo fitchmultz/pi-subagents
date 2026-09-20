@@ -154,6 +154,9 @@ test("native idle package can acquire a resumable checkpoint; broker refuses bef
     assert.equal(host.session.sessionManager.getEntries().length, before);
     assert.equal(hold.signal.aborted, false);
   } finally { hold.release(); }
+  // Native release is synchronous; the broker release travels on the host socket.
+  // A list round trip on that same connection orders it before another client sends.
+  await host.invoke("intercom", { action: "list" });
   const delivered = await keeper.send("idle", { text: "after release", delivery: "passive", messageId: "released-once" });
   assert.equal(delivered.accepted, true);
   await waitFor(() => host.session.sessionManager.getEntries().some((e: any) => e.details?.message?.id === "released-once"));

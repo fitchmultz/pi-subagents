@@ -70,7 +70,9 @@ jobs:
               # Do not use npm run ci here: npm prepends the published CLI to PATH.
               node scripts/package-smoke.mjs
               node scripts/local-install-smoke.mjs
-              node scripts/run-tests.mjs all
+              # The full Linux suite can still be progressing at the 300s local default.
+              # Budget the whole suite, without changing individual test deadlines.
+              node scripts/run-tests.mjs all --timeout-ms 360000
             '
 
   published-compatibility:

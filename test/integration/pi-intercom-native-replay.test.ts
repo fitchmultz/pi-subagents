@@ -1046,6 +1046,10 @@ test("native contact_supervisor progress reaches the first tool boundary before 
   await waitFor(() => firstStarted, "first parent tool");
   const contact = child.session.agent.state.tools.find((tool) => tool.name === "contact_supervisor")!;
   const receipt = await contact.execute("timely-discovery", { reason: "progress_update", message: "A required migration changes the API decision." }, new AbortController().signal);
+  assert.equal(receipt.details.accepted, true);
+  // Broker acceptance is not recipient admission. Keep the first tool active
+  // until public recipient status confirms this exact message's native handoff.
+  await waitFor(async () => (await parent.status()).includes(`[${receipt.details.messageId}] (delivered to model queue; not yet consumed)`), "progress admitted during first parent tool");
   assert.equal(secondStarted, false);
   firstGate.resolve();
   await waitFor(() => secondStarted, "second parent tool");
