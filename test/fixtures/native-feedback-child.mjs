@@ -7,8 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { writeAtomicJson } from "../../src/shared/atomic-json.ts";
 
 const args = process.argv.slice(2), cwd = process.cwd(), agentDir = process.env.PI_CODING_AGENT_DIR;
-const sdkRoot = process.env.PI_INTERCOM_TEST_SDK;
-assert.ok(sdkRoot && process.env.PI_FEEDBACK_RELEASE_FILE, "Run only through the private native feedback test");
+const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url));
+assert.ok(process.env.PI_FEEDBACK_RELEASE_FILE, "Run only through the private native feedback test");
 const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
 const sdk = await import(sdkEntry.href);
 const { toJsonEvent } = await import(pathToFileURL(path.join(sdkRoot, "dist/modes/json-event.js")).href);

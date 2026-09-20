@@ -540,6 +540,25 @@ pi-subagents/
     └── SKILL.md              # Bundled skill for common patterns
 ```
 
+## Native idle checkpoints
+
+Hosts exposing native `session_checkpoint` can capture an idle session without running shutdown or disconnecting Intercom. Official Pi 0.85.1 does not expose this API. On both hosts, an assistant-error reply waits for the broker acknowledgement during `message_end`, bounded by `sendTimeoutMs`.
+
+The bundled broker advertises an additive admission hold. A positive ordered marker means earlier deliveries have already reached the recipient's socket callbacks, and the broker refuses new sends to/from that held session with `accepted:false` and an explicit retry-after-release reason. The extension also invalidates before accepting an arrival and joins unfinished inbound/reconnect work. Event-bus relays return their promises to native Pi. Native entries and queues remain the persistence authority; the marker alone is **not** a recipient persistence receipt.
+
+Already accepted replace-mode messages are never discarded to acquire a hold. While any such delivery involving this session remains in the broker's memory-only coalescer, sleep stays blocked. Normal delivery/persistence finishes after release, then capture can be retried. Release resumes admission and the existing observers; it does not replay accepted messages. A send refused during capture was not accepted and must be retried by its caller. Older brokers cannot qualify connected idle: let their sessions close normally rather than stopping a live broker to upgrade it.
+
+Subagents pause the existing result coalescer/poller, join an already-started result tail after invalidation, and check the existing ownership, process, result, nested-run and question records. Active children/runners, foreground controls, uncertain completion, reply waiters and unresolved questions keep sleep blocked. The existing debounced agent-view entry is flushed at idle. No child is stopped, question answered, queue cleared, or new state store created to qualify sleep.
+
+A native receipt qualifies **this session**, not every client of the shared broker or arbitrary subprocess memory. The archive owner must still coordinate other sessions/services, freeze filesystem writers and preserve the matching files before stopping compute. A checkpoint does not resurrect running children. Failed capture must release the native hold and retain compute.
+
+Model-free native contract checks (real isolated broker, files and controlled children):
+
+```bash
+PI_CHECKPOINT_TEST_SDK=/path/to/native/pi/packages/coding-agent \
+  node --test test/integration/native-checkpoint-idle.test.ts
+```
+
 ## Limitations
 
 On Pi 0.85.1, retained queues can resume work after cancellation, incoming messages can start a turn during user-prompt preparation, custom queues are absent from pending-message state, and idle wakeups bypass `before_agent_start` guidance. Updating this extension does not change those host behaviors.

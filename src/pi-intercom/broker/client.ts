@@ -80,6 +80,7 @@ export class IntercomClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _topicsSupported = false;
+  private _checkpointSupported = false;
   private pendingSends = new Map<string, { resolve: (r: SendResult) => void; reject: (e: Error) => void }>();
   private pendingLists = new Map<string, { resolve: (snapshot: SessionSnapshot) => void; reject: (e: Error) => void; sessions: Map<string, SessionInfo>; receipts: SessionSnapshot["receipts"] }>();
   private connecting = false;
@@ -110,6 +111,18 @@ export class IntercomClient extends EventEmitter {
   }
 
   get supportsTopics(): boolean { return this.isConnected() && this._topicsSupported; }
+  get supportsCheckpoint(): boolean { return this.isConnected() && this._checkpointSupported; }
+  get hasPendingRequests(): boolean { return this.connecting || this.pendingSends.size > 0 || this.pendingLists.size > 0; }
+
+  /** An ordered marker, not a persistence receipt. The extension must join its inbound tails. */
+  async holdCheckpoint(): Promise<boolean> {
+    if (!this.supportsCheckpoint || this.hasPendingRequests) return false;
+    return (await this.requestSessions(undefined, undefined, "hold")).checkpointHeld === true;
+  }
+
+  async releaseCheckpoint(): Promise<void> {
+    if (this.supportsCheckpoint) await this.requestSessions(undefined, undefined, "release");
+  }
 
   isConnected(): boolean {
     const socket = this.socket;
@@ -285,6 +298,7 @@ export class IntercomClient extends EventEmitter {
         }
 
         this._sessionId = brokerMessage.sessionId;
+        this._checkpointSupported = brokerMessage.checkpointSupported === true;
         this._topicsSupported = brokerMessage.topicsSupported === true && brokerMessage.topicFrames === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
@@ -316,7 +330,7 @@ export class IntercomClient extends EventEmitter {
         }
         if (more !== true) {
           this.pendingLists.delete(requestId);
-          pending.resolve({ sessions: [...pending.sessions.values()], receipts: pending.receipts });
+          pending.resolve({ sessions: [...pending.sessions.values()], receipts: pending.receipts, ...(typeof brokerMessage.checkpointHeld === "boolean" ? { checkpointHeld: brokerMessage.checkpointHeld } : {}) });
         }
         break;
       }
@@ -450,7 +464,7 @@ export class IntercomClient extends EventEmitter {
     return this.requestSessions(change, onAccepted);
   }
 
-  private requestSessions(change?: TopicChange, onAccepted?: (snapshot: SessionSnapshot) => void): Promise<SessionSnapshot> {
+  private requestSessions(change?: TopicChange, onAccepted?: (snapshot: SessionSnapshot) => void, checkpoint?: "hold" | "release"): Promise<SessionSnapshot> {
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
@@ -481,7 +495,7 @@ export class IntercomClient extends EventEmitter {
       timeout.unref?.();
       this.pendingLists.set(requestId, { resolve: wrappedResolve, reject: wrappedReject, sessions: new Map(), receipts: [] });
       try {
-        writeMessage(socket, { type: "list", requestId, stream: true, ...(change ? { change } : {}) });
+        writeMessage(socket, { type: "list", requestId, stream: true, ...(change ? { change } : {}), ...(checkpoint ? { checkpoint } : {}) });
       } catch (error) {
         clearTimeout(timeout);
         this.pendingLists.delete(requestId);

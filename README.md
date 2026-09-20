@@ -35,7 +35,14 @@ Pi core packages remain optional wildcard peers. Development dependencies are pi
 
 ## Local validation
 
-Use the locked published Pi dependencies:
+[GitHub Actions](.github/workflows/test.yml) checks two explicitly different contracts on Node 26.9.0 / Ubuntu 24.04:
+
+- **Native working-session contract:** builds `fitchmultz/pi` at `c3f449637e4b2acb4524c7e58107e4a4adb5c01d` with its lockfile, public model-catalog hydration and offline workspace build. Runs this extension's normal locked install/build, typecheck, package/install smokes, and **all unit and integration tests**, including all 15 checkpoint controls. No provider credentials or inference services are used.
+- **Official Pi 0.85.1 compatibility:** locked published dependencies, build, types, unit tests and package/install smokes only. This is **not** a full published integration pass: five unchanged assertions expose missing host contracts (custom-queue visibility, prompt-preparation ownership/startup, and `newContext`); 12 checkpoint cases require the native API. See [host limitations](docs/intercom.md#limitations).
+
+The native job maps `PI_INTERCOM_TEST_SDK`, `PI_OWNERSHIP_TEST_PACKAGE_ROOT`, `PI_CONTEXT_TEST_PACKAGE_ROOT`, `PI_PACKAGE_DIR` and `PI_CHECKPOINT_TEST_SDK` to the same built `packages/coding-agent`. `PI_CHECKPOINT_TEST_REQUIRED=1` makes a missing checkpoint SDK selection fail instead of silently skipping; an SDK lacking the API fails the native tests. The matching public `dist/bundle/cli.js` executable is first on `PATH` via a private bin directory outside `node_modules`. Smokes and `node scripts/run-tests.mjs all` run directly, since npm scripts prepend the published CLI. The workflow's `env -i` commands also work locally with `PI_NATIVE_ROOT` pointing to that built host; keep synthetic HOME/TMPDIR outside your real home ancestry (for example `/private/tmp` on macOS), because agent discovery walks ancestors independently of HOME.
+
+To diagnose the full suite against the locked published Pi dependencies:
 
 ```bash
 npm ci

@@ -33,6 +33,8 @@ import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { OWNED_RUN_ENTRY, rememberOwnedRun, restoreOwnedRuns } from "../runs/shared/run-records.ts";
 import { getRunMetadataDir, saveAsyncRunResult } from "../runs/shared/supervisor-questions.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
+import { onNativeCheckpoint } from "../shared/native-checkpoint.ts";
+import { subagentCheckpointBlocker } from "../runs/shared/checkpoint.ts";
 import { applyForceTopLevelAsyncOverride } from "../runs/background/top-level-async.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
@@ -276,7 +278,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		},
 	};
 
-	const { startResultWatcher, primeExistingResults, stopResultWatcher } = createResultWatcher(
+	const { startResultWatcher, primeExistingResults, stopResultWatcher, holdCheckpoint } = createResultWatcher(
 		pi,
 		state,
 		RESULTS_DIR,
@@ -643,6 +645,24 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			registerSubagentNotify(pi);
 		}
 		resetSessionState(ctx);
+	});
+
+	onNativeCheckpoint(pi, async (event, ctx) => {
+		// Polling/reconciliation is synchronous; clearing the existing interval
+		// leaves no detached poll writer. Restore it when the native hold releases.
+		const hadPoller = Boolean(state.poller);
+		if (state.poller) clearInterval(state.poller);
+		state.poller = null;
+		event.signal.addEventListener("abort", () => { if (hadPoller) ensurePoller(); }, { once: true });
+		await holdCheckpoint(event);
+		event.signal.throwIfAborted();
+		// Rediscover from the same durable records used on startup, rather than
+		// treating an empty UI job map (whose finished rows expire) as authority.
+		restoreOwnedRuns(state, ctx, { strict: true });
+		const reason = subagentCheckpointBlocker(state, ctx.sessionManager.getSessionId());
+		if (reason) return { sleepReady: false, reason };
+		if (!agentView?.prepareCheckpoint()) return { sleepReady: false, reason: "Agent conversation interaction is live" };
+		return { sleepReady: true };
 	});
 
 	pi.on("session_shutdown", () => {
