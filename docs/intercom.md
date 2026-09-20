@@ -542,7 +542,7 @@ pi-subagents/
 
 ## Native idle checkpoints
 
-Hosts exposing native `session_checkpoint` can capture an idle session without running shutdown or disconnecting Intercom. Official Pi 0.85.1 does not expose this API; ordinary operation there is unchanged.
+Hosts exposing native `session_checkpoint` can capture an idle session without running shutdown or disconnecting Intercom. Official Pi 0.85.1 does not expose this API. On both hosts, an assistant-error reply waits for the broker acknowledgement during `message_end`, bounded by `sendTimeoutMs`.
 
 The bundled broker advertises an additive admission hold. A positive ordered marker means earlier deliveries have already reached the recipient's socket callbacks, and the broker refuses new sends to/from that held session with `accepted:false` and an explicit retry-after-release reason. The extension also invalidates before accepting an arrival and joins unfinished inbound/reconnect work. Event-bus relays return their promises to native Pi. Native entries and queues remain the persistence authority; the marker alone is **not** a recipient persistence receipt.
 
