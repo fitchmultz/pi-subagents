@@ -18,6 +18,7 @@ import { isDurableSupervisorQuestion, ReplyTracker } from "./reply-tracker.ts";
 import { filterProjectSessions, formatPeerAwarenessHint, formatSessionTarget, formatTargetOptions, PEER_AWARENESS_HINT, resolveSessionProjectId, targetDisplayName, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
 import { registerSubagentLiveEventHandlers } from "./subagent-live-events.ts";
 import { formatRunAction } from "../shared/status-format.ts";
+import { onNativeCheckpoint, type NativeCheckpointEvent } from "../shared/native-checkpoint.ts";
 import { cancelSupervisorQuestion, createSupervisorQuestion, getRunMetadataDir, readRunJson, readQuestionState, recordQuestionDelivery, saveQuestionAnswer, type SupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -649,7 +650,11 @@ async function settleWithin<T>(operation: () => Promise<T>, timeoutMs: number): 
     void Promise.resolve().then(operation).then((value) => finish(value), () => finish(null));
   });
 }
+
 export default function piIntercomExtension(pi: ExtensionAPI) {
+  let checkpoint: NativeCheckpointEvent | undefined;
+  const inboundTails = new Set<Promise<void>>();
+  const invalidateCheckpoint = () => checkpoint?.invalidate();
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
   const childOrchestratorMetadata = readChildOrchestratorMetadata();
@@ -734,6 +739,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         replyTo,
         question,
         resolve: (message) => {
+          invalidateCheckpoint();
           if (question && message.content.attachments?.some((attachment) => attachment.name === RECIPIENT_TURN_FAILED_ATTACHMENT)) {
             pi.appendEntry("intercom_question_notification_error", { questionId: question.questionId, error: message.content.text });
             return;
@@ -748,6 +754,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           }
         },
         reject: (error) => {
+          invalidateCheckpoint();
           cleanup();
           reject(error);
         },
@@ -1107,6 +1114,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     });
   }
   function scheduleInboundFlush(delayMs = INBOUND_FLUSH_DELAY_MS): void {
+    if (checkpoint) return;
     if (!getLiveContext()) {
       return;
     }
@@ -1176,7 +1184,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const owner = readRunJson<{ sessionId?: string }>(path.join(getRunMetadataDir(origin.runId), "question-owner.json"));
     return owner?.sessionId === origin.ownerSessionId && from.id === `pi-${createHash("sha256").update(origin.ownerSessionId).digest("hex").slice(0, 32)}`;
   }
-  function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
+  async function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): Promise<void> {
+    invalidateCheckpoint();
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
     if (!liveContext) {
@@ -1209,7 +1218,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     syncPresenceStatus();
     const entry = { from, message, replyCommand, bodyText };
     if (discardObsoleteProgress(entry)) return;
-    void (async () => {
+    await (async () => {
       const activeContext = getLiveContext(liveContext, messageGeneration);
       if (!activeContext) {
         return;
@@ -1283,12 +1292,17 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (client !== nextClient || !liveContext) {
         return;
       }
-      handleIncomingMessage(liveContext, from, message);
+      const tail = handleIncomingMessage(liveContext, from, message);
+      inboundTails.add(tail);
+      void tail.catch((error) => {
+        console.error("Intercom inbound delivery failed:", error);
+      }).finally(() => inboundTails.delete(tail));
     });
     nextClient.on("session_left", (sessionId: string) => {
       if (client !== nextClient) {
         return;
       }
+      invalidateCheckpoint();
       topics.disconnected(sessionId);
       rejectReplyWaiterForPeer(sessionId);
       replyTracker.expireSender(sessionId);
@@ -1303,6 +1317,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (client !== nextClient) {
         return;
       }
+      invalidateCheckpoint();
       if (!replyWaiter?.question) rejectReplyWaiter(new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }));
       client = null;
       topics.disconnected();
@@ -1316,7 +1331,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     });
   }
   function scheduleReconnect(): void {
-    if (disposed || reconnectTimer || reconnectPromise || !getLiveContext()) {
+    if (checkpoint || disposed || reconnectTimer || reconnectPromise || !getLiveContext()) {
       return;
     }
     const scheduledGeneration = runtimeGeneration;
@@ -1348,6 +1363,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return failure;
   }
   async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay" | "peer-awareness"): Promise<IntercomClient> {
+    invalidateCheckpoint();
     if (disposed) {
       throw new Error("Intercom shutting down");
     }
@@ -1486,17 +1502,18 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       ...(error ? { error: getErrorMessage(error) } : {}),
     });
   }
-  function relaySubagentIntercomPayload(payload: unknown, options: {
+  async function relaySubagentIntercomPayload(payload: unknown, options: {
     sender: "subagent-control" | "subagent-result";
     status: string;
     errorEntryType: string;
     acknowledge?: boolean;
-  }): void {
+  }): Promise<void> {
+    invalidateCheckpoint();
     const parsed = parseSubagentIntercomPayload(payload);
     if (!parsed) return;
 
     const relayGeneration = runtimeGeneration;
-    void (async () => {
+    await (async () => {
       const relayStillLive = () => !runtimeStarted || Boolean(getLiveContext(runtimeContext, relayGeneration));
       if (!relayStillLive()) {
         return;
@@ -1578,7 +1595,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       }),
       pi.events.on("intercom:open", () => {
         const ctx = getLiveContext();
-        if (ctx?.mode === "tui") void openIntercomOverlay(ctx, "all");
+        if (ctx?.mode === "tui") return openIntercomOverlay(ctx, "all");
       }),
       pi.events.on(SUBAGENT_INTERCOM_IDENTITY_REQUEST_EVENT, (payload) => {
         const requestId = payload && typeof payload === "object" ? (payload as { requestId?: unknown }).requestId : undefined;
@@ -1587,14 +1604,14 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         }
       }),
       pi.events.on(SUBAGENT_CONTROL_INTERCOM_EVENT, (payload) => {
-        relaySubagentIntercomPayload(payload, {
+        return relaySubagentIntercomPayload(payload, {
           sender: "subagent-control",
           status: "needs_attention",
           errorEntryType: "intercom_control_error",
         });
       }),
       pi.events.on(SUBAGENT_RESULT_INTERCOM_EVENT, (payload) => {
-        relaySubagentIntercomPayload(payload, {
+        return relaySubagentIntercomPayload(payload, {
           sender: "subagent-result",
           status: "result",
           errorEntryType: "intercom_result_error",
@@ -1636,6 +1653,43 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     scheduleStartupConnection(ctx, runtimeGeneration);
     if (queuedInbound().length > 0) scheduleInboundFlush();
+  });
+
+  onNativeCheckpoint(pi, async (event) => {
+    checkpoint = event;
+    let requestedClient: IntercomClient | undefined;
+    clearStartupConnectTimer();
+    clearReconnectTimer();
+    clearInboundFlushTimer();
+    event.signal.addEventListener("abort", () => {
+      if (checkpoint !== event) return;
+      checkpoint = undefined;
+      // Wire order releases even if cancellation races the hold response.
+      void requestedClient?.releaseCheckpoint().catch(() => {});
+      if (getLiveContext()) {
+        if (!client?.isConnected()) scheduleReconnect();
+        if (queuedInbound().length) scheduleInboundFlush();
+      }
+    }, { once: true });
+    if (replyWaiter) return { sleepReady: false, reason: "Intercom reply waiter is live" };
+    // A tail may still need native sendMessage (forbidden during capture). Cancel
+    // this attempt before joining it; do not cancel/auto-answer the user's work.
+    if (inboundTails.size || reconnectPromise) {
+      event.invalidate();
+      await Promise.allSettled([...inboundTails, ...(reconnectPromise ? [reconnectPromise] : [])]);
+      return { sleepReady: false, reason: "Intercom inbound/reconnect work is settling" };
+    }
+    if (replyTracker.hasReplyContext) return { sleepReady: false, reason: "Intercom inbound reply context is live" };
+    const activeClient = client;
+    if (!activeClient?.supportsCheckpoint) return { sleepReady: false, reason: "Intercom broker admission hold unavailable; let an older broker exit normally" };
+    if (activeClient.hasPendingRequests) return { sleepReady: false, reason: "Intercom IPC request is pending" };
+    requestedClient = activeClient;
+    const held = await activeClient.holdCheckpoint();
+    event.signal.throwIfAborted();
+    // All earlier socket frames have been dispatched before the marker. Arrival
+    // invalidates before persistence; a positive marker therefore has no tail.
+    if (!held) return { sleepReady: false, reason: "Intercom broker has accepted queued delivery; retry after normal delivery" };
+    return { sleepReady: true };
   });
 
   pi.on("session_shutdown", async () => {
@@ -1692,7 +1746,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return;
     }
     const replyTo = context.message.id;
-    void activeClient.send(context.from.id, {
+    return activeClient.send(context.from.id, {
       text: `${RECIPIENT_TURN_FAILED_PREFIX} ${errorMessage}`,
       replyTo,
       attachments: [{

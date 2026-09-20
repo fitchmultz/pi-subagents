@@ -19,6 +19,7 @@ import {
 	resolveSubagentResultStatus,
 } from "../../intercom/result-intercom.ts";
 import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-events.ts";
+import type { NativeCheckpointEvent } from "../../shared/native-checkpoint.ts";
 import { parseAsyncResultFileContent, readAsyncResultFile } from "./async-result-file.ts";
 
 const WATCHER_RESTART_DELAY_MS = 3000;
@@ -78,11 +79,14 @@ export function createResultWatcher(
 	startResultWatcher: () => void;
 	primeExistingResults: () => void;
 	stopResultWatcher: () => void;
+	holdCheckpoint: (event: NativeCheckpointEvent) => Promise<void>;
 } {
 	const fsApi = deps.fs ?? fs;
 	const timers = deps.timers ?? { setTimeout, clearTimeout, setInterval, clearInterval };
 	let periodicScanTimer: ReturnType<typeof setInterval> | null = null;
 	const processingCompletionKeys = new Set<string>();
+	const inFlight = new Set<Promise<void>>();
+	let checkpoint: NativeCheckpointEvent | undefined;
 
 	const handleResult = async (file: string) => {
 		let claimedCompletionKey: string | undefined;
@@ -206,10 +210,14 @@ export function createResultWatcher(
 	};
 
 	state.resultFileCoalescer = createFileCoalescer((file) => {
-		void handleResult(file);
+		if (checkpoint) return; // The durable file remains discoverable on release.
+		const tail = handleResult(file);
+		inFlight.add(tail);
+		void tail.finally(() => inFlight.delete(tail));
 	}, 50);
 
 	const primeExistingResults = () => {
+		if (checkpoint) return;
 		try {
 			fsApi.readdirSync(resultsDir)
 				.filter((f) => f.endsWith(".json"))
@@ -249,6 +257,7 @@ export function createResultWatcher(
 	const scheduleRestart = () => {
 		if (state.watcherRestartTimer) return;
 		state.watcherRestartTimer = timers.setTimeout(() => {
+			checkpoint?.invalidate();
 			state.watcherRestartTimer = null;
 			try {
 				fsApi.mkdirSync(resultsDir, { recursive: true });
@@ -280,9 +289,11 @@ export function createResultWatcher(
 				if (ev !== "rename" || !file) return;
 				const fileName = file.toString();
 				if (!fileName.endsWith(".json")) return;
+				checkpoint?.invalidate(); // Before accepting result work or deleting a file.
 				state.resultFileCoalescer.schedule(fileName);
 			});
 			state.watcher.on("error", (error) => {
+				checkpoint?.invalidate();
 				if (shouldFallBackToPolling(error)) {
 					startPollingFallback(error);
 					return;
@@ -317,5 +328,33 @@ export function createResultWatcher(
 		state.resultFileCoalescer.clear();
 	};
 
-	return { startResultWatcher, primeExistingResults, stopResultWatcher };
+	const holdCheckpoint = async (event: NativeCheckpointEvent) => {
+		checkpoint = event;
+		state.resultFileCoalescer.clear();
+		event.signal.addEventListener("abort", () => {
+			if (checkpoint !== event) return;
+			checkpoint = undefined;
+			primeExistingResults();
+		}, { once: true });
+		if (inFlight.size) {
+			// Its native notification cannot run while held. Invalidate first, join
+			// the existing tail without cancelling it, then retry from real idle.
+			event.invalidate();
+			await Promise.all([...inFlight]);
+		} else {
+			// Do not capture the gap between notification and a failed unlink:
+			// completionSeen is only a runtime deduper. Finish ordinary delivery
+			// before qualifying idle instead of inventing another persisted queue.
+			for (const file of fsApi.readdirSync(resultsDir).filter((name) => name.endsWith(".json"))) {
+				const data = fsApi === fs ? readAsyncResultFile(path.join(resultsDir, file)) : parseAsyncResultFileContent(fsApi.readFileSync(path.join(resultsDir, file), "utf-8"), file);
+				const runId = data.runId ?? data.id ?? file.replace(/\.json$/i, "");
+				if (data.sessionId ? data.sessionId === state.currentSessionId : state.ownedRuns?.has(runId)) {
+					event.invalidate();
+					break;
+				}
+			}
+		}
+	};
+
+	return { startResultWatcher, primeExistingResults, stopResultWatcher, holdCheckpoint };
 }

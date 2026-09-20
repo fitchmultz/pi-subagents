@@ -17,6 +17,7 @@ interface ConnectedSession {
   socket: net.Socket;
   info: SessionInfo;
   topicFrames: boolean;
+  checkpointHeld?: boolean;
 }
 
 function messageSender(info: SessionInfo): SessionInfo {
@@ -154,7 +155,7 @@ class IntercomBroker {
           this.shutdownTimer = null;
         }
 
-        writeMessage(socket, { type: "registered", sessionId: id, ...(topicFrames ? { topicsSupported: true, topicFrames: true } : {}) });
+        writeMessage(socket, { type: "registered", sessionId: id, checkpointSupported: true, ...(topicFrames ? { topicsSupported: true, topicFrames: true } : {}) });
         break;
       }
 
@@ -180,6 +181,16 @@ class IntercomBroker {
         try {
           const session = currentId && this.sessions.get(currentId);
           if (!session) throw new Error("Sender session not found");
+          if (clientMessage.checkpoint !== undefined) {
+            if (clientMessage.checkpoint !== "hold" && clientMessage.checkpoint !== "release") throw new Error("Invalid checkpoint request");
+            // Never disconnect/drain by dropping an accepted coalesced delivery. Let
+            // its ordinary timer deliver first, then the owner may retry capture.
+            const queued = [...this.pendingReplaceDeliveries.values()].some((pending) => pending.toId === currentId || pending.fromId === currentId);
+            session.checkpointHeld = clientMessage.checkpoint === "hold" && !queued;
+            // Socket ordering places every earlier delivery before this marker.
+            writeMessage(socket, { type: "sessions", requestId, sessions: [], checkpointHeld: session.checkpointHeld });
+            break;
+          }
           let nextInfo = session.info;
           let publication: TopicUpdate | undefined;
           const change = clientMessage.change as { action?: unknown; topic?: unknown; subscription?: unknown } | undefined;
@@ -343,6 +354,7 @@ class IntercomBroker {
   private sendToSession(fromId: string, toId: string, from: SessionInfo, message: Message): SendResult {
     const target = this.sessions.get(toId);
     if (!target) return { id: message.id, accepted: false, delivered: false, reason: "Recipient disconnected before delivery" };
+    if (target.checkpointHeld || this.sessions.get(fromId)?.checkpointHeld) return { id: message.id, accepted: false, delivered: false, reason: "Session held for checkpoint; retry after release" };
     const status = target.info.status ?? "";
     const idle = status === "idle" || status.startsWith("idle ");
     if (message.delivery === "queue" && message.queueMode === "replace" && message.threadId && (message.expectsReply || idle && target.info.acceptsAsks !== false)) return this.queueReplaceDelivery(fromId, toId, from, message);

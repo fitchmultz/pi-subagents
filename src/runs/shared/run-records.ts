@@ -137,7 +137,7 @@ function savedWorkflowNodes(status: AsyncStatus | null | undefined) {
 	return nodes;
 }
 
-export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext): void {
+export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, options: { strict?: boolean } = {}): void {
 	const ownerSessionId = ctx.sessionManager.getSessionId();
 	const entries = ctx.sessionManager.getEntries();
 	state.ownedRuns = new Map();
@@ -204,6 +204,7 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext): v
 				if (recovered) saveAsyncRunResult(status.runId, recovered);
 			}
 		} catch (error) {
+			if (options.strict) throw error;
 			console.error(`Could not recover owned async metadata for '${name}':`, error);
 		}
 	}

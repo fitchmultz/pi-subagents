@@ -179,6 +179,11 @@ export class ReplyTracker {
     this.removeContext(replyTo);
   }
 
+  /** A checkpoint must not expire a question just to qualify sleep. */
+  get hasReplyContext(): boolean {
+    return this.pendingAsks.size > 0 || this.pendingTurnContexts.length > 0 || this.currentTurnContext !== null || this.activeAgentContext !== null;
+  }
+
   listPending(now = Date.now()): IntercomContext[] {
     this.pruneExpired(now);
     return Array.from(this.pendingAsks.values()).sort((a, b) => a.receivedAt - b.receivedAt);

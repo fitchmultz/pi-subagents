@@ -351,6 +351,13 @@ export class AgentViewController {
 		this.render?.();
 	}
 
+	/** Native idle capture flushes the existing debounced view entry, not a new store. */
+	prepareCheckpoint(): boolean {
+		if (this.busy.size || this.overlay) return false;
+		this.save();
+		return true;
+	}
+
 	private save(): void {
 		if (this.saveTimer) clearTimeout(this.saveTimer);
 		this.saveTimer = undefined;
@@ -358,8 +365,8 @@ export class AgentViewController {
 		const saved = { ownerSessionId: this.ctx!.sessionManager.getSessionId(), visits: [...this.visits], pinned: this.pinned };
 		const serialized = JSON.stringify(saved);
 		if (serialized === this.lastSaved) return;
-		this.lastSaved = serialized;
 		this.pi.appendEntry(VIEW_ENTRY, saved);
+		this.lastSaved = serialized;
 	}
 
 	pin(key: string | undefined): void { this.pinned = key; this.save(); this.render?.(); }

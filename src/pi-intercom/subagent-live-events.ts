@@ -49,11 +49,11 @@ function parseLiveMessagePayload(payload: unknown): { requestId: string; to: str
   };
 }
 
-function relayLiveSubagentMessage(payload: unknown, deps: LiveEventDeps): void {
+async function relayLiveSubagentMessage(payload: unknown, deps: LiveEventDeps): Promise<void> {
   const parsed = parseLiveMessagePayload(payload);
   if (!parsed) return;
   const isLive = deps.getLivenessCheck();
-  void (async () => {
+  await (async () => {
     if (!isLive()) return;
     let activeClient: IntercomClient;
     let target: string;
@@ -86,7 +86,7 @@ function parseHealthPayload(payload: unknown): { requestId: string; targets: str
   return { requestId: parsed.requestId, targets };
 }
 
-function answerLiveIntercomHealth(payload: unknown, deps: LiveEventDeps): void {
+async function answerLiveIntercomHealth(payload: unknown, deps: LiveEventDeps): Promise<void> {
   const parsed = parseHealthPayload(payload);
   if (!parsed) return;
   const isLive = deps.getLivenessCheck();
@@ -97,7 +97,7 @@ function answerLiveIntercomHealth(payload: unknown, deps: LiveEventDeps): void {
   const respond = (health: unknown[], connection: SubagentIntercomConnection) => {
     if (isLive()) deps.events.emit(SUBAGENT_INTERCOM_HEALTH_RESPONSE_EVENT, { requestId: parsed.requestId, health, connection });
   };
-  void (async () => {
+  await (async () => {
     if (!isLive()) return;
     try {
       // An empty target list is a read-only check of this bridge, not a reconnect request.
