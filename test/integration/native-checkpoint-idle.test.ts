@@ -195,6 +195,9 @@ test("accepted queued topic blocks capture until recipient persistence; topic an
   const completed = await host.invoke("delegate", { agent: "probe", task: "Return FIRST_SESSION_TOKEN", async: false, output: false });
   assert.ok(completed.details.runId);
   writeFileSync(path.join(root, "cold-expected.json"), JSON.stringify({ runId: completed.details.runId }));
+  // Delegation's completion notification can still be preparing a native turn.
+  // Join it; the subscription round trip then orders idle presence on that socket.
+  await host.session.waitForIdle();
   await host.invoke("intercom", { action: "subscribe", topic: "checkpoint-resource" });
   const update = { topic: "checkpoint-resource", revision: 1, updatedAt: Date.now(), event: "update" as const, text: "retained owner", resource: "fixture", ownership: "held" as const };
   const snapshot = await keeper.updateTopics({ action: "publish", topic: update });

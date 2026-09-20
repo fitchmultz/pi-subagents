@@ -1087,6 +1087,9 @@ test("native owning-parent human messages preserve context and real consumption,
   assert.equal(receipt.messageId, "human-direction");
   const humanEntries = () => child.session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-human-message");
   assert.equal(humanEntries().length, 0, "broker receipt is not model consumption");
+  // Keep the first tool active until this exact message reaches the native queue,
+  // not merely the broker's other socket. Consumption must still be next-boundary.
+  await waitFor(async () => (await child.status()).includes(`[${receipt.messageId}] (delivered to model queue; not yet consumed)`), "human direction admitted during child tool");
   hold.resolve();
   await running;
   assert.equal(humanEntries().length, 1);

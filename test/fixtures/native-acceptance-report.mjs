@@ -17,7 +17,12 @@ export async function runNativeReport(args, fixture) {
 	const capturePath = process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE;
 	const receipt = { scenario, sdkRoot, schema: schemaPath ? JSON.parse(fs.readFileSync(schemaPath, "utf8")) : undefined,
 		providerCalls: 0, networkRequests: 0, extensionErrors: [], events: [], messages: [] };
-	const save = () => fs.writeFileSync(fixture.receiptPath, JSON.stringify(receipt));
+	const save = () => {
+		// One writer per receipt; concurrent readers must see a complete snapshot.
+		const temporary = `${fixture.receiptPath}.tmp`;
+		fs.writeFileSync(temporary, JSON.stringify(receipt));
+		fs.renameSync(temporary, fixture.receiptPath);
+	};
 	globalThis.fetch = async () => { receipt.networkRequests++; save(); throw new Error("Network forbidden in native report fixture"); };
 	const faux = ai.fauxProvider({ provider: "report-fixture", tokensPerSecond: 1_000_000, tokenSize: { min: 1024, max: 1024 } });
 	const settingsManager = sdk.SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } });
