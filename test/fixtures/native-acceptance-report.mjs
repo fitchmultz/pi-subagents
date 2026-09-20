@@ -6,8 +6,7 @@ import { pathToFileURL } from "node:url";
 
 // The existing mock CLI chooses the leaf response; finalization itself runs in the real SDK.
 export async function runNativeReport(args, fixture) {
-	const sdkRoot = process.env.PI_INTERCOM_TEST_SDK;
-	assert.ok(sdkRoot, "PI_INTERCOM_TEST_SDK must select the native SDK for this fixture");
+	const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url));
 	const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
 	const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(sdkRoot, "dist/index.js"))));
 	const ai = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);

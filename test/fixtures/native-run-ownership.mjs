@@ -8,7 +8,11 @@ const coldParent = phase === "cold-parent";
 const cwd = path.join(root, "project"), agentDir = path.join(root, "agent"), runtimeDir = path.join(root, "pi-subagents-runtime"), callsDir = path.join(root, "calls");
 for (const dir of [cwd, agentDir, callsDir, path.join(cwd, ".pi/agents"), path.join(root, "bin"), path.join(cwd, ".pi/skills/saved-skill")]) fs.mkdirSync(dir, { recursive: true });
 Object.assign(process.env, { HOME: root, TMPDIR: root, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENT_TEMP_ROOT: runtimeDir, PI_OFFLINE: "1", OWNERSHIP_SDK_ROOT: sdkRoot, OWNERSHIP_PROBE_DIR: callsDir, OWNERSHIP_REPO: repo });
-fs.writeFileSync(path.join(root, "bin/pi"), `#!/bin/sh\nexec "${process.execPath}" "${path.join(repo, "test/fixtures/native-ownership-cli.mjs")}" "$@"\n`, { mode: 0o755 });
+// Match Pi's CLI/SDK sibling layout so the real cwd preload reaches the selected
+// native SessionManager before the controlled child opens its saved session.
+fs.writeFileSync(path.join(root, "bin/index.js"), `export { SessionManager } from ${JSON.stringify(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href)};\n`);
+fs.writeFileSync(path.join(root, "bin/cli.mjs"), `await import(${JSON.stringify(pathToFileURL(path.join(repo, "test/fixtures/native-ownership-cli.mjs")).href)});\n`);
+fs.writeFileSync(path.join(root, "bin/pi"), `#!/bin/sh\nexec "${process.execPath}" "${path.join(root, "bin/cli.mjs")}" "$@"\n`, { mode: 0o755 });
 process.env.PATH = `${path.join(root, "bin")}${path.delimiter}${process.env.PATH}`;
 const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
 const { QUESTIONS_DIR, getRunMetadataDir, readQuestionContract, saveQuestionContract, questionProcessAlive } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
@@ -246,9 +250,11 @@ async function runJourney() {
 	fs.mkdirSync(path.join(replacementCwd, "replacement"), { recursive: true });
 	const answerParams = { action: "answer", id: questionId, questionId: pending.questionId, message: "Use the stable answer.", cwd: "replacement" };
 	const beforeAnswer = calls().length;
+	const savedQuestionHeader = sdk.SessionManager.open(pending.sessionFile).getHeader();
 	assert.equal(questionProcessAlive(pending), false, "the original question child must have exited before revival");
 	const answered = await invoke("agent_runs", answerParams);
-	await completed(answered.details.asyncId);
+	const answerResult = await completed(answered.details.asyncId);
+	assert.equal(answerResult.success, true, JSON.stringify(answerResult));
 	const answerCalls = calls().slice(beforeAnswer);
 	const answerContract = readQuestionContract(answered.details.asyncId, 0);
 	check("saved question revival keeps actual model, off thinking, output and acceptance", () => {
@@ -268,6 +274,13 @@ async function runJourney() {
 		assert.deepEqual(answerContinuations.map((run) => run.runId), [answered.details.asyncId]);
 		assert.deepEqual([...new Set(answerCalls.map((call) => call.cwd))], [fs.realpathSync(replacementCwd)]);
 		assert.equal(answerContract.launch.cwd, replacementCwd);
+		assert.deepEqual(sdk.SessionManager.open(pending.sessionFile).getHeader(), savedQuestionHeader);
+		for (const call of answerCalls) {
+			assert.equal(call.sessionCwd, replacementCwd, "native session cwd must receive the preload override");
+			assert.equal(call.headerCwd, savedQuestionHeader.cwd, "the saved header must not be rewritten");
+			assert.equal(call.sessionCwdOverride, undefined, "the launch override must be consumed before child work");
+			assert.equal(call.nodeOptions, process.env.NODE_OPTIONS, "the preload must not leak to nested children");
+		}
 	});
 	assert.equal(resolvedQuestions.filter((id) => id === pending.questionId).length, 2, "same-answer retries repeat the idempotent presence-resolution event");
 	const conflictingAnswer = await invoke("agent_runs", { action: "answer", id: questionId, questionId: pending.questionId, message: "A conflicting answer." });
