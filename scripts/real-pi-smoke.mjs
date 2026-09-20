@@ -171,7 +171,7 @@ async function collectOwnedProcesses({ root, env, processes }) {
 		}
 	}
 	const brokerPid = join(env.PI_CODING_AGENT_DIR, "intercom", "broker.pid");
-	if (existsSync(brokerPid)) remember(Number(readFileSync(brokerPid, "utf8").trim()), true);
+	if (existsSync(brokerPid)) remember(Number(readFileSync(brokerPid, "utf8").split("\n")[0]), true);
 	// Startup can precede PID-file publication. Query only direct children of known owned PIDs,
 	// including new Map entries (grandchildren), before signalling their parents. No argv/global scan.
 	for (const entry of processes.values()) {
