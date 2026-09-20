@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import { getPiAgentDir } from "../agent-dir.ts";
 import { writeMessage, createMessageReader, validateIntercomMessageSize } from "./framing.ts";
 import { prepareBrokerSocketPath } from "./paths.ts";
+import { brokerPidRecord } from "./pid.ts";
 import { compactTopicMessage, isSessionRegistration, isTopicSubscription, isTopicUpdate, normalizeMessage, normalizeSessionInfo } from "../types.ts";
 import type { SessionInfo, Message, BrokerMessage, SendResult, SessionSnapshot, TopicUpdate } from "../types.ts";
 
@@ -58,7 +59,7 @@ class IntercomBroker {
   start(): void {
     this.server.listen(this.socketPath, () => {
       chmodSync(this.socketPath, 0o600);
-      writeFileSync(PID_PATH, String(process.pid), { mode: 0o600 });
+      writeFileSync(PID_PATH, brokerPidRecord(), { mode: 0o600 });
       console.log(`Intercom broker started (pid: ${process.pid})`);
     });
     process.on("SIGTERM", () => this.shutdown());

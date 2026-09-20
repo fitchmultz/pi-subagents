@@ -1677,7 +1677,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     if (replyTracker.hasReplyContext) return { sleepReady: false, reason: "Intercom inbound reply context is live" };
     const activeClient = client;
-    if (!activeClient?.supportsCheckpoint) return { sleepReady: false, reason: "Intercom broker admission hold unavailable; let an older broker exit normally" };
+    if (!activeClient?.isConnected()) return { sleepReady: false, reason: "Intercom client is disconnected; waiting for broker connection" };
+    if (!activeClient.supportsCheckpoint) return { sleepReady: false, reason: "Intercom broker admission hold unavailable; let an older broker exit normally" };
     if (activeClient.hasPendingRequests) return { sleepReady: false, reason: "Intercom IPC request is pending" };
     requestedClient = activeClient;
     const held = await activeClient.holdCheckpoint();

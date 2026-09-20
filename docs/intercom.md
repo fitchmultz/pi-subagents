@@ -494,7 +494,7 @@ Async extension work (startup, inbound flushes, reconnects, overlays, and relays
 
 Runtime files:
 - Unix domain socket — private short temp path `pi-intercom-<hash>/broker.sock` on macOS/Linux, keyed by user ID and `PI_CODING_AGENT_DIR` or `~/.pi/agent`
-- `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/broker.pid` — Broker process ID
+- `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/broker.pid` — Broker process ID on the first line (backward-readable). On Linux, new brokers add native boot ID, PID namespace, reader time namespace and process start ticks on a second `linux-v1` line.
 - `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/config.json` — User configuration
 
 ## Design Decisions
@@ -502,6 +502,8 @@ Runtime files:
 **Local IPC instead of TCP.** Same-machine only by design. `pi-intercom` uses Unix sockets on macOS/Linux, which keeps setup simple and avoids port management.
 
 **Auto-spawn with file lock.** The broker starts on first connection and exits after 5 seconds idle. There is no daemon to manage. A spawn lock file, keyed by PID and timestamp, prevents duplicate brokers when multiple sessions start at once.
+
+**PID reuse after restore.** A live numeric PID alone does not identify a broker: a cold restore can reuse that number for an unrelated process or thread. Linux startup ignores a saved PID only when readable native metadata disproves its identity. Different boot/PID namespace or comparable start ticks identify a stale record; start ticks are compared only in the same reader time namespace. Legacy numeric-only records remain ambiguous and blocking, except a proven non-leader thread (`Tgid != Pid`) cannot be the process ID a broker wrote. Unreadable/unsupported metadata, foreign procfs PID views and signal-0 permission errors retain the conservative refusal. macOS needs no procfs and retains numeric-PID behavior. No process is killed and no PID file is deleted to recover; normal broker startup writes its new record. A connected broker, accepted queues and admission holds are unchanged. The fields follow Linux [`proc_pid_status(5)`](https://man7.org/linux/man-pages/man5/proc_pid_status.5.html), [`proc_pid_stat(5)`](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html) and [`namespaces(7)`](https://man7.org/linux/man-pages/man7/namespaces.7.html); they are identity evidence, not process-control authority.
 
 **`ask` stays client-side.** The broker still routes plain messages; it does not have a special request/response mode for `ask`. The sender marks the message as expecting a reply, the recipient wakes or queues according to the delivery mode, and the sender waits for the matching reply before returning it as the tool result. Reply hints make that flow practical by showing the recipient the exact `reply` call to use. Separately, `list` / `sessions` now carry a `requestId` so a delayed session-list reply cannot be mistaken for a newer one.
 

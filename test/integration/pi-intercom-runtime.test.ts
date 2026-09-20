@@ -466,6 +466,23 @@ function waitForSessionModel(client: InstanceType<typeof IntercomClient>, name: 
     (sessions) => `Timed out waiting for ${name} model ${model}; saw ${JSON.stringify(sessions.map((session) => ({ name: session.name, model: session.model })))}`);
 }
 
+test("checkpoint without a connected client does not diagnose an older broker", async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const harness = createExtensionHarness();
+  const controller = new AbortController();
+  piIntercomExtension(harness.pi as never);
+  try {
+    const results = await harness.emitLifecycle("session_checkpoint", {
+      type: "session_checkpoint", boundary: "settled", signal: controller.signal,
+      invalidate: () => controller.abort(),
+    });
+    assert.deepEqual(results, [{ sleepReady: false, reason: "Intercom client is disconnected; waiting for broker connection" }]);
+  } finally {
+    controller.abort();
+    await harness.emitLifecycle("session_shutdown");
+  }
+});
+
 test("intercom tool renders compact call and result rows", async (t) => {
   const sdk = import.meta.resolve("@earendil-works/pi-coding-agent");
   const { KeybindingsManager } = await import(new URL("./core/keybindings.js", sdk).href);
