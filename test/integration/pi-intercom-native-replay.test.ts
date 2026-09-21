@@ -581,10 +581,11 @@ test("native context reset, compaction, and reload preserve receipts without rep
   receiver.session.clearQueue();
   receiver.session.agent.abort();
   originalResponse.resolve();
-  await running;
   await waitFor(() => receiver.faux.state.callCount === 2, "recovery provider request");
   receiver.session.newContext({ handoff: "The intercom messages were handled." });
   recoveryResponse.resolve();
+  // Pi joins settlement-triggered runs; release recovery before awaiting the original prompt.
+  await running;
   await waitFor(() => receiver.settled() >= 2 && receiver.session.isIdle, "fresh context boundary");
   assert.equal(receiver.session.messages.some((message: unknown) => inboundId(message) === "appended-follower"), false);
   assert.equal(receiver.visible("appended-follower").length, 1);
