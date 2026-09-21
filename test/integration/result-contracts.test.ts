@@ -615,10 +615,28 @@ describe("result contracts", () => {
 				assert.equal(outputs?.answers, undefined);
 				assert.equal(graph.nodes[1].status, "failed");
 				assert.equal(graph.nodes[2].status, "pending");
-				assert.equal(mock.callCount(), 2);
+				assert.equal(results.length, 2, "must not execute the downstream step");
+				// The execution deadline includes startup: the spawned child can be killed
+				// before the mock script records its call. Token limits require a response.
+				const recordedCalls = calls();
+				if (limit === "maxExecutionTimeMs") assert.ok(recordedCalls.length === 1 || recordedCalls.length === 2);
+				else assert.equal(recordedCalls.length, 2);
+				assert.match(recordedCalls[0].expandedArgs.at(-1), /^Task: List items$/);
+				if (recordedCalls[1]) assert.match(recordedCalls[1].expandedArgs.at(-1), /^Task: Review a(?:\n|$)/);
+				for (const call of recordedCalls) assert.doesNotMatch(call.expandedArgs.join("\n"), /Downstream must not run/);
 				const metadata = JSON.parse(fs.readFileSync(results[1].artifactPaths.metadataPath, "utf8"));
+				assert.equal(metadata.agent, "worker");
+				assert.match(metadata.task, /^Review a(?:\n|$)/);
+				assert.ok(Number.isSafeInteger(metadata.agentProcessExit?.pid) && metadata.agentProcessExit.pid > 0, "must record the actual child process exit");
 				assert.equal(metadata.exitCode, 1);
+				assert.equal(metadata.error, results[1].error);
 				assert.equal(metadata.resourceLimitExceeded.kind, limit);
+				assert.equal(metadata.resourceLimitExceeded.limit, 100);
+				assert.deepEqual(metadata.modelAttempts, results[1].modelAttempts);
+				assert.equal(metadata.modelAttempts.length, 1);
+				assert.equal(metadata.modelAttempts[0].success, false);
+				assert.equal(metadata.modelAttempts[0].exitCode, 1);
+				assert.equal(metadata.modelAttempts[0].error, metadata.error);
 			});
 		}
 
