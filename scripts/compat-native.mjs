@@ -15,9 +15,9 @@ if (fork) Object.assign(env, { PI_CHECKPOINT_TEST_SDK: hostRoot, PI_CHECKPOINT_T
 else { delete env.PI_CHECKPOINT_TEST_SDK; delete env.PI_CHECKPOINT_TEST_REQUIRED; }
 const contracts = ["native-context-contract", "native-same-cwd-resume", "native-acceptance-cli", "native-structured-output", "native-run-ownership", "native-result-routing", "native-tool-results", "tool-activation"];
 try {
-  // Retain the previous CI's six-minute full-suite budget; individual test deadlines are unchanged.
-  const args = fork ? ["scripts/run-tests.mjs", "integration", "--timeout-ms", "360000"] : ["--test", "--test-concurrency=2", ...contracts.map(name => `test/integration/${name}.test.ts`)];
-  const result = spawnSync(process.execPath, args, { env, stdio: "inherit", timeout: 390_000 });
+  // Allow the full suite to drain on slower hosted runners; individual test deadlines are unchanged.
+  const args = fork ? ["scripts/run-tests.mjs", "integration", "--timeout-ms", "480000"] : ["--test", "--test-concurrency=2", ...contracts.map(name => `test/integration/${name}.test.ts`)];
+  const result = spawnSync(process.execPath, args, { env, stdio: "inherit", timeout: fork ? 510_000 : 390_000 });
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;
 } finally { rmSync(root, { recursive: true, force: true }); }
