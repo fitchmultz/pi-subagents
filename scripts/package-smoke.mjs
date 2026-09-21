@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
+import { hostCli, hostRoot } from "./compat-host.mjs";
 
 const require = createRequire(import.meta.url);
 const packageJson = require("../package.json");
@@ -165,12 +166,10 @@ export default function (pi) {
 	const nativeEnv = { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_OFFLINE: "1" };
 	for (const key of Object.keys(nativeEnv)) if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key)) delete nativeEnv[key];
 	nativeEnv.PI_SUBAGENT_TEMP_ROOT = join(home, "pi-subagents-runtime");
-	const nativePi = await import(new URL("../dist/runs/shared/pi-spawn.js", import.meta.url));
-	const piPackageRoot = process.env.PI_PACKAGE_DIR || nativePi.resolvePiPackageRoot() || nativePi.resolveInstalledPiPackageRoot();
-	if (!piPackageRoot) throw new Error("Native Pi is required for the packed detached-run check");
+	const piPackageRoot = hostRoot;
 	const bin = join(home, "bin");
 	mkdirSync(bin);
-	writeFileSync(join(bin, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${join(piPackageRoot, "dist/cli.js")}" "$@"\n`, { mode: 0o755 });
+	writeFileSync(join(bin, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${hostCli}" "$@"\n`, { mode: 0o755 });
 	// A wrapper-only PATH also covers managed installs whose shim is not a symlink.
 	nativeEnv.PATH = `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`;
 	delete nativeEnv.PI_PACKAGE_DIR;
@@ -184,6 +183,7 @@ export default function (pi) {
 	if (observed.sessionFile !== sessionFile) throw new Error("Packed child did not bind the requested native Pi session");
 	if (observed.model?.provider !== "faux" || observed.model?.id !== "faux-1" || observed.modelCalls !== 0) throw new Error("Packed child must select the native faux model without invoking it");
 	console.log("[package-smoke] packed detached Node runner completed a controlled native Pi startup (no model call)");
+	process.stdout.write(run(process.execPath, [join(process.cwd(), "scripts/native-package-smoke.mjs"), gitPackageRoot], home, { ...nativeEnv, PI_PACKAGE_DIR: hostRoot }));
 } catch (error) {
 	productionImportError = error;
 } finally {

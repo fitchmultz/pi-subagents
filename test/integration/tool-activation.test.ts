@@ -156,14 +156,17 @@ describe("subagent lazy activation with SDK tool filters", () => {
 		});
 	});
 
-	it("adds the available full tool through Pi's deferred-loading wrapper", async () => {
+	it("enables the available full tool through Pi's public active-tool API",  async () => {
 		await withSdkSession({}, async (session) => {
 			assert.equal(session.getActiveToolNames().includes("subagent"), false);
 			const loader = activeTool(session, "load_subagent");
 			assert.ok(loader);
 			const result = await loader.execute("load", {}, new AbortController().signal);
-			assert.deepEqual(result.addedToolNames, ["subagent"]);
+			assert.match(JSON.stringify(result.content), /Subagent enabled/);
 			assert.equal(session.getActiveToolNames().includes("subagent"), true);
+			const repeated = await loader.execute("load-again", {}, new AbortController().signal);
+			assert.match(JSON.stringify(repeated.content), /Subagent already enabled/);
+			assert.equal(session.getActiveToolNames().filter(name => name === "subagent").length, 1);
 		});
 	});
 });

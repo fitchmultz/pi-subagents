@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import process from "node:process";
+import { hostCli } from "./compat-host.mjs";
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
 	console.log(`Usage: node scripts/local-install-smoke.mjs\n\nInstalls this repository into an isolated temporary Pi home, then verifies pi list\ncan resolve the single package. User-level Pi settings are not modified.\n\nExit codes:\n  0  local path install/list smoke passed\n  1  pi install or pi list failed, or the installed package was not listed`);
@@ -25,7 +26,7 @@ function isolatedEnv(home) {
 }
 
 function runPi(args, env) {
-	const result = spawnSync("pi", args, {
+	const result = spawnSync(process.execPath, [hostCli, ...args], {
 		cwd: process.cwd(),
 		env,
 		encoding: "utf-8",

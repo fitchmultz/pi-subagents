@@ -29,7 +29,7 @@ export default function(pi) {
 				sessionEnabled: false, inheritProjectContext, inheritSkills: false, systemPrompt: "EXPLICIT_SELECTED_CONTEXT", extensions: [observer], projectTrust: "approve" });
 			const env = { ...process.env, ...built.env, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_OFFLINE: "1", CONTEXT_PROBE_OUTPUT: output };
 			try {
-				const child = spawnSync(process.execPath, [path.join(packageRoot, "dist/cli.js"), ...built.args], { cwd: root, env, input: "", encoding: "utf8", timeout: 15_000 });
+				const child = spawnSync(process.execPath, [process.env.PI_HOST_CLI ?? path.join(packageRoot, JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8")).bin.pi), ...built.args], { cwd: root, env, input: "", encoding: "utf8", timeout: 15_000 });
 				assert.equal(child.status, 0, child.stderr);
 				const prompt = fs.readFileSync(output, "utf8");
 				assert.equal(prompt.includes("NATIVE_PROJECT_SENTINEL"), inheritProjectContext);

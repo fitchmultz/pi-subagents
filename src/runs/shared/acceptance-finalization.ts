@@ -35,7 +35,7 @@ export function readFinalizationReport(messages: Message[], runtime: StructuredO
 		for (const call of message.content) {
 			if (call.type !== "toolCall" || call.name !== "structured_output" || !successfulIds.has(call.id)) continue;
 			const value = call.arguments.value;
-			if (validateStructuredOutputValue(runtime.schema, value).status === "valid" && parseAcceptanceReport(value.report).report) unconfirmedOutput = value.report;
+			if (validateStructuredOutputValue(runtime.schema, value).status === "valid" && value && typeof value === "object" && "report" in value && typeof value.report === "string" && parseAcceptanceReport(value.report).report) unconfirmedOutput = value.report;
 		}
 	}
 	const rejected = (reason: string): FinalizationReportSubmission => ({
