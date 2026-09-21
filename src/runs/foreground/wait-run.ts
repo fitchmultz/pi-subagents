@@ -71,6 +71,8 @@ export async function waitForOwnedRun(input: {
 		});
 		input.signal?.addEventListener("abort", abort, { once: true });
 		if (input.signal?.aborted) abort(); else check();
-		if (!finished) { timer = setInterval(check, 100); timer.unref?.(); }
+		// Unlike passive background tracking, this foreground call owes a result.
+		// The detached runner cannot keep this process alive; finish() releases the timer.
+		if (!finished) timer = setInterval(check, 100);
 	});
 }

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx } from "../support/helpers.ts";
 import { waitForOwnedRun } from "../../src/runs/foreground/wait-run.ts";
@@ -34,6 +35,15 @@ function setup(t, allowLaunch = false) {
 	t.after(() => { if (state.poller) clearInterval(state.poller); for (const timer of state.cleanupTimers.values()) clearTimeout(timer); mock.uninstall(); });
 	return { cwd, runId, state, events, mock, deps, invoke: (params, signal?, update?) => executor.execute(randomUUID(), params, signal, update, makeMinimalCtx(cwd)) };
 }
+
+for (const outcome of ["completed", "cancelled", "yielded", "unavailable", "background"]) test(`owned-run liveness without a host reference: ${outcome}`, () => {
+	const cwd = createTempDir("wait-liveness-");
+	const child = spawnSync(process.execPath, [fileURLToPath(new URL("../fixtures/owned-run-wait-liveness.mjs", import.meta.url)), cwd, outcome], {
+		encoding: "utf8", timeout: 10_000,
+	});
+	assert.equal(child.status, 0, child.stderr || child.error?.message || `Process exited before ${outcome} settled`);
+	if (outcome !== "background") assert.equal(child.stdout.trim(), outcome);
+});
 
 test("removed wait action is rejected without starting or attaching to work", async (t) => {
 	const f = setup(t);
