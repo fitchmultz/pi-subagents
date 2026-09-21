@@ -21,7 +21,10 @@ const prompt = args.includes("--system-prompt") ? fs.readFileSync(value("--syste
 const record = { pid: process.pid, cwd: process.cwd(), modelArg, model, thinking, sessionFile: file, previousMessages: session.getEntries().filter((entry) => entry.type === "message").length, task, prompt, tools: args.includes("--tools") ? value("--tools") : null, extensions: args.flatMap((arg, index) => arg === "--extension" ? [args[index + 1]] : []), noExtensions: args.includes("--no-extensions"), noContextFiles: args.includes("--no-context-files"), noSkills: args.includes("--no-skills") };
 Object.assign(record, { sessionCwd: session.getCwd(), headerCwd: session.getHeader()?.cwd,
 	sessionCwdOverride: process.env.PI_SUBAGENT_SESSION_CWD, nodeOptions: process.env.NODE_OPTIONS });
-fs.writeFileSync(path.join(process.env.OWNERSHIP_PROBE_DIR, `call-${Date.now()}-${randomUUID()}.json`), JSON.stringify(record));
+const callName = `call-${Date.now()}-${randomUUID()}.json`;
+const temporaryCall = path.join(process.env.OWNERSHIP_PROBE_DIR, `.${callName}.tmp`);
+fs.writeFileSync(temporaryCall, JSON.stringify(record));
+fs.renameSync(temporaryCall, path.join(process.env.OWNERSHIP_PROBE_DIR, callName));
 session.appendModelChange(provider, modelId);
 session.appendThinkingLevelChange(thinking);
 session.appendMessage({ role: "user", content: task, timestamp: Date.now() });

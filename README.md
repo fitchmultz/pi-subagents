@@ -31,16 +31,21 @@ Use the normal development workflow below for editing and validation, then rerun
 
 Supported platforms: **macOS and Linux**. Termux on Android is unverified; Windows is not supported.
 
-Pi core packages remain optional wildcard peers. Development dependencies are pinned to Pi 0.85.1 for compilation and package checks.
+Pi core packages remain optional wildcard peers. Development dependencies are pinned to the coherent official Pi 0.86.1 cohort for compilation and package checks.
 
 ## Local validation
 
-[GitHub Actions](.github/workflows/test.yml) checks two explicitly different contracts on Node 26.9.0 / Ubuntu 24.04:
+`npm run check:compat` uses the selected host installed in this checkout, never a hidden Pi from PATH. It checks host SDK/manifest-bin identity, builds, typechecks, runs all unit tests, packs a runtime-only consumer, and qualifies both compiled entries with a private Intercom broker through the native SDK and bundled RPC CLI. It also exercises same/different-cwd resume, acceptance, structured output, native result routing/ownership and tool activation using the existing integration tests. No provider credentials or inference services are used.
 
-- **Native working-session contract:** builds `fitchmultz/pi` at `c3f449637e4b2acb4524c7e58107e4a4adb5c01d` with its lockfile, public model-catalog hydration and offline workspace build. Runs this extension's normal locked install/build, typecheck, package/install smokes, and **all unit and integration tests**, including all 15 checkpoint controls. No provider credentials or inference services are used.
-- **Official Pi 0.85.1 compatibility:** locked published dependencies, build, types, unit tests and package/install smokes only. This is **not** a full published integration pass: five unchanged assertions expose missing host contracts (custom-queue visibility, prompt-preparation ownership/startup, and `newContext`); 12 checkpoint cases require the native API. See [host limitations](docs/intercom.md#limitations).
+The compatibility runner supplies `PI_COMPAT_HOST=official|fork`, `PI_COMPAT_EXPECTED_VERSION`, `PI_COMPAT_EXPECTED_PACKAGE_DIR`, `PI_HOST_INDEX`, and `PI_HOST_CLI`. Types, SDK imports, and child CLI must resolve to that installed graph. `PI_COMPAT_HOST=fork` additionally runs the **entire** integration suite and requires native checkpoint hooks instead of silently skipping them. The ordinary official lane does **not** certify the extended replay/working-session contract: full official 0.86.1 integration still exposes five unchanged queue visibility, prompt-preparation ownership/startup, and `newContext` failures. See [host limitations](docs/intercom.md#limitations).
 
-The native job maps `PI_INTERCOM_TEST_SDK`, `PI_OWNERSHIP_TEST_PACKAGE_ROOT`, `PI_CONTEXT_TEST_PACKAGE_ROOT`, `PI_PACKAGE_DIR` and `PI_CHECKPOINT_TEST_SDK` to the same built `packages/coding-agent`. `PI_CHECKPOINT_TEST_REQUIRED=1` makes a missing checkpoint SDK selection fail instead of silently skipping; an SDK lacking the API fails the native tests. The matching public `dist/bundle/cli.js` executable is first on `PATH` via a private bin directory outside `node_modules`. Smokes and `node scripts/run-tests.mjs all` run directly, since npm scripts prepend the published CLI. The workflow's `env -i` commands also work locally with `PI_NATIVE_ROOT` pointing to that built host; keep synthetic HOME/TMPDIR outside your real home ancestry (for example `/private/tmp` on macOS), because agent discovery walks ancestors independently of HOME.
+Use an empty HOME outside your real home ancestry and a short temporary directory. Child tests use local fixtures and their own broker/profile. Preserve the separate Node 22.19 and Linux qualification lanes; a Node 24 macOS run is not evidence for every advertised platform.
+
+### SDK embeddings of runtime-only installations
+
+Before loading a pruned package with `DefaultResourceLoader`, set `process.env.PI_PACKAGE_DIR = getPackageDir()` from the **selected SDK**. This is the existing host-location contract for native session APIs and detached runners. Alternatively the host must be discoverable through the extension's dependency graph or an actual Pi executable on PATH. CLI consumers resolve their own host normally.
+
+Without any of those host-location sources, `src/shared/native-session.ts` cannot locate session APIs. With a pruned compiled package, Node 24/Jiti can turn that failed top-level initialization into a module-loader assertion rather than surfacing the intended missing-host error. This is an unresolved loader diagnostic defect in the unsupported/misconfigured embedding path, not a general CLI/package failure. Qualification does not disable native imports or suppress loader errors: the supported explicit-host SDK path and the real bundled CLI both load the full runtime-only package.
 
 To diagnose the full suite against the locked published Pi dependencies:
 
@@ -49,11 +54,11 @@ npm ci
 npm run ci
 ```
 
-Some native queue and prompt-preparation regressions still expose the [known host limitations](docs/intercom.md#limitations) on Pi 0.85.1. Retain those checks and report their failures; a focused passing check does not establish a full-suite pass.
+Some native queue and prompt-preparation regressions still expose the [known host limitations](docs/intercom.md#limitations) on official Pi 0.86.1. Retain those checks and report their failures; a focused passing check does not establish a full-suite pass.
 
 That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
-For a credential-free Linux gate against committed `HEAD`, Docker and `PI_LINUX_PI_ARCHIVE` are required. Supply an absolute path to a `.tar.gz` containing one top-level `pi/`: a Pi 0.85.1 source checkout, its Linux `node_modules` (including workspace dependencies), and all built `dist/` output. It must include `pi/packages/coding-agent/dist/index.js` and `pi/packages/coding-agent/dist/bundle/cli.js`.
+For a credential-free Linux gate against committed `HEAD`, Docker and `PI_LINUX_PI_ARCHIVE` are required. Supply an absolute path to a `.tar.gz` containing one top-level `pi/`: a checkpoint-capable Pi fork source checkout, its Linux `node_modules` (including workspace dependencies), and all built `dist/` output. It must include `pi/packages/coding-agent/dist/index.js` and `pi/packages/coding-agent/dist/bundle/cli.js`.
 
 Prepare that checkout in a clean Linux build environment matching the image's CPU architecture and Node version. Install locked dependencies and complete Pi's workspace build, including its generated model data, before archiving. Do not copy host `node_modules`, Pi user state, `auth.json`, secret `.env` files, or credential-bearing npm/Git configuration. From the Linux build environment:
 

@@ -563,7 +563,7 @@ PI_CHECKPOINT_TEST_SDK=/path/to/native/pi/packages/coding-agent \
 
 ## Limitations
 
-On Pi 0.85.1, retained queues can resume work after cancellation, incoming messages can start a turn during user-prompt preparation, custom queues are absent from pending-message state, and idle wakeups bypass `before_agent_start` guidance. Updating this extension does not change those host behaviors.
+On official Pi 0.85.1 and 0.86.1, retained queues can resume work after cancellation, incoming messages can start a turn during user-prompt preparation, custom queues are absent from pending-message state, and idle wakeups bypass `before_agent_start` guidance. The extended native replay suite also requires the fork's `newContext` API. Updating this extension does not change those host behaviors. `check:compat` qualifies ordinary official package startup and core child contracts separately; `npm run test:integration` retains the full assertions and their official-host failures.
 
 - **Same machine only** — Uses local Unix sockets, no network support
 - **No dedicated intercom log** — Messages are kept in Pi session history, but there is no separate intercom transcript or inbox
