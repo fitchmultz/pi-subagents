@@ -53,7 +53,9 @@ export default function(pi) { pi.on("session_start", (_event, ctx) => {
 writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ tools: pi.getActiveTools(), commands: pi.getCommands().map(c => c.name) }));
 ctx.shutdown();
 }); }`);
-  const child = spawnSync(process.execPath, [hostCli, "--mode", "rpc", "--no-session", "-ne", "-ns", "-np", "-nc", "--no-themes", "--approve", "-e", packageRoot, "-e", observer], { cwd: root, env: process.env, input: "", encoding: "utf8", timeout: 30_000 });
+  const cliEnv = { ...process.env };
+  delete cliEnv.PI_PACKAGE_DIR; // Ordinary CLI consumers locate their host through argv, unlike detached SDK embeddings.
+  const child = spawnSync(process.execPath, [hostCli, "--mode", "rpc", "--no-session", "-ne", "-ns", "-np", "-nc", "--no-themes", "--approve", "-e", packageRoot, "-e", observer], { cwd: root, env: cliEnv, input: "", encoding: "utf8", timeout: 30_000 });
   assert.equal(child.status, 0, `${child.error ?? ""}\n${child.stderr}`);
   assert.doesNotMatch(child.stderr, /Failed to load extension|ERR_INTERNAL_ASSERTION|Extension error/);
   const observed = JSON.parse(readFileSync(marker, "utf8"));
