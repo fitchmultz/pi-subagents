@@ -2,11 +2,17 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "node:test";
-import { inspectSubagentStatus } from "../../src/runs/background/run-status.ts";
-import { ownedRunList } from "../../src/runs/shared/run-records.ts";
-import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
-import { TEMP_ROOT_DIR, type SubagentState } from "../../src/shared/types.ts";
+import { after, describe, it } from "node:test";
+import type { SubagentState } from "../../src/shared/types.ts";
+
+const suiteRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-suite-"));
+process.env.PI_CODING_AGENT_DIR = path.join(suiteRoot, "agent");
+process.env.PI_SUBAGENT_TEMP_ROOT = path.join(suiteRoot, "pi-subagents-runtime");
+const { inspectSubagentStatus } = await import("../../src/runs/background/run-status.ts");
+const { ownedRunList } = await import("../../src/runs/shared/run-records.ts");
+const { createNestedRoute, writeNestedEvent } = await import("../../src/runs/shared/nested-events.ts");
+const { TEMP_ROOT_DIR } = await import("../../src/shared/types.ts");
+after(() => rmrf(suiteRoot));
 
 function errno(code: string): NodeJS.ErrnoException {
 	const error = new Error(code) as NodeJS.ErrnoException;

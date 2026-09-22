@@ -498,7 +498,7 @@ describe("nested control routing", () => {
 		}
 	});
 
-	it("records admission failure without inventing a nested start", async () => {
+	it("reports admission failure without inventing a nested start", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-foreground-throw-"));
 		try {
 			const route = createNestedRoute("root-parent");
@@ -517,10 +517,8 @@ describe("nested control routing", () => {
 			assert.match(text(result), /model registry exploded/);
 			const registry = projectNestedEvents(route);
 			assert.deepEqual(registry.children, [], "admission failed before the owner started; no phantom live or completed child");
-			assert.equal(state.ownedRuns!.size, 1, "retain the failed assignment for parent inspection");
-			const failed = [...state.ownedRuns!.values()][0]!;
-			assert.match(failed.error!, /model registry exploded/);
-			assert.equal(failed.asyncDir, undefined, "no execution owner was launched");
+			assert.equal(state.ownedRuns?.size ?? 0, 0, "a rejected launch must not retain phantom owned children");
+			assert.equal(result.details.runId ?? result.details.asyncId, undefined, "no execution owner was launched");
 			assert.equal(state.asyncJobs.size, 0);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
