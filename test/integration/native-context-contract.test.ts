@@ -10,10 +10,15 @@ import { buildPiArgs, cleanupTempDir } from "../../src/runs/shared/pi-args.ts";
 
 const packageRoot = process.env.PI_CONTEXT_TEST_PACKAGE_ROOT ?? path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
 
-it("native Pi suppresses inherited project files without dropping selected context", () => {
+it("native Pi suppresses inherited resources without dropping selected context and skills", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-context-contract-"));
 	try {
 		fs.writeFileSync(path.join(root, "AGENTS.md"), "NATIVE_PROJECT_SENTINEL");
+		const inheritedSkillDir = path.join(root, "agent", "skills", "inherited");
+		fs.mkdirSync(inheritedSkillDir, { recursive: true });
+		fs.writeFileSync(path.join(inheritedSkillDir, "SKILL.md"), "---\nname: inherited\ndescription: INHERITED_SKILL_SENTINEL\n---\nInherited body");
+		const selectedSkill = path.join(root, "selected.md");
+		fs.writeFileSync(selectedSkill, "---\nname: selected\ndescription: SELECTED_SKILL_SENTINEL\n---\nSelected body");
 		const observer = path.join(root, "observe.ts");
 		// Observe the real resource loader and prompt builder, then stop before any model request.
 		fs.writeFileSync(observer, `import { writeFileSync } from "node:fs";
@@ -25,8 +30,8 @@ export default function(pi) {
 }`);
 		for (const inheritProjectContext of [false, true]) {
 			const output = path.join(root, `prompt-${inheritProjectContext}.txt`);
-			const built = buildPiArgs({ baseArgs: ["--mode", "rpc", "--no-prompt-templates", "--no-themes"], task: "Do not invoke a model",
-				sessionEnabled: false, inheritProjectContext, inheritSkills: false, systemPrompt: "EXPLICIT_SELECTED_CONTEXT", extensions: [observer], projectTrust: "approve" });
+			const built = buildPiArgs({ baseArgs: ["--mode", "rpc", "--no-prompt-templates", "--no-themes", "--skill", selectedSkill], task: "Do not invoke a model",
+				sessionEnabled: false, inheritProjectContext, inheritSkills: inheritProjectContext, systemPrompt: "EXPLICIT_SELECTED_CONTEXT", extensions: [observer], projectTrust: "approve" });
 			const env = { ...process.env, ...built.env, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_OFFLINE: "1", CONTEXT_PROBE_OUTPUT: output };
 			try {
 				const child = spawnSync(process.execPath, [process.env.PI_HOST_CLI ?? path.join(packageRoot, JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8")).bin.pi), ...built.args], { cwd: root, env, input: "", encoding: "utf8", timeout: 15_000 });
@@ -34,6 +39,8 @@ export default function(pi) {
 				const prompt = fs.readFileSync(output, "utf8");
 				assert.equal(prompt.includes("NATIVE_PROJECT_SENTINEL"), inheritProjectContext);
 				assert.ok(prompt.includes("EXPLICIT_SELECTED_CONTEXT"));
+				assert.ok(prompt.includes("SELECTED_SKILL_SENTINEL"));
+				assert.equal(prompt.includes("INHERITED_SKILL_SENTINEL"), inheritProjectContext);
 			} finally {
 				cleanupTempDir(built.tempDir);
 			}
@@ -41,6 +48,16 @@ export default function(pi) {
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}
+});
+
+it("native child and intercom prompt sections preserve provider-visible content and fork boundaries", () => {
+	const env = { ...process.env, PI_PROMPT_TEST_SDK: packageRoot };
+	delete env.NODE_TEST_CONTEXT;
+	const child = spawnSync(process.execPath, ["--test", "--test-reporter=tap", "test/fixtures/native-prompt-sections.mjs"], {
+		encoding: "utf8", timeout: 60_000, env,
+	});
+	assert.equal(child.status, 0, `${child.error?.message ?? ""}\n${child.stdout}\n${child.stderr}`);
+	assert.match(child.stdout, /# pass 5\b/);
 });
 
 it("native Pi preserves configured builtins and custom tools for the bundled delegate", () => {
