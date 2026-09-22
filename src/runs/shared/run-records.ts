@@ -10,7 +10,9 @@ import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { resolveSubagentResultStatus } from "../../intercom/result-intercom.ts";
 import { buildManagementControl, formatAgentProcessExit, formatRunAction } from "../../shared/status-format.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
-import { readAsyncResultFile } from "../background/async-result-file.ts";
+import { isDurableRun, readAsyncResultFile } from "../background/async-result-file.ts";
+import { asyncRunRoots, exactAsyncRunLocation } from "../background/async-resume.ts";
+import { reconcileAsyncRun } from "../background/stale-run-reconciler.ts";
 import { applyThinkingSuffix } from "./pi-args.ts";
 import { acceptanceHumanAction } from "./acceptance-evaluation.ts";
 import { sumAttemptUsage } from "./model-fallback.ts";
@@ -18,7 +20,7 @@ import { workflowAgentNodes } from "./workflow-graph.ts";
 import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
 import { getRunMetadataDir, listRunQuestions, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionContract, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
-import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, type AsyncResultChild, type AsyncResultFile, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type RunSyncOptions, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
+import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type RunSyncOptions, type SingleResult, type SubagentExecutionResult, type SubagentState, type Usage, type WorkflowGraphSnapshot } from "../../shared/types.ts";
 
 export const OWNED_RUN_ENTRY = "subagent-run";
 
@@ -107,19 +109,6 @@ function recoverOutput(sessionFile: string | undefined, outputFile: string | und
 	return getFinalOutput(buildSessionContext(entries.filter((entry): entry is SessionEntry => entry.type !== "session" && Date.parse(entry.timestamp) <= endedAt)).messages.filter((message) => message.role === "assistant"));
 }
 
-function recoverAsyncResult(status: AsyncStatus, asyncDir: string): AsyncResultFile | undefined {
-	if (status.state === "running" || status.state === "queued") return undefined;
-	return {
-		id: status.runId, sessionId: status.sessionId, cwd: status.cwd, mode: status.mode, state: status.state, success: status.state === "complete",
-		timestamp: status.endedAt ?? status.lastUpdate, sessionFile: status.sessionFile,
-		results: status.steps?.map((step, index) => ({
-			agent: step.agent, model: step.model, sessionFile: step.sessionFile, acceptance: step.acceptance,
-			success: step.status === "complete" || step.status === "completed", interrupted: step.status === "paused", exitCode: step.exitCode, error: step.error,
-			output: recoverOutput(step.sessionFile, undefined, step.endedAt ?? status.endedAt ?? status.lastUpdate ?? Date.now()) || recoverOutput(undefined, path.join(asyncDir, `output-${index}.log`), 0),
-		})),
-	};
-}
-
 export function workflowChildren(children: OwnedRun["children"], graph: WorkflowGraphSnapshot | undefined): OwnedRun["children"] {
 	if (!graph || (graph.mode !== "chain" && !children.some((child) => child.workflowNodeId))) return children;
 	return workflowAgentNodes(graph).map((node, index) => {
@@ -181,12 +170,18 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 		rememberOwnedRun(state, run);
 	}
 	// Pre-update background runs may have no parent tool receipt (for example slash launches).
-	for (const name of fs.existsSync(ASYNC_DIR) ? fs.readdirSync(ASYNC_DIR) : []) {
-		const asyncDir = path.join(ASYNC_DIR, name);
+	const runIds = new Set(asyncRunRoots(ASYNC_DIR).flatMap((root) => fs.existsSync(root) ? fs.readdirSync(root) : []));
+	for (const name of runIds) {
 		try {
+			const location = exactAsyncRunLocation(name, ASYNC_DIR, RESULTS_DIR);
+			const asyncDir = location.asyncDir;
+			if (!asyncDir) continue;
 			const status = readStatus(asyncDir);
-			if (!status || status.sessionId !== resolveCurrentSessionId(ctx.sessionManager)) continue;
-			saveRunStatus(status.runId, status);
+			const owner = readRunJson<{ sessionId: string }>(path.join(getRunMetadataDir(name), "question-owner.json"));
+			if (!status || (status.sessionId !== resolveCurrentSessionId(ctx.sessionManager) && status.sessionId !== ownerSessionId && owner?.sessionId !== ownerSessionId)) continue;
+			const durable = isDurableRun(status);
+			const terminal = !["running", "queued"].includes(status.state);
+			if (!durable && terminal) saveRunStatus(status.runId, status);
 			const old = state.ownedRuns.get(status.runId);
 			const nodes = savedWorkflowNodes(status);
 			const declared = status.mode === "chain" && nodes && !old?.children.some((child) => child.workflowNodeId) ? [] : old?.children ?? [];
@@ -195,13 +190,12 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 				...old, runId: status.runId, ownerSessionId, rootRunId: old?.rootRunId ?? status.runId,
 				source: "async", mode: status.mode, cwd: status.cwd ?? old?.cwd ?? ctx.cwd,
 				task: old?.task ?? "Recovered background run", startedAt: status.startedAt,
-				asyncDir, pid: status.pid, legacy: old?.legacy ?? true,
+				asyncDir, pid: status.pid, legacy: old?.legacy ?? !durable,
 				children: (status.steps ?? []).map((step, index) => ({ ...children.find((child) => child.index === index), agent: step.agent, index, ...(status.mode === "chain" && nodes?.[index] ? { workflowNodeId: nodes[index]!.id } : {}), label: step.label ?? children[index]?.label, sessionFile: step.sessionFile ?? (status.steps?.length === 1 ? status.sessionFile : undefined) })),
 			});
 			const resultPath = path.join(RESULTS_DIR, `${status.runId}.json`);
-			if (!fs.existsSync(path.join(getRunMetadataDir(status.runId), "result.json"))) {
-				const recovered = fs.existsSync(resultPath) ? readAsyncResultFile(resultPath) : recoverAsyncResult(status, asyncDir);
-				if (recovered) saveAsyncRunResult(status.runId, recovered);
+			if (!durable && terminal && fs.existsSync(resultPath) && !fs.existsSync(path.join(getRunMetadataDir(status.runId), "result.json"))) {
+				saveAsyncRunResult(status.runId, readAsyncResultFile(resultPath));
 			}
 		} catch (error) {
 			if (options.strict) throw error;
@@ -233,10 +227,10 @@ function processAlive(pid: number | undefined): boolean {
 	return Boolean(pid && Number.isSafeInteger(pid) && pid > 0 && questionProcessAlive({ pid }));
 }
 
-function asyncChildResult(child: AsyncResultChild, task: string) {
+function asyncChildResult(child: AsyncResultChild & { usage?: Usage }, task: string) {
 	return {
 		...child, agent: child.agent ?? "unknown", task, exitCode: child.exitCode ?? (child.success ? 0 : 1),
-		finalOutput: child.output, usage: sumAttemptUsage(child.modelAttempts ?? []),
+		finalOutput: child.output, usage: child.usage ?? sumAttemptUsage(child.modelAttempts ?? []),
 	};
 }
 
@@ -255,14 +249,19 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 	const foreground = readRunJson<ForegroundResumeRun>(path.join(root, "foreground.json")) ?? state.foregroundRuns?.get(run.runId);
 	const resultPath = path.join(root, "result.json");
 	const result = fs.existsSync(resultPath) ? readAsyncResultFile(resultPath) : undefined;
-	const liveStatus = run.asyncDir ? readStatus(run.asyncDir) : null;
-	const status = liveStatus ?? readRunJson<AsyncStatus>(path.join(root, "status.json"));
+	const location = exactAsyncRunLocation(run.runId, ASYNC_DIR, RESULTS_DIR);
+	const asyncDir = location.asyncDir ?? run.asyncDir;
+	const liveStatus = asyncDir ? readStatus(asyncDir) : null;
+	const savedStatus = liveStatus ?? readRunJson<AsyncStatus>(path.join(root, "status.json"));
+	const durable = isDurableRun(savedStatus) || isDurableRun(readRunJson<object>(path.join(root, "launch.json")));
+	const reconciliation = durable ? reconcileAsyncRun(asyncDir ?? root) : undefined;
+	const status = reconciliation?.status ?? savedStatus;
 	const contracts = new Map<number, SupervisorRunContract>();
 	const contractDir = path.join(root, "contracts");
 	for (const name of fs.existsSync(contractDir) ? fs.readdirSync(contractDir) : []) {
 		if (!/^\d+\.json$/.test(name)) continue;
 		const index = Number(name.slice(0, -5));
-		const contract = readQuestionContract(run.runId, index);
+		const contract = readQuestionContract(run.runId, index, undefined, { endedAt: status?.steps?.[index]?.endedAt ?? result?.timestamp ?? foreground?.updatedAt });
 		if (contract) contracts.set(index, contract);
 	}
 	const control = state.foregroundControls.get(run.runId);
@@ -309,6 +308,7 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 	const live = state.foregroundControls.has(run.runId) || children.some((child) => child.state === "live") || (!result && (!status || status.state === "running" || status.state === "queued") && processAlive(status?.pid ?? run.pid));
 	const error = foreground?.error ?? run.error;
 	const executionState: ManagementRunState = error ? "failed" : result ? normalizedState(result.terminalState)
+		: durable && !live ? "unknown"
 		: live ? "live"
 		: children.some((child) => child.state === "failed") ? "failed"
 		: children.some((child) => child.state === "blocked") ? "blocked"
@@ -322,8 +322,27 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 		updatedAt: result?.timestamp ?? status?.lastUpdate ?? foreground?.updatedAt ?? run.startedAt,
 		continuations: options.includeContinuations === false ? [] : [...(state.ownedRuns?.values() ?? [])].filter((candidate) => candidate.rootRunId === run.rootRunId && candidate.predecessorRunId).sort((a, b) => a.startedAt - b.startedAt).map((candidate) => ({ runId: candidate.runId, predecessorRunId: candidate.predecessorRunId!, predecessorIndex: candidate.predecessorIndex })),
 		...(result ? { resultPath } : foreground ? { resultPath: path.join(root, "foreground.json") } : {}),
-		...(error ? { diagnosis: error } : executionState === "paused" && foreground?.pausedReason ? { diagnosis: foreground.pausedReason } : executionState === "unknown" ? { diagnosis: "Completion is unconfirmed. Saved sessions are context, not proof of successful execution." } : {}),
+		...(error ? { diagnosis: error } : executionState === "paused" && foreground?.pausedReason ? { diagnosis: foreground.pausedReason } : executionState === "unknown" ? { diagnosis: reconciliation?.message ?? "Completion is unconfirmed. Saved sessions are context, not proof of successful execution." } : {}),
 	};
+}
+
+export function ownedRunExecutionResult(run: OwnedRun, state: SubagentState, index?: number): SubagentExecutionResult {
+	const view = ownedRunView(run, state);
+	const location = exactAsyncRunLocation(run.runId, ASYNC_DIR, RESULTS_DIR);
+	const saved = location.resultPath ? readAsyncResultFile(location.resultPath) : undefined;
+	const children = view.children.filter((child) => index === undefined || child.index === index);
+	const results: SingleResult[] = children.flatMap((child) => {
+		if (!child.result) return [];
+		const { artifactPaths, ...result } = child.result;
+		return [{ ...result, ...(artifactPaths?.inputPath && artifactPaths.outputPath && artifactPaths.metadataPath
+			? { artifactPaths: { inputPath: artifactPaths.inputPath, outputPath: artifactPaths.outputPath, metadataPath: artifactPaths.metadataPath } } : {}) }];
+	});
+	const text = [index === undefined ? saved?.summary : undefined,
+		...children.map((child) => child.result ? getSingleResultOutput(child.result) || child.result.error : undefined), view.diagnosis].filter(Boolean).join("\n\n");
+	return { content: [{ type: "text", text: text || `Run ${run.runId}: ${view.state}.` }],
+		isError: index === undefined ? view.state !== "completed" : children.length === 0 || children.some((child) => child.state !== "completed"),
+		details: { mode: run.mode, runId: run.runId, asyncId: run.runId, asyncDir: location.asyncDir ?? run.asyncDir, results, run: view,
+			...(saved?.outputs ? { outputs: saved.outputs } : {}), ...(saved?.workflowGraph ? { workflowGraph: saved.workflowGraph } : {}) } };
 }
 
 function compact(value: string, max = 180): string {

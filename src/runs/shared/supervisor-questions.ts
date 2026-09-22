@@ -115,28 +115,33 @@ export function saveQuestionOwner(runId: string, sessionId: string, root = QUEST
 
 export function saveQuestionContract(runId: string, index: number, contract: SupervisorRunContract, root = QUESTIONS_DIR): void {
 	if (!Number.isSafeInteger(index) || index < 0) throw new Error("Child index must be a non-negative integer.");
-	writeAtomicJson(path.join(root, safeId(runId), "contracts", `${index}.json`), { ...readQuestionContract(runId, index, root), ...contract });
+	const file = path.join(root, safeId(runId), "contracts", `${index}.json`);
+	const previous = readRunJson<SupervisorRunContract>(file);
+	writeAtomicJson(file, { ...previous, ...contract, ...(previous?.launch ? { launch: previous.launch } : {}) });
 }
 
-export function readQuestionContract(runId: string, index: number, root = QUESTIONS_DIR): SupervisorRunContract | undefined {
-	return readRunJson<SupervisorRunContract>(path.join(root, safeId(runId), "contracts", `${index}.json`));
+export function readQuestionContract(runId: string, index: number, root = QUESTIONS_DIR, projection: { sessionFile?: string; endedAt?: number } = {}): SupervisorRunContract | undefined {
+	const contract = readRunJson<SupervisorRunContract>(path.join(root, safeId(runId), "contracts", `${index}.json`));
+	if (!contract) return undefined;
+	const native = readNativeSessionConfiguration(projection.sessionFile ?? contract.sessionFile, undefined, projection.endedAt);
+	return { ...contract, ...(contract.launch ? { launch: { ...contract.launch, ...native } } : {}) };
 }
 
-export function readNativeSessionConfiguration(sessionFile: string | undefined, cachedEntries?: FileEntry[]): { model?: string; thinking?: string; modelRecordedAt?: number } {
-	const entries = cachedEntries ?? (sessionFile && fs.existsSync(sessionFile) ? parseSessionEntries(fs.readFileSync(sessionFile, "utf8")) : []);
+export function readNativeSessionConfiguration(sessionFile: string | undefined, cachedEntries?: FileEntry[], endedAt?: number): { model?: string; thinking?: string; modelRecordedAt?: number } {
+	const raw = cachedEntries ?? (sessionFile && fs.existsSync(sessionFile) ? parseSessionEntries(fs.readFileSync(sessionFile, "utf8")) : []);
+	const entries = endedAt === undefined ? raw : raw.filter((entry) => entry.type === "session" || Date.parse(entry.timestamp) <= endedAt);
 	if (entries[0]?.type !== "session") return {};
-	const context = buildSessionContext(entries.filter((entry) => entry.type !== "session"));
-	const modelEntry = SessionManager.inMemory(undefined, undefined, entries).getBranch().findLast((entry) => entry.type === "model_change" || entry.type === "message" && entry.message.role === "assistant");
-	return { ...(context.model ? { model: `${context.model.provider}/${context.model.modelId}` } : {}), ...(entries.some((entry) => entry.type === "thinking_level_change") ? { thinking: context.thinkingLevel } : {}),
+	const branch = SessionManager.inMemory(undefined, undefined, entries).getBranch();
+	const context = buildSessionContext(branch);
+	const modelEntry = branch.findLast((entry) => entry.type === "model_change" || entry.type === "message" && entry.message.role === "assistant");
+	return { ...(context.model ? { model: `${context.model.provider}/${context.model.modelId}` } : {}), ...(branch.some((entry) => entry.type === "thinking_level_change") ? { thinking: context.thinkingLevel } : {}),
 		...(modelEntry ? { modelRecordedAt: Date.parse(modelEntry.timestamp) } : {}) };
 }
 
 export function refreshQuestionLaunch(runId: string, index: number, sessionFile: string | undefined): void {
 	if (!runId) return;
-	const contract = readQuestionContract(runId, index);
-	if (!contract?.launch) return;
-	const native = readNativeSessionConfiguration(sessionFile);
-	saveQuestionContract(runId, index, { ...contract, sessionFile: sessionFile ?? contract.sessionFile, launch: { ...contract.launch, ...native } });
+	// Compatibility for old callers: current model selection is projected on read.
+	readQuestionContract(runId, index, QUESTIONS_DIR, { sessionFile });
 }
 
 export function migrateSupervisorQuestions(ownerSessionId: string): void {
@@ -152,16 +157,16 @@ export function migrateSupervisorQuestions(ownerSessionId: string): void {
 
 export function createSupervisorQuestion(input: Omit<SupervisorQuestion, "questionId" | "createdAt" | "ownerSessionId">, root = QUESTIONS_DIR): SupervisorQuestion {
 	const runDir = path.join(root, safeId(input.runId));
-	const status = root === QUESTIONS_DIR ? readRunJson<AsyncStatus>(path.join(ASYNC_DIR, safeId(input.runId), "status.json")) : undefined;
+	const status = readRunJson<AsyncStatus>(path.join(runDir, "status.json"))
+		?? (root === QUESTIONS_DIR ? readRunJson<AsyncStatus>(path.join(ASYNC_DIR, safeId(input.runId), "status.json")) : undefined);
 	const owner = readRunJson<{ sessionId: string }>(path.join(runDir, "question-owner.json")) ?? status;
 	if (!owner?.sessionId) throw new Error(`Run ${input.runId} has no saved question owner; cannot create a recoverable supervisor question.`);
 	if (!input.sessionFile || path.extname(input.sessionFile) !== ".jsonl") throw new Error("Supervisor questions require a saved child session.");
 	if (!Number.isSafeInteger(input.index) || input.index < 0) throw new Error("Child index must be a non-negative integer.");
 	if (!input.message.trim()) throw new Error("Supervisor question must not be empty.");
-	if (root === QUESTIONS_DIR) refreshQuestionLaunch(input.runId, input.index, input.sessionFile);
-	const contract = readQuestionContract(input.runId, input.index, root)
+	const contract = readQuestionContract(input.runId, input.index, root, { sessionFile: input.sessionFile })
 		?? { effectiveAcceptance: status?.steps?.[input.index]?.acceptance?.effectiveAcceptance };
-	const question = { ...input, ...contract, ownerSessionId: owner.sessionId, questionId: randomUUID(), createdAt: Date.now() };
+	const question = { ...input, ...contract, sessionFile: input.sessionFile, pid: input.pid, ownerSessionId: owner.sessionId, questionId: randomUUID(), createdAt: Date.now() };
 	writeAtomicJson(path.join(questionDir(question, root), "question.json"), question);
 	return question;
 }
@@ -169,13 +174,15 @@ export function createSupervisorQuestion(input: Omit<SupervisorQuestion, "questi
 function questionStatePaths(question: SupervisorQuestion, file: string, root: string): string[] {
 	const current = path.join(questionDir(question, root), file);
 	const legacy = questionDir(question, LEGACY_QUESTIONS_DIR);
-	return root === QUESTIONS_DIR && fs.existsSync(path.join(legacy, "question.json")) ? [current, path.join(legacy, file)] : [current];
+	// Old waiters still claim the legacy file; both runtimes must compete on that same inode.
+	return root === QUESTIONS_DIR && fs.existsSync(path.join(legacy, "question.json")) ? [path.join(legacy, file), current] : [current];
 }
 
 function writeQuestionStateOnce(question: SupervisorQuestion, file: string, value: object, root: string): boolean {
-	const [current, ...legacy] = questionStatePaths(question, file, root);
-	const written = writeOnce(current!, value);
-	for (const target of legacy) writeOnce(target, value);
+	const [primary, ...mirrors] = questionStatePaths(question, file, root);
+	const written = writeOnce(primary!, value);
+	const winner = written ? value : readRunJson<object>(primary!)!;
+	for (const target of mirrors) writeOnce(target, winner);
 	return written;
 }
 

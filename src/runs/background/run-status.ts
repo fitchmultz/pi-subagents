@@ -6,11 +6,11 @@ import { formatModelThinking } from "../../shared/formatters.ts";
 import { buildManagementControl, formatActivityLabel, formatLiveIntercomActionLines, formatRunAction } from "../../shared/status-format.ts";
 import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus, type NestedRunSummary, type SubagentLiveIntercomHealth, type SubagentState, type SubagentExecutionResult } from "../../shared/types.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
-import { resolveAsyncRunLocation } from "./async-resume.ts";
+import { exactAsyncRunLocation, resolveAsyncRunLocation } from "./async-resume.ts";
 import { resolveSubagentRunId } from "./run-id-resolver.ts";
 import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
-import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot, type NestedRunResolutionScope } from "../shared/nested-events.ts";
+import { attachRootChildrenToSteps, findNestedRouteForRootId, findNestedRun, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 import { readAsyncResultFile } from "./async-result-file.ts";
 import { readStatus } from "../../shared/utils.ts";
 
@@ -50,7 +50,8 @@ function nestedCompletionTargetsCurrentSession(rootRunId: string, asyncDirRoot: 
 	const tracked = state.asyncJobs.get(rootRunId);
 	if (tracked) return completionTargetsCurrentSession(tracked, state);
 	try {
-		const status = readStatus(path.join(asyncDirRoot, rootRunId));
+		const location = exactAsyncRunLocation(rootRunId, asyncDirRoot, RESULTS_DIR);
+		const status = location.asyncDir ? readStatus(location.asyncDir) : null;
 		return status ? completionTargetsCurrentSession(status, state) : false;
 	} catch {
 		return false;
@@ -204,10 +205,9 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 		if (!params.dir && requestedId) {
 			const resolved = resolveSubagentRunId(requestedId, { asyncDirRoot, resultsDir, state: deps.state, nested: deps.nested });
 			if (resolved?.kind === "nested") {
-				reconcileNestedAsyncDescendants(resolved.match.route, { resultsDir, kill: deps.kill, now: deps.now });
-				const refreshed = resolveSubagentRunId(requestedId, { asyncDirRoot, resultsDir, state: deps.state, nested: deps.nested });
-				const nested = refreshed?.kind === "nested" ? refreshed : resolved;
-				const run = nested.match.run;
+				const children = reconcileNestedAsyncDescendants(resolved.match.route, { resultsDir, kill: deps.kill, now: deps.now });
+				const nested = resolved;
+				const run = findNestedRun(children, nested.id) ?? nested.match.run;
 				const state = normalizedState(run.state);
 				const intercomTarget = run.intercomTarget ?? run.leafIntercomTarget;
 				const text = formatNestedExactStatus(nested.match.rootRunId, run, childSafe);
@@ -265,8 +265,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			let nestedWarning: string | undefined;
 			try {
 				const nestedRoute = findNestedRouteForRootId(status.runId);
-				if (nestedRoute) reconcileNestedAsyncDescendants(nestedRoute, { resultsDir, kill: deps.kill, now: deps.now });
-				nestedChildren = projectNestedRegistryForRoot(status.runId)?.children ?? [];
+				if (nestedRoute) nestedChildren = reconcileNestedAsyncDescendants(nestedRoute, { resultsDir, kill: deps.kill, now: deps.now });
 				attachRootChildrenToSteps(status.runId, status.steps, nestedChildren);
 			} catch (error) {
 				nestedWarning = `Nested status unavailable: ${error instanceof Error ? error.message : String(error)}`;

@@ -4,7 +4,8 @@ import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { RESULTS_DIR, RUNNER_ERROR_LOG_FILE, type AsyncParallelGroupStatus, type AsyncResultChild, type AsyncResultTerminalState, type AsyncStatus, type NestedRunSummary, type SubagentRunMode } from "../../shared/types.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { nestedSummaryFromAsyncStatus, projectNestedEvents, resolveNestedAsyncDir, writeNestedEvent, type NestedRoute } from "../shared/nested-events.ts";
-import { readAsyncResultFileIfExists } from "./async-result-file.ts";
+import { isDurableRun, readAsyncResultFileIfExists } from "./async-result-file.ts";
+import { readRunJson } from "../shared/supervisor-questions.ts";
 import { readStatus } from "../../shared/utils.ts";
 
 export type PidLiveness = "alive" | "dead" | "unknown";
@@ -57,13 +58,14 @@ function readStatusFile(asyncDir: string): AsyncStatus | null {
 
 interface ResultRepairData {
 	state: AsyncResultTerminalState;
+	timestamp?: number;
 	results?: AsyncResultChild[];
 }
 
 function readResultRepairData(resultPath: string): ResultRepairData | undefined {
 	const data = readAsyncResultFileIfExists(resultPath);
 	if (!data) return undefined;
-	return { state: data.terminalState, ...(Array.isArray(data.results) ? { results: data.results } : {}) };
+	return { state: data.terminalState, timestamp: data.timestamp, ...(Array.isArray(data.results) ? { results: data.results } : {}) };
 }
 
 function childState(overallState: ResultRepairData["state"], child: AsyncResultChild | undefined): "complete" | "failed" | "blocked" | "paused" {
@@ -88,6 +90,7 @@ function withoutLiveActivity<T extends { currentTool?: string; currentToolArgs?:
 function terminalStatusFromResult(status: AsyncStatus, resultPath: string, now: number): AsyncStatus | undefined {
 	const repair = readResultRepairData(resultPath);
 	if (!repair) return undefined;
+	now = repair.timestamp ?? now;
 	const steps = (status.steps ?? []).map((step, index) => {
 		if (step.status !== "running" && step.status !== "pending") return withoutLiveActivity(step);
 		const child = repair.results?.[index];
@@ -178,7 +181,7 @@ function readRunnerStderr(asyncDir: string): string | undefined {
 function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, reason?: string): { status: AsyncStatus; result: object; message: string } {
 	const runId = status.runId || path.basename(asyncDir);
 	const pid = typeof status.pid === "number" ? status.pid : "unknown";
-	const defaultMessage = `Async runner process ${pid} exited or disappeared before writing a result. Marked run failed by stale-run reconciliation.`;
+	const defaultMessage = `Async runner process ${pid} exited or disappeared before writing a result. Completion is unconfirmed.`;
 	const runnerStderr = reason ? undefined : readRunnerStderr(asyncDir);
 	const message = reason ?? (runnerStderr ? `${defaultMessage}\n\nRunner stderr:\n${runnerStderr}` : defaultMessage);
 	const steps = status.steps?.length ? status.steps : [{ agent: "subagent", status: "running" as const }];
@@ -261,7 +264,7 @@ function* nestedRuns(children: NestedRunSummary[] | undefined): Generator<Nested
 	}
 }
 
-export function reconcileNestedAsyncDescendants(route: NestedRoute, options: ReconcileAsyncRunOptions = {}): void {
+export function reconcileNestedAsyncDescendants(route: NestedRoute, options: ReconcileAsyncRunOptions = {}): NestedRunSummary[] {
 	const registry = projectNestedEvents(route);
 	for (const run of nestedRuns(registry.children)) {
 		if (run.state !== "running" && run.state !== "queued") continue;
@@ -273,24 +276,24 @@ export function reconcileNestedAsyncDescendants(route: NestedRoute, options: Rec
 		});
 		const status = result.status;
 		if (!status) continue;
-		if (!result.repaired && !terminal(status.state)) continue;
 		const ts = options.now?.() ?? Date.now();
+		const child = nestedSummaryFromAsyncStatus(status, asyncDir, {
+			id: run.id, parentRunId: run.parentRunId, parentStepIndex: run.parentStepIndex,
+			depth: run.depth, path: run.path, mode: run.mode, ts,
+		});
+		child.steps?.forEach((step, index) => { step.children = run.steps?.[index]?.children; });
+		Object.assign(run, child, result.message ? { error: result.message } : {});
+		if (isDurableRun(status)) continue;
+		if (!result.repaired && !terminal(status.state)) continue;
 		writeNestedEvent(route, {
 			type: terminal(status.state) ? "subagent.nested.completed" : "subagent.nested.updated",
 			ts,
 			parentRunId: run.parentRunId,
 			parentStepIndex: run.parentStepIndex,
-			child: nestedSummaryFromAsyncStatus(status, asyncDir, {
-				id: run.id,
-				parentRunId: run.parentRunId,
-				parentStepIndex: run.parentStepIndex,
-				depth: run.depth,
-				path: run.path,
-				mode: run.mode,
-				ts,
-			}),
+			child,
 		});
 	}
+	return registry.children;
 }
 
 export function checkPidLiveness(pid: number, kill: KillFn = process.kill): PidLiveness {
@@ -315,7 +318,19 @@ export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOp
 	if (!effectiveStatus) return { status: null, repaired: false };
 
 	const runId = effectiveStatus.runId || path.basename(asyncDir);
-	const resultPath = path.join(options.resultsDir ?? RESULTS_DIR, `${runId}.json`);
+	const durable = isDurableRun(effectiveStatus) || isDurableRun(readRunJson<object>(path.join(asyncDir, "launch.json")));
+	const resultPath = durable ? path.join(asyncDir, "result.json") : path.join(options.resultsDir ?? RESULTS_DIR, `${runId}.json`);
+	if (durable) {
+		// The detached owner is the only execution writer. Inspection projects evidence.
+		const final = terminalStatusFromResult(effectiveStatus, resultPath, effectiveStatus.endedAt ?? now);
+		if (final) return { status: final, repaired: false, resultPath };
+		if (typeof effectiveStatus.pid === "number" && checkPidLiveness(effectiveStatus.pid, options.kill) === "dead") {
+			const failure = buildFailedRepair(effectiveStatus, asyncDir, effectiveStatus.lastUpdate ?? effectiveStatus.startedAt);
+			return { status: failure.status, repaired: false, message: failure.message };
+		}
+		if (terminal(effectiveStatus.state)) return { status: { ...effectiveStatus, state: "running" }, repaired: false, message: "Waiting for the owner's final result. Completion is unconfirmed." };
+		return { status: effectiveStatus, repaired: false };
+	}
 	if (fs.existsSync(resultPath)) {
 		const terminalStatus = effectiveStatus.state === "running" || effectiveStatus.state === "queued"
 			? terminalStatusFromResult(effectiveStatus, resultPath, now)

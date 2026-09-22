@@ -1,6 +1,10 @@
 import * as fs from "node:fs";
 import type { AsyncResultChild, AsyncResultFile, AsyncResultTerminalState } from "../../shared/types.ts";
 
+export function isDurableRun(value: object | null | undefined): boolean {
+	return Boolean(value && "runtimeVersion" in value && value.runtimeVersion === 2);
+}
+
 export type ParsedAsyncResultFile = Omit<AsyncResultFile, "results"> & {
 	results?: AsyncResultChild[];
 	terminalState: AsyncResultTerminalState;

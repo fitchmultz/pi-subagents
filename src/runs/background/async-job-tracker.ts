@@ -16,9 +16,10 @@ import {
 import { readStatus } from "../../shared/utils.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
-import { findNestedRouteForRootId, hasLiveNestedDescendants, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
+import { attachRootChildrenToSteps, findNestedRouteForRootId, hasLiveNestedDescendants } from "../shared/nested-events.ts";
 import { asyncStatusToSummary, listAsyncRuns } from "./async-status.ts";
 import { isTuiContext } from "../../shared/ui-mode.ts";
+import { exactAsyncRunLocation } from "./async-resume.ts";
 
 interface AsyncJobTrackerOptions {
 	render?: (ctx: ExtensionContext, jobs: AsyncJobState[]) => void;
@@ -129,6 +130,12 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		}
 	};
 
+	const refreshNestedJob = (job: AsyncJobState) => {
+		if (!job.nestedRoute) return;
+		job.nestedChildren = reconcileNestedAsyncDescendants(job.nestedRoute, { resultsDir, kill: options.kill, now: options.now });
+		attachRootChildrenToSteps(job.asyncId, job.steps, job.nestedChildren);
+	};
+
 	const ensurePoller = () => {
 		if (state.poller) return;
 		state.poller = setInterval(() => {
@@ -158,24 +165,16 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				let nestedRefreshFailed = false;
 				const refreshNestedProjection = () => {
 					try {
-						updateAsyncJobNestedProjection(job);
+						refreshNestedJob(job);
 					} catch (error) {
 						nestedRefreshFailed = true;
 						console.error(`Failed to refresh nested async descendants for '${job.asyncDir}':`, error);
 					}
 				};
-				const reconcileNestedDescendants = () => {
-					try {
-						if (job.nestedRoute) reconcileNestedAsyncDescendants(job.nestedRoute, { resultsDir, kill: options.kill, now: options.now });
-					} catch (error) {
-						nestedRefreshFailed = true;
-						console.error(`Failed to refresh nested async descendants for '${job.asyncDir}':`, error);
-					}
-					refreshNestedProjection();
-				};
+
 				try {
 					emitNewControlEvents(job);
-					reconcileNestedDescendants();
+					refreshNestedProjection();
 					const reconciliation = reconcileAsyncRun(job.asyncDir, {
 						resultsDir,
 						kill: options.kill,
@@ -263,7 +262,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		const info = data as AsyncStartedEvent;
 		if (!info.id) return;
 		const now = Date.now();
-		const asyncDir = info.asyncDir ?? path.join(asyncDirRoot, info.id);
+		const asyncDir = info.asyncDir ?? exactAsyncRunLocation(info.id, asyncDirRoot, resultsDir).asyncDir ?? path.join(asyncDirRoot, info.id);
 		const rawAgents = info.agents?.length ? info.agents : info.chain && info.chain.length > 0 ? info.chain : info.agent ? [info.agent] : undefined;
 		const validParallelGroups = normalizeParallelGroups(info.parallelGroups, Number.MAX_SAFE_INTEGER, info.chainStepCount ?? Number.MAX_SAFE_INTEGER);
 		const firstGroup = validParallelGroups.find((group) => group.start === 0);
@@ -304,7 +303,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			job.updatedAt = Date.now();
 			if (result.asyncDir) job.asyncDir = result.asyncDir;
 			try {
-				updateAsyncJobNestedProjection(job);
+				refreshNestedJob(job);
 			} catch (error) {
 				nestedRefreshFailed = true;
 				console.error(`Failed to refresh nested async descendants for '${job.asyncDir}':`, error);

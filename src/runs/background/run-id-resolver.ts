@@ -1,7 +1,5 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { ASYNC_DIR, RESULTS_DIR, type SubagentState } from "../../shared/types.ts";
-import { findAsyncRunPrefixMatches, type AsyncRunLocation } from "./async-resume.ts";
+import { exactAsyncRunLocation, findAsyncRunPrefixMatches, type AsyncRunLocation } from "./async-resume.ts";
 import { assertSafeNestedId, findNestedRunMatchesById, type NestedRoute, type NestedRunMatch, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 
 export type ResolvedSubagentRunId =
@@ -14,17 +12,6 @@ export interface ResolveSubagentRunIdDeps {
 	asyncDirRoot?: string;
 	resultsDir?: string;
 	nested?: NestedRunResolutionScope;
-}
-
-function exactAsyncLocation(id: string, asyncDirRoot: string, resultsDir: string): AsyncRunLocation | undefined {
-	const asyncDir = path.join(asyncDirRoot, id);
-	const resultPath = path.join(resultsDir, `${id}.json`);
-	if (!fs.existsSync(asyncDir) && !fs.existsSync(resultPath)) return undefined;
-	return {
-		asyncDir: fs.existsSync(asyncDir) ? asyncDir : null,
-		resultPath: fs.existsSync(resultPath) ? resultPath : null,
-		resolvedId: id,
-	};
 }
 
 function foregroundIds(state: SubagentState | undefined): string[] {
@@ -58,8 +45,8 @@ export function resolveSubagentRunId(id: string, deps: ResolveSubagentRunIdDeps 
 
 	const nestedScope = deps.nested ?? nestedScopeFromState(deps.state);
 	if (deps.state?.foregroundControls.has(id)) return { kind: "foreground", id };
-	const exactAsync = exactAsyncLocation(id, asyncDirRoot, resultsDir);
-	if (exactAsync) return { kind: "async", id, location: exactAsync };
+	const exactAsync = exactAsyncRunLocation(id, asyncDirRoot, resultsDir);
+	if (exactAsync.asyncDir || exactAsync.resultPath) return { kind: "async", id, location: exactAsync };
 	const exactNested = findNestedRunMatchesById(id, nestedScope ? { scope: nestedScope } : {});
 	if (exactNested.length > 1) throw new Error(`Nested run id '${id}' is ambiguous across authorized registries. Provide the full id after stale registries are cleaned up.`);
 	if (exactNested[0]) return { kind: "nested", id, match: exactNested[0] };
