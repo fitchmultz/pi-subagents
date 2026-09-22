@@ -28,8 +28,14 @@ const result = (): SubagentExecutionResult => ({ content: [{ type: "text", text:
 
 async function harness(t: TestContext, portable = true) {
 	const root = mkdtempSync(path.join(tmpdir(), "parent-usage-"));
-	const sessions: Array<{ abort(): Promise<void>; dispose(): void }> = [];
-	t.after(async () => { for (const session of sessions) { await session.abort(); session.dispose(); } rmSync(root, { recursive: true, force: true }); });
+	const sessions = new Set<InstanceType<typeof sdk.AgentSession>>();
+	async function close(session: InstanceType<typeof sdk.AgentSession>) {
+		if (!sessions.delete(session)) return;
+		await session.abort();
+		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+		session.dispose();
+	}
+	t.after(async () => { for (const session of sessions) await close(session); rmSync(root, { recursive: true, force: true }); });
 	const faux = fauxProvider({ provider: "parent-usage-fixture" });
 	const modelRuntime = await sdk.ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
 	modelRuntime.registerNativeProvider(faux.provider);
@@ -66,7 +72,7 @@ async function harness(t: TestContext, portable = true) {
 		assert.deepEqual(loader.getExtensions().errors, []);
 		const { session } = await sdk.createAgentSession({ cwd: root, agentDir: root, modelRuntime, model: faux.getModel(), settingsManager, resourceLoader: loader,
 			sessionManager: file ? sdk.SessionManager.open(file) : sdk.SessionManager.create(root, path.join(root, "sessions")), tools: ["usage_wait", ...(delegation ? [delegation.tool] : [])] });
-		sessions.push(session);
+		sessions.add(session);
 		await session.bindExtensions({ mode: "print", onError: (error: unknown) => errors.push(error) });
 		const invoke = async (tool: string, ...args: object[]) => {
 			faux.setResponses([fauxAssistantMessage(args.map((params) => fauxToolCall(tool, params)), { stopReason: "toolUse" }), fauxAssistantMessage("Done")]);
@@ -75,7 +81,7 @@ async function harness(t: TestContext, portable = true) {
 		};
 		return { session, adapter, ctx, nativeAvailable, invoke, wait: (...args: object[]) => invoke("usage_wait", ...args), setContributions(value: UsageContribution[]) { contributions = value; } };
 	}
-	return { open };
+	return { open, close };
 }
 
 function toolMessages(session: any) {
@@ -90,7 +96,7 @@ test("portable concurrent final waits charge once in native journal and survive 
 	assert.deepEqual(toolMessages(first.session).map((message: any) => message.usage), [usage, undefined]);
 	const file = first.session.sessionManager.getSessionFile();
 	assert.equal(readFileSync(file, "utf8").split("\n").filter((line) => line.includes('"role":"toolResult"') && line.includes('"parentUsage"')).length, 1);
-	await first.session.abort(); first.session.dispose();
+	await h.close(first.session);
 	const resumed = await h.open(file);
 	await resumed.wait({});
 	assert.equal(resumed.session.getSessionStats().cost, 10);
@@ -137,7 +143,7 @@ test("native delayed recordUsage keeps attribution and deduplicates after recove
 	]);
 	const file = first.session.sessionManager.getSessionFile();
 	const before = readFileSync(file, "utf8");
-	await first.session.abort(); first.session.dispose();
+	await h.close(first.session);
 	const resumed = await h.open(file);
 	assert.equal(resumed.adapter.record(contributions, resumed.ctx), true);
 	assert.equal(readFileSync(file, "utf8"), before);
@@ -155,7 +161,7 @@ test("native delayed usage survives restart before the parent's first assistant 
 	first.adapter.record([contribution], first.ctx);
 	const file = first.session.sessionManager.getSessionFile();
 	assert.ok(existsSync(file), "successful native recordUsage must persist paid work even before the first assistant turn");
-	await first.session.abort(); first.session.dispose();
+	await h.close(first.session);
 	const resumed = await h.open(file);
 	resumed.adapter.record([contribution], resumed.ctx);
 	assert.equal(resumed.session.getSessionStats().cost, 10);
@@ -204,7 +210,7 @@ for (const childSafe of [false, true]) test(`${childSafe ? "child-safe" : "paren
 	const env = { PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_FANOUT_CHILD: "1", PI_SUBAGENT_PARENT_ROOT_RUN_ID: rootId, PI_SUBAGENT_PARENT_RUN_ID: rootId, PI_SUBAGENT_PARENT_CHILD_INDEX: "0", PI_SUBAGENT_PARENT_EVENT_SINK: route.eventSink, PI_SUBAGENT_PARENT_CONTROL_INBOX: route.controlInbox, PI_SUBAGENT_PARENT_CAPABILITY_TOKEN: route.capabilityToken };
 	const savedEnv = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
 	if (childSafe) Object.assign(process.env, env);
-	await original.session.abort(); original.session.dispose();
+	await h.close(original.session);
 	let directUsage;
 	const parent = await h.open(savedParentFile, { tool: childSafe ? "subagent" : "agent_runs", register(pi) {
 		(childSafe ? registerFanoutSubagent : registerSubagents)(pi);
