@@ -1541,7 +1541,7 @@ describe("async execution utilities", () => {
 			assert.ok(asyncDir, "expected asyncDir");
 			fs.writeFileSync(path.join(asyncDir, "worktree-diffs"), "not a directory", "utf-8");
 
-			const resultPath = path.join(RESULTS_DIR, `${asyncId}.json`);
+			const resultPath = path.join(getRunMetadataDir(asyncId), "result.json");
 			const deadline = Date.now() + 30_000;
 			while (!fs.existsSync(resultPath)) {
 				if (Date.now() > deadline) assert.fail(`Timed out waiting for async result file: ${resultPath}`);

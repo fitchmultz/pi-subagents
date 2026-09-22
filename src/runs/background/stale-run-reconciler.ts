@@ -94,6 +94,7 @@ function terminalStatusFromResult(status: AsyncStatus, resultPath: string, now: 
 	const steps = (status.steps ?? []).map((step, index) => {
 		if (step.status !== "running" && step.status !== "pending") return withoutLiveActivity(step);
 		const child = repair.results?.[index];
+		if (isDurableRun(status) && step.status === "pending" && !child) return withoutLiveActivity(step);
 		const state = childState(repair.state, child);
 		return withoutLiveActivity({
 			...step,

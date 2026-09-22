@@ -421,12 +421,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			?? [{ agent: effectiveParams.agent!, task: effectiveParams.task, label: effectiveParams.label }];
 
 		saveQuestionOwner(runId, ctx.sessionManager.getSessionId());
-		rememberOwnedRun(deps.state, {
-			runId, ownerSessionId: ctx.sessionManager.getSessionId(), rootRunId: runId,
-			source: "async", mode: hasChain ? "chain" : hasTasks ? "parallel" : "single",
-			cwd: effectiveCwd, task: effectiveParams.task ?? effectiveParams.tasks?.map((task) => task.task).join("\n") ?? "Delegated workflow",
-			startedAt: Date.now(), children: assignments.map(({ agent, task, label }, index) => ({ agent, index, task, label, ...(assignmentNodes?.[index] ? { workflowNodeId: assignmentNodes[index]!.id } : {}) })),
-		});
 		const execData: ExecutionContextData = {
 			params: effectiveParams,
 			effectiveCwd,
@@ -453,13 +447,15 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		try {
 			const result = runAsyncPath(execData, deps);
 			if (!result) throw new Error("Invalid subagent execution mode.");
-			const owned = deps.state.ownedRuns?.get(runId);
-			if (owned) rememberOwnedRun(deps.state, {
-				...owned,
-				...(result.details.asyncId ? { asyncDir: result.details.asyncDir, pid: result.details.asyncPid ?? deps.state.asyncJobs.get(runId)?.pid } : {}),
-				...(result.isError ? { error: result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") } : {}),
+			if (result.isError) return withForkContext(result, invocationContext);
+			rememberOwnedRun(deps.state, {
+				runId, ownerSessionId: ctx.sessionManager.getSessionId(), rootRunId: runId,
+				source: "async", mode: hasChain ? "chain" : hasTasks ? "parallel" : "single",
+				cwd: effectiveCwd, task: effectiveParams.task ?? effectiveParams.tasks?.map((task) => task.task).join("\n") ?? "Delegated workflow",
+				asyncDir: result.details.asyncDir, pid: result.details.asyncPid ?? deps.state.asyncJobs.get(runId)?.pid,
+				startedAt: Date.now(), children: assignments.map(({ agent, task, label }, index) => ({ agent, index, task, label, ...(assignmentNodes?.[index] ? { workflowNodeId: assignmentNodes[index]!.id } : {}) })),
 			});
-			if ((!effectiveAsync || params.nativeToolCallId) && !result.isError && result.details.asyncId) {
+			if ((!effectiveAsync || params.nativeToolCallId) && result.details.asyncId) {
 				return withForkContext(await waitForOwnedRun({ id: runId, deps, ctx, signal, onUpdate: onUpdateWithContext,
 					cancelNewRun: !effectiveAsync, executionResult: true, includeProgress: effectiveParams.includeProgress, nativeAsync: Boolean(params.nativeToolCallId) }), invocationContext);
 			}

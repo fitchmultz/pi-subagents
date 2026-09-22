@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createSubagentExecutor, type SubagentParamsLike } from "../../src/runs/foreground/subagent-executor.ts";
-import { createSupervisorQuestion, getRunMetadataDir, questionProcessAlive, readQuestionContract, saveQuestionContract } from "../../src/runs/shared/supervisor-questions.ts";
+import { createSupervisorQuestion, getRunMetadataDir, questionProcessAlive, readQuestionContract } from "../../src/runs/shared/supervisor-questions.ts";
 import { ASYNC_DIR, RESULTS_DIR, getAsyncConfigPath, type AsyncResultFile, type ForegroundResumeRun, type SubagentExecutionResult } from "../../src/shared/types.ts";
 import { readStatus } from "../../src/shared/utils.ts";
 import { createEventBus, createMockPi, createTempDir, makeAgent, makeMinimalCtx, removeTempDir, type MockPi } from "../support/helpers.ts";
@@ -352,7 +352,7 @@ describe("saved output choices", () => {
 		const id = original.details.asyncId!;
 		const legacy = { ...savedLaunch(id) };
 		delete legacy.generatedOutputFilename;
-		saveQuestionContract(id, 0, { launch: legacy });
+		fs.writeFileSync(path.join(getRunMetadataDir(id), "contracts", "0.json"), JSON.stringify({ ...JSON.parse(contractBytes(id).toString()), launch: legacy }));
 		const receipt = contractBytes(id);
 		assert.ok(typeof legacy.output === "string");
 		assert.ok(legacy.output.includes(id));
@@ -425,9 +425,9 @@ describe("saved output choices", () => {
 				const legacy = { ...previous };
 				delete legacy.generatedOutputFilename;
 				Reflect.deleteProperty(legacy, "outputFromAgentDefault");
-				saveQuestionContract(id, 0, { launch: legacy });
+				fs.writeFileSync(path.join(getRunMetadataDir(id), "contracts", "0.json"), JSON.stringify({ ...JSON.parse(contractBytes(id).toString()), launch: legacy }));
 			}
-			if (choice === "no-launch") saveQuestionContract(id, 0, { launch: undefined });
+			if (choice === "no-launch") fs.writeFileSync(path.join(getRunMetadataDir(id), "contracts", "0.json"), JSON.stringify({ ...JSON.parse(contractBytes(id).toString()), launch: undefined }));
 			const receipt = contractBytes(id);
 			profile.output = "changed-current-profile.md";
 			mockPi.onCall({ output: "Current-profile report" });
@@ -485,8 +485,8 @@ describe("saved output choices", () => {
 		const replacementCwd = path.join(tempDir, "replacement");
 		fs.mkdirSync(originalCwd);
 		fs.mkdirSync(replacementCwd);
-		mockPi.onCall({ output: "Predecessor report" });
-		mockPi.onCall({ output: "Predecessor report" });
+		const report = '```acceptance-report\n{"criteriaSatisfied":[{"id":"criterion-1","status":"satisfied","evidence":"fixture"}]}\n```';
+		mockPi.onCall({ nativeReport: { scenario: "single", initialReport: `Predecessor report\n${report}`, report: `Predecessor report\n${report}`, receiptPath: path.join(tempDir, "native-before.json") } });
 		const original = await run({ agent: "writer", task: "Prepare the result", cwd: originalCwd, output: false,
 			acceptance: { criteria: ["Deliver the result"], maxFinalizationTurns: 1 } });
 		const id = original.details.runId!;
@@ -498,13 +498,16 @@ describe("saved output choices", () => {
 		}) : undefined;
 		fs.rmdirSync(originalCwd);
 		const before = mockPi.callCount();
-		mockPi.onCall({ output: "Continued report" });
-		mockPi.onCall({ output: "Continued report" });
+		const nativeReceipt = path.join(tempDir, "native-after.json");
+		mockPi.onCall({ nativeReport: { scenario: "single", initialReport: `Continued report\n${report}`, report: `Continued report\n${report}`, receiptPath: nativeReceipt } });
 		const continued = await run({ action, id, questionId: question?.questionId, message: "Continue in the replacement", cwd: "replacement" });
 		assert.equal(savedLaunch(continued.details.asyncId!).cwd, replacementCwd);
 		const attempts = fs.readdirSync(mockPi.dir).filter((name) => /^call-.*\.json$/.test(name)).sort()
 			.map((name) => JSON.parse(fs.readFileSync(path.join(mockPi.dir, name), "utf8"))).slice(before);
-		assert.equal(attempts.length, 2);
+		assert.equal(attempts.length, 1, "initial work and review share one native process");
+		const native = JSON.parse(fs.readFileSync(nativeReceipt, "utf8"));
+		assert.equal(native.providerCalls, 2);
+		assert.deepEqual(native.providerCwds, [replacementCwd, replacementCwd].map((dir) => fs.realpathSync(dir)));
 		for (const call of attempts) {
 			assert.equal(call.cwd, fs.realpathSync(replacementCwd));
 			assert.equal(call.args[call.args.indexOf("--session") + 1], contract.sessionFile);

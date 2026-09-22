@@ -18,7 +18,7 @@ export async function runNativeReport(args, fixture) {
 	const schemaPath = nativeConfig?.reportRuntime.schemaPath ?? process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA;
 	const capturePath = nativeConfig?.reportRuntime.outputPath ?? process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE;
 	const receipt = { scenario, sdkRoot, schema: schemaPath ? JSON.parse(fs.readFileSync(schemaPath, "utf8")) : undefined,
-		providerCalls: 0, networkRequests: 0, extensionErrors: [], events: [], messages: [] };
+		providerCalls: 0, providerCwds: [], networkRequests: 0, extensionErrors: [], events: [], messages: [] };
 	const save = () => {
 		// One writer per receipt; concurrent readers must see a complete snapshot.
 		const temporary = `${fixture.receiptPath}.tmp`;
@@ -95,7 +95,10 @@ export async function runNativeReport(args, fixture) {
 		async () => { first.resolve(); await release.promise; return initial; },
 		...(tails[scenario] ?? [plain]),
 		...(fixture.retry ? [submit(report, "retry-report")] : []),
-	]);
+	].map((response) => async (...args) => {
+		receipt.providerCwds.push(session.sessionManager.getCwd());
+		return typeof response === "function" ? response(...args) : response;
+	}));
 	session.subscribe((event) => {
 		if (event.type === "message_end") receipt.messages.push(event.message);
 		if (["message_end", "tool_execution_start", "tool_execution_end", "agent_settled"].includes(event.type)) {

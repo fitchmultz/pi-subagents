@@ -79,6 +79,7 @@ describe("chain contracts through the detached owner", () => {
 		assert.equal(result.isError, true);
 		assert.match(result.content[0].text, /outputMode: "file-only"/);
 		assert.equal(mock.callCount(), 0);
+		assert.equal(state.ownedRuns.size, 0, "rejected plans must not leave phantom owned children");
 	});
 
 	it("rejects duplicate, unknown and malformed output references before spawning", async () => {
@@ -91,6 +92,7 @@ describe("chain contracts through the detached owner", () => {
 			assert.equal(result.isError, true);
 			assert.match(result.content[0].text, expected);
 			assert.equal(mock.callCount(), 0);
+			assert.equal(state.ownedRuns.size, 0, "invalid output bindings must not register a run");
 		}
 	});
 

@@ -170,7 +170,8 @@ async function runJourney() {
 	assert.deepEqual(beforeContinuation.children.map((child) => child.state), ["completed", "live"]);
 	const launchSession = beforeContinuation.children[0].sessionFile;
 	const initialLaunchCalls = calls().filter((call) => call.sessionFile === launchSession);
-	assert.equal(initialLaunchCalls.length, 2, "the initial child completes its same-session acceptance turn before continuation");
+	assert.equal(initialLaunchCalls.length, 1, "acceptance stays in the original child process");
+	assert.equal(initialLaunchCalls[0].providerCalls, 2, "the child performs its initial and review turns in one native session");
 	assert.ok(initialLaunchCalls.every((call) => call.modelArg === "openai-codex/gpt-6-astra:high"));
 	assert.equal(JSON.parse(fs.readFileSync(launchStatusFile, "utf8")).steps[0].acceptance.finalization.status, "completed");
 	const nativeInitial = sdk.SessionManager.open(launchSession).buildSessionContext();
@@ -183,7 +184,8 @@ async function runJourney() {
 	assert.equal(launchContinuationResult.results[0].sessionFile, launchSession);
 	assert.equal(launchContinuationResult.results[0].acceptance.finalization.status, "completed");
 	const continuationCalls = calls().filter((call) => call.sessionFile === launchSession).slice(initialLaunchCalls.length);
-	assert.equal(continuationCalls.length, 2);
+	assert.equal(continuationCalls.length, 1);
+	assert.equal(continuationCalls[0].providerCalls, 2);
 	assert.ok(continuationCalls.every((call) => call.modelArg === "openai/gpt-6-astra:low" && call.previousMessages >= 4));
 	const nativeContinued = sdk.SessionManager.open(launchSession).buildSessionContext();
 	assert.deepEqual(nativeContinued.model, { provider: "openai", modelId: "gpt-6-astra" });
@@ -236,12 +238,14 @@ async function runJourney() {
 	await invoke("load_subagent", {});
 	const acceptance = { criteria: ["Return the requested token"], evidence: ["manual-notes"], maxFinalizationTurns: 1 };
 	const questionRun = await invoke("subagent", { agent: "probe", task: "CREATE_QUESTION", async: false, output: false, model: "openai-codex/gpt-6-astra:off", acceptance });
-	const questionId = questionRun.details.runId;
+	const questionId = questionRun.details.runId ?? questionRun.details.wait?.runId;
+	await completed(questionId);
 	const questionContract = readQuestionContract(questionId, 0);
 	await session.reload();
 	const questions = await invoke("agent_runs", { action: "questions", id: questionId });
 	const pending = questions.details.questions.find((question) => question.state === "awaiting_input");
 	assert.ok(pending);
+	await wait(() => !questionProcessAlive(pending), "question process exit");
 	const withQuestion = await invoke("agent_runs", { action: "list", limit: 2 });
 	assert.equal(withQuestion.details.runs[0].runId, questionId);
 	fs.rmSync(runtimeDir, { recursive: true, force: true });
@@ -288,10 +292,11 @@ async function runJourney() {
 	assert.match(JSON.stringify(conflictingAnswer.content), /different saved answer/);
 	assert.equal(resolvedQuestions.filter((id) => id === pending.questionId).length, 2, "failed durable writes must not emit resolution");
 	const cancelledRun = await invoke("delegate", { agent: "probe", task: "CREATE_QUESTION", async: false, output: false });
-	const cancelledQuestion = (await invoke("agent_runs", { action: "questions", id: cancelledRun.details.runId })).details.questions[0];
-	await invoke("agent_runs", { action: "stop", id: cancelledRun.details.runId });
+	const cancelledId = cancelledRun.details.runId ?? cancelledRun.details.wait?.runId;
+	const cancelledQuestion = (await invoke("agent_runs", { action: "questions", id: cancelledId })).details.questions[0];
+	await invoke("agent_runs", { action: "stop", id: cancelledId });
 	assert.ok(resolvedQuestions.includes(cancelledQuestion.questionId));
-	assert.equal((await invoke("agent_runs", { action: "questions", id: cancelledRun.details.runId })).details.questions[0].state, "cancelled");
+	assert.equal((await invoke("agent_runs", { action: "questions", id: cancelledId })).details.questions[0].state, "cancelled");
 	evidence.checks.push("answer/retry/cancel emit question-resolution only after durable writes; conflicts emit nothing");
 	try { await invoke("delegate", { agent: "probe", task: "PERMANENT_FAILURE", async: false, output: false }); } catch {}
 	const batch = [];
@@ -316,10 +321,10 @@ async function runJourney() {
 	assert.equal(nudgeDeliveries, nudgesBefore);
 	assert.equal((await inspect(failedId)).details.run.state, "failed");
 	const unknownId = batch[0].details.runId;
-	fs.rmSync(path.join(getRunMetadataDir(unknownId), "foreground.json"));
+	fs.rmSync(path.join(getRunMetadataDir(unknownId), "result.json"));
 	saveQuestionContract(unknownId, 0, { result: undefined });
 	const childEvidenceId = batch[3].details.runId;
-	fs.rmSync(path.join(getRunMetadataDir(childEvidenceId), "foreground.json"));
+	fs.rmSync(path.join(getRunMetadataDir(childEvidenceId), "result.json"));
 	const unknownOwnership = session.sessionManager.getEntries().findLast((entry) => entry.type === "custom" && entry.customType === "subagent-run" && entry.data.runId === unknownId).data;
 	session.sessionManager.appendCustomEntry("subagent-run", { ...unknownOwnership, children: [] });
 	const missingId = batch[1].details.runId;
@@ -338,7 +343,8 @@ async function runJourney() {
 	assert.equal((await inspect(continuedId)).details.run.children[0].result.finalOutput, "RECALLED FIRST_SESSION_TOKEN");
 	assert.equal((await inspect(unknownId)).details.run.state, "unknown");
 	const fromChildEvidence = (await inspect(childEvidenceId)).details.run;
-	assert.equal(fromChildEvidence.state, "completed", "a persisted child result remains authoritative without the aggregate file");
+	assert.equal(fromChildEvidence.state, "unknown", "child evidence cannot invent the durable owner's missing workflow outcome");
+	assert.equal(fromChildEvidence.children[0].state, "completed", "the persisted child outcome remains authoritative");
 	assert.equal(fromChildEvidence.children[0].result.finalOutput, "FIRST_SESSION_TOKEN");
 	assert.equal((await inspect(missingId)).details.run.children[0].missingSession, true);
 	const missingSession = await invoke("agent_runs", { action: "continue", id: missingId, message: "Do not invent a missing session." });
@@ -351,11 +357,18 @@ async function runJourney() {
 	const other = newParent(path.join(root, "unrelated.jsonl"));
 	await open(other);
 	assert.equal((await invoke("agent_runs", { action: "list" })).details.runList.total, 0);
-	const foreignInspection = await inspect(originalId);
-	assert.equal(foreignInspection.isError, true);
-	assert.match(JSON.stringify(foreignInspection.content), /not found/);
-	assert.equal((await inspect(afterLoss.details.asyncId)).details.managementControl.state, "completed");
-	assert.equal((await invoke("agent_runs", { action: "list" })).details.runList.total, 0, "explicit legacy inspection must not adopt the run");
+	const beforeForeignCalls = calls().length, ownerBytes = fs.readFileSync(parentFile);
+	for (const id of [originalId, afterLoss.details.asyncId]) {
+		const metadata = ["status.json", "result.json"].map((name) => path.join(getRunMetadataDir(id), name));
+		const before = metadata.map((file) => fs.readFileSync(file));
+		const foreignInspection = await inspect(id);
+		assert.equal(foreignInspection.isError, undefined);
+		assert.equal(foreignInspection.details.managementControl.state, "completed");
+		assert.deepEqual(metadata.map((file) => fs.readFileSync(file)), before, "explicit inspection must not mutate another owner's evidence");
+	}
+	assert.equal(calls().length, beforeForeignCalls);
+	assert.deepEqual(fs.readFileSync(parentFile), ownerBytes);
+	assert.equal((await invoke("agent_runs", { action: "list" })).details.runList.total, 0, "explicit inspection must not adopt another parent's durable run");
 	await close();
 	const fork = sdk.SessionManager.forkFrom(parentFile, cwd, path.join(root, "forks"));
 	await open(fork.getSessionFile());
@@ -367,10 +380,16 @@ async function runJourney() {
 	const legacyFile = path.join(root, "legacy-parent.jsonl");
 	fs.writeFileSync(legacyFile, `${JSON.stringify(header)}\n`);
 	const legacy = sdk.SessionManager.open(legacyFile);
-	legacy.appendMessage(originalReceipt);
+	const legacyReceipt = (receipt) => {
+		const copy = structuredClone(receipt);
+		delete copy.details.asyncId; delete copy.details.asyncDir; delete copy.details.wait;
+		return copy;
+	};
+	legacy.appendMessage(legacyReceipt(originalReceipt));
 	const stripped = batch[2];
-	assert.equal(stripped.details.results[0].finalOutput, undefined, "use the actual compact intercom receipt");
-	legacy.appendMessage({ role: "toolResult", toolCallId: "legacy-stripped", toolName: "delegate", content: stripped.content, details: stripped.details, isError: false, timestamp: Date.now() });
+	const strippedReceipt = legacyReceipt({ role: "toolResult", toolCallId: "legacy-stripped", toolName: "delegate", content: stripped.content, details: stripped.details, isError: false, timestamp: Date.now() });
+	for (const result of strippedReceipt.details.results) delete result.finalOutput;
+	legacy.appendMessage(strippedReceipt);
 	fs.rmSync(path.join(QUESTIONS_DIR, stripped.details.runId), { recursive: true, force: true });
 	fs.rmSync(path.join(QUESTIONS_DIR, originalId), { recursive: true, force: true });
 	await open(legacyFile);
@@ -411,8 +430,10 @@ async function runLegacyAsync() {
 	const asyncDir = path.join(ASYNC_DIR, runId), oldResultPath = path.join(RESULTS_DIR, `${runId}.json`);
 	fs.mkdirSync(asyncDir, { recursive: true });
 	fs.mkdirSync(RESULTS_DIR, { recursive: true });
+	fs.mkdirSync(QUESTIONS_DIR, { recursive: true });
+	for (const directory of [ASYNC_DIR, QUESTIONS_DIR]) fs.writeFileSync(path.join(directory, ".DS_Store"), "not a run directory");
 	const endedAt = Date.now(), startedAt = endedAt - 1000;
-	const status = { runId, sessionId: ownerFile, mode: "single", state: "complete", cwd, startedAt, endedAt, lastUpdate: endedAt, currentStep: 0, chainStepCount: 1, sessionFile, steps: [{ agent: "probe", status: "complete", model: "openai/gpt-6-astra", sessionFile, startedAt, endedAt, exitCode: 0 }] };
+	const status = { runId, sessionId: ownerFile, mode: "single", state: "complete", cwd, startedAt, endedAt, lastUpdate: endedAt, currentStep: 0, chainStepCount: 1, sessionFile, steps: [{ agent: "probe", status: route === "status-session" ? "completed" : "complete", model: "openai/gpt-6-astra", sessionFile, startedAt, endedAt, exitCode: 0 }] };
 	const result = { id: runId, sessionId: ownerFile, mode: "single", state: "complete", success: true, cwd, asyncDir, sessionFile, timestamp: endedAt, exitCode: 0, results: [{ agent: "probe", model: "openai/gpt-6-astra", sessionFile, success: true, exitCode: 0, output }] };
 	fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify(status));
 	if (route !== "status-session") {
@@ -485,7 +506,9 @@ async function runWorkflowOutcomes() {
 		const requestId = randomUUID();
 		const unsubscribe = bus.on("subagent:slash:response", (message) => {
 			if (message.requestId !== requestId) return;
-			unsubscribe(); resolve(message.result);
+			unsubscribe();
+			session.sessionManager.appendCustomMessageEntry("subagent-slash-result", message.result.content, true, { requestId, result: message.result });
+			resolve(message.result);
 		});
 		bus.emit("subagent:slash:request", { requestId, params });
 	});
@@ -511,12 +534,26 @@ async function runWorkflowOutcomes() {
 	evidence.workflows = [];
 	for (const background of [false, true]) for (const scenario of cases) {
 		const name = `${background ? "background" : "foreground"}-${scenario.name}`;
-		const beforeCalls = calls().length;
+		const beforeCalls = calls().length, beforeNotices = notifications.length;
+		const beforeRuns = scenario.name === "before-launch-rejected" ? (await invoke("agent_runs", { action: "list" })).details.runList.total : undefined;
 		const result = await execute({ chain: scenario.chain, task: name, async: background, context: "fresh", artifacts: false });
-		const id = result.details.runId;
+		const id = result.details?.runId;
+		if (scenario.name === "before-launch-rejected") {
+			verify(`${name}: invalid plans create no run or child`, () => {
+				assert.equal(result.isError, true);
+				assert.match(JSON.stringify(result.content), scenario.error);
+				assert.equal(id, undefined);
+				assert.equal(calls().length, beforeCalls);
+				assert.equal(notifications.length, beforeNotices);
+			});
+			assert.equal((await invoke("agent_runs", { action: "list" })).details.runList.total, beforeRuns);
+			evidence.workflows.push({ name, calls: 0, notifications: [] });
+			continue;
+		}
 		assert.ok(id, `${name}: native owning executor must return its run handle`);
-		const terminal = result.details.asyncId ? await completed(id) : result.details;
-		if (result.details.asyncId) await wait(() => completions.some((message) => message.runId === id), `${name} acknowledged completion`);
+		const terminal = await completed(id);
+		if (background) await wait(() => completions.some((message) => message.runId === id), `${name} acknowledged completion`);
+		else await wait(() => !fs.existsSync(path.join(runtimeDir, "async-subagent-results", `${id}.json`)), `${name} consumed completion`);
 		const childCalls = calls().slice(beforeCalls);
 		const emitted = notifications.filter((message) => message.runId === id);
 		const receipt = { name, runId: id, result, terminal, childCalls, notifications: emitted, inspections: [] };
@@ -537,17 +574,12 @@ async function runWorkflowOutcomes() {
 			}
 		});
 		verify(`${name}: acknowledged grouped delivery reports the workflow outcome and reason`, () => {
-			assert.equal(emitted.length, scenario.expected.length ? 1 : 0);
+			assert.equal(emitted.length, background ? 1 : 0, "only a background result gets a completion notification");
 			if (!emitted.length) return;
 			const notification = emitted[0];
 			assert.equal(notification.status, scenario.error ? "failed" : "completed");
 			assert.deepEqual(notification.children.filter((child) => child.status === "completed").map((child) => child.summary), scenario.expected);
 			if (scenario.error) assert.match(notification.message, scenario.error);
-			if (!background) {
-				assert.equal(result.details.intercomDelivery.delivered, true);
-				assert.equal(result.details.intercomDelivery.status, notification.status);
-				if (scenario.error) assert.match(result.content.map((part) => part.text).join("\n"), scenario.error);
-			}
 		});
 		for (const checkpoint of ["before reload", "after reload", "after reopen"]) {
 			if (checkpoint === "after reload") await session.reload();
@@ -595,8 +627,7 @@ async function runWorkflowOutcomes() {
 				}
 			});
 			verify(`${name}: terminal views exclude unexpanded declared children ${checkpoint}`, () => {
-				// Background failures also retain the runner's explicit diagnostic result.
-				const expectedCount = background && result.details.asyncId ? terminal.results.length : scenario.expected.length;
+				const expectedCount = scenario.expected.length;
 				assert.equal(run.children.length, expectedCount);
 				assert.ok(run.children.every((child) => child.state !== "unknown"));
 				if (scenario.error && !background) assert.match(run.diagnosis, scenario.error);

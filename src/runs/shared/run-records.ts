@@ -146,7 +146,7 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 		rememberOwnedRun(state, run);
 	}
 	// Pre-update background runs may have no parent tool receipt (for example slash launches).
-	const runIds = new Set(asyncRunRoots(ASYNC_DIR).flatMap((root) => fs.existsSync(root) ? fs.readdirSync(root) : []));
+	const runIds = new Set(asyncRunRoots(ASYNC_DIR).flatMap((root) => fs.existsSync(root) ? fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name) : []));
 	for (const name of runIds) {
 		try {
 			const location = exactAsyncRunLocation(name, ASYNC_DIR, RESULTS_DIR);
@@ -170,8 +170,20 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 				children: (status.steps ?? []).map((step, index) => ({ ...children.find((child) => child.index === index), agent: step.agent, index, ...(status.mode === "chain" && nodes?.[index] ? { workflowNodeId: nodes[index]!.id } : {}), label: step.label ?? children[index]?.label, sessionFile: step.sessionFile ?? (status.steps?.length === 1 ? status.sessionFile : undefined) })),
 			});
 			const resultPath = path.join(RESULTS_DIR, `${status.runId}.json`);
-			if (!durable && terminal && fs.existsSync(resultPath) && !fs.existsSync(path.join(getRunMetadataDir(status.runId), "result.json"))) {
-				saveAsyncRunResult(status.runId, readAsyncResultFile(resultPath));
+			if (!durable && terminal && !fs.existsSync(path.join(getRunMetadataDir(status.runId), "result.json"))) {
+				if (fs.existsSync(resultPath)) saveAsyncRunResult(status.runId, readAsyncResultFile(resultPath));
+				else if (status.steps?.length && status.steps.every((step) => !["running", "pending"].includes(step.status))) {
+					const endedAt = status.endedAt ?? status.lastUpdate ?? status.startedAt;
+					const results = status.steps.map((step, index) => {
+						const sessionFile = step.sessionFile ?? (status.steps!.length === 1 ? status.sessionFile : undefined);
+						return { agent: step.agent, sessionFile, model: step.model, acceptance: step.acceptance,
+							exitCode: step.exitCode, agentProcessExit: step.agentProcessExit, success: step.status === "complete" || step.status === "completed",
+							interrupted: step.status === "paused" || undefined, timedOut: step.status === "timed-out" || undefined, error: step.error,
+							output: recoverOutput(sessionFile, path.join(asyncDir, `output-${index}.log`), step.endedAt ?? endedAt) ?? "" };
+					});
+					saveAsyncRunResult(status.runId, { id: status.runId, sessionId: status.sessionId, mode: status.mode, state: status.state,
+						success: status.state === "complete", error: status.error, timestamp: endedAt, cwd: status.cwd, asyncDir, sessionFile: status.sessionFile, results });
+				}
 			}
 		} catch (error) {
 			if (options.strict) throw error;
