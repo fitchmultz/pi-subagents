@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
+import { parseAcceptanceReport, stripAcceptanceReport } from "../../src/runs/shared/acceptance-reports.ts";
 
 // The existing mock CLI chooses the leaf response; finalization itself runs in the real SDK.
 export async function runNativeReport(args, fixture) {
@@ -52,8 +53,9 @@ export async function runNativeReport(args, fixture) {
 	await session.bindExtensions({ mode: "json", onError: (error) => receipt.extensionErrors.push(error) });
 	receipt.sessionFile = session.sessionFile;
 	const structured = session.agent.state.tools.some((tool) => tool.name === "structured_output");
+	const typed = (output) => ({ answer: stripAcceptanceReport(output), report: parseAcceptanceReport(output).report ?? { notes: "Malformed report" } });
 	const submit = (value, id) => structured
-		? ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: { report: value } }, { id }), { stopReason: "toolUse" })
+		? ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: typed(value) }, { id }), { stopReason: "toolUse" })
 		: ai.fauxAssistantMessage(value);
 	const work = () => ai.fauxAssistantMessage(ai.fauxToolCall("fixture_work", {}), { stopReason: "toolUse" });
 	const plain = ai.fauxAssistantMessage("Coordination acknowledged; no new task report.");
@@ -68,10 +70,10 @@ export async function runNativeReport(args, fixture) {
 		"user-failed-work": [work(), plain],
 		"different-work": [work()],
 		"malformed-work": [ai.fauxAssistantMessage("```acceptance-report\n{malformed\n```")],
-		"malformed-submission": [submit("```acceptance-report\n{malformed\n```", "malformed-report")],
+		"malformed-submission": [submit("```acceptance-report\n{malformed\n```", "malformed-report"), plain],
 		"invalid-tool-submission": [ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: { report: { invalid: true } } }), { stopReason: "toolUse" }), plain],
 		"invalid-submission": [ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: { report: 42 } }), { stopReason: "toolUse" }), plain],
-		mixed: [ai.fauxAssistantMessage([ai.fauxToolCall("structured_output", { value: { report: laterReport } }), ai.fauxToolCall("fixture_work", {})], { stopReason: "toolUse" })],
+		mixed: [ai.fauxAssistantMessage([ai.fauxToolCall("structured_output", { value: typed(laterReport) }), ai.fauxToolCall("fixture_work", {})], { stopReason: "toolUse" })],
 		error: [ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "Fixture provider failed after the report" })],
 		"native-abort": [ai.fauxAssistantMessage("", { stopReason: "aborted", errorMessage: "Fixture native cancellation" })],
 		cancel: [async () => {
@@ -108,7 +110,7 @@ export async function runNativeReport(args, fixture) {
 		release.resolve();
 		await pending;
 		await session.waitForIdle();
-		if (capturePath && scenario === "capture-mismatch") fs.writeFileSync(capturePath, JSON.stringify({ report: laterReport }));
+		if (capturePath && scenario === "capture-mismatch") fs.writeFileSync(capturePath, JSON.stringify(typed(laterReport)));
 		if (capturePath && scenario === "missing-capture") fs.rmSync(capturePath, { force: true });
 		if (capturePath && scenario === "invalid-capture") fs.writeFileSync(capturePath, JSON.stringify({ report: false }));
 		receipt.capture = capturePath && fs.existsSync(capturePath) ? JSON.parse(fs.readFileSync(capturePath, "utf8")) : undefined;

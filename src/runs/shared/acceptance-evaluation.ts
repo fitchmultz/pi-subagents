@@ -13,7 +13,7 @@ import type {
 	ResolvedAcceptanceConfig,
 	ResolvedAcceptanceGate,
 } from "../../shared/types.ts";
-import { parseAcceptanceReport } from "./acceptance-reports.ts";
+import { parseAcceptanceReport, validateAcceptanceReportShape } from "./acceptance-reports.ts";
 
 const LEVEL_RANK: Record<AcceptanceProvenanceLevel, number> = {
 	none: 0,
@@ -72,7 +72,7 @@ function checkNoStagedFiles(cwd: string): AcceptanceRuntimeCheck {
 		: { id: "no-staged-files", status: "failed", message: `Staged files present: ${staged.join(", ")}` };
 }
 
-function runStructuralChecks(acceptance: ResolvedAcceptanceConfig, report: AcceptanceReport, cwd: string): AcceptanceRuntimeCheck[] {
+function runStructuralChecks(acceptance: ResolvedAcceptanceConfig, report: AcceptanceReport): AcceptanceRuntimeCheck[] {
 	const checks: AcceptanceRuntimeCheck[] = [];
 	checks.push(...checkCriteriaSatisfied(acceptance.criteria, report));
 	if (!acceptance.criteria.length) for (const item of report.criteriaSatisfied ?? []) {
@@ -89,7 +89,6 @@ function runStructuralChecks(acceptance: ResolvedAcceptanceConfig, report: Accep
 			message: present ? `${kind} evidence present.` : `${kind} evidence missing from child report.`,
 		});
 	}
-	if (acceptance.evidence.includes("no-staged-files") || acceptance.criteria.some((criterion) => criterion.evidence?.includes("no-staged-files"))) checks.push(checkNoStagedFiles(cwd));
 	return checks;
 }
 
@@ -180,14 +179,15 @@ function runVerifyCommand(command: AcceptanceVerifyCommand, defaultCwd: string, 
 	});
 }
 
-export async function evaluateAcceptance(input: {
+interface ReportEvaluationInput {
 	acceptance: ResolvedAcceptanceConfig;
 	governing?: ResolvedAcceptanceConfig;
 	output: string;
-	cwd: string;
-	report?: AcceptanceReport;
-	signal?: AbortSignal;
-}): Promise<AcceptanceLedger> {
+	report?: unknown;
+}
+
+/** Structural evidence only. The run owner must still perform runtime checks before acceptance. */
+export function evaluateAcceptanceReport(input: ReportEvaluationInput): AcceptanceLedger {
 	const acceptance = input.acceptance;
 	const ledger: AcceptanceLedger = {
 		status: acceptance.level === "none" ? "not-required" : "claimed",
@@ -200,7 +200,9 @@ export async function evaluateAcceptance(input: {
 	};
 	if (acceptance.level === "none") return ledger;
 
-	const parsed = input.report ? { report: input.report } : parseAcceptanceReport(input.output);
+	const shapeError = input.report !== undefined ? validateAcceptanceReportShape(input.report) : undefined;
+	const parsed = input.report === undefined ? parseAcceptanceReport(input.output)
+		: shapeError ? { error: `Acceptance report is invalid: ${shapeError}` } : { report: input.report as AcceptanceReport };
 	if (parsed.report) {
 		ledger.childReport = parsed.report;
 		ledger.status = "attested";
@@ -212,7 +214,7 @@ export async function evaluateAcceptance(input: {
 	}
 
 	if (LEVEL_RANK[acceptance.level] >= LEVEL_RANK.checked || parsed.report.criteriaSatisfied?.some((item) => item.status === "blocked")) {
-		ledger.runtimeChecks = runStructuralChecks(acceptance, parsed.report, input.cwd);
+		ledger.runtimeChecks = runStructuralChecks(acceptance, parsed.report);
 		if (ledger.runtimeChecks.some((check) => check.status === "failed")) {
 			ledger.status = "rejected";
 			return ledger;
@@ -220,6 +222,21 @@ export async function evaluateAcceptance(input: {
 		if (ledger.runtimeChecks.some((check) => check.status === "blocked")) { ledger.status = "blocked"; return ledger; }
 		ledger.status = "checked";
 	}
+
+	return ledger;
+}
+
+export async function evaluateAcceptance(input: ReportEvaluationInput & { cwd: string; signal?: AbortSignal }): Promise<AcceptanceLedger> {
+	const { acceptance } = input;
+	const ledger = evaluateAcceptanceReport(input);
+	if (!ledger.childReport) return ledger;
+	if ((LEVEL_RANK[acceptance.level] >= LEVEL_RANK.checked || ledger.childReport.criteriaSatisfied?.some((item) => item.status === "blocked"))
+		&& (acceptance.evidence.includes("no-staged-files") || acceptance.criteria.some((criterion) => criterion.evidence.includes("no-staged-files")))) {
+		const check = checkNoStagedFiles(input.cwd);
+		ledger.runtimeChecks.push(check);
+		if (check.status === "failed") ledger.status = "rejected";
+	}
+	if (ledger.status === "rejected" || ledger.status === "blocked") return ledger;
 
 	if (acceptance.verify.length > 0) {
 		ledger.verifyRuns = [];

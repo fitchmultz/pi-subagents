@@ -174,7 +174,10 @@ async function writeResponseEntries(entries, jsonMode, args) {
 			const report = extractPlainText(entry);
 			if (report.trim()) {
 				const toolCallId = `mock-report-${process.pid}-${Math.random().toString(16).slice(2)}`;
-				const value = { report };
+				const block = report.match(/```acceptance-report\s*\n([\s\S]*?)```/i);
+				let typedReport;
+				try { typedReport = JSON.parse(block?.[1] ?? ""); } catch { typedReport = {}; }
+				const value = { answer: report.replace(/\n?```acceptance-report\s*\n[\s\S]*?```\s*$/i, "").trimEnd(), report: typedReport };
 				await writeJsonlLine({ ...entry, message: { ...entry.message, stopReason: "toolUse", content: [{ type: "toolCall", id: toolCallId, name: "structured_output", arguments: { value } }] } });
 				await maybeWriteStructuredOutput({ structuredOutput: value }, true, toolCallId);
 				continue;

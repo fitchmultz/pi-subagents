@@ -1,6 +1,55 @@
 import type {
 	AcceptanceReport,
+	JsonSchemaObject,
 } from "../../shared/types.ts";
+
+// Open finding objects are intentional: native strict conversion must fall back,
+// rather than discarding caller-defined review evidence.
+export const ACCEPTANCE_REPORT_SCHEMA: JsonSchemaObject = {
+	type: "object",
+	properties: {
+		criteriaSatisfied: { type: "array", items: {
+			type: "object", properties: {
+				id: { type: "string" },
+				status: { type: "string", enum: ["satisfied", "not-satisfied", "not-applicable", "blocked"] },
+				evidence: { type: "string", pattern: "\\S" },
+				humanAction: { type: "string", pattern: "\\S" },
+			}, required: ["status", "evidence"],
+			if: { properties: { status: { const: "blocked" } } }, then: { required: ["humanAction"] },
+		} },
+		changedFiles: { type: "array", items: { type: "string" } },
+		testsAddedOrUpdated: { type: "array", items: { type: "string" } },
+		commandsRun: { type: "array", items: {
+			type: "object", properties: {
+				command: { type: "string" }, result: { type: "string", enum: ["passed", "failed", "not-run"] }, summary: { type: "string" },
+			}, required: ["command", "result", "summary"],
+		} },
+		validationOutput: { type: "array", items: { type: "string" } },
+		residualRisks: { type: "array", items: { type: "string" } },
+		noStagedFiles: { type: "boolean" },
+		diffSummary: { type: "string" },
+		reviewFindings: { type: "array", items: { anyOf: [{ type: "string" }, { type: "object", minProperties: 1, additionalProperties: true }] } },
+		manualNotes: { type: "string" },
+		notes: { type: "string" },
+	},
+};
+
+export function formatAcceptanceReportExample(nativeReport = false): string {
+	const report: AcceptanceReport = {
+		criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "specific proof from the final state" }],
+		changedFiles: [],
+		testsAddedOrUpdated: [],
+		commandsRun: [{ command: "command", result: "passed", summary: "short result" }],
+		validationOutput: [],
+		residualRisks: [],
+		noStagedFiles: true,
+		diffSummary: "concise summary of changed behavior and important files",
+		reviewFindings: [],
+		manualNotes: "manual notes or external evidence, if any",
+		notes: "self-review summary and remaining work",
+	};
+	return `\`\`\`${nativeReport ? "json" : "acceptance-report"}\n${JSON.stringify(nativeReport ? { value: { answer: "Complete standalone final answer with all requested handoff details", report } } : report, null, 2)}\n\`\`\``;
+}
 
 export function parseAcceptanceReport(output: string): { report?: AcceptanceReport; error?: string } {
 	const fenced = [...output.matchAll(/```acceptance-report\s*\n([\s\S]*?)```/gi)]
@@ -43,6 +92,7 @@ function isCriterionReport(value: unknown): value is NonNullable<AcceptanceRepor
 	const criterion = value as { id?: unknown; status?: unknown; evidence?: unknown; humanAction?: unknown };
 	if (criterion.id !== undefined && typeof criterion.id !== "string") return false;
 	if (criterion.status !== "satisfied" && criterion.status !== "not-satisfied" && criterion.status !== "not-applicable" && criterion.status !== "blocked") return false;
+	if (criterion.humanAction !== undefined && typeof criterion.humanAction !== "string") return false;
 	if (criterion.status === "blocked" && (typeof criterion.humanAction !== "string" || !criterion.humanAction.trim())) return false;
 	return typeof criterion.evidence === "string" && criterion.evidence.trim().length > 0;
 }
@@ -62,7 +112,7 @@ function isReviewFinding(value: unknown): value is NonNullable<AcceptanceReport[
 	return values.length > 0 && values.some((item) => typeof item === "string" && item.trim().length > 0);
 }
 
-function validateAcceptanceReportShape(value: unknown): string | undefined {
+export function validateAcceptanceReportShape(value: unknown): string | undefined {
 	if (!isPlainObject(value)) return "acceptance report must be a JSON object";
 	const report = value as {
 		criteriaSatisfied?: unknown;

@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { runSync } from "../../src/runs/foreground/execution.ts";
 import { executeAsyncSingle } from "../../src/runs/background/async-execution.ts";
 import { createStructuredOutputRuntime } from "../../src/runs/shared/structured-output.ts";
-import { parseAcceptanceReport } from "../../src/runs/shared/acceptance.ts";
+import { parseAcceptanceReport, stripAcceptanceReport } from "../../src/runs/shared/acceptance.ts";
 import { getRunMetadataDir, questionProcessAlive, readQuestionContract } from "../../src/runs/shared/supervisor-questions.ts";
 import { ASYNC_DIR, RESULTS_DIR, getAsyncConfigPath } from "../../src/shared/types.ts";
 import { createEventBus, createMockPi, createTempDir, makeAgent, removeTempDir } from "../support/helpers.ts";
@@ -157,13 +157,13 @@ for (const background of [false, true]) describe(`${background ? "background" : 
 		assert.equal(result.exitCode, 0, result.error);
 		assert.equal(result.acceptance.status, "checked");
 		assert.deepEqual(result.acceptance.childReport, parseAcceptanceReport(fullReport).report);
-		assert.equal(result.acceptance.finalization.turns[0].rawOutput, fullReport);
+		assert.equal(result.acceptance.finalization.turns[0].rawOutput, handoff);
 		assert.equal(result.acceptance.finalization.turns.length, 1);
 		assert.equal(result.finalOutput ?? result.output, handoff);
 		assert.equal(artifact, handoff);
 		assert.equal(native[0].providerCalls, 2);
 		const latest = native[0].messages.findLast((message) => message.role === "assistant");
-		assert.deepEqual(latest.content[0].arguments.value, { report: fullReport });
+		assert.deepEqual(latest.content[0].arguments.value, { answer: handoff, report: parseAcceptanceReport(fullReport).report });
 		assert.ok(native[0].messages.some((message) => message.role === "toolResult" && message.toolCallId === latest.content[0].id && message.isError === false));
 		assert.equal(mock.callCount(), 2);
 	});
@@ -183,7 +183,7 @@ for (const background of [false, true]) describe(`${background ? "background" : 
 		const childHandoff = "Child-written detailed handoff with independent findings.\n";
 		const { result, artifact, outputPath } = await run("child-file", { outputMode: "file-only", handoff: childHandoff });
 		assert.equal(result.exitCode, 0, result.error);
-		assert.equal(result.acceptance.finalization.turns[0].rawOutput, fullReport);
+		assert.equal(result.acceptance.finalization.turns[0].rawOutput, handoff);
 		assert.equal(artifact, childHandoff.trimEnd());
 		assert.equal(fs.readFileSync(outputPath!, "utf8"), childHandoff);
 	});
@@ -215,7 +215,7 @@ for (const background of [false, true]) describe(`${background ? "background" : 
 			assert.equal(result.acceptance.childReport, undefined);
 			assert.equal(result.acceptance.finalization.status, "failed");
 			assert.equal(result.acceptance.finalization.turns.length, 1);
-			assert.equal(result.acceptance.runtimeChecks[0].id, scenario === "malformed-submission" ? "attestation" : "finalization-report");
+			assert.equal(result.acceptance.runtimeChecks[0].id, "finalization-report");
 			assert.match(result.acceptance.unconfirmedOutput, /Identifier: task-42/);
 			if (["plain", "follow-up", "failed-work", "user-failed-work", "different-work", "malformed-work", "malformed-submission", "invalid-submission", "invalid-tool-submission", "mixed", "missing-result"].includes(scenario)) assert.equal(result.acceptance.unconfirmedOutput, fullReport);
 			assert.match(artifact, /^UNCONFIRMED task report/);
@@ -243,7 +243,7 @@ for (const background of [false, true]) describe(`${background ? "background" : 
 		const { result, native, artifact } = await run("repair");
 		assert.equal(result.exitCode, 0, result.error);
 		assert.equal(result.acceptance.status, "checked");
-		assert.equal(result.acceptance.finalization.turns[0].rawOutput, fullReport);
+		assert.equal(result.acceptance.finalization.turns[0].rawOutput, handoff);
 		assert.equal(native[0].providerCalls, 4);
 		assert.equal(native[0].events.filter((event) => event.type === "tool_execution_end" && event.isError).length, 1);
 		assert.equal(artifact, handoff);
@@ -254,7 +254,7 @@ for (const background of [false, true]) describe(`${background ? "background" : 
 		const { result, artifact } = await run("not-satisfied", { laterReport: current });
 		assert.equal(result.exitCode, 1);
 		assert.equal(result.acceptance.childReport.criteriaSatisfied[0].status, "not-satisfied");
-		assert.equal(result.acceptance.finalization.turns[0].rawOutput, current);
+		assert.equal(result.acceptance.finalization.turns[0].rawOutput, stripAcceptanceReport(current));
 		assert.equal(artifact, `Current task blocked\n${details}`);
 		assert.equal(result.acceptance.unconfirmedOutput, undefined);
 	});
@@ -265,7 +265,7 @@ for (const background of [false, true]) describe(`${background ? "background" : 
 		assert.equal(artifact, handoff);
 		assert.equal(native[0].providerCalls, 1);
 		assert.equal(native[0].messages.at(-1).role, "custom");
-		assert.equal(result.acceptance.finalization.turns[0].rawOutput, fullReport);
+		assert.equal(result.acceptance.finalization.turns[0].rawOutput, handoff);
 	});
 
 	for (const scenario of ["error", "native-abort", "cancel"]) it(`keeps ${scenario} authoritative after a submitted report`, async () => {
@@ -295,7 +295,7 @@ for (const background of [false, true]) describe(`${background ? "background" : 
 		assert.deepEqual(result.structuredOutput, { items: ["original payload"] });
 		assert.deepEqual(JSON.parse(fs.readFileSync(result.structuredOutputPath, "utf8")), result.structuredOutput);
 		assert.ok(JSON.parse(fs.readFileSync(result.structuredOutputSchemaPath, "utf8")).properties.items);
-		assert.deepEqual(native[0].capture, { report: fullReport });
-		assert.deepEqual(native[0].schema.required, ["report"]);
+		assert.deepEqual(native[0].capture, { answer: handoff, report: parseAcceptanceReport(fullReport).report });
+		assert.deepEqual(native[0].schema.required, ["answer", "report"]);
 	});
 });

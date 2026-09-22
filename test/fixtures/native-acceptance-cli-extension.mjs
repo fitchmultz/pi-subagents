@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { parseAcceptanceReport, stripAcceptanceReport } from "../../src/runs/shared/acceptance-reports.ts";
 
 const sdkEntry = pathToFileURL(path.join(process.env.PI_INTERCOM_TEST_SDK, "dist/index.js"));
 const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry));
@@ -26,7 +27,7 @@ export default function (pi) {
 	const success = scenario === "bash-stop"
 		? fauxAssistantMessage(fauxToolCall("bash", { command: `printf '%s' "$$" > '${pidDir}/shell.pid'; sleep 30 & printf '%s' "$!" > '${pidDir}/descendant.pid'; printf ready > '${pidDir}/ready'; wait` }), { stopReason: "toolUse" })
 		: finalizing
-		? fauxAssistantMessage(fauxToolCall("structured_output", { value: { report } }, { id: `report-${process.pid}` }), { stopReason: "toolUse" })
+		? fauxAssistantMessage(fauxToolCall("structured_output", { value: { answer: stripAcceptanceReport(report), report: parseAcceptanceReport(report).report } }, { id: `report-${process.pid}` }), { stopReason: "toolUse" })
 		: fauxAssistantMessage(initialReport);
 	faux.setResponses([
 		...(finalizing && scenario === "retry" ? [fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded; native CLI fixture" })] : []),

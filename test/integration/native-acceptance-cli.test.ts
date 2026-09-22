@@ -118,7 +118,7 @@ for (const background of [false, true]) for (const scenario of ["single", "retry
 		assert.equal(result.acceptance.finalization.turns.length, 1);
 		assert.equal(native.providerCalls, ["retry", "final-error"].includes(scenario) ? 2 : 1);
 		assert.ok(native.events.some((event) => event.type === "agent_settled"));
-		assert.deepEqual(native.capture, { report: fullReport });
+		assert.deepEqual(native.capture, { answer: handoff, report: parseAcceptanceReport(fullReport).report });
 		const messages = native.events.filter((event) => event.type === "message_end").map((event) => event.message);
 		const submission = messages.findLast((message) => message.role === "assistant" && message.stopReason === "toolUse");
 		assert.equal(submission.content.length, 1);
@@ -149,7 +149,7 @@ for (const background of [false, true]) for (const scenario of ["single", "retry
 			assert.equal(result.error, undefined);
 			assert.equal(result.acceptance.status, "checked");
 			assert.deepEqual(result.acceptance.childReport, parseAcceptanceReport(fullReport).report);
-			assert.equal(result.acceptance.finalization.turns[0].rawOutput, fullReport);
+			assert.equal(result.acceptance.finalization.turns[0].rawOutput, handoff);
 			assert.equal(result.finalOutput ?? result.output, handoff);
 			assert.equal(fs.readFileSync(result.artifactPaths.outputPath, "utf8"), handoff);
 		}
