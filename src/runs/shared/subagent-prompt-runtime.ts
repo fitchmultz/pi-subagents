@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "./pi-args.ts";
 import { setPromptSection } from "../../shared/prompt-sections.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, validateStructuredOutputValue } from "./structured-output.ts";
@@ -99,24 +100,13 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 	const structuredSchemaPath = process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
 	if (structuredOutputPath && structuredSchemaPath) {
 		const schema = JSON.parse(fs.readFileSync(structuredSchemaPath, "utf-8")) as JsonSchemaObject;
-		const parameters = {
-			type: "object",
-			properties: { value: schema },
-			required: ["value"],
-			additionalProperties: false,
-		};
-		const registerTool = pi.registerTool as unknown as (tool: {
-			name: string;
-			label: string;
-			description: string;
-			parameters: unknown;
-			execute: (_id: string, params: { value: unknown }) => Promise<unknown>;
-		}) => void;
-		registerTool({
+		const parameters = Type.Object({ value: Type.Unsafe(schema) }, { additionalProperties: false });
+		pi.registerTool({
 			name: "structured_output",
 			label: "Structured Output",
 			description: "Submit the required final structured output for this subagent step. This terminates the step.",
-			parameters: parameters as never,
+			parameters,
+			constrainedSampling: { type: "json_schema", strict: "prefer" },
 			async execute(_id: string, params: { value: unknown }) {
 				const validation = validateStructuredOutputValue(schema, params.value);
 				if (validation.status === "invalid") {
