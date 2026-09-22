@@ -59,7 +59,7 @@ import { runModelAttempts, sumAttemptUsage } from "../shared/model-fallback.ts";
 import { buildChildInvocation, runChildAttempt, type ChildAttemptResult, type ChildEvent, type NativeAttemptSegment } from "../shared/child-attempt.ts";
 import { createNativeFinalization } from "../shared/native-finalization.ts";
 import { updateStreamingText } from "../shared/streaming-text.ts";
-import { pendingSupervisorQuestion, refreshQuestionLaunch, saveAsyncRunResult, saveRunStatus, saveQuestionContract } from "../shared/supervisor-questions.ts";
+import { pendingSupervisorQuestion, saveAsyncRunResult, saveRunStatus, saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { compactForegroundResult, detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile } from "../../shared/utils.ts";
 import { hasCompletedMutationToolCall, resolveCompletionPolicy } from "../shared/completion-guard.ts";
 import {
@@ -607,8 +607,6 @@ async function runSingleStep(
 			resourceLimitExceeded: outcome.resourceLimitExceeded, skills: step.skills, timestamp: Date.now(),
 		}, null, 2), "utf-8");
 	}
-	// Snapshot before a continuation can append different choices to this same session.
-	refreshQuestionLaunch(ctx.id, ctx.flatIndex, sessionFile);
 	const result: RunSingleStepResult = {
 		agent: step.agent, output: outputForSummary, exitCode: effectiveFinalExitCode, error: outcome.error, agentProcessExit: execution.agentProcessExit,
 		usage, timedOut: outcome.timedOut, task: step.task, skills: step.skills,

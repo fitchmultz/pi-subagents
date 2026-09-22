@@ -138,12 +138,6 @@ export function readNativeSessionConfiguration(sessionFile: string | undefined, 
 		...(modelEntry ? { modelRecordedAt: Date.parse(modelEntry.timestamp) } : {}) };
 }
 
-export function refreshQuestionLaunch(runId: string, index: number, sessionFile: string | undefined): void {
-	if (!runId) return;
-	// Compatibility for old callers: current model selection is projected on read.
-	readQuestionContract(runId, index, QUESTIONS_DIR, { sessionFile });
-}
-
 export function migrateSupervisorQuestions(ownerSessionId: string): void {
 	if (!fs.existsSync(LEGACY_QUESTIONS_DIR)) return;
 	for (const entry of fs.readdirSync(LEGACY_QUESTIONS_DIR, { withFileTypes: true })) {
