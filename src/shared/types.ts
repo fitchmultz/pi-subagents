@@ -631,6 +631,8 @@ export interface AsyncResultChild {
 }
 
 export interface AsyncResultFile {
+	runtimeVersion?: 2;
+	timedOut?: boolean;
 	id?: string;
 	runId?: string;
 	agent?: string;
@@ -746,6 +748,9 @@ export interface AsyncStartedEvent {
 }
 
 export interface AsyncStatus {
+	runtimeVersion?: 2;
+	timeoutAt?: number;
+	timedOut?: boolean;
 	runId: string;
 	indexedControl?: boolean;
 	controlRequestFiles?: boolean;
