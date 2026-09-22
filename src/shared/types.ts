@@ -548,6 +548,8 @@ export interface ManagementControl {
 
 export interface Details {
 	mode: SubagentRunMode | "management";
+	/** A receipt only when persisted on a native tool result with matching top-level usage. */
+	parentUsage?: { contributions: UsageContribution[] };
 	runId?: string;
 	context?: "fresh" | "fork";
 	results: SingleResult[];
