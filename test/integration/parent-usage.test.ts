@@ -8,7 +8,7 @@ import { test, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { SubagentExecutionResult, UsageContribution } from "../../src/shared/types.ts";
+import { SUBAGENT_LIVE_INTERCOM_EVENT, SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT, SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, type SubagentExecutionResult, type UsageContribution } from "../../src/shared/types.ts";
 import { registerParentUsage } from "../../src/runs/shared/parent-usage.ts";
 import { readNativeUsage, snapshotNativeUsage } from "../../src/runs/shared/native-usage.ts";
 import registerSubagents from "../../src/extension/index.ts";
@@ -194,6 +194,8 @@ test("native grandchild usage reaches the parent once through the child's own jo
 for (const childSafe of [false, true]) test(`${childSafe ? "child-safe" : "parent"} nested continuation charges only the later direct-child journal delta`, async (t) => {
 	const h = await harness(t), child = await h.open(), original = await h.open();
 	await child.wait({ inspect: true });
+	// Native journals buffer pre-response entries; persist the parent before reopening it.
+	await original.wait({ inspect: true });
 	const childFile = child.session.sessionManager.getSessionFile(), baseline = snapshotNativeUsage(childFile);
 	const parentId = original.session.sessionManager.getSessionId();
 	const rootId = randomUUID(), nestedId = randomUUID(), rootDir = getRunMetadataDir(rootId), nestedDir = getRunMetadataDir(nestedId), route = createNestedRoute(rootId);
@@ -214,11 +216,13 @@ for (const childSafe of [false, true]) test(`${childSafe ? "child-safe" : "paren
 	let directUsage;
 	const parent = await h.open(savedParentFile, { tool: childSafe ? "subagent" : "agent_runs", register(pi) {
 		(childSafe ? registerFanoutSubagent : registerSubagents)(pi);
-		pi.events.on("subagent:live-intercom", (request) => {
-			if (request.runId !== rootId) return;
-			saveAsyncRunResult(rootId, { runtimeVersion: 2, id: rootId, state: "complete", success: true, results: [{ agent: "worker", success: true, exitCode: 0, output: "Direct child completed", sessionFile: childFile, usage: directUsage }] });
-			pi.events.emit("subagent:live-intercom-delivery", { requestId: request.requestId, delivered: true });
-		});
+		for (const [send, delivered] of [[SUBAGENT_LIVE_INTERCOM_EVENT, SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT], [SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT]]) {
+			pi.events.on(send, (request) => {
+				if (request.runId !== rootId) return;
+				saveAsyncRunResult(rootId, { runtimeVersion: 2, id: rootId, state: "complete", success: true, results: [{ agent: "worker", success: true, exitCode: 0, output: "Direct child completed", sessionFile: childFile, usage: directUsage }] });
+				pi.events.emit(delivered, { requestId: request.requestId, delivered: true });
+			});
+		}
 	} });
 	let delivered = false;
 	const reply = setInterval(() => {
