@@ -16,6 +16,7 @@ import { registerToolResultAdapter } from "./tool-result.ts";
 import { renderSubagentResult } from "../tui/render.ts";
 import { type Details, type SubagentExecutionResult, type SubagentState } from "../shared/types.ts";
 import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
+import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { OWNED_RUN_ENTRY, restoreOwnedRuns } from "../runs/shared/run-records.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
@@ -215,8 +216,9 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	const state = createChildSafeState();
 	state.persistOwnedRun = (run) => pi.appendEntry(OWNED_RUN_ENTRY, run);
 	const ensureSessionState = (ctx: ExtensionContext) => {
-		if (state.currentSessionId === ctx.sessionManager.getSessionId()) return;
-		state.currentSessionId = ctx.sessionManager.getSessionId();
+		const sessionId = resolveCurrentSessionId(ctx.sessionManager);
+		if (state.currentSessionId === sessionId) return;
+		state.currentSessionId = sessionId;
 		state.foregroundRuns?.clear();
 		restoreOwnedRuns(state, ctx);
 	};

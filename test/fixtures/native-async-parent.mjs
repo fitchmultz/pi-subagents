@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const [root, repo, sdkRoot, phase, variant] = process.argv.slice(2);
 const cwd = path.join(root, "project"), agentDir = path.join(root, "agent");
-const portableChild = phase === "portable-child";
+const portableChild = phase.startsWith("portable-child");
 for (const dir of [cwd, agentDir, path.join(cwd, ".pi/agents"), path.join(root, "bin")]) fs.mkdirSync(dir, { recursive: true });
 for (const key of Object.keys(process.env)) if (key.startsWith("PI_SUBAGENT_")) delete process.env[key];
 Object.assign(process.env, { HOME: root, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENT_TEMP_ROOT: path.join(root, "pi-subagents-runtime"), PI_OFFLINE: "1",
@@ -51,27 +51,42 @@ try {
 	if (portableChild) {
 		const { readNativeUsage, snapshotNativeUsage } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/native-usage.js")).href);
 		const baseline = snapshotNativeUsage(manager.getSessionFile());
-		fs.writeFileSync(path.join(root, "release-child"), "release");
+		if (phase === "portable-child") fs.writeFileSync(path.join(root, "release-child"), "release");
 		const args = { agent: "fixture", task: "Return the controlled fixture result", output: false, async: false };
 		faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: originalCallId, name: "subagent", arguments: args }], { stopReason: "toolUse" }), fauxAssistantMessage("Nested work collected")]);
-		await session.prompt("Delegate one bounded nested task");
+		const launch = session.prompt("Delegate one bounded nested task");
+		if (phase === "portable-child-control") {
+			await until(() => children().length === 1, "nested child starts before interruption");
+			const run = manager.getEntries().find((entry) => entry.type === "custom" && entry.customType === "subagent-run").data;
+			const control = session.agent.state.tools.find((tool) => tool.name === "subagent");
+			const receipt = await control.execute("stop_nested", { action: "interrupt", id: run.runId }, new AbortController().signal);
+			assert.notEqual(receipt.isError, true, JSON.stringify(receipt));
+		}
+		await launch;
 		await session.waitForIdle();
 		assert.equal(resultEntries().length, 1);
 		assert.equal(resultEntries()[0].message.isError, false, JSON.stringify(resultEntries()[0].message));
-		assert.match(resultEntries()[0].message.content[0].text, /NATIVE_ORIGINAL_CALL_RESULT/);
-		assert.equal(session.getSessionStats().cost, 1, "paid grandchild work must reach the child native journal");
-		const runId = resultEntries()[0].message.details.runId;
-		faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "inspect_result", name: "subagent", arguments: { action: "status", id: runId } }], { stopReason: "toolUse" }), fauxAssistantMessage("Saved result inspected")]);
-		await session.prompt("Read the same completed nested work");
-		const inspected = manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === "inspect_result").message;
-		assert.equal(inspected.isError, false, JSON.stringify(inspected));
-		assert.equal(inspected.details.run.state, "completed");
-		assert.equal(inspected.usage, undefined);
-		assert.equal(session.getSessionStats().cost, 1, "inspecting completed nested work cannot charge it twice");
-		assert.equal(children().length, 1);
-		const delta = readNativeUsage(manager.getSessionFile(), baseline);
-		assert.equal(delta.reduce((sum, usage) => sum + usage.cost, 0), 1, "the grandparent imports the direct child's native journal, including its nested work");
-		evidence.checks.push("actual child-safe tool records grandchild usage once through native journal; inspection stays pure and never relaunches");
+		assert.equal(resultEntries()[0].message.details.wait.status, "completed", "concurrent control in the same saved session cannot end the wait as a session switch");
+		if (phase === "portable-child-control") {
+			assert.equal(resultEntries()[0].message.details.run.state, "paused");
+			assert.equal(children().length, 1);
+			evidence.checks.push("actual child-safe interruption preserves waiting-session identity and returns the saved paused result");
+		} else {
+			assert.match(resultEntries()[0].message.content[0].text, /NATIVE_ORIGINAL_CALL_RESULT/);
+			assert.equal(session.getSessionStats().cost, 1, "paid grandchild work must reach the child native journal");
+			const runId = resultEntries()[0].message.details.runId;
+			faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "inspect_result", name: "subagent", arguments: { action: "status", id: runId } }], { stopReason: "toolUse" }), fauxAssistantMessage("Saved result inspected")]);
+			await session.prompt("Read the same completed nested work");
+			const inspected = manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === "inspect_result").message;
+			assert.equal(inspected.isError, false, JSON.stringify(inspected));
+			assert.equal(inspected.details.run.state, "completed");
+			assert.equal(inspected.usage, undefined);
+			assert.equal(session.getSessionStats().cost, 1, "inspecting completed nested work cannot charge it twice");
+			assert.equal(children().length, 1);
+			const delta = readNativeUsage(manager.getSessionFile(), baseline);
+			assert.equal(delta.reduce((sum, usage) => sum + usage.cost, 0), 1, "the grandparent imports the direct child's native journal, including its nested work");
+			evidence.checks.push("actual child-safe tool records grandchild usage once through native journal; inspection stays pure and never relaunches");
+		}
 	} else if (phase === "seed") {
 		const args = { agent: "fixture", task: "Return the controlled fixture result", output: false };
 		const call = { type: "toolCall", id: originalCallId, name: "delegate", arguments: args, async: true,

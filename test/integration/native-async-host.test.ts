@@ -10,13 +10,13 @@ import { test } from "node:test";
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const sdkRoot = process.env.PI_NATIVE_ASYNC_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
 const { AgentSession } = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
-test("child-safe delegation persists nested usage once through the native host", { timeout: 40_000 }, () => {
+for (const [phase, title] of [["portable-child", "persists nested usage once"], ["portable-child-control", "keeps its wait attached during interruption"]]) test(`child-safe delegation ${title} through the native host`, { timeout: 40_000 }, () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-native-child-"));
 	try {
-		const result = spawnSync(process.execPath, [path.join(repo, "test/fixtures/native-async-parent.mjs"), root, repo, sdkRoot, "portable-child", "nested"],
+		const result = spawnSync(process.execPath, [path.join(repo, "test/fixtures/native-async-parent.mjs"), root, repo, sdkRoot, phase, "nested"],
 			{ cwd: repo, encoding: "utf8", timeout: 30_000, maxBuffer: 2 * 1024 * 1024 });
 		assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
-		const evidence = JSON.parse(fs.readFileSync(path.join(root, "portable-child-evidence.json"), "utf8"));
+		const evidence = JSON.parse(fs.readFileSync(path.join(root, `${phase}-evidence.json`), "utf8"));
 		assert.equal(evidence.networkRequests, 0);
 		assert.deepEqual(evidence.errors, []);
 	} finally {
