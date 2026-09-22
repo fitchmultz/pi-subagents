@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 const [root, repo, sdkRoot, phase, variant] = process.argv.slice(2);
 const cwd = path.join(root, "project"), agentDir = path.join(root, "agent");
 const portableChild = phase.startsWith("portable-child");
-const childSafe = portableChild || variant === "fork";
+const childSafe = portableChild || variant === "fork" || variant === "child-restart";
 const providerSteering = variant.startsWith("steering");
 for (const dir of [cwd, agentDir, path.join(cwd, ".pi/agents"), path.join(root, "bin")]) fs.mkdirSync(dir, { recursive: true });
 for (const key of Object.keys(process.env)) if (key.startsWith("PI_SUBAGENT_")) delete process.env[key];
@@ -23,12 +23,15 @@ const { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } = await im
 const { default: subagents } = await import(pathToFileURL(path.join(repo, "dist/extension/index.js")).href);
 const { default: fanoutChild } = await import(pathToFileURL(path.join(repo, "dist/extension/fanout-child.js")).href);
 const nativeSession = await import(pathToFileURL(path.join(repo, "dist/shared/native-session.js")).href);
+const { RESULTS_DIR } = await import(pathToFileURL(path.join(repo, "dist/shared/types.js")).href);
+const { createSupervisorQuestion, listSupervisorQuestions, saveQuestionAnswer, recordQuestionDelivery } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
 assert.equal(nativeSession.SessionManager, sdk.SessionManager, "extension native readers must use the selected SDK");
 if (childSafe) Object.assign(process.env, { PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_FANOUT_CHILD: "1", PI_SUBAGENT_DEPTH: "1", PI_SUBAGENT_MAX_DEPTH: "2" });
 const evidence = { phase, variant, sdkRoot, nativeSessionManagerMatches: nativeSession.SessionManager === sdk.SessionManager,
 	pid: process.pid, networkRequests: 0, errors: [], checks: [], providerInputs: [], steering: [] };
 globalThis.fetch = async () => { evidence.networkRequests++; throw new Error("Network is forbidden in native async fixtures"); };
 const seed = phase === "seed" || portableChild ? undefined : JSON.parse(fs.readFileSync(path.join(root, "seed.json"), "utf8"));
+if (seed && variant === "canonical-result") assert.equal(fs.existsSync(path.join(RESULTS_DIR, `${seed.runId}.json`)), false, "fresh startup has no temporary result notification");
 const modelRuntime = await sdk.ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
 const faux = fauxProvider({ provider: "native-parent-fixture" });
 modelRuntime.registerNativeProvider(faux.provider);
@@ -193,7 +196,22 @@ try {
 		}
 		const seed = { sessionFile: manager.getSessionFile(), sessionId: manager.getSessionId(), runId: binding.runId, pid: process.pid, originalLeaf,
 			beforeCall: manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "user").id };
+		if (variant === "question-restart") {
+			const child = childStarts()[0];
+			const question = createSupervisorQuestion({ runId: binding.runId, ownerTarget: "parent", agent: "fixture", index: 0,
+				childSessionId: sdk.SessionManager.open(child.sessionFile).getSessionId(), childTarget: "child", sessionFile: child.sessionFile,
+				cwd, pid: child.pid, reason: "need_decision", message: "May the fixture complete?" });
+			saveQuestionAnswer(question, "Proceed");
+			seed.questionId = question.questionId;
+		}
 		fs.writeFileSync(path.join(root, "seed.json"), JSON.stringify(seed));
+		if (variant === "canonical-result") {
+			fs.writeFileSync(path.join(root, "release-child"), "release");
+			await until(() => fs.existsSync(path.join(RESULTS_DIR, `${binding.runId}.json`)), "owner finishes result publication");
+			assert.equal(fs.existsSync(path.join(agentDir, "sessions/subagent-runs", binding.runId, "result.json")), true);
+			fs.rmSync(path.join(RESULTS_DIR, `${binding.runId}.json`));
+			evidence.checks.push("only the canonical result remains before the fresh parent resumes");
+		}
 		evidence.checks.push("original call journaled before launch; abort leaves durable work pending without a tool result");
 	} else if (phase === "fork") {
 		assert.notEqual(process.pid, seed.pid);
@@ -235,6 +253,14 @@ try {
 	} else {
 		assert.notEqual(process.pid, seed.pid, "reattachment must use a fresh parent process");
 		assert.equal(session.getPendingToolCalls()[0].toolCallId, originalCallId);
+		if (variant === "question-restart") {
+			const question = listSupervisorQuestions(manager.getSessionId(), seed.runId).find((question) => question.questionId === seed.questionId);
+			assert.equal(question.state, "answer_pending");
+			assert.equal(question.answer.message, "Proceed");
+			assert.throws(() => saveQuestionAnswer(question, "Different answer"), /already has a different saved answer/);
+			recordQuestionDelivery(question, { kind: "live", runId: seed.runId, deliveredAt: Date.now() });
+			evidence.checks.push("startup retains the immutable saved supervisor answer before native call recovery");
+		}
 		if (variant === "branch") {
 			await session.navigateTree(seed.beforeCall, { summarize: false });
 			assert.equal(session.getPendingToolCalls().length, 0);

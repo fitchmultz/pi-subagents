@@ -3,13 +3,13 @@ import * as path from "node:path";
 import { formatDuration, formatModelThinking, formatTokens, shortenPath } from "../../shared/formatters.ts";
 import { formatRunAction, formatActivityLabel, formatParallelOutcome } from "../../shared/status-format.ts";
 import { type ActivityState, type AsyncJobStep, type AsyncParallelGroupStatus, type AsyncStatus, type NestedRunSummary, type SubagentRunMode, type TokenUsage } from "../../shared/types.ts";
-import { readStatus } from "../../shared/utils.ts";
 import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-events.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
-import { asyncRunRoots, exactAsyncRunLocation } from "./async-resume.ts";
+import { asyncRunRoots, readAsyncRunRecord, type AsyncRunRecord } from "./async-resume.ts";
 import { RESULTS_DIR } from "../../shared/types.ts";
+import { getRunMetadataDir, readRunJson } from "../shared/supervisor-questions.ts";
 
 interface AsyncRunStepSummary {
 	index: number;
@@ -79,6 +79,12 @@ interface AsyncRunListOptions {
 	now?: () => number;
 	reconcile?: boolean;
 	skipInvalid?: boolean;
+	records?: AsyncRunRecord[];
+}
+
+interface AsyncRunDiscoveryOptions extends Omit<AsyncRunListOptions, "states" | "limit" | "records"> {
+	ownerSessionId?: string;
+	receiptRunIds?: () => Iterable<string>;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -295,37 +301,80 @@ function sortRuns(runs: AsyncRunSummary[]): AsyncRunSummary[] {
 	});
 }
 
-export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions = {}): AsyncRunSummary[] {
-	const entries = new Set<string>();
-	for (const root of asyncRunRoots(asyncDirRoot)) try {
-		for (const entry of fs.readdirSync(root).filter((entry) => {
+/** Retry new/unpublished runs without retaining payloads or negative ownership facts. */
+export function createAsyncRunDiscovery(asyncDirRoot: string, options: AsyncRunDiscoveryOptions = {}): () => AsyncRunRecord[] {
+	const owners = new Map<string, string>();
+	const discovered = new Set<string>();
+	const sessionIds = new Set([options.sessionId, options.ownerSessionId].filter((id): id is string => Boolean(id)));
+	// A legacy file-path-only query cannot classify native UUID owners as foreign.
+	const ownerSessionId = options.ownerSessionId ?? (options.sessionId && !path.isAbsolute(options.sessionId) ? options.sessionId : undefined);
+	return () => {
+		const receipts = new Set(options.receiptRunIds?.());
+		const entries = new Set(receipts);
+		for (const root of asyncRunRoots(asyncDirRoot)) try {
+			for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+				try {
+					if (entry.isDirectory() || (entry.isSymbolicLink() && isAsyncRunDir(root, entry.name))) entries.add(entry.name);
+				} catch (error) {
+					if (!options.skipInvalid) throw error;
+					console.error(`Skipping invalid async run '${path.join(root, entry.name)}':`, error);
+				}
+			}
+		} catch (error) {
+			if (isNotFoundError(error)) continue;
+			throw new Error(`Failed to list async runs in '${asyncDirRoot}': ${getErrorMessage(error)}`, {
+				cause: error instanceof Error ? error : undefined,
+			});
+		}
+
+		const records: AsyncRunRecord[] = [];
+		for (const entry of entries) {
 			try {
-				return isAsyncRunDir(root, entry);
+				if (discovered.has(entry)) continue;
+				let owner = owners.get(entry);
+				if (!owner && ownerSessionId) {
+					try {
+						const saved = readRunJson<{ sessionId?: unknown }>(path.join(getRunMetadataDir(entry), "question-owner.json"));
+						if (typeof saved?.sessionId === "string" && saved.sessionId.trim()) {
+							owner = saved.sessionId;
+							owners.set(entry, owner);
+						}
+					} catch {
+						// Missing/unusable identity metadata retains the legacy status fallback.
+					}
+				}
+				const receipt = receipts.has(entry);
+				const matchingOwner = owner !== undefined && owner === ownerSessionId;
+				if (owner && !matchingOwner && !receipt) continue;
+				const record = readAsyncRunRecord(entry, asyncDirRoot, options.resultsDir ?? RESULTS_DIR);
+				const { asyncDir } = record.location;
+				if (!asyncDir) continue;
+				if (sessionIds.size && !receipt && !matchingOwner && !sessionIds.has(record.status?.sessionId ?? "")) continue;
+				if (options.reconcile !== false) {
+					record.status = reconcileAsyncRun(asyncDir, { resultsDir: options.resultsDir, kill: options.kill, now: options.now }, record).status;
+				}
+				if (record.status) {
+					validateStatusForSummary(record.status, path.join(asyncDir, "status.json"));
+					discovered.add(entry);
+				}
+				records.push(record);
 			} catch (error) {
 				if (!options.skipInvalid) throw error;
-				console.error(`Skipping invalid async run '${path.join(asyncDirRoot, entry)}':`, error);
-				return false;
+				console.error(`Skipping invalid async run '${entry}':`, error);
 			}
-		})) entries.add(entry);
-	} catch (error) {
-		if (isNotFoundError(error)) continue;
-		throw new Error(`Failed to list async runs in '${asyncDirRoot}': ${getErrorMessage(error)}`, {
-			cause: error instanceof Error ? error : undefined,
-		});
-	}
+		}
+		return records;
+	};
+}
 
+export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions = {}): AsyncRunSummary[] {
 	const allowedStates = options.states ? new Set(options.states) : undefined;
 	const runs: AsyncRunSummary[] = [];
-	for (const entry of entries) {
+	for (const { location, status } of options.records ?? createAsyncRunDiscovery(asyncDirRoot, options)()) {
+		const asyncDir = location.asyncDir;
+		if (!asyncDir) continue;
 		try {
-			const asyncDir = exactAsyncRunLocation(entry, asyncDirRoot, options.resultsDir ?? RESULTS_DIR).asyncDir;
-			if (!asyncDir) continue;
-			const reconciliation = options.reconcile === false
-				? undefined
-				: reconcileAsyncRun(asyncDir, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
-			const status = (reconciliation?.status ?? readStatus(asyncDir)) as (AsyncStatus & { cwd?: string }) | null;
 			if (!status) continue;
-			if (options.sessionId && status.sessionId !== options.sessionId) continue;
 			const nestedWarnings: string[] = [];
 			let nestedChildren: NestedRunSummary[] | undefined;
 			try {
@@ -339,7 +388,7 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 			runs.push(summary);
 		} catch (error) {
 			if (!options.skipInvalid) throw error;
-			console.error(`Skipping invalid async run '${entry}':`, error);
+			console.error(`Skipping invalid async run '${location.resolvedId}':`, error);
 		}
 	}
 

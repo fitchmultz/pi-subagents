@@ -654,13 +654,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		state.lastUiContext = ctx;
 		resetJobs();
+		const restoration = restoreOwnedRuns(state, ctx);
 		try {
-			restoreJobs(state.currentSessionId, ctx);
+			restoreJobs(state.currentSessionId, ctx, restoration);
 		} catch (error) {
 			console.error("Failed to restore active async jobs:", error);
 			resetJobs(ctx);
 		}
-		restoreOwnedRuns(state, ctx);
 		agentView?.start(ctx);
 		cleanupOldRunStorage();
 		cleanupOldChainDirs();

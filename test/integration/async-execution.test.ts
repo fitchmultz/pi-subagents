@@ -1565,22 +1565,44 @@ describe("async execution utilities", () => {
 		}
 	});
 
-	it("readStatus caches by mtime (second call uses cache)", () => {
+	it("readStatus reuses unchanged files and invalidates replacement, rewrite, append, truncation and disappearance", () => {
 		const dir = createTempDir();
 		try {
+			const file = path.join(dir, "status.json");
+			const timestamp = new Date(10_000);
 			const statusData = {
 				runId: "cache-test",
-				state: "running",
+				state: "queued",
 				mode: "single",
 				startedAt: Date.now(),
 			};
-			fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify(statusData));
+			fs.writeFileSync(file, JSON.stringify(statusData));
+			fs.utimesSync(file, timestamp, timestamp);
 
 			const s1 = readStatus(dir);
-			const s2 = readStatus(dir);
 			assert.ok(s1);
-			assert.ok(s2);
-			assert.equal(s1.runId, s2.runId);
+			assert.equal(readStatus(dir), s1, "unchanged reads reuse the decoded object");
+			const oldStat = fs.statSync(file, { bigint: true });
+			fs.writeFileSync(`${file}.replacement`, JSON.stringify({ ...statusData, state: "paused" }));
+			fs.utimesSync(`${file}.replacement`, timestamp, timestamp);
+			fs.renameSync(`${file}.replacement`, file);
+			const newStat = fs.statSync(file, { bigint: true });
+			assert.equal(newStat.mtimeNs, oldStat.mtimeNs);
+			assert.equal(newStat.size, oldStat.size);
+			assert.equal(readStatus(dir)?.state, "paused", "same-size/same-mtime replacement is fresh");
+			fs.writeFileSync(file, JSON.stringify({ ...statusData, state: "failed" }));
+			fs.utimesSync(file, timestamp, timestamp);
+			assert.equal(readStatus(dir)?.state, "failed", "same-size/same-mtime rewrite is fresh");
+			const beforeAppend = readStatus(dir);
+			fs.appendFileSync(file, " ");
+			assert.notEqual(readStatus(dir), beforeAppend);
+			fs.writeFileSync(file, JSON.stringify({ ...statusData, state: "complete", startedAt: 1 }));
+			assert.equal(readStatus(dir)?.startedAt, 1);
+			fs.rmSync(file);
+			assert.equal(readStatus(dir), null);
+			fs.writeFileSync(file, JSON.stringify(statusData));
+			fs.utimesSync(file, timestamp, timestamp);
+			assert.equal(readStatus(dir)?.state, "queued");
 		} finally {
 			removeTempDir(dir);
 		}

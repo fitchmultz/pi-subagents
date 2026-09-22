@@ -211,10 +211,11 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	const ensureSessionState = (ctx: ExtensionContext) => {
 		const sessionId = resolveCurrentSessionId(ctx.sessionManager);
 		if (state.currentSessionId === sessionId) return;
-		state.currentSessionId = sessionId;
 		state.foregroundRuns?.clear();
 		restoreOwnedRuns(state, ctx);
+		state.currentSessionId = sessionId;
 	};
+	pi.on("session_start", (_event, ctx) => ensureSessionState(ctx));
 	const executor = createSubagentExecutor({
 		pi,
 		state,

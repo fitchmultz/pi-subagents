@@ -3,9 +3,14 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { randomUUID } from "node:crypto";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createAsyncJobTracker } from "../../src/runs/background/async-job-tracker.ts";
+import { restoreOwnedRuns } from "../../src/runs/shared/run-records.ts";
+import { getRunMetadataDir, saveQuestionOwner, saveRunStatus } from "../../src/runs/shared/supervisor-questions.ts";
+import { resolveAsyncRunLocation } from "../../src/runs/background/async-resume.ts";
 import { createNestedRoute, NESTED_EVENTS_DIR, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
-import { TEMP_ROOT_DIR } from "../../src/shared/types.ts";
+import { ASYNC_DIR, RESULTS_DIR, SLASH_RESULT_TYPE, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import { buildWidgetLines } from "../../src/tui/render.ts";
 import { createTempDir, removeTempDir } from "../support/helpers.ts";
 
@@ -78,6 +83,133 @@ function createUiContext() {
 }
 
 describe("async job tracker", () => {
+	it("shares one selected-status decode and avoids established foreign payloads and repairs", (t) => {
+		const owner = randomUUID(), other = randomUUID();
+		const manager = SessionManager.inMemory("/repo", { id: owner });
+		const state = createState(), ui = createUiContext(), recorder = createEventRecorder();
+		const ctx = { ...ui.ctx, cwd: "/repo", sessionManager: manager };
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, ASYNC_DIR);
+		const ids: string[] = [], selected: string[] = [], foreign: string[] = [];
+		const seed = (name: string, sessionId: string, sidecar: string | undefined, durable = true, pid = process.pid) => {
+			const id = `${owner}-${name}`; ids.push(id);
+			const dir = durable ? getRunMetadataDir(id) : path.join(ASYNC_DIR, id);
+			fs.mkdirSync(dir, { recursive: true });
+			if (sidecar) saveQuestionOwner(id, sidecar);
+			fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify({
+				_discoveryFixture: true, ...(durable ? { runtimeVersion: 2 } : {}), runId: id, sessionId,
+				mode: "single", state: "running", pid, startedAt: Date.now(),
+				steps: [{ agent: "worker", status: "running", currentToolArgs: "x".repeat(64_000) }],
+			}));
+			return id;
+		};
+		try {
+			for (let index = 0; index < 55; index++) selected.push(seed(`own-${index}`, "/sessions/old-location.jsonl", owner));
+			for (let index = 0; index < 64; index++) foreign.push(seed(`foreign-${index}`, other, other, index % 2 === 0, 2_147_483_647));
+			selected.push(seed("missing-owner", owner, undefined, false));
+			const malformed = seed("malformed-owner", owner, undefined, false); selected.push(malformed);
+			fs.mkdirSync(getRunMetadataDir(malformed), { recursive: true });
+			fs.writeFileSync(path.join(getRunMetadataDir(malformed), "question-owner.json"), "{");
+			const receiptId = seed("receipt", other, other); selected.push(receiptId);
+			manager.appendCustomEntry("subagent-run", { runId: receiptId, rootRunId: receiptId, ownerSessionId: owner, source: "async",
+				mode: "single", cwd: "/repo", task: "Receipt overrides sidecar disagreement", startedAt: 1, review: { decision: "accepted" }, children: [] });
+			const slashId = seed("slash-receipt", other, other); selected.push(slashId);
+			manager.appendCustomMessageEntry(SLASH_RESULT_TYPE, "Saved slash receipt", false, {
+				result: { details: { mode: "single", asyncId: slashId, results: [] } },
+			});
+			const canonical = selected[0]!;
+			fs.mkdirSync(path.join(ASYNC_DIR, canonical), { recursive: true });
+			fs.writeFileSync(path.join(ASYNC_DIR, canonical, "status.json"), "{", "utf8");
+			const legacy = selected.find((id) => id.endsWith("-missing-owner"))!;
+			saveRunStatus(legacy, { runId: legacy, sessionId: owner, mode: "single", state: "complete", startedAt: 1 });
+
+			const parse = JSON.parse, decodes = new Map<string, number>();
+			t.mock.method(JSON, "parse", (...args) => {
+				const value = parse(...args);
+				if (value?._discoveryFixture) decodes.set(value.runId, (decodes.get(value.runId) ?? 0) + 1);
+				return value;
+			});
+			const reads = t.mock.method(fs, "readFileSync");
+			const writes = t.mock.method(fs, "writeFileSync");
+			syncBuiltinESMExports();
+			const restoration = restoreOwnedRuns(state as never, ctx as never);
+			tracker.restoreJobs(owner, ctx as never, restoration);
+			const isForeignPayload = (file: unknown) => foreign.some((id) => String(file).includes(`${id}${path.sep}`)) && !String(file).endsWith("question-owner.json");
+			assert.equal(reads.mock.calls.filter((call) => isForeignPayload(call.arguments[0])).length, 0, "established foreign owners must prevent full payload reads");
+			assert.equal(writes.mock.calls.filter((call) => isForeignPayload(call.arguments[0])).length, 0, "restoration must not repair foreign execution records");
+			assert.deepEqual([...state.ownedRuns.keys()].sort(), selected.sort());
+			assert.equal(state.ownedRuns.get(receiptId).review.decision, "accepted");
+			assert.equal(state.asyncJobs.size, selected.length, "receipt and UUID-owned live work must be ready together");
+			assert.equal(state.ownedRuns.get(canonical).asyncDir, getRunMetadataDir(canonical));
+			assert.equal(state.ownedRuns.get(legacy).asyncDir, path.join(ASYNC_DIR, legacy));
+			assert.deepEqual([...decodes.values()], selected.map(() => 1), "more selected records than the global cache must still decode only once");
+			const priorDecodes = [...decodes];
+			assert.deepEqual(restoration.discover(), [], "the grace scan retries publications, not already restored history");
+			assert.deepEqual([...decodes], priorDecodes);
+			t.diagnostic(`Restored ${selected.length} selected statuses with one decode each; ${foreign.length} established foreign owners had zero payload reads/writes.`);
+			t.mock.restoreAll(); syncBuiltinESMExports();
+			assert.equal(JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(receiptId), "question-owner.json"), "utf8")).sessionId, other, "receipt recovery must not transfer sidecar identity");
+			assert.equal(JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(slashId), "question-owner.json"), "utf8")).sessionId, other, "legacy receipts also leave established sidecar identity intact");
+			const foreignId = foreign[0]!;
+			assert.equal(resolveAsyncRunLocation({ id: foreignId }, ASYNC_DIR, RESULTS_DIR).resolvedId, foreignId, "explicit inspection remains available");
+			assert.throws(() => resolveAsyncRunLocation({ id: `${owner}-foreign-` }, ASYNC_DIR, RESULTS_DIR), /Ambiguous async run id prefix/);
+		} finally {
+			t.mock.restoreAll(); syncBuiltinESMExports();
+			tracker.resetJobs(); if (state.poller) clearInterval(state.poller);
+			for (const id of ids) { removeTempDir(getRunMetadataDir(id)); removeTempDir(path.join(ASYNC_DIR, id)); fs.rmSync(path.join(RESULTS_DIR, `${id}.json`), { force: true }); }
+		}
+	});
+
+	it("keeps the pre-discovery control boundary and retries missing owner/status publications through the final scan", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 10_000 });
+		const owner = randomUUID(), ids = ["initial", "late-status", "late-owner"].map((name) => `${owner}-${name}`);
+		const manager = SessionManager.inMemory("/repo", { id: owner });
+		const state = createState(), ui = createUiContext(), recorder = createEventRecorder();
+		const ctx = { ...ui.ctx, cwd: "/repo", sessionManager: manager };
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, ASYNC_DIR, { pollIntervalMs: 700 });
+		const status = (id: string, sessionId = owner) => ({ runtimeVersion: 2, runId: id, sessionId, mode: "single" as const,
+			state: "running" as const, pid: process.pid, startedAt: Date.now(), steps: [{ agent: "worker", status: "running" as const }] });
+		const event = (id: string, ts: number, message: string) => `${JSON.stringify({ type: "subagent.control", channels: ["event"],
+			event: { type: "needs_attention", to: "needs_attention", runId: id, agent: "worker", ts, message } })}\n`;
+		try {
+			saveQuestionOwner(ids[0]!, owner); saveRunStatus(ids[0]!, status(ids[0]!));
+			saveQuestionOwner(ids[1]!, owner);
+			saveRunStatus(ids[2]!, status(ids[2]!, "unresolved-legacy-path"));
+			const eventsFile = path.join(getRunMetadataDir(ids[0]!), "events.jsonl");
+			fs.writeFileSync(eventsFile, event(ids[0]!, 9_999, "historical"));
+			const read = fs.readFileSync;
+			let appended = false;
+			t.mock.method(fs, "readFileSync", (...args) => {
+				if (!appended && String(args[0]) === path.join(getRunMetadataDir(ids[0]!), "status.json")) {
+					appended = true;
+					fs.appendFileSync(eventsFile, event(ids[0]!, Date.now(), "during discovery"));
+				}
+				return read(...args);
+			});
+			syncBuiltinESMExports();
+			const restoration = restoreOwnedRuns(state as never, ctx as never);
+			assert.equal(appended, true);
+			tracker.restoreJobs(owner, ctx as never, restoration);
+			t.mock.timers.tick(1_999);
+			assert.deepEqual(recorder.events.map(({ data }) => data.event.message), ["during discovery"]);
+			const cursor = state.asyncJobs.get(ids[0]).controlEventCursor;
+			restoreOwnedRuns(state as never, ctx as never, { strict: true });
+			assert.equal(state.asyncJobs.get(ids[0]).controlEventCursor, cursor, "fresh checkpoint evidence must not reset delivery cursors");
+			saveRunStatus(ids[1]!, status(ids[1]!));
+			saveQuestionOwner(ids[2]!, owner);
+			fs.writeFileSync(path.join(getRunMetadataDir(ids[1]!), "events.jsonl"), event(ids[1]!, Date.now(), "before late discovery"));
+			t.mock.timers.tick(101);
+			assert.deepEqual([...state.asyncJobs.keys()].sort(), [...ids].sort());
+			assert.deepEqual([...state.ownedRuns.keys()].sort(), [...ids].sort(), "late job discovery also makes the owned handle available");
+			assert.deepEqual(recorder.events.map(({ data }) => data.event.message), ["during discovery", "before late discovery"]);
+			t.mock.timers.tick(700);
+			assert.equal(recorder.events.length, 2, "attention is delivered once across the final grace scan and polling");
+		} finally {
+			t.mock.restoreAll(); syncBuiltinESMExports();
+			tracker.resetJobs(); if (state.poller) clearInterval(state.poller);
+			for (const id of ids) removeTempDir(getRunMetadataDir(id));
+		}
+	});
+
 	it("removes completed jobs after retention and requests a rerender", async () => {
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
@@ -370,6 +502,27 @@ describe("async job tracker", () => {
 		} finally {
 			tracker.resetJobs();
 			if (state.poller) clearInterval(state.poller);
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("does not adopt an unidentified status and retries it after its session identity is published", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1_000 });
+		const asyncRoot = createTempDir("pi-async-job-unidentified-");
+		const runDir = path.join(asyncRoot, randomUUID());
+		fs.mkdirSync(runDir);
+		const status = { runId: path.basename(runDir), mode: "single", state: "running", startedAt: Date.now(), steps: [] };
+		fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify(status));
+		const state = createState(), ui = createUiContext(), recorder = createEventRecorder();
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 700 });
+		try {
+			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
+			assert.equal(state.asyncJobs.size, 0, "missing identity is not a matching undefined UUID alias");
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({ ...status, sessionId: "/sessions/current.jsonl" }));
+			t.mock.timers.tick(700);
+			assert.equal(state.asyncJobs.has(status.runId), true);
+		} finally {
+			tracker.resetJobs(); if (state.poller) clearInterval(state.poller);
 			removeTempDir(asyncRoot);
 		}
 	});

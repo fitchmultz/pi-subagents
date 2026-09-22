@@ -9,7 +9,8 @@ import { resolveSubagentResultStatus } from "../../intercom/result-intercom.ts";
 import { buildManagementControl, formatAgentProcessExit, formatRunAction } from "../../shared/status-format.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { isDurableRun, readAsyncResultFile } from "../background/async-result-file.ts";
-import { asyncRunRoots, exactAsyncRunLocation } from "../background/async-resume.ts";
+import { exactAsyncRunLocation, type AsyncRunRecord } from "../background/async-resume.ts";
+import { createAsyncRunDiscovery } from "../background/async-status.ts";
 import { reconcileAsyncRun } from "../background/stale-run-reconciler.ts";
 import { acceptanceHumanAction } from "./acceptance-evaluation.ts";
 import { resolveFinalizationOutput } from "./acceptance-finalization.ts";
@@ -128,7 +129,14 @@ function savedWorkflowNodes(status: AsyncStatus | null | undefined) {
 	return nodes;
 }
 
-export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, options: { strict?: boolean } = {}): void {
+export interface OwnedRunRestoration {
+	startedAt: number;
+	records: AsyncRunRecord[];
+	discover: () => AsyncRunRecord[];
+}
+
+export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, options: { strict?: boolean } = {}): OwnedRunRestoration {
+	const startedAt = Date.now();
 	const ownerSessionId = ctx.sessionManager.getSessionId();
 	const entries = ctx.sessionManager.getEntries();
 	state.ownedRuns = new Map();
@@ -168,54 +176,59 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 			if (header?.type === "session" && header.cwd) run.cwd = header.cwd;
 		}
 		if (run.source === "foreground") saveForegroundRun({ ...run, results: details.results.map((result) => ({ ...result, finalOutput: result.finalOutput ?? recoverOutput(result.sessionFile, result.artifactPaths?.outputPath, Date.parse(entry.timestamp)) })) });
-		saveQuestionOwner(runId, ownerSessionId);
+		let owner: { sessionId?: unknown } | undefined;
+		try { owner = readRunJson(path.join(getRunMetadataDir(runId), "question-owner.json")); } catch { /* Unusable metadata can be repaired from the genuine receipt. */ }
+		if (typeof owner?.sessionId !== "string" || !owner.sessionId.trim()) saveQuestionOwner(runId, ownerSessionId);
 		rememberOwnedRun(state, run);
 	}
 	// Pre-update background runs may have no parent tool receipt (for example slash launches).
-	const runIds = new Set(asyncRunRoots(ASYNC_DIR).flatMap((root) => fs.existsSync(root) ? fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name) : []));
-	for (const name of runIds) {
-		try {
-			const location = exactAsyncRunLocation(name, ASYNC_DIR, RESULTS_DIR);
-			const asyncDir = location.asyncDir;
-			if (!asyncDir) continue;
-			const status = readStatus(asyncDir);
-			const owner = readRunJson<{ sessionId: string }>(path.join(getRunMetadataDir(name), "question-owner.json"));
-			if (!status || (status.sessionId !== resolveCurrentSessionId(ctx.sessionManager) && status.sessionId !== ownerSessionId && owner?.sessionId !== ownerSessionId)) continue;
-			const durable = isDurableRun(status);
-			const terminal = !["running", "queued"].includes(status.state);
-			if (!durable && terminal) saveRunStatus(status.runId, status);
-			const old = state.ownedRuns.get(status.runId);
-			const nodes = savedWorkflowNodes(status);
-			const declared = status.mode === "chain" && nodes && !old?.children.some((child) => child.workflowNodeId) ? [] : old?.children ?? [];
-			const children = workflowChildren(declared, nodes ? status.workflowGraph : undefined);
-			rememberOwnedRun(state, {
-				...old, runId: status.runId, ownerSessionId, rootRunId: old?.rootRunId ?? status.runId,
-				source: "async", mode: status.mode, cwd: status.cwd ?? old?.cwd ?? ctx.cwd,
-				task: old?.task ?? "Recovered background run", startedAt: status.startedAt,
-				asyncDir, pid: status.pid, legacy: old?.legacy ?? !durable,
-				children: (status.steps ?? []).map((step, index) => ({ ...children.find((child) => child.index === index), agent: step.agent, index, ...(status.mode === "chain" && nodes?.[index] ? { workflowNodeId: nodes[index]!.id } : {}), label: step.label ?? children[index]?.label, sessionFile: step.sessionFile ?? (status.steps?.length === 1 ? status.sessionFile : undefined) })),
-			});
-			const resultPath = path.join(RESULTS_DIR, `${status.runId}.json`);
-			if (!durable && terminal && !fs.existsSync(path.join(getRunMetadataDir(status.runId), "result.json"))) {
-				if (fs.existsSync(resultPath)) saveAsyncRunResult(status.runId, readAsyncResultFile(resultPath));
-				else if (status.steps?.length && status.steps.every((step) => !["running", "pending"].includes(step.status))) {
-					const endedAt = status.endedAt ?? status.lastUpdate ?? status.startedAt;
-					const results = status.steps.map((step) => {
-						const sessionFile = step.sessionFile ?? (status.steps!.length === 1 ? status.sessionFile : undefined);
-						return { agent: step.agent, sessionFile, model: step.model, acceptance: step.acceptance,
-							exitCode: step.exitCode, agentProcessExit: step.agentProcessExit, success: step.status === "complete" || step.status === "completed",
-							interrupted: step.status === "paused" || undefined, timedOut: step.status === "timed-out" || undefined, error: step.error,
-							output: recoverLegacyTerminalOutput(sessionFile, step.startedAt ?? status.startedAt, step.endedAt ?? status.endedAt, step.acceptance) ?? "" };
-					});
-					saveAsyncRunResult(status.runId, { id: status.runId, sessionId: status.sessionId, mode: status.mode, state: status.state,
-						success: status.state === "complete", error: status.error, timestamp: endedAt, cwd: status.cwd, asyncDir, sessionFile: status.sessionFile, results });
+	const scan = createAsyncRunDiscovery(ASYNC_DIR, {
+		sessionId: resolveCurrentSessionId(ctx.sessionManager), ownerSessionId,
+		receiptRunIds: () => state.ownedRuns!.keys(), skipInvalid: !options.strict,
+	});
+	const discover = () => {
+		const records = scan();
+		for (const { location, status, durable } of records) {
+			try {
+				const asyncDir = location.asyncDir;
+				if (!asyncDir || !status) continue;
+				const terminal = !["running", "queued"].includes(status.state);
+				if (!durable && terminal) saveRunStatus(status.runId, status);
+				const old = state.ownedRuns!.get(status.runId);
+				const nodes = savedWorkflowNodes(status);
+				const declared = status.mode === "chain" && nodes && !old?.children.some((child) => child.workflowNodeId) ? [] : old?.children ?? [];
+				const children = workflowChildren(declared, nodes ? status.workflowGraph : undefined);
+				rememberOwnedRun(state, {
+					...old, runId: status.runId, ownerSessionId, rootRunId: old?.rootRunId ?? status.runId,
+					source: "async", mode: status.mode, cwd: status.cwd ?? old?.cwd ?? ctx.cwd,
+					task: old?.task ?? "Recovered background run", startedAt: status.startedAt,
+					asyncDir, pid: status.pid, legacy: old?.legacy ?? !durable,
+					children: (status.steps ?? []).map((step, index) => ({ ...children.find((child) => child.index === index), agent: step.agent, index, ...(status.mode === "chain" && nodes?.[index] ? { workflowNodeId: nodes[index]!.id } : {}), label: step.label ?? children[index]?.label, sessionFile: step.sessionFile ?? (status.steps?.length === 1 ? status.sessionFile : undefined) })),
+				});
+				const resultPath = path.join(RESULTS_DIR, `${status.runId}.json`);
+				if (!durable && terminal && !fs.existsSync(path.join(getRunMetadataDir(status.runId), "result.json"))) {
+					if (fs.existsSync(resultPath)) saveAsyncRunResult(status.runId, readAsyncResultFile(resultPath));
+					else if (status.steps?.length && status.steps.every((step) => !["running", "pending"].includes(step.status))) {
+						const endedAt = status.endedAt ?? status.lastUpdate ?? status.startedAt;
+						const results = status.steps.map((step) => {
+							const sessionFile = step.sessionFile ?? (status.steps!.length === 1 ? status.sessionFile : undefined);
+							return { agent: step.agent, sessionFile, model: step.model, acceptance: step.acceptance,
+								exitCode: step.exitCode, agentProcessExit: step.agentProcessExit, success: step.status === "complete" || step.status === "completed",
+								interrupted: step.status === "paused" || undefined, timedOut: step.status === "timed-out" || undefined, error: step.error,
+								output: recoverLegacyTerminalOutput(sessionFile, step.startedAt ?? status.startedAt, step.endedAt ?? status.endedAt, step.acceptance) ?? "" };
+						});
+						saveAsyncRunResult(status.runId, { id: status.runId, sessionId: status.sessionId, mode: status.mode, state: status.state,
+							success: status.state === "complete", error: status.error, timestamp: endedAt, cwd: status.cwd, asyncDir, sessionFile: status.sessionFile, results });
+					}
 				}
+			} catch (error) {
+				if (options.strict) throw error;
+				console.error(`Could not recover owned async metadata for '${location.resolvedId}':`, error);
 			}
-		} catch (error) {
-			if (options.strict) throw error;
-			console.error(`Could not recover owned async metadata for '${name}':`, error);
 		}
-	}
+		return records;
+	};
+	const records = discover();
 	for (const run of state.ownedRuns.values()) {
 		const stored = readRunJson<ForegroundResumeRun>(path.join(getRunMetadataDir(run.runId), "foreground.json"));
 		if (stored) (state.foregroundRuns ??= new Map()).set(run.runId, stored);
@@ -226,6 +239,7 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 		const files = sessionFiles(root).sort();
 		if (files.length) rememberOwnedRun(state, { ...run, children: files.map((sessionFile, index) => ({ agent: run.children[index]?.agent ?? "unknown", index, sessionFile })) });
 	}
+	return { startedAt, records, discover };
 }
 
 function normalizedState(value: string | undefined): ManagementRunState {
