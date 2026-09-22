@@ -14,7 +14,8 @@ process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
 const { createSubagentExecutor } = await import("../../src/runs/foreground/subagent-executor.ts");
 const { bindNativeInvocation, isNativeAsyncCall, nativeInvocationTarget, nativeInvocations } = await import("../../src/runs/shared/native-async.ts");
 const { rememberOwnedRun, restoreOwnedRuns } = await import("../../src/runs/shared/run-records.ts");
-const { getRunMetadataDir, createSupervisorQuestion, saveQuestionOwner, saveQuestionAnswer, recordQuestionDelivery } = await import("../../src/runs/shared/supervisor-questions.ts");
+const { getRunMetadataDir, createSupervisorQuestion, saveQuestionOwner, saveQuestionAnswer, recordQuestionDelivery, saveRunStatus, saveAsyncRunResult, saveQuestionContract } = await import("../../src/runs/shared/supervisor-questions.ts");
+const { createNestedRoute, writeNestedEvent, readNestedControlRequests, writeNestedControlResult } = await import("../../src/runs/shared/nested-events.ts");
 const { createResultWatcher } = await import("../../src/runs/background/result-watcher.ts");
 const { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT, SUBAGENT_LIVE_INTERCOM_EVENT, SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT, RESULTS_DIR } = await import("../../src/shared/types.ts");
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -148,6 +149,62 @@ for (const includeProgress of [true, undefined]) test(`native live continuation 
 	bindNativeInvocation(f.pi, f.ctx, "unconfirmed-delivery", { runId, index: 0, kind: "delivery" });
 	assert.equal(await f.executor.resume("unconfirmed-delivery", {}, undefined, undefined, f.ctx), undefined);
 	assert.equal(deliveries, 1);
+});
+
+for (const selected of [undefined, 1]) test(`native nested continuation ${selected === undefined ? "whole-run" : "selected-child"} waits and recovers without adoption or redelivery`, async (t) => {
+	const f = setup(t), rootId = randomUUID(), runId = randomUUID(), callId = `native-nested-${selected ?? "all"}`;
+	const childOwner = SessionManager.create(f.cwd, path.join(f.cwd, "child-owner"));
+	const route = createNestedRoute(rootId), asyncDir = getRunMetadataDir(runId), mode = selected === undefined ? "single" : "parallel";
+	rememberOwnedRun(f.state, { runId: rootId, rootRunId: rootId, ownerSessionId: f.manager.getSessionId(), source: "async", mode: "single", cwd: f.cwd, task: "Outer assignment", startedAt: Date.now(), children: [] });
+	saveQuestionOwner(runId, childOwner.getSessionId());
+	const steps = Array.from({ length: selected === undefined ? 1 : 2 }, (_, index) => ({ agent: "worker", status: "running", sessionFile: path.join(f.cwd, `nested-${index}.jsonl`) }));
+	for (const [index, step] of steps.entries()) saveQuestionContract(runId, index, { task: `Nested assignment ${index}`, sessionFile: step.sessionFile });
+	saveRunStatus(runId, { runtimeVersion: 2, runId, mode, state: "running", pid: process.pid, cwd: f.cwd, startedAt: Date.now(), indexedControl: true, controlRequestFiles: true, steps });
+	fs.writeFileSync(path.join(asyncDir, "launch.json"), JSON.stringify({ runtimeVersion: 2, nestedRoute: route, nestedSelf: { parentRunId: rootId } }));
+	writeNestedEvent(route, { type: "subagent.nested.started", ts: Date.now(), parentRunId: rootId, parentStepIndex: 0,
+		child: { id: runId, parentRunId: rootId, parentStepIndex: 0, depth: 1, path: [{ runId: rootId, stepIndex: 0 }], state: "running", mode, agent: "worker", ownerState: "live", asyncDir, indexedControl: true } });
+	f.pending.add(callId);
+	let delivered = 0, bindingBeforeDelivery;
+	const reply = setInterval(() => {
+		const request = readNestedControlRequests(route)[0];
+		if (!request || delivered) return;
+		delivered++;
+		bindingBeforeDelivery = nativeInvocations(f.ctx).find((call) => call.toolCallId === callId);
+		writeNestedControlResult(route, { ts: Date.now(), requestId: request.requestId, targetRunId: runId, ok: true, message: "Guidance accepted" });
+	}, 10);
+	const abort = new AbortController();
+	let settled = false;
+	const pending = f.invoke(callId, { action: "resume", id: runId.slice(0, 12), ...(selected === undefined ? {} : { index: selected, async: false }), message: "Continue the authorized work" }, abort.signal).then((result) => { settled = true; return result; });
+	t.after(async () => { clearInterval(reply); abort.abort(); await pending; });
+	await until(() => delivered === 1, "nested owner receives guidance");
+	await delay(120);
+	assert.equal(settled, false, "accepted nested guidance must remain pending for the actual native result");
+	assert.equal(bindingBeforeDelivery?.runId, runId);
+	assert.equal(bindingBeforeDelivery?.accepted, undefined, "journal intent before delivery");
+	assert.equal(nativeInvocations(f.ctx).find((call) => call.toolCallId === callId)?.accepted, true);
+	assert.equal(readNestedControlRequests(route)[0]?.index, selected);
+	abort.abort();
+	assert.equal((await pending).pending, true);
+	assert.equal(fs.existsSync(path.join(asyncDir, "control-requests")), false, "detaching a continuation never cancels the descendant");
+	assert.deepEqual([...f.state.ownedRuns.keys()], [rootId]);
+	assert.equal(f.state.asyncJobs.size, 0);
+	let recovered = false;
+	const recovery = f.executor.resume(callId, {}, undefined, undefined, f.ctx).then((result) => { recovered = true; return result; });
+	await delay(30); assert.equal(recovered, false, "recovery waits on saved work rather than returning another receipt");
+	const childResult = { agent: "worker", task: `Nested assignment ${selected ?? 0}`, exitCode: 0, finalOutput: "NESTED_NATIVE_RESULT", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } };
+	if (selected === undefined) saveAsyncRunResult(runId, { runtimeVersion: 2, id: runId, state: "complete", success: true, timestamp: Date.now(), results: [{ ...childResult, success: true }] });
+	else saveQuestionContract(runId, selected, { result: childResult });
+	const result = await recovery;
+	assert.equal(result?.details.wait?.status, "completed");
+	assert.match(result!.content[0].text, /NESTED_NATIVE_RESULT/);
+	assert.equal(result!.details.run.ownerSessionId, childOwner.getSessionId(), "read-only projection retains the actual direct parent");
+	assert.equal(result!.details.wait.index, selected);
+	assert.equal(result!.details.results.length, 1);
+	assert.equal((await f.executor.resume(callId, {}, undefined, undefined, f.ctx))?.details.wait?.status, "completed");
+	assert.equal(delivered, 1); assert.equal(f.mock.callCount(), 0);
+	assert.deepEqual([...f.state.ownedRuns.keys()], [rootId]);
+	f.state.ownedRuns.clear();
+	assert.equal(await f.executor.resume(callId, {}, undefined, undefined, f.ctx), undefined, "an old binding cannot bypass current route authorization");
 });
 
 test("answer recovery uses immutable answer and revival evidence, with no extra delivery", (t) => {

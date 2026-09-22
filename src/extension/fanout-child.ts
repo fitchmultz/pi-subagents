@@ -232,7 +232,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	const parentUsage = registerParentUsage(pi, ["subagent"]);
 	const adaptToolResult = registerToolResultAdapter(pi, ["subagent"]);
 	const toRegisteredToolResult = (result: SubagentExecutionResult, ctx: ExtensionContext) => adaptToolResult(
-		result.details.wait?.status === "completed" && result.details.run
+		result.details.wait?.status === "completed" && result.details.run?.ownerSessionId === ctx.sessionManager.getSessionId()
 			? parentUsage.attach(result, finalizedChildUsage(result.details.run.children, result.details.wait.index), ctx)
 			: result,
 	);

@@ -445,7 +445,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const parentUsage = registerParentUsage(pi, toolNames);
 	const adaptToolResult = registerToolResultAdapter(pi, toolNames);
 	const toRegisteredToolResult = (result: SubagentExecutionResult, ctx: ExtensionContext) => adaptToolResult(
-		result.details.wait?.status === "completed" && result.details.run
+		result.details.wait?.status === "completed" && result.details.run?.ownerSessionId === ctx.sessionManager.getSessionId()
 			? parentUsage.attach(result, finalizedChildUsage(result.details.run.children, result.details.wait.index), ctx)
 			: result,
 	);

@@ -4,7 +4,7 @@ import { writeAsyncControlRequest, writeAsyncInterruptRequest } from "../backgro
 import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readNativeSessionConfiguration, readQuestionContract, readRunJson, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AgentScope } from "../../agents/agents.ts";
 import { splitKnownThinkingSuffix, toModelInfo } from "../../shared/model-info.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
@@ -32,7 +32,6 @@ import {
 	RUNNER_ERROR_LOG_FILE,
 	type SubagentExecutionResult,
 	type ForegroundResumeRun,
-	type IntercomEventBus,
 	type NestedRunSummary,
 	type ResolvedAcceptanceConfig,
 	type SubagentState,
@@ -435,20 +434,31 @@ export function liveLaunchOverrideNotice(params: SubagentParamsLike): string | u
 		: undefined;
 }
 
-async function resumeLiveNestedRun(input: { target: ResolvedSubagentRunId & { kind: "nested" }; message: string; acceptanceOverrideSupplied: boolean; events: IntercomEventBus; childSafe: boolean }): Promise<SubagentExecutionResult> {
+async function resumeLiveNestedRun(input: { target: ResolvedSubagentRunId & { kind: "nested" }; message: string; index?: number; includeProgress?: boolean; acceptanceOverrideSupplied: boolean; pi: ExtensionAPI; ctx: ExtensionContext; toolCallId?: string; childSafe: boolean }): Promise<SubagentExecutionResult> {
 	const run = input.target.match.run;
-	const result = await sendNestedControlRequest(input.target, "resume", input.message);
-	if (result?.ok) return { content: [{ type: "text", text: [result.message, input.acceptanceOverrideSupplied ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined].filter(Boolean).join("\n") }], details: { mode: "management", results: [] } };
-	const directTarget = run.leafIntercomTarget ?? run.intercomTarget;
+	const binding = { runId: run.id, index: input.index, kind: "delivery" as const, ...(input.includeProgress ? { includeProgress: true } : {}) };
+	bindNativeInvocation(input.pi, input.ctx, input.toolCallId, binding);
+	const result = await sendNestedControlRequest(input.target, "resume", input.message, input.index);
+	if (result?.ok) {
+		bindNativeInvocation(input.pi, input.ctx, input.toolCallId, { ...binding, accepted: true });
+		return { content: [{ type: "text", text: [result.message, input.acceptanceOverrideSupplied ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined].filter(Boolean).join("\n") }], details: { mode: "management", results: [] } };
+	}
+	const asyncDir = input.index !== undefined ? resolveNestedAsyncDir(input.target.match.rootRunId, run) : undefined;
+	const selected = asyncDir ? readStatus(asyncDir)?.steps?.[input.index!] : undefined;
+	const directTarget = input.index === undefined ? run.leafIntercomTarget ?? run.intercomTarget
+		: selected?.status === "running" ? resolveSubagentIntercomTarget(run.id, selected.agent, input.index) : undefined;
 	if (directTarget) {
 		const delivered = await deliverSubagentIntercomMessageEvent(
-			input.events,
+			input.pi.events,
 			directTarget,
 			`Follow-up for nested run ${run.id}:\n\n${input.message}`,
 			500,
-			{ source: "nested-resume-fallback", runId: run.id, agent: run.agent, index: run.currentStep },
+			{ source: "nested-resume-fallback", runId: run.id, agent: run.agent, index: input.index ?? run.currentStep },
 		);
-		if (delivered) return { content: [{ type: "text", text: [`Delivered follow-up directly to live nested run ${run.id}.`, input.acceptanceOverrideSupplied ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined].filter(Boolean).join("\n") }], details: { mode: "management", results: [] } };
+		if (delivered) {
+			bindNativeInvocation(input.pi, input.ctx, input.toolCallId, { ...binding, accepted: true });
+			return { content: [{ type: "text", text: [`Delivered follow-up directly to live nested run ${run.id}.`, input.acceptanceOverrideSupplied ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined].filter(Boolean).join("\n") }], details: { mode: "management", results: [] } };
+		}
 	}
 	if (result) return { content: [{ type: "text", text: result.message }], isError: true, details: { mode: "management", results: [] } };
 	return { content: [{ type: "text", text: `Nested run ${run.id} appears live but its owner route is not reachable. Wait for completion, then retry ${formatRunAction("resume", run.id, { message: "..." }, input.childSafe)}.` }], isError: true, details: { mode: "management", results: [] } };
@@ -615,7 +625,7 @@ export async function resumeAsyncRun(input: {
 		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
 		if (resolved?.kind === "nested") {
 			if (resolved.match.run.state === "running" || resolved.match.run.state === "queued") {
-				return resumeLiveNestedRun({ target: resolved, message: followUp, acceptanceOverrideSupplied: input.params.acceptance !== undefined, events: input.deps.pi.events, childSafe: Boolean(nestedResolutionScopeForExecutor(input.deps)) });
+				return resumeLiveNestedRun({ target: resolved, message: followUp, index: input.params.index, includeProgress: input.params.includeProgress, acceptanceOverrideSupplied: input.params.acceptance !== undefined, pi: input.deps.pi, ctx: input.ctx, toolCallId: input.params.nativeToolCallId, childSafe: Boolean(nestedResolutionScopeForExecutor(input.deps)) });
 			}
 			const trustedSessionRoots = [
 				...(input.deps.config.defaultSessionDir ? [path.resolve(input.deps.expandTilde(input.deps.config.defaultSessionDir))] : []),

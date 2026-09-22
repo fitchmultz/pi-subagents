@@ -485,7 +485,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			const id = result.details.asyncId ?? result.details.managementControl?.runId ?? question?.delivery?.runId ?? question?.runId ?? params.id ?? params.runId;
 			const index = result.details.asyncId || question?.delivery?.kind === "revive" ? 0
 				: result.details.managementControl?.nextActions.find((action) => action.index !== undefined)?.index ?? question?.index ?? params.index;
-			if (id) return waitForOwnedRun({ id, index, deps, ctx, signal, onUpdate, cancelNewRun: params.async === false && !before?.has(id), nativeAsync, executionResult: true, includeProgress: params.includeProgress });
+			if (id) return waitForOwnedRun({ id, index, deps, ctx, signal, onUpdate, cancelNewRun: params.async === false && !before?.has(id) && deps.state.ownedRuns?.has(id), nativeAsync, executionResult: true, includeProgress: params.includeProgress });
 		}
 		if (args[1].action === "interrupt") return cancelSupervisorInput(result, args[1], args[4].sessionManager.getSessionId(), deps.pi.events);
 		if (args[1].action !== "status" || result.details.runList) return result;
@@ -503,7 +503,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		deps.ensureSessionState?.(ctx);
 		const invocation = nativeInvocations(ctx).find((call) => call.toolCallId === id);
 		const target = invocation && nativeInvocationTarget(ctx, invocation);
-		if (!target || !resolveOwnedRun(deps.state, target.runId)) return undefined;
+		if (!target) return undefined;
+		if (!resolveOwnedRun(deps.state, target.runId) && resolveSubagentRunId(target.runId, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) })?.kind !== "nested") return undefined;
 		return waitForOwnedRun({ id: target.runId, index: target.index, deps, ctx, signal, onUpdate, nativeAsync: true, executionResult: true, includeProgress: invocation?.includeProgress });
 	} };
 }

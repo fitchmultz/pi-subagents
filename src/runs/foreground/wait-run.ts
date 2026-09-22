@@ -1,9 +1,13 @@
+import * as path from "node:path";
 import { writeAsyncControlRequest } from "../background/async-control.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ownedRunExecutionResult, ownedRunProgressResult, ownedRunStatusResult, ownedRunView, resolveOwnedRun } from "../shared/run-records.ts";
-import { listSupervisorQuestions, questionProcessAlive } from "../shared/supervisor-questions.ts";
+import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readRunJson } from "../shared/supervisor-questions.ts";
 import { getSingleResultOutput, readStatus } from "../../shared/utils.ts";
-import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT, type SubagentExecutionResult } from "../../shared/types.ts";
+import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT, type OwnedRun, type SubagentExecutionResult } from "../../shared/types.ts";
+import { resolveSubagentRunId } from "../background/run-id-resolver.ts";
+import { resolveNestedAsyncDir } from "../shared/nested-events.ts";
+import { nestedResolutionScopeForExecutor } from "./foreground-control.ts";
 import type { ExecutorDeps } from "./subagent-params.ts";
 
 /** Wait on the saved outcome, not the transient notification file or an early terminal status. */
@@ -21,11 +25,28 @@ export async function waitForOwnedRun(input: {
 }): Promise<SubagentExecutionResult> {
 	const { deps, id, index, ctx } = input;
 	const owner = ctx.sessionManager.getSessionId(), session = deps.state.currentSessionId;
-	let run;
-	try { run = resolveOwnedRun(deps.state, id); } catch (error) {
+	let run: OwnedRun | undefined, nested = false;
+	try {
+		run = resolveOwnedRun(deps.state, id);
+		if (!run) {
+			const resolved = resolveSubagentRunId(id, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
+			if (resolved?.kind === "nested") {
+				const asyncDir = resolveNestedAsyncDir(resolved.match.rootRunId, resolved.match.run);
+				const status = asyncDir ? readStatus(asyncDir) : null;
+				if (status?.runId === resolved.id) {
+					const savedOwner = readRunJson<{ sessionId: string }>(path.join(getRunMetadataDir(resolved.id), "question-owner.json"));
+					// Read through the authorized route without adopting the descendant or attributing its usage to this caller.
+					run = { runId: resolved.id, rootRunId: resolved.match.rootRunId, ownerSessionId: savedOwner?.sessionId ?? status.sessionId ?? "",
+						source: "async", mode: status.mode, cwd: status.cwd ?? "", task: "Nested delegated run", startedAt: status.startedAt, asyncDir, pid: status.pid,
+						children: (status.steps ?? []).map((step, index) => ({ agent: step.agent, index, sessionFile: step.sessionFile })) };
+					nested = true;
+				}
+			}
+		}
+	} catch (error) {
 		return { content: [{ type: "text", text: String(error) }], isError: true, details: { mode: "management", results: [] } };
 	}
-	if (!run || run.ownerSessionId !== owner) return { content: [{ type: "text", text: "Run not found in this parent session. No work started." }], isError: true, details: { mode: "management", results: [] } };
+	if (!run || (!nested && run.ownerSessionId !== owner)) return { content: [{ type: "text", text: "Run is not available to wait on in this session. This wait did not start or stop work." }], isError: true, details: { mode: "management", results: [] } };
 	const target = run;
 	const waiting = deps.state.waitingRuns ??= new Map();
 	waiting.set(target.runId, (waiting.get(target.runId) ?? 0) + 1);

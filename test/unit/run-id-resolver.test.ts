@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import type { SubagentState } from "../../src/shared/types.ts";
 import { resolveSubagentRunId } from "../../src/runs/background/run-id-resolver.ts";
+import { getRunMetadataDir, saveRunStatus } from "../../src/runs/shared/supervisor-questions.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 
 const routeRoots: string[] = [];
@@ -72,6 +73,19 @@ describe("subagent run id resolver", () => {
 		}
 	});
 
+	for (const owned of [true, false]) it(`keeps canonical ${owned ? "owned" : "tracked"} async control direct for exact IDs and prefixes`, () => {
+		const id = "direct-canonical-child", route = nested("direct-canonical-root", id), state = stateWithNestedRoute(route);
+		const asyncDir = getRunMetadataDir(id); routeRoots.push(asyncDir);
+		saveRunStatus(id, { runtimeVersion: 2, runId: id, mode: "single", state: "running", pid: process.pid, startedAt: Date.now(), steps: [{ agent: "worker", status: "running" }] });
+		if (owned) state.ownedRuns!.set(id, stateWithOwnedRun(id).ownedRuns!.get(id)!);
+		else state.asyncJobs.set(id, { asyncId: id, asyncDir, status: "running" });
+		for (const requested of [id, "direct-canonical-c"]) {
+			const resolved = resolveSubagentRunId(requested, { state });
+			assert.equal(resolved?.kind, "async");
+			assert.equal(resolved?.id, id);
+		}
+	});
+
 	it("reports one combined ambiguity for prefixes across namespaces", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-ambiguous-"));
 		try {
@@ -100,6 +114,9 @@ describe("subagent run id resolver", () => {
 		const resolved = resolveSubagentRunId("shared-nested", { state: stateWithNestedRoute(allowed) });
 		assert.equal(resolved?.kind, "nested");
 		assert.equal(resolved?.kind === "nested" ? resolved.match.rootRunId : undefined, "root-allowed");
+		const ambiguous = stateWithNestedRoute(allowed);
+		ambiguous.ownedRuns!.set("root-outside", stateWithOwnedRun("root-outside").ownedRuns!.get("root-outside")!);
+		assert.throws(() => resolveSubagentRunId("shared-nest", { state: ambiguous }), /Ambiguous subagent run id prefix/, "distinct authorized routes must not collapse into one prefix target");
 	});
 
 	it("limits nested lookup to descendants of a scoped child address", () => {
