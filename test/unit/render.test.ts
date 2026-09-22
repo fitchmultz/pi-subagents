@@ -571,6 +571,23 @@ test("compact parallel rendering shows each child model", () => {
 	assert.match(text, /Agent 2\/2: researcher · openai-codex\/gpt-5\.5:high · 24 tool uses · 119k token/);
 });
 
+test("unstarted sequential steps retain their saved paused state in both native card views", () => {
+	const receipt: SubagentExecutionResult = { content: [], details: {
+		mode: "chain", runId: "paused-chain", chainAgents: ["worker", "writer"], totalSteps: 2, currentStepIndex: 0,
+		results: [{ ...result("worker", "Stopped"), interrupted: true }],
+		workflowGraph: { runId: "paused-chain", mode: "chain", phases: [], nodes: [
+			{ id: "step-0", kind: "step", agent: "worker", label: "worker", status: "paused", flatIndex: 0, stepIndex: 0 },
+			{ id: "step-1", kind: "step", agent: "writer", label: "writer", status: "paused", flatIndex: 1, stepIndex: 1 },
+		] },
+	} };
+	const card = nativeTool("subagent", receipt);
+	assert.match(renderedText(card, 120), /Step 2: writer.*paused/);
+	card.setExpanded(true);
+	assert.match(renderedText(card, 120), /paused Step 2: writer/);
+	assert.doesNotMatch(renderedText(card, 120), /status: pending/);
+	assert.equal(receipt.details.results.length, 1, "rendering must not invent a second child result");
+});
+
 test("compact chain rendering uses workflow graph spans for dynamic fanout results", () => {
 	const component = renderSubagentResult({
 		content: [{ type: "text", text: "done" }],

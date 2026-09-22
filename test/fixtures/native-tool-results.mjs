@@ -292,8 +292,7 @@ async function workflow(shape, stop, failed = true) {
 				assert.match(receipt.expanded, /PREFIX_EVIDENCE/);
 				assert.match(receipt.expanded, /Step 1:/);
 				assert.match(receipt.expanded, /Step 3:/);
-				if (stop === "interrupt") assert.ok(unwrap(receipt.expanded).includes("pausedStep3:probe"));
-				else if (failed) assert.match(receipt.expanded, /status: pending/);
+				if (stop === "interrupt" || failed) assert.ok(unwrap(receipt.expanded).includes("pausedStep3:probe"));
 				else assert.match(receipt.expanded, /DEPENDENT_STEP_FINISHED/);
 			}
 			if (prefixCount) assert.match(receipt.narrowExpanded, /PREFIX_EVIDENCE/);
