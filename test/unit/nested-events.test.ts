@@ -6,6 +6,7 @@ import type { AsyncJobState, SubagentState } from "../../src/shared/types.ts";
 import {
 	createNestedRoute,
 	hasLiveNestedDescendants,
+	nestedSummaryFromAsyncStatus,
 	parseNestedEventRecords,
 	projectNestedEvents,
 	resolveNestedParentAddressFromEnv,
@@ -114,6 +115,16 @@ describe("nested event route validation", () => {
 });
 
 describe("nested event parsing and projection", () => {
+	it("retains owner and child failure reasons in the shared status projection", () => {
+		const summary = nestedSummaryFromAsyncStatus({
+			runId: "nested-failed", mode: "single", state: "failed", startedAt: 10,
+			error: "Owner deadline expired", steps: [{ agent: "worker", status: "failed", error: "Child partial failure" }],
+		}, "/tmp/nested-failed", { id: "nested-failed", parentRunId: "root-run", depth: 1, ts: 20 });
+		assert.equal(summary.state, "failed");
+		assert.equal(summary.error, "Owner deadline expired");
+		assert.equal(summary.steps?.[0]?.error, "Child partial failure");
+	});
+
 	it("projects started, updated, and completed records into async and foreground parent state", () => {
 		const route = trackRoute();
 		writeNestedEvent(route, {

@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { runSync } from "../../src/runs/foreground/execution.ts";
-import { INTERCOM_DETACH_REQUEST_EVENT } from "../../src/shared/types.ts";
+import { INTERCOM_DETACH_REQUEST_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../../src/shared/types.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { mapConcurrent } from "../../src/shared/utils.ts";
 import type { MockPi } from "../support/helpers.ts";
@@ -72,9 +72,9 @@ describe("parallel agent execution", () => {
 		try { fs.rmSync(worktreePath, { recursive: true, force: true }); } catch {}
 	}
 
-	function makeExecutor(agents = [makeAgent("echo")], artifactsDir = tempDir) {
+	function makeExecutor(agents = [makeAgent("echo")], artifactsDir = tempDir, eventBus = createEventBus()) {
 		return createSubagentExecutor({
-			pi: { events: createEventBus(), getSessionName: () => undefined },
+			pi: { events: eventBus, getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
 			config: {},
 			asyncByDefault: false,
@@ -251,10 +251,14 @@ describe("parallel agent execution", () => {
 		fs.writeFileSync(sessionFile, "", "utf-8");
 		const artifactsDir = path.join(sessionRoot, "subagent-artifacts");
 		fs.mkdirSync(artifactsDir, { recursive: true });
-		fs.writeFileSync(path.join(artifactsDir, "worktree-diffs"), "not a directory\n", "utf-8");
+		const eventBus = createEventBus();
+		eventBus.on(SUBAGENT_ASYNC_STARTED_EVENT, (event) => {
+			assert.ok(event.asyncDir, "owner must publish its artifact directory");
+			fs.writeFileSync(path.join(event.asyncDir, "worktree-diffs"), "not a directory\n", "utf-8");
+		});
 		mockPi.onCall({ output: "Fast result" });
 		mockPi.onCall({ delay: 10000 });
-		const executor = makeExecutor([makeAgent("fast"), makeAgent("slow")], artifactsDir);
+		const executor = makeExecutor([makeAgent("fast"), makeAgent("slow")], artifactsDir, eventBus);
 		let preservedWorktree = "";
 		let preservedBranch = "";
 		try {

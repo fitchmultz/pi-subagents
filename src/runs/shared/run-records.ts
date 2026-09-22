@@ -20,7 +20,7 @@ import { workflowAgentNodes } from "./workflow-graph.ts";
 import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
 import { getRunMetadataDir, listRunQuestions, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionContract, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
-import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type RunSyncOptions, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
+import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, truncateOutput, type AgentProgress, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type RunSyncOptions, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
 
 export const OWNED_RUN_ENTRY = "subagent-run";
 
@@ -228,9 +228,10 @@ function processAlive(pid: number | undefined): boolean {
 }
 
 function asyncChildResult(child: AsyncResultChild, task: string) {
+	const { output, ...result } = child;
 	return {
-		...child, agent: child.agent ?? "unknown", task, exitCode: child.exitCode ?? (child.success ? 0 : 1),
-		finalOutput: child.output, usage: child.usage ?? sumAttemptUsage(child.modelAttempts ?? []),
+		...result, agent: child.agent ?? "unknown", task: child.task ?? task, exitCode: child.exitCode ?? (child.success ? 0 : 1),
+		finalOutput: child.finalOutput ?? output, usage: child.usage ?? sumAttemptUsage(child.modelAttempts ?? []),
 	};
 }
 
@@ -330,19 +331,76 @@ export function ownedRunExecutionResult(run: OwnedRun, state: SubagentState, ind
 	const view = ownedRunView(run, state);
 	const location = exactAsyncRunLocation(run.runId, ASYNC_DIR, RESULTS_DIR);
 	const saved = location.resultPath ? readAsyncResultFile(location.resultPath) : undefined;
+	const limits = { ...DEFAULT_MAX_OUTPUT, ...(saved?.maxOutput ?? view.children[0]?.launch?.maxOutput) };
 	const children = view.children.filter((child) => index === undefined || child.index === index);
-	const results: SingleResult[] = children.flatMap((child) => {
+	const projected = view.children.map((child) => {
+		if (!child.result) return { ...child, result: undefined };
+		const { artifactPaths, ...result } = child.result;
+		const finalOutput = getSingleResultOutput(result);
+		const truncation = result.outputMode === "file-only" && result.exitCode === 0 && result.outputReference
+			? { text: result.outputReference.message, truncated: false } : truncateOutput(finalOutput, limits, artifactPaths?.outputPath);
+		const compacted = compactForegroundResult({ ...result, finalOutput: truncation.text,
+			...(truncation.truncated ? { truncation } : {}),
+			...(result.initialOutput ? { initialOutput: truncateOutput(result.initialOutput, limits, artifactPaths?.outputPath).text } : {}),
+		});
+		return { ...child, result: { ...compacted, ...(artifactPaths ? { artifactPaths } : {}) } };
+	});
+	const results: SingleResult[] = projected.filter((child) => index === undefined || child.index === index).flatMap((child) => {
 		if (!child.result) return [];
 		const { artifactPaths, ...result } = child.result;
 		return [{ ...result, ...(artifactPaths?.inputPath && artifactPaths.outputPath && artifactPaths.metadataPath
 			? { artifactPaths: { inputPath: artifactPaths.inputPath, outputPath: artifactPaths.outputPath, metadataPath: artifactPaths.metadataPath } } : {}) }];
 	});
-	const text = (index === undefined ? saved?.summary : undefined) || [...children.map((child) => child.result ? getSingleResultOutput(child.result) || child.result.error : undefined), view.diagnosis].filter(Boolean).join("\n\n");
+	let text = (index === undefined ? saved?.summary : undefined) || [...children.map((child) => child.result ? getSingleResultOutput(child.result) || child.result.error : undefined), view.diagnosis].filter(Boolean).join("\n\n");
 	const failed = index === undefined ? ["failed", "unknown"].includes(view.state) : children.length === 0 || children.some((child) => ["failed", "unknown"].includes(child.state));
-	return { content: [{ type: "text", text: text || `Run ${run.runId}: ${view.state}.` }],
+	if (failed && saved?.error && !text.includes(saved.error)) text = `${saved.error}\n\n${text}`;
+	const logPath = path.join(location.asyncDir ?? run.asyncDir ?? getRunMetadataDir(run.runId), `subagent-log-${run.runId}.md`);
+	const artifactPath = run.mode === "single" ? results[0]?.artifactPaths?.outputPath : fs.existsSync(logPath) ? logPath : undefined;
+	const referenceOnly = view.state === "completed" && run.mode === "single" && results.length === 1 && results[0]?.outputMode === "file-only" && results[0].outputReference;
+	const truncation = referenceOnly ? { text: referenceOnly.message, truncated: false }
+		: view.state === "blocked" ? { text, truncated: false } : truncateOutput(text, limits, artifactPath);
+	const files = results.flatMap((result) => result.artifactPaths ? [result.artifactPaths] : []);
+	const progressSummary = { toolCount: results.reduce((total, result) => total + (result.progressSummary?.toolCount ?? 0), 0),
+		tokens: results.reduce((total, result) => total + (result.progressSummary?.tokens ?? 0), 0),
+		durationMs: saved?.durationMs ?? Math.max(0, ...results.map((result) => result.progressSummary?.durationMs ?? 0)) };
+	return { content: [{ type: "text", text: truncation.text || `Run ${run.runId}: ${view.state}.` }],
 		...(failed ? { isError: true } : {}),
-		details: { mode: run.mode, runId: run.runId, asyncId: run.runId, asyncDir: location.asyncDir ?? run.asyncDir, results, run: view,
+		details: { mode: run.mode, runId: run.runId, asyncId: run.runId, asyncDir: location.asyncDir ?? run.asyncDir, results,
+			run: { ...view, children: projected }, progressSummary,
+			...(files.length ? { artifacts: { dir: saved?.artifactsDir ?? path.dirname(files[0]!.outputPath), files } } : {}),
+			...(truncation.truncated ? { truncation } : {}),
 			...(saved?.outputs ? { outputs: saved.outputs } : {}), ...(saved?.workflowGraph ? { workflowGraph: saved.workflowGraph } : {}) } };
+}
+
+/** Project the run owner's native activity for waiting callers without copying its journal. */
+export function ownedRunProgressResult(run: OwnedRun, state: SubagentState, index?: number): SubagentExecutionResult {
+	const view = ownedRunView(run, state);
+	const status = readStatus(run.asyncDir ?? getRunMetadataDir(run.runId));
+	const children = view.children.filter((child) => index === undefined || child.index === index);
+	const progress: AgentProgress[] = children.map((child) => {
+		const existing = state.foregroundControls.get(run.runId)?.progress?.find((item) => item.index === child.index);
+		if (existing) return { ...existing, recentTools: [...existing.recentTools], recentOutput: [...existing.recentOutput] };
+		const step = status?.steps?.[child.index];
+		return {
+			index: child.index, agent: child.agent, task: child.task ?? run.task,
+			status: step?.status ?? (child.state === "live" ? "running" : child.state === "unknown" ? "failed" : child.state),
+			model: step?.model, thinking: step?.thinking, modelStartedAt: step?.modelStartedAt,
+			activityState: step?.activityState, lastActivityAt: step?.lastActivityAt, skills: step?.skills,
+			currentTool: step?.currentTool, currentToolArgs: step?.currentToolArgs, currentToolStartedAt: step?.currentToolStartedAt,
+			currentPath: step?.currentPath, streamingText: step?.streamingText,
+			recentTools: step?.recentTools?.slice(-10) ?? [], recentOutput: step?.recentOutput?.slice(-10) ?? [],
+			toolCount: step?.toolCount ?? 0, turnCount: step?.turnCount, tokens: step?.tokens?.total ?? 0,
+			durationMs: step?.durationMs ?? Math.max(0, Date.now() - (step?.startedAt ?? run.startedAt)), error: step?.error,
+		};
+	});
+	const results: SingleResult[] = progress.map((item, position) => ({
+		agent: item.agent, task: item.task, exitCode: children[position]?.result?.exitCode ?? 0,
+		usage: children[position]?.result?.usage ?? { input: status?.steps?.[item.index]?.tokens?.input ?? 0, output: status?.steps?.[item.index]?.tokens?.output ?? 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: item.turnCount ?? 0 },
+		progress: item, model: item.model, sessionFile: children[position]?.sessionFile,
+		finalOutput: item.streamingText || item.recentOutput.at(-1),
+	}));
+	return { content: [{ type: "text", text: progress.map((item) => `${item.agent}: ${item.status}${item.currentTool ? ` — ${item.currentTool}${item.currentToolArgs ? ` ${item.currentToolArgs}` : ""}` : ""}`).join("\n") }],
+		details: { mode: run.mode, runId: run.runId, asyncId: run.runId, asyncDir: run.asyncDir, results, progress, workflowGraph: status?.workflowGraph } };
 }
 
 function compact(value: string, max = 180): string {

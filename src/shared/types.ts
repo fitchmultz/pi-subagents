@@ -620,7 +620,10 @@ export interface AsyncParallelGroupStatus {
 
 export type AsyncResultTerminalState = "complete" | "failed" | "blocked" | "paused";
 
-export interface AsyncResultChild {
+export interface AsyncResultChild extends Partial<Pick<SingleResult,
+	"task" | "finalOutput" | "initialOutput" | "outputMode" | "savedOutputPath" | "outputReference" | "outputSaveError" | "outputCleanup"
+	| "toolCalls" | "progressSummary" | "truncation" | "skills" | "skillsWarning"
+>> {
 	usage?: Usage;
 	timedOut?: boolean;
 	agent?: string;
@@ -647,6 +650,8 @@ export interface AsyncResultChild {
 }
 
 export interface AsyncResultFile {
+	maxOutput?: MaxOutputConfig;
+	error?: string;
 	runtimeVersion?: 2;
 	timedOut?: boolean;
 	id?: string;
@@ -765,6 +770,7 @@ export interface AsyncStartedEvent {
 
 export interface AsyncStatus {
 	runtimeVersion?: 2;
+	error?: string;
 	timeoutAt?: number;
 	timedOut?: boolean;
 	runId: string;

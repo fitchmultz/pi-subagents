@@ -12,7 +12,7 @@ it("owned inspection retains persisted background attempt usage and full, partia
 	process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
 	process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
 	try {
-		const { ownedRunStatusResult } = await import("../../src/runs/shared/run-records.ts");
+		const { ownedRunStatusResult, ownedRunExecutionResult } = await import("../../src/runs/shared/run-records.ts");
 		const { getRunMetadataDir, saveAsyncRunResult } = await import("../../src/runs/shared/supervisor-questions.ts");
 		const { readAsyncResultFile } = await import("../../src/runs/background/async-result-file.ts");
 		const artifactPaths: ArtifactPaths = {
@@ -62,6 +62,9 @@ it("owned inspection retains persisted background attempt usage and full, partia
 		], "owned inspection must not erase recorded usage or paths, or invent missing paths");
 		const artifactLines = inspected.content.flatMap((part) => part.type === "text" ? part.text.split("\n").filter((line) => line.startsWith("  Artifact: ")) : []);
 		assert.deepEqual(artifactLines, [`  Artifact: ${artifactPaths.outputPath}`, `  Artifact: ${legacyPaths.outputPath}`]);
+		const execution = ownedRunExecutionResult(run, state);
+		assert.deepEqual(execution.details.run?.children[1]?.result?.artifactPaths, legacyPaths, "bounded execution views must retain available legacy artifact references");
+		assert.equal(execution.details.results[1]?.artifactPaths, undefined, "do not fabricate missing required artifact paths");
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

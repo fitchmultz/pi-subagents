@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import { findPackageJSON } from "node:module";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -139,12 +140,19 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 for (const mode of ["single", "chain"] as const) test(`a nested foreground ${mode} human blocker remains blocked after acknowledged Intercom delivery`, async (t) => {
 	const f = setup(t, true), route = createNestedRoute(randomUUID());
 	const nestedEnv = { PI_SUBAGENT_PARENT_ROOT_RUN_ID: route.rootRunId, PI_SUBAGENT_PARENT_RUN_ID: route.rootRunId, PI_SUBAGENT_PARENT_CHILD_INDEX: "0", PI_SUBAGENT_PARENT_DEPTH: "1", PI_SUBAGENT_PARENT_EVENT_SINK: route.eventSink, PI_SUBAGENT_PARENT_CONTROL_INBOX: route.controlInbox, PI_SUBAGENT_PARENT_CAPABILITY_TOKEN: route.capabilityToken };
-	const saved = Object.fromEntries(Object.keys(nestedEnv).map((key) => [key, process.env[key]]));
-	Object.assign(process.env, nestedEnv);
+	const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
+	const bin = path.join(f.cwd, "native-bin"), input = path.join(f.cwd, "native-blocked.json"), receipt = path.join(f.cwd, "native-receipt.json");
+	fs.mkdirSync(bin);
+	fs.writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec '${process.execPath}' '${path.join(sdkRoot, "dist/cli.js")}' "$@"\n`, { mode: 0o755 });
+	fs.writeFileSync(input, JSON.stringify({ scenario: "blocked", receiptPath: receipt, report: { criteriaSatisfied: [{ id: "deliver", status: "satisfied", evidence: "fixture" }] } }));
+	const runtimeEnv = { ...nestedEnv, PATH: `${bin}${path.delimiter}${process.env.PATH}`, PI_DRIVER_FIXTURE: input, PI_INTERCOM_TEST_SDK: sdkRoot };
+	const saved = Object.fromEntries(Object.keys(runtimeEnv).map((key) => [key, process.env[key]]));
+	Object.assign(process.env, runtimeEnv);
+	f.deps.discoverAgents = () => ({ agents: [makeAgent("worker", { model: "driver-fixture/faux-1", completionGuard: false,
+		extensions: [fileURLToPath(new URL("../fixtures/native-child-attempt.mjs", import.meta.url))] })] });
 	try {
-		f.mock.onCall({ output: '```acceptance-report\n{"criteriaSatisfied":[{"id":"criterion-1","status":"blocked","evidence":"Touch ID prompt is visible","humanAction":"Complete Touch ID"}]}\n```' });
 		f.events.on("subagent:result-intercom", (payload) => f.events.emit("subagent:result-intercom-delivery", { requestId: payload.requestId, delivered: true }));
-		const task = { agent: "worker", task: "Verify authenticated flow", output: false, acceptance: { criteria: ["Verify sign-in"] } };
+		const task = { agent: "worker", task: "Verify authenticated flow", output: false, acceptance: { criteria: [{ id: "deliver", must: "Verify sign-in" }] } };
 		const result = await f.invoke({ ...(mode === "single" ? task : { chain: [task, { agent: "worker", task: "Dependent step must not run", output: false }] }), async: false, artifacts: false });
 		assert.equal(result.isError, undefined);
 		const terminal = fs.readdirSync(route.eventSink).map((file) => JSON.parse(fs.readFileSync(path.join(route.eventSink, file), "utf8"))).filter((event) => event.type === "subagent.nested.completed" && event.child?.id === result.details.runId);
@@ -153,7 +161,9 @@ for (const mode of ["single", "chain"] as const) test(`a nested foreground ${mod
 		assert.equal(terminal[0].child.steps[0].status, "blocked");
 		assert.match(terminal[0].child.steps[0].error, /Complete Touch ID/);
 		assert.match(terminal[0].child.error, /Complete Touch ID/);
-		assert.equal(f.mock.callCount(), 1, "human-only blocker must not enter finalization");
+		const native = JSON.parse(fs.readFileSync(receipt, "utf8"));
+		assert.equal(native.calls, 1, "human-only blocker must not enter finalization");
+		assert.equal(native.networkRequests, 0);
 	} finally { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
 });
 
