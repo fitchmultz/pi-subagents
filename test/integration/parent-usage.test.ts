@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -120,6 +120,10 @@ test("native delayed recordUsage keeps attribution and deduplicates after recove
 	assert.equal(first.adapter.record(contributions, first.ctx), true);
 	assert.equal(first.session.getSessionStats().cost, 20);
 	assert.equal(first.adapter.attach(result(), contributions, first.ctx).usage, undefined, "native usage must not also travel on tool result");
+	first.setContributions(contributions);
+	await first.wait({});
+	assert.equal(first.session.getSessionStats().cost, 20);
+	assert.ok(toolMessages(first.session).every((message: any) => message.usage === undefined));
 	const entries = first.session.sessionManager.getEntries().filter((entry: any) => entry.type === "usage");
 	assert.deepEqual(entries.map((entry: any) => [entry.contributionId, entry.provider, entry.model, entry.usage]), [
 		["subagent:child-session:assistant-entry", "child-provider", "actual-response-model", usage],
@@ -133,6 +137,23 @@ test("native delayed recordUsage keeps attribution and deduplicates after recove
 	assert.equal(readFileSync(file, "utf8"), before);
 	assert.throws(() => resumed.adapter.record([{ ...contribution, model: "changed" }], resumed.ctx), /conflict/i);
 	assert.equal(readFileSync(file, "utf8"), before);
+});
+
+test("native delayed usage survives restart before the parent's first assistant turn", async (t) => {
+	const h = await harness(t, false);
+	const first = await h.open();
+	if (!first.nativeAvailable) {
+		assert.notEqual(process.env.PI_PARENT_USAGE_REQUIRE_NATIVE, "1");
+		t.skip("host has no public recordUsage"); return;
+	}
+	first.adapter.record([contribution], first.ctx);
+	const file = first.session.sessionManager.getSessionFile();
+	assert.ok(existsSync(file), "successful native recordUsage must persist paid work even before the first assistant turn");
+	await first.session.abort(); first.session.dispose();
+	const resumed = await h.open(file);
+	resumed.adapter.record([contribution], resumed.ctx);
+	assert.equal(resumed.session.getSessionStats().cost, 10);
+	assert.equal(resumed.session.sessionManager.getEntries().filter((entry: any) => entry.type === "usage").length, 1);
 });
 
 test("native grandchild usage reaches the parent once through the child's own journal delta", async (t) => {
