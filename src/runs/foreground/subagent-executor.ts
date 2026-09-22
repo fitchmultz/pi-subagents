@@ -23,6 +23,7 @@ import {
 	validateForkContextModelPolicy,
 } from "../../shared/agent-context-policy.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
+import { resolveExecutionCwd } from "../../shared/execution-cwd.ts";
 import { applyIntercomBridgeToAgent, resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
 import { createNestedRoute, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
@@ -106,11 +107,13 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		onForegroundRun?: (runId: string) => void,
 	): Promise<SubagentExecutionResult> => {
 		deps.ensureSessionState?.(ctx);
-		deps.state.baseCwd = ctx.cwd;
+		const needsExecutionCwd = !params.action || params.cwd !== undefined || ["list", "get", "create", "update", "delete", "doctor"].includes(params.action);
+		const invocationCwd = needsExecutionCwd ? resolveExecutionCwd(deps.pi, ctx) : ctx.cwd;
+		if (needsExecutionCwd) deps.state.baseCwd = invocationCwd;
 		deps.state.foregroundRuns ??= new Map();
 		deps.state.foregroundControls ??= new Map();
 		deps.state.lastForegroundControlId ??= null;
-		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
+		const requestCwd = resolveRequestedCwd(invocationCwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
 			if (params.action === "review") {
@@ -350,7 +353,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		);
 
 		const scope: AgentScope = resolveExecutionAgentScope(effectiveParams.agentScope);
-		const effectiveCwd = effectiveParams.cwd ?? ctx.cwd;
+		const effectiveCwd = effectiveParams.cwd ?? invocationCwd;
 		const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
 		deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		const inheritedModel = providerQualifiedModelId(ctx.model?.provider, ctx.model?.id);

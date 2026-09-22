@@ -8,6 +8,10 @@
 
 New sessions inherit the child process's working directory. Saved sessions retain their file, identity, header, and history; a requested directory change uses Pi's native SDK cwd override before startup. Same-directory resumes, including symlink and trailing-slash spellings, need no override. Structured-output startup preserves active tools and enables its capture tool. Use an explicit tool policy for restricted child runs; Pi can restore default built-ins when resuming without one.
 
+With [pi-change-working-dir](https://github.com/fitchmultz/pi-change-working-dir) **0.5.0 or later**, new delegation and agent discovery use the selected execution directory. Relative `cwd` overrides resolve from that directory, captured once before asynchronous preparation. New forks initialize their own selection without changing the parent's history. An explicit continuation `cwd` replaces the child's selection once; omitted continuation cwd preserves saved launch settings and later child `change_dir` selections.
+
+Without a directory extension, native Pi cwd behavior is unchanged. An installed older or failing directory extension produces a clear error before work starts; update it rather than silently launching in another directory. Inspection, review, questions, stop, and ordinary saved-child continuation remain available even when the parent's selected directory is unavailable. Native session identity, project context, and browser-group identity keep their existing ownership.
+
 Install from GitHub:
 
 ```bash
@@ -1020,7 +1024,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `clarify` | boolean | false | Show TUI preview/edit flow only when explicitly set to `true`. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
 | `async` | boolean | top-level: true | Background execution. Child-safe nested calls retain their foreground default so the result returns in the calling child's report. Set `false` for foreground execution; `clarify: true` and foreground timeout fields also keep the run foreground. |
-| `cwd` | string | runtime cwd | Override working directory. |
+| `cwd` | string | selected execution cwd | Override working directory. Relative paths resolve from the parent's current selection; omitted continuation cwd retains the saved child launch and selection. Without a directory extension, use native Pi cwd. |
 | `progress` | boolean | agent default | Maintain `progress.md` for a single run. Parallel task-level progress is maintained in each task cwd; chain progress is maintained in `chainDir`. |
 | `maxOutput` | object | 200KB, 5000 lines | Final output truncation limits. |
 | `artifacts` | boolean | true | Write input, output, and metadata debug artifacts. JSONL is not written. |

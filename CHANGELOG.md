@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.39.0] - 2026-09-21
+
+### Added
+- Use the directory selected by `pi-change-working-dir` for new delegation, agent discovery, and relative cwd overrides. Capture the directory once before asynchronous preparation.
+
+### Fixed
+- Initialize new forks and explicit saved-child cwd overrides through the directory owner before the first model request, without rewriting parent or child history. Ordinary continuation preserves the child's later directory selections.
+- Reject delegation when a loaded directory owner is incompatible or cannot resolve the selected directory. Child initialization failures stop before provider or tool dispatch; run inspection and control remain available without resolving the parent's directory.
+
 ## [0.38.2] - 2026-09-19
 
 ### Fixed

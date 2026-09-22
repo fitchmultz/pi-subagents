@@ -8,10 +8,15 @@ const intentPath = (sessionFile: string): string => `${sessionFile}.subagent-cwd
 type CwdIntent = { cwd?: string };
 type CwdRequest = { sessionManager: ExtensionContext["sessionManager"]; path?: string; result?: { cwd: string; error?: string } };
 
-/** Call once for a new fork, or with cwd for an explicitly requested resume override. */
-export function requestChildExecutionCwd(sessionFile: string, cwd?: string): void {
+/** Call once for a new fork or explicit resume override; undo only if launch fails before starting. */
+export function requestChildExecutionCwd(sessionFile: string, cwd?: string): () => void {
 	if (cwd !== undefined && !path.isAbsolute(cwd)) throw new Error("Child execution cwd must be absolute.");
+	const previous = readIntent(sessionFile);
 	fs.writeFileSync(intentPath(sessionFile), JSON.stringify({ cwd }), { mode: 0o600 });
+	return () => {
+		if (previous) fs.writeFileSync(intentPath(sessionFile), JSON.stringify(previous), { mode: 0o600 });
+		else fs.unlinkSync(intentPath(sessionFile));
+	};
 }
 
 function readIntent(sessionFile: string): CwdIntent | undefined {
