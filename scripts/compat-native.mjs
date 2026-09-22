@@ -1,4 +1,4 @@
-// Official hosts run portable contracts; the fleet CI shards the full fork suite.
+// Official hosts run portable contracts; the external fleet shards the full fork suite.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";

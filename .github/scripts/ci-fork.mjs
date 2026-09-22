@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 
 const [suite, automationArg, sourceArg, packageArg, expectedRef] = process.argv.slice(2);
 assert.ok(["core", "smoke"].includes(suite) && automationArg && sourceArg && packageArg && /^[a-f0-9]{40}$/.test(expectedRef ?? ""),
-  "Usage: node scripts/ci-fork.mjs core|smoke AUTOMATION SOURCE FORK_PACKAGE FORK_SHA");
+  "Usage: node .github/scripts/ci-fork.mjs core|smoke AUTOMATION SOURCE FORK_PACKAGE FORK_SHA");
 
 const automation = resolve(automationArg);
 const source = resolve(sourceArg);

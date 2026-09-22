@@ -58,16 +58,12 @@ jobs:
           (cd "$source_dir" && node "$GITHUB_WORKSPACE/scripts/local-install-smoke.mjs")
 
   fork:
-    if: github.event_name == 'pull_request'
     name: Fork / ${{ matrix.os }} / ${{ matrix.suite }}
     strategy:
       fail-fast: false
+      # PRs run Linux core and macOS smoke; main pushes run Linux smoke only.
       matrix:
-        include:
-          - os: ubuntu-24.04
-            suite: core
-          - os: macos-latest
-            suite: smoke
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-24.04","suite":"core"},{"os":"macos-latest","suite":"smoke"}]' || '[{"os":"ubuntu-24.04","suite":"smoke"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 9
     steps:
@@ -104,45 +100,4 @@ jobs:
           node ../automation/scripts/pack-fork.mjs . "$RUNNER_TEMP/fork-package" "$PI_FORK_REF"
           git diff --exit-code
       - name: Qualify the fork
-        run: node extension/scripts/ci-fork.mjs "${{ matrix.suite }}" automation extension "$RUNNER_TEMP/fork-package" "$PI_FORK_REF"
-
-  fork-main:
-    if: github.event_name == 'push'
-    name: Fork / Linux startup
-    runs-on: ubuntu-24.04
-    timeout-minutes: 9
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: extension
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: fitchmultz/.github
-          ref: ${{ env.PI_AUTOMATION_REF }}
-          path: automation
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: fitchmultz/pi
-          ref: ${{ env.PI_FORK_REF }}
-          path: fork
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: |
-            extension/package-lock.json
-            fork/package-lock.json
-      - run: npm install --global "$(node -p 'require("./automation/package.json").packageManager')"
-      - name: Build the pinned fork
-        working-directory: fork
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          npm run hydrate:model-data
-          PI_OFFLINE=1 PI_TELEMETRY=0 npm run build:offline
-          node ../automation/scripts/pack-fork.mjs . "$RUNNER_TEMP/fork-package" "$PI_FORK_REF"
-          git diff --exit-code
-      - name: Load a clean fork consumer
-        run: node extension/scripts/ci-fork.mjs smoke automation extension "$RUNNER_TEMP/fork-package" "$PI_FORK_REF"
+        run: node extension/.github/scripts/ci-fork.mjs "${{ matrix.suite }}" automation extension "$RUNNER_TEMP/fork-package" "$PI_FORK_REF"
