@@ -465,11 +465,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		parameters: DelegateParams,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		async execute(id, params, signal, onUpdate, ctx) {
-			const { worktree, context, async: background, ...task } = params;
+			const { worktree, context, async: background, ...task } = normalizeEverydayParams(params);
 			const request = worktree
 				? { tasks: [task], worktree: true, context, async: background, cwd: task.cwd }
 				: { ...task, context, async: background };
-			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(normalizeEverydayParams(request)), signal, onUpdate, ctx), ctx);
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(request), signal, onUpdate, ctx), ctx);
 		},
 		renderResult: renderSubagentResult,
 	});
