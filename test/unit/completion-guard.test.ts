@@ -16,11 +16,12 @@ function assistantToolCall(name: string, args: Record<string, unknown> = {}, id?
 	} as unknown as Message;
 }
 
-function toolResult(text: string, isError = false, toolCallId?: string, toolName?: string): Message {
+function toolResult(text: string, isError = false, toolCallId?: string, toolName?: string, details?: unknown): Message {
 	return {
 		role: "toolResult",
 		content: [{ type: "text", text }],
 		isError,
+		details,
 		...(toolCallId ? { toolCallId } : {}),
 		...(toolName ? { toolName } : {}),
 	} as unknown as Message;
@@ -42,6 +43,24 @@ test("native apply_edits counts only after a successful result", () => {
 	const call = assistantToolCall("apply_edits", { path: "a.ts", rewrite: "updated" });
 	assert.equal(hasCompletedMutationToolCall([call, toolResult("updated a.ts")]), true);
 	assert.equal(hasCompletedMutationToolCall([call, toolResult("anchor missing", true)]), false);
+});
+
+test("editor previews do not prove mutation; verified partial commits do even on overall error", () => {
+	for (const name of ["apply_edits", "apply_patch", "replace_text", "write_files"]) {
+		const call = assistantToolCall(name, { preview: true });
+		assert.equal(hasCompletedMutationToolCall([call, toolResult("preview")]), false, name);
+		assert.equal(hasCompletedMutationToolCall([
+			assistantToolCall(name), toolResult("partial publication", true, undefined, name, { modifiedFiles: ["/work/a.ts"], files: [{ path: "/work/b.ts", status: "uncertain" }] }),
+		]), true, name);
+		assert.equal(hasCompletedMutationToolCall([
+			assistantToolCall(name), toolResult("unchanged", false, undefined, name, { modifiedFiles: [] }),
+		]), false, name);
+		assert.equal(hasCompletedMutationToolCall([
+			assistantToolCall(name), toolResult("uncertain publication", true, undefined, name, { modifiedFiles: [], files: [{ path: "/work/a.ts", status: "uncertain" }] }),
+		]), false, name);
+	}
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("preview_patch"), toolResult("preview")]), false);
+	assert.equal(hasCompletedMutationToolCall([assistantToolCall("apply_patch"), toolResult("no verified receipt")]), false);
 });
 
 test("bash activity paths ignore file descriptors and tolerate redirect whitespace", () => {
