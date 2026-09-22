@@ -154,6 +154,9 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 		let resourceTimer: NodeJS.Timeout | undefined;
 		let attemptStartedAt = startedAt;
 		let messageOffset = 0;
+		// maxTokens bounds this assistant; billing also includes nested tools and summaries.
+		let assistantTokens = 0;
+		let attemptAssistantTokens = 0;
 		const attemptUsage = { ...result.usage };
 		const resetResourceTimer = () => {
 			clearTimeout(resourceTimer);
@@ -193,15 +196,20 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 				if (marker.nonce !== options.nativeFinalization.nonce || marker.messageCount > messages.length) break;
 				const segmentMessages = messages.slice(messageOffset, marker.messageCount);
 				const usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+				let segmentAssistantTokens = 0;
 				for (const message of segmentMessages) {
-					if (message.role === "assistant") usage.turns++;
+					if (message.role === "assistant") {
+						usage.turns++;
+						segmentAssistantTokens += (message.usage?.input ?? 0) + (message.usage?.output ?? 0);
+					}
 					if ((message.role === "assistant" || message.role === "toolResult") && message.usage) addUsage(usage, message.usage);
 				}
 				(result.finalization ??= []).push({ event: marker, messages: segmentMessages, usage, durationMs: marker.at - attemptStartedAt });
-				if (options.maxTokens !== undefined && usage.input + usage.output >= options.maxTokens) resourceLimit("maxTokens", options.maxTokens, usage.input + usage.output);
+				if (options.maxTokens !== undefined && segmentAssistantTokens >= options.maxTokens) resourceLimit("maxTokens", options.maxTokens, segmentAssistantTokens);
 				if (options.maxExecutionTimeMs !== undefined && marker.at - attemptStartedAt >= options.maxExecutionTimeMs) resourceLimit("maxExecutionTimeMs", options.maxExecutionTimeMs);
 				if (marker.nextPrompt) {
 					messageOffset = marker.messageCount;
+					attemptAssistantTokens += segmentAssistantTokens;
 					for (const key of ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"] as const) attemptUsage[key] += usage[key];
 					attemptStartedAt = marker.at;
 					resetResourceTimer();
@@ -264,6 +272,7 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 				} else if (message.role === "assistant") {
 					result.model ??= providerQualifiedModelId(message.provider, message.model);
 					result.usage.turns++;
+					assistantTokens += (message.usage?.input ?? 0) + (message.usage?.output ?? 0);
 					if (message.errorMessage) assistantError = message.errorMessage;
 					cleanAssistantStop = message.stopReason === "stop" && !message.errorMessage
 						&& !message.content.some((part) => part.type === "toolCall");
@@ -277,7 +286,7 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 				stop({ error: loopFailure });
 			}
 			if (event.type === "message_end") syncFinalization();
-			const tokens = result.usage.input + result.usage.output - attemptUsage.input - attemptUsage.output;
+			const tokens = assistantTokens - attemptAssistantTokens;
 			if (options.maxTokens !== undefined && tokens >= options.maxTokens) resourceLimit("maxTokens", options.maxTokens, tokens);
 		};
 

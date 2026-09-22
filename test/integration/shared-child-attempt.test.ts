@@ -9,7 +9,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { resolveEffectiveAcceptance } from "../../src/runs/shared/acceptance.ts";
 import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
 import { writeAsyncControlRequest } from "../../src/runs/background/async-control.ts";
-import { createTempDir, removeTempDir } from "../support/helpers.ts";
+import { createMockPi, createTempDir, events, removeTempDir } from "../support/helpers.ts";
+import { runChildAttempt } from "../../src/runs/shared/child-attempt.ts";
 
 const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
 const repo = path.resolve(".");
@@ -87,6 +88,24 @@ for (const scenario of ["success", "public-output", "repair", "passive"] as cons
 	assert.equal(new Set(contributions.map((item) => item.id)).size, receipt.calls);
 	assert.ok(contributions.every((item) => item.provider === "driver-fixture" && item.usage.reasoning === 4 && item.usage.cacheWrite1h === 2));
 	if (scenario === "public-output") assert.deepEqual(child.structuredOutput, { items: ["public payload"] });
+});
+
+test("nested tool usage is accounted without tightening the assistant-only token limit", async (t) => {
+	const mock = createMockPi();
+	mock.install();
+	t.after(() => mock.uninstall());
+	mock.onCall({ jsonl: [
+		{ type: "message_end", message: { role: "toolResult", toolName: "nested", toolCallId: "nested-call", isError: false,
+			content: [{ type: "text", text: "Nested work finished" }],
+			usage: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1000, cost: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, total: 1 } } } },
+		events.assistantMessage("Finished"),
+	] });
+	const result = await runChildAttempt({ args: ["--mode", "json", "-p", "Task: nested fixture"], cwd: repo, agent: "fixture", maxTokens: 200 });
+	assert.equal(result.exitCode, 0, result.error);
+	assert.equal(result.resourceLimitExceeded, undefined);
+	assert.equal(result.usage.input, 1100);
+	assert.equal(result.usage.output, 50);
+	assert.equal(result.usage.contributions?.length, 2);
 });
 
 test("owner allocates a native session when acceptance has no preassigned file", async () => {
