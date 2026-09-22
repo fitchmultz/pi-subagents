@@ -1637,7 +1637,9 @@ test("answering in the view releases the real native durable question with human
 	assert.equal(readQuestionState(question).answer?.message, "Use the first path");
 	assert.equal(f.calls[0].action, "answer");
 	assert.equal(f.calls[0].questionId, question.questionId);
-	await pending; f.controller.refresh(true);
+	await pending;
+	await until(() => readQuestionState(question).delivery?.kind === "live", "native child consumes the saved answer");
+	f.controller.refresh(true);
 	assert.equal(readQuestionState(question).delivery?.kind, "live");
 	assert.equal(f.state.ownedRuns!.size, 1, "answering a live question starts no continuation");
 	assert.match(f.controller.task(task.key)!.history.map((item) => item.text).join("\n"), /Direct user answer \(human origin\)[\s\S]*Use the first path/);

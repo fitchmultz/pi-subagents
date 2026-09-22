@@ -58,6 +58,8 @@ async function nativeSession(t: TestContext, name: string, options: { waitForCon
   const faux = options.beforeAgentStart ? fauxProvider({ provider: `checkpoint-${name}` }) : undefined;
   if (faux) modelRuntime.registerNativeProvider(faux.provider);
   const eventBus = sdk.createEventBus();
+  const launcherPids = new Map<string, number>();
+  eventBus.on("subagent:async-started", (event: { id: string; pid: number }) => launcherPids.set(event.id, event.pid));
   let providerCalls = 0;
   const errors: unknown[] = [];
   const loader = new sdk.DefaultResourceLoader({ cwd, agentDir, settingsManager, eventBus, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, additionalExtensionPaths: [path.join(runtimeRepo, "src/extension/index.ts"), path.join(runtimeRepo, "src/pi-intercom/index.ts")], extensionFactories: [(pi: any) => {
@@ -87,18 +89,19 @@ async function nativeSession(t: TestContext, name: string, options: { waitForCon
     // Raw execute() does not journal a native tool result. Join its ordinary
     // completion delivery before testing an unrelated checkpoint blocker.
     await waitFor(() => session.sessionManager.getEntries().some((e: any) => e.customType === "subagent-run" && e.data?.runId === runId && e.data?.delivery), "persisted completion delivery");
-    await waitForRunExit(runId);
+    await waitForRunExit(runId, launcherPids.get(runId));
     await session.waitForIdle();
   };
-  return { session, invoke, capture, close, sdk, cwd, eventBus, waitForCompletion };
+  return { session, invoke, capture, close, sdk, cwd, eventBus, waitForCompletion, launcherPids };
 }
 
-async function waitForRunExit(runId: string) {
+async function waitForRunExit(runId: string, launcherPid: number | undefined) {
   const { getRunMetadataDir, questionProcessAlive } = await import("../../src/runs/shared/supervisor-questions.ts");
+  assert.equal(typeof launcherPid, "number", "fixture observed the runner launcher");
   await waitFor(() => {
     const { pid } = JSON.parse(readFileSync(path.join(getRunMetadataDir(runId), "status.json"), "utf8"));
-    return pid && !questionProcessAlive({ pid });
-  }, "natural run owner exit");
+    return pid && !questionProcessAlive({ pid }) && !questionProcessAlive({ pid: launcherPid! });
+  }, "natural runner and launcher exit");
 }
 
 test("real broker startup writes a backward-readable PID identity and stays protected", async () => {
@@ -521,7 +524,7 @@ test("native slash foreground ownership defers capture and preserves its live ch
   const receipt = host.session.sessionManager.getEntries().findLast((e: any) => e.customType === "subagent-slash-result");
   assert.ok(receipt);
   assert.equal(receipt.details.result.details.wait.status, "completed");
-  await waitForRunExit(receipt.details.result.details.runId);
+  await waitForRunExit(receipt.details.result.details.runId, host.launcherPids.get(receipt.details.result.details.runId));
   const hold = await host.capture(); assert.equal(hold.sleepReady, true, hold.sleepBlockers.join("\n")); hold.release();
 });
 
