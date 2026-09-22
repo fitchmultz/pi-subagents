@@ -13,6 +13,8 @@ import {
 interface SlashSubagentRequest {
 	requestId: string;
 	params: SubagentParamsLike;
+	/** Reuse slash discovery's captured directory without changing the native session context. */
+	executionCwd?: string;
 }
 
 export interface SlashSubagentResponse {
@@ -43,6 +45,7 @@ interface SlashBridgeOptions {
 		signal: AbortSignal,
 		onUpdate: ((r: SubagentExecutionResult) => void) | undefined,
 		ctx: ExtensionContext,
+		executionCwd?: string,
 	) => Promise<SubagentExecutionResult>;
 }
 
@@ -130,6 +133,7 @@ export function registerSlashSubagentBridge(options: SlashBridgeOptions): {
 					options.events.emit(SLASH_SUBAGENT_UPDATE_EVENT, payload);
 				},
 				ctx,
+				request.executionCwd,
 			);
 
 			const response: SlashSubagentResponse = {

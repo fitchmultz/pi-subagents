@@ -45,7 +45,10 @@ describe("subagent extension child mode", () => {
 				sendMessage() {},
 				on(event, handler) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
 				getActiveTools() { return [...activeTools]; },
-				getAllTools() { return [...registeredTools.values()]; },
+				getAllTools() { return [...registeredTools.values()].map((tool) => ({ ...tool,
+					sourceInfo: { path: "/fixtures/pi-subagents/index.ts", source: "extension", scope: "temporary", origin: "top-level" },
+				})); },
+				getCommands() { return []; },
 				setActiveTools(names) { activeTools = [...names]; activeSets.push([...names]); },
 				getSessionName() { return undefined; },
 			}, {

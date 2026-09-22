@@ -1,6 +1,6 @@
 import { writeAsyncControlRequest } from "../background/async-control.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ownedRunExecutionResult, ownedRunStatusResult, ownedRunView, resolveOwnedRun } from "../shared/run-records.ts";
+import { ownedRunExecutionResult, ownedRunProgressResult, ownedRunStatusResult, ownedRunView, resolveOwnedRun } from "../shared/run-records.ts";
 import { listSupervisorQuestions, questionProcessAlive } from "../shared/supervisor-questions.ts";
 import { getSingleResultOutput, readStatus } from "../../shared/utils.ts";
 import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT, type SubagentExecutionResult } from "../../shared/types.ts";
@@ -68,7 +68,11 @@ export async function waitForOwnedRun(input: {
 				const producerAlive = deps.state.foregroundControls.has(target.runId) || (pid ? questionProcessAlive({ pid }) : children.some((child) => child.state === "live"));
 				if (!producerAlive) { finish("unavailable", `No saved final result is available for ${target.runId}; completion is unconfirmed. Inspect the saved session. No work was started.`, result); return; }
 				const update = `Waiting for ${target.runId}${index !== undefined ? ` child ${index}` : ""}: ${children.map((child) => child.state).join(", ")}. ${input.cancelNewRun ? "Cancelling requests cancellation of this newly launched run; process exit still needs confirmation." : "Cancelling this wait leaves existing work alive."}`;
-				if (update !== previous) { previous = update; input.onUpdate?.({ content: [{ type: "text", text: update }], details: { mode: "management", results: [], run: view } }); }
+				if (input.onUpdate) {
+					const progress = ownedRunProgressResult(target, deps.state, index);
+					const signature = JSON.stringify(progress.details.progress?.map(({ durationMs: _duration, ...activity }) => activity));
+					if (signature !== previous) { previous = signature; input.onUpdate({ ...progress, content: [{ type: "text", text: update }, ...progress.content] }); }
+				}
 			} catch (error) { finish("unavailable", `Wait could not read ${target.runId}: ${error instanceof Error ? error.message : String(error)}`); }
 		};
 		unsubscribe = deps.pi.events.on(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {

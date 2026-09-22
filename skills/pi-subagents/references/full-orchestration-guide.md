@@ -1,11 +1,11 @@
 ---
 name: pi-subagents
-description: "Pi subagent orchestration reference for single, parallel, chain, async/background, forked-context, acceptance, worktree, intercom, status/control, and agent-management workflows. Do not use for Agent Skill maintenance, spawned child prompts, or non-Pi delegation."
+description: "Pi subagent orchestration reference for single, parallel, chain, async/background, forked-context, acceptance, worktree, intercom, status/control, and agent-management workflows. Do not use for Agent Skill maintenance or non-Pi delegation."
 ---
 
 # Pi Subagents
 
-This skill is for the main parent orchestrator only. Do not inject or follow it inside spawned child subagents. The parent session owns delegation, orchestration, review fanout, and final fix-worker launches; child subagents should receive concrete role-specific tasks and must not launch more subagents.
+The original agent owns integration, review synthesis, and final delivery. Helpers with delegation enabled may split their assigned work when it saves time or improves quality. Use the available child-safe tools and preserve the assigned scope.
 
 Use this skill when the parent orchestrator needs to launch a specialized subagent, compose multiple agents into a workflow, or create/edit agents and chains on demand.
 
@@ -16,7 +16,7 @@ Use this skill when the parent orchestrator needs to launch a specialized subage
 - **Recon and planning**: use `scout` or `context-builder`, then `planner`
 - **Parallel exploration**: run multiple non-conflicting tasks concurrently
 - **Long-running work**: launch async/background runs and inspect them later
-- **Long-running observation**: launch `watcher` asynchronously with explicit material-change and terminal conditions
+- **Long-running observation**: use ordinary tools for routine waiting and check collection; use `watcher` when ongoing interpretation adds value
 - **Subagent control**: watch needs-attention signals and soft-interrupt only when a delegated run is genuinely blocked
 - **Subagent definition management**: create, update, or override Pi agents and chains for a project
 
@@ -64,7 +64,7 @@ Use this when the user wants adversarial review of a diff, plan, issue, file, or
 
 ### Review-loop technique
 
-Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one `worker` implements or fixes, fresh-context `reviewer` agents inspect the actual repo and diff, the parent synthesizes accepted fixes, and one `worker` applies them. Prefer separate async reviewer runs so each completion wakes the parent instead of waiting for the whole panel. Continue useful parent work while they run; if none remains, end the turn and wait instead of polling. Do not put reviewer panels inside one async chain because the aggregate result hides individual reviewer completions; continue with explicit follow-up runs after each completion. An incomplete active Pi goal follows the same async workflow: yield when child evidence gates the next step, then resume the goal after automatic completion delivery. Treat an async implementation worker handoff as an intermediate state, not final completion, unless the user explicitly asked for worker-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish, and do not let children launch subagents or decide the loop outcome.
+Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one `worker` implements or fixes, fresh-context `reviewer` agents inspect the actual repo and diff, the parent synthesizes accepted fixes, and one `worker` applies them. Prefer separate async reviewer runs so each completion wakes the parent instead of waiting for the whole panel. Continue useful parent work while they run; if none remains, end the turn and wait instead of polling. Do not put reviewer panels inside one async chain because the aggregate result hides individual reviewer completions; continue with explicit follow-up runs after each completion. An incomplete active Pi goal follows the same async workflow: yield when child evidence gates the next step, then resume the goal after automatic completion delivery. Treat an async implementation worker handoff as an intermediate state, not final completion, unless the user explicitly asked for worker-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish. Helpers may delegate within their assigned work; the original agent decides the loop outcome.
 
 ### Parallel research technique
 
@@ -174,7 +174,7 @@ A strong subagent prompt usually includes:
 - **Goal**: the concrete outcome the child should produce.
 - **Context/evidence**: relevant plan paths, files, diffs, decisions, or user constraints already approved.
 - **Success criteria**: what must be true before the child can finish.
-- **Hard constraints**: true invariants only, such as no edits for review-only tasks, one writer thread, child subagents must not launch more subagents, or escalation for unapproved decisions.
+- **Hard constraints**: true invariants only, such as no edits for review-only tasks, one writer thread or escalation for decisions outside the approved outcome.
 - **Validation**: targeted checks to run, or the next-best check when validation is impossible.
 - **Output**: the expected summary shape, artifact path, or finding format.
 - **Stop rules**: when to ask via `intercom`, when to stop after enough evidence, and when not to keep searching.
@@ -319,14 +319,7 @@ subagent({
 })
 ```
 
-For changing external state, give `watcher` the target, material transitions, and terminal condition. It suppresses unchanged observations and steers non-terminal material changes the parent needs while working. Skip routine status; retain findings in the terminal result instead of sending a duplicate completion update.
-
-```typescript
-subagent({
-  agent: "watcher",
-  task: "Watch GitHub Actions for PR #123. Treat status changes, failures, and recoveries as material. Stop when every check is terminal."
-})
-```
+Use ordinary tools for routine waiting and CI status collection. When observation requires ongoing interpretation, give `watcher` the target, material transitions, and terminal condition. It should report meaningful findings without repeating unchanged status.
 
 File-only output mode also works for async single runs, top-level parallel task items, sequential chain steps, and chain parallel task items. In chains, `{previous}` receives the compact saved-file reference when the prior step used file-only mode.
 
@@ -751,12 +744,12 @@ When review has already produced concrete findings across several independent ar
 
 For very large work, split into serial milestones instead of launching a swarm of writers. Each milestone gets one writer, a validation contract, fresh-context review/validation, a fix pass, and parent acceptance before the next milestone starts. Use parallel subagents inside a milestone for read-only context, research, review, and validation only.
 
-Keep orchestration authority in the parent session. Child subagents must not launch more subagents, read this skill, or run their own orchestration loops. Spawned subagents do not receive the `pi-subagents` skill, parent-only status/control/slash messages, prior parent `subagent` tool-call/tool-result artifacts, or the `subagent` extension tool. Child context filtering strips old hidden orchestration-instruction messages when they appear in inherited history, and every child is told that the parent owns orchestration. Implementation children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
+Keep final integration and delivery with the original agent. Helpers with native delegation enabled may split their assigned work using the child-safe `subagent` tool. Parent-only management controls and inherited orchestration records remain filtered by the runtime. Configure `allowSubagents` and the native depth budget to support the intended delegation; do not add a blanket role-level prohibition. Implementation helpers must use real edit/write tools.
 
 1. Clarify only material uncertainty. Gather code context with `scout` or `context-builder`, add `researcher` only when external evidence matters, then ask the user unresolved questions with the available clarification tool (`ask_question` in pi) when the answer changes scope, acceptance criteria, constraints, or non-goals.
 2. Define the validation contract. State acceptance before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the worker handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.
-3. Plan when useful. For complex work, call `planner` or write a plan doc yourself and get approval before implementation. For simple work, confirm shared understanding and explicitly note why planning is skipped.
-4. Implement with one writer. After approval, launch `worker` asynchronously with a proper meta prompt that includes clarified requirements, relevant context, plan path or summary, the validation contract, and output expectations. Packaged `worker` defaults to fresh context. While an async worker runs, prepare validation or inspect adjacent code instead of editing the same worktree.
+3. Plan when useful. Use existing authorization and make routine implementation decisions directly. Ask only when missing information prevents correct work or a decision would change the approved outcome, scope, cost, permissions, or acceptance.
+4. Implement with one writer. Launch `worker` under the existing authorization with the requirements, relevant context, plan path or summary, validation expectations, and required output. Packaged `worker` defaults to fresh context. While an async worker runs, prepare validation or inspect adjacent code instead of editing the same worktree.
 5. Require a useful worker handoff. Ask the worker to report changed files, what was implemented, what was left undone, commands run with exit codes, validation evidence, surprises or new risks, decisions made inside approved scope, and decisions needing parent approval.
 6. Review after implementation. After the worker completes, launch fresh-context `reviewer` agents for correctness/regressions, tests/validation, and simplicity/maintainability as separate async runs so each completion wakes the parent. Add security, performance, docs/API, domain-specific, or user-flow validators for complex work, risky changes, broad refactors, or many changed lines. Use `output: false` unless review artifacts are explicitly needed.
 7. Synthesize, then run the fix worker. Separate blockers, fixes worth doing now, optional improvements, and feedback to ignore/defer, then launch an async `worker` to apply fixes worth doing now when the workflow is implementation-authorized. If reviewers found scope/product/architecture choices that were not approved, ask the user first instead of applying them.

@@ -84,7 +84,7 @@ export { normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "./subage
 export { writeAsyncInterruptRequest } from "./foreground-control.ts";
 
 type ExecuteSubagent = (id: string, params: SubagentParamsLike, signal: AbortSignal | undefined,
-	onUpdate: ((r: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext) => Promise<SubagentExecutionResult>;
+	onUpdate: ((r: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext, executionCwd?: string) => Promise<SubagentExecutionResult>;
 
 export function createSubagentExecutor(deps: ExecutorDeps): {
 	execute: ExecuteSubagent;
@@ -96,10 +96,11 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		signal: AbortSignal | undefined,
 		onUpdate: ((r: SubagentExecutionResult) => void) | undefined,
 		ctx: ExtensionContext,
+		executionCwd?: string,
 	): Promise<SubagentExecutionResult> => {
 		deps.ensureSessionState?.(ctx);
 		const needsExecutionCwd = !params.action || params.cwd !== undefined || ["list", "get", "create", "update", "delete", "doctor"].includes(params.action);
-		const invocationCwd = needsExecutionCwd ? resolveExecutionCwd(deps.pi, ctx) : ctx.cwd;
+		const invocationCwd = needsExecutionCwd ? executionCwd ?? resolveExecutionCwd(deps.pi, ctx) : ctx.cwd;
 		if (needsExecutionCwd) deps.state.baseCwd = invocationCwd;
 		deps.state.foregroundRuns ??= new Map();
 		deps.state.foregroundControls ??= new Map();
@@ -525,12 +526,12 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 	};
 
 	return { execute: async (...args) => {
-		const [id, params, signal, onUpdate, ctx] = args;
+		const [id, params, signal, onUpdate, ctx, executionCwd] = args;
 		const nativeAsync = isNativeAsyncCall(ctx, id) && (!params.action || params.action === "resume" || params.action === "answer");
 		const request = { ...params, nativeToolCallId: nativeAsync ? id : undefined };
 		const waiting = (params.async === false || nativeAsync) && (params.action === "resume" || params.action === "answer");
 		const before = waiting ? new Set(deps.state.ownedRuns?.keys()) : undefined;
-		let result = await execute(id, request, signal, onUpdate, ctx);
+		let result = await execute(id, request, signal, onUpdate, ctx, executionCwd);
 		// Launch/answer receipts and claims are saved before waiting; execution failure must not undo a successful launch.
 		if (waiting && !result.isError) {
 			const question = result.details.questions?.find((question) => question.delivery || question.state === "answer_pending");

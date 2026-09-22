@@ -8,10 +8,15 @@ const intentPath = (sessionFile: string): string => `${sessionFile}.subagent-cwd
 type CwdIntent = { cwd?: string };
 type CwdRequest = { sessionManager: ExtensionContext["sessionManager"]; path?: string; result?: { cwd: string; error?: string } };
 
-/** Call once for a new fork, or with cwd for an explicitly requested resume override. */
-export function requestChildExecutionCwd(sessionFile: string, cwd?: string): void {
+/** Call once for a new fork or explicit resume override; undo only if launch fails before starting. */
+export function requestChildExecutionCwd(sessionFile: string, cwd?: string): () => void {
 	if (cwd !== undefined && !path.isAbsolute(cwd)) throw new Error("Child execution cwd must be absolute.");
+	const previous = readIntent(sessionFile);
 	fs.writeFileSync(intentPath(sessionFile), JSON.stringify({ cwd }), { mode: 0o600 });
+	return () => {
+		if (previous) fs.writeFileSync(intentPath(sessionFile), JSON.stringify(previous), { mode: 0o600 });
+		else fs.unlinkSync(intentPath(sessionFile));
+	};
 }
 
 function readIntent(sessionFile: string): CwdIntent | undefined {
@@ -54,15 +59,17 @@ export function registerChildExecutionCwd(pi: ExtensionAPI): void {
 		try {
 			const sessionFile = ctx.sessionManager.getSessionFile();
 			const intent = sessionFile ? readIntent(sessionFile) : undefined;
+			const request: CwdRequest = { sessionManager: ctx.sessionManager };
+			pi.events.emit(RESOLVE_CWD, request);
+			if (request.result?.error) throw new Error(request.result.error);
+			const owned = Boolean(request.result) || hasExecutionCwdOwner(pi);
+			if (owned && !request.result?.cwd) throw new Error("The loaded directory extension did not resolve the child directory. Update pi-change-working-dir and ensure session startup has completed.");
 			if (!intent) {
 				initialized = true;
 				return;
 			}
 			if (!intent.cwd) throw new Error("New fork execution cwd was not prepared before startup.");
-			const request: CwdRequest = { sessionManager: ctx.sessionManager };
-			pi.events.emit(RESOLVE_CWD, request);
-			if (request.result?.error) throw new Error(request.result.error);
-			if (request.result || hasExecutionCwdOwner(pi)) {
+			if (owned) {
 				const selection: CwdRequest = { sessionManager: ctx.sessionManager, path: intent.cwd };
 				pi.events.emit(SET_CWD, selection);
 				if (!selection.result) throw new Error("The loaded directory extension did not initialize the child directory. Update pi-change-working-dir and ensure session startup has completed.");

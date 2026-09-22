@@ -26,6 +26,17 @@ test("new-fork intent freezes once, while ordinary resumes never recreate a cons
 	assert.equal(fs.existsSync(marker), false);
 });
 
+test("rejected launches undo only their request, preserving any previous pending initialization", (t) => {
+	const { root, sessionFile, marker } = fixture(t);
+	const undoNew = requestChildExecutionCwd(sessionFile, root);
+	undoNew();
+	assert.equal(fs.existsSync(marker), false);
+	requestChildExecutionCwd(sessionFile);
+	const undoReplacement = requestChildExecutionCwd(sessionFile, root);
+	undoReplacement();
+	assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), {});
+});
+
 test("explicit resume override is separate from the ordinary launch cwd; malformed intent fails before launch", (t) => {
 	const { root, sessionFile, marker } = fixture(t);
 	requestChildExecutionCwd(sessionFile, root);

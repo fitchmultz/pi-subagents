@@ -396,8 +396,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const slashBridge = registerSlashSubagentBridge({
 		events: pi.events,
 		getContext: () => state.lastUiContext,
-		execute: (id, params, signal, onUpdate, ctx) =>
-			executor.execute(id, params, signal, onUpdate, ctx),
+		execute: (id, params, signal, onUpdate, ctx, executionCwd) =>
+			executor.execute(id, params, signal, onUpdate, ctx, executionCwd),
 	});
 
 	const promptTemplateBridge = registerPromptTemplateDelegationBridge({
