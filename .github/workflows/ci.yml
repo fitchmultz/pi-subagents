@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: 'true'
+  PI_FORK_REF: 870f4f667bb0135f2d9d935c087dc45b6e48ff74
+  PI_AUTOMATION_REF: 117b227140265329055bcda5927ac170c6301d75
+  npm_config_cache: ${{ github.workspace }}/.npm-cache
+
+jobs:
+  official:
+    name: Official Pi / Linux / Node 22.19
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.19.0'
+          cache: npm
+      - run: npm install --global "$(node -p 'require("./package.json").packageManager')"
+      - name: Install native test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fd-find ripgrep
+          sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build
+      - name: Qualify official native contracts
+        if: github.event_name == 'pull_request'
+        env:
+          PI_COMPAT_HOST: official
+        run: node scripts/compat-native.mjs
+      - name: Install and load a clean Git-source consumer
+        shell: bash
+        run: |
+          source_dir="$(mktemp -d /tmp/ps-source.XXXXXX)"
+          trap 'rm -rf "$source_dir"' EXIT
+          git archive HEAD | tar -xf - -C "$source_dir"
+          npm --prefix "$source_dir" install --omit=dev --no-audit --no-fund
+          test -f "$source_dir/dist/extension/index.js"
+          test -f "$source_dir/dist/pi-intercom/index.js"
+          test ! -e "$source_dir/node_modules/typescript"
+          PI_COMPAT_HOST=official node scripts/native-package-smoke.mjs "$source_dir"
+          (cd "$source_dir" && node "$GITHUB_WORKSPACE/scripts/local-install-smoke.mjs")
+
+  fork:
+    name: Fork / ${{ matrix.os }} / ${{ matrix.suite }}
+    strategy:
+      fail-fast: false
+      # PRs run Linux core and macOS smoke; main pushes run Linux smoke only.
+      matrix:
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-24.04","suite":"core"},{"os":"macos-latest","suite":"smoke"}]' || '[{"os":"ubuntu-24.04","suite":"smoke"}]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: extension
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fitchmultz/.github
+          ref: ${{ env.PI_AUTOMATION_REF }}
+          path: automation
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fitchmultz/pi
+          ref: ${{ env.PI_FORK_REF }}
+          path: fork
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            extension/package-lock.json
+            fork/package-lock.json
+      - run: npm install --global "$(node -p 'require("./automation/package.json").packageManager')"
+      - name: Build the pinned fork on this platform
+        working-directory: fork
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run hydrate:model-data
+          PI_OFFLINE=1 PI_TELEMETRY=0 npm run build:offline
+          node ../automation/scripts/pack-fork.mjs . "$RUNNER_TEMP/fork-package" "$PI_FORK_REF"
+          git diff --exit-code
+      - name: Qualify the fork
+        run: node extension/.github/scripts/ci-fork.mjs "${{ matrix.suite }}" automation extension "$RUNNER_TEMP/fork-package" "$PI_FORK_REF"
