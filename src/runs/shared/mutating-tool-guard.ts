@@ -78,8 +78,8 @@ export function isMutatingBashCommand(command: string): boolean {
 }
 
 export function isMutatingTool(toolName: string | undefined, args: Record<string, unknown> | undefined): boolean {
-	if (!toolName) return false;
-	if (toolName === "edit" || toolName === "write" || toolName === "apply_edits") return true;
+	if (!toolName || args?.preview === true) return false;
+	if (["edit", "write", "apply_edits", "apply_patch", "replace_text", "write_files"].includes(toolName)) return true;
 	if (toolName !== "bash") return false;
 	const command = typeof args?.command === "string" ? args.command : "";
 	if (!command.trim()) return false;
@@ -101,7 +101,7 @@ export interface MutationToolResult extends PendingMutationTool {
 
 export function createMutationCompletionTracker(): {
 	recordToolStart(input: { id?: string; toolName?: string; args?: Record<string, unknown>; path?: string; mutates?: boolean; startedAt?: number }): PendingMutationTool;
-	recordToolResult(input?: { toolCallId?: unknown; toolName?: unknown; isError?: unknown }): MutationToolResult | undefined;
+	recordToolResult(input?: { toolCallId?: unknown; toolName?: unknown; isError?: unknown; details?: unknown }): MutationToolResult | undefined;
 } {
 	const pending: PendingMutationTool[] = [];
 	const take = (input?: { toolCallId?: unknown; toolName?: unknown }): PendingMutationTool | undefined => {
@@ -134,7 +134,11 @@ export function createMutationCompletionTracker(): {
 			const entry = take(input);
 			if (!entry) return undefined;
 			const errored = input?.isError === true;
-			return { ...entry, errored, completedMutation: entry.mutates && !errored };
+			const details = input?.details && typeof input.details === "object" ? input.details as { preview?: unknown; modifiedFiles?: unknown } : undefined;
+			const committed = Array.isArray(details?.modifiedFiles)
+				? details.modifiedFiles.some((file) => typeof file === "string" && file.trim().length > 0)
+				: !errored && !["apply_patch", "replace_text", "write_files"].includes(entry.tool);
+			return { ...entry, errored, completedMutation: entry.mutates && details?.preview !== true && committed };
 		},
 	};
 }
