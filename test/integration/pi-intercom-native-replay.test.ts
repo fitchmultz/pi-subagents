@@ -246,8 +246,16 @@ test("native steady passive receipts do not rescan old history and still survive
   const oldIds = new Set(entriesBefore.map((entry: { id: string }) => entry.id));
   let fullReads = 0, oldLookups = 0, lookups = 0;
   const readAll = manager.getEntries.bind(manager), readOne = manager.getEntry.bind(manager);
-  t.mock.method(manager, "getEntries", () => { fullReads++; return readAll(); });
-  t.mock.method(manager, "getEntry", (id: string) => { lookups++; if (oldIds.has(id)) oldLookups++; return readOne(id); });
+  // Count extension reads, not Pi's canonical-context projection on each passive append.
+  const observedManager = new Proxy(manager, {
+    get(target, key) {
+      if (key === "getEntries") return () => { fullReads++; return readAll(); };
+      if (key === "getEntry") return (id: string) => { lookups++; if (oldIds.has(id)) oldLookups++; return readOne(id); };
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  t.mock.getter(receiver.context(), "sessionManager", () => observedManager);
   for (let index = 0; index < 12; index++) {
     const id = `new-${index}`;
     await receiver.send(id, { text: `passive ${index}`, delivery: "passive" });
