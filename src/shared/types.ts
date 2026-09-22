@@ -545,6 +545,7 @@ export interface Details {
 	controlEvents?: ControlEvent[];
 	asyncId?: string;
 	asyncDir?: string;
+	asyncPid?: number;
 	progress?: AgentProgress[];
 	progressSummary?: ProgressSummary;
 	intercomTargets?: string[];
@@ -607,6 +608,8 @@ export interface AsyncParallelGroupStatus {
 export type AsyncResultTerminalState = "complete" | "failed" | "blocked" | "paused";
 
 export interface AsyncResultChild {
+	usage?: Usage;
+	timedOut?: boolean;
 	agent?: string;
 	agentProcessExit?: AgentProcessExit;
 	exitCode?: number | null;
@@ -919,6 +922,8 @@ export interface SubagentState {
 	baseCwd: string;
 	currentSessionId: string | null;
 	asyncJobs: Map<string, AsyncJobState>;
+	waitingRuns?: Map<string, number>;
+	isRunResultConsumed?: (runId: string) => boolean;
 	foregroundRuns?: Map<string, ForegroundResumeRun>;
 	ownedRuns?: Map<string, OwnedRun>;
 	persistOwnedRun?: (run: OwnedRun) => void;
