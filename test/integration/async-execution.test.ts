@@ -579,7 +579,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "Async top-level report" });
 		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
 			config: {},
 			asyncByDefault: true,
 			tempArtifactsDir: tempDir,
@@ -634,7 +634,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "Async default report B" });
 		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -673,7 +673,7 @@ describe("async execution utilities", () => {
 	it("rejects duplicate explicit output paths before starting top-level async parallel children", async () => {
 		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -725,7 +725,7 @@ describe("async execution utilities", () => {
 		const outputPath = path.join(tempDir, "same-absolute.md");
 		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -759,7 +759,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "Async single default report" });
 		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -914,7 +914,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "Async review" });
 		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -1456,7 +1456,7 @@ describe("async execution utilities", () => {
 			mockPi.onCall({ output: "Worktree report" });
 			const executor = createSubagentExecutor({
 				pi: { events: createEventBus(), getSessionName: () => undefined },
-				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map() },
 				config: {},
 				asyncByDefault: false,
 				tempArtifactsDir: repoDir,
@@ -1513,7 +1513,7 @@ describe("async execution utilities", () => {
 			mockPi.onCall({ delay: 300, output: "Worktree report" });
 			const executor = createSubagentExecutor({
 				pi: { events: createEventBus(), getSessionName: () => undefined },
-				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map() },
 				config: {},
 				asyncByDefault: false,
 				tempArtifactsDir: repoDir,

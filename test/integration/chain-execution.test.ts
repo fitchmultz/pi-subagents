@@ -16,7 +16,7 @@ describe("chain contracts through the detached owner", () => {
 	beforeEach(() => {
 		cwd = createTempDir("chain-owner-");
 		mock.reset();
-		state = { baseCwd: cwd, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), ownedRuns: new Map(), lastForegroundControlId: null };
+		state = { baseCwd: cwd, currentSessionId: null, asyncJobs: new Map(), ownedRuns: new Map() };
 	});
 	afterEach(() => {
 		for (const run of state.ownedRuns.values()) {

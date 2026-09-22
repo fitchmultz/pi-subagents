@@ -43,7 +43,7 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 						fs.writeFileSync(parentFile, `${JSON.stringify({ type: "session", version: 3, id: randomUUID(), cwd, timestamp: new Date().toISOString() })}\n`);
 						let parent = SessionManager.open(parentFile);
 						const state = {
-							baseCwd: cwd, currentSessionId: parentFile, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null,
+							baseCwd: cwd, currentSessionId: parentFile, asyncJobs: new Map(),
 							ownedRuns: new Map(), completionSeen: new Map(), cleanupTimers: new Map(), persistOwnedRun: (run) => parent.appendCustomEntry(OWNED_RUN_ENTRY, run),
 						} as SubagentState;
 						const ctx = { ...makeMinimalCtx(cwd), sessionManager: parent };
@@ -113,7 +113,6 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 								await waitFor(() => notifications.some((entry) => entry.runId === runId), "grouped background completion");
 							}
 							const beforeSettlement = await invoke({ action: "status", id: runId });
-							if (detaching) await waitFor(() => !state.foregroundControls.has(runId!), "detached child completion");
 							parent = SessionManager.open(parentFile);
 							ctx.sessionManager = parent;
 							state.foregroundRuns = new Map();
@@ -180,9 +179,9 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 							}
 						} finally {
 							watcher.stopResultWatcher();
-							if (runId && (state.foregroundControls.has(runId) || host === "background" && !fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")))) {
+							if (runId && !fs.existsSync(path.join(getRunMetadataDir(runId), "result.json"))) {
 								await invoke({ action: "interrupt", id: runId });
-								await waitFor(() => host === "foreground" ? !state.foregroundControls.has(runId!) : fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "owned test run cleanup");
+								await waitFor(() => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "owned test run cleanup");
 							}
 							await pending;
 							tracker.resetJobs();

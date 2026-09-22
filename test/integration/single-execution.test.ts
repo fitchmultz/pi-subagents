@@ -62,7 +62,7 @@ describe("single owner execution", () => {
 	beforeEach(() => {
 		tempDir = createTempDir();
 		mockPi.reset();
-		state = { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), ownedRuns: new Map(), lastForegroundControlId: null };
+		state = { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), ownedRuns: new Map() };
 	});
 
 	afterEach(() => {

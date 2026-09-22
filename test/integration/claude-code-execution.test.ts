@@ -79,7 +79,7 @@ describe("Claude Code child backend", () => {
 	beforeEach(() => {
 		tempDir = createTempDir("claude-code-exec-");
 		mock = installMockClaude(tempDir);
-		state = { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), ownedRuns: new Map(), lastForegroundControlId: null };
+		state = { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), ownedRuns: new Map() };
 	});
 
 	afterEach(() => {

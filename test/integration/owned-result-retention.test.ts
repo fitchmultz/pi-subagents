@@ -26,7 +26,7 @@ describe("unified owner result retention through actual router", () => {
 		mock.reset();
 		cwd = createTempDir("owned-retention-");
 		runFiles = createTempDir("owned-retention-state-");
-		state = { baseCwd: cwd, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), ownedRuns: new Map(), lastForegroundControlId: null };
+		state = { baseCwd: cwd, currentSessionId: null, asyncJobs: new Map(), ownedRuns: new Map() };
 	});
 	afterEach(() => {
 		for (const run of state.ownedRuns.values()) {

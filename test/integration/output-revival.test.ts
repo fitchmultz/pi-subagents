@@ -73,7 +73,7 @@ describe("saved output choices", () => {
 	function createExecutor() {
 		return createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: path.join(tempDir, "artifacts"),

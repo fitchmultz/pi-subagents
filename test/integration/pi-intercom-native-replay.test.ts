@@ -1115,7 +1115,7 @@ for (const mode of ["single", "parallel", "chain"] as const) test(`native import
   writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${path.join(repo, "test/fixtures/native-feedback-child.mjs")}" "$@"\n`, { mode: 0o700 });
   const saved = { PATH: process.env.PATH, PI_FEEDBACK_RELEASE_FILE: process.env.PI_FEEDBACK_RELEASE_FILE, PI_FEEDBACK_SCENARIO: process.env.PI_FEEDBACK_SCENARIO };
   process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`; process.env.PI_FEEDBACK_RELEASE_FILE = release; process.env.PI_FEEDBACK_SCENARIO = "tool";
-  const state = { baseCwd: directory, currentSessionId: "", ownedRuns: new Map(), asyncJobs: new Map(), foregroundRuns: new Map(), foregroundControls: new Map(), lastForegroundControlId: null };
+  const state = { baseCwd: directory, currentSessionId: "", ownedRuns: new Map(), asyncJobs: new Map(), foregroundRuns: new Map() };
   const { getRunMetadataDir } = await import("../../src/runs/shared/supervisor-questions.ts");
   let seen = "", yielded;
   t.after(async () => { writeFileSync(release, "released"); await waitFor(() => [...state.ownedRuns.keys()].every((id) => existsSync(path.join(getRunMetadataDir(id), "result.json"))), "continued workflow cleanup"); for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });

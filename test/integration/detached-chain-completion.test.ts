@@ -61,7 +61,7 @@ describe("detached chain workflow completion", { timeout: 30_000 }, () => {
 		const previousEnv = Object.fromEntries(Object.keys(nestedEnv).map((key) => [key, process.env[key]]));
 		Object.assign(process.env, nestedEnv);
 		const makeState = () => ({
-			baseCwd: cwd, currentSessionId: parentFile, asyncJobs: new Map(), foregroundRuns: new Map(), foregroundControls: new Map(), lastForegroundControlId: null,
+			baseCwd: cwd, currentSessionId: parentFile, asyncJobs: new Map(), foregroundRuns: new Map(),
 			ownedRuns: new Map(), completionSeen: new Map(), cleanupTimers: new Map(), persistOwnedRun: (run) => parent.appendCustomEntry(OWNED_RUN_ENTRY, run),
 		} as SubagentState);
 		let state = makeState();

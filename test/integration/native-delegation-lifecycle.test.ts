@@ -39,8 +39,8 @@ function setup(t) {
 		if (type === "subagent-invocation" && data.kind === "launch") assert.equal(fs.existsSync(path.join(getRunMetadataDir(data.runId), "launch.json")), false, "call identity must be journaled before launch");
 		manager.appendCustomEntry(type, data);
 	} };
-	const state = { baseCwd: cwd, currentSessionId: null, ownedRuns: new Map(), foregroundRuns: new Map(), foregroundControls: new Map(), asyncJobs: new Map(),
-		cleanupTimers: new Map(), completionSeen: new Map(), lastForegroundControlId: null, lastUiContext: ctx,
+	const state = { baseCwd: cwd, currentSessionId: null, ownedRuns: new Map(), foregroundRuns: new Map(), asyncJobs: new Map(),
+		cleanupTimers: new Map(), completionSeen: new Map(), lastUiContext: ctx,
 		persistOwnedRun: (run) => manager.appendCustomEntry("subagent-run", run), resultFileCoalescer: { schedule: () => false, clear() {} } };
 	const executor = createSubagentExecutor({ pi, state, config: {}, asyncByDefault: true, tempArtifactsDir: cwd,
 		getSubagentSessionRoot: () => path.join(cwd, "children"), expandTilde: (value) => value,

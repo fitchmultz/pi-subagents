@@ -626,7 +626,7 @@ if (process.argv[1]?.endsWith("subagent-runner.ts")) {
 	function executor() {
 		return createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: cwd, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: { baseCwd: cwd, currentSessionId: null, asyncJobs: new Map() },
 			config: {}, asyncByDefault: false, tempArtifactsDir: cwd, getSubagentSessionRoot: () => cwd,
 			expandTilde: (value) => value, discoverAgents: () => ({ agents: [makeAgent("worker")] }),
 		});

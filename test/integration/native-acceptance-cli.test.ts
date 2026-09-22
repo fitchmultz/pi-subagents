@@ -49,7 +49,7 @@ it("native stop records the agent process exit separately from real bash/descend
 	process.env.PI_FINAL_REPORT_CLI_INPUT = path.join(cwd, "input.json");
 	fs.writeFileSync(process.env.PI_FINAL_REPORT_CLI_INPUT, JSON.stringify({ pidDir: cwd }));
 	const agent = makeAgent("worker", { model: "report-cli-fixture/faux-1", extensions: [extension], output: false });
-	const state = { baseCwd: cwd, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), ownedRuns: new Map(), lastForegroundControlId: null };
+	const state = { baseCwd: cwd, currentSessionId: null, asyncJobs: new Map(), ownedRuns: new Map() };
 	const executor = createSubagentExecutor({ pi: { events: createEventBus(), getSessionName: () => undefined }, state,
 		config: {}, asyncByDefault: false, tempArtifactsDir: cwd, getSubagentSessionRoot: () => cwd,
 		expandTilde: (value) => value, discoverAgents: () => ({ agents: [agent] }) });

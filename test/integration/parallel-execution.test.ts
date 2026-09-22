@@ -67,7 +67,7 @@ describe("parallel agent execution", () => {
 	function makeExecutor(agents = [makeAgent("echo")], artifactsDir = tempDir, eventBus = createEventBus()) {
 		return createSubagentExecutor({
 			pi: { events: eventBus, getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: artifactsDir,
@@ -161,7 +161,7 @@ describe("parallel agent execution", () => {
 		const bus = createEventBus();
 		const executor = createSubagentExecutor({
 			pi: { events: bus, getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
