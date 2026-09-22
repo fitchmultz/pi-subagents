@@ -12,7 +12,7 @@ const childSafe = portableChild || variant === "fork";
 const providerSteering = variant.startsWith("steering");
 for (const dir of [cwd, agentDir, path.join(cwd, ".pi/agents"), path.join(root, "bin")]) fs.mkdirSync(dir, { recursive: true });
 for (const key of Object.keys(process.env)) if (key.startsWith("PI_SUBAGENT_")) delete process.env[key];
-Object.assign(process.env, { HOME: root, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENT_TEMP_ROOT: path.join(root, "pi-subagents-runtime"), PI_OFFLINE: "1",
+Object.assign(process.env, { HOME: root, PI_CODING_AGENT_DIR: agentDir, PI_PACKAGE_DIR: sdkRoot, PI_SUBAGENT_TEMP_ROOT: path.join(root, "pi-subagents-runtime"), PI_OFFLINE: "1",
 	NATIVE_ASYNC_ROOT: root, NATIVE_ASYNC_SDK: sdkRoot, PATH: `${path.join(root, "bin")}${path.delimiter}${process.env.PATH}` });
 fs.writeFileSync(path.join(root, "bin/pi"), `#!/bin/sh\nexec "${process.execPath}" "${path.join(repo, "test/fixtures/native-async-child.mjs")}" "$@"\n`, { mode: 0o755 });
 fs.writeFileSync(path.join(cwd, ".pi/agents/fixture.md"), "---\nname: fixture\ndescription: Native async fixture\nmodel: child-fixture/actual-model\ninheritProjectContext: false\ninheritSkills: false\ncompletionGuard: false\n---\nReturn the controlled fixture result.\n");
@@ -22,8 +22,11 @@ const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry));
 const { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
 const { default: subagents } = await import(pathToFileURL(path.join(repo, "dist/extension/index.js")).href);
 const { default: fanoutChild } = await import(pathToFileURL(path.join(repo, "dist/extension/fanout-child.js")).href);
+const nativeSession = await import(pathToFileURL(path.join(repo, "dist/shared/native-session.js")).href);
+assert.equal(nativeSession.SessionManager, sdk.SessionManager, "extension native readers must use the selected SDK");
 if (childSafe) Object.assign(process.env, { PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_FANOUT_CHILD: "1", PI_SUBAGENT_DEPTH: "1", PI_SUBAGENT_MAX_DEPTH: "2" });
-const evidence = { phase, variant, sdkRoot, pid: process.pid, networkRequests: 0, errors: [], checks: [], providerInputs: [], steering: [] };
+const evidence = { phase, variant, sdkRoot, nativeSessionManagerMatches: nativeSession.SessionManager === sdk.SessionManager,
+	pid: process.pid, networkRequests: 0, errors: [], checks: [], providerInputs: [], steering: [] };
 globalThis.fetch = async () => { evidence.networkRequests++; throw new Error("Network is forbidden in native async fixtures"); };
 const seed = phase === "seed" || portableChild ? undefined : JSON.parse(fs.readFileSync(path.join(root, "seed.json"), "utf8"));
 const modelRuntime = await sdk.ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
@@ -145,9 +148,11 @@ try {
 		}
 	} else if (phase === "seed") {
 		if (variant === "fork") {
-			faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "inherited_inspection", name: "subagent", arguments: { action: "status" } }], { stopReason: "toolUse" }),
+			faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "inherited_inspection", name: "subagent", arguments: { action: "list" } }], { stopReason: "toolUse" }),
 				fauxAssistantMessage("Inherited completed fanout inspection")]);
-			await session.prompt("Inspect this parent's existing runs");
+			await session.prompt("Inspect available child profiles");
+			assert.equal(manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "toolResult"
+				&& entry.message.toolCallId === "inherited_inspection").message.isError, false);
 		}
 		const call = { type: "toolCall", id: originalCallId, name: toolName, arguments: args, async: true, responsesItem: wireCall };
 		faux.setResponses([fauxAssistantMessage([call, { type: "text", text: "Independent parent answer while the child runs" }], { responseId: "initial-response", stopReason: "toolUse" }), fauxAssistantMessage("Ready for child result")]);
@@ -202,8 +207,15 @@ try {
 		assert.equal(inheritedCall.executionStarted, true);
 		assert.equal(inheritedCall.executionDetached, true);
 		const beforeStarts = childStarts();
-		const inspect = async () => registered.execute("fork_inspection", { action: "status" }, new AbortController().signal);
-		assert.equal((await inspect()).details.runList.total, 0);
+		const inspect = async () => {
+			const result = await registered.execute("fork_inspection", { action: "status", id: seed.runId }, new AbortController().signal);
+			(evidence.forkInspections ??= []).push(result);
+			assert.notEqual(result.isError, true, JSON.stringify(result));
+			assert.equal(result.details.run, undefined, "explicit inspection cannot project the original run as fork-owned");
+			assert.equal(manager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "subagent-run"
+				&& entry.data.ownerSessionId === manager.getSessionId()).length, 0, "fork cannot persist an owned-run adoption");
+		};
+		await inspect();
 		faux.setResponses([fauxAssistantMessage("Inherited work belongs to the original parent"), fauxAssistantMessage("No work adopted")]);
 		await session.prompt("Continue this fork without starting new work");
 		await session.waitForIdle();
@@ -212,7 +224,7 @@ try {
 		assert.equal(resultEntries()[0].message.isError, true);
 		assert.match(resultEntries()[0].message.content[0].text, /outcome is unknown/i);
 		assert.deepEqual(childStarts(), beforeStarts, "fork must not execute the inherited call again");
-		assert.equal((await inspect()).details.runList.total, 0, "fork must not adopt the original parent's run");
+		await inspect();
 		assert.equal(session.getSessionStats().cost, 0);
 		assert.equal(manager.getEntries().filter((entry) => entry.type === "usage" && entry.kind === "subagent").length, 0);
 		assert.deepEqual(manager.getEntries().slice(0, inheritedEntries.length), inheritedEntries, "inherited tool history remains unchanged");

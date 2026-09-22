@@ -10,7 +10,7 @@ import { test } from "node:test";
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const sdkRoot = process.env.PI_NATIVE_ASYNC_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
 const suiteRoot = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-native-suite-"));
-Object.assign(process.env, { HOME: suiteRoot, PI_CODING_AGENT_DIR: path.join(suiteRoot, "agent"),
+Object.assign(process.env, { HOME: suiteRoot, PI_CODING_AGENT_DIR: path.join(suiteRoot, "agent"), PI_PACKAGE_DIR: sdkRoot,
 	PI_SUBAGENT_TEMP_ROOT: path.join(suiteRoot, "pi-subagents-runtime"), PI_OFFLINE: "1" });
 const { AgentSession } = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
 for (const [phase, title] of [["portable-child", "persists nested usage once"], ["portable-child-control", "keeps its wait attached during interruption"]]) test(`child-safe delegation ${title} through the native host`, { timeout: 40_000 }, () => {
