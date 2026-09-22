@@ -14,7 +14,8 @@ import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
 import { registerToolResultAdapter } from "./tool-result.ts";
 import { renderSubagentResult } from "../tui/render.ts";
-import { type Details, type SubagentState } from "../shared/types.ts";
+import { type Details, type SubagentExecutionResult, type SubagentState } from "../shared/types.ts";
+import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { OWNED_RUN_ENTRY, restoreOwnedRuns } from "../runs/shared/run-records.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
@@ -233,8 +234,23 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		ensureSessionState,
 	});
 
-	const toRegisteredToolResult = registerToolResultAdapter(pi, ["subagent"]);
+	const parentUsage = registerParentUsage(pi, ["subagent"]);
+	const adaptToolResult = registerToolResultAdapter(pi, ["subagent"]);
+	const toRegisteredToolResult = (result: SubagentExecutionResult, ctx: ExtensionContext) => adaptToolResult(
+		result.details.wait?.status === "completed" && result.details.run
+			? parentUsage.attach(result, finalizedChildUsage(result.details.run.children, result.details.wait.index), ctx)
+			: result,
+	);
+	const nativeAsyncLifecycle = {
+		async: true,
+		resume: async (id: string, _params: unknown, signal: AbortSignal | undefined,
+			onUpdate: ((result: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext) => {
+			const result = await executor.resume(id, {}, signal, onUpdate, ctx);
+			return result && toRegisteredToolResult(result, ctx);
+		},
+	};
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
+		...nativeAsyncLifecycle,
 		name: "subagent",
 		label: "Subagent",
 		description: [
@@ -246,14 +262,14 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		].join("\n"),
 		promptSnippet: "Delegate nested child-safe subagent work from an explicitly allowed fanout child.",
 		promptGuidelines: [
-			"Use subagent in child-safe fanout mode only for explicitly assigned nested delegation or control inspection.",
+			"Delegate useful helper work within your assigned task when it saves time or improves quality; the original parent owns integration and final delivery.",
 			"Nested execution defaults to foreground unless configuration explicitly opts into async. Set async:false whenever the nested result must appear in this child's report; use async:true only for intentionally detached work.",
 			"Use subagent action:list before nested execution unless the executable nested agent is already known from the task context.",
 			"Do not use subagent child-safe mode for agent config mutation actions; create, update, and delete are blocked here.",
 		],
 		parameters: SubagentParams,
 		async execute(id, params, signal, onUpdate, ctx) {
-			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx));
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx), ctx);
 		},
 		renderResult: renderSubagentResult,
 	};
