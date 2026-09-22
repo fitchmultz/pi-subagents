@@ -55,23 +55,23 @@ export async function runNativeReport(args, fixture) {
 	receipt.sessionFile = session.sessionFile;
 	const structured = Boolean(nativeConfig) || session.agent.state.tools.some((tool) => tool.name === "structured_output");
 	const typed = (output) => ({ answer: stripAcceptanceReport(output), report: parseAcceptanceReport(output).report ?? { notes: "Malformed report" } });
-	const submit = (value, id) => structured
-		? ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: typed(value) }, { id }), { stopReason: "toolUse" })
+	const submit = (value) => structured
+		? ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: typed(value) }), { stopReason: "toolUse" })
 		: ai.fauxAssistantMessage(value);
 	const work = () => ai.fauxAssistantMessage(ai.fauxToolCall("fixture_work", {}), { stopReason: "toolUse" });
 	const plain = ai.fauxAssistantMessage("Coordination acknowledged; no new task report.");
 	const first = Promise.withResolvers(), release = Promise.withResolvers();
-	const initial = scenario === "unsubmitted" ? ai.fauxAssistantMessage(report) : scenario === "child-file" ? work() : submit(report, "first-report");
+	const initial = scenario === "unsubmitted" ? ai.fauxAssistantMessage(report) : scenario === "child-file" ? work() : submit(report);
 	const tails = {
-		resubmit: [submit(laterReport, "current-report")],
-		"not-satisfied": [submit(laterReport, "current-report")],
-		"child-file": [submit(report, "current-report")],
+		resubmit: [submit(laterReport)],
+		"not-satisfied": [submit(laterReport)],
+		"child-file": [submit(report)],
 		"failed-work": [work(), plain],
-		repair: [work(), work(), submit(report, "current-report")],
+		repair: [work(), work(), submit(report)],
 		"user-failed-work": [work(), plain],
 		"different-work": [work()],
 		"malformed-work": [ai.fauxAssistantMessage("```acceptance-report\n{malformed\n```")],
-		"malformed-submission": [submit("```acceptance-report\n{malformed\n```", "malformed-report"), plain],
+		"malformed-submission": [submit("```acceptance-report\n{malformed\n```"), plain],
 		"invalid-tool-submission": [ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: { report: { invalid: true } } }), { stopReason: "toolUse" }), plain],
 		"invalid-submission": [ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: { report: 42 } }), { stopReason: "toolUse" }), plain],
 		mixed: [ai.fauxAssistantMessage([ai.fauxToolCall("structured_output", { value: typed(laterReport) }), ai.fauxToolCall("fixture_work", {})], { stopReason: "toolUse" })],
@@ -94,7 +94,7 @@ export async function runNativeReport(args, fixture) {
 		}] : []),
 		async () => { first.resolve(); await release.promise; return initial; },
 		...(tails[scenario] ?? [plain]),
-		...(fixture.retry ? [submit(report, "retry-report")] : []),
+		...(fixture.retry ? [submit(report)] : []),
 	].map((response) => async (...args) => {
 		receipt.providerCwds.push(session.sessionManager.getCwd());
 		return typeof response === "function" ? response(...args) : response;
