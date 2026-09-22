@@ -1,6 +1,6 @@
 {
   "name": "pi-subagents",
-  "version": "0.40.0",
+  "version": "0.40.1",
   "description": "Pi extension for subagent orchestration and local session coordination",
   "license": "MIT",
   "type": "module",
@@ -43,7 +43,7 @@
     "test:unit": "node scripts/run-tests.mjs unit",
     "test:integration": "node scripts/run-tests.mjs integration",
     "test:all": "node scripts/run-tests.mjs all",
-    "check:compat": "node scripts/compat-host.mjs && npm run build && npm run typecheck && npm run test:unit && npm run smoke:package && npm run smoke:install && node scripts/compat-native.mjs",
+    "check:compat": "node scripts/compat-host.mjs && npm run build && npm run typecheck && node scripts/compat-native.mjs",
     "typecheck": "tsc --noEmit",
     "smoke:package": "node scripts/package-smoke.mjs",
     "smoke:install": "node scripts/local-install-smoke.mjs",

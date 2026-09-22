@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -20,6 +20,7 @@ process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
 const sdkRoot = process.env.PI_OWNERSHIP_TEST_PACKAGE_ROOT ?? path.dirname(path.dirname(new URL(import.meta.resolve("@earendil-works/pi-coding-agent")).pathname));
 const { SessionManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/session-manager.js")).href);
 const { AgentViewController, AgentConversation } = await import("../../src/tui/agent-view.ts");
+const { NativeAgentHistory, historyItems, withFinalResult } = await import("../../src/tui/agent-history.ts");
 const { restoreOwnedRuns, ownedRunView, OWNED_RUN_ENTRY } = await import("../../src/runs/shared/run-records.ts");
 const { getRunMetadataDir, readQuestionState, saveRunStatus, saveAsyncRunResult, saveQuestionOwner, saveQuestionContract, createSupervisorQuestion } = await import("../../src/runs/shared/supervisor-questions.ts");
 const { createSubagentExecutor } = await import("../../src/runs/foreground/subagent-executor.ts");
@@ -135,6 +136,170 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, ex
 		complete() { saveAsyncRunResult(run.runId, { runtimeVersion: 2, id: run.runId, state: "complete", timestamp: Date.now(), results: run.children.map((child) => ({ agent: child.agent, task: child.task!, success: true, exitCode: 0, finalOutput: "Finished", sessionFile: child.sessionFile, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } })) }); controller.refresh(true); },
 	};
 }
+
+for (const count of [20, 227]) test(`Agents startup shares ${count} transcript parses and formats only the selected conversation beside 8000 unrelated runs`, async (t) => {
+	const f = fixture(t, "regular", count);
+	f.controller.dispose();
+	f.state.ownedRuns.clear();
+	for (const [index, manager] of f.childSessions.entries()) {
+		const runId = randomUUID(), child = { ...f.run.children[index], index: 0 };
+		const run = { ...f.run, runId, rootRunId: runId, asyncDir: getRunMetadataDir(runId), mode: "single", children: [child] };
+		manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: `call-${index}`, name: "check", arguments: { input: "x".repeat(4096) } }], provider: "fixture", model: "fixture", api: "openai-responses", stopReason: "toolUse", usage, timestamp: Date.now() });
+		manager.appendMessage({ role: "toolResult", toolCallId: `call-${index}`, toolName: "check", content: [{ type: "text", text: "Complete" }], details: { historyProbe: index, payload: "x".repeat(4096) }, isError: false, timestamp: Date.now() });
+		saveQuestionOwner(runId, run.ownerSessionId);
+		saveQuestionContract(runId, 0, { task: `Full assignment ${index}`, sessionFile: child.sessionFile, launch: { model: "fixture/original", cwd: f.cwd } });
+		saveRunStatus(runId, { ...f.status, runId, state: "complete", pid: undefined, steps: [{ agent: "worker", status: "complete", sessionFile: child.sessionFile }] });
+		saveAsyncRunResult(runId, { runtimeVersion: 2, id: runId, state: "complete", timestamp: Date.now(), results: [{ agent: "worker", task: child.task, sessionFile: child.sessionFile, success: true, exitCode: 0, finalOutput: "Saved completion" }] });
+		f.state.ownedRuns.set(runId, run);
+	}
+	const metadataRoot = path.dirname(getRunMetadataDir(f.run.runId));
+	for (let index = 0; index < 8000; index++) fs.mkdirSync(path.join(metadataRoot, `foreign-${index}`), { recursive: true });
+	const files = new Set(f.childSessions.map((manager) => manager.getSessionFile()));
+	const reads: string[] = [], formatted: number[] = [], rootListings: string[] = [];
+	const readFile = fs.readFileSync, readdir = fs.readdirSync, stringify = JSON.stringify;
+	t.mock.method(fs, "readFileSync", function(file, ...args) { if (files.has(String(file))) reads.push(String(file)); return readFile.call(this, file, ...args); });
+	t.mock.method(fs, "readdirSync", function(file, ...args) { if (String(file) === metadataRoot || String(file).endsWith("/supervisor-questions")) rootListings.push(String(file)); return readdir.call(this, file, ...args); });
+	t.mock.method(JSON, "stringify", function(value, ...args) { if (value?.result?.details?.historyProbe !== undefined) formatted.push(value.result.details.historyProbe); return stringify.call(this, value, ...args); });
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	f.controller.start(f.ctx);
+	assert.equal(reads.length, count, "configuration and history must share one read/parse per file");
+	assert.equal(new Set(reads).size, count);
+	assert.deepEqual(rootListings, [], "known run questions never enumerate global roots");
+	assert.deepEqual(formatted, [], "closed-panel startup does not format raw tool details");
+	assert.equal(f.controller.tasks.length, count);
+	f.controller.refresh(); f.controller.refresh(true);
+	assert.equal(reads.length, count, "unchanged live/forced refreshes reuse the parsed file");
+	const opening = f.controller.open(f.controller.tasks[0].key);
+	plain(f.overlay);
+	assert.equal(reads.length, count, "opening one conversation does not reread all child bodies");
+	assert.equal(formatted.length, 1, "only the selected conversation materializes full tool details");
+	assert.equal(f.controller.tasks.every((task) => task.child.task?.startsWith("Full assignment")), true);
+	f.overlay.handleInput("\x1b"); await opening;
+	assert.equal(f.calls.length, 0);
+	t.diagnostic(`${count} children: ${reads.length} transcript reads, ${rootListings.length} global question listings, ${formatted.length} formatted conversations`);
+});
+
+test("native snapshots invalidate append, same-size rewrite/replacement, truncation and disappearance while keeping terminal cutoffs distinct", (t) => {
+	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
+	const reader = new NativeAgentHistory(), readFile = fs.readFileSync;
+	let reads = 0;
+	t.mock.method(fs, "readFileSync", function(target, ...args) { if (String(target) === file) reads++; return readFile.call(this, target, ...args); });
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const initial = reader.read(file);
+	reader.configuration(file); reader.configuration(file, 0);
+	assert.equal(reader.read(file), initial);
+	assert.equal(reads, 1);
+	const initialIds = [...initial.entryIds], appended = assistant(manager, "Appended reply");
+	assert.ok(reader.read(file).entryIds.includes(`${appended}:0`));
+	assert.equal(reads, 2);
+	const entries = [
+		{ type: "session", version: 3, id: "child", cwd: f.cwd, timestamp: "2026-01-01T00:00:00Z" },
+		{ type: "model_change", id: "first", parentId: null, provider: "fixture", modelId: "first", timestamp: "2026-01-01T00:01:00Z" },
+		{ type: "thinking_level_change", id: "high", parentId: "first", thinkingLevel: "high", timestamp: "2026-01-01T00:02:00Z" },
+		{ type: "model_change", id: "later", parentId: "high", provider: "fixture", modelId: "later", timestamp: "2026-01-01T00:03:00Z" },
+		{ type: "thinking_level_change", id: "low", parentId: "later", thinkingLevel: "low", timestamp: "2026-01-01T00:04:00Z" },
+	];
+	const write = (target, values) => fs.writeFileSync(target, values.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+	write(file, entries);
+	const firstEnd = Date.parse("2026-01-01T00:02:30Z"), laterEnd = Date.parse("2026-01-01T00:04:30Z");
+	const first = reader.configuration(file, firstEnd), later = reader.configuration(file, laterEnd);
+	assert.deepEqual([first.model, first.thinking, later.model, later.thinking], ["fixture/first", "high", "fixture/later", "low"]);
+	assert.equal(reader.configuration(file, firstEnd), first);
+	assert.equal(reader.configuration(file, laterEnd), later);
+	assert.equal(reader.read(file).entryIds.length, 0);
+	assert.equal(reads, 3, "all cutoff projections use the same parse");
+	for (const [endedAt, model] of [[firstEnd, "fixture/first"], [laterEnd, "fixture/later"]]) {
+		const runId = randomUUID(), run = { ...f.run, runId, rootRunId: runId, asyncDir: getRunMetadataDir(runId) };
+		saveQuestionContract(runId, 0, { sessionFile: file, launch: { model: "fixture/requested", cwd: f.cwd } });
+		saveAsyncRunResult(runId, { runtimeVersion: 2, id: runId, state: "complete", timestamp: endedAt, results: [{ agent: "worker", task: "Shared conversation", sessionFile: file, success: true, exitCode: 0 }] });
+		assert.equal(ownedRunView(run, f.state, { pendingInput: false, includeContinuations: false, readConfiguration: (file, cutoff) => reader.configuration(file, cutoff) }).children[0].launch.model, model);
+	}
+	assert.equal(reads, 3, "separate completed runs sharing a transcript retain their own model cutoff without rereading");
+	const stat = fs.statSync(file);
+	entries[3].modelId = "other";
+	write(`${file}.replacement`, entries); fs.utimesSync(`${file}.replacement`, stat.atime, stat.mtime); fs.renameSync(`${file}.replacement`, file);
+	assert.equal(reader.configuration(file, laterEnd).model, "fixture/other", "atomic replacement invalidates even with the same size and restored mtime");
+	assert.equal(reader.configuration(file, firstEnd).model, "fixture/first");
+	assert.equal(reads, 4);
+	entries[3].modelId = "again"; write(file, entries); fs.utimesSync(file, stat.atime, stat.mtime);
+	assert.equal(reader.configuration(file, laterEnd).model, "fixture/again", "ctime invalidates in-place same-size writes with restored mtime");
+	assert.equal(reads, 5);
+	write(file, entries.slice(0, 3));
+	assert.equal(reader.configuration(file, laterEnd).model, "fixture/first", "truncation cannot retain the later choice");
+	assert.equal(reads, 6);
+	fs.unlinkSync(file);
+	assert.deepEqual(reader.configuration(file, laterEnd), {});
+	assert.match(reader.read(file, true).unavailable, /unavailable/);
+	assert.equal(reader.read(file, true).entryIds.length, 0);
+	write(file, entries);
+	assert.equal(reader.configuration(file, laterEnd).model, "fixture/again", "a disappeared file is not negative-cached");
+	assert.equal(reads, 7);
+	reader.clear();
+	reader.read(file);
+	assert.equal(reads, 8, "session disposal drops all snapshots");
+	assert.equal(initial.entryIds.length, initialIds.length, "old presentation snapshots remain immutable");
+});
+
+test("history reading IDs and delivery facts never need raw tool serialization", () => {
+	let formatted = 0;
+	const entries = [
+		{ type: "custom_message", id: "direction", timestamp: "2026-01-01", customType: "subagent-human-message", content: "Keep the API", details: { message: { id: "ack-1" } } },
+		{ type: "message", id: "call", timestamp: "2026-01-01", message: { role: "assistant", content: [{ type: "thinking", thinking: "Reasoning" }, { type: "text", text: "Reply" }, { type: "toolCall", id: "tool-1", name: "check", arguments: {} }], stopReason: "toolUse" } },
+		{ type: "message", id: "result", timestamp: "2026-01-01", message: { role: "toolResult", toolCallId: "tool-1", toolName: "check", content: [{ type: "text", text: "Done" }], details: { toJSON() { formatted++; return { full: "RAW-DETAIL", diff: "-before\n+after" }; } } } },
+	];
+	const history = historyItems(entries);
+	assert.deepEqual(history.entryIds, ["direction", "call:0", "call:1", "call:2", "result"]);
+	assert.equal(history.items[0].messageId, "ack-1");
+	assert.equal(history.items[1].kind, "assistant");
+	assert.deepEqual(history.items[2].entryIds, ["call:2", "result"]);
+	assert.equal(formatted, 0);
+	assert.match(history.items[2].details, /RAW-DETAIL/);
+	assert.equal(formatted, 1);
+	assert.match(history.items[2].details, /RAW-DETAIL/);
+	assert.equal(formatted, 1, "display details are formatted once per snapshot");
+});
+
+test("legacy native snapshots migrate the full journal before projecting different terminal cutoffs", (t) => {
+	const f = fixture(t), file = f.childSessions[0].getSessionFile();
+	const entries = [
+		{ type: "session", version: 1, id: "legacy-child", cwd: f.cwd, timestamp: "2026-01-01T00:00:00Z" },
+		{ type: "model_change", provider: "fixture", modelId: "first", timestamp: "2026-01-01T00:01:00Z" },
+		{ type: "thinking_level_change", thinkingLevel: "high", timestamp: "2026-01-01T00:02:00Z" },
+		{ type: "message", message: { role: "user", content: "Full legacy assignment", timestamp: 0 }, timestamp: "2026-01-01T00:02:01Z" },
+		{ type: "model_change", provider: "fixture", modelId: "later", timestamp: "2026-01-01T00:03:00Z" },
+		{ type: "thinking_level_change", thinkingLevel: "low", timestamp: "2026-01-01T00:04:00Z" },
+	];
+	const original = entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+	fs.writeFileSync(file, original);
+	const reader = new NativeAgentHistory();
+	const early = reader.configuration(file, Date.parse("2026-01-01T00:02:30Z"));
+	const later = reader.configuration(file, Date.parse("2026-01-01T00:04:30Z"));
+	assert.deepEqual([early.model, early.thinking, later.model, later.thinking], ["fixture/first", "high", "fixture/later", "low"]);
+	assert.equal(reader.read(file).configuration.model, "fixture/later");
+	assert.equal(reader.read(file).items[0].text, "Full legacy assignment");
+	assert.ok(reader.read(file).entryIds.every((id) => typeof id === "string" && id.length > 0));
+	assert.equal(fs.readFileSync(file, "utf8"), original, "presentation migration never rewrites the saved native journal");
+});
+
+test("shared-history saved-result matching indexes exact sanitized text once and retains the latest matching native ID", () => {
+	const entries = ["earlier", "latest"].map((id) => ({ type: "message", id, timestamp: "2026-01-01", message: { role: "assistant",
+		content: [{ type: "thinking", thinking: "Context" }, { type: "text", text: "\x1b[31mFinal report\x1b[0m\n```acceptance-report\n{\"criteriaSatisfied\":[]}\n```" }] } }));
+	const history = historyItems(entries);
+	let textReads = 0;
+	for (const item of history.items) {
+		const get = Object.getOwnPropertyDescriptor(item, "text").get;
+		Object.defineProperty(item, "text", { get() { textReads++; return get.call(this); } });
+	}
+	for (let run = 0; run < 267; run++) {
+		assert.equal(withFinalResult(history, "Final report", `run-${run}`, run).finalId, "latest:0");
+		assert.equal(withFinalResult(history, `Different saved result ${run}`, `run-${run}`, run).finalId, `result:run-${run}`);
+	}
+	assert.equal(textReads, 2, "many continuations must not rescan all assistant text on unchanged refresh");
+	const saved = withFinalResult(history, "Only canonical", "saved", 1);
+	assert.equal(withFinalResult(saved, "Only canonical", "saved", 1).items.length, saved.items.length, "reapplying a canonical result cannot duplicate it");
+});
 
 test("Agents model identity follows native branch settings and tool-only messages, not requested routes", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-01-01T00:00:00Z") });
@@ -1472,7 +1637,9 @@ test("answering in the view releases the real native durable question with human
 	assert.equal(readQuestionState(question).answer?.message, "Use the first path");
 	assert.equal(f.calls[0].action, "answer");
 	assert.equal(f.calls[0].questionId, question.questionId);
-	await pending; f.controller.refresh(true);
+	await pending;
+	await until(() => readQuestionState(question).delivery?.kind === "live", "native child consumes the saved answer");
+	f.controller.refresh(true);
 	assert.equal(readQuestionState(question).delivery?.kind, "live");
 	assert.equal(f.state.ownedRuns!.size, 1, "answering a live question starts no continuation");
 	assert.match(f.controller.task(task.key)!.history.map((item) => item.text).join("\n"), /Direct user answer \(human origin\)[\s\S]*Use the first path/);

@@ -219,11 +219,12 @@ test("native post-submission provider failure remains authoritative", async () =
 });
 
 test("per-attempt time allowance resets between initial work and review in one native process", async () => {
-	const { result, receipt } = await run("per-attempt-time", { maxExecutionTimeMs: 3000 });
+	// Two 4.5s attempts exceed 8s together, while each leaves room for cold native startup.
+	const { result, receipt } = await run("per-attempt-time", { maxExecutionTimeMs: 8000 });
 	assert.equal(result.success, true, JSON.stringify(result));
 	assert.equal(receipt.calls, 2);
 	assert.equal(result.results[0].agentProcessExit.pid, receipt.pid);
-	assert.ok(result.results[0].progressSummary.durationMs > 3000);
+	assert.ok(result.results[0].progressSummary.durationMs > 8000);
 	assert.equal(result.results[0].resourceLimitExceeded, undefined);
 });
 

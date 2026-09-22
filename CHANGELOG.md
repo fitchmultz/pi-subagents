@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.40.1] - 2026-09-22
+
+### Fixed
+- Restore owned runs from lightweight ownership metadata and shared decoded records, avoiding full reads of unrelated history while retaining legacy recovery and late-published runs.
+- Keep restored ownership and controls ready for immediate native tool resume, including nested children.
+- Reuse native transcript snapshots for Agents status, model selection, unread markers, and conversation history. Format full conversations when opened, retaining all saved messages, tool details, and reading positions.
+- Use already-read per-run question state in Agents instead of repeatedly searching every saved run.
+- Keep foreground and native asynchronous waits responsive without repeatedly parsing child conversations or formatting unchanged inspection results on every poll.
+
 ## [0.40.0] - 2026-09-22
 
 ### Changed

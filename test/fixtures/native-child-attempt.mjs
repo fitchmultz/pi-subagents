@@ -53,7 +53,7 @@ export default function (pi) {
 		if (index === 1 && ["stale-after-report", "resubmit", "final-error"].includes(scenario)) pi.sendMessage({ customType: "fixture", content: "Acknowledge this later request.", display: false }, { deliverAs: "steer" });
 		if (index === 1 && scenario === "passive") pi.sendMessage({ customType: "fixture", content: "Passive context.", display: false }, { triggerTurn: false });
 		if (scenario === "slow") await delay(1000);
-		if (scenario === "per-attempt-time") await delay(2000);
+		if (scenario === "per-attempt-time") await delay(4500);
 		return response;
 	}));
 	pi.registerProvider("driver-fixture", { api: faux.api, baseUrl: faux.getModel().baseUrl, apiKey: "fixture", models: faux.models, streamSimple: faux.provider.streamSimple });

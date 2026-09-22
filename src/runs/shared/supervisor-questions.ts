@@ -120,11 +120,15 @@ export function saveQuestionContract(runId: string, index: number, contract: Sup
 	writeAtomicJson(file, { ...previous, ...contract, ...(previous?.launch ? { launch: previous.launch } : {}) });
 }
 
-export function readQuestionContract(runId: string, index: number, root = QUESTIONS_DIR, projection: { sessionFile?: string; endedAt?: number } = {}): SupervisorRunContract | undefined {
+export type NativeConfigurationReader = (sessionFile: string | undefined, endedAt?: number) => ReturnType<typeof readNativeSessionConfiguration>;
+
+export function readQuestionContract(runId: string, index: number, root = QUESTIONS_DIR, projection: { sessionFile?: string; endedAt?: number; readConfiguration?: NativeConfigurationReader | false } = {}): SupervisorRunContract | undefined {
 	const contract = readRunJson<SupervisorRunContract>(path.join(root, safeId(runId), "contracts", `${index}.json`));
-	if (!contract) return undefined;
-	const native = readNativeSessionConfiguration(projection.sessionFile ?? contract.sessionFile, undefined, projection.endedAt);
-	return { ...contract, ...(contract.launch ? { launch: { ...contract.launch, ...native } } : {}) };
+	if (!contract?.launch || projection.readConfiguration === false) return contract;
+	const sessionFile = projection.sessionFile ?? contract.sessionFile;
+	const native = projection.readConfiguration ? projection.readConfiguration(sessionFile, projection.endedAt)
+		: readNativeSessionConfiguration(sessionFile, undefined, projection.endedAt);
+	return { ...contract, launch: { ...contract.launch, ...native } };
 }
 
 export function readNativeSessionConfiguration(sessionFile: string | undefined, cachedEntries?: FileEntry[], endedAt?: number): { model?: string; thinking?: string; modelRecordedAt?: number } {
@@ -138,14 +142,14 @@ export function readNativeSessionConfiguration(sessionFile: string | undefined, 
 		...(modelEntry ? { modelRecordedAt: Date.parse(modelEntry.timestamp) } : {}) };
 }
 
-export function migrateSupervisorQuestions(ownerSessionId: string): void {
+export function migrateSupervisorQuestions(ownerSessionId: string, runId?: string): void {
 	if (!fs.existsSync(LEGACY_QUESTIONS_DIR)) return;
-	for (const entry of fs.readdirSync(LEGACY_QUESTIONS_DIR, { withFileTypes: true })) {
-		if (!entry.isDirectory()) continue;
-		const source = getRunMetadataDir(entry.name, LEGACY_QUESTIONS_DIR);
+	const runs = runId === undefined ? fs.readdirSync(LEGACY_QUESTIONS_DIR, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name) : [safeId(runId)];
+	for (const id of runs) {
+		const source = getRunMetadataDir(id, LEGACY_QUESTIONS_DIR);
 		const owner = readRunJson<{ sessionId?: string }>(path.join(source, "question-owner.json"));
 		if (owner?.sessionId !== ownerSessionId) continue;
-		fs.cpSync(source, getRunMetadataDir(entry.name), { recursive: true, force: false });
+		fs.cpSync(source, getRunMetadataDir(id), { recursive: true, force: false });
 	}
 }
 
@@ -201,6 +205,12 @@ export function listRunQuestions(runDir: string): SupervisorQuestionView[] {
 		const question = readRunJson<SupervisorQuestion>(path.join(runDir, "questions", entry.name, "question.json"));
 		return question ? [readQuestionState(question, path.dirname(runDir))] : [];
 	});
+}
+
+/** Known run IDs need neither a global directory walk nor prefix resolution. */
+export function listOwnedRunQuestions(ownerSessionId: string, runId: string): SupervisorQuestionView[] {
+	migrateSupervisorQuestions(ownerSessionId, runId);
+	return listRunQuestions(getRunMetadataDir(runId)).filter((question) => question.ownerSessionId === ownerSessionId);
 }
 
 export function pendingSupervisorQuestion(input: { runId: string; agent: string; index: number; sessionFile?: string; pid?: number }): import("../../shared/types.ts").ControlEvent["supervisorQuestion"] {

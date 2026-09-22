@@ -5,6 +5,7 @@ import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts
 import { checkPidLiveness, reconcileAsyncRun } from "./stale-run-reconciler.ts";
 import { isDurableRun, readAsyncResultFile, type ParsedAsyncResultFile } from "./async-result-file.ts";
 import { QUESTIONS_DIR, readQuestionContract, readRunJson } from "../shared/supervisor-questions.ts";
+import { readStatus } from "../../shared/utils.ts";
 
 export interface AsyncResumeParams {
 	id?: string;
@@ -37,6 +38,12 @@ export interface AsyncRunLocation {
 	asyncDir: string | null;
 	resultPath: string | null;
 	resolvedId?: string;
+}
+
+export interface AsyncRunRecord {
+	location: AsyncRunLocation;
+	status: AsyncStatus | null;
+	durable: boolean;
 }
 
 function validateOptionalString(value: Record<string, unknown>, field: string, source: string, displayField = field): string | undefined {
@@ -105,14 +112,28 @@ export function asyncRunRoots(asyncDirRoot: string): string[] {
 }
 
 export function exactAsyncRunLocation(runId: string, asyncDirRoot: string, resultsDir: string): AsyncRunLocation {
+	return resolveAsyncRunRecord(runId, asyncDirRoot, resultsDir, false).location;
+}
+
+/** Resolve canonical precedence and decode each candidate status once for this pass. */
+export function readAsyncRunRecord(runId: string, asyncDirRoot: string, resultsDir: string): AsyncRunRecord {
+	return resolveAsyncRunRecord(runId, asyncDirRoot, resultsDir, true);
+}
+
+function resolveAsyncRunRecord(runId: string, asyncDirRoot: string, resultsDir: string, readLegacyStatus: boolean): AsyncRunRecord {
 	assertRunId(runId, "id");
 	const durableDir = path.join(QUESTIONS_DIR, runId);
 	const legacyDir = path.join(asyncDirRoot, runId);
-	const durableStatus = readRunJson<AsyncStatus>(path.join(durableDir, "status.json"));
+	const durableStatus = readStatus(durableDir);
 	const durableResult = path.join(durableDir, "result.json");
 	const durable = isDurableRun(durableStatus) || isDurableRun(readRunJson<object>(path.join(durableDir, "launch.json")));
 	const asyncDir = durable ? durableDir : fs.existsSync(legacyDir) ? legacyDir : durableStatus ? durableDir : null;
-	return { asyncDir, resultPath: fs.existsSync(durableResult) ? durableResult : exactResultPath(resultsDir, runId), resolvedId: runId };
+	const status = asyncDir === durableDir ? durableStatus : asyncDir && readLegacyStatus ? readStatus(asyncDir) : null;
+	return {
+		location: { asyncDir, resultPath: fs.existsSync(durableResult) ? durableResult : exactResultPath(resultsDir, runId), resolvedId: runId },
+		status,
+		durable: durable || isDurableRun(status),
+	};
 }
 
 function exactResultPath(resultsDir: string, runId: string): string | null {

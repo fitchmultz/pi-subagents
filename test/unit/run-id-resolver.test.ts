@@ -111,7 +111,11 @@ describe("subagent run id resolver", () => {
 			/ambiguous across authorized registries|ambiguous across registries/i,
 		);
 		assert.equal(resolveSubagentRunId("shared-nested", { state: stateWithOwnedRun("owned-only") }), undefined);
-		const resolved = resolveSubagentRunId("shared-nested", { state: stateWithNestedRoute(allowed) });
+		const asyncRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-shadow-"));
+		routeRoots.push(asyncRoot);
+		fs.mkdirSync(path.join(asyncRoot, "shared-nested"));
+		fs.writeFileSync(path.join(asyncRoot, "shared-nested", "status.json"), "{");
+		const resolved = resolveSubagentRunId("shared-nested", { state: stateWithNestedRoute(allowed), asyncDirRoot: asyncRoot });
 		assert.equal(resolved?.kind, "nested");
 		assert.equal(resolved?.kind === "nested" ? resolved.match.rootRunId : undefined, "root-allowed");
 		const ambiguous = stateWithNestedRoute(allowed);
@@ -142,6 +146,7 @@ describe("subagent run id resolver", () => {
 			const resultsDir = path.join(root, "results");
 			fs.mkdirSync(path.join(asyncRoot, "dupe-one"), { recursive: true });
 			fs.mkdirSync(path.join(asyncRoot, "dupe-two"), { recursive: true });
+			fs.writeFileSync(path.join(asyncRoot, "dupe-one", "status.json"), "{");
 
 			assert.throws(
 				() => resolveSubagentRunId("dupe", { asyncDirRoot: asyncRoot, resultsDir }),

@@ -7,6 +7,7 @@ import { nestedSummaryFromAsyncStatus, projectNestedEvents, resolveNestedAsyncDi
 import { isDurableRun, readAsyncResultFileIfExists } from "./async-result-file.ts";
 import { readRunJson } from "../shared/supervisor-questions.ts";
 import { readStatus } from "../../shared/utils.ts";
+import type { AsyncRunRecord } from "./async-resume.ts";
 
 export type PidLiveness = "alive" | "dead" | "unknown";
 
@@ -311,15 +312,15 @@ export function checkPidLiveness(pid: number, kill: KillFn = process.kill): PidL
 	}
 }
 
-export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOptions = {}): ReconcileAsyncRunResult {
+export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOptions = {}, record?: Pick<AsyncRunRecord, "status" | "durable">): ReconcileAsyncRunResult {
 	const now = options.now?.() ?? Date.now();
-	const status = readStatusFile(asyncDir);
+	const status = record ? record.status : readStatusFile(asyncDir);
 	const startedStatus = !status && options.startedRun ? buildStartedStatus(asyncDir, options.startedRun, now) : undefined;
 	const effectiveStatus = status ?? startedStatus;
 	if (!effectiveStatus) return { status: null, repaired: false };
 
 	const runId = effectiveStatus.runId || path.basename(asyncDir);
-	const durable = isDurableRun(effectiveStatus) || isDurableRun(readRunJson<object>(path.join(asyncDir, "launch.json")));
+	const durable = isDurableRun(effectiveStatus) || (record ? record.durable : isDurableRun(readRunJson<object>(path.join(asyncDir, "launch.json"))));
 	const resultPath = durable ? path.join(asyncDir, "result.json") : path.join(options.resultsDir ?? RESULTS_DIR, `${runId}.json`);
 	if (durable) {
 		// The detached owner is the only execution writer. Inspection projects evidence.

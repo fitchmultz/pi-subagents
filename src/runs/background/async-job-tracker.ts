@@ -17,9 +17,10 @@ import { readStatus } from "../../shared/utils.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 import { attachRootChildrenToSteps, findNestedRouteForRootId, hasLiveNestedDescendants } from "../shared/nested-events.ts";
-import { asyncStatusToSummary, listAsyncRuns } from "./async-status.ts";
+import { asyncStatusToSummary, createAsyncRunDiscovery, listAsyncRuns } from "./async-status.ts";
 import { isTuiContext } from "../../shared/ui-mode.ts";
-import { exactAsyncRunLocation } from "./async-resume.ts";
+import { exactAsyncRunLocation, type AsyncRunRecord } from "./async-resume.ts";
+import type { OwnedRunRestoration } from "../shared/run-records.ts";
 
 interface AsyncJobTrackerOptions {
 	render?: (ctx: ExtensionContext, jobs: AsyncJobState[]) => void;
@@ -35,13 +36,14 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	ensurePoller: () => void;
 	handleStarted: (data: unknown) => void;
 	handleComplete: (data: unknown) => void;
-	restoreJobs: (sessionId: string, ctx: ExtensionContext) => void;
+	restoreJobs: (sessionId: string, ctx: ExtensionContext, restoration?: OwnedRunRestoration) => void;
 	resetJobs: (ctx?: ExtensionContext) => void;
 } {
 	const completionRetentionMs = options.completionRetentionMs ?? 10000;
 	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
 	const resultsDir = options.resultsDir ?? RESULTS_DIR;
-	let restoreDiscoverySessionId: string | undefined;
+	let restoreDiscovery: (() => AsyncRunRecord[]) | undefined;
+	let restoreBoundary = 0;
 	let restoreDiscoveryDeadline = 0;
 	const rerenderWidget = (ctx: ExtensionContext, jobs = Array.from(state.asyncJobs.values())) => {
 		(options.render ?? renderWidget)(ctx, jobs);
@@ -140,19 +142,21 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		if (state.poller) return;
 		state.poller = setInterval(() => {
 			let widgetChanged = false;
-			if (restoreDiscoverySessionId) {
+			let restoredRecords: AsyncRunRecord[] = [];
+			if (restoreDiscovery) {
 				try {
-					widgetChanged = discoverRestoredJobs(restoreDiscoverySessionId);
+					restoredRecords = restoreDiscovery();
+					widgetChanged = discoverRestoredJobs(restoredRecords, true);
 				} catch (error) {
 					console.error("Failed to discover active async jobs:", error);
 				}
 				if (Date.now() >= restoreDiscoveryDeadline) {
-					restoreDiscoverySessionId = undefined;
+					restoreDiscovery = undefined;
 					restoreDiscoveryDeadline = 0;
 				}
 			}
 			if (state.asyncJobs.size === 0) {
-				if (restoreDiscoverySessionId) return;
+				if (restoreDiscovery) return;
 				if (state.lastUiContext && isTuiContext(state.lastUiContext)) rerenderWidget(state.lastUiContext, []);
 				if (state.poller) {
 					clearInterval(state.poller);
@@ -160,6 +164,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				}
 				return;
 			}
+			const restoredByDir = new Map(restoredRecords.map((record) => [record.location.asyncDir, record]));
 			for (const job of state.asyncJobs.values()) {
 				const widgetStateBefore = widgetRenderKey(job);
 				let nestedRefreshFailed = false;
@@ -175,7 +180,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				try {
 					emitNewControlEvents(job);
 					refreshNestedProjection();
-					const reconciliation = reconcileAsyncRun(job.asyncDir, {
+					const reconciliation = restoredByDir.get(job.asyncDir) ?? reconcileAsyncRun(job.asyncDir, {
 						resultsDir,
 						kill: options.kill,
 						now: options.now,
@@ -315,11 +320,11 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		if (!nestedRefreshFailed && !hasLiveNestedDescendants(job?.nestedChildren)) scheduleCleanup(asyncId);
 	};
 
-	const discoverRestoredJobs = (sessionId: string): boolean => {
+	const discoverRestoredJobs = (records: AsyncRunRecord[], sinceBoundary: boolean): boolean => {
 		let changed = false;
 		for (const run of listAsyncRuns(asyncDirRoot, {
 			states: ["queued", "running"],
-			sessionId,
+			records,
 			resultsDir,
 			kill: options.kill,
 			now: options.now,
@@ -333,10 +338,11 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			const steps = activeGroup
 				? run.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count)
 				: run.steps;
-			const restoreBoundary = Date.now();
 			let controlEventCursor = 0;
-			let controlEventSince: number | undefined;
-			try {
+			let controlEventSince: number | undefined = sinceBoundary ? restoreBoundary : undefined;
+			// Shared discovery has already started. An EOF observed now could swallow
+			// attention appended during it; late publications use the same original cut.
+			if (!sinceBoundary) try {
 				controlEventCursor = (options.statSync ?? fs.statSync)(path.join(run.asyncDir, "events.jsonl")).size;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -387,11 +393,14 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		return changed;
 	};
 
-	const restoreJobs = (sessionId: string, ctx: ExtensionContext) => {
-		restoreDiscoverySessionId = sessionId;
-		restoreDiscoveryDeadline = Date.now() + 2_000;
+	const restoreJobs = (sessionId: string, ctx: ExtensionContext, restoration?: OwnedRunRestoration) => {
+		restoreBoundary = restoration?.startedAt ?? Date.now();
+		restoreDiscovery = restoration?.discover ?? createAsyncRunDiscovery(asyncDirRoot, {
+			sessionId, ownerSessionId: ctx.sessionManager?.getSessionId(), resultsDir, kill: options.kill, now: options.now, skipInvalid: true,
+		});
+		restoreDiscoveryDeadline = restoreBoundary + 2_000;
 		try {
-			discoverRestoredJobs(sessionId);
+			discoverRestoredJobs(restoration?.records ?? restoreDiscovery(), Boolean(restoration));
 		} catch (error) {
 			console.error("Failed to discover active async jobs:", error);
 		}
@@ -403,7 +412,8 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	};
 
 	const resetJobs = (ctx?: ExtensionContext) => {
-		restoreDiscoverySessionId = undefined;
+		restoreDiscovery = undefined;
+		restoreBoundary = 0;
 		restoreDiscoveryDeadline = 0;
 		for (const timer of state.cleanupTimers.values()) {
 			clearTimeout(timer);
