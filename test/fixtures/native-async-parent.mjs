@@ -61,13 +61,17 @@ try {
 		assert.match(resultEntries()[0].message.content[0].text, /NATIVE_ORIGINAL_CALL_RESULT/);
 		assert.equal(session.getSessionStats().cost, 1, "paid grandchild work must reach the child native journal");
 		const runId = resultEntries()[0].message.details.runId;
-		faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "repeat_wait", name: "subagent", arguments: { action: "wait", id: runId } }], { stopReason: "toolUse" }), fauxAssistantMessage("Saved result read again")]);
+		faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "inspect_result", name: "subagent", arguments: { action: "status", id: runId } }], { stopReason: "toolUse" }), fauxAssistantMessage("Saved result inspected")]);
 		await session.prompt("Read the same completed nested work");
-		assert.equal(session.getSessionStats().cost, 1, "reading completed nested work cannot charge it twice");
+		const inspected = manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === "inspect_result").message;
+		assert.equal(inspected.isError, false, JSON.stringify(inspected));
+		assert.equal(inspected.details.run.state, "completed");
+		assert.equal(inspected.usage, undefined);
+		assert.equal(session.getSessionStats().cost, 1, "inspecting completed nested work cannot charge it twice");
 		assert.equal(children().length, 1);
 		const delta = readNativeUsage(manager.getSessionFile(), baseline);
 		assert.equal(delta.reduce((sum, usage) => sum + usage.cost, 0), 1, "the grandparent imports the direct child's native journal, including its nested work");
-		evidence.checks.push("actual child-safe tool records grandchild usage once through native journal; repeat wait never relaunches");
+		evidence.checks.push("actual child-safe tool records grandchild usage once through native journal; inspection stays pure and never relaunches");
 	} else if (phase === "seed") {
 		const args = { agent: "fixture", task: "Return the controlled fixture result", output: false };
 		const call = { type: "toolCall", id: originalCallId, name: "delegate", arguments: args, async: true,

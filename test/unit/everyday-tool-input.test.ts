@@ -22,6 +22,8 @@ test("verification environment pairs preserve values and reject duplicate names"
 });
 
 test("closed control sampling retains action-specific validation before execution", () => {
+	assert.throws(() => normalizeEverydayParams({ action: "review", id: "run" }, true), /Invalid agent_runs/);
+	assert.throws(() => normalizeEverydayParams({ action: "review", decision: "accepted" }, true), /Invalid agent_runs/);
 	assert.throws(() => normalizeEverydayParams({ action: "answer", id: "run", message: "Proceed" }, true), /Invalid agent_runs/);
 	assert.throws(() => normalizeEverydayParams({ action: "inspect", id: "run", acceptance: { evidence: ["manual-notes"] } }, true), /Invalid agent_runs/);
 	assert.throws(() => normalizeEverydayParams({ action: "stop", id: "run", full: true }, true), /Invalid agent_runs/);
