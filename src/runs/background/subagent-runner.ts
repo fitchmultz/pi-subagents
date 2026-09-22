@@ -1798,6 +1798,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		if (sessionFile) {
 			try {
 				const exportDir = config.sessionDir ?? path.dirname(sessionFile);
+				fs.mkdirSync(exportDir, { recursive: true });
 				const htmlPath = await exportSessionHtml(sessionFile, exportDir, config.piPackageRoot);
 				const share = createShareLink(htmlPath);
 				if ("error" in share) shareError = share.error;

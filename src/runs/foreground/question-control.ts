@@ -51,7 +51,7 @@ export function controlSupervisorQuestion(input: { params: SubagentParamsLike; r
 		if (!id || !params.questionId) throw new Error("action='answer' requires id and questionId.");
 		const question = questions.find((entry) => entry.questionId === params.questionId);
 		if (!question) throw new Error("Question not found in this session's runs. Resume the owning supervisor session to answer it.");
-		bindNativeInvocation(input.deps.pi, input.ctx, params.nativeToolCallId, { runId: question.runId, index: question.index, kind: "answer", questionId: question.questionId, answer: params.message?.trim() ?? "" });
+		bindNativeInvocation(input.deps.pi, input.ctx, params.nativeToolCallId, { runId: question.runId, index: question.index, kind: "answer", questionId: question.questionId, answer: params.message?.trim() ?? "", ...(params.includeProgress ? { includeProgress: true } : {}) });
 		const answer = saveQuestionAnswer(question, params.message ?? "", undefined, params.messageOrigin);
 		input.deps.pi.events.emit("subagent:supervisor-question-resolved", { questionId: question.questionId });
 		if (!question.delivery && questionProcessAlive(question)) return questionResult([readQuestionState(question)], [`Answer saved for question ${question.questionId}. The live child will read it from the durable waiter; delivery is pending, not execution completion.`, liveLaunchOverrideNotice(params)].filter(Boolean).join("\n"));

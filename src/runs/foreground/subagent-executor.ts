@@ -304,7 +304,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const orchestratorTarget = resolveOrchestratorIntercomTarget(deps.pi.events, fallbackTarget);
 		const intercomBridge = resolveIntercomBridge(orchestratorTarget);
 		const runId = randomUUID();
-		bindNativeInvocation(deps.pi, ctx, params.nativeToolCallId, { runId, kind: "launch" });
+		bindNativeInvocation(deps.pi, ctx, params.nativeToolCallId, { runId, kind: "launch", ...(params.includeProgress ? { includeProgress: true } : {}) });
 		const agentNameAtIndex = buildFlatAgentNameResolver(effectiveParams);
 		const resolveContextForAgent = (agentName: string | undefined) =>
 			resolveAgentContext(effectiveParams.context, agentName, discoveredAgents);
@@ -461,7 +461,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			});
 			if ((!effectiveAsync || params.nativeToolCallId) && !result.isError && result.details.asyncId) {
 				return withForkContext(await waitForOwnedRun({ id: runId, deps, ctx, signal, onUpdate: onUpdateWithContext,
-					cancelNewRun: !effectiveAsync, executionResult: true, nativeAsync: Boolean(params.nativeToolCallId) }), invocationContext);
+					cancelNewRun: !effectiveAsync, executionResult: true, includeProgress: effectiveParams.includeProgress, nativeAsync: Boolean(params.nativeToolCallId) }), invocationContext);
 			}
 			return withForkContext(result, invocationContext);
 		} catch (error) {
@@ -485,7 +485,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			const id = result.details.asyncId ?? result.details.managementControl?.runId ?? question?.delivery?.runId ?? question?.runId ?? params.id ?? params.runId;
 			const index = result.details.asyncId || question?.delivery?.kind === "revive" ? 0
 				: result.details.managementControl?.nextActions.find((action) => action.index !== undefined)?.index ?? question?.index ?? params.index;
-			if (id) return waitForOwnedRun({ id, index, deps, ctx, signal, onUpdate, cancelNewRun: params.async === false && !before?.has(id), nativeAsync, executionResult: true });
+			if (id) return waitForOwnedRun({ id, index, deps, ctx, signal, onUpdate, cancelNewRun: params.async === false && !before?.has(id), nativeAsync, executionResult: true, includeProgress: params.includeProgress });
 		}
 		if (args[1].action === "interrupt") return cancelSupervisorInput(result, args[1], args[4].sessionManager.getSessionId(), deps.pi.events);
 		if (args[1].action !== "status" || result.details.runList) return result;
@@ -504,6 +504,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const invocation = nativeInvocations(ctx).find((call) => call.toolCallId === id);
 		const target = invocation && nativeInvocationTarget(ctx, invocation);
 		if (!target || !resolveOwnedRun(deps.state, target.runId)) return undefined;
-		return waitForOwnedRun({ id: target.runId, index: target.index, deps, ctx, signal, onUpdate, nativeAsync: true, executionResult: true });
+		return waitForOwnedRun({ id: target.runId, index: target.index, deps, ctx, signal, onUpdate, nativeAsync: true, executionResult: true, includeProgress: invocation?.includeProgress });
 	} };
 }

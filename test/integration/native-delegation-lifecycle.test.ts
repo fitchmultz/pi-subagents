@@ -88,7 +88,7 @@ test("abort detaches native background work; recovery follows the durable bindin
 	const f = setup(t); f.pending.add("native-recovery");
 	f.mock.onCall({ delay: 450, output: "AFTER_REATTACH" });
 	const abort = new AbortController();
-	const pending = f.invoke("native-recovery", { agent: "worker", task: "Keep running" }, abort.signal);
+	const pending = f.invoke("native-recovery", { agent: "worker", task: "Keep running", includeProgress: true }, abort.signal);
 	await until(() => f.mock.callCount() === 1, "native child starts");
 	const call = nativeInvocations(f.ctx)[0];
 	abort.abort();
@@ -101,6 +101,8 @@ test("abort detaches native background work; recovery follows the durable bindin
 	const result = await f.executor.resume("native-recovery", {}, undefined, undefined, f.ctx);
 	assert.equal(result.details.wait.status, "completed");
 	assert.match(result.content[0].text, /AFTER_REATTACH/);
+	assert.equal(result.details.progress?.[0]?.status, "complete", "native recovery must retain the original call's progress opt-in");
+	assert.equal(result.details.progress?.[0]?.task, "Keep running");
 	assert.equal(f.mock.callCount(), 1);
 	assert.equal(await f.executor.resume("unbound-call", { agent: "worker", task: "Must not launch" }, undefined, undefined, f.ctx), undefined);
 	assert.equal(f.mock.callCount(), 1);
@@ -120,10 +122,10 @@ test("Intercom attention keeps the original native result pending while the chil
 	assert.match((await promise).content[0].text, /AFTER_STEER/);
 });
 
-test("native live continuation journals delivery before sending and never repeats it on recovery", async (t) => {
+for (const includeProgress of [true, undefined]) test(`native live continuation journals delivery and restores its own progress opt-in (${includeProgress})`, async (t) => {
 	const f = setup(t);
 	f.mock.onCall({ delay: 650, output: "LIVE_CONTINUATION_RESULT" });
-	const receipt = await f.invoke("portable-launch", { agent: "worker", task: "Wait for guidance" });
+	const receipt = await f.invoke("portable-launch", { agent: "worker", task: "Wait for guidance", includeProgress: !includeProgress });
 	const runId = receipt.details.asyncId;
 	await until(() => f.mock.callCount() === 1, "portable child starts");
 	f.pending.add("native-continue");
@@ -135,10 +137,12 @@ test("native live continuation journals delivery before sending and never repeat
 		assert.equal(saved.accepted, undefined, "delivery intent precedes the effect");
 		f.bus.emit(SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT, { requestId: request.requestId, delivered: true });
 	});
-	const result = await f.invoke("native-continue", { action: "resume", id: runId, message: "Use this guidance" });
+	const result = await f.invoke("native-continue", { action: "resume", id: runId, message: "Use this guidance", includeProgress });
 	assert.equal(result.details.wait.status, "completed");
 	assert.match(result.content[0].text, /LIVE_CONTINUATION_RESULT/);
-	await f.executor.resume("native-continue", {}, undefined, undefined, f.ctx);
+	assert.equal(result.details.progress?.[0]?.status, includeProgress ? "complete" : undefined, "the waiting continuation opts in independently of the original launch");
+	const recovered = await f.executor.resume("native-continue", {}, undefined, undefined, f.ctx);
+	assert.deepEqual(recovered.details.progress, result.details.progress);
 	assert.equal(deliveries, 1);
 	assert.equal(f.mock.callCount(), 1);
 	bindNativeInvocation(f.pi, f.ctx, "unconfirmed-delivery", { runId, index: 0, kind: "delivery" });

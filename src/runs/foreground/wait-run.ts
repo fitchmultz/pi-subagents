@@ -16,6 +16,7 @@ export async function waitForOwnedRun(input: {
 	onUpdate?: (result: SubagentExecutionResult) => void;
 	cancelNewRun?: boolean;
 	executionResult?: boolean;
+	includeProgress?: boolean;
 	nativeAsync?: boolean;
 }): Promise<SubagentExecutionResult> {
 	const { deps, id, index, ctx } = input;
@@ -38,7 +39,7 @@ export async function waitForOwnedRun(input: {
 			if (remaining) waiting.set(target.runId, remaining); else waiting.delete(target.runId);
 			if (timer) clearInterval(timer);
 			unsubscribe?.(); input.signal?.removeEventListener("abort", abort);
-			const execution = input.executionResult && status === "completed" ? ownedRunExecutionResult(target, deps.state, index) : undefined;
+			const execution = input.executionResult && status === "completed" ? ownedRunExecutionResult(target, deps.state, index, input.includeProgress) : undefined;
 			const pending = input.nativeAsync && input.signal?.aborted;
 			resolve({ ...result, ...execution, content: status === "completed" && execution ? execution.content : [{ type: "text", text }],
 				...(pending ? { pending: true } : status === "unavailable" || status === "cancelled" ? { isError: true } : {}),

@@ -309,7 +309,7 @@ function workflowDetails(graph: WorkflowGraphSnapshot | undefined): Pick<Details
 		...(current?.stepIndex !== undefined ? { currentStepIndex: current.stepIndex } : {}) };
 }
 
-export function ownedRunExecutionResult(run: OwnedRun, state: SubagentState, index?: number): SubagentExecutionResult {
+export function ownedRunExecutionResult(run: OwnedRun, state: SubagentState, index?: number, includeProgress = false): SubagentExecutionResult {
 	const view = ownedRunView(run, state);
 	const location = exactAsyncRunLocation(run.runId, ASYNC_DIR, RESULTS_DIR);
 	const saved = location.resultPath ? readAsyncResultFile(location.resultPath) : undefined;
@@ -345,10 +345,15 @@ export function ownedRunExecutionResult(run: OwnedRun, state: SubagentState, ind
 	const progressSummary = { toolCount: results.reduce((total, result) => total + (result.progressSummary?.toolCount ?? 0), 0),
 		tokens: results.reduce((total, result) => total + (result.progressSummary?.tokens ?? 0), 0),
 		durationMs: saved?.durationMs ?? Math.max(0, ...results.map((result) => result.progressSummary?.durationMs ?? 0)) };
-	return { content: [{ type: "text", text: truncation.text || `Run ${run.runId}: ${view.state}.` }],
+	const share = saved?.shareUrl ? `Session: ${saved.shareUrl}` : saved?.shareError ? `Session share error: ${saved.shareError}` : undefined;
+	return { content: [{ type: "text", text: [truncation.text || `Run ${run.runId}: ${view.state}.`, share].filter(Boolean).join("\n\n") }],
 		...(failed ? { isError: true } : {}),
 		details: { mode: run.mode, runId: run.runId, asyncId: run.runId, asyncDir: location.asyncDir ?? run.asyncDir, results,
 			run: { ...view, children: projected }, progressSummary,
+			...(includeProgress ? { progress: ownedRunProgressResult(run, state, index).details.progress } : {}),
+			...(saved?.shareUrl ? { shareUrl: saved.shareUrl } : {}),
+			...(saved?.gistUrl ? { gistUrl: saved.gistUrl } : {}),
+			...(saved?.shareError ? { shareError: saved.shareError } : {}),
 			...(files.length ? { artifacts: { dir: saved?.artifactsDir ?? path.dirname(files[0]!.outputPath), files } } : {}),
 			...(truncation.truncated ? { truncation } : {}),
 			...(saved?.outputs ? { outputs: saved.outputs } : {}), ...workflowDetails(saved?.workflowGraph) } };
@@ -361,14 +366,15 @@ export function ownedRunProgressResult(run: OwnedRun, state: SubagentState, inde
 	const children = view.children.filter((child) => index === undefined || child.index === index);
 	const progress: AgentProgress[] = children.map((child) => {
 		const step = status?.steps?.[child.index];
+		const live = child.state === "live";
 		return {
 			index: child.index, agent: child.agent, task: child.task ?? run.task,
 			status: step?.status ?? (child.state === "live" ? "pending" : child.state === "unknown" ? "failed" : child.state),
 			model: step?.model, thinking: step?.thinking, modelStartedAt: step?.modelStartedAt,
 			activityState: step?.activityState, lastActivityAt: step?.lastActivityAt, skills: step?.skills,
-			currentTool: step?.currentTool, currentToolArgs: step?.currentToolArgs, currentToolStartedAt: step?.currentToolStartedAt,
-			currentPath: step?.currentPath, streamingText: step?.streamingText,
-			recentTools: step?.recentTools?.slice(-10) ?? [], recentOutput: step?.recentOutput?.slice(-10) ?? [],
+			...(live ? { currentTool: step?.currentTool, currentToolArgs: step?.currentToolArgs, currentToolStartedAt: step?.currentToolStartedAt,
+				currentPath: step?.currentPath, streamingText: step?.streamingText } : {}),
+			recentTools: live ? step?.recentTools?.slice(-10) ?? [] : [], recentOutput: live ? step?.recentOutput?.slice(-10) ?? [] : [],
 			toolCount: step?.toolCount ?? 0, turnCount: step?.turnCount, tokens: step?.tokens?.total ?? 0,
 			durationMs: step?.durationMs ?? Math.max(0, Date.now() - (step?.startedAt ?? run.startedAt)), error: step?.error,
 		};
@@ -377,7 +383,7 @@ export function ownedRunProgressResult(run: OwnedRun, state: SubagentState, inde
 		agent: item.agent, task: item.task, exitCode: children[position]?.result?.exitCode ?? 0,
 		usage: children[position]?.result?.usage ?? { input: status?.steps?.[item.index]?.tokens?.input ?? 0, output: status?.steps?.[item.index]?.tokens?.output ?? 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: item.turnCount ?? 0 },
 		progress: item, model: item.model, sessionFile: children[position]?.sessionFile,
-		finalOutput: item.streamingText || item.recentOutput.at(-1),
+		finalOutput: getSingleResultOutput(children[position]?.result ?? {}) || item.streamingText || item.recentOutput.at(-1),
 	}));
 	return { content: [{ type: "text", text: progress.map((item) => `${item.agent}: ${item.status}${item.currentTool ? ` — ${item.currentTool}${item.currentToolArgs ? ` ${item.currentToolArgs}` : ""}` : ""}`).join("\n") }],
 		details: { mode: run.mode, runId: run.runId, asyncId: run.runId, asyncDir: run.asyncDir, results, progress, ...workflowDetails(status?.workflowGraph) } };

@@ -14,6 +14,7 @@ export interface NativeInvocation {
 	runId: string;
 	index?: number;
 	kind: "launch" | "delivery" | "answer";
+	includeProgress?: boolean;
 	accepted?: boolean;
 	questionId?: string;
 	answer?: string;

@@ -150,6 +150,17 @@ describe("unified owner result retention through actual router", () => {
 		const result = await pending;
 		assert.ok(observed.some((update) => update.details.progress?.[0]?.currentTool === "read"));
 		assert.ok(observed.some((update) => update.details.progress?.[0]?.streamingText === "Working summary"));
+		const progress = result.details.progress?.[0];
+		assert.ok(progress, "includeProgress must retain owner progress in the final public executor result");
+		assert.equal(progress.agent, "worker");
+		assert.equal(progress.task, "Inspect");
+		assert.equal(progress.status, "complete");
+		assert.equal(progress.toolCount, 1);
+		assert.ok(progress.durationMs >= 1000);
+		const ownerProgress = records.ownedRunProgressResult(state.ownedRuns.get(result.details.runId), state);
+		assert.deepEqual(result.details.progress, ownerProgress.details.progress);
+		assert.equal(ownerProgress.details.results[0].finalOutput, "Finished compactly", "completed children keep their final output in live workflow updates");
+		assert.doesNotMatch(JSON.stringify(result), /large raw payload/);
 		const child = result.details.results[0];
 		assert.equal(child.messages, undefined);
 		assert.equal(child.progress, undefined);
@@ -157,6 +168,47 @@ describe("unified owner result retention through actual router", () => {
 		assert.ok(child.progressSummary.durationMs >= 1000);
 		assert.equal(child.toolCalls[0].text, "read source.ts");
 		assert.ok(JSON.stringify(result).length < 80_000);
+	});
+
+	for (const includeProgress of [undefined, false]) it(`keeps final results compact with includeProgress ${includeProgress}`, async () => {
+		mock.onCall({ output: "Compact result" });
+		const result = await executor().execute("compact", { agent: "worker", task: "Inspect", ...(includeProgress === undefined ? {} : { includeProgress }) }, undefined, undefined, makeMinimalCtx(cwd));
+		assert.equal(result.isError, undefined);
+		assert.equal(result.details.progress, undefined);
+		assert.equal(result.details.results[0].progress, undefined);
+		assert.equal(result.details.results[0].messages, undefined);
+		assert.ok(result.details.progressSummary.durationMs > 0);
+	});
+
+	for (const outcome of ["success", "error", "disabled"]) it(`retains explicitly requested session sharing ${outcome} in the final result`, async () => {
+		const before = { PATH: process.env.PATH, PI_DRIVER_FIXTURE: process.env.PI_DRIVER_FIXTURE, PI_INTERCOM_TEST_SDK: process.env.PI_INTERCOM_TEST_SDK };
+		const bin = path.join(cwd, "bin"), input = path.join(cwd, "native.json"), calls = path.join(cwd, "gh-calls.txt");
+		fs.mkdirSync(bin);
+		fs.writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec '${process.execPath}' '${path.join(sdkRoot, "dist/cli.js")}' "$@"\n`, { mode: 0o755 });
+		fs.writeFileSync(path.join(bin, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nif [ "$1" = auth ]; then exit 0; fi\n${outcome === "error" ? "echo 'Fixture share failure' >&2\nexit 1" : "echo 'https://gist.github.com/fixture/local-only-fixture'"}\n`, { mode: 0o755 });
+		fs.writeFileSync(input, JSON.stringify({ scenario: "success", receiptPath: path.join(cwd, "receipt.json") }));
+		Object.assign(process.env, { PATH: `${bin}${path.delimiter}${before.PATH}`, PI_DRIVER_FIXTURE: input, PI_INTERCOM_TEST_SDK: sdkRoot });
+		try {
+			const result = await executor(makeAgent("worker", { model: "driver-fixture/faux-1", extensions: [path.join(repo, "test/fixtures/native-child-attempt.mjs")] }))
+				.execute("share", { agent: "worker", task: "Inspect", ...(outcome === "disabled" ? {} : { share: true }), artifacts: false }, undefined, undefined, makeMinimalCtx(cwd));
+			assert.equal(result.isError, undefined, JSON.stringify(result.content));
+			const durable = saved(result);
+			if (outcome === "success") {
+				assert.equal(durable.shareUrl, "https://shittycodingagent.ai/session/?local-only-fixture");
+				assert.equal(result.details.shareUrl, durable.shareUrl);
+				assert.equal(result.details.gistUrl, "https://gist.github.com/fixture/local-only-fixture");
+				assert.ok(result.content[0].text.includes(durable.shareUrl));
+			} else if (outcome === "error") {
+				assert.match(durable.shareError, /Fixture share failure/);
+				assert.equal(result.details.shareError, durable.shareError);
+				assert.match(result.content[0].text, /Session share error:.*Fixture share failure/);
+			} else {
+				assert.equal(fs.existsSync(calls), false, "sharing must remain opt-in");
+				assert.equal(result.details.shareUrl, undefined);
+				assert.equal(result.details.gistUrl, undefined);
+				assert.equal(result.details.shareError, undefined);
+			}
+		} finally { for (const [key, value] of Object.entries(before)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
 	});
 
 	it("preserves binary worktree patch references in the model and durable result", async () => {

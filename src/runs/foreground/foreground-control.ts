@@ -538,7 +538,7 @@ export async function nudgeSubagentRun(input: {
 		return { content: [{ type: "text", text }], isError: true, details: { mode: "management", results: [] } };
 	}
 
-	bindNativeInvocation(input.deps.pi, input.ctx, input.params.nativeToolCallId, { runId, index, kind: "delivery" });
+	bindNativeInvocation(input.deps.pi, input.ctx, input.params.nativeToolCallId, { runId, index, kind: "delivery", ...(input.params.includeProgress ? { includeProgress: true } : {}) });
 	const result = await sendLiveSubagentMessage(input.deps.pi.events, {
 		to: target,
 		message: `Nudge for subagent run ${runId} (${agent}${index !== undefined ? ` step ${index + 1}` : ""}):\n\n${message}`,
@@ -640,7 +640,7 @@ export async function resumeAsyncRun(input: {
 	}
 
 	if (target.kind === "live") {
-		bindNativeInvocation(input.deps.pi, input.ctx, input.params.nativeToolCallId, { runId: target.runId, index: target.index, kind: "delivery" });
+		bindNativeInvocation(input.deps.pi, input.ctx, input.params.nativeToolCallId, { runId: target.runId, index: target.index, kind: "delivery", ...(input.params.includeProgress ? { includeProgress: true } : {}) });
 		const delivered = await deliverSubagentIntercomMessageEvent(
 			input.deps.pi.events,
 			target.intercomTarget,
@@ -730,7 +730,7 @@ export function reviveSavedSubagent(input: {
 		};
 	}
 
-	bindNativeInvocation(input.deps.pi, input.ctx, input.params.nativeToolCallId, { runId, kind: "launch" });
+	bindNativeInvocation(input.deps.pi, input.ctx, input.params.nativeToolCallId, { runId, kind: "launch", ...(input.params.includeProgress ? { includeProgress: true } : {}) });
 	saveQuestionOwner(runId, input.ctx.sessionManager.getSessionId());
 	const prior = input.deps.state.ownedRuns?.get(target.runId);
 	rememberOwnedRun(input.deps.state, {

@@ -557,6 +557,9 @@ export interface Details {
 	asyncId?: string;
 	asyncDir?: string;
 	asyncPid?: number;
+	shareUrl?: string;
+	gistUrl?: string;
+	shareError?: string;
 	progress?: AgentProgress[];
 	progressSummary?: ProgressSummary;
 	intercomTargets?: string[];
