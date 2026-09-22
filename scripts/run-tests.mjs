@@ -125,7 +125,7 @@ function runNodeTest(label, imports, files, timeoutMs, concurrency) {
 
 const { mode, timeoutMs } = parseArgs(process.argv.slice(2));
 const unit = () => runNodeTest("unit tests", [], testFiles("test/unit"), timeoutMs);
-const integration = () => runNodeTest("integration tests", [], testFiles("test/integration"), timeoutMs, Math.min(4, availableParallelism()));
+const integration = () => runNodeTest("integration tests", [], testFiles("test/integration"), timeoutMs, Math.min(4, Math.max(1, availableParallelism() - 1)));
 
 let status;
 switch (mode) {
