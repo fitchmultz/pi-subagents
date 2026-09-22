@@ -146,7 +146,9 @@ test("default children filter all parent orchestration tool names without rewrit
 test("authorized fanout children retain their own nested calls and results through native resume", async () => {
 	const calls = toolNames.map((name) => ai.fauxToolCall(name, {}, { id: `own_${name}|fc_own_${name}` }));
 	const child = await run(await make({ fanout: true, script: [ai.fauxAssistantMessage(calls, { stopReason: "toolUse" }), ai.fauxAssistantMessage("done")] }));
-	assert.match(currentPrompt(child), /explicit fanout responsibility/);
+	assert.match(currentPrompt(child), /delegation enabled for your assigned task/);
+	assert.match(currentPrompt(child), /useful helper work within that task/);
+	assert.match(currentPrompt(child), /original parent owns integration/);
 	assert.doesNotMatch(currentPrompt(child), /Do not propose or run subagents/);
 	for (const name of toolNames) assert.match(JSON.stringify(wire(child, 1)), new RegExp(`${name} nested result`));
 	const file = child.sm.getSessionFile();

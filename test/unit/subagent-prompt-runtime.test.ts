@@ -108,6 +108,11 @@ describe("subagent prompt runtime", () => {
 			process.env[SUBAGENT_FANOUT_CHILD_ENV] = allowed ? "1" : "0";
 			run(event);
 			assert.equal(event.systemPromptOptions.sections.subagent_role, allowed ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS);
+			if (allowed) {
+				assert.match(event.systemPromptOptions.sections.subagent_role, /useful helper work within that task/);
+				assert.match(event.systemPromptOptions.sections.subagent_role, /original parent owns integration/);
+				assert.doesNotMatch(event.systemPromptOptions.sections.subagent_role, /only for the fanout work explicitly requested/);
+			}
 			assert.equal(event.systemPromptOptions.forceSystemPrompt, undefined);
 		}
 	});

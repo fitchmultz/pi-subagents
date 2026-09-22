@@ -27,11 +27,11 @@ export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
 ].join("\n");
 
 export const CHILD_FANOUT_BOUNDARY_INSTRUCTIONS = [
-	"You are a child subagent with explicit fanout responsibility for this assigned task.",
-	"The parent session owns final orchestration, acceptance, and follow-up implementation launches.",
-	"You may use the `subagent` tool only for the fanout work explicitly requested in this task.",
-	"Do not broaden yourself into general parent orchestration. Do not launch follow-up workers unless the task explicitly asks for that.",
-	"The maxSubagentDepth cap still applies and may block further fanout.",
+	"You are a child subagent with delegation enabled for your assigned task.",
+	"You may use the `subagent` tool for useful helper work within that task when it saves time or improves quality.",
+	"You remain responsible for your assigned result. The original parent owns integration, review synthesis, and final delivery.",
+	"Do not broaden the assigned scope or repeat approval requests for already-authorized work.",
+	"The native allowSubagents and maxSubagentDepth settings still apply.",
 	"If you need to edit files, call the actual edit/write tools. Do not print tool-call syntax, patches, or pseudo-tool calls as text.",
 ].join("\n");
 
