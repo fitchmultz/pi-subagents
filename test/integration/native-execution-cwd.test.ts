@@ -111,15 +111,18 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
 			${failure === "old" ? "" : `pi.events.on('pi-change-working-dir:resolve-execution-cwd', request => { request.result = { cwd: ${JSON.stringify(dirs.B)}, ${failure === "resolver-error" ? "error: 'resolver refused'" : ""} }; });`}
 			${["setter-error", "wrong-selection"].includes(failure) ? `pi.events.on('pi-change-working-dir:set-execution-cwd', request => { request.result = { cwd: ${JSON.stringify(dirs.B)}, ${failure === "setter-error" ? "error: 'setter refused'" : ""} }; });` : ""}
 		}`);
-		const file = fork();
-		const { child, observed } = launch(file, dirs.C, ownerFile, undefined, ["--exclude-tools", "change_dir"]);
-		assert.equal(child.status, 1, child.stderr);
-		assert.match(child.stderr, /Subagent directory initialization failed:/);
-		assert.equal(observed.calls, 0, `${failure}: provider must never dispatch`);
-		assert.deepEqual(observed.results, [], `${failure}: tools must never execute`);
-		assert.equal(fs.existsSync(`${file}.subagent-cwd-init`), true, "failed intent remains pending");
-		assert.ok(observed.commands.some(({ name }: { name: string }) => name === "cwd"));
-		assert.equal(observed.tools.some(({ name }: { name: string }) => name === "change_dir"), false);
+		for (const fresh of [false, true]) {
+			if (fresh && !["old", "resolver-error"].includes(failure)) continue;
+			const file = fresh ? path.join(root, `fresh-${failure}.jsonl`) : fork();
+			const { child, observed } = launch(file, dirs.C, ownerFile, undefined, ["--exclude-tools", "change_dir"]);
+			assert.equal(child.status, 1, child.stderr);
+			assert.match(child.stderr, /Subagent directory initialization failed:/);
+			assert.equal(observed.calls, 0, `${failure}: provider must never dispatch`);
+			assert.deepEqual(observed.results, [], `${failure}: tools must never execute`);
+			assert.equal(fs.existsSync(`${file}.subagent-cwd-init`), !fresh, "failed fork intent remains pending; fresh children need no marker");
+			assert.ok(observed.commands.some(({ name }: { name: string }) => name === "cwd"));
+			assert.equal(observed.tools.some(({ name }: { name: string }) => name === "change_dir"), false);
+		}
 	}
 	// Bare SDK skips session_start until bindExtensions. It must fail closed, then work after binding.
 	const coldFile = fork();
@@ -147,7 +150,7 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
 		await session.prompt("Must not dispatch before owner startup");
 		assert.equal(faux.state.callCount, 0);
 		assert.equal(process.exitCode, 1);
-		assert.match(admissionErrors.join("\n"), /directory extension did not initialize/);
+		assert.match(admissionErrors.join("\n"), /directory extension did not resolve/);
 		assert.equal(fs.existsSync(`${coldFile}.subagent-cwd-init`), true);
 		process.exitCode = originalExitCode;
 		await session.bindExtensions({ mode: "print" });

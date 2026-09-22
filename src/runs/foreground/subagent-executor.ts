@@ -96,6 +96,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		signal: AbortSignal | undefined,
 		onUpdate: ((r: SubagentExecutionResult) => void) | undefined,
 		ctx: ExtensionContext,
+		executionCwd?: string,
 	) => Promise<SubagentExecutionResult>;
 } {
 	const execute = async (
@@ -104,11 +105,12 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		signal: AbortSignal | undefined,
 		onUpdate: ((r: SubagentExecutionResult) => void) | undefined,
 		ctx: ExtensionContext,
+		executionCwd?: string,
 		onForegroundRun?: (runId: string) => void,
 	): Promise<SubagentExecutionResult> => {
 		deps.ensureSessionState?.(ctx);
 		const needsExecutionCwd = !params.action || params.cwd !== undefined || ["list", "get", "create", "update", "delete", "doctor"].includes(params.action);
-		const invocationCwd = needsExecutionCwd ? resolveExecutionCwd(deps.pi, ctx) : ctx.cwd;
+		const invocationCwd = needsExecutionCwd ? executionCwd ?? resolveExecutionCwd(deps.pi, ctx) : ctx.cwd;
 		if (needsExecutionCwd) deps.state.baseCwd = invocationCwd;
 		deps.state.foregroundRuns ??= new Map();
 		deps.state.foregroundControls ??= new Map();
@@ -686,12 +688,12 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 	};
 
 	return { execute: async (...args) => {
-		const [, params, signal, onUpdate, ctx] = args;
+		const [id, params, signal, onUpdate, ctx, executionCwd] = args;
 		const waiting = params.async === false && (params.action === "resume" || params.action === "answer");
 		const before = waiting ? new Set(deps.state.ownedRuns?.keys()) : undefined;
 		const attention = Promise.withResolvers<SubagentExecutionResult>();
 		let unsubscribe: (() => void) | undefined;
-		const work = execute(...args, (runId) => {
+		const work = execute(id, params, signal, onUpdate, ctx, executionCwd, (runId) => {
 			unsubscribe = deps.pi.events.on(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
 				if (!payload || typeof payload !== "object") return;
 				const request = payload as { requestId?: unknown; reason?: unknown };

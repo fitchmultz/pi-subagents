@@ -59,15 +59,17 @@ export function registerChildExecutionCwd(pi: ExtensionAPI): void {
 		try {
 			const sessionFile = ctx.sessionManager.getSessionFile();
 			const intent = sessionFile ? readIntent(sessionFile) : undefined;
+			const request: CwdRequest = { sessionManager: ctx.sessionManager };
+			pi.events.emit(RESOLVE_CWD, request);
+			if (request.result?.error) throw new Error(request.result.error);
+			const owned = Boolean(request.result) || hasExecutionCwdOwner(pi);
+			if (owned && !request.result?.cwd) throw new Error("The loaded directory extension did not resolve the child directory. Update pi-change-working-dir and ensure session startup has completed.");
 			if (!intent) {
 				initialized = true;
 				return;
 			}
 			if (!intent.cwd) throw new Error("New fork execution cwd was not prepared before startup.");
-			const request: CwdRequest = { sessionManager: ctx.sessionManager };
-			pi.events.emit(RESOLVE_CWD, request);
-			if (request.result?.error) throw new Error(request.result.error);
-			if (request.result || hasExecutionCwdOwner(pi)) {
+			if (owned) {
 				const selection: CwdRequest = { sessionManager: ctx.sessionManager, path: intent.cwd };
 				pi.events.emit(SET_CWD, selection);
 				if (!selection.result) throw new Error("The loaded directory extension did not initialize the child directory. Update pi-change-working-dir and ensure session startup has completed.");

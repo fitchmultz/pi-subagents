@@ -19,6 +19,8 @@ const sdkUrl = pathToFileURL(path.join(host, "dist/index.js"));
 const sdk = await import(sdkUrl.href);
 const ai = await import(pathToFileURL(path.join(path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkUrl)), "dist/index.js")).href);
 const { createSubagentExecutor } = await import(pathToFileURL(path.join(repo, "dist/runs/foreground/subagent-executor.js")).href);
+const { registerSlashCommands } = await import(pathToFileURL(path.join(repo, "dist/slash/slash-commands.js")).href);
+const { registerSlashSubagentBridge } = await import(pathToFileURL(path.join(repo, "dist/slash/slash-bridge.js")).href);
 const { discoverAgents } = await import(pathToFileURL(path.join(repo, "dist/agents/agents.js")).href);
 const { getRunMetadataDir } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
 const provider = path.join(repo, "test/fixtures/native-execution-cwd-provider.ts");
@@ -35,20 +37,21 @@ const parentProvider = ai.fauxProvider();
 const modelRuntime = await sdk.ModelRuntime.create({ credentials: new ai.InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
 modelRuntime.registerNativeProvider(parentProvider.provider);
 let pi, ctx;
+const state = { baseCwd: dirs.A, currentSessionId: null, asyncJobs: new Map(), foregroundRuns: new Map(), foregroundControls: new Map(), lastForegroundControlId: null, ownedRuns: new Map() };
 const loader = new sdk.DefaultResourceLoader({ cwd: dirs.A, agentDir, settingsManager: settings, eventBus: bus, noExtensions: true,
 	noSkills: true, noContextFiles: true, noThemes: true, noPromptTemplates: true, additionalExtensionPaths: [owner],
-	extensionFactories: [(api) => { pi = api; api.on("session_start", (_event, context) => { ctx = context; }); }] });
+	extensionFactories: [(api) => { pi = api; registerSlashCommands(api, state); api.on("session_start", (_event, context) => { ctx = context; }); }] });
 await loader.reload();
 assert.deepEqual(loader.getExtensions().errors, []);
 const sm = sdk.SessionManager.create(dirs.A, path.join(root, "sessions"));
 sm.appendMessage(ai.fauxAssistantMessage("Persisted parent"));
 const { session } = await sdk.createAgentSession({ cwd: dirs.A, agentDir, settingsManager: settings, resourceLoader: loader, sessionManager: sm, modelRuntime, model: parentProvider.getModel() });
 await session.bindExtensions({ mode: "json" });
-const state = { baseCwd: dirs.A, currentSessionId: null, asyncJobs: new Map(), foregroundRuns: new Map(), foregroundControls: new Map(), lastForegroundControlId: null, ownedRuns: new Map() };
 const discoveries = [];
 const executor = createSubagentExecutor({ pi, state, config: { projectTrust: { childRuns: "no-approve" } }, asyncByDefault: false,
 	tempArtifactsDir: path.join(root, "artifacts"), getSubagentSessionRoot: () => path.join(root, "children"), expandTilde: (value) => value,
 	discoverAgents: (...args) => { discoveries.push(args[0]); return discoverAgents(...args); } });
+const slashBridge = registerSlashSubagentBridge({ events: bus, getContext: () => ctx, execute: executor.execute });
 const checks = [];
 const read = { name: "read", input: { path: "sentinel.txt" } };
 let index = 0;
@@ -109,6 +112,33 @@ try {
 	await run({ action: "resume", id: reset.result.details.runId ?? reset.result.details.asyncId, message: "saved root survives unavailable parent directory" }, [read], ["A"]);
 	assert.equal(errorQueries, 1, "status, review, questions and omitted-cwd resume bypass unavailable parent cwd");
 	unsubscribe();
+	fs.writeFileSync(path.join(dirs.B, ".pi/agents/selected-only.md"), fs.readFileSync(path.join(dirs.B, ".pi/agents/cwd-probe.md"), "utf8").replace("name: cwd-probe", "name: selected-only"));
+	fs.mkdirSync(path.join(dirs.B, ".pi/chains"), { recursive: true });
+	fs.writeFileSync(path.join(dirs.B, ".pi/chains/selected-chain.chain.json"), JSON.stringify({ name: "selected-chain", description: "Cwd fixture", chain: [{ agent: "selected-only", task: "Read the sentinel" }] }));
+	state.lastUiContext = ctx;
+	state.baseCwd = dirs.A;
+	assert.ok(session.extensionRunner.getCommand("run").getArgumentCompletions("selected-").some(({ value }) => value === "selected-only"));
+	assert.ok(session.extensionRunner.getCommand("run-chain").getArgumentCompletions("selected-").some(({ value }) => value === "selected-chain"));
+	let slashResolves = 0;
+	bus.on("pi-change-working-dir:resolve-execution-cwd", () => { slashResolves++; });
+	bus.on("subagent:slash:started", () => {
+		bus.emit("pi-change-working-dir:set-execution-cwd", { sessionManager: ctx.sessionManager, path: dirs.D });
+	});
+	for (const command of ["run selected-only probe --fg", "chain selected-only -- probe --fg", "parallel selected-only -- probe --fg", "run-chain selected-chain -- probe --fg"]) {
+		state.baseCwd = dirs.A;
+		const output = path.join(root, `slash-${++index}.json`);
+		process.env.PI_CWD_FIXTURE_OUTPUT = output;
+		process.env.PI_CWD_FIXTURE_SCRIPT = JSON.stringify([read]);
+		const before = slashResolves;
+		await session.prompt(`/${command}`);
+		assert.ok(fs.existsSync(output), `No child launched for /${command}`);
+		const observed = JSON.parse(fs.readFileSync(output, "utf8"));
+		assert.equal(observed.results.find(({ name }) => name === "read").content[0].text, "B");
+		assert.equal(slashResolves - before, 1, "slash validation and execution share one captured directory");
+		checks.push({ command, nativeCwd: observed.cwd, resolves: slashResolves - before });
+		assert.equal(ctx.cwd, dirs.A, "native parent root remains unchanged");
+		bus.emit("pi-change-working-dir:set-execution-cwd", { sessionManager: ctx.sessionManager, path: dirs.B });
+	}
 	assert.equal(parentProvider.state.callCount, 0);
 	fs.writeFileSync(path.join(root, "delegation-evidence.json"), JSON.stringify({ host, cli, owner, parentFile: sm.getSessionFile(), parentNativeCwd: dirs.A, parentSelectedCwd: dirs.B, parentCalls: parentProvider.state.callCount, discoveries, checks }, null, 2));
 } finally {
@@ -118,6 +148,7 @@ try {
 		const { pid, state: outcome } = JSON.parse(fs.readFileSync(status, "utf8"));
 		if (pid && outcome === "running") { try { process.kill(pid, "SIGTERM"); } catch {} }
 	}
+	slashBridge.dispose();
 	await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 	session.dispose();
 }
