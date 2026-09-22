@@ -45,6 +45,15 @@ The compatibility runner supplies `PI_COMPAT_HOST=official|fork`, `PI_COMPAT_EXP
 
 Use an empty HOME outside your real home ancestry and a short temporary directory. Child tests use local fixtures and their own broker/profile. Preserve the separate Node 22.19 and Linux qualification lanes; a Node 24 macOS run is not evidence for every advertised platform.
 
+The completion guard recognizes verified `modifiedFiles` receipts from pi-apply-edits v1's `apply_patch`, `replace_text`, and `write_files`, including partial publication errors. Previews and unchanged results do not count as mutations. To exercise the real editor through native SDK events, use an installed v1 editor checkout:
+
+```bash
+PI_EDITOR_RECEIPT_TEST_ROOT=/absolute/path/to/pi-apply-edits \
+  node --test test/integration/native-editor-receipts.test.ts
+```
+
+`PI_EDITOR_RECEIPT_TEST_SDK` selects another installed host package root; `PI_EDITOR_RECEIPT_EVIDENCE_DIR` retains receipts and fixture files. Without an editor checkout, this optional integration test skips.
+
 ### SDK embeddings of runtime-only installations
 
 Before loading a pruned package with `DefaultResourceLoader`, set `process.env.PI_PACKAGE_DIR = getPackageDir()` from the **selected SDK**. This is the existing host-location contract for native session APIs and detached runners. Alternatively the host must be discoverable through the extension's dependency graph or an actual Pi executable on PATH. CLI consumers resolve their own host normally.

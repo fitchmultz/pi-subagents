@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.39.1] - 2026-09-22
+
+### Fixed
+- Recognize verified file changes from `apply_patch`, `replace_text`, and `write_files` in the completion guard, including partial publication followed by an error. Previews, unchanged files, and missing receipts do not count as completed mutations; legacy editing tools remain supported.
+
 ## [0.39.0] - 2026-09-21
 
 ### Added
