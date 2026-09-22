@@ -13,9 +13,9 @@ export const ACCEPTANCE_REPORT_SCHEMA: JsonSchemaObject = {
 				id: { type: "string" },
 				status: { type: "string", enum: ["satisfied", "not-satisfied", "not-applicable", "blocked"] },
 				evidence: { type: "string", pattern: "\\S" },
-				humanAction: { type: "string", pattern: "\\S" },
+				humanAction: { type: "string" },
 			}, required: ["status", "evidence"],
-			if: { properties: { status: { const: "blocked" } } }, then: { required: ["humanAction"] },
+			if: { properties: { status: { const: "blocked" } } }, then: { required: ["humanAction"], properties: { humanAction: { pattern: "\\S" } } },
 		} },
 		changedFiles: { type: "array", items: { type: "string" } },
 		testsAddedOrUpdated: { type: "array", items: { type: "string" } },
@@ -92,7 +92,6 @@ function isCriterionReport(value: unknown): value is NonNullable<AcceptanceRepor
 	const criterion = value as { id?: unknown; status?: unknown; evidence?: unknown; humanAction?: unknown };
 	if (criterion.id !== undefined && typeof criterion.id !== "string") return false;
 	if (criterion.status !== "satisfied" && criterion.status !== "not-satisfied" && criterion.status !== "not-applicable" && criterion.status !== "blocked") return false;
-	if (criterion.humanAction !== undefined && typeof criterion.humanAction !== "string") return false;
 	if (criterion.status === "blocked" && (typeof criterion.humanAction !== "string" || !criterion.humanAction.trim())) return false;
 	return typeof criterion.evidence === "string" && criterion.evidence.trim().length > 0;
 }

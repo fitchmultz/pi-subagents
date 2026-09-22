@@ -300,9 +300,9 @@ describe("single sync execution", () => {
 		assert.equal(withOptOut.progress.status, "completed");
 	});
 
-	it("lets explicit acceptance own completion for report-only output", async () => {
+	it("lets explicit acceptance own completion for an initial report-only output", async () => {
 		mockPi.onCall({ output: acceptanceReport() });
-		mockPi.onCall({ output: acceptanceReport() });
+		mockPi.onCall({ output: `Self-review complete.\n${acceptanceReport()}` });
 		const agents = [makeAgent("worker", { completionGuard: true })];
 
 		const result = await runSync(tempDir, agents, "worker", "Create guard-acceptance.txt with verified content", {
@@ -315,7 +315,7 @@ describe("single sync execution", () => {
 
 		assert.equal(result.exitCode, 0);
 		assert.equal(result.error, undefined);
-		assert.equal(result.finalOutput, "");
+		assert.equal(result.finalOutput, "Self-review complete.");
 		assert.equal(result.acceptance?.status, "checked");
 		assert.equal(result.acceptance?.finalization?.status, "completed");
 		assert.equal(mockPi.callCount(), 2);
@@ -327,8 +327,8 @@ describe("single sync execution", () => {
 
 	it("stops acceptance finalization at max turns when self-review never satisfies criteria", async () => {
 		mockPi.onCall({ output: "```acceptance-report\n{bad-json\n```" });
-		mockPi.onCall({ output: formatAcceptanceReport([{ id: "criterion-1", status: "not-satisfied", evidence: "still missing after first self-review" }]) });
-		mockPi.onCall({ output: formatAcceptanceReport([{ id: "criterion-1", status: "not-satisfied", evidence: "still missing after second self-review" }]) });
+		mockPi.onCall({ output: `Still incomplete.\n${formatAcceptanceReport([{ id: "criterion-1", status: "not-satisfied", evidence: "still missing after first self-review" }])}` });
+		mockPi.onCall({ output: `Still incomplete.\n${formatAcceptanceReport([{ id: "criterion-1", status: "not-satisfied", evidence: "still missing after second self-review" }])}` });
 		const agents = [makeAgent("worker")];
 
 		const result = await runSync(tempDir, agents, "worker", "Create guard-acceptance.txt with verified content", {
@@ -342,7 +342,7 @@ describe("single sync execution", () => {
 		assert.equal(mockPi.callCount(), 3);
 		assert.equal(result.exitCode, 1);
 		assert.match(result.error ?? "", /Acceptance rejected/);
-		assert.equal(result.finalOutput, "");
+		assert.equal(result.finalOutput, "Still incomplete.");
 		assert.equal(result.acceptance?.status, "rejected");
 		assert.equal(result.acceptance?.finalization?.status, "failed");
 		assert.equal(result.acceptance?.finalization?.maxTurns, 2);

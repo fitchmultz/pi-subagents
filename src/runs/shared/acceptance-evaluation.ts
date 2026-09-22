@@ -231,7 +231,7 @@ export async function evaluateAcceptance(input: ReportEvaluationInput & { cwd: s
 	const ledger = evaluateAcceptanceReport(input);
 	if (!ledger.childReport) return ledger;
 	if ((LEVEL_RANK[acceptance.level] >= LEVEL_RANK.checked || ledger.childReport.criteriaSatisfied?.some((item) => item.status === "blocked"))
-		&& (acceptance.evidence.includes("no-staged-files") || acceptance.criteria.some((criterion) => criterion.evidence.includes("no-staged-files")))) {
+		&& (acceptance.evidence.includes("no-staged-files") || acceptance.criteria.some((criterion) => criterion.evidence?.includes("no-staged-files")))) {
 		const check = checkNoStagedFiles(input.cwd);
 		ledger.runtimeChecks.push(check);
 		if (check.status === "failed") ledger.status = "rejected";
