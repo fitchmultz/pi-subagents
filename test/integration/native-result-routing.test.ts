@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { it } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
 
 it("native restarted owners route async results to their current intercom identity; foreign owners stay excluded and fallback stays quiet", { timeout: 100_000 }, async (t) => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-result-routing-"));
@@ -15,16 +16,22 @@ it("native restarted owners route async results to their current intercom identi
 	const env = { ...process.env };
 	for (const key of Object.keys(env)) if (key.startsWith("PI_SUBAGENT_") || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN)$/.test(key)) delete env[key];
 	Object.assign(env, { HOME: root, TMPDIR: root, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_SUBAGENT_TEMP_ROOT: path.join(root, "pi-subagents-runtime"), PI_OFFLINE: "1", JITI_FS_CACHE: path.join(root, "jiti") });
+	const previousEnv = { ...process.env };
+	Object.assign(process.env, { TMPDIR: root, PI_CODING_AGENT_DIR: env.PI_CODING_AGENT_DIR });
+	t.after(() => { process.env = previousEnv; });
+	const keeper = new IntercomClient();
 	const broker = spawn(process.execPath, [path.join(repo, "dist/pi-intercom/broker/broker.js")], { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
 	let brokerLog = "";
 	broker.stdout.on("data", (chunk) => { brokerLog += chunk; });
 	broker.stderr.on("data", (chunk) => { brokerLog += chunk; });
 	const exited = once(broker, "exit");
-	const stopBroker = async () => { if (broker.exitCode === null && broker.signalCode === null) broker.kill("SIGTERM"); await exited; };
+	const stopBroker = async () => { await keeper.disconnect(); if (broker.exitCode === null && broker.signalCode === null) broker.kill("SIGTERM"); await exited; };
 	const results: Array<{ phase: string; status: number | null; stderr: string; evidence: { failures: string[]; nativeProviderRequests: number; checks: string[] } }> = [];
 	try {
 		const deadline = Date.now() + 5_000;
 		while (!brokerLog.includes("Intercom broker started")) { assert.ok(Date.now() < deadline, brokerLog || "Private broker did not start"); await sleep(20); }
+		// Cold SDK startup can exceed the broker's five-second idle lifetime between phases.
+		await keeper.connect({ name: "fixture-host", cwd: root, model: "fixture" });
 		for (const phase of ["seed", "foreign", "resume", "fallback"]) {
 			if (phase === "fallback") {
 				await stopBroker();

@@ -41,6 +41,7 @@ for (const explicit of [false, true]) test(`resumed structured output reaches th
 	});
 	faux.setResponses([fauxAssistantMessage("Initial work finished")]);
 	await initial.prompt("Perform initial work");
+	initial.sessionManager.appendCustomMessageEntry("subagent-notify", "PARENT_ONLY_NOTIFICATION", false);
 	const sessionFile = initial.sessionManager.getSessionFile();
 	initial.dispose();
 
@@ -60,11 +61,16 @@ for (const explicit of [false, true]) test(`resumed structured output reaches th
 	t.diagnostic(`Native restored tools before extension startup: ${restoredTools.join(", ")}`);
 	await session.bindExtensions({ mode: "print" });
 	let providerTools: string[] = [];
+	let providerMessages: unknown[] = [];
 	faux.setResponses([(context: { tools?: Array<{ name: string }>; messages: unknown[] }) => {
 		providerTools = (context.tools ?? getCurrentTools(context.messages)).map((tool: { name: string }) => tool.name);
+		providerMessages = context.messages;
 		return fauxAssistantMessage(fauxToolCall("structured_output", { value: { report: "Verified final report" } }), { stopReason: "toolUse" });
 	}, fauxAssistantMessage("Done")]);
 	await session.prompt("Submit the final report");
+	assert.match(JSON.stringify(providerMessages), /Initial work finished/, "saved conversation survives context filtering");
+	assert.doesNotMatch(JSON.stringify(providerMessages), /PARENT_ONLY_NOTIFICATION/, "parent-only history is excluded from the child request");
+	assert.ok(session.sessionManager.getEntries().some((entry) => entry.type === "custom_message" && entry.content === "PARENT_ONLY_NOTIFICATION"), "filtering must not rewrite saved history");
 	assert.ok(providerTools.includes("structured_output"), "resumed provider request must advertise structured_output");
 	assert.ok(providerTools.includes("read"), "existing tool selection survives");
 	assert.deepEqual(providerTools.sort(), [...new Set([...restoredTools, "structured_output"])].sort(), "startup activation must preserve the host's restored selection without enabling unrelated tools");

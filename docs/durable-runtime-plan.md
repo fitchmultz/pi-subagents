@@ -26,7 +26,7 @@ Run the package checks on macOS and supported Linux Node versions, native Pi's r
 
 ## Dependency decision
 
-Target official Pi **0.85.1** using its public SDK and CLI. Saved-child cwd changes use `SessionManager.open(path, sessionDir, cwdOverride)` before native startup; the saved journal is unchanged. Same-directory and new-session launches keep their normal CLI path. Do not require a Pi fork or replace native session, tool, model, trust, or resource handling.
+Target official Pi **0.87.0** using its public SDK and CLI. Saved-child cwd changes use `SessionManager.open(path, sessionDir, cwdOverride)` before native startup; the saved journal is unchanged. Same-directory and new-session launches keep their normal CLI path. Do not require a Pi fork or replace native session, tool, model, trust, or resource handling.
 
 The [known Intercom host limitations](intercom.md#limitations) remain unresolved by this package. Preserve the regressions and report actual results.
 
