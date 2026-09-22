@@ -30,7 +30,8 @@ import { withMouseExpansion } from "../tui/action-hints.ts";
 import { AgentRunsParams, DelegateParams, SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
-import { OWNED_RUN_ENTRY, rememberOwnedRun, restoreOwnedRuns } from "../runs/shared/run-records.ts";
+import { OWNED_RUN_ENTRY, ownedRunView, rememberOwnedRun, restoreOwnedRuns } from "../runs/shared/run-records.ts";
+import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { getRunMetadataDir, saveAsyncRunResult } from "../runs/shared/supervisor-questions.ts";
 import { nativeInvocationTarget, nativeInvocations } from "../runs/shared/native-async.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
@@ -445,13 +446,20 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}, 0);
 	}
 
-	const toRegisteredToolResult = registerToolResultAdapter(pi, [SUBAGENT_TOOL_NAME, "delegate", "agent_runs"]);
+	const toolNames = [SUBAGENT_TOOL_NAME, "delegate", "agent_runs"];
+	const parentUsage = registerParentUsage(pi, toolNames);
+	const adaptToolResult = registerToolResultAdapter(pi, toolNames);
+	const toRegisteredToolResult = (result: SubagentExecutionResult, ctx: ExtensionContext) => adaptToolResult(
+		result.details.wait?.status === "completed" && result.details.run
+			? parentUsage.attach(result, finalizedChildUsage(result.details.run.children, result.details.wait.index), ctx)
+			: result,
+	);
 	const nativeAsyncLifecycle = {
 		async: true,
 		resume: async (id: string, _params: unknown, signal: AbortSignal | undefined,
 			onUpdate: ((result: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext) => {
 			const result = await executor.resume(id, {}, signal, onUpdate, ctx);
-			return result && toRegisteredToolResult(result);
+			return result && toRegisteredToolResult(result, ctx);
 		},
 	};
 	pi.registerTool({
@@ -466,7 +474,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			const request = worktree
 				? { tasks: [task], worktree: true, context, async: background, cwd: task.cwd }
 				: { ...task, context, async: background };
-			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(normalizeEverydayParams(request)), signal, onUpdate, ctx));
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(normalizeEverydayParams(request)), signal, onUpdate, ctx), ctx);
 		},
 		renderResult: renderSubagentResult,
 	});
@@ -480,7 +488,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		async execute(id, params, signal, onUpdate, ctx) {
 			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list", questions: "questions", answer: "answer", review: "review" };
-			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike({ ...normalizeEverydayParams(params, true), action: actions[params.action] }), signal, onUpdate, ctx));
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike({ ...normalizeEverydayParams(params, true), action: actions[params.action] }), signal, onUpdate, ctx), ctx);
 		},
 		renderResult: renderSubagentResult,
 	});
@@ -519,7 +527,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		parameters: SubagentParams,
 
 		async execute(id, params, signal, onUpdate, ctx) {
-			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx));
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx), ctx);
 		},
 
 		renderCall(args, theme) {
@@ -609,9 +617,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (data) => {
 			handleComplete(data);
 			const result = data as import("../shared/types.ts").AsyncResultFile & { intercomResultDelivered?: boolean; suppressNotification?: boolean };
-			if (result.suppressNotification === true) return;
 			const run = state.ownedRuns?.get(result.runId ?? result.id ?? "");
 			if (!run || result.sessionId !== state.currentSessionId) return;
+			if (state.lastUiContext) parentUsage.record(finalizedChildUsage(ownedRunView(run, state).children), state.lastUiContext);
+			if (result.suppressNotification === true) return;
 			if (result.runtimeVersion !== 2 && !fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))) saveAsyncRunResult(run.runId, result);
 			rememberOwnedRun(state, { ...run, delivery: { notifiedAt: Date.now(), intercomDelivered: result.intercomResultDelivered === true } });
 		}),
