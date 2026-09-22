@@ -12,7 +12,9 @@ const manager = SessionManager.open(sessionFile);
 manager.appendModelChange("child-fixture", "actual-model");
 manager.appendMessage({ role: "user", content: "Return the fixture result after release", timestamp: Date.now() });
 const root = process.env.NATIVE_ASYNC_ROOT;
-fs.writeFileSync(path.join(root, `child-${process.env.PI_SUBAGENT_RUN_ID}.json`), JSON.stringify({ pid: process.pid, sessionFile }));
+const started = { pid: process.pid, sessionFile, runId: process.env.PI_SUBAGENT_RUN_ID };
+fs.appendFileSync(path.join(root, "child-starts.jsonl"), `${JSON.stringify(started)}\n`);
+fs.writeFileSync(path.join(root, `child-${started.runId}.json`), JSON.stringify(started));
 const deadline = Date.now() + 60_000;
 while (!fs.existsSync(path.join(root, "release-child"))) {
 	if (Date.now() > deadline) throw new Error("The native async fixture child was never released.");
