@@ -1,11 +1,11 @@
 ---
 name: pi-subagents
-description: "Pi subagent orchestration: delegate to builtin/custom agents; run single, parallel, chain, async/background, forked-context, acceptance, worktree, intercom, status/control, or agent-management workflows. Do not use for Agent Skill maintenance, spawned child prompts, or non-Pi delegation."
+description: "Pi subagent orchestration: delegate to builtin/custom agents; run single, parallel, chain, async/background, forked-context, acceptance, worktree, intercom, status/control, or agent-management workflows. Do not use for Agent Skill maintenance or non-Pi delegation."
 ---
 
 # Pi Subagents
 
-Parent-orchestrator skill for launching focused child Pi sessions. Parent owns orchestration, decisions, review synthesis, and final user-facing status. Do not inject or follow this skill inside ordinary spawned child subagents. For Agent Skill file maintenance (`SKILL.md`, evals, trigger descriptions), use `agent-skill-engineering` instead.
+Use this skill to coordinate focused Pi sessions. The original agent owns integration, review synthesis, and final delivery. Helpers with delegation enabled may split their assigned work when it saves time or improves quality. For Agent Skill file maintenance (`SKILL.md`, evals, trigger descriptions), use `agent-skill-engineering` instead.
 
 ## Hard constraints
 
@@ -20,7 +20,7 @@ Parent-orchestrator skill for launching focused child Pi sessions. Parent owns o
 - An observed human-only authentication boundary may report a criterion as `blocked`, with concrete `evidence` and an exact `humanAction`. Acceptance stays incomplete and finalization/verification stops until explicit Continue. Retain completed evidence; do not use this for ordinary errors or fixable work.
 - Keep writes single-threaded unless writers are isolated with `worktree: true`.
 - Use fresh-context reviewers for adversarial review; use forked `oracle` for inherited-decision/drift review.
-- Do not let child subagents launch more subagents. Keep all delegation and fanout in the parent session.
+- Allow useful helper delegation within the assigned task through the native `allowSubagents` and depth settings. Keep the original agent responsible for the complete result; do not make helpers repeat approval requests for already-authorized work.
 - A reviewer timeout is not sign-off. Foreground reviewer budgets are raised to a safe floor; planner/researcher budgets are raised only from local history. Rerun, resume, or split timed-out work.
 - Subagent execution defaults to async/background. Launch a small bounded fanout as separate single-agent runs so each completion wakes the parent, with at most one writer. Continue useful parent work while children run; if none remains, end the turn and wait for completion instead of polling. Use one `tasks` call for non-review fanout when all child results are required together, when shared concurrency/task limits are needed, or when multiple writers require `worktree: true`; the parent receives one aggregate completion. Check status only when the user asks or the run may be blocked or stale.
 - An incomplete active Pi goal follows the same async workflow: if child evidence gates the next step, end the current turn and continue after automatic completion delivery. Do not advance past missing evidence. Use `async: false` for explicitly chosen foreground execution or a non-interactive one-shot caller that needs the result on stdout.
@@ -36,7 +36,7 @@ Use effective agents from `agent_runs({ action: "profiles" })` or `subagent({ ac
 - `scout`: fast codebase recon and handoff context.
 - `context-builder`: stronger context/meta-prompt handoff builder.
 - `researcher`: evidence-driven technical research.
-- `watcher`: read-only async monitoring; define material transitions and a terminal condition in the task.
+- `watcher`: observation that needs ongoing interpretation; use ordinary tools for routine waiting and check collection. Define material transitions and a terminal condition.
 - `planner`: concrete implementation plans; should read and plan, not edit.
 - `worker`: single-writer implementation for approved scope.
 - `debugger`: root-cause diagnosis and repair evidence.
