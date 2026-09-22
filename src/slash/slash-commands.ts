@@ -26,6 +26,7 @@ import {
 	type SubagentState,
 } from "../shared/types.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
+import { resolveExecutionCwd } from "../shared/execution-cwd.ts";
 
 interface InlineConfig {
 	output?: string | false;
@@ -114,9 +115,15 @@ const extractExecutionFlags = (rawArgs: string): { args: string; async?: boolean
 
 const projectTrusted = (state: SubagentState): boolean => state.lastUiContext ? state.lastUiContext.isProjectTrusted() : true;
 
-const makeAgentCompletions = (state: SubagentState, multiAgent: boolean) => (prefix: string) => {
-	if (!state.baseCwd) return null;
-	const agents = discoverAgents(state.baseCwd, "both", { projectTrusted: projectTrusted(state) }).agents;
+const completionCwd = (pi: ExtensionAPI, state: SubagentState): string | null => {
+	try { return state.lastUiContext ? resolveExecutionCwd(pi, state.lastUiContext) : state.baseCwd; }
+	catch { return null; }
+};
+
+const makeAgentCompletions = (pi: ExtensionAPI, state: SubagentState, multiAgent: boolean) => (prefix: string) => {
+	const cwd = completionCwd(pi, state);
+	if (!cwd) return null;
+	const agents = discoverAgents(cwd, "both", { projectTrusted: projectTrusted(state) }).agents;
 	if (!multiAgent) {
 		if (prefix.includes(" ")) return null;
 		return agents.filter((a) => a.name.startsWith(prefix)).map((a) => ({ value: a.name, label: a.name }));
@@ -136,10 +143,9 @@ const makeAgentCompletions = (state: SubagentState, multiAgent: boolean) => (pre
 	return agents.filter((a) => a.name.startsWith(lastWord)).map((a) => ({ value: `${beforeLastWord}${a.name}`, label: a.name }));
 };
 
-const discoverSavedChains = (state: SubagentState): ChainConfig[] => {
-	if (!state.baseCwd) return [];
+const discoverSavedChains = (cwd: string, projectTrusted: boolean): ChainConfig[] => {
 	const chainsByName = new Map<string, ChainConfig>();
-	for (const chain of discoverAgentsAll(state.baseCwd, { projectTrusted: projectTrusted(state) }).chains) {
+	for (const chain of discoverAgentsAll(cwd, { projectTrusted }).chains) {
 		const existing = chainsByName.get(chain.name);
 		const projectOverride = existing?.source === "user" && chain.source === "project";
 		const sameScopeJsonOverride = existing?.source === chain.source && chain.filePath.endsWith(".chain.json") && !existing.filePath.endsWith(".chain.json");
@@ -148,9 +154,10 @@ const discoverSavedChains = (state: SubagentState): ChainConfig[] => {
 	return Array.from(chainsByName.values());
 };
 
-const makeChainCompletions = (state: SubagentState) => (prefix: string) => {
-	if (prefix.includes(" ") || !state.baseCwd) return null;
-	return discoverSavedChains(state)
+const makeChainCompletions = (pi: ExtensionAPI, state: SubagentState) => (prefix: string) => {
+	const cwd = completionCwd(pi, state);
+	if (prefix.includes(" ") || !cwd) return null;
+	return discoverSavedChains(cwd, projectTrusted(state))
 		.filter((chain) => chain.name.startsWith(prefix))
 		.map((chain) => ({ value: chain.name, label: chain.name }));
 };
@@ -212,6 +219,7 @@ async function requestSlashRun(
 	ctx: ExtensionContext,
 	requestId: string,
 	params: SubagentParamsLike,
+	executionCwd?: string,
 ): Promise<SlashSubagentResponse> {
 	return new Promise((resolve, reject) => {
 		let done = false;
@@ -275,7 +283,7 @@ async function requestSlashRun(
 			next();
 		};
 
-		pi.events.emit(SLASH_SUBAGENT_REQUEST_EVENT, { requestId, params });
+		pi.events.emit(SLASH_SUBAGENT_REQUEST_EVENT, { requestId, params, ...(executionCwd ? { executionCwd } : {}) });
 
 		// Bridge emits STARTED synchronously during REQUEST emit.
 		// If not started, no bridge received the request.
@@ -324,6 +332,7 @@ async function runSlashSubagent(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	params: SubagentParamsLike,
+	executionCwd?: string,
 ): Promise<void> {
 	const requestId = randomUUID();
 	const initialDetails = buildSlashInitialResult(requestId, params);
@@ -336,7 +345,7 @@ async function runSlashSubagent(
 	});
 
 	try {
-		const response = await requestSlashRun(pi, ctx, requestId, params);
+		const response = await requestSlashRun(pi, ctx, requestId, params, executionCwd);
 		const finalDetails = finalizeSlashResult(response);
 		pi.sendMessage({
 			customType: SLASH_RESULT_TYPE,
@@ -374,7 +383,7 @@ async function runSlashSubagent(
 interface ParsedStep { name: string; config: InlineConfig; task?: string }
 
 const parseAgentArgs = (
-	state: SubagentState,
+	cwd: string,
 	args: string,
 	command: string,
 	ctx: ExtensionContext,
@@ -440,11 +449,7 @@ const parseAgentArgs = (
 		ctx.ui.notify(usage, "error");
 		return null;
 	}
-	if (!state.baseCwd) {
-		ctx.ui.notify("Subagent session cwd is not initialized yet", "error");
-		return null;
-	}
-	const agents = discoverAgents(state.baseCwd, "both", { projectTrusted: ctx.isProjectTrusted() }).agents;
+	const agents = discoverAgents(cwd, "both", { projectTrusted: ctx.isProjectTrusted() }).agents;
 	for (const step of steps) {
 		if (!agents.find((a) => a.name === step.name)) {
 			ctx.ui.notify(`Unknown agent: ${step.name}`, "error");
@@ -468,7 +473,7 @@ export function registerSlashCommands(
 ): void {
 	pi.registerCommand("run", {
 		description: "Run a subagent directly: /run agent[output=file] [task] [--bg|--fg] [--fork]",
-		getArgumentCompletions: makeAgentCompletions(state, false),
+		getArgumentCompletions: makeAgentCompletions(pi, state, false),
 		handler: async (args, ctx) => {
 			const flags = extractExecutionFlags(args);
 			if (flags.error) { ctx.ui.notify(flags.error, "error"); return; }
@@ -486,8 +491,8 @@ export function registerSlashCommands(
 			const { name: agentName, config: inline } = parsedAgent;
 			const task = firstSpace === -1 ? "" : unwrapQuotedTask(input.slice(firstSpace + 1).trim());
 
-			if (!state.baseCwd) { ctx.ui.notify("Subagent session cwd is not initialized yet", "error"); return; }
-			const agents = discoverAgents(state.baseCwd, "both", { projectTrusted: ctx.isProjectTrusted() }).agents;
+			const cwd = resolveExecutionCwd(pi, ctx);
+			const agents = discoverAgents(cwd, "both", { projectTrusted: ctx.isProjectTrusted() }).agents;
 			if (!agents.find((a) => a.name === agentName)) { ctx.ui.notify(`Unknown agent: ${agentName}`, "error"); return; }
 
 			let finalTask = task;
@@ -502,18 +507,19 @@ export function registerSlashCommands(
 			if (inline.progress !== undefined) params.progress = inline.progress;
 			if (asyncMode !== undefined) params.async = asyncMode;
 			if (fork) params.context = "fork";
-			await runSlashSubagent(pi, ctx, params);
+			await runSlashSubagent(pi, ctx, params, cwd);
 		},
 	});
 
 	pi.registerCommand("chain", {
 		description: "Run agents in sequence: /chain scout \"task\" -> oracle [--bg|--fg] [--fork]",
-		getArgumentCompletions: makeAgentCompletions(state, true),
+		getArgumentCompletions: makeAgentCompletions(pi, state, true),
 		handler: async (args, ctx) => {
 			const flags = extractExecutionFlags(args);
 			if (flags.error) { ctx.ui.notify(flags.error, "error"); return; }
 			const { args: cleanedArgs, async: asyncMode, fork } = flags;
-			const parsed = parseAgentArgs(state, cleanedArgs, "chain", ctx);
+			const cwd = resolveExecutionCwd(pi, ctx);
+			const parsed = parseAgentArgs(cwd, cleanedArgs, "chain", ctx);
 			if (!parsed) return;
 			const chain = parsed.steps.map(({ name, config, task: stepTask }, i) => ({
 				agent: name,
@@ -528,13 +534,13 @@ export function registerSlashCommands(
 			const params: SubagentParamsLike = { chain, task: parsed.task, clarify: false, agentScope: "both" };
 			if (asyncMode !== undefined) params.async = asyncMode;
 			if (fork) params.context = "fork";
-			await runSlashSubagent(pi, ctx, params);
+			await runSlashSubagent(pi, ctx, params, cwd);
 		},
 	});
 
 	pi.registerCommand("run-chain", {
 		description: "Run a saved chain: /run-chain chainName -- task [--bg|--fg] [--fork]",
-		getArgumentCompletions: makeChainCompletions(state),
+		getArgumentCompletions: makeChainCompletions(pi, state),
 		handler: async (args, ctx) => {
 			const flags = extractExecutionFlags(args);
 			if (flags.error) { ctx.ui.notify(flags.error, "error"); return; }
@@ -551,8 +557,8 @@ export function registerSlashCommands(
 				ctx.ui.notify(usage, "error");
 				return;
 			}
-			if (!state.baseCwd) { ctx.ui.notify("Subagent session cwd is not initialized yet", "error"); return; }
-			const chain = discoverSavedChains(state).find((candidate) => candidate.name === chainName);
+			const cwd = resolveExecutionCwd(pi, ctx);
+			const chain = discoverSavedChains(cwd, ctx.isProjectTrusted()).find((candidate) => candidate.name === chainName);
 			if (!chain) {
 				ctx.ui.notify(`Unknown chain: ${chainName}`, "error");
 				return;
@@ -567,18 +573,19 @@ export function registerSlashCommands(
 			const params: SubagentParamsLike = { chain: savedSteps, task, clarify: false, agentScope: "both" };
 			if (asyncMode !== undefined) params.async = asyncMode;
 			if (fork) params.context = "fork";
-			await runSlashSubagent(pi, ctx, params);
+			await runSlashSubagent(pi, ctx, params, cwd);
 		},
 	});
 
 	pi.registerCommand("parallel", {
 		description: "Run agents in parallel: /parallel scout \"task1\" -> oracle \"task2\" [--bg|--fg] [--fork]",
-		getArgumentCompletions: makeAgentCompletions(state, true),
+		getArgumentCompletions: makeAgentCompletions(pi, state, true),
 		handler: async (args, ctx) => {
 			const flags = extractExecutionFlags(args);
 			if (flags.error) { ctx.ui.notify(flags.error, "error"); return; }
 			const { args: cleanedArgs, async: asyncMode, fork } = flags;
-			const parsed = parseAgentArgs(state, cleanedArgs, "parallel", ctx);
+			const cwd = resolveExecutionCwd(pi, ctx);
+			const parsed = parseAgentArgs(cwd, cleanedArgs, "parallel", ctx);
 			if (!parsed) return;
 			const tasks = parsed.steps.map(({ name, config, task: stepTask }) => ({
 				agent: name,
@@ -593,7 +600,7 @@ export function registerSlashCommands(
 			const params: SubagentParamsLike = { tasks, clarify: false, agentScope: "both" };
 			if (asyncMode !== undefined) params.async = asyncMode;
 			if (fork) params.context = "fork";
-			await runSlashSubagent(pi, ctx, params);
+			await runSlashSubagent(pi, ctx, params, cwd);
 		},
 	});
 

@@ -23,6 +23,7 @@ import {
 	validateForkContextModelPolicy,
 } from "../../shared/agent-context-policy.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
+import { resolveExecutionCwd } from "../../shared/execution-cwd.ts";
 import { applyIntercomBridgeToAgent, resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
 import { createNestedRoute, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
@@ -95,6 +96,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		signal: AbortSignal | undefined,
 		onUpdate: ((r: SubagentExecutionResult) => void) | undefined,
 		ctx: ExtensionContext,
+		executionCwd?: string,
 	) => Promise<SubagentExecutionResult>;
 } {
 	const execute = async (
@@ -103,14 +105,17 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		signal: AbortSignal | undefined,
 		onUpdate: ((r: SubagentExecutionResult) => void) | undefined,
 		ctx: ExtensionContext,
+		executionCwd?: string,
 		onForegroundRun?: (runId: string) => void,
 	): Promise<SubagentExecutionResult> => {
 		deps.ensureSessionState?.(ctx);
-		deps.state.baseCwd = ctx.cwd;
+		const needsExecutionCwd = !params.action || params.cwd !== undefined || ["list", "get", "create", "update", "delete", "doctor"].includes(params.action);
+		const invocationCwd = needsExecutionCwd ? executionCwd ?? resolveExecutionCwd(deps.pi, ctx) : ctx.cwd;
+		if (needsExecutionCwd) deps.state.baseCwd = invocationCwd;
 		deps.state.foregroundRuns ??= new Map();
 		deps.state.foregroundControls ??= new Map();
 		deps.state.lastForegroundControlId ??= null;
-		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
+		const requestCwd = resolveRequestedCwd(invocationCwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
 			if (params.action === "review") {
@@ -350,7 +355,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		);
 
 		const scope: AgentScope = resolveExecutionAgentScope(effectiveParams.agentScope);
-		const effectiveCwd = effectiveParams.cwd ?? ctx.cwd;
+		const effectiveCwd = effectiveParams.cwd ?? invocationCwd;
 		const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
 		deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		const inheritedModel = providerQualifiedModelId(ctx.model?.provider, ctx.model?.id);
@@ -683,12 +688,12 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 	};
 
 	return { execute: async (...args) => {
-		const [, params, signal, onUpdate, ctx] = args;
+		const [id, params, signal, onUpdate, ctx, executionCwd] = args;
 		const waiting = params.async === false && (params.action === "resume" || params.action === "answer");
 		const before = waiting ? new Set(deps.state.ownedRuns?.keys()) : undefined;
 		const attention = Promise.withResolvers<SubagentExecutionResult>();
 		let unsubscribe: (() => void) | undefined;
-		const work = execute(...args, (runId) => {
+		const work = execute(id, params, signal, onUpdate, ctx, executionCwd, (runId) => {
 			unsubscribe = deps.pi.events.on(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
 				if (!payload || typeof payload !== "object") return;
 				const request = payload as { requestId?: unknown; reason?: unknown };

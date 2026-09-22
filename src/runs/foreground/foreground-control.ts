@@ -11,6 +11,7 @@ import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { executeAsyncSingle, formatAsyncStartedMessage } from "../background/async-execution.ts";
 import { resolveConfiguredChildProjectTrustPolicy } from "../shared/pi-args.ts";
+import { requestChildExecutionCwd } from "../shared/child-execution-cwd.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { applyIntercomBridgeToAgent, resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget, resolveSubagentIntercomTarget, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import { formatControlIntercomMessage, formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
@@ -891,7 +892,7 @@ export function reviveSavedSubagent(input: {
 	const modelOverride = model && thinking && !splitKnownThinkingSuffix(model).thinkingSuffix ? `${model}:${thinking}` : model;
 	const skill = normalizeSkillInput(input.params.skill);
 	const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
-	const result = executeAsyncSingle(runId, {
+	const launchInput: Parameters<typeof executeAsyncSingle>[1] = {
 		agent: selectedAgent,
 		task: buildRevivedAsyncTask(target, followUp, input.params.messageOrigin),
 		agentConfig,
@@ -923,7 +924,16 @@ export function reviveSavedSubagent(input: {
 		outputMode: input.params.outputMode ?? savedLaunch?.outputMode ?? contract.outputMode,
 		outputSchema: input.params.outputSchema ?? savedLaunch?.outputSchema ?? contract.outputSchema,
 		projectTrust: savedLaunch?.projectTrust ?? resolveConfiguredChildProjectTrustPolicy(input.deps.config.projectTrust),
-	});
+	};
+	const undoCwdRequest = input.params.cwd !== undefined ? requestChildExecutionCwd(target.sessionFile, effectiveCwd) : undefined;
+	let result: ReturnType<typeof executeAsyncSingle>;
+	try {
+		result = executeAsyncSingle(runId, launchInput);
+	} catch (error) {
+		undoCwdRequest?.();
+		throw error;
+	}
+	if (result.isError) undoCwdRequest?.();
 	const owned = input.deps.state.ownedRuns?.get(runId);
 	if (owned) rememberOwnedRun(input.deps.state, { ...owned, asyncDir: result.details.asyncDir, pid: input.deps.state.asyncJobs.get(runId)?.pid, ...(result.isError ? { error: result.content.map((part) => part.text).join("\n") } : {}) });
 	if (result.isError) return result;

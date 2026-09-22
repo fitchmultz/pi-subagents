@@ -121,6 +121,33 @@ describe("doctor action executor routing", () => {
 		assert.doesNotMatch(text, /wiring: active/);
 	});
 
+	it("captures the directory owner once before awaiting live discovery", async () => {
+		const events = createEventBus();
+		const selected = path.join(tempDir, "selected");
+		fs.mkdirSync(selected);
+		let current = selected;
+		let resolutions = 0;
+		events.on("pi-change-working-dir:resolve-execution-cwd", (request) => {
+			resolutions++;
+			request.result = { cwd: current };
+		});
+		events.on("subagent:intercom-health-request", ({ requestId }) => {
+			queueMicrotask(() => {
+				current = tempDir;
+				events.emit("subagent:intercom-health-response", { requestId, health: [], connection: { status: "disconnected" } });
+			});
+		});
+		const executor = createSubagentExecutor({
+			pi: { events, getSessionName: () => undefined }, state: makeState(tempDir), config: {}, asyncByDefault: false,
+			tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir, expandTilde: (value) => value, discoverAgents: () => ({ agents: [] }),
+		});
+		const pending = executor.execute("doctor", { action: "doctor" }, undefined, undefined, makeMinimalCtx(tempDir));
+		assert.equal(resolutions, 1, "resolve synchronously before the first await");
+		const result = await pending;
+		assert.ok(result.content[0].text.includes(`- Requested cwd: ${selected}`));
+		assert.equal(resolutions, 1);
+	});
+
 	it("reports session manager failures without failing the doctor action", async () => {
 		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },

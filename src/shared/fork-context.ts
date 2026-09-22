@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { requestChildExecutionCwd } from "../runs/shared/child-execution-cwd.ts";
 
 type SubagentExecutionContext = "fresh" | "fork";
 
@@ -65,6 +66,7 @@ export function createForkContextResolver(
 				if (!fs.existsSync(sessionFile)) {
 					throw new Error(`Session manager returned a forked session file that does not exist: ${sessionFile}`);
 				}
+				requestChildExecutionCwd(sessionFile);
 				cachedSessionFiles.set(index, sessionFile);
 				return sessionFile;
 			} catch (error) {
