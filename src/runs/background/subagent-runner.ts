@@ -546,6 +546,7 @@ async function runSingleStep(
 	const nativeReport = !initial.model || !isClaudeCodeModel(initial.model);
 	const acceptance = step.effectiveAcceptance ? await evaluateRunAcceptance({
 		acceptance: step.effectiveAcceptance, initial, initialOutput: initial.finalOutput, sessionFile, cwd: step.cwd ?? ctx.cwd, signal: verificationSignal, nativeReport, recordedTurns: nativeSegments.length,
+		initialAcceptance: nativeExecution?.finalization?.[0]?.event.acceptance,
 		runTurn: async (prompt, turn, sessionFile) => {
 			const cached = nativeSegments[turn - 1];
 			const reportRuntime = nativeReport && !cached ? createFinalizationReportRuntime() : undefined;
@@ -564,7 +565,7 @@ async function runSingleStep(
 			if (reviewed.reportSubmission?.reportSubmissionError) return reviewed.reportSubmission;
 			resolvedOutput = reviewed.resolvedOutput;
 			output = stripAcceptanceReport(resolvedOutput.fullOutput);
-			return { ...reviewed.reportSubmission, output: reviewed.finalOutput };
+			return { ...reviewed.reportSubmission, output: reviewed.finalOutput, acceptance: cached?.event.acceptance };
 		},
 	}) : undefined;
 	const outcome = resolveExecutionOutcome({ result: execution, acceptance, signal: ctx.signal, interruptSignal });

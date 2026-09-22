@@ -119,16 +119,17 @@ export async function evaluateRunAcceptance(input: {
 	initial: ExecutionOutcome;
 	initialOutput: string;
 	initialReport?: AcceptanceReport;
+	initialAcceptance?: AcceptanceLedger;
 	sessionFile?: string;
 	cwd: string;
 	signal?: AbortSignal;
 	nativeReport?: boolean;
 	recordedTurns?: number;
-	runTurn: (prompt: string, turn: number, sessionFile: string) => Promise<FinalizationReportSubmission & { error?: string }>;
+	runTurn: (prompt: string, turn: number, sessionFile: string) => Promise<FinalizationReportSubmission & { error?: string; acceptance?: AcceptanceLedger }>;
 }): Promise<AcceptanceLedger> {
 	const review = shouldRunAcceptanceFinalization(input.acceptance);
 	const selfReview = review ? acceptanceSelfReviewConfig(input.acceptance) : input.acceptance;
-	const initialLedger = await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: input.initialOutput, report: input.initialReport, cwd: input.cwd, signal: input.signal });
+	const initialLedger = input.initialAcceptance ?? await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: input.initialOutput, report: input.initialReport, cwd: input.cwd, signal: input.signal });
 	if (initialLedger.status === "blocked" || !review || input.initial.exitCode !== 0 || input.initial.error || input.initial.interrupted || (input.signal?.aborted && !input.recordedTurns)) return initialLedger;
 
 	const maxTurns = input.acceptance.finalization.maxTurns;
@@ -154,7 +155,10 @@ export async function evaluateRunAcceptance(input: {
 			const ledger = buildFinalizationProcessFailureLedger({ initialLedger, turns, maxTurns, message: result.error });
 			return input.nativeReport ? { ...ledger, childReport: undefined, childReportParseError: result.reportSubmissionError, unconfirmedOutput: auditOutput } : ledger;
 		}
-		authoritativeLedger = await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: result.reportSubmissionError ? "" : result.output, report: result.reportSubmissionError ? undefined : result.report, cwd: input.cwd, signal: input.signal });
+		// Replay each native boundary's checks, not the workspace left by a later repair.
+		authoritativeLedger = !result.reportSubmissionError && result.acceptance
+			? result.acceptance
+			: await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: result.reportSubmissionError ? "" : result.output, report: result.reportSubmissionError ? undefined : result.report, cwd: input.cwd, signal: input.signal });
 		if (result.reportSubmissionError) {
 			authoritativeLedger.childReportParseError = result.reportSubmissionError;
 			authoritativeLedger.runtimeChecks = [{ id: "finalization-report", status: "failed", message: result.reportSubmissionError }];
@@ -164,7 +168,7 @@ export async function evaluateRunAcceptance(input: {
 		if (authoritativeLedger.status === "blocked") return attachFinalizationToLedger({ initialLedger, authoritativeLedger, turns, status: "blocked", maxTurns });
 		const failure = acceptanceFailureMessage(authoritativeLedger);
 		if (!failure && !input.signal?.aborted) {
-			if (selfReview !== input.acceptance) authoritativeLedger = await evaluateAcceptance({ acceptance: input.acceptance, output: result.output, report: result.report, cwd: input.cwd, signal: input.signal });
+			if (result.acceptance || selfReview !== input.acceptance) authoritativeLedger = await evaluateAcceptance({ acceptance: input.acceptance, output: result.output, report: result.report, cwd: input.cwd, signal: input.signal });
 			return attachFinalizationToLedger({ initialLedger, authoritativeLedger, turns, status: input.signal?.aborted ? "failed" : "completed", maxTurns });
 		}
 		if (input.signal?.aborted) break;

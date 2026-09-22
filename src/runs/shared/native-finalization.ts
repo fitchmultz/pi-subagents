@@ -10,7 +10,7 @@ import { setPromptSection } from "../../shared/prompt-sections.ts";
 import { detectSubagentError, getFinalOutput } from "../../shared/utils.ts";
 import {
 	acceptanceFailureMessage, acceptanceSelfReviewConfig, createFinalizationReportRuntime,
-	evaluateAcceptanceReport, formatAcceptanceFinalizationPrompt, readFinalizationReport,
+	evaluateAcceptance, formatAcceptanceFinalizationPrompt, readFinalizationReport,
 	resolveFinalizationOutput, stripAcceptanceReport,
 } from "./acceptance.ts";
 import { captureSingleOutputSnapshot, resolveSingleOutput, type SingleOutputSnapshot } from "./single-output.ts";
@@ -36,6 +36,7 @@ export interface NativeFinalizationEvent {
 	messageCount: number;
 	at: number;
 	submission: ReturnType<typeof readFinalizationReport> & { error?: string };
+	acceptance?: AcceptanceLedger;
 	resolvedOutput: ReturnType<typeof resolveSingleOutput>;
 	nextPrompt?: string;
 }
@@ -51,7 +52,7 @@ export function nativeFinalizationLaunch(config: NativeFinalizationConfig): { ex
 	return { extension: fileURLToPath(new URL(`native-finalization${import.meta.url.endsWith(".ts") ? ".ts" : ".js"}`, import.meta.url)), env: { [CONFIG_ENV]: configPath } };
 }
 
-/** The native settlement hook only evaluates report data. The owner runs all commands. */
+/** Self-review includes structural and workspace checks; configured verification stays owner-run. */
 export default function registerNativeFinalization(pi: ExtensionAPI): void {
 	const configPath = process.env[CONFIG_ENV];
 	if (!configPath) return;
@@ -83,7 +84,7 @@ export default function registerNativeFinalization(pi: ExtensionAPI): void {
 	pi.on("message_end", (event) => {
 		if (["assistant", "user", "toolResult"].includes(event.message.role)) messages.push(event.message as Message);
 	});
-	pi.on("agent_before_settle", (event, ctx) => {
+	pi.on("agent_before_settle", async (event, ctx) => {
 		if (event.outcome !== "completed") return;
 		const submission: NativeFinalizationEvent["submission"] = turn === 0
 			? { output: getFinalOutput(messages) }
@@ -94,7 +95,7 @@ export default function registerNativeFinalization(pi: ExtensionAPI): void {
 			if (hiddenError.hasError) submission.error = hiddenError.details ?? `${hiddenError.errorType} failed`;
 			if (config.publicOutput) submission.error ??= readStructuredOutput(config.publicOutput).error;
 		}
-		const ledger = evaluateAcceptanceReport({ acceptance: selfReview, governing: acceptance,
+		const ledger = await evaluateAcceptance({ acceptance: selfReview, governing: acceptance, cwd: ctx.cwd,
 			output: submission.reportSubmissionError ? "" : submission.output, report: submission.reportSubmissionError ? undefined : submission.report });
 		initialLedger ??= ledger;
 		if (!submission.error && !submission.reportSubmissionError) {
@@ -107,7 +108,7 @@ export default function registerNativeFinalization(pi: ExtensionAPI): void {
 		const nextPrompt = continueReview ? formatAcceptanceFinalizationPrompt({ acceptance, initialOutput, initialLedger,
 			turn: turn + 1, maxTurns: acceptance.finalization.maxTurns,
 			previousFailure: submission.reportSubmissionError ?? acceptanceFailureMessage(ledger), nativeReport: true }) : undefined;
-		const marker: NativeFinalizationEvent = { type: FINALIZATION_EVENT, nonce: config.nonce, turn, lastEntryId: ctx.sessionManager.getLeafId() ?? undefined, messageCount: messages.length, at: Date.now(), submission, resolvedOutput, nextPrompt };
+		const marker: NativeFinalizationEvent = { type: FINALIZATION_EVENT, nonce: config.nonce, turn, lastEntryId: ctx.sessionManager.getLeafId() ?? undefined, messageCount: messages.length, at: Date.now(), submission, acceptance: ledger, resolvedOutput, nextPrompt };
 		fs.appendFileSync(path.join(path.dirname(reportRuntime.schemaPath), "boundaries.jsonl"), `${JSON.stringify(marker)}\n`, { mode: 0o600 });
 		if (!nextPrompt) return;
 		if (turn === 0) {

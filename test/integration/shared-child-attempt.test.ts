@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -18,7 +18,8 @@ const runtimeDir = path.join(repo, process.env.PI_DRIVER_TEST_DIST ? "dist" : "s
 const runtimeExtension = process.env.PI_DRIVER_TEST_DIST ? "js" : "ts";
 const report = { criteriaSatisfied: [{ id: "deliver", status: "satisfied", evidence: "Native fixture completed" }], residualRisks: [], diffSummary: "Implemented fixture" };
 
-async function run(scenario: string, options: { turns?: number; timeoutMs?: number; extendMs?: number; verify?: string; maxTokens?: number; maxExecutionTimeMs?: number; omitSessionFile?: boolean } = {}) {
+async function run(scenario: string, options: { turns?: number; timeoutMs?: number; extendMs?: number; verify?: string; maxTokens?: number; maxExecutionTimeMs?: number; omitSessionFile?: boolean;
+	staged?: boolean; withoutAcceptance?: boolean; fallback?: boolean; startupExit?: { code: number; once?: boolean; stderr?: string; model?: string } } = {}) {
 	const root = createTempDir("driver-native-");
 	const id = path.basename(root);
 	const asyncDir = getRunMetadataDir(id);
@@ -28,15 +29,22 @@ async function run(scenario: string, options: { turns?: number; timeoutMs?: numb
 	fs.mkdirSync(bin);
 	fs.mkdirSync(path.join(root, "agent"));
 	fs.writeFileSync(path.join(root, "agent/settings.json"), JSON.stringify({ retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 }, compaction: { enabled: false } }));
-	fs.writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec '${process.execPath}' '${path.join(sdkRoot, "dist/cli.js")}' "$@"\n`, { mode: 0o755 });
-	fs.writeFileSync(input, JSON.stringify({ scenario, receiptPath, report }));
+	fs.writeFileSync(path.join(bin, "pi"), `#!/bin/sh\necho $$ >> '${root}/pids'\nexec '${process.execPath}' '${path.join(sdkRoot, "dist/cli.js")}' "$@"\n`, { mode: 0o755 });
+	if (options.staged) {
+		execFileSync("git", ["init", "-q"], { cwd: root });
+		fs.writeFileSync(path.join(root, "staged.txt"), "staged fixture\n");
+		execFileSync("git", ["add", "staged.txt"], { cwd: root });
+	}
+	fs.writeFileSync(input, JSON.stringify({ scenario, receiptPath, report: { ...report, ...(options.staged ? { noStagedFiles: true } : {}) }, startupExit: options.startupExit }));
 	fs.mkdirSync(asyncDir, { recursive: true });
-	const acceptance = resolveEffectiveAcceptance({ explicit: { criteria: [{ id: "deliver", must: "Deliver fixture" }], maxFinalizationTurns: options.turns ?? 1,
+	const acceptance = resolveEffectiveAcceptance({ explicit: options.withoutAcceptance ? undefined : { criteria: [{ id: "deliver", must: "Deliver fixture" }], maxFinalizationTurns: options.turns ?? 1,
+		...(options.staged ? { evidence: ["no-staged-files"] } : {}),
 		...(options.verify ? { verify: [{ id: "check", command: options.verify }] } : {}) } });
 	const configPath = path.join(asyncDir, "launch.json");
 	fs.writeFileSync(configPath, JSON.stringify({ id, runtimeVersion: 2, timeoutMs: options.timeoutMs, cwd: root, asyncDir, resultPath,
 		placeholder: "{previous}", resultMode: "single", steps: [{ agent: "worker", task: "Complete synthetic fixture", model: "driver-fixture/faux-1",
-			inheritProjectContext: false, inheritSkills: false, tools: ["read"], extensions: [path.join(repo, "test/fixtures/native-child-attempt.mjs")],
+			modelCandidates: options.fallback ? ["driver-fixture/faux-1", "driver-fixture/faux-2"] : undefined,
+			inheritProjectContext: false, inheritSkills: false, tools: options.staged ? ["read", "bash"] : ["read"], extensions: [path.join(repo, "test/fixtures/native-child-attempt.mjs")],
 			sessionFile: options.omitSessionFile ? undefined : path.join(root, "session.jsonl"), outputPath: path.join(root, "output.md"), effectiveAcceptance: acceptance,
 			maxTokens: options.maxTokens, maxExecutionTimeMs: options.maxExecutionTimeMs,
 			...(scenario === "public-output" ? { structuredOutputSchema: { type: "object", properties: { items: { type: "array", items: { type: "string" } } }, required: ["items"] } } : {}),
@@ -63,7 +71,8 @@ async function run(scenario: string, options: { turns?: number; timeoutMs?: numb
 		const status = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf8"));
 		assert.ok(fs.existsSync(configPath), "v2 owner retains frozen launch");
 		assert.equal(receipt?.networkRequests ?? 0, 0);
-		return { result, receipt, status, output: fs.existsSync(path.join(root, "output.md")) ? fs.readFileSync(path.join(root, "output.md"), "utf8") : undefined };
+		const pids = fs.readFileSync(path.join(root, "pids"), "utf8").trim().split("\n").map(Number);
+		return { result, receipt, status, pids, output: fs.existsSync(path.join(root, "output.md")) ? fs.readFileSync(path.join(root, "output.md"), "utf8") : undefined };
 	} finally {
 		clearTimeout(watchdog);
 		if (proc.exitCode === null) proc.kill("SIGTERM");
@@ -76,6 +85,91 @@ async function run(scenario: string, options: { turns?: number; timeoutMs?: numb
 		removeTempDir(root); removeTempDir(asyncDir);
 	}
 }
+
+for (const withoutAcceptance of [true, false]) test(`native pre-boundary exit 143 retries with acceptance ${!withoutAcceptance}`, async () => {
+	const { result, receipt, pids } = await run("success", { withoutAcceptance, startupExit: { code: 143, once: true } });
+	assert.equal(result.success, true, JSON.stringify(result));
+	assert.equal(pids.length, 2);
+	assert.equal(new Set(pids).size, 2);
+	assert.equal(receipt.pid, pids[1]);
+	assert.equal(result.results[0].modelAttempts[0].exitCode, 143);
+	assert.match(result.results[0].modelAttempts[0].error, /143/);
+	assert.ok(result.results[0].modelAttempts.every((attempt) => attempt.model === "driver-fixture/faux-1"));
+});
+
+test("native pre-boundary transport failure retains its exit after the retry budget", async () => {
+	const { result, pids } = await run("success", { startupExit: { code: 143 } });
+	assert.equal(result.success, false);
+	assert.equal(pids.length, 2);
+	assert.deepEqual(result.results[0].modelAttempts.map((attempt) => attempt.exitCode), [143, 143]);
+	assert.equal(result.results[0].exitCode, 143);
+	assert.doesNotMatch(result.results[0].error, /boundary did not return/);
+});
+
+test("native pre-boundary transport failure reaches the configured fallback after one retry", async () => {
+	const { result, receipt, pids } = await run("success", { fallback: true, startupExit: { code: 143, model: "faux-1" } });
+	const child = result.results[0];
+	assert.equal(result.success, true, JSON.stringify(child));
+	assert.equal(pids.length, 3);
+	assert.equal(new Set(pids).size, 3);
+	assert.equal(receipt.pid, pids[2]);
+	assert.equal(child.model, "driver-fixture/faux-2");
+	assert.deepEqual(child.attemptedModels, ["driver-fixture/faux-1", "driver-fixture/faux-1", "driver-fixture/faux-2"]);
+	assert.deepEqual(child.modelAttempts.map((attempt) => attempt.exitCode), [143, 143, 0, 0]);
+	assert.equal(child.acceptance.finalization.turns.length, 1);
+});
+
+test("native pre-boundary ordinary failure preserves diagnostics without a retry", async () => {
+	const { result, pids } = await run("success", { fallback: true, startupExit: { code: 7, stderr: "Fixture startup failed" } });
+	assert.equal(result.success, false);
+	assert.equal(pids.length, 1);
+	assert.equal(result.results[0].exitCode, 7);
+	assert.match(result.results[0].error, /Fixture startup failed/);
+});
+
+test("native apparent success without a required self-review boundary is rejected", async () => {
+	const { result, pids } = await run("success", { fallback: true, startupExit: { code: 0 } });
+	assert.equal(result.success, false);
+	assert.equal(pids.length, 1);
+	assert.equal(result.results[0].exitCode, 1);
+	assert.match(result.results[0].error, /Native self-review boundary did not return a result/);
+});
+
+test("native no-staged-files rejection repairs in one process and retains both review outcomes", async () => {
+	const { result, receipt, pids, output } = await run("staged-repair", { staged: true, turns: 2,
+		verify: 'test -z "$PI_SUBAGENT_FINALIZATION_CONFIG" && test -z "$(git diff --cached --name-only)" && echo owner-check' });
+	const child = result.results[0];
+	assert.equal(pids.length, 1, JSON.stringify({ pids, child }));
+	assert.equal(result.success, true, JSON.stringify(child));
+	assert.equal(receipt.pid, pids[0]);
+	assert.equal(receipt.calls, 4);
+	assert.equal(receipt.sawStagedFailure, true);
+	assert.equal(output, "Repaired answer");
+	assert.equal(child.finalOutput, "Repaired answer");
+	assert.deepEqual(child.acceptance.finalization.turns.map((turn) => turn.status), ["rejected", "checked"]);
+	assert.match(child.acceptance.finalization.turns[0].failureMessage, /Staged files present:.*staged\.txt/);
+	assert.equal(child.acceptance.runtimeChecks.find((check) => check.id === "no-staged-files").status, "passed");
+	assert.equal(child.acceptance.verifyRuns.length, 1);
+	assert.equal(child.acceptance.verifyRuns[0].stdout, "owner-check");
+});
+
+test("native no-staged-files rejection exhausts its review cap without another process", async () => {
+	const { result, receipt, pids } = await run("success", { staged: true, turns: 2 });
+	assert.equal(pids.length, 1);
+	assert.equal(result.success, false);
+	assert.equal(receipt.calls, 3);
+	assert.deepEqual(result.results[0].acceptance.finalization.turns.map((turn) => turn.status), ["rejected", "rejected"]);
+	assert.match(result.results[0].error, /Staged files present:.*staged\.txt/);
+});
+
+test("owner rechecks the index after native no-staged-files repair and shutdown", async () => {
+	const { result, receipt, pids } = await run("staged-repair-restage", { staged: true, turns: 2 });
+	assert.equal(pids.length, 1);
+	assert.equal(receipt.calls, 4);
+	assert.equal(result.success, false);
+	assert.deepEqual(result.results[0].acceptance.finalization.turns.map((turn) => turn.status), ["rejected", "checked"]);
+	assert.match(result.results[0].error, /Staged files present:.*staged\.txt/);
+});
 
 for (const scenario of ["success", "public-output", "repair", "passive"] as const) test(`native child performs ${scenario} and mandatory review in one process`, async () => {
 	const { result, receipt, output } = await run(scenario, { turns: scenario === "repair" ? 2 : 1, maxTokens: 30 });
@@ -159,8 +253,9 @@ test("owner allocates a native session when acceptance has no preassigned file",
 });
 
 test("native child stops at explicit blocked initial report without review or verification", async () => {
-	const { result, receipt } = await run("blocked", { verify: "exit 7", turns: 3 });
+	const { result, receipt, pids } = await run("blocked", { verify: "exit 7", turns: 3 });
 	assert.equal(result.state, "blocked");
+	assert.equal(pids.length, 1);
 	assert.equal(receipt.calls, 1);
 	assert.deepEqual(result.results[0].acceptance.verifyRuns, []);
 });

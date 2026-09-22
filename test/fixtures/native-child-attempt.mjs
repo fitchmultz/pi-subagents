@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -11,12 +12,23 @@ const { fauxProvider, fauxAssistantMessage, fauxToolCall, getCurrentTools } = aw
 export default function (pi) {
 	const config = JSON.parse(fs.readFileSync(process.env.PI_DRIVER_FIXTURE, "utf8"));
 	const { scenario, receiptPath, report } = config;
+	const repairStaged = scenario === "staged-repair" || scenario === "staged-repair-restage";
 	const receipt = { pid: process.pid, calls: 0, networkRequests: 0, errors: [], tools: [], sampling: [], shutdownStarted: false, shutdownFinished: false, events: [] };
 	const save = () => fs.writeFileSync(receiptPath, JSON.stringify(receipt));
+	pi.on("session_start", (_event, ctx) => {
+		const marker = path.join(path.dirname(receiptPath), "startup-exit");
+		if (config.startupExit && (!config.startupExit.model || config.startupExit.model === ctx.model?.id)
+			&& (!config.startupExit.once || !fs.existsSync(marker))) {
+			fs.writeFileSync(marker, String(process.pid));
+			if (config.startupExit.stderr) fs.writeSync(2, config.startupExit.stderr);
+			save();
+			process.exit(config.startupExit.code);
+		}
+	});
 	globalThis.fetch = async () => { receipt.networkRequests++; save(); throw new Error("Network forbidden in driver fixture"); };
-	const faux = fauxProvider({ provider: "driver-fixture", tokensPerSecond: 1_000_000, tokenSize: { min: 1024, max: 1024 } });
+	const faux = fauxProvider({ provider: "driver-fixture", models: [{ id: "faux-1" }, { id: "faux-2" }], tokensPerSecond: 1_000_000, tokenSize: { min: 1024, max: 1024 } });
 	const textReport = (value) => `Initial answer\n\n\`\`\`acceptance-report\n${JSON.stringify(value)}\n\`\`\``;
-	const submit = (value, id) => fauxAssistantMessage(fauxToolCall("structured_output", { value: { answer: "Reviewed answer", report: value } }, { id }), { stopReason: "toolUse" });
+	const submit = (value, id, answer = "Reviewed answer") => fauxAssistantMessage(fauxToolCall("structured_output", { value: { answer, report: value } }, { id }), { stopReason: "toolUse" });
 	const rejected = { ...report, criteriaSatisfied: [{ id: "deliver", status: "not-satisfied", evidence: "missing proof" }] };
 	const blocked = { ...report, criteriaSatisfied: [{ id: "deliver", status: "blocked", evidence: "Native sign-in requests Touch ID", humanAction: "Complete Touch ID" }] };
 	const responses = [
@@ -24,8 +36,10 @@ export default function (pi) {
 			: fauxAssistantMessage(textReport(scenario === "blocked" ? blocked : report)),
 		scenario === "repair" ? submit(rejected, "rejected") : ["stale", "missing-then-repair"].includes(scenario) ? fauxAssistantMessage("Forgot to submit current report")
 			: scenario === "retry" ? fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded; native fixture" }) : submit(report, "reviewed"),
-		scenario === "stale-after-report" ? fauxAssistantMessage("Later activity without a current report")
+		repairStaged ? fauxAssistantMessage(fauxToolCall("bash", { command: "git rm --cached -- staged.txt" }), { stopReason: "toolUse" })
+			: scenario === "stale-after-report" ? fauxAssistantMessage("Later activity without a current report")
 			: scenario === "final-error" ? fauxAssistantMessage("", { stopReason: "error", errorMessage: "Fixture final provider failure" }) : submit(report, "repaired"),
+		...(repairStaged ? [submit(report, "unstaged", "Repaired answer")] : []),
 	];
 	if (scenario === "question-initial") responses.unshift(fauxAssistantMessage(fauxToolCall("contact_supervisor", { reason: "need_decision", message: "Choose before initial work" }), { stopReason: "toolUse" }));
 	if (scenario === "question-review") responses.splice(1, 0, fauxAssistantMessage(fauxToolCall("contact_supervisor", { reason: "need_decision", message: "Choose during review" }), { stopReason: "toolUse" }));
@@ -34,6 +48,7 @@ export default function (pi) {
 		const tools = context.tools ?? getCurrentTools(context.messages);
 		receipt.tools.push(tools.map((tool) => tool.name));
 		receipt.sampling.push(tools.find((tool) => tool.name === "structured_output")?.constrainedSampling);
+		if (repairStaged && index === 2) receipt.sawStagedFailure = JSON.stringify(context.messages).includes("Staged files present:");
 		save();
 		if (index === 1 && ["stale-after-report", "resubmit", "final-error"].includes(scenario)) pi.sendMessage({ customType: "fixture", content: "Acknowledge this later request.", display: false }, { deliverAs: "steer" });
 		if (index === 1 && scenario === "passive") pi.sendMessage({ customType: "fixture", content: "Passive context.", display: false }, { triggerTurn: false });
@@ -53,6 +68,7 @@ export default function (pi) {
 		receipt.shutdownStarted = true; save();
 		if (scenario === "linger") await delay(3000);
 		if (scenario === "process-error") process.exitCode = 7;
+		if (scenario === "staged-repair-restage") execFileSync("git", ["add", "staged.txt"], { cwd: path.dirname(receiptPath) });
 		receipt.shutdownFinished = true; save();
 	});
 }

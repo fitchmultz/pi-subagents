@@ -358,7 +358,7 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 					if (final.event.turn > 0) final.event.submission = { ...readFinalizationReport(result.messages, options.nativeFinalization.reportRuntime, { messageOffset }), error: final.event.submission.error };
 					final.execution = { exitCode: result.exitCode, error: result.error, interrupted: result.interrupted,
 						timedOut: result.timedOut, resourceLimitExceeded: result.resourceLimitExceeded, terminalFailure: result.terminalFailure };
-				} else if (!result.error && !result.interrupted) {
+				} else if (result.exitCode === 0 && !result.error && !result.interrupted) {
 					result.error = "Native self-review boundary did not return a result.";
 					result.exitCode = 1;
 					result.terminalFailure = true;
