@@ -1,6 +1,6 @@
 import { writeAsyncControlRequest } from "../background/async-control.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ownedRunStatusResult, ownedRunView, resolveOwnedRun } from "../shared/run-records.ts";
+import { ownedRunExecutionResult, ownedRunStatusResult, ownedRunView, resolveOwnedRun } from "../shared/run-records.ts";
 import { listSupervisorQuestions, questionProcessAlive } from "../shared/supervisor-questions.ts";
 import { getSingleResultOutput, readStatus } from "../../shared/utils.ts";
 import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT, type SubagentExecutionResult } from "../../shared/types.ts";
@@ -15,6 +15,7 @@ export async function waitForOwnedRun(input: {
 	signal?: AbortSignal;
 	onUpdate?: (result: SubagentExecutionResult) => void;
 	cancelNewRun?: boolean;
+	executionResult?: boolean;
 }): Promise<SubagentExecutionResult> {
 	const { deps, id, index, ctx } = input;
 	const owner = ctx.sessionManager.getSessionId(), session = deps.state.currentSessionId;
@@ -24,16 +25,21 @@ export async function waitForOwnedRun(input: {
 	}
 	if (!run || run.ownerSessionId !== owner) return { content: [{ type: "text", text: "Run not found in this parent session. No work started." }], isError: true, details: { mode: "management", results: [] } };
 	const target = run;
+	const waiting = deps.state.waitingRuns ??= new Map();
+	waiting.set(target.runId, (waiting.get(target.runId) ?? 0) + 1);
 	return new Promise((resolve) => {
 		let finished = false, timer: ReturnType<typeof setInterval> | undefined, unsubscribe: (() => void) | undefined;
 		let previous = "";
 		const finish = (status: "completed" | "cancelled" | "yielded" | "awaiting_input" | "unavailable", text: string, result?: SubagentExecutionResult) => {
 			if (finished) return;
 			finished = true;
+			const remaining = (waiting.get(target.runId) ?? 1) - 1;
+			if (remaining) waiting.set(target.runId, remaining); else waiting.delete(target.runId);
 			if (timer) clearInterval(timer);
 			unsubscribe?.(); input.signal?.removeEventListener("abort", abort);
-			resolve({ ...result, content: [{ type: "text", text }], ...(status === "unavailable" || status === "cancelled" ? { isError: true } : {}),
-				details: { ...result?.details, mode: "management", results: [], wait: { runId: target.runId, index, status } } });
+			const execution = input.executionResult ? ownedRunExecutionResult(target, deps.state, index) : undefined;
+			resolve({ ...result, ...execution, content: status === "completed" && execution ? execution.content : [{ type: "text", text }], ...(status === "unavailable" || status === "cancelled" ? { isError: true } : {}),
+				details: { mode: "management", results: [], ...result?.details, ...execution?.details, wait: { runId: target.runId, index, status } } });
 		};
 		const abort = () => {
 			if (input.cancelNewRun && target.asyncDir) {

@@ -100,6 +100,18 @@ export const AcceptanceOverride = Type.Unsafe({
 	description: "Optional acceptance contract. criteria=definition of done, evidence/verify=proof, stopRules=constraints, maxFinalizationTurns=self-review budget; at least one required. no-staged-files requires the entire Git index to be empty, including pre-existing staged paths. Continue/resume/answer overrides apply only to newly started continuations, never to a live child's acceptance. See the pi-subagents skill.",
 });
 
+// The everyday tools use closed acceptance shapes. Advanced callers retain the full contract below.
+export const DelegateAcceptance = Type.Object({
+	criteria: Type.Optional(Type.Array(AcceptanceGateSchema)),
+	evidence: Type.Optional(Type.Array(AcceptanceEvidenceKind)),
+	verify: Type.Optional(Type.Array(Type.Object({
+		...AcceptanceVerifyCommandSchema.properties,
+		env: Type.Optional(Type.Array(Type.Object({ name: Type.String({ minLength: 1 }), value: Type.String() }, { additionalProperties: false }))),
+	}, { additionalProperties: false }))),
+	stopRules: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	maxFinalizationTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
+}, { additionalProperties: false, description: "Acceptance criteria, evidence, verification commands and stop rules. Criteria use objects; verification environment uses unique name/value pairs. Self-review budget: 1–10 turns." });
+
 const TaskItem = Type.Object({
 	agent: Type.String({ minLength: 1 }),
 	task: Type.String({ minLength: 1 }),
@@ -248,10 +260,10 @@ export const DelegateParams = Type.Object({
 	async: Type.Optional(Type.Boolean({ description: "Background by default; false waits for the result." })),
 	worktree: Type.Optional(Type.Boolean({ description: "Isolate this writer in a Git worktree; return its patch. Requires a clean checkout." })),
 	output: TaskItem.properties.output,
-	acceptance: TaskItem.properties.acceptance,
+	acceptance: Type.Optional(DelegateAcceptance),
 }, { additionalProperties: false });
 
-export const AgentRunsParams = Type.Object({
+export const AgentRunsValidationParams = Type.Object({
 	action: Type.Enum(["list", "inspect", "nudge", "stop", "continue", "profiles", "questions", "answer", "review"] as const, { type: "string" }),
 	id: Type.Optional(Type.String({ minLength: 1, description: "Run ID or unambiguous prefix." })),
 	questionId: Type.Optional(Type.String({ minLength: 1, description: "Durable supervisor question ID for answer." })),
@@ -280,6 +292,12 @@ export const AgentRunsParams = Type.Object({
 		{ if: requiredObject("full"), then: { properties: { action: { enum: ["inspect"] } } } },
 	],
 });
+
+// Conditional action requirements remain locally validated; native strict sampling covers this closed shape.
+export const AgentRunsParams = Type.Object({
+	...AgentRunsValidationParams.properties,
+	acceptance: Type.Optional(DelegateAcceptance),
+}, { additionalProperties: false });
 
 export const SubagentParams = Type.Object({
 	agent: Type.Optional(Type.String({ minLength: 1, description: "Agent name for single mode/definition management; on resume/answer, explicitly select a current profile instead of the saved profile." })),

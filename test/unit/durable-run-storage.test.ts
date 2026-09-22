@@ -99,7 +99,7 @@ it("v2 final results survive temporary cleanup and supply full execution results
 	assert.equal(resolveAsyncResumeTarget({ id: "v2-resum" }, { kill: dead }).sessionFile, sessionFile);
 	assert.equal(resolveAsyncResumeTarget({ id: run.runId }, { kill: dead }).kind, "revive");
 	const execution = ownedRunExecutionResult(run, state());
-	assert.equal(execution.isError, false);
+	assert.equal(execution.isError, undefined);
 	assert.equal(execution.details.results[0]?.finalOutput, "Full child report");
 	assert.equal(execution.details.results[0]?.usage.cost, 0.75, "direct native usage takes precedence over legacy attempt aggregation");
 	assert.equal(execution.details.results[0]?.artifactPaths?.metadataPath, "metadata");
@@ -166,7 +166,7 @@ it("waiting tools retain delivery ownership until they settle or detach", async 
 	const notification = path.join(RESULTS_DIR, `${run.runId}.json`);
 	write(notification, { runtimeVersion: 2, id: run.runId, sessionId: "parent-file" });
 	let consumed = false;
-	const local = Object.assign(state(), { waitingRuns: new Set([run.runId]), isRunResultConsumed: () => consumed });
+	const local = Object.assign(state(), { waitingRuns: new Map([[run.runId, 1]]), isRunResultConsumed: () => consumed });
 	local.ownedRuns!.set(run.runId, run);
 	const events = createEventBus();
 	const delivered: Array<{ suppressNotification?: boolean }> = [];

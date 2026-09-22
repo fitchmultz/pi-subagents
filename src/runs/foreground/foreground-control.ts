@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { resolveRootSessionId } from "../../shared/session-identity.ts";
-import { writeAsyncInterruptRequest } from "../background/async-control.ts";
+import { writeAsyncControlRequest, writeAsyncInterruptRequest } from "../background/async-control.ts";
 import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readNativeSessionConfiguration, readQuestionContract, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -11,6 +11,7 @@ import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { executeAsyncSingle, formatAsyncStartedMessage } from "../background/async-execution.ts";
 import { resolveConfiguredChildProjectTrustPolicy } from "../shared/pi-args.ts";
+import { requestChildExecutionCwd } from "../shared/child-execution-cwd.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { applyIntercomBridgeToAgent, resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget, resolveSubagentIntercomTarget, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import { formatControlIntercomMessage, formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
@@ -351,7 +352,9 @@ function resolveResumeTarget(params: SubagentParamsLike, state: SubagentState): 
 function getAsyncInterruptTarget(state: SubagentState, runId: string | undefined): { asyncId: string; asyncDir: string } | undefined {
 	if (runId) {
 		const direct = state.asyncJobs.get(runId);
-		return direct ? { asyncId: direct.asyncId, asyncDir: direct.asyncDir } : undefined;
+		if (direct) return { asyncId: direct.asyncId, asyncDir: direct.asyncDir };
+		const owned = resolveOwnedRun(state, runId);
+		return owned?.asyncDir ? { asyncId: owned.runId, asyncDir: owned.asyncDir } : undefined;
 	}
 	let newest: { asyncId: string; asyncDir: string; updatedAt: number } | undefined;
 	for (const job of state.asyncJobs.values()) {
@@ -387,6 +390,21 @@ function emitControlNotification(input: {
 			to: input.intercomBridge.orchestratorTarget,
 			message: formatControlIntercomMessage(input.event, childIntercomTarget, input.childSafe),
 		});
+	}
+}
+
+export function extendAsyncTimeoutResult(state: SubagentState, runId: string | undefined, extendMs: number): SubagentExecutionResult {
+	const target = getAsyncInterruptTarget(state, runId);
+	const status = target && readStatus(target.asyncDir);
+	if (!target || !status || status.runtimeVersion !== 2 || status.state !== "running" || status.timedOut || !status.timeoutAt) return {
+		content: [{ type: "text", text: "No live run with an extendable timeout was found. No extension was requested." }], isError: true, details: { mode: "management", results: [] },
+	};
+	try {
+		writeAsyncControlRequest(target.asyncDir, target.asyncId, "extend", undefined, extendMs);
+		return { content: [{ type: "text", text: `Requested ${extendMs}ms more for run ${target.asyncId}. Inspect status for the owner's updated deadline.` }],
+			details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: target.asyncId, canInterrupt: true, canExtend: true }) } };
+	} catch (error) {
+		return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
 	}
 }
 
@@ -823,7 +841,7 @@ function continueQuestionSession(input: Parameters<typeof reviveSavedSubagent>[0
 	const priorExists = prior?.kind === "async"
 		? prior.location.resultPath || (prior.location.asyncDir && fs.existsSync(path.join(prior.location.asyncDir, "status.json")))
 		: Boolean(prior);
-	if (revival && (questionProcessAlive(revival) || priorExists || fs.existsSync(getAsyncConfigPath(revival.runId)) || fs.existsSync(path.join(ASYNC_DIR, revival.runId, RUNNER_ERROR_LOG_FILE)))) {
+	if (revival && (questionProcessAlive(revival) || priorExists || fs.existsSync(getAsyncConfigPath(revival.runId)) || fs.existsSync(path.join(getRunMetadataDir(revival.runId), "launch.json")) || fs.existsSync(path.join(ASYNC_DIR, revival.runId, RUNNER_ERROR_LOG_FILE)))) {
 		throw new Error(`Continuation ${revival.runId} may already have launched. Inspect or continue that run; the original question was not restarted.`);
 	}
 	const message = [input.params.message ?? input.params.task, question.answer ? `Saved supervisor answer:\n${question.answer.message}\n\nOriginal question:\n${question.message}` : undefined].filter(Boolean).join("\n\n");
@@ -891,6 +909,7 @@ export function reviveSavedSubagent(input: {
 	const modelOverride = model && thinking && !splitKnownThinkingSuffix(model).thinkingSuffix ? `${model}:${thinking}` : model;
 	const skill = normalizeSkillInput(input.params.skill);
 	const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
+	if (input.params.cwd !== undefined) requestChildExecutionCwd(target.sessionFile, effectiveCwd);
 	const result = executeAsyncSingle(runId, {
 		agent: selectedAgent,
 		task: buildRevivedAsyncTask(target, followUp, input.params.messageOrigin),
@@ -925,7 +944,7 @@ export function reviveSavedSubagent(input: {
 		projectTrust: savedLaunch?.projectTrust ?? resolveConfiguredChildProjectTrustPolicy(input.deps.config.projectTrust),
 	});
 	const owned = input.deps.state.ownedRuns?.get(runId);
-	if (owned) rememberOwnedRun(input.deps.state, { ...owned, asyncDir: result.details.asyncDir, pid: input.deps.state.asyncJobs.get(runId)?.pid, ...(result.isError ? { error: result.content.map((part) => part.text).join("\n") } : {}) });
+	if (owned) rememberOwnedRun(input.deps.state, { ...owned, asyncDir: result.details.asyncDir, pid: result.details.asyncPid ?? input.deps.state.asyncJobs.get(runId)?.pid, ...(result.isError ? { error: result.content.map((part) => part.text).join("\n") } : {}) });
 	if (result.isError) return result;
 
 	const revivedId = result.details.asyncId ?? runId;

@@ -20,7 +20,7 @@ import { workflowAgentNodes } from "./workflow-graph.ts";
 import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
 import { getRunMetadataDir, listRunQuestions, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionContract, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
-import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type RunSyncOptions, type SingleResult, type SubagentExecutionResult, type SubagentState, type Usage, type WorkflowGraphSnapshot } from "../../shared/types.ts";
+import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type RunSyncOptions, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
 
 export const OWNED_RUN_ENTRY = "subagent-run";
 
@@ -227,7 +227,7 @@ function processAlive(pid: number | undefined): boolean {
 	return Boolean(pid && Number.isSafeInteger(pid) && pid > 0 && questionProcessAlive({ pid }));
 }
 
-function asyncChildResult(child: AsyncResultChild & { usage?: Usage }, task: string) {
+function asyncChildResult(child: AsyncResultChild, task: string) {
 	return {
 		...child, agent: child.agent ?? "unknown", task, exitCode: child.exitCode ?? (child.success ? 0 : 1),
 		finalOutput: child.output, usage: child.usage ?? sumAttemptUsage(child.modelAttempts ?? []),
@@ -337,10 +337,10 @@ export function ownedRunExecutionResult(run: OwnedRun, state: SubagentState, ind
 		return [{ ...result, ...(artifactPaths?.inputPath && artifactPaths.outputPath && artifactPaths.metadataPath
 			? { artifactPaths: { inputPath: artifactPaths.inputPath, outputPath: artifactPaths.outputPath, metadataPath: artifactPaths.metadataPath } } : {}) }];
 	});
-	const text = [index === undefined ? saved?.summary : undefined,
-		...children.map((child) => child.result ? getSingleResultOutput(child.result) || child.result.error : undefined), view.diagnosis].filter(Boolean).join("\n\n");
+	const text = (index === undefined ? saved?.summary : undefined) || [...children.map((child) => child.result ? getSingleResultOutput(child.result) || child.result.error : undefined), view.diagnosis].filter(Boolean).join("\n\n");
+	const failed = index === undefined ? ["failed", "unknown"].includes(view.state) : children.length === 0 || children.some((child) => ["failed", "unknown"].includes(child.state));
 	return { content: [{ type: "text", text: text || `Run ${run.runId}: ${view.state}.` }],
-		isError: index === undefined ? view.state !== "completed" : children.length === 0 || children.some((child) => child.state !== "completed"),
+		...(failed ? { isError: true } : {}),
 		details: { mode: run.mode, runId: run.runId, asyncId: run.runId, asyncDir: location.asyncDir ?? run.asyncDir, results, run: view,
 			...(saved?.outputs ? { outputs: saved.outputs } : {}), ...(saved?.workflowGraph ? { workflowGraph: saved.workflowGraph } : {}) } };
 }

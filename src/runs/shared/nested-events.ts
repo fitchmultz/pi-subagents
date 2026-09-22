@@ -26,6 +26,7 @@ import {
 	SUBAGENT_PARENT_RUN_ID_ENV,
 } from "./pi-args.ts";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import { getRunMetadataDir, readRunJson } from "./supervisor-questions.ts";
 
 export const NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
 const ROUTE_FILE = "route.json";
@@ -164,6 +165,10 @@ export function resolveNestedParentAddressFromEnv(env: NodeJS.ProcessEnv = proce
 export function resolveNestedAsyncDir(rootRunId: string, run: NestedRunSummary): string | undefined {
 	if (!run.asyncDir) return undefined;
 	const resolved = path.resolve(run.asyncDir);
+	if (resolved === getRunMetadataDir(run.id)) {
+		const launch = readRunJson<{ runtimeVersion?: number; nestedRoute?: { rootRunId?: string }; nestedSelf?: { parentRunId?: string } }>(path.join(resolved, "launch.json"));
+		return launch?.runtimeVersion === 2 && launch.nestedRoute?.rootRunId === rootRunId && launch.nestedSelf?.parentRunId === run.parentRunId ? resolved : undefined;
+	}
 	const nestedRoot = path.resolve(TEMP_ROOT_DIR, "nested-subagent-runs", rootRunId, run.id);
 	const relative = path.relative(nestedRoot, resolved);
 	return resolved === nestedRoot || (!relative.startsWith("..") && !path.isAbsolute(relative)) ? resolved : undefined;

@@ -39,6 +39,7 @@ interface SubagentResult {
 	taskIndex?: number;
 	totalTasks?: number;
 	intercomResultDelivered?: boolean;
+	suppressNotification?: boolean;
 }
 
 export default function registerSubagentNotify(pi: ExtensionAPI): void {
@@ -58,7 +59,7 @@ export default function registerSubagentNotify(pi: ExtensionAPI): void {
 
 	const handleComplete = (data: unknown) => {
 		const result = data as SubagentResult;
-		if (result.intercomResultDelivered === true) return;
+		if (result.intercomResultDelivered === true || result.suppressNotification === true) return;
 		const now = Date.now();
 		const key = buildCompletionKey(result, "notify");
 		if (markSeenWithTtl(seen, key, now, ttlMs)) return;

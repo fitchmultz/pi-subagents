@@ -71,7 +71,7 @@ function shouldFallBackToPolling(error: unknown): boolean {
 
 export function createResultWatcher(
 	pi: { events: IntercomEventBus },
-	state: SubagentState & { waitingRuns?: Pick<Set<string>, "has">; isRunResultConsumed?: (runId: string) => boolean },
+	state: SubagentState,
 	resultsDir: string,
 	completionTtlMs: number,
 	deps: ResultWatcherDeps = {},

@@ -32,18 +32,16 @@ import {
 	type ResolvedControlConfig,
 	type SavedLaunchConfig,
 	type SubagentRunMode,
-	ASYNC_DIR,
 	DEFAULT_MAX_OUTPUT,
 	RESULTS_DIR,
 	RUNNER_ERROR_LOG_FILE,
 	SUBAGENT_ASYNC_STARTED_EVENT,
-	TEMP_ROOT_DIR,
-	getAsyncConfigPath,
 	resolveChildMaxSubagentDepth,
 } from "../../shared/types.ts";
 import { nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
 import { formatRunAction } from "../../shared/status-format.ts";
 import { ensureTempRoot } from "../../shared/temp-root.ts";
+import { getRunMetadataDir } from "../shared/supervisor-questions.ts";
 
 const piPackageRoot = resolvePiPackageRoot();
 
@@ -95,6 +93,7 @@ interface AsyncExecutionContext {
 }
 
 interface AsyncChainParams {
+	timeoutMs?: number;
 	chain: ChainStep[];
 	task?: string;
 	resultMode?: Exclude<SubagentRunMode, "single">;
@@ -121,6 +120,7 @@ interface AsyncChainParams {
 }
 
 interface AsyncSingleParams {
+	timeoutMs?: number;
 	agent: string;
 	task?: string;
 	agentConfig: AgentConfig;
@@ -185,7 +185,7 @@ export function formatAsyncStartedMessage(headline: string, childSafe = process.
 /**
  * Spawn the async runner process
  */
-function spawnRunner(cfg: object, suffix: string, cwd: string, asyncDir: string): { pid?: number; error?: string } {
+function spawnRunner(cfg: object, cwd: string, asyncDir: string): { pid?: number; error?: string } {
 	try {
 		const cwdStats = fs.statSync(cwd);
 		if (!cwdStats.isDirectory()) {
@@ -196,8 +196,8 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, asyncDir: string)
 	}
 
 	ensureTempRoot();
-	const cfgPath = getAsyncConfigPath(suffix);
-	fs.writeFileSync(cfgPath, JSON.stringify(cfg), { mode: 0o600 });
+	const cfgPath = path.join(asyncDir, "launch.json");
+	fs.writeFileSync(cfgPath, JSON.stringify({ ...cfg, runtimeVersion: 2 }), { mode: 0o600, flag: "wx" });
 	const runnerDir = path.dirname(fileURLToPath(import.meta.url));
 	const moduleExtension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
 	const launcher = path.join(runnerDir, `subagent-runner-launcher${moduleExtension}`);
@@ -302,9 +302,7 @@ export function executeAsyncChain(
 
 	const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
 	const nestedAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
-	const asyncDir = inheritedNestedRoute
-		? path.join(TEMP_ROOT_DIR, "nested-subagent-runs", inheritedNestedRoute.rootRunId, id)
-		: path.join(ASYNC_DIR, id);
+	const asyncDir = getRunMetadataDir(id);
 	try {
 		fs.mkdirSync(asyncDir, { recursive: true });
 	} catch (error) {
@@ -505,6 +503,7 @@ export function executeAsyncChain(
 				cwd: runnerCwd,
 				placeholder: "{previous}",
 				maxOutput,
+				timeoutMs: params.timeoutMs,
 				artifactsDir,
 				share: shareEnabled,
 				sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
@@ -529,7 +528,6 @@ export function executeAsyncChain(
 				} : undefined,
 				projectTrust: params.projectTrust,
 			},
-			id,
 			runnerCwd,
 			asyncDir,
 		);
@@ -633,7 +631,7 @@ export function executeAsyncChain(
 
 	return {
 		content: [{ type: "text", text: formatAsyncStartedMessage(`Async ${resultMode}: ${chainDesc} [${id}]`) }],
-		details: { mode: resultMode, runId: id, results: [], asyncId: id, asyncDir, workflowGraph },
+		details: { mode: resultMode, runId: id, results: [], asyncId: id, asyncDir, asyncPid: spawnResult.pid, workflowGraph },
 	};
 }
 
@@ -679,9 +677,7 @@ export function executeAsyncSingle(
 
 	const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
 	const nestedAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
-	const asyncDir = inheritedNestedRoute
-		? path.join(TEMP_ROOT_DIR, "nested-subagent-runs", inheritedNestedRoute.rootRunId, id)
-		: path.join(ASYNC_DIR, id);
+	const asyncDir = getRunMetadataDir(id);
 	try {
 		fs.mkdirSync(asyncDir, { recursive: true });
 	} catch (error) {
@@ -758,6 +754,7 @@ export function executeAsyncSingle(
 				cwd: runnerCwd,
 				placeholder: "{previous}",
 				maxOutput,
+				timeoutMs: params.timeoutMs,
 				artifactsDir,
 				share: shareEnabled,
 				sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
@@ -780,7 +777,6 @@ export function executeAsyncSingle(
 				} : undefined,
 				projectTrust: params.projectTrust,
 			},
-			id,
 			runnerCwd,
 			asyncDir,
 		);
@@ -842,6 +838,6 @@ export function executeAsyncSingle(
 
 	return {
 		content: [{ type: "text", text: formatAsyncStartedMessage(`Async: ${agent} [${id}]`) }],
-		details: { mode: "single", runId: id, results: [], asyncId: id, asyncDir },
+		details: { mode: "single", runId: id, results: [], asyncId: id, asyncDir, asyncPid: spawnResult.pid },
 	};
 }

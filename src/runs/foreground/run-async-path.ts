@@ -43,7 +43,6 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 		sessionFileForAgentIndex,
 		artifactsEnabled,
 		artifactsDir,
-		effectiveAsync,
 		controlConfig,
 		intercomBridge,
 		nestedRoute,
@@ -51,7 +50,6 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 	const hasChain = (params.chain?.length ?? 0) > 0;
 	const hasTasks = (params.tasks?.length ?? 0) > 0;
 	const hasSingle = !hasChain && !hasTasks && Boolean(params.agent);
-	if (!effectiveAsync) return null;
 
 	if (hasChain && params.chain) {
 		const chainWorktreeTaskCwdError = buildChainWorktreeTaskCwdError(params.chain as ChainStep[], effectiveCwd);
@@ -146,6 +144,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 			availableModels,
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
+			timeoutMs: data.foregroundTimeoutMs,
 			artifactsDir: artifactsEnabled ? artifactsDir : undefined,
 			shareEnabled,
 			sessionRoot,
@@ -175,6 +174,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 			cwd: effectiveCwd,
 			chainDir: params.chainDir,
 			maxOutput: params.maxOutput,
+			timeoutMs: data.foregroundTimeoutMs,
 			artifactsDir: artifactsEnabled ? artifactsDir : undefined,
 			shareEnabled,
 			sessionRoot,
@@ -221,6 +221,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 			availableModels,
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
+			timeoutMs: data.foregroundTimeoutMs,
 			artifactsDir: artifactsEnabled ? artifactsDir : undefined,
 			shareEnabled,
 			sessionRoot,

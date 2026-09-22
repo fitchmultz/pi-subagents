@@ -46,6 +46,7 @@ import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
 import { loadConfig } from "./config.ts";
 import { registerToolResultAdapter } from "./tool-result.ts";
+import { normalizeEverydayParams } from "./tool-input.ts";
 import {
 	type Details,
 	type SubagentExecutionResult,
@@ -278,6 +279,18 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		},
 	};
 
+	state.isRunResultConsumed = (runId) => {
+		const run = state.ownedRuns?.get(runId);
+		return state.lastUiContext?.sessionManager.getEntries().some((entry) => {
+			const details = entry.type === "message" && entry.message.role === "toolResult"
+				? entry.message.details as Details | undefined
+				: entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE
+					? (entry.details as SlashMessageDetails | undefined)?.result?.details : undefined;
+			return details?.wait?.runId === runId && details.wait.status === "completed"
+				&& (details.wait.index === undefined || (run?.mode === "single" && details.wait.index === 0));
+		}) ?? false;
+	};
+
 	const { startResultWatcher, primeExistingResults, stopResultWatcher, holdCheckpoint } = createResultWatcher(
 		pi,
 		state,
@@ -434,12 +447,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		label: "Delegate",
 		description: "Delegate one bounded task to a configured agent. Discover profiles with agent_runs({action:'profiles'}). Background by default; completion arrives automatically. Use worktree for an isolated writer, acceptance for explicit requirements, and fresh context for independent review. Advanced workflows and definition management remain behind load_subagent.",
 		parameters: DelegateParams,
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		async execute(id, params, signal, onUpdate, ctx) {
 			const { worktree, context, async: background, ...task } = params;
 			const request = worktree
 				? { tasks: [task], worktree: true, context, async: background, cwd: task.cwd }
 				: { ...task, context, async: background };
-			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(request), signal, onUpdate, ctx));
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(normalizeEverydayParams(request)), signal, onUpdate, ctx));
 		},
 		renderResult: renderSubagentResult,
 	});
@@ -449,9 +463,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		label: "Agent Runs",
 		description: "List your delegated runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; async:false waits for its actual result. Overrides apply only to a new continuation, never to live acceptance. profiles lists agents. Results arrive automatically; history survives reload.",
 		parameters: AgentRunsParams,
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		async execute(id, params, signal, onUpdate, ctx) {
 			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list", questions: "questions", answer: "answer", review: "review" };
-			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike({ ...params, action: actions[params.action] }), signal, onUpdate, ctx));
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike({ ...normalizeEverydayParams(params, true), action: actions[params.action] }), signal, onUpdate, ctx));
 		},
 		renderResult: renderSubagentResult,
 	});
@@ -578,10 +593,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}),
 		pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (data) => {
 			handleComplete(data);
-			const result = data as import("../shared/types.ts").AsyncResultFile & { intercomResultDelivered?: boolean };
+			const result = data as import("../shared/types.ts").AsyncResultFile & { intercomResultDelivered?: boolean; suppressNotification?: boolean };
+			if (result.suppressNotification === true) return;
 			const run = state.ownedRuns?.get(result.runId ?? result.id ?? "");
 			if (!run || result.sessionId !== state.currentSessionId) return;
-			if (!fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))) saveAsyncRunResult(run.runId, result);
+			if (result.runtimeVersion !== 2 && !fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))) saveAsyncRunResult(run.runId, result);
 			rememberOwnedRun(state, { ...run, delivery: { notifiedAt: Date.now(), intercomDelivered: result.intercomResultDelivered === true } });
 		}),
 		pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler),
