@@ -4,7 +4,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message, Usage as NativeUsage } from "@earendil-works/pi-ai";
 import type { FSWatcher } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -80,7 +80,16 @@ interface TruncationResult {
 	artifactPath?: string;
 }
 
+export interface UsageContribution {
+	id: string;
+	/** Native tool and summary usage may not carry model attribution. */
+	provider?: string;
+	model?: string;
+	usage: NativeUsage;
+}
+
 export interface Usage {
+	contributions?: UsageContribution[];
 	input: number;
 	output: number;
 	cacheRead: number;

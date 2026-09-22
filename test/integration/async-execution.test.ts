@@ -802,7 +802,7 @@ describe("async execution utilities", () => {
 			"```",
 		].join("\n");
 		mockPi.onCall({ output: report });
-		mockPi.onCall({ output: report });
+		mockPi.onCall({ output: `Completed the file and verified its content.\n${report}` });
 		const id = `itest-ae-${process.pid}-acceptance-guard-${Date.now().toString(36)}`;
 		executeAsyncSingle(id, {
 			agent: "worker",
@@ -822,7 +822,7 @@ describe("async execution utilities", () => {
 
 		assert.equal(result.success, true);
 		assert.equal(result.results[0]?.error, undefined);
-		assert.equal(result.results[0]?.output, "");
+		assert.equal(result.results[0]?.output, "Completed the file and verified its content.");
 		assert.equal(result.results[0]?.acceptance?.status, "checked");
 		assert.equal(result.results[0]?.acceptance?.finalization?.status, "completed");
 		assert.equal(mockPi.callCount(), 2);

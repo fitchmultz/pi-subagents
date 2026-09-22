@@ -2,8 +2,7 @@
  * Core execution logic for running subagents
  */
 
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, unlinkSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
@@ -26,7 +25,6 @@ import {
 	INTERCOM_DETACH_REQUEST_EVENT,
 	INTERCOM_DETACH_RESPONSE_EVENT,
 	truncateOutput,
-	getSubagentDepthEnv,
 } from "../../shared/types.ts";
 import {
 	DEFAULT_CONTROL_CONFIG,
@@ -41,26 +39,19 @@ import {
 	detectSubagentError,
 	extractToolArgsPreview,
 	extractTextFromContent,
-	formatResourceLimitExceeded,
 	compactForegroundResult,
 } from "../../shared/utils.ts";
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { hasCompletedMutationToolCall, resolveCompletionPolicy, type CompletionPolicy } from "../shared/completion-guard.ts";
-import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
-import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
+import { buildChildInvocation, runChildAttempt, type ChildAttemptControl } from "../shared/child-attempt.ts";
 import { pendingSupervisorQuestion, refreshQuestionLaunch, saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { updateStreamingText } from "../shared/streaming-text.ts";
 import { saveForegroundLaunch } from "../shared/run-records.ts";
-import { providerQualifiedModelId, resolveEffectiveThinking } from "../../shared/model-info.ts";
-import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
+import { resolveEffectiveThinking } from "../../shared/model-info.ts";
+import { applyThinkingSuffix, cleanupTempDir } from "../shared/pi-args.ts";
 import {
-	appendClaudeCodeMessage,
-	buildClaudeCodeInvocation,
-	claudeCodeMessageFromResult,
 	isClaudeCodeModel,
-	writeClaudeCodeSessionMetadata,
 	type ClaudeCodeInvocation,
-	type ClaudeCodeResultEvent,
 } from "../shared/claude-code.ts";
 import { readStructuredOutput, type StructuredOutputRuntime } from "../shared/structured-output.ts";
 import { captureSingleOutputSnapshot, cleanupSingleOutputFile, formatConsumedOutputReference, formatSavedOutputReference, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
@@ -71,18 +62,12 @@ import {
 } from "../shared/model-fallback.ts";
 import {
 	createMutatingFailureState,
-	createMutationCompletionTracker,
 	recordMutatingFailure,
 	resetMutatingFailureState,
 	resolveCurrentPath,
 	shouldEscalateMutatingFailures,
 	summarizeRecentMutatingFailures,
 } from "../shared/mutating-tool-guard.ts";
-import {
-	createRepeatedSubagentCallGuardState,
-	recordToolEndForSubagentLoopGuard,
-	recordToolStartForSubagentLoopGuard,
-} from "../shared/subagent-tool-loop-guard.ts";
 import {
 	evaluateRunAcceptance,
 	createFinalizationReportRuntime,
@@ -217,7 +202,7 @@ function snapshotResult(result: SingleResult, progress: AgentProgress): SingleRe
 	return {
 		...result,
 		messages: result.outputMode === "file-only" && result.savedOutputPath ? undefined : result.messages ? [...result.messages] : undefined,
-		usage: { ...result.usage },
+		usage: { ...result.usage, contributions: result.usage.contributions?.slice() },
 		skills: result.skills ? [...result.skills] : undefined,
 		attemptedModels: result.attemptedModels ? [...result.attemptedModels] : undefined,
 		modelAttempts: result.modelAttempts
@@ -269,58 +254,23 @@ async function runSingleAttempt(
 	let tempDir: string | undefined;
 	let claudeCodeInvocation: ClaudeCodeInvocation | undefined;
 	try {
-		if (modelArg && isClaudeCodeModel(modelArg)) {
-			claudeCodeInvocation = buildClaudeCodeInvocation({
-				model: modelArg,
-				task,
-				systemPrompt: shared.systemPrompt,
-				systemPromptMode: agent.systemPromptMode,
-				sessionFile: options.sessionFile,
-				sessionName: options.intercomSessionName,
-				tools: agent.tools,
-				mcpDirectTools: agent.mcpDirectTools,
-				allowSubagents: agent.allowSubagents,
-				inheritProjectContext: agent.inheritProjectContext,
-				inheritSkills: agent.inheritSkills,
-				outputSchema: options.structuredOutput?.schema,
-			});
-			args = claudeCodeInvocation.args;
-			sharedEnv = claudeCodeInvocation.env;
-		} else {
-			const built = buildPiArgs({
-				baseArgs: ["--mode", "json", "-p"],
-				task,
-				sessionEnabled: shared.sessionEnabled,
-				sessionDir: options.sessionDir,
-				sessionFile: options.sessionFile,
-				model,
-				thinking: agent.thinking,
-				systemPromptMode: agent.systemPromptMode,
-				inheritProjectContext: agent.inheritProjectContext,
-				inheritSkills: agent.inheritSkills,
-				tools: agent.tools,
-				allowSubagents: agent.allowSubagents,
-				extensions: agent.extensions,
-				systemPrompt: shared.systemPrompt,
-				mcpDirectTools: agent.mcpDirectTools,
-				cwd: options.cwd ?? runtimeCwd,
-				intercomSessionName: options.intercomSessionName,
-				orchestratorIntercomTarget: options.orchestratorIntercomTarget,
-				rootSessionId: options.rootSessionId,
-				runId: options.runId,
-				childAgentName: agent.name,
-				childIndex: options.index ?? 0,
-				parentEventSink: options.nestedRoute?.eventSink,
-				parentControlInbox: options.nestedRoute?.controlInbox,
-				parentRootRunId: options.nestedRoute?.rootRunId,
-				parentCapabilityToken: options.nestedRoute?.capabilityToken,
-				structuredOutput: shared.reportRuntime ?? options.structuredOutput,
-				projectTrust: options.projectTrust,
-			});
-			args = built.args;
-			sharedEnv = built.env;
-			tempDir = built.tempDir;
-		}
+		const built = buildChildInvocation({
+			task, sessionEnabled: shared.sessionEnabled, sessionDir: options.sessionDir, sessionFile: options.sessionFile,
+			model, thinking: agent.thinking, systemPromptMode: agent.systemPromptMode,
+			inheritProjectContext: agent.inheritProjectContext, inheritSkills: agent.inheritSkills,
+			tools: agent.tools, allowSubagents: agent.allowSubagents, extensions: agent.extensions,
+			systemPrompt: shared.systemPrompt, mcpDirectTools: agent.mcpDirectTools,
+			cwd: options.cwd ?? runtimeCwd, intercomSessionName: options.intercomSessionName,
+			orchestratorIntercomTarget: options.orchestratorIntercomTarget, rootSessionId: options.rootSessionId,
+			runId: options.runId, childAgentName: agent.name, childIndex: options.index ?? 0,
+			parentEventSink: options.nestedRoute?.eventSink, parentControlInbox: options.nestedRoute?.controlInbox,
+			parentRootRunId: options.nestedRoute?.rootRunId, parentCapabilityToken: options.nestedRoute?.capabilityToken,
+			structuredOutput: shared.reportRuntime ?? options.structuredOutput, projectTrust: options.projectTrust,
+		});
+		args = built.args;
+		sharedEnv = built.env;
+		tempDir = built.tempDir;
+		claudeCodeInvocation = built.claudeCodeInvocation;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return {
@@ -388,474 +338,180 @@ async function runSingleAttempt(
 		lastActivityAt: startTime,
 	};
 	result.progress = progress;
-	const spawnEnv = { ...process.env, ...sharedEnv, ...getSubagentDepthEnv(options.maxSubagentDepth) };
 	let observedCompletedMutation = false;
-
-	const exitCode = await new Promise<number>((resolve) => {
-		const spawnSpec = claudeCodeInvocation
-			? { command: claudeCodeInvocation.command, args: claudeCodeInvocation.args }
-			: getPiSpawnCommand(args);
-		const proc = spawn(spawnSpec.command, spawnSpec.args, {
-			cwd: options.cwd ?? runtimeCwd,
-			env: spawnEnv,
-			stdio: ["ignore", "pipe", "pipe"],
-			detached: true,
+	let processClosed = false;
+	let detached = false;
+	let control: ChildAttemptControl | undefined;
+	let timeoutTimer: NodeJS.Timeout | undefined;
+	let activityTimer: NodeJS.Timeout | undefined;
+	const blockingIntercomCalls = new Set<string>();
+	const mutatingFailures = createMutatingFailureState();
+	const mutatingFailureWindowMs = 5 * 60_000;
+	const fireUpdate = () => {
+		if (!options.onUpdate || processClosed) return;
+		progress.durationMs = Date.now() - startTime;
+		const progressSnapshot = snapshotProgress(progress);
+		const controlEvents = pendingControlEvents.length ? pendingControlEvents : undefined;
+		pendingControlEvents = [];
+		options.onUpdate({
+			content: [{ type: "text", text: getFinalOutput(result.messages ?? []) || "(running...)" }],
+			details: { mode: "single", results: [snapshotResult(result, progressSnapshot)], progress: [progressSnapshot], controlEvents },
 		});
-		if (proc.pid && options.runId) saveQuestionContract(options.runId, options.index ?? 0, { pid: proc.pid, sessionFile: options.sessionFile, updatedAt: Date.now(),
-			modelSelection: { model: progress.model, thinking: progress.thinking, modelStartedAt: startTime } });
-		let buf = "";
-		let processClosed = false;
-		let settled = false;
-		let detached = false;
-		const blockingIntercomCalls = new Set<string>();
-		const lifecycle = attachChildProcessLifecycle(proc);
-		let assistantError: string | undefined;
-		let timedOut = false;
-		let resourceLimited = false;
-		let timeoutTimer: NodeJS.Timeout | undefined;
-		let resourceLimitTimer: NodeJS.Timeout | undefined;
-		let removeAbortListener: (() => void) | undefined;
-		let removeInterruptListener: (() => void) | undefined;
-		let activityTimer: NodeJS.Timeout | undefined;
-		let unsubscribeIntercomDetach: (() => void) | undefined;
-
-		const detachForIntercom = () => {
-			detached = true;
-			unsubscribeIntercomDetach?.();
-			options.onIntercomDetach?.({
-				...snapshotResult(result, { ...snapshotProgress(progress), status: "detached" }),
-				detached: true,
-				detachedReason: "intercom coordination",
-				sessionFile: options.sessionFile,
-				finalOutput: "Detached for intercom coordination.",
-				progressSummary: { toolCount: progress.toolCount, tokens: progress.tokens, durationMs: Date.now() - startTime },
-			});
-		};
-
-		let cleanTerminalAssistantStopReceived = false;
-
-		unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
-			if (!options.allowIntercomDetach || detached || processClosed || lifecycle.stopping) return;
-			if (!payload || typeof payload !== "object") return;
-			if ((payload as { reason?: unknown }).reason === "attention" || blockingIntercomCalls.size === 0) return;
-			const requestId = (payload as { requestId?: unknown }).requestId;
-			if (typeof requestId !== "string" || requestId.length === 0) return;
-			options.intercomEvents?.emit(INTERCOM_DETACH_RESPONSE_EVENT, { requestId, accepted: true });
-			detachForIntercom();
+	};
+	const emitNeedsAttention = (now: number, input: { message?: string; reason?: ControlEvent["reason"]; recentFailureSummary?: string; currentTool?: string; currentPath?: string; currentToolDurationMs?: number } = {}): boolean => {
+		if (!controlConfig.enabled) return false;
+		const previous = progress.activityState;
+		progress.activityState = "needs_attention";
+		emitControlEvent(buildControlEvent({
+			type: "needs_attention", from: previous, to: "needs_attention", runId: options.runId, agent: agent.name, index: options.index,
+			ts: now, lastActivityAt: progress.lastActivityAt, message: input.message, reason: input.reason ?? "idle",
+			turns: result.usage.turns, tokens: progress.tokens, toolCount: progress.toolCount,
+			currentTool: input.currentTool ?? progress.currentTool,
+			currentToolDurationMs: input.currentToolDurationMs ?? (progress.currentToolStartedAt !== undefined ? Math.max(0, now - progress.currentToolStartedAt) : undefined),
+			currentPath: input.currentPath ?? progress.currentPath, recentFailureSummary: input.recentFailureSummary,
+			supervisorQuestion: input.reason === undefined || input.reason === "idle"
+				? pendingSupervisorQuestion({ runId: options.runId, agent: agent.name, index: options.index ?? 0, sessionFile: options.sessionFile, pid: control?.pid }) : undefined,
+		}));
+		return previous !== "needs_attention";
+	};
+	const updateActivityState = (now: number): boolean => {
+		if (!controlConfig.enabled) return false;
+		const idleState = deriveActivityState({ config: controlConfig, startedAt: startTime, lastActivityAt: progress.lastActivityAt, now });
+		if (idleState === "needs_attention" && progress.activityState !== "needs_attention") return emitNeedsAttention(now);
+		if (idleState !== "needs_attention" && progress.activityState === "needs_attention") {
+			progress.activityState = undefined;
+			emittedControlEventKeys.clear();
+			return true;
+		}
+		return false;
+	};
+	const unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
+		if (!options.allowIntercomDetach || detached || processClosed || !control || control.stopping) return;
+		if (!payload || typeof payload !== "object" || (payload as { reason?: unknown }).reason === "attention" || blockingIntercomCalls.size === 0) return;
+		const requestId = (payload as { requestId?: unknown }).requestId;
+		if (typeof requestId !== "string" || !requestId) return;
+		options.intercomEvents?.emit(INTERCOM_DETACH_RESPONSE_EVENT, { requestId, accepted: true });
+		detached = true;
+		options.onIntercomDetach?.({
+			...snapshotResult(result, { ...snapshotProgress(progress), status: "detached" }),
+			detached: true, detachedReason: "intercom coordination", sessionFile: options.sessionFile,
+			finalOutput: "Detached for intercom coordination.",
+			progressSummary: { toolCount: progress.toolCount, tokens: progress.tokens, durationMs: Date.now() - startTime },
 		});
-
-		const finish = (code: number) => {
-			if (settled) return;
-			settled = true;
-			if (timeoutTimer) {
-				clearTimeout(timeoutTimer);
-				timeoutTimer = undefined;
-			}
-			if (resourceLimitTimer) {
-				clearTimeout(resourceLimitTimer);
-				resourceLimitTimer = undefined;
-			}
-			if (activityTimer) {
-				clearInterval(activityTimer);
-				activityTimer = undefined;
-			}
-			unsubscribeIntercomDetach?.();
-			removeAbortListener?.();
-			removeInterruptListener?.();
-			resolve(code);
-		};
-
-		const drainPendingControlEvents = (): ControlEvent[] | undefined => {
-			if (pendingControlEvents.length === 0) return undefined;
-			const events = pendingControlEvents;
-			pendingControlEvents = [];
-			return events;
-		};
-
-		const mutationTracker = createMutationCompletionTracker();
-		const subagentLoopGuard = createRepeatedSubagentCallGuardState();
-		const mutatingFailures = createMutatingFailureState();
-		const mutatingFailureWindowMs = 5 * 60_000;
-		const currentToolDurationMs = (now: number) => progress.currentToolStartedAt !== undefined ? Math.max(0, now - progress.currentToolStartedAt) : undefined;
-		const emitNeedsAttention = (now: number, input: { message?: string; reason?: ControlEvent["reason"]; recentFailureSummary?: string; currentTool?: string; currentPath?: string; currentToolDurationMs?: number } = {}): boolean => {
-			if (!controlConfig.enabled) return false;
-			const previous = progress.activityState;
-			progress.activityState = "needs_attention";
-			const event = buildControlEvent({
-				type: "needs_attention",
-				from: previous,
-				to: "needs_attention",
-				runId: options.runId,
-				agent: agent.name,
-				index: options.index,
-				ts: now,
-				lastActivityAt: progress.lastActivityAt,
-				message: input.message,
-				reason: input.reason ?? "idle",
-				turns: result.usage.turns,
-				tokens: progress.tokens,
-				toolCount: progress.toolCount,
-				currentTool: input.currentTool ?? progress.currentTool,
-				currentToolDurationMs: input.currentToolDurationMs ?? currentToolDurationMs(now),
-				currentPath: input.currentPath ?? progress.currentPath,
-				recentFailureSummary: input.recentFailureSummary,
-				supervisorQuestion: input.reason === undefined || input.reason === "idle"
-					? pendingSupervisorQuestion({ runId: options.runId, agent: agent.name, index: options.index ?? 0, sessionFile: options.sessionFile, pid: proc.pid }) : undefined,
-			});
-			emitControlEvent(event);
-			return previous !== "needs_attention";
-		};
-		const updateActivityState = (now: number): boolean => {
-			if (!controlConfig.enabled) return false;
-			const idleState = deriveActivityState({
-				config: controlConfig,
-				startedAt: startTime,
-				lastActivityAt: progress.lastActivityAt,
-				now,
-			});
-			if (idleState === "needs_attention" && progress.activityState !== "needs_attention") return emitNeedsAttention(now);
-			if (idleState !== "needs_attention" && progress.activityState === "needs_attention") {
+	});
+	let timeoutDeadline = options.timeoutAt;
+	const scheduleTimeout = () => {
+		clearTimeout(timeoutTimer);
+		if (timeoutDeadline === undefined) return;
+		const expire = () => control?.stop({ error: formatForegroundTimeoutMessage(options.timeoutMs), timedOut: true });
+		if (timeoutDeadline <= Date.now()) expire();
+		else { timeoutTimer = setTimeout(expire, timeoutDeadline - Date.now()); timeoutTimer.unref(); }
+	};
+	options.registerTimeoutExtension?.((additionalMs) => {
+		if (!Number.isFinite(additionalMs) || additionalMs <= 0) return { ok: false, message: "additionalMs must be a positive number." };
+		if (timeoutDeadline === undefined) return { ok: false, message: "This foreground run does not have a timeout to extend." };
+		if (processClosed || detached) return { ok: false, message: "This foreground run is no longer active." };
+		if (result.timedOut) return { ok: false, message: "This foreground run has already timed out; use action='resume' with a follow-up message." };
+		timeoutDeadline = Math.max(timeoutDeadline, Date.now()) + additionalMs;
+		scheduleTimeout();
+		return { ok: true, timeoutAt: timeoutDeadline, message: `Extended timeout until ${new Date(timeoutDeadline).toISOString()}.` };
+	});
+	if (controlConfig.enabled) {
+		activityTimer = setInterval(() => { if (updateActivityState(Date.now())) fireUpdate(); }, 1000);
+		activityTimer.unref();
+	}
+	fireUpdate();
+	try {
+		const attempt = await runChildAttempt({
+			args, cwd: options.cwd ?? runtimeCwd, env: sharedEnv, agent: agent.name, model: modelArg,
+			maxSubagentDepth: options.maxSubagentDepth, maxExecutionTimeMs: options.maxExecutionTimeMs, maxTokens: options.maxTokens,
+			claudeCodeInvocation, sessionFile: options.sessionFile, structuredOutput: options.structuredOutput, reportRuntime: shared.reportRuntime,
+			signal: options.signal, interruptSignal: options.interruptSignal,
+			onStart: (handle, state) => {
+				control = handle;
+				result.messages = state.messages;
+				result.usage = state.usage;
+				if (handle.pid && options.runId) saveQuestionContract(options.runId, options.index ?? 0, { pid: handle.pid, sessionFile: options.sessionFile, updatedAt: Date.now(),
+					modelSelection: { model: progress.model, thinking: progress.thinking, modelStartedAt: startTime } });
+				scheduleTimeout();
+			},
+			onFailure: (state) => {
+				result.error = state.error;
+				result.finalOutput = state.error ?? "Interrupted. Waiting for explicit next action.";
+				result.timedOut = state.timedOut;
+				result.interrupted = state.interrupted;
+				result.resourceLimitExceeded = state.resourceLimitExceeded;
+				result.terminalFailure = state.terminalFailure;
+				progress.status = state.interrupted ? "running" : "failed";
 				progress.activityState = undefined;
-				emittedControlEventKeys.clear();
-				return true;
-			}
-			return false;
-		};
-
-
-		const failForToolLoop = (message: string) => {
-			if (processClosed || settled || timedOut || resourceLimited) return;
-			resourceLimited = true;
-			result.terminalFailure = true;
-			result.error = message;
-			result.finalOutput = message;
-			progress.status = "failed";
-			progress.durationMs = Date.now() - startTime;
-			appendRecentOutput(progress, [message]);
-			progress.activityState = undefined;
-			fireUpdate();
-			lifecycle.terminate();
-		};
-
-		const triggerResourceLimit = (kind: "maxExecutionTimeMs" | "maxTokens", limit: number, observed?: number) => {
-			if (processClosed || settled || timedOut || resourceLimited) return;
-			resourceLimited = true;
-			const message = formatResourceLimitExceeded({ agent: agent.name, kind, limit, observed });
-			result.resourceLimitExceeded = { kind, limit, ...(observed !== undefined ? { observed } : {}), message };
-			result.error = message;
-			result.finalOutput = message;
-			progress.status = "failed";
-			progress.durationMs = Date.now() - startTime;
-			appendRecentOutput(progress, [message]);
-			progress.activityState = undefined;
-			fireUpdate();
-			lifecycle.terminate();
-		};
-
-		const emitUpdateSnapshot = (text: string) => {
-			if (!options.onUpdate || processClosed) return;
-			const progressSnapshot = snapshotProgress(progress);
-			const resultSnapshot = snapshotResult(result, progressSnapshot);
-			const controlEvents = drainPendingControlEvents();
-			options.onUpdate({
-				content: [{ type: "text", text }],
-				details: {
-					mode: "single",
-					results: [resultSnapshot],
-					progress: [progressSnapshot],
-					controlEvents,
-				},
-			});
-		};
-
-		const fireUpdate = () => {
-			if (!options.onUpdate || processClosed) return;
-			progress.durationMs = Date.now() - startTime;
-			emitUpdateSnapshot(getFinalOutput(result.messages ?? []) || "(running...)");
-		};
-
-		// Publish each attempt's selection before its first saved response or streaming event.
-		fireUpdate();
-
-		const processLine = (line: string) => {
-			if (!line.trim()) return;
-			let evt: { type?: string; message?: Message; toolCallId?: string; toolName?: string; args?: unknown; isError?: boolean; assistantMessageEvent?: Parameters<typeof updateStreamingText>[1]["assistantMessageEvent"] };
-			try {
-				evt = JSON.parse(line) as typeof evt;
-			} catch {
-				// Non-JSON stdout lines are expected; only structured events are parsed.
-				return;
-			}
-			if (!evt || typeof evt !== "object") return;
-			lifecycle.observeEvent(claudeCodeInvocation && evt.type === "result" ? "agent_settled" : evt.type);
-			if (evt.type === "agent_settled") blockingIntercomCalls.clear();
-			if (claudeCodeInvocation && evt.type === "result") {
-				const resultEvent = evt as ClaudeCodeResultEvent;
-				if (options.structuredOutput && resultEvent.structured_output !== undefined) {
-					mkdirSync(path.dirname(options.structuredOutput.outputPath), { recursive: true });
-					writeFileSync(options.structuredOutput.outputPath, `${JSON.stringify(resultEvent.structured_output)}\n`, "utf-8");
-				}
-				const message = claudeCodeMessageFromResult(resultEvent, modelArg ?? claudeCodeInvocation.model.inputModel);
-				if (options.sessionFile) {
-					writeClaudeCodeSessionMetadata(options.sessionFile, {
-						sessionId: resultEvent.session_id || claudeCodeInvocation.sessionId,
-						model: claudeCodeInvocation.model.inputModel,
-						cliModel: claudeCodeInvocation.model.cliModel,
-						family: claudeCodeInvocation.model.family,
-						context: claudeCodeInvocation.model.context,
-						updatedAt: Date.now(),
-					});
-					appendClaudeCodeMessage(options.sessionFile, message);
-				}
-				evt = { type: "message_end", message };
-			}
-
-			const now = Date.now();
-			progress.durationMs = now - startTime;
-			progress.lastActivityAt = now;
-			updateActivityState(now);
-
-			const streamingText = updateStreamingText(progress.streamingText, evt);
-			if (streamingText !== progress.streamingText) { progress.streamingText = streamingText; fireUpdate(); }
-
-			if (evt.type === "tool_execution_start") {
-				const loopFailure = recordToolStartForSubagentLoopGuard({
-					state: subagentLoopGuard,
-					toolCallId: evt.toolCallId,
-					toolName: evt.toolName,
-					args: evt.args,
-				});
-				if (loopFailure) {
-					failForToolLoop(loopFailure);
-					return;
-				}
-				const toolArgs = evt.args && typeof evt.args === "object" && !Array.isArray(evt.args)
-					? evt.args as Record<string, unknown>
-					: {};
-				if ((evt.toolName === "intercom" && toolArgs.action === "ask")
-					|| (evt.toolName === "contact_supervisor" && (toolArgs.reason === "need_decision" || toolArgs.reason === "interview_request"))) {
-					blockingIntercomCalls.add(evt.toolCallId ?? evt.toolName);
-				}
-				progress.toolCount++;
-				progress.currentTool = evt.toolName;
-				progress.currentToolArgs = extractToolArgsPreview(toolArgs);
-				progress.currentToolStartedAt = now;
-				progress.currentPath = resolveCurrentPath(evt.toolName, toolArgs);
-				mutationTracker.recordToolStart({ toolName: evt.toolName, args: toolArgs, path: progress.currentPath, startedAt: now });
+				if (state.error) appendRecentOutput(progress, [state.error]);
 				fireUpdate();
-			}
-
-			if (evt.type === "tool_execution_end") {
-				blockingIntercomCalls.delete(evt.toolCallId ?? evt.toolName ?? "");
-				if (progress.currentTool) {
-					progress.recentTools.push({
-						tool: progress.currentTool,
-						args: progress.currentToolArgs || "",
-						endMs: now,
-					});
-				}
-				progress.currentTool = undefined;
-				progress.currentToolArgs = undefined;
-				progress.currentToolStartedAt = undefined;
-				progress.currentPath = undefined;
-				fireUpdate();
-				const loopFailure = recordToolEndForSubagentLoopGuard({
-					state: subagentLoopGuard,
-					toolCallId: evt.toolCallId,
-					toolName: evt.toolName,
-					isError: evt.isError,
-				});
-				if (loopFailure) {
-					failForToolLoop(loopFailure);
-					return;
-				}
-			}
-
-			if (evt.type === "message_end" && evt.message) {
-				(result.messages ??= []).push(evt.message);
-				if (evt.message.role === "assistant") {
-					result.usage.turns++;
-					progress.turnCount = result.usage.turns;
-					const u = evt.message.usage;
-					if (u) {
-						result.usage.input += u.input || 0;
-						result.usage.output += u.output || 0;
-						result.usage.cacheRead += u.cacheRead || 0;
-						result.usage.cacheWrite += u.cacheWrite || 0;
-						result.usage.cost += u.cost?.total || 0;
-						progress.tokens = result.usage.input + result.usage.output;
-						if (options.maxTokens !== undefined && progress.tokens >= options.maxTokens) {
-							triggerResourceLimit("maxTokens", options.maxTokens, progress.tokens);
-						}
-					}
-					if (!result.model) result.model = providerQualifiedModelId(evt.message.provider, evt.message.model);
-					if (evt.message.errorMessage) assistantError = evt.message.errorMessage;
-					const assistantText = extractTextFromContent(evt.message.content);
-					appendRecentOutput(progress, assistantText.split("\n").slice(-10));
-					const stopReason = (evt.message as { stopReason?: string }).stopReason;
-					const hasToolCall = Array.isArray(evt.message.content)
-						&& evt.message.content.some((part) => (part as { type?: string }).type === "toolCall");
-					cleanTerminalAssistantStopReceived = stopReason === "stop" && !hasToolCall && !evt.message.errorMessage;
-					if (cleanTerminalAssistantStopReceived && assistantText.trim()) assistantError = undefined;
-				} else if (evt.message.role === "toolResult") {
-					const resultText = extractTextFromContent(evt.message.content);
-					appendRecentOutput(progress, resultText.split("\n").slice(-10));
-					const toolSnapshot = mutationTracker.recordToolResult(evt.message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown });
-					if (toolSnapshot?.completedMutation) observedCompletedMutation = true;
-					if (toolSnapshot?.mutates && toolSnapshot.errored) {
-						recordMutatingFailure(mutatingFailures, {
-							tool: toolSnapshot.tool,
-							path: toolSnapshot.path,
-							error: resultText.split("\n").find((line) => line.trim())?.trim().slice(0, 180) ?? "mutating tool failed",
-							ts: now,
-						}, mutatingFailureWindowMs);
-						if (shouldEscalateMutatingFailures(mutatingFailures, controlConfig.failedToolAttemptsBeforeAttention)) {
-							emitNeedsAttention(now, {
-								message: `${agent.name} needs attention after repeated mutating tool failures`,
-								reason: "tool_failures",
-								currentTool: toolSnapshot.tool,
-								currentPath: toolSnapshot.path,
-								currentToolDurationMs: toolSnapshot.startedAt ? Math.max(0, now - toolSnapshot.startedAt) : undefined,
-								recentFailureSummary: summarizeRecentMutatingFailures(mutatingFailures),
-							});
-						}
-					} else if (toolSnapshot?.mutates) {
-						resetMutatingFailureState(mutatingFailures);
-					}
-				}
-				updateActivityState(now);
-				fireUpdate();
-			}
-		};
-
-		if (controlConfig.enabled) {
-			activityTimer = setInterval(() => {
-				if (processClosed || settled) return;
+			},
+			onEvent: (event, state, mutation) => {
 				const now = Date.now();
-				if (updateActivityState(now)) {
-					progress.durationMs = now - startTime;
+				progress.lastActivityAt = now;
+				progress.tokens = state.usage.input + state.usage.output;
+				progress.turnCount = state.usage.turns;
+				result.model = state.model;
+				updateActivityState(now);
+				const text = updateStreamingText(progress.streamingText, event);
+				if (text !== progress.streamingText) { progress.streamingText = text; fireUpdate(); }
+				if (event.type === "agent_settled") blockingIntercomCalls.clear();
+				if (event.type === "tool_execution_start") {
+					const args = event.args ?? {};
+					if ((event.toolName === "intercom" && args.action === "ask") || (event.toolName === "contact_supervisor" && (args.reason === "need_decision" || args.reason === "interview_request"))) {
+						blockingIntercomCalls.add(event.toolCallId ?? event.toolName);
+					}
+					progress.toolCount++;
+					progress.currentTool = event.toolName;
+					progress.currentToolArgs = extractToolArgsPreview(args);
+					progress.currentToolStartedAt = now;
+					progress.currentPath = resolveCurrentPath(event.toolName, args);
+					fireUpdate();
+				} else if (event.type === "tool_execution_end") {
+					blockingIntercomCalls.delete(event.toolCallId ?? event.toolName ?? "");
+					if (progress.currentTool) progress.recentTools.push({ tool: progress.currentTool, args: progress.currentToolArgs || "", endMs: now });
+					progress.currentTool = undefined;
+					progress.currentToolArgs = undefined;
+					progress.currentToolStartedAt = undefined;
+					progress.currentPath = undefined;
+					fireUpdate();
+				} else if (event.type === "message_end" && event.message) {
+					const messageText = extractTextFromContent(event.message.content);
+					appendRecentOutput(progress, messageText.split("\n").slice(-10));
+					if (mutation?.mutates && mutation.errored) {
+						recordMutatingFailure(mutatingFailures, { tool: mutation.tool, path: mutation.path,
+							error: messageText.split("\n").find((line) => line.trim())?.trim().slice(0, 180) ?? "mutating tool failed", ts: now }, mutatingFailureWindowMs);
+						if (shouldEscalateMutatingFailures(mutatingFailures, controlConfig.failedToolAttemptsBeforeAttention)) emitNeedsAttention(now, {
+							message: `${agent.name} needs attention after repeated mutating tool failures`, reason: "tool_failures",
+							currentTool: mutation.tool, currentPath: mutation.path,
+							currentToolDurationMs: mutation.startedAt ? Math.max(0, now - mutation.startedAt) : undefined,
+							recentFailureSummary: summarizeRecentMutatingFailures(mutatingFailures),
+						});
+					} else if (mutation?.mutates) resetMutatingFailureState(mutatingFailures);
+					updateActivityState(now);
 					fireUpdate();
 				}
-			}, 1000);
-			activityTimer.unref?.();
-		}
-
-		let stderrBuf = "";
-
-		proc.stdout.on("data", (d) => {
-			buf += d.toString();
-			const lines = buf.split("\n");
-			buf = lines.pop() || "";
-			lines.forEach(processLine);
+			},
 		});
-		proc.stderr.on("data", (d) => {
-			stderrBuf += d.toString();
-		});
-		proc.on("close", (code, signal) => {
-			result.agentProcessExit = lifecycle.agentProcessExit;
-			cleanupTempDir(tempDir);
-			processClosed = true;
-			if (buf.trim()) processLine(buf);
-			const currentReport = shared.reportRuntime && readFinalizationReport(result.messages ?? [], shared.reportRuntime).output;
-			if (currentReport) assistantError = undefined;
-			if (!result.error && assistantError) result.error = assistantError;
-			const forcedDrainAfterFinalSuccess = lifecycle.settledCleanup && (cleanTerminalAssistantStopReceived || currentReport) && !result.error;
-			if (code !== 0 && stderrBuf.trim() && !result.error && !forcedDrainAfterFinalSuccess) {
-				result.error = stderrBuf.trim();
-			}
-			const finalCode = forcedDrainAfterFinalSuccess ? 0 : lifecycle.stopping || signal ? (code ?? 1) : (code ?? 0);
-			finish(finalCode);
-		});
-		proc.on("error", (error) => {
-			cleanupTempDir(tempDir);
-			if (!result.error) {
-				result.error = error instanceof Error ? error.message : String(error);
-			}
-			finish(1);
-		});
-
-		if (options.signal) {
-			const kill = () => {
-				if (processClosed) return;
-				interruptedByControl = false;
-				result.interrupted = false;
-				result.error = "Subagent cancelled.";
-				lifecycle.terminate();
-			};
-			if (options.signal.aborted) kill();
-			else {
-				options.signal.addEventListener("abort", kill, { once: true });
-				removeAbortListener = () => options.signal?.removeEventListener("abort", kill);
-			}
-		}
-
-		let timeoutDeadline = options.timeoutAt;
-		const triggerTimeout = () => {
-			if (processClosed || settled || timedOut || resourceLimited) return;
-			timedOut = true;
-			const message = formatForegroundTimeoutMessage(options.timeoutMs);
-			result.timedOut = true;
-			result.error = message;
-			result.finalOutput = message;
-			progress.status = "failed";
-			progress.durationMs = Date.now() - startTime;
-			appendRecentOutput(progress, [message]);
-			progress.activityState = undefined;
-			fireUpdate();
-			lifecycle.terminate();
-		};
-		const scheduleTimeout = () => {
-			if (timeoutTimer) {
-				clearTimeout(timeoutTimer);
-				timeoutTimer = undefined;
-			}
-			if (timeoutDeadline === undefined) return;
-			const delay = timeoutDeadline - Date.now();
-			if (delay <= 0) triggerTimeout();
-			else {
-				timeoutTimer = setTimeout(triggerTimeout, delay);
-				timeoutTimer.unref?.();
-			}
-		};
-		options.registerTimeoutExtension?.((additionalMs: number) => {
-			if (!Number.isFinite(additionalMs) || additionalMs <= 0) return { ok: false, message: "additionalMs must be a positive number." };
-			if (timeoutDeadline === undefined) return { ok: false, message: "This foreground run does not have a timeout to extend." };
-			if (settled || processClosed || detached) return { ok: false, message: "This foreground run is no longer active." };
-			if (timedOut) return { ok: false, message: "This foreground run has already timed out; use action='resume' with a follow-up message." };
-			timeoutDeadline = Math.max(timeoutDeadline, Date.now()) + additionalMs;
-			scheduleTimeout();
-			return { ok: true, timeoutAt: timeoutDeadline, message: `Extended timeout until ${new Date(timeoutDeadline).toISOString()}.` };
-		});
-		if (timeoutDeadline !== undefined) scheduleTimeout();
-
-		if (options.maxExecutionTimeMs !== undefined) {
-			const maxExecutionTimeMs = options.maxExecutionTimeMs;
-			resourceLimitTimer = setTimeout(() => {
-				triggerResourceLimit("maxExecutionTimeMs", maxExecutionTimeMs);
-			}, maxExecutionTimeMs);
-			resourceLimitTimer.unref?.();
-		}
-
-		if (options.interruptSignal) {
-			const interrupt = () => {
-				if (options.signal?.aborted || processClosed || settled || timedOut || resourceLimited) return;
-				interruptedByControl = true;
-				progress.status = "running";
-				progress.durationMs = Date.now() - startTime;
-				result.interrupted = true;
-				result.finalOutput = "Interrupted. Waiting for explicit next action.";
-				progress.activityState = undefined;
-				fireUpdate();
-				lifecycle.terminate();
-			};
-			if (options.interruptSignal.aborted) interrupt();
-			else {
-				options.interruptSignal.addEventListener("abort", interrupt, { once: true });
-				removeInterruptListener = () => options.interruptSignal?.removeEventListener("abort", interrupt);
-			}
-		}
-	});
-	result.exitCode = exitCode;
+		result.exitCode = attempt.exitCode;
+		result.agentProcessExit = attempt.agentProcessExit;
+		result.messages = attempt.messages;
+		result.usage = attempt.usage;
+		result.error = attempt.error;
+		result.timedOut = attempt.timedOut;
+		result.interrupted = attempt.interrupted;
+		result.resourceLimitExceeded = attempt.resourceLimitExceeded;
+		result.terminalFailure = attempt.terminalFailure;
+		interruptedByControl = attempt.interrupted === true;
+		observedCompletedMutation = attempt.observedCompletedMutation;
+	} finally {
+		processClosed = true;
+		clearTimeout(timeoutTimer);
+		clearInterval(activityTimer);
+		unsubscribeIntercomDetach?.();
+		cleanupTempDir(tempDir);
+	}
 	if (shared.reportRuntime) finalizationReportByResult.set(result, readFinalizationReport(result.messages ?? [], shared.reportRuntime));
 	if (result.resourceLimitExceeded) {
 		result.exitCode = 1;

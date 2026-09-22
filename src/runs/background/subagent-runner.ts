@@ -1,13 +1,11 @@
-import { spawn, spawnSync } from "node:child_process";
-import { addAbortListener } from "node:events";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Message } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { readAsyncControlRequests } from "./async-control.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
-import { PI_CODING_AGENT_PACKAGE, getPiSpawnCommand, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
+import { PI_CODING_AGENT_PACKAGE, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
 import { captureSingleOutputSnapshot, cleanupSingleOutputFile, finalizeSingleOutput, findDuplicateOutputPath, formatConsumedOutputReference, formatSavedOutputReference, injectSingleOutputInstruction, resolveSingleOutput } from "../shared/single-output.ts";
 import {
 	type AcceptanceLedger,
@@ -30,7 +28,6 @@ import {
 	DEFAULT_MAX_OUTPUT,
 	type MaxOutputConfig,
 	truncateOutput,
-	getSubagentDepthEnv,
 } from "../../shared/types.ts";
 import {
 	DEFAULT_CONTROL_CONFIG,
@@ -48,15 +45,10 @@ import {
 	flattenSteps,
 	MAX_PARALLEL_CONCURRENCY,
 } from "../shared/parallel-utils.ts";
-import { buildPiArgs, cleanupTempDir, SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../shared/pi-args.ts";
+import { cleanupTempDir, SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../shared/pi-args.ts";
 import {
-	appendClaudeCodeMessage,
-	buildClaudeCodeInvocation,
-	claudeCodeMessageFromResult,
 	isClaudeCodeModel,
-	writeClaudeCodeSessionMetadata,
 	type ClaudeCodeInvocation,
-	type ClaudeCodeResultEvent,
 } from "../shared/claude-code.ts";
 import { renderChainTask } from "../shared/chain-outputs.ts";
 import { createStructuredOutputRuntime, readStructuredOutput, type StructuredOutputRuntime } from "../shared/structured-output.ts";
@@ -64,26 +56,21 @@ import { DynamicFanoutError, materializeDynamicParallelStep } from "../shared/dy
 import { completeWorkflowStep, runParallelTasks, workflowChildSucceeded, type ParallelStopReason } from "../shared/workflow-policy.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { runModelAttempts, sumAttemptUsage } from "../shared/model-fallback.ts";
-import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
+import { buildChildInvocation, runChildAttempt, type ChildAttemptResult, type ChildEvent, type NativeAttemptSegment } from "../shared/child-attempt.ts";
+import { createNativeFinalization } from "../shared/native-finalization.ts";
 import { updateStreamingText } from "../shared/streaming-text.ts";
 import { pendingSupervisorQuestion, refreshQuestionLaunch, saveAsyncRunResult, saveRunStatus, saveQuestionContract } from "../shared/supervisor-questions.ts";
-import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile, formatResourceLimitExceeded, getFinalOutput } from "../../shared/utils.ts";
+import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile } from "../../shared/utils.ts";
 import { hasCompletedMutationToolCall, resolveCompletionPolicy } from "../shared/completion-guard.ts";
 import {
 	createMutatingFailureState,
-	createMutationCompletionTracker,
+	type MutationToolResult,
 	recordMutatingFailure,
 	resetMutatingFailureState,
 	resolveCurrentPath,
 	shouldEscalateMutatingFailures,
 	summarizeRecentMutatingFailures,
 } from "../shared/mutating-tool-guard.ts";
-import {
-	createRepeatedSubagentCallGuardState,
-	recordToolEndForSubagentLoopGuard,
-	recordToolStartForSubagentLoopGuard,
-} from "../shared/subagent-tool-loop-guard.ts";
-import { parseSessionTokens } from "../../shared/session-tokens.ts";
 import {
 	appendWorktreeSummary,
 	cleanupWorktrees,
@@ -93,7 +80,7 @@ import {
 	formatWorktreeTaskCwdConflict,
 	type WorktreeSetup,
 } from "../shared/worktree.ts";
-import { providerQualifiedModelId, resolveEffectiveThinking } from "../../shared/model-info.ts";
+import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { namespaceParallelOutput, writeInitialProgressFile } from "../../shared/settings.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
@@ -109,6 +96,8 @@ import {
 } from "../shared/acceptance.ts";
 
 interface SubagentRunConfig {
+	runtimeVersion?: 2;
+	timeoutMs?: number;
 	rootSessionId?: string;
 	id: string;
 	steps: RunnerStep[];
@@ -140,6 +129,8 @@ interface SubagentRunConfig {
 }
 
 interface StepResult {
+	usage?: Usage;
+	timedOut?: boolean;
 	agent: string;
 	output: string;
 	error?: string;
@@ -229,48 +220,9 @@ interface ChildEventContext {
 	agent: string;
 }
 
-interface ChildUsage {
-	input?: number;
-	inputTokens?: number;
-	output?: number;
-	outputTokens?: number;
-	cacheRead?: number;
-	cacheWrite?: number;
-	cost?: { total?: number };
-}
-
-type ChildMessage = Message & {
-	model?: string;
-	errorMessage?: string;
-	usage?: ChildUsage;
-};
-
-interface ChildEvent {
-	type?: string;
-	assistantMessageEvent?: Parameters<typeof updateStreamingText>[1]["assistantMessageEvent"];
-	message?: ChildMessage;
-	toolCallId?: string;
-	toolName?: string;
-	args?: Record<string, unknown>;
-	isError?: boolean;
-}
-
-interface RunPiStreamingResult {
-	stderr: string;
-	agentProcessExit?: AgentProcessExit;
-	exitCode: number | null;
-	messages: Message[];
-	usage: Usage;
-	model?: string;
-	error?: string;
-	finalOutput: string;
-	interrupted?: boolean;
-	observedCompletedMutation?: boolean;
-	resourceLimitExceeded?: ResourceLimitExceeded;
-	durationMs?: number;
-}
-
 interface RunSingleStepResult {
+	usage?: Usage;
+	timedOut?: boolean;
 	agent: string;
 	agentProcessExit?: AgentProcessExit;
 	output: string;
@@ -295,281 +247,31 @@ type AsyncParallelStepResult = RunSingleStepResult & {
 	skipped?: boolean;
 };
 
-function runPiStreaming(
-	args: string[],
-	cwd: string,
+async function runPiStreaming(
+	options: Parameters<typeof runChildAttempt>[0],
 	outputFile: string,
-	env?: Record<string, string | undefined>,
-	maxSubagentDepth?: number,
-	childEventContext?: ChildEventContext,
-	interruptSignal?: AbortSignal,
-	onChildEvent?: (event: ChildEvent) => void,
-	maxExecutionTimeMs?: number,
-	maxTokens?: number,
-	claudeCodeInvocation?: ClaudeCodeInvocation,
-	sessionFile?: string,
-	structuredOutput?: StructuredOutputRuntime,
-	signal?: AbortSignal,
-	reportRuntime?: StructuredOutputRuntime,
-): Promise<RunPiStreamingResult> {
-	return new Promise((resolve) => {
-		const startTime = Date.now();
-		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
-		const spawnEnv = { ...process.env, ...(env ?? {}), ...getSubagentDepthEnv(maxSubagentDepth) };
-		const spawnSpec = claudeCodeInvocation
-			? { command: claudeCodeInvocation.command, args: claudeCodeInvocation.args }
-			: getPiSpawnCommand(args);
-		const child = spawn(spawnSpec.command, spawnSpec.args, {
-			cwd,
-			stdio: ["ignore", "pipe", "pipe"],
-			env: spawnEnv,
-			detached: true,
+	context: ChildEventContext,
+): Promise<ChildAttemptResult> {
+	const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
+	const appendEvent = (event: object) => appendJsonl(context.eventsPath, JSON.stringify({
+		...event, subagentSource: "child", subagentRunId: context.runId,
+		subagentStepIndex: context.stepIndex, subagentAgent: context.agent, observedAt: Date.now(),
+	}));
+	try {
+		return await runChildAttempt({
+			...options,
+			onStart: (control, result) => {
+				if (control.pid) saveQuestionContract(context.runId, context.stepIndex, { pid: control.pid, sessionFile: options.sessionFile, updatedAt: Date.now() });
+				options.onStart?.(control, result);
+			},
+			onOutput: (text) => outputStream.write(text),
+			onStderr: (text) => outputStream.write(text),
+			onRawLine: (stream, line) => appendEvent({ type: `subagent.child.${stream}`, line }),
+			onEvent: (event, result, mutation) => { appendEvent(event); options.onEvent?.(event, result, mutation); },
 		});
-		const lifecycle = attachChildProcessLifecycle(child);
-		if (child.pid && childEventContext) saveQuestionContract(childEventContext.runId, childEventContext.stepIndex, { pid: child.pid, sessionFile, updatedAt: Date.now() });
-		let stderr = "";
-		let stdoutBuf = "";
-		let stderrBuf = "";
-		const messages: Message[] = [];
-		const usage = emptyUsage();
-		let model: string | undefined;
-		let error: string | undefined;
-		let assistantError: string | undefined;
-		let interrupted = false;
-		let resourceLimitExceeded: ResourceLimitExceeded | undefined;
-		let observedCompletedMutation = false;
-		const mutationTracker = createMutationCompletionTracker();
-		let resourceLimitTimer: NodeJS.Timeout | undefined;
-		const subagentLoopGuard = createRepeatedSubagentCallGuardState();
-		const rawStdoutLines: string[] = [];
-
-		const writeOutputLine = (line: string) => {
-			if (!line.trim()) return;
-			outputStream.write(`${line}\n`);
-		};
-
-		const writeOutputText = (text: string) => {
-			for (const line of text.split("\n")) {
-				writeOutputLine(line);
-			}
-		};
-
-		const failForToolLoop = (message: string) => {
-			if (settled || resourceLimitExceeded || lifecycle.stopping) return;
-			error = message;
-			writeOutputLine(message);
-			lifecycle.terminate();
-		};
-
-		const triggerResourceLimit = (kind: ResourceLimitExceeded["kind"], limit: number, observed?: number) => {
-			if (settled || resourceLimitExceeded) return;
-			const message = formatResourceLimitExceeded({ agent: childEventContext?.agent ?? "subagent", kind, limit, observed });
-			resourceLimitExceeded = { kind, limit, ...(observed !== undefined ? { observed } : {}), message };
-			error = message;
-			writeOutputLine(message);
-			lifecycle.terminate();
-		};
-
-		const appendChildEvent = (event: object) => {
-			if (!childEventContext) return;
-			appendJsonl(childEventContext.eventsPath, JSON.stringify({
-				...event,
-				subagentSource: "child",
-				subagentRunId: childEventContext.runId,
-				subagentStepIndex: childEventContext.stepIndex,
-				subagentAgent: childEventContext.agent,
-				observedAt: Date.now(),
-			}));
-		};
-
-		const appendChildLine = (type: "subagent.child.stdout" | "subagent.child.stderr", line: string) => {
-			appendChildEvent({ type, line });
-		};
-
-		const processStdoutLine = (line: string) => {
-			if (!line.trim()) return;
-			let event: ChildEvent;
-			try {
-				event = JSON.parse(line) as ChildEvent;
-			} catch {
-				rawStdoutLines.push(line);
-				writeOutputLine(line);
-				appendChildLine("subagent.child.stdout", line);
-				return;
-			}
-			if (!event || typeof event !== "object") return;
-			lifecycle.observeEvent(claudeCodeInvocation && event.type === "result" ? "agent_settled" : event.type);
-			if (claudeCodeInvocation && event.type === "result") {
-				const resultEvent = event as ClaudeCodeResultEvent;
-				if (structuredOutput && resultEvent.structured_output !== undefined) {
-					fs.mkdirSync(path.dirname(structuredOutput.outputPath), { recursive: true });
-					fs.writeFileSync(structuredOutput.outputPath, `${JSON.stringify(resultEvent.structured_output)}\n`, "utf-8");
-				}
-				const message = claudeCodeMessageFromResult(resultEvent, claudeCodeInvocation.model.inputModel);
-				if (sessionFile) {
-					writeClaudeCodeSessionMetadata(sessionFile, {
-						sessionId: resultEvent.session_id || claudeCodeInvocation.sessionId,
-						model: claudeCodeInvocation.model.inputModel,
-						cliModel: claudeCodeInvocation.model.cliModel,
-						family: claudeCodeInvocation.model.family,
-						context: claudeCodeInvocation.model.context,
-						updatedAt: Date.now(),
-					});
-					appendClaudeCodeMessage(sessionFile, message);
-				}
-				event = { type: "message_end", message } as ChildEvent;
-			}
-
-			appendChildEvent(event);
-			onChildEvent?.(event);
-
-			if (event.type === "tool_execution_start" && event.toolName) {
-				const loopFailure = recordToolStartForSubagentLoopGuard({
-					state: subagentLoopGuard,
-					toolCallId: event.toolCallId,
-					toolName: event.toolName,
-					args: event.args,
-				});
-				if (loopFailure) {
-					failForToolLoop(loopFailure);
-					return;
-				}
-				mutationTracker.recordToolStart({ toolName: event.toolName, args: event.args });
-				const toolArgs = extractToolArgsPreview(event.args ?? {});
-				writeOutputLine(toolArgs ? `${event.toolName}: ${toolArgs}` : event.toolName);
-				return;
-			}
-
-			if (event.type === "tool_execution_end") {
-				const loopFailure = recordToolEndForSubagentLoopGuard({
-					state: subagentLoopGuard,
-					toolCallId: event.toolCallId,
-					toolName: event.toolName,
-					isError: event.isError,
-				});
-				if (loopFailure) failForToolLoop(loopFailure);
-				return;
-			}
-
-			if (event.type === "message_end" && event.message) {
-				messages.push(event.message);
-				const text = extractTextFromContent(event.message.content);
-				if (text) writeOutputText(text);
-				if (event.message.role === "toolResult") {
-					const toolSnapshot = mutationTracker.recordToolResult(event.message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown });
-					if (toolSnapshot?.completedMutation) observedCompletedMutation = true;
-					return;
-				}
-
-				if (event.message.role !== "assistant") return;
-				model = providerQualifiedModelId(event.message.provider, event.message.model) ?? model;
-				if (event.message.errorMessage) assistantError = event.message.errorMessage;
-				const eventUsage = event.message.usage;
-				if (eventUsage) {
-					usage.turns++;
-					usage.input += eventUsage.input ?? eventUsage.inputTokens ?? 0;
-					usage.output += eventUsage.output ?? eventUsage.outputTokens ?? 0;
-					usage.cacheRead += eventUsage.cacheRead ?? 0;
-					usage.cacheWrite += eventUsage.cacheWrite ?? 0;
-					usage.cost += eventUsage.cost?.total ?? 0;
-					const observedTokens = usage.input + usage.output;
-					if (maxTokens !== undefined && observedTokens >= maxTokens) {
-						triggerResourceLimit("maxTokens", maxTokens, observedTokens);
-					}
-				}
-				const stopReason = (event.message as { stopReason?: string }).stopReason;
-				const hasToolCall = Array.isArray(event.message.content)
-					&& event.message.content.some((part) => (part as { type?: string }).type === "toolCall");
-				cleanTerminalAssistantStopReceived = stopReason === "stop" && !hasToolCall && !event.message.errorMessage;
-				if (cleanTerminalAssistantStopReceived && text.trim()) assistantError = undefined;
-			}
-		};
-
-		const processStderrText = (text: string) => {
-			stderr += text;
-			stderrBuf += text;
-			outputStream.write(text);
-			if (!childEventContext) return;
-			const lines = stderrBuf.split("\n");
-			stderrBuf = lines.pop() || "";
-			for (const line of lines) {
-				if (!line.trim()) continue;
-				appendChildLine("subagent.child.stderr", line);
-			}
-		};
-
-		let cleanTerminalAssistantStopReceived = false;
-		let settled = false;
-		if (maxExecutionTimeMs !== undefined) {
-			resourceLimitTimer = setTimeout(() => {
-				triggerResourceLimit("maxExecutionTimeMs", maxExecutionTimeMs);
-			}, maxExecutionTimeMs);
-			resourceLimitTimer.unref?.();
-		}
-		child.stdout.on("data", (chunk: Buffer) => {
-			const text = chunk.toString();
-			stdoutBuf += text;
-			const lines = stdoutBuf.split("\n");
-			stdoutBuf = lines.pop() || "";
-			for (const line of lines) processStdoutLine(line);
-		});
-
-		child.stderr.on("data", (chunk: Buffer) => {
-			processStderrText(chunk.toString());
-		});
-		const interruptListener = interruptSignal && addAbortListener(interruptSignal, () => {
-			if (signal?.aborted || settled || resourceLimitExceeded) return;
-			interrupted = true;
-			if (!error) error = "Interrupted. Waiting for explicit next action.";
-			lifecycle.terminate();
-		});
-		const abortListener = signal && addAbortListener(signal, () => {
-			interrupted = false;
-			error = "Subagent cancelled.";
-			lifecycle.terminate();
-		});
-		const cleanup = () => {
-			clearTimeout(resourceLimitTimer);
-			interruptListener?.[Symbol.dispose]();
-			abortListener?.[Symbol.dispose]();
-		};
-		child.on("close", (exitCode, exitSignal) => {
-			settled = true;
-			cleanup();
-			if (stdoutBuf.trim()) processStdoutLine(stdoutBuf);
-			if (stderrBuf.trim()) appendChildLine("subagent.child.stderr", stderrBuf);
-			outputStream.end();
-			const durationMs = Date.now() - startTime;
-			const finalOutput = resourceLimitExceeded?.message ?? (getFinalOutput(messages) || rawStdoutLines.join("\n").trim());
-			const currentReport = reportRuntime && readFinalizationReport(messages, reportRuntime).output;
-			if (currentReport) assistantError = undefined;
-			const finalError = resourceLimitExceeded?.message ?? error ?? assistantError;
-			const forcedDrainAfterFinalSuccess = lifecycle.settledCleanup && (cleanTerminalAssistantStopReceived || currentReport) && !finalError;
-			resolve({
-				stderr,
-				agentProcessExit: lifecycle.agentProcessExit,
-				exitCode: resourceLimitExceeded ? 1 : interrupted || forcedDrainAfterFinalSuccess ? 0 : lifecycle.stopping || exitSignal ? (exitCode ?? 1) : exitCode,
-				messages,
-				usage,
-				model,
-				error: interrupted || forcedDrainAfterFinalSuccess ? undefined : finalError,
-				finalOutput,
-				interrupted,
-				observedCompletedMutation,
-				resourceLimitExceeded,
-				durationMs,
-			});
-		});
-
-		child.on("error", (spawnError) => {
-			settled = true;
-			cleanup();
-			outputStream.end();
-			const finalOutput = resourceLimitExceeded?.message ?? (getFinalOutput(messages) || rawStdoutLines.join("\n").trim());
-			const spawnErrorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
-			resolve({ stderr, exitCode: 1, messages, usage, model, error: resourceLimitExceeded?.message ?? error ?? assistantError ?? spawnErrorMessage, finalOutput, observedCompletedMutation, resourceLimitExceeded, durationMs: Date.now() - startTime });
-		});
-	});
+	} finally {
+		await new Promise<void>((resolve) => outputStream.end(resolve));
+	}
 }
 
 function resolvePiPackageRootFallback(): string {
@@ -680,6 +382,7 @@ function writeRunLog(
 
 /** Context for running a single step */
 interface SingleStepContext {
+	nativeFinalization?: boolean;
 	rootSessionId?: string;
 	cwd: string;
 	sessionEnabled: boolean;
@@ -697,7 +400,7 @@ interface SingleStepContext {
 	nestedRoute?: NestedRouteInfo;
 	projectTrust?: ChildProjectTrustPolicy;
 	onAttemptStart?: (attempt: { model?: string; thinking?: string }) => void;
-	onChildEvent?: (event: ChildEvent) => void;
+	onChildEvent?: (event: ChildEvent, mutation?: MutationToolResult) => void;
 }
 
 /** Run a single pi agent step, returning output and metadata */
@@ -706,6 +409,9 @@ async function runSingleStep(
 	ctx: SingleStepContext,
 ): Promise<RunSingleStepResult> {
 	if (ctx.signal?.aborted) return { agent: step.agent, output: "", exitCode: 1, error: "Subagent cancelled." };
+	if (ctx.nativeFinalization && step.effectiveAcceptance?.explicit && !step.sessionFile) {
+		step = { ...step, sessionFile: path.join(path.dirname(ctx.outputFile), `session-${ctx.flatIndex}.jsonl`) };
+	}
 	saveQuestionContract(ctx.id, ctx.flatIndex, { task: step.task, label: step.label, effectiveAcceptance: step.effectiveAcceptance, output: step.outputPath ?? false, outputMode: step.outputMode, outputSchema: step.structuredOutputSchema ?? step.structuredOutput?.schema, launch: step.launch ? { ...step.launch, cwd: step.cwd ?? ctx.cwd, output: step.outputPath ?? false, outputMode: step.outputMode ?? "inline", outputSchema: step.structuredOutputSchema ?? step.structuredOutput?.schema, model: step.model, thinking: step.thinking } : undefined, sessionFile: step.sessionFile });
 	const interruptController = new AbortController();
 	ctx.registerInterrupt?.(() => interruptController.abort());
@@ -729,7 +435,7 @@ async function runSingleStep(
 		fs.writeFileSync(artifactPaths.inputPath, `# Task for ${step.agent}\n\n${task}`, "utf-8");
 	}
 
-	type StepAttempt = RunPiStreamingResult & {
+	type StepAttempt = ChildAttemptResult & {
 		terminalFailure?: boolean;
 		completionGuardTriggered?: boolean;
 		structuredOutput?: unknown;
@@ -737,11 +443,26 @@ async function runSingleStep(
 		resolvedOutput: ReturnType<typeof resolveSingleOutput>;
 	};
 	const eventsPath = path.join(path.dirname(ctx.outputFile), "events.jsonl");
+	let nativeExecution: ChildAttemptResult | undefined;
+	let nativeSegments: NativeAttemptSegment[] = [];
+	const nativeAttempt = (segment: NativeAttemptSegment): StepAttempt => {
+		const state = segment.execution;
+		const error = state?.error ?? segment.event.submission.error
+			?? (state?.exitCode && !state.interrupted ? formatProcessExitFailure({ agent: step.agent, exitCode: state.exitCode, durationMs: segment.durationMs }) : undefined);
+		return {
+			...nativeExecution!, exitCode: error && !state?.exitCode ? 1 : state?.exitCode ?? 0, error,
+			interrupted: state?.interrupted, timedOut: state?.timedOut, resourceLimitExceeded: state?.resourceLimitExceeded,
+			terminalFailure: Boolean(segment.event.submission.error) || state?.terminalFailure,
+			messages: segment.messages, usage: segment.usage, durationMs: segment.durationMs,
+			finalOutput: segment.event.submission.output, reportSubmission: segment.event.turn > 0 ? segment.event.submission : undefined,
+			resolvedOutput: segment.event.resolvedOutput, finalization: undefined,
+		};
+	};
 	async function runAttempt(prompt: string, model: string | undefined, review?: { turn: number; sessionFile: string; previousOutput: string; reportRuntime?: StructuredOutputRuntime; outputSnapshot?: ReturnType<typeof captureSingleOutputSnapshot> }): Promise<StepAttempt> {
 		if (verificationSignal.aborted) {
 			const outcome = resolveExecutionOutcome({ result: { exitCode: 1 }, signal: ctx.signal, interruptSignal });
-			return { stderr: "", messages: [], usage: emptyUsage(), finalOutput: outcome.error ?? "Interrupted. Waiting for explicit next action.",
-				...outcome, model, terminalFailure: true, resolvedOutput: { fullOutput: "" } };
+			return { stderr: "", messages: [], usage: emptyUsage(), durationMs: 0, observedCompletedMutation: false, finalOutput: outcome.error ?? "Interrupted. Waiting for explicit next action.",
+				...outcome, exitCode: outcome.exitCode ?? 1, model, terminalFailure: true, resolvedOutput: { fullOutput: "" } };
 		}
 		ctx.onAttemptStart?.({ model, thinking: resolveEffectiveThinking(model, step.thinking) });
 		const structuredRuntime = review ? review.reportRuntime : effectiveStructuredOutput;
@@ -756,44 +477,49 @@ async function runSingleStep(
 		let tempDir: string | undefined;
 		let claudeCodeInvocation: ClaudeCodeInvocation | undefined;
 		const sessionFile = review?.sessionFile ?? step.sessionFile;
+		const nativeFinalization = ctx.nativeFinalization && !review && !isClaudeCodeModel(model) && step.effectiveAcceptance?.explicit
+			? createNativeFinalization(step.effectiveAcceptance, structuredRuntime, step.outputPath) : undefined;
 		try {
-			if (model && isClaudeCodeModel(model)) {
-				claudeCodeInvocation = buildClaudeCodeInvocation({ model, task: prompt, systemPrompt: step.systemPrompt ?? undefined,
-					systemPromptMode: step.systemPromptMode, sessionFile, sessionName: ctx.childIntercomTarget,
-					tools: step.tools, mcpDirectTools: step.mcpDirectTools, allowSubagents: step.allowSubagents,
-					inheritProjectContext: step.inheritProjectContext, inheritSkills: step.inheritSkills, outputSchema: structuredRuntime?.schema });
-				args = claudeCodeInvocation.args;
-				env = claudeCodeInvocation.env;
-			} else {
-				const built = buildPiArgs({
-					baseArgs: ["--mode", "json", "-p"], task: prompt, model, thinking: step.thinking,
-					sessionEnabled: review ? true : sessionEnabled, sessionDir: review ? undefined : sessionDir, sessionFile,
-					inheritProjectContext: step.inheritProjectContext, inheritSkills: step.inheritSkills,
-					tools: step.tools, allowSubagents: step.allowSubagents, extensions: step.extensions,
-					systemPrompt: step.systemPrompt, systemPromptMode: step.systemPromptMode, mcpDirectTools: step.mcpDirectTools,
-					cwd: step.cwd ?? ctx.cwd, intercomSessionName: ctx.childIntercomTarget, orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
-					runId: ctx.id, childAgentName: step.agent, childIndex: ctx.flatIndex, rootSessionId: ctx.rootSessionId,
-					parentEventSink: ctx.nestedRoute?.eventSink, parentControlInbox: ctx.nestedRoute?.controlInbox,
-					parentRootRunId: ctx.nestedRoute?.rootRunId, parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
-					structuredOutput: structuredRuntime, projectTrust: ctx.projectTrust,
-				});
-				args = built.args;
-				env = built.env;
-				tempDir = built.tempDir;
-			}
+			const built = buildChildInvocation({
+				task: prompt, model, thinking: step.thinking,
+				sessionEnabled: review ? true : sessionEnabled, sessionDir: review ? undefined : sessionDir, sessionFile,
+				inheritProjectContext: step.inheritProjectContext, inheritSkills: step.inheritSkills,
+				tools: step.tools, allowSubagents: step.allowSubagents, extensions: step.extensions,
+				systemPrompt: step.systemPrompt, systemPromptMode: step.systemPromptMode, mcpDirectTools: step.mcpDirectTools,
+				cwd: step.cwd ?? ctx.cwd, intercomSessionName: ctx.childIntercomTarget, orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
+				runId: ctx.id, childAgentName: step.agent, childIndex: ctx.flatIndex, rootSessionId: ctx.rootSessionId,
+				parentEventSink: ctx.nestedRoute?.eventSink, parentControlInbox: ctx.nestedRoute?.controlInbox,
+				parentRootRunId: ctx.nestedRoute?.rootRunId, parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
+				structuredOutput: structuredRuntime, projectTrust: ctx.projectTrust, nativeFinalization,
+			});
+			args = built.args;
+			env = built.env;
+			tempDir = built.tempDir;
+			claudeCodeInvocation = built.claudeCodeInvocation;
 		} catch (error) {
+			if (nativeFinalization) cleanupTempDir(path.dirname(nativeFinalization.reportRuntime.schemaPath));
 			const message = error instanceof Error ? error.message : String(error);
-			return { stderr: message, exitCode: 1, messages: [], usage: emptyUsage(), model, error: message,
+			return { stderr: message, exitCode: 1, messages: [], usage: emptyUsage(), durationMs: 0, observedCompletedMutation: false, model, error: message,
 				finalOutput: message, terminalFailure: true, resolvedOutput: { fullOutput: message } };
 		}
-		let run: RunPiStreamingResult;
+		let run: ChildAttemptResult;
 		try {
-			run = await runPiStreaming(args, step.cwd ?? ctx.cwd, review ? `${ctx.outputFile}.finalization-${review.turn}.log` : ctx.outputFile,
-				env, step.maxSubagentDepth, { eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
-				interruptSignal, ctx.onChildEvent, step.maxExecutionTimeMs, step.maxTokens, claudeCodeInvocation,
-				sessionFile, structuredRuntime, ctx.signal, review?.reportRuntime);
+			run = await runPiStreaming({ args, cwd: step.cwd ?? ctx.cwd, env, agent: step.agent, model,
+				maxSubagentDepth: step.maxSubagentDepth, maxExecutionTimeMs: step.maxExecutionTimeMs, maxTokens: step.maxTokens,
+				interruptSignal, signal: ctx.signal, claudeCodeInvocation, sessionFile,
+				structuredOutput: structuredRuntime, reportRuntime: review?.reportRuntime, nativeFinalization,
+				onEvent: (event, _result, mutation) => ctx.onChildEvent?.(event, mutation),
+			}, review ? `${ctx.outputFile}.finalization-${review.turn}.log` : ctx.outputFile,
+			{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent });
 		} finally {
 			cleanupTempDir(tempDir);
+			if (nativeFinalization) cleanupTempDir(path.dirname(nativeFinalization.reportRuntime.schemaPath));
+		}
+		const initialSegment = nativeFinalization ? run.finalization?.[0] : undefined;
+		if (initialSegment) {
+			nativeExecution = run;
+			nativeSegments = run.finalization!.slice(1);
+			run = nativeAttempt(initialSegment);
 		}
 		const reportSubmission = review?.reportRuntime ? readFinalizationReport(run.messages, review.reportRuntime) : undefined;
 		const hiddenError = run.exitCode === 0 && !run.error && !reportSubmission?.output ? detectSubagentError(run.messages) : undefined;
@@ -815,7 +541,7 @@ async function runSingleStep(
 		let exitCode = completionGuardTriggered || structuredError ? 1 : hiddenError?.hasError ? hiddenError.exitCode ?? 1 : error && run.exitCode === 0 ? 1 : run.exitCode;
 		const finalOutput = reportSubmission?.output ?? run.finalOutput;
 		const fullOutput = review ? resolveFinalizationOutput(finalOutput, review.previousOutput) : stripAcceptanceReport(finalOutput);
-		const resolvedOutput = step.outputPath && exitCode === 0 && !run.interrupted && !reportSubmission?.reportSubmissionError
+		const resolvedOutput = initialSegment ? initialSegment.event.resolvedOutput : step.outputPath && exitCode === 0 && !run.interrupted && !reportSubmission?.reportSubmissionError
 			? resolveSingleOutput(step.outputPath, fullOutput, outputSnapshot)
 			: { fullOutput };
 		if (resolvedOutput.saveError) {
@@ -830,6 +556,11 @@ async function runSingleStep(
 		candidates: step.modelCandidates?.length ? step.modelCandidates : [step.model], signal: verificationSignal,
 		runAttempt: (model) => runAttempt(task, model),
 	});
+	for (const segment of nativeSegments) {
+		const attempt = nativeAttempt(segment);
+		modelAttempts.push({ model: attempt.model ?? "default", success: attempt.exitCode === 0 && !attempt.error && !attempt.interrupted,
+			exitCode: attempt.exitCode, error: attempt.error, usage: { ...attempt.usage } });
+	}
 	let execution = initial;
 	let resolvedOutput = initial.resolvedOutput;
 	let output = stripAcceptanceReport(resolvedOutput.fullOutput);
@@ -839,16 +570,17 @@ async function runSingleStep(
 	const acceptance = step.effectiveAcceptance ? await evaluateRunAcceptance({
 		acceptance: step.effectiveAcceptance, initial, initialOutput: initial.finalOutput, sessionFile, cwd: step.cwd ?? ctx.cwd, signal: verificationSignal, nativeReport,
 		runTurn: async (prompt, turn, sessionFile) => {
-			const reportRuntime = nativeReport ? createFinalizationReportRuntime() : undefined;
+			const cached = nativeSegments[turn - 1];
+			const reportRuntime = nativeReport && !cached ? createFinalizationReportRuntime() : undefined;
 			let reviewed: StepAttempt;
 			try {
-				reviewed = await runAttempt(prompt, initial.model ?? step.model, { turn, sessionFile, previousOutput: output, reportRuntime,
+				reviewed = cached ? nativeAttempt(cached) : await runAttempt(prompt, initial.model ?? step.model, { turn, sessionFile, previousOutput: output, reportRuntime,
 					outputSnapshot: nativeReport ? resolvedOutput.writtenSnapshot : undefined });
 			} finally {
 				if (reportRuntime) cleanupTempDir(path.dirname(reportRuntime.schemaPath));
 			}
 			execution = reviewed;
-			modelAttempts.push({ model: reviewed.model ?? "default", success: reviewed.exitCode === 0 && !reviewed.error && !reviewed.interrupted,
+			if (!cached) modelAttempts.push({ model: reviewed.model ?? "default", success: reviewed.exitCode === 0 && !reviewed.error && !reviewed.interrupted,
 				exitCode: reviewed.exitCode, error: reviewed.error, usage: { ...reviewed.usage } });
 			if (reviewed.exitCode !== 0 || reviewed.error || reviewed.interrupted) return { ...reviewed.reportSubmission, output: reviewed.finalOutput,
 				error: reviewed.error ?? reviewed.resourceLimitExceeded?.message ?? "Acceptance finalization turn did not complete successfully." };
@@ -889,6 +621,7 @@ async function runSingleStep(
 	refreshQuestionLaunch(ctx.id, ctx.flatIndex, sessionFile);
 	const result: RunSingleStepResult = {
 		agent: step.agent, output: outputForSummary, exitCode: effectiveFinalExitCode, error: outcome.error, agentProcessExit: execution.agentProcessExit,
+		usage, timedOut: outcome.timedOut,
 		sessionFile, intercomTarget: ctx.childIntercomTarget, model: initial.model,
 		attemptedModels: attemptedModels.length ? attemptedModels : undefined, modelAttempts, artifactPaths,
 		interrupted: outcome.interrupted, completionGuardTriggered: initial.completionGuardTriggered,
@@ -1064,7 +797,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	let currentActivityState: ActivityState | undefined;
 	let activityTimer: NodeJS.Timeout | undefined;
 	let controlRequestTimer: NodeJS.Timeout | undefined;
-	let previousCumulativeTokens: TokenUsage = { input: 0, output: 0, total: 0 };
 	let latestSessionFile: string | undefined;
 
 	const parallelGroups: Array<{ start: number; count: number; stepIndex: number }> = [];
@@ -1130,6 +862,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		|| flatSteps.some((step) => Boolean(step.sessionFile));
 	const statusPayload: RunnerStatusPayload = {
 		runId: id,
+		runtimeVersion: config.runtimeVersion,
 		indexedControl: true,
 		controlRequestFiles: true,
 		...(config.sessionId ? { sessionId: config.sessionId } : {}),
@@ -1152,7 +885,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 	fs.mkdirSync(asyncDir, { recursive: true });
 	writeAtomicJson(statusPath, statusPayload);
-	saveRunStatus(id, statusPayload);
+	if (config.runtimeVersion !== 2) saveRunStatus(id, statusPayload);
 	const emitNestedSelfEvent = (type: "subagent.nested.updated" | "subagent.nested.completed"): void => {
 		if (!config.nestedRoute || !config.nestedSelf) return;
 		try {
@@ -1214,7 +947,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		}
 		refreshWorkflowGraph();
 		writeAtomicJson(statusPath, statusPayload);
-		saveRunStatus(id, statusPayload);
+		if (config.runtimeVersion !== 2) saveRunStatus(id, statusPayload);
 		emitNestedSelfEvent(statusPayload.state === "running" || statusPayload.state === "queued" ? "subagent.nested.updated" : "subagent.nested.completed");
 	};
 	const scheduleStatusWrite = (): void => {
@@ -1222,6 +955,23 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		statusWriteTimer = setTimeout(writeStatusPayload, 200);
 		statusWriteTimer.unref?.();
 	};
+	let deadlineTimer: NodeJS.Timeout | undefined;
+	statusPayload.timeoutAt = config.timeoutMs !== undefined ? overallStartTime + config.timeoutMs : undefined;
+	const scheduleDeadline = () => {
+		clearTimeout(deadlineTimer);
+		if (statusPayload.timeoutAt === undefined || cancellation.signal.aborted) return;
+		const expire = () => {
+			statusPayload.timedOut = true;
+			statusPayload.error = `Timed out after ${Date.now() - overallStartTime}ms.`;
+			cancellation.abort(new DOMException(statusPayload.error, "TimeoutError"));
+			writeStatusPayload();
+		};
+		const remaining = statusPayload.timeoutAt - Date.now();
+		if (remaining <= 0) expire();
+		else { deadlineTimer = setTimeout(expire, remaining); deadlineTimer.unref(); }
+	};
+	scheduleDeadline();
+	writeStatusPayload();
 	const markDynamicGraphGroup = (stepIndex: number, status: "completed" | "failed" | "blocked" | "running" | "paused", error?: string, acceptance?: AcceptanceLedger): void => {
 		const groupNode = statusPayload.workflowGraph?.nodes.find((node) => node.id === `step-${stepIndex}`);
 		if (!groupNode) return;
@@ -1230,6 +980,11 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		groupNode.acceptanceStatus = acceptance?.status ?? groupNode.acceptanceStatus;
 	};
 
+	const refreshUsageTotals = () => {
+		statusPayload.totalTokens = statusPayload.steps.reduce((total, step) => ({
+			input: total.input + (step.tokens?.input ?? 0), output: total.output + (step.tokens?.output ?? 0), total: total.total + (step.tokens?.total ?? 0),
+		}), { input: 0, output: 0, total: 0 });
+	};
 	const stepOutputActivityAt = (index: number): number => {
 		const step = statusPayload.steps[index];
 		let lastActivityAt = step?.lastActivityAt ?? step?.startedAt ?? overallStartTime;
@@ -1246,7 +1001,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const childSafeControls = Boolean(config.nestedSelf) || (process.env[SUBAGENT_CHILD_ENV] === "1" && process.env[SUBAGENT_FANOUT_CHILD_ENV] === "1");
 	const emittedControlEventKeys = new Set<string>();
 	const mutatingFailureStates = initialStatusSteps.map(() => createMutatingFailureState());
-	const mutationTrackers = initialStatusSteps.map(() => createMutationCompletionTracker());
 	const mutatingFailureWindowMs = 5 * 60_000;
 	const appendControlEvent = (event: ReturnType<typeof buildControlEvent>) => {
 		if (!controlConfig.enabled) return;
@@ -1288,7 +1042,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		const childKey = config.childIntercomTargets?.[flatIndex] ?? `${config.id}:${flatIndex}`;
 		for (const key of emittedControlEventKeys) if (key.startsWith(`${childKey}:`)) emittedControlEventKeys.delete(key);
 	};
-	const updateStepFromChildEvent = (flatIndex: number, event: ChildEvent): void => {
+	const updateStepFromChildEvent = (flatIndex: number, event: ChildEvent, toolSnapshot?: MutationToolResult): void => {
 		const step = statusPayload.steps[flatIndex];
 		if (!step) return;
 		const now = Date.now();
@@ -1308,7 +1062,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			step.currentToolArgs = extractToolArgsPreview(event.args ?? {});
 			step.currentToolStartedAt = now;
 			step.currentPath = currentPath;
-			mutationTrackers[flatIndex]?.recordToolStart({ toolName: event.toolName, args: event.args, path: currentPath, startedAt: now });
 			statusPayload.toolCount = (statusPayload.toolCount ?? 0) + 1;
 			syncTopLevelCurrentTool();
 		} else if (event.type === "tool_execution_end") {
@@ -1322,7 +1075,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			step.currentPath = undefined;
 			syncTopLevelCurrentTool();
 		} else if (event.type === "message_end" && event.message?.role === "toolResult") {
-			const toolSnapshot = mutationTrackers[flatIndex]?.recordToolResult(event.message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown });
 			const resultText = extractTextFromContent(event.message.content);
 			appendRecentStepOutput(step, resultText.split("\n").slice(-10));
 			if (toolSnapshot?.mutates && toolSnapshot.errored) {
@@ -1364,8 +1116,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			step.turnCount = (step.turnCount ?? 0) + 1;
 			const usage = event.message.usage;
 			if (usage) {
-				const input = usage.input ?? usage.inputTokens ?? 0;
-				const output = usage.output ?? usage.outputTokens ?? 0;
+				const input = usage.input ?? 0;
+				const output = usage.output ?? 0;
 				const previousInput = step.tokens?.input ?? 0;
 				const previousOutput = step.tokens?.output ?? 0;
 				step.tokens = { input: previousInput + input, output: previousOutput + output, total: previousInput + previousOutput + input + output };
@@ -1468,7 +1220,13 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	process.on(ASYNC_INTERRUPT_SIGNAL, interruptRunner);
 	controlRequestTimer = setInterval(() => {
 		for (const request of readAsyncControlRequests(asyncDir, id)) {
-			if (request.action === "cancel") cancellation.abort();
+			if (request.action === "extend") {
+				if (statusPayload.timeoutAt === undefined || cancellation.signal.aborted || interrupted) continue;
+				statusPayload.timeoutAt = Math.max(statusPayload.timeoutAt, Date.now()) + request.extendMs!;
+				scheduleDeadline();
+				writeStatusPayload();
+				appendJsonl(eventsPath, JSON.stringify({ type: "subagent.run.extended", requestId: request.requestId, runId: id, ts: Date.now(), timeoutAt: statusPayload.timeoutAt }));
+			} else if (request.action === "cancel") cancellation.abort();
 			else if (request.index === undefined) interruptRunner();
 			else activeChildInterrupts.get(request.index)?.();
 		}
@@ -1533,6 +1291,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.started", ts: taskStartTime, runId: id, stepIndex: fi, agent: task.agent }));
 
 		const singleResult = await runSingleStep({ ...task, task: renderTask(task.task, input.item) }, {
+			nativeFinalization: config.runtimeVersion === 2,
 			cwd: input.taskCwd, sessionEnabled,
 			sessionDir: input.sessionDir,
 			artifactsDir, id,
@@ -1550,7 +1309,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				else activeChildInterrupts.delete(fi);
 			},
 			onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking),
-			onChildEvent: (event) => updateStepFromChildEvent(fi, event),
+			onChildEvent: (event, mutation) => updateStepFromChildEvent(fi, event, mutation),
 		});
 		activeChildInterrupts.delete(fi);
 		if (input.trackSession && task.sessionFile) latestSessionFile = task.sessionFile;
@@ -1566,6 +1325,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		statusStep.thinking = resolveEffectiveThinking(singleResult.model, statusStep.thinking);
 		statusStep.attemptedModels = singleResult.attemptedModels;
 		statusStep.modelAttempts = singleResult.modelAttempts;
+		statusStep.tokens = tokenUsageFromAttempts(singleResult.modelAttempts) ?? undefined;
+		refreshUsageTotals();
 		statusStep.error = singleResult.error;
 		statusStep.structuredOutput = singleResult.structuredOutput;
 		statusStep.structuredOutputPath = singleResult.structuredOutputPath;
@@ -1693,7 +1454,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				});
 			}
 			mutatingFailureStates.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => createMutatingFailureState()));
-			mutationTrackers.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => createMutationCompletionTracker()));
 			const materializedDelta = dynamicStatusSteps.length - 1;
 			for (const group of statusPayload.parallelGroups) {
 				if (group.stepIndex === stepIndex) {
@@ -1763,6 +1523,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					model: pr.model,
 					attemptedModels: pr.attemptedModels,
 					modelAttempts: pr.modelAttempts,
+					usage: pr.usage, timedOut: pr.timedOut,
 					artifactPaths: pr.artifactPaths,
 					structuredOutput: pr.structuredOutput,
 					structuredOutputPath: pr.structuredOutputPath,
@@ -1890,21 +1651,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 				flatIndex += group.parallel.length;
 
-				for (let t = 0; t < group.parallel.length; t++) {
-					const fi = groupStartFlatIndex + t;
-					const sessionTokens = config.sessionDir
-						? parseSessionTokens(path.join(config.sessionDir, `parallel-${t}`))
-						: null;
-					const taskTokens = sessionTokens ?? tokenUsageFromAttempts(parallelResults[t]?.modelAttempts);
-					if (!taskTokens) continue;
-					statusPayload.steps[fi].tokens = taskTokens;
-					previousCumulativeTokens = {
-						input: previousCumulativeTokens.input + taskTokens.input,
-						output: previousCumulativeTokens.output + taskTokens.output,
-						total: previousCumulativeTokens.total + taskTokens.total,
-					};
-				}
-				statusPayload.totalTokens = { ...previousCumulativeTokens };
+				refreshUsageTotals();
 				statusPayload.lastUpdate = Date.now();
 				writeStatusPayload();
 
@@ -1921,6 +1668,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						model: pr.model,
 						attemptedModels: pr.attemptedModels,
 						modelAttempts: pr.modelAttempts,
+					usage: pr.usage, timedOut: pr.timedOut,
 						artifactPaths: pr.artifactPaths,
 							structuredOutput: pr.structuredOutput,
 							structuredOutputPath: pr.structuredOutputPath,
@@ -1979,6 +1727,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}));
 
 			const singleResult = await runSingleStep({ ...seqStep, task: renderTask(seqStep.task) }, {
+				nativeFinalization: config.runtimeVersion === 2,
 				cwd, sessionEnabled,
 				sessionDir: config.sessionDir,
 				artifactsDir, id,
@@ -1995,7 +1744,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					else activeChildInterrupts.delete(flatIndex);
 				},
 				onAttemptStart: (attempt) => updateStepModel(flatIndex, attempt.model, attempt.thinking),
-				onChildEvent: (event) => updateStepFromChildEvent(flatIndex, event),
+				onChildEvent: (event, mutation) => updateStepFromChildEvent(flatIndex, event, mutation),
 			});
 			activeChildInterrupts.delete(flatIndex);
 			if (seqStep.sessionFile) {
@@ -2016,6 +1765,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				model: singleResult.model,
 				attemptedModels: singleResult.attemptedModels,
 				modelAttempts: singleResult.modelAttempts,
+				usage: singleResult.usage, timedOut: singleResult.timedOut,
 				artifactPaths: singleResult.artifactPaths,
 				structuredOutput: singleResult.structuredOutput,
 				structuredOutputPath: singleResult.structuredOutputPath,
@@ -2027,27 +1777,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			Object.assign(outputs, completion.outputs);
 			statusPayload.outputs = outputs;
 
-			const cumulativeTokens = config.sessionDir ? parseSessionTokens(config.sessionDir) : null;
-			let stepTokens: TokenUsage | null = cumulativeTokens
-				? {
-						input: cumulativeTokens.input - previousCumulativeTokens.input,
-						output: cumulativeTokens.output - previousCumulativeTokens.output,
-						total: cumulativeTokens.total - previousCumulativeTokens.total,
-					}
-				: null;
-			if (cumulativeTokens) {
-				previousCumulativeTokens = cumulativeTokens;
-			} else {
-				stepTokens = tokenUsageFromAttempts(singleResult.modelAttempts);
-				if (stepTokens) {
-					previousCumulativeTokens = {
-						input: previousCumulativeTokens.input + stepTokens.input,
-						output: previousCumulativeTokens.output + stepTokens.output,
-						total: previousCumulativeTokens.total + stepTokens.total,
-					};
-				}
-			}
-
+			const stepTokens = tokenUsageFromAttempts(singleResult.modelAttempts);
 			const stepEndTime = Date.now();
 			statusPayload.steps[flatIndex].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? singleResult.acceptance?.status === "blocked" ? "blocked" : "complete" : "failed";
 			clearStepCurrentActivity(statusPayload.steps[flatIndex]);
@@ -2067,7 +1797,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			statusPayload.steps[flatIndex].resourceLimitExceeded = singleResult.resourceLimitExceeded;
 			if (stepTokens) {
 				statusPayload.steps[flatIndex].tokens = stepTokens;
-				statusPayload.totalTokens = { ...previousCumulativeTokens };
+				refreshUsageTotals();
 			}
 			statusPayload.lastUpdate = stepEndTime;
 			writeStatusPayload();
@@ -2151,6 +1881,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		}
 	}
 
+	clearTimeout(deadlineTimer);
 	if (activityTimer) {
 		clearInterval(activityTimer);
 		activityTimer = undefined;
@@ -2236,6 +1967,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	try {
 		const resultData: AsyncResultFile = {
 			id,
+			runtimeVersion: config.runtimeVersion,
+			timedOut: statusPayload.timedOut,
 			agent: agentName,
 			mode: resultMode,
 			success: finalRunState === "complete",
@@ -2255,6 +1988,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					model: r.model,
 					attemptedModels: r.attemptedModels,
 					modelAttempts: r.modelAttempts,
+					usage: r.usage, timedOut: r.timedOut,
 					artifactPaths: r.artifactPaths,
 					truncated: r.truncated || childOutput.truncated || undefined,
 					structuredOutput: r.structuredOutput,
@@ -2268,7 +2002,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}),
 			outputs,
 			workflowGraph: statusPayload.workflowGraph,
-			exitCode: finalRunState === "failed" ? 1 : 0,
+			exitCode: statusPayload.timedOut ? 124 : finalRunState === "failed" ? 1 : 0,
 			timestamp: runEndedAt,
 			durationMs: runEndedAt - overallStartTime,
 			truncated,
@@ -2285,7 +2019,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			...(totalTasks !== undefined && { totalTasks }),
 		};
 		saveAsyncRunResult(id, { ...resultData, results });
-		writeAtomicJson(resultPath, resultData);
+		if (config.runtimeVersion !== 2 || path.resolve(resultPath) !== path.resolve(asyncDir, "result.json")) writeAtomicJson(resultPath, resultData);
 	} catch (err) {
 		console.error(`Failed to write result file ${resultPath}:`, err);
 	}
@@ -2297,7 +2031,7 @@ if (configArg) {
 		const configJson = fs.readFileSync(configArg, "utf-8");
 		const config = JSON.parse(configJson) as SubagentRunConfig;
 		try {
-			fs.unlinkSync(configArg);
+			if (config.runtimeVersion !== 2) fs.unlinkSync(configArg);
 		} catch {
 			// Temp config cleanup is best effort.
 		}
