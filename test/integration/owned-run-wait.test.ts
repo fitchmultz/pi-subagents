@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { findPackageJSON } from "node:module";
+import { findPackageJSON, syncBuiltinESMExports } from "node:module";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -242,4 +242,51 @@ test("foreground result collection requires durable publication, not an early te
 	fs.mkdirSync(getRunMetadataDir(id), { recursive: true });
 	fs.writeFileSync(path.join(getRunMetadataDir(id), "result.json"), JSON.stringify({ id, mode: "single", success: true, state: "complete", results: [{ agent: "worker", output: "DURABLE-AFTER-GAP", exitCode: 0, success: true }] }));
 	assert.match((await pending).content[0]!.text, /DURABLE-AFTER-GAP/);
+});
+
+test("waiting polls one fresh view without reading transcripts or enumerating unrelated questions", async (t) => {
+	const f = setup(t), id = randomUUID(), original = f.state.ownedRuns!.get(f.runId)!;
+	const sessionFile = original.children[0]!.sessionFile!;
+	fs.appendFileSync(sessionFile, JSON.stringify({ type: "model_change", id: "model", parentId: null, provider: "fixture", modelId: "recorded", timestamp: new Date().toISOString() }) + "\n");
+	const run = { ...original, runId: id, rootRunId: id, source: "async" as const, asyncDir: getRunMetadataDir(id), pid: process.pid };
+	f.state.ownedRuns!.set(id, run);
+	saveQuestionOwner(id, run.ownerSessionId);
+	saveQuestionContract(id, 0, JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(f.runId), "contracts/0.json"), "utf8")));
+	const status = { runtimeVersion: 2 as const, runId: id, mode: "single" as const, state: "running" as const, pid: process.pid, startedAt: Date.now(),
+		steps: [{ agent: "worker", status: "running" as const, sessionFile, model: "fixture/original" }] };
+	saveRunStatus(id, status);
+	let tick: () => void = () => { throw new Error("Wait timer was not registered"); };
+	t.mock.method(globalThis, "setInterval", (callback, interval) => { assert.equal(interval, 100); tick = callback; return {} as NodeJS.Timeout; });
+	t.mock.method(globalThis, "clearInterval", () => {});
+	const readFile = fs.readFileSync, readdir = fs.readdirSync;
+	let transcriptReads = 0, contractReads = 0, globalListings = 0;
+	t.mock.method(fs, "readFileSync", function(file, ...args) {
+		if (String(file) === sessionFile) transcriptReads++;
+		if (String(file) === path.join(run.asyncDir, "contracts/0.json")) contractReads++;
+		return readFile.call(this, file, ...args);
+	});
+	t.mock.method(fs, "readdirSync", function(file, ...args) {
+		if (String(file) === path.dirname(run.asyncDir) || String(file).endsWith("/supervisor-questions")) globalListings++;
+		return readdir.call(this, file, ...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const controller = new AbortController(), updates = [];
+	t.after(() => controller.abort());
+	const pending = waitForOwnedRun({ id, deps: f.deps, ctx: makeMinimalCtx(f.cwd), signal: controller.signal, onUpdate: (result) => updates.push(result) });
+	tick();
+	saveRunStatus(id, { ...status, steps: [{ ...status.steps[0]!, model: "fixture/fallback" }] });
+	tick();
+	assert.equal(contractReads, 3, "initial check and two ticks each project the run once");
+	assert.equal(transcriptReads, 0, "polling needs saved status, not native conversation configuration");
+	assert.equal(globalListings, 0, "an exact run never enumerates unrelated question directories");
+	assert.equal(updates.length, 2, "unchanged updates stay quiet and changed activity remains fresh");
+	assert.equal(updates[1].details.progress[0].model, "fixture/fallback");
+	createSupervisorQuestion({ runId: id, ownerTarget: "parent", agent: "worker", index: 0, childSessionId: "child", childTarget: "child", sessionFile, cwd: f.cwd, pid: process.pid, reason: "need_decision", message: "Choose now" });
+	tick();
+	const result = await pending;
+	assert.equal(result.details.wait?.status, "awaiting_input");
+	assert.equal(result.details.questions[0].message, "Choose now");
+	assert.equal(result.details.run?.children[0]?.launch?.model, "fixture/recorded", "returned inspection still projects current native configuration");
+	assert.equal(f.mock.callCount(), 0, "polling never launches work");
 });

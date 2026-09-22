@@ -122,9 +122,9 @@ export function saveQuestionContract(runId: string, index: number, contract: Sup
 
 export type NativeConfigurationReader = (sessionFile: string | undefined, endedAt?: number) => ReturnType<typeof readNativeSessionConfiguration>;
 
-export function readQuestionContract(runId: string, index: number, root = QUESTIONS_DIR, projection: { sessionFile?: string; endedAt?: number; readConfiguration?: NativeConfigurationReader } = {}): SupervisorRunContract | undefined {
+export function readQuestionContract(runId: string, index: number, root = QUESTIONS_DIR, projection: { sessionFile?: string; endedAt?: number; readConfiguration?: NativeConfigurationReader | false } = {}): SupervisorRunContract | undefined {
 	const contract = readRunJson<SupervisorRunContract>(path.join(root, safeId(runId), "contracts", `${index}.json`));
-	if (!contract?.launch) return contract;
+	if (!contract?.launch || projection.readConfiguration === false) return contract;
 	const sessionFile = projection.sessionFile ?? contract.sessionFile;
 	const native = projection.readConfiguration ? projection.readConfiguration(sessionFile, projection.endedAt)
 		: readNativeSessionConfiguration(sessionFile, undefined, projection.endedAt);

@@ -272,7 +272,7 @@ function runAttention(run: OwnedRun, executionState: ManagementRunState, pending
 	];
 }
 
-export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pendingInput?: boolean; includeContinuations?: boolean; readConfiguration?: import("./supervisor-questions.ts").NativeConfigurationReader } = {}): OwnedRunView {
+export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pendingInput?: boolean; includeContinuations?: boolean; readConfiguration?: import("./supervisor-questions.ts").NativeConfigurationReader | false } = {}): OwnedRunView {
 	run = state.ownedRuns?.get(run.runId) ?? run;
 	const root = getRunMetadataDir(run.runId);
 	const foreground = readRunJson<ForegroundResumeRun>(path.join(root, "foreground.json")) ?? state.foregroundRuns?.get(run.runId);
@@ -412,8 +412,7 @@ export function ownedRunExecutionResult(run: OwnedRun, state: SubagentState, ind
 }
 
 /** Project the run owner's native activity for waiting callers without copying its journal. */
-export function ownedRunProgressResult(run: OwnedRun, state: SubagentState, index?: number): SubagentExecutionResult {
-	const view = ownedRunView(run, state);
+export function ownedRunProgressResult(run: OwnedRun, state: SubagentState, index?: number, view = ownedRunView(run, state, { readConfiguration: false, includeContinuations: false })): SubagentExecutionResult {
 	const status = readStatus(run.asyncDir ?? getRunMetadataDir(run.runId));
 	const children = view.children.filter((child) => index === undefined || child.index === index);
 	const progress: AgentProgress[] = children.map((child) => {
