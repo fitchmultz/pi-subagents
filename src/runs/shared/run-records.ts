@@ -12,6 +12,8 @@ import { isDurableRun, readAsyncResultFile } from "../background/async-result-fi
 import { asyncRunRoots, exactAsyncRunLocation } from "../background/async-resume.ts";
 import { reconcileAsyncRun } from "../background/stale-run-reconciler.ts";
 import { acceptanceHumanAction } from "./acceptance-evaluation.ts";
+import { resolveFinalizationOutput } from "./acceptance-finalization.ts";
+import { parseAcceptanceReport, validateAcceptanceReportShape } from "./acceptance-reports.ts";
 import { sumAttemptUsage } from "./model-fallback.ts";
 import { workflowAgentNodes } from "./workflow-graph.ts";
 import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
@@ -83,6 +85,30 @@ function recoverOutput(sessionFile: string | undefined, outputFile: string | und
 	const entries = parseSessionEntries(fs.readFileSync(sessionFile, "utf8"));
 	if (entries[0]?.type !== "session") return undefined;
 	return getFinalOutput(buildSessionContext(entries.filter((entry): entry is SessionEntry => entry.type !== "session" && Date.parse(entry.timestamp) <= endedAt)).messages.filter((message) => message.role === "assistant"));
+}
+
+function recoverLegacyTerminalOutput(sessionFile: string | undefined, startedAt: number, endedAt: number | undefined, acceptance: SingleResult["acceptance"]): string | undefined {
+	const review = acceptance?.finalization;
+	const reviewedOutput = review?.status === "completed" ? review.turns.at(-1)?.rawOutput : undefined;
+	if (reviewedOutput?.trim()) return resolveFinalizationOutput(reviewedOutput, "") || undefined;
+	// Live and finalization logs are separate, mutable streams, not a final-answer receipt.
+	if (endedAt === undefined || !Number.isFinite(endedAt) || !sessionFile || !fs.existsSync(sessionFile)) return;
+	const entries = parseSessionEntries(fs.readFileSync(sessionFile, "utf8"));
+	if (entries[0]?.type !== "session") return;
+	const messages = buildSessionContext(entries.filter((entry): entry is SessionEntry => entry.type !== "session" && Date.parse(entry.timestamp) >= startedAt && Date.parse(entry.timestamp) <= endedAt)).messages;
+	const index = messages.findLastIndex((message) => message.role === "assistant");
+	const last = messages[index];
+	if (last?.role !== "assistant" || last.errorMessage || !["stop", "toolUse"].includes(last.stopReason) || !Array.isArray(last.content)) return;
+	const calls = last.content.filter((part) => part.type === "toolCall");
+	if (!calls.length) return index === messages.length - 1 && last.stopReason === "stop" ? resolveFinalizationOutput(getFinalOutput([last]), "") || undefined : undefined;
+	if (calls.length !== 1 || calls[0]!.name !== "structured_output") return;
+	const following = messages.slice(index + 1);
+	const result = following.at(-1);
+	if (following.some((message) => message.role !== "toolResult") || result?.role !== "toolResult" || result.toolCallId !== calls[0]!.id || result.toolName !== "structured_output" || result.isError !== false) return;
+	const value = calls[0]!.arguments.value;
+	if (!value || typeof value !== "object" || !("report" in value)) return;
+	if (typeof value.report === "string" && parseAcceptanceReport(value.report).report) return resolveFinalizationOutput(value.report, "") || undefined;
+	if ("answer" in value && typeof value.answer === "string" && value.answer.trim() && !validateAcceptanceReportShape(value.report)) return value.answer;
 }
 
 export function workflowChildren(children: OwnedRun["children"], graph: WorkflowGraphSnapshot | undefined): OwnedRun["children"] {
@@ -174,12 +200,12 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 				if (fs.existsSync(resultPath)) saveAsyncRunResult(status.runId, readAsyncResultFile(resultPath));
 				else if (status.steps?.length && status.steps.every((step) => !["running", "pending"].includes(step.status))) {
 					const endedAt = status.endedAt ?? status.lastUpdate ?? status.startedAt;
-					const results = status.steps.map((step, index) => {
+					const results = status.steps.map((step) => {
 						const sessionFile = step.sessionFile ?? (status.steps!.length === 1 ? status.sessionFile : undefined);
 						return { agent: step.agent, sessionFile, model: step.model, acceptance: step.acceptance,
 							exitCode: step.exitCode, agentProcessExit: step.agentProcessExit, success: step.status === "complete" || step.status === "completed",
 							interrupted: step.status === "paused" || undefined, timedOut: step.status === "timed-out" || undefined, error: step.error,
-							output: recoverOutput(sessionFile, path.join(asyncDir, `output-${index}.log`), step.endedAt ?? endedAt) ?? "" };
+							output: recoverLegacyTerminalOutput(sessionFile, step.startedAt ?? status.startedAt, step.endedAt ?? status.endedAt, step.acceptance) ?? "" };
 					});
 					saveAsyncRunResult(status.runId, { id: status.runId, sessionId: status.sessionId, mode: status.mode, state: status.state,
 						success: status.state === "complete", error: status.error, timestamp: endedAt, cwd: status.cwd, asyncDir, sessionFile: status.sessionFile, results });
