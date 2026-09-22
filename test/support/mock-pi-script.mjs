@@ -78,7 +78,8 @@ function defaultAssistantMessage(output) {
 				output: 50,
 				cacheRead: 0,
 				cacheWrite: 0,
-				cost: { total: 0.001 },
+				totalTokens: 150,
+				cost: { input: 0.001, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 },
 			},
 		},
 	};
