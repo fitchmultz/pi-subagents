@@ -27,7 +27,7 @@ const { setKeybindings } = await import(createRequire(import.meta.resolve("@eare
 setKeybindings(new KeybindingsManager());
 
 function nativeTool(name: string, result: SubagentExecutionResult, args: Record<string, unknown> = { agent: "worker" }, tui?: TUI): ToolExecutionComponent {
-	const tool = extension.tools.get(name)?.definition;
+	const tool = [...extension.tools.values()].find(({ definition }) => definition.name === name)?.definition;
 	assert.ok(tool, `${name} must use its registered renderer`);
 	const component = new ToolExecutionComponent(name, "render-test", args, {}, tool, tui ?? { requestRender() {} } as never, process.cwd());
 	component.updateResult({ ...result, isError: result.isError ?? false });

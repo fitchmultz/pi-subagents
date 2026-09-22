@@ -99,7 +99,7 @@ test("registered subagent completion messages honor native collapse and expand w
     await t.test("native Intercom list-tool hint follows configured and unbound expansion keys", () => {
       const keys = new KeybindingsManager({ "app.tools.expand": "alt+o" }); setKeybindings(keys);
       const terminal = createTestTerminal(90, 40), tui = new TuiAltScreen(terminal);
-      const definition = extension.tools.get("intercom")?.definition;
+      const definition = [...extension.tools.values()].find(({ definition }) => definition.name === "intercom")?.definition;
       assert.ok(definition);
       const card = new ToolExecutionComponent("intercom", "list-hint", { action: "list" }, {}, definition, tui, process.cwd());
       card.updateResult({ content: [{ type: "text", text: "Full listing\nINTERCOM-PEER-END" }], details: { sessionCount: 2 }, isError: false });
