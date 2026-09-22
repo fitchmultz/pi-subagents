@@ -990,59 +990,6 @@ export interface SubagentLiveIntercomHealth {
 // Execution Options
 // ============================================================================
 
-export interface RunSyncOptions {
-	rootSessionId?: string;
-	cwd?: string;
-	signal?: AbortSignal;
-	interruptSignal?: AbortSignal;
-	timeoutMs?: number;
-	timeoutAt?: number;
-	registerTimeoutExtension?: (extend: TimeoutExtensionCallback) => void;
-	allowIntercomDetach?: boolean;
-	onDetachedComplete?: (result: SingleResult) => void | Promise<void>;
-	onRunSettled?: () => void;
-	intercomEvents?: IntercomEventBus;
-	onUpdate?: (r: SubagentExecutionResult) => void;
-	onControlEvent?: (event: ControlEvent) => void;
-	controlConfig?: ResolvedControlConfig;
-	intercomSessionName?: string;
-	orchestratorIntercomTarget?: string;
-	maxOutput?: MaxOutputConfig;
-	artifactsDir?: string;
-	runId: string;
-	index?: number;
-	sessionDir?: string;
-	sessionFile?: string;
-	share?: boolean;
-	outputPath?: string;
-	outputPathFromAgentDefault?: boolean;
-	outputMode?: OutputMode;
-	/** When true, an inline output file is left in place (workspace/cwd) instead of being consumed after capture. */
-	persistOutputFile?: boolean;
-	maxSubagentDepth?: number;
-	maxExecutionTimeMs?: number;
-	maxTokens?: number;
-	nestedRoute?: NestedRouteInfo;
-	/** Override the agent's default model (format: "provider/id" or just "id") */
-	modelOverride?: string;
-	/** Registry models available for heuristic bare-model resolution */
-	availableModels?: Array<{ provider: string; id: string; fullId: string }>;
-	/** Current parent-session provider to prefer for ambiguous bare model ids */
-	preferredModelProvider?: string;
-	/** Skills to inject (overrides agent default if provided) */
-	skills?: string[];
-	/** Override whether the child inherits the runtime's discovered skills. */
-	inheritSkills?: boolean;
-	structuredOutput?: {
-		schema: JsonSchemaObject;
-		schemaPath: string;
-		outputPath: string;
-	};
-	projectTrust?: ChildProjectTrustPolicy;
-	projectTrusted?: boolean;
-	acceptance?: AcceptanceInput;
-}
-
 export type ChildProjectTrustPolicy = "inherit" | "approve" | "no-approve";
 
 export interface ProjectTrustConfig {

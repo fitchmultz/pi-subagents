@@ -4,7 +4,7 @@ import { writeAsyncControlRequest, writeAsyncInterruptRequest } from "../backgro
 import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readNativeSessionConfiguration, readQuestionContract, readRunJson, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AgentScope } from "../../agents/agents.ts";
 import { splitKnownThinkingSuffix, toModelInfo } from "../../shared/model-info.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
@@ -14,49 +14,33 @@ import { resolveConfiguredChildProjectTrustPolicy } from "../shared/pi-args.ts";
 import { requestChildExecutionCwd } from "../shared/child-execution-cwd.ts";
 import { bindNativeInvocation } from "../shared/native-async.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
-import { applyIntercomBridgeToAgent, resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget, resolveSubagentIntercomTarget, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
-import { formatControlIntercomMessage, formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
-import { getSingleResultOutput, readStatus } from "../../shared/utils.ts";
-import {
-	attachNestedChildrenToResultChildren,
-	buildSubagentResultIntercomPayload,
-	deliverSubagentIntercomMessageEvent,
-	deliverSubagentResultIntercomEvent,
-	formatSubagentResultReceipt,
-	resolveSubagentResultStatus,
-	stripDetailsOutputsForIntercomReceipt,
-} from "../../intercom/result-intercom.ts";
+import { resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import { resolveControlConfig } from "../shared/subagent-control.ts";
+import { readStatus } from "../../shared/utils.ts";
+import { deliverSubagentIntercomMessageEvent } from "../../intercom/result-intercom.ts";
 import { sendLiveSubagentMessage } from "../../intercom/live-intercom.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
 import { readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNestedAsyncDir, resolveNestedParentAddressFromEnv, writeNestedControlRequest, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
-import { buildManagementControl, formatAgentProcessExit, formatRunAction } from "../../shared/status-format.ts";
+import { buildManagementControl, formatRunAction } from "../../shared/status-format.ts";
 import { acceptanceInputFromResolved } from "../shared/acceptance.ts";
-import { ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun, saveForegroundRun } from "../shared/run-records.ts";
+import { ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun } from "../shared/run-records.ts";
 import {
 	ASYNC_DIR,
 	getAsyncConfigPath,
 	RUNNER_ERROR_LOG_FILE,
-	type ControlEvent,
-	type Details,
 	type SubagentExecutionResult,
 	type ForegroundResumeRun,
 	type IntercomEventBus,
 	type NestedRunSummary,
 	type ResolvedAcceptanceConfig,
-	type ResolvedControlConfig,
-	type SingleResult,
-	type SubagentRunMode,
 	type SubagentState,
-	SUBAGENT_CONTROL_EVENT,
-	SUBAGENT_CONTROL_INTERCOM_EVENT,
 	checkSubagentDepth,
 	resolveCurrentMaxSubagentDepth,
 } from "../../shared/types.ts";
 
 import {
-	type ExecutionContextData,
 	type ExecutorDeps,
 	type SubagentParamsLike,
 } from "./subagent-params.ts";
@@ -76,10 +60,6 @@ export function nestedResolutionScopeForExecutor(deps: ExecutorDeps): NestedRunR
 		routes: route ? [route] : [],
 		...(address ? { descendantOf: { parentRunId: address.parentRunId, ...(address.parentStepIndex !== undefined ? { parentStepIndex: address.parentStepIndex } : {}) } } : {}),
 	};
-}
-
-export function rememberForegroundRun(state: SubagentState, input: Parameters<typeof saveForegroundRun>[0]): void {
-	(state.foregroundRuns ??= new Map()).set(input.runId, saveForegroundRun(input));
 }
 
 const LATEST_FOREGROUND_ALIASES = new Set(["last", "latest"]);
@@ -266,33 +246,6 @@ function getAsyncInterruptTarget(state: SubagentState, runId: string | undefined
 		newest = { asyncId: run.runId, asyncDir: run.asyncDir, updatedAt: run.startedAt };
 	}
 	return newest ? { asyncId: newest.asyncId, asyncDir: newest.asyncDir } : undefined;
-}
-
-function emitControlNotification(input: {
-	pi: ExtensionAPI;
-	controlConfig: ResolvedControlConfig;
-	intercomBridge: IntercomBridgeState;
-	event: ControlEvent;
-	childSafe: boolean;
-}): void {
-	if (!shouldNotifyControlEvent(input.controlConfig, input.event)) return;
-	const childIntercomTarget = resolveSubagentIntercomTarget(input.event.runId, input.event.agent, input.event.index);
-	const payload = {
-		event: input.event,
-		source: "foreground" as const,
-		childIntercomTarget,
-		noticeText: formatControlNoticeMessage(input.event, childIntercomTarget, input.childSafe),
-	};
-	if (input.controlConfig.notifyChannels.includes("event")) {
-		input.pi.events.emit(SUBAGENT_CONTROL_EVENT, payload);
-	}
-	if (input.controlConfig.notifyChannels.includes("intercom")) {
-		input.pi.events.emit(SUBAGENT_CONTROL_INTERCOM_EVENT, {
-			...payload,
-			to: input.intercomBridge.orchestratorTarget,
-			message: formatControlIntercomMessage(input.event, childIntercomTarget, input.childSafe),
-		});
-	}
 }
 
 export function extendAsyncTimeoutResult(state: SubagentState, runId: string | undefined, extendMs: number): SubagentExecutionResult {
@@ -765,7 +718,7 @@ export function reviveSavedSubagent(input: {
 	const fallbackTarget = resolveIntercomSessionTarget(input.deps.pi.getSessionName(), input.ctx.sessionManager.getSessionId());
 	const orchestratorTarget = resolveOrchestratorIntercomTarget(input.deps.pi.events, fallbackTarget);
 	const intercomBridge = resolveIntercomBridge(orchestratorTarget);
-	const agents = discoveredAgents.map((agent) => applyIntercomBridgeToAgent(agent, intercomBridge));
+	const agents = discoveredAgents;
 	const selectedAgent = input.params.agent ?? target.agent;
 	const profile = agents.find((agent) => agent.name === selectedAgent);
 	const agentConfig = profile && savedLaunch ? { ...profile, thinking: savedLaunch.thinking ?? profile.thinking, maxExecutionTimeMs: savedLaunch.maxExecutionTimeMs, maxTokens: savedLaunch.maxTokens } : profile;
@@ -860,191 +813,5 @@ export function reviveSavedSubagent(input: {
 			...result.details,
 			managementControl: buildManagementControl({ state: "live", runId: revivedId, index: 0, intercomTarget: revivedTarget, canInterrupt: true, revivedFromRunId: target.runId }),
 		},
-	};
-}
-
-function resultSummaryForIntercom(result: SingleResult): string {
-	if (result.interrupted) return `${formatAgentProcessExit(result.agentProcessExit)}\n${getSingleResultOutput(result) || "Agent paused."}`;
-	const output = result.truncation?.truncated ? result.truncation.text : getSingleResultOutput(result);
-	if (result.exitCode !== 0 && result.error) {
-		return output ? `${result.error}\n\nOutput:\n${output}` : result.error;
-	}
-	return output || result.error || "(no output)";
-}
-
-export function createForegroundControlNotifier(data: Pick<ExecutionContextData, "controlConfig" | "intercomBridge">, deps: ExecutorDeps): (event: ControlEvent) => void {
-	return (event) => emitControlNotification({
-		pi: deps.pi,
-		controlConfig: data.controlConfig,
-		intercomBridge: data.intercomBridge,
-		childSafe: Boolean(nestedResolutionScopeForExecutor(deps)),
-		event,
-	});
-}
-
-async function emitForegroundResultIntercom(input: {
-	pi: ExtensionAPI;
-	intercomBridge: IntercomBridgeState;
-	runId: string;
-	mode: SubagentRunMode;
-	results: SingleResult[];
-	error?: string;
-	pausedReason?: string;
-	chainSteps?: number;
-	nestedChildren?: NestedRunSummary[];
-}): Promise<ReturnType<typeof buildSubagentResultIntercomPayload> | null> {
-	const children = input.results.flatMap((result, index) => result.detached ? [] : [{
-		agent: result.agent,
-		status: resolveSubagentResultStatus({
-			exitCode: result.exitCode,
-			acceptance: result.acceptance,
-			interrupted: result.interrupted,
-			detached: result.detached,
-			timedOut: result.timedOut,
-		}),
-		summary: resultSummaryForIntercom(result),
-		index,
-		artifactPath: result.artifactPaths?.outputPath,
-		metadataPath: result.artifactPaths?.metadataPath,
-		sessionPath: result.sessionFile,
-		intercomTarget: resolveSubagentIntercomTarget(input.runId, result.agent, index),
-	}]);
-	if (children.length === 0) return null;
-	const resultPath = path.join(getRunMetadataDir(input.runId), "foreground.json");
-	const payload = buildSubagentResultIntercomPayload({
-		to: input.intercomBridge.orchestratorTarget,
-		runId: input.runId,
-		mode: input.mode,
-		source: "foreground",
-		...(fs.existsSync(resultPath) ? { resultPath } : {}),
-		...(input.error ? { status: "failed", error: input.error } : input.pausedReason ? { status: "paused", error: input.pausedReason } : {}),
-		children: attachNestedChildrenToResultChildren(input.runId, children, input.nestedChildren),
-		...(typeof input.chainSteps === "number" ? { chainSteps: input.chainSteps } : {}),
-	});
-	const delivered = await deliverSubagentResultIntercomEvent(input.pi.events, payload);
-	if (!delivered) return null;
-	return payload;
-}
-
-interface DetachedCompletionGroup {
-	onComplete: (result: SingleResult, index: number) => void;
-	setResults: (results: SingleResult[], nestedChildren?: NestedRunSummary[]) => void;
-	hasDetached: () => boolean;
-}
-
-export function createDetachedCompletionGroup(input: {
-	pi: ExtensionAPI;
-	state: SubagentState;
-	intercomBridge: IntercomBridgeState;
-	runId: string;
-	mode: SubagentRunMode;
-	chainSteps?: number;
-	finalizeResults?: (results: SingleResult[]) => void;
-	onResultsSettled?: (results: SingleResult[]) => void;
-	onSettled?: () => void;
-}): DetachedCompletionGroup {
-	let results: SingleResult[] | undefined;
-	let nestedChildren: NestedRunSummary[] | undefined;
-	let wasDetached = false;
-	let deliveryStarted = false;
-	let settledCallbackStarted = false;
-	const completions = new Map<number, SingleResult>();
-
-	const maybeEmit = () => {
-		if (!wasDetached || deliveryStarted || !results || results.some((result) => result.detached)) return;
-		deliveryStarted = true;
-		try {
-			input.finalizeResults?.(results);
-		} catch (error) {
-			const target = results[0];
-			if (target) {
-				target.exitCode = 1;
-				target.error = `Detached completion finalization failed: ${error instanceof Error ? error.message : String(error)}`;
-				target.finalOutput = target.error;
-				target.truncation = undefined;
-			}
-		}
-		const remembered = input.state.foregroundRuns?.get(input.runId);
-		try {
-			if (remembered) rememberForegroundRun(input.state, { ...remembered, results });
-			input.onResultsSettled?.(results);
-		} catch (error) {
-			console.error("Failed to finalize detached nested status:", error);
-		}
-		if (!settledCallbackStarted && input.onSettled) {
-			settledCallbackStarted = true;
-			queueMicrotask(input.onSettled);
-		}
-		void emitForegroundResultIntercom({
-			pi: input.pi,
-			intercomBridge: input.intercomBridge,
-			runId: input.runId,
-			mode: input.mode,
-			results,
-			error: remembered?.error,
-			pausedReason: remembered?.pausedReason,
-			...(input.chainSteps !== undefined ? { chainSteps: input.chainSteps } : {}),
-			...(nestedChildren?.length ? { nestedChildren } : {}),
-		}).then((payload) => {
-			if (!payload) console.error(`Failed to emit detached foreground result for '${input.runId}'.`);
-		}).catch((error) => console.error("Failed to emit detached foreground result:", error));
-	};
-
-	return {
-		onComplete(result, index) {
-			wasDetached = true;
-			completions.set(index, result);
-			if (results) results[index] = result;
-			const remembered = input.state.foregroundRuns?.get(input.runId);
-			const child = remembered?.children[index];
-			if (child) {
-				child.status = resolveSubagentResultStatus({ exitCode: result.exitCode, acceptance: result.acceptance, interrupted: result.interrupted, timedOut: result.timedOut });
-				child.summary = resultSummaryForIntercom(result);
-				child.result = result;
-				child.artifactPath = result.artifactPaths?.outputPath;
-				remembered!.updatedAt = Date.now();
-			}
-			maybeEmit();
-		},
-		setResults(initialResults, initialNestedChildren) {
-			results = [...initialResults];
-			nestedChildren = initialNestedChildren;
-			wasDetached ||= results.some((result) => result.detached) || completions.size > 0;
-			for (const [index, result] of completions) results[index] = result;
-			maybeEmit();
-		},
-		hasDetached: () => wasDetached,
-	};
-}
-
-export async function maybeBuildForegroundIntercomReceipt(input: {
-	pi: ExtensionAPI;
-	intercomBridge: IntercomBridgeState;
-	runId: string;
-	mode: SubagentRunMode;
-	details: Details;
-	error?: string;
-	nestedChildren?: NestedRunSummary[];
-}): Promise<{ text: string; details: Details; status: ReturnType<typeof buildSubagentResultIntercomPayload>["status"] } | null> {
-	const payload = await emitForegroundResultIntercom({
-		pi: input.pi,
-		intercomBridge: input.intercomBridge,
-		runId: input.runId,
-		mode: input.mode,
-		results: input.details.results,
-		error: input.error,
-		...(typeof input.details.totalSteps === "number" ? { chainSteps: input.details.totalSteps } : {}),
-		...(input.nestedChildren?.length ? { nestedChildren: input.nestedChildren } : {}),
-	});
-	if (!payload) return null;
-	return {
-		text: formatSubagentResultReceipt({ mode: input.mode, runId: input.runId, payload }),
-		details: stripDetailsOutputsForIntercomReceipt(input.details, {
-			delivered: true,
-			to: payload.to,
-			status: payload.status,
-			summary: payload.summary,
-		}),
-		status: payload.status,
 	};
 }

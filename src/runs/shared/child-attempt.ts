@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
+import { applyIntercomBridgeToAgent, resolveIntercomBridge } from "../../intercom/intercom-bridge.ts";
 import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { getSubagentDepthEnv, type AgentProcessExit, type ResourceLimitExceeded, type Usage } from "../../shared/types.ts";
 import { extractTextFromContent, extractToolArgsPreview, formatResourceLimitExceeded, getFinalOutput, findLatestSessionFile } from "../../shared/utils.ts";
@@ -31,6 +32,11 @@ export function buildChildInvocation(input: Omit<Parameters<typeof buildPiArgs>[
 } {
 	const model = applyThinkingSuffix(input.model, input.thinking);
 	if (!model || !isClaudeCodeModel(model)) {
+		if (input.orchestratorIntercomTarget) {
+			const bridged = applyIntercomBridgeToAgent({ systemPrompt: input.systemPrompt ?? "",
+				tools: input.tools, extensions: input.extensions }, resolveIntercomBridge(input.orchestratorIntercomTarget));
+			input = { ...input, systemPrompt: bridged.systemPrompt, tools: bridged.tools, extensions: bridged.extensions };
+		}
 		const built = buildPiArgs({ ...input, structuredOutput: input.nativeFinalization ? undefined : input.structuredOutput, baseArgs: ["--mode", "json", "-p"] });
 		if (input.nativeFinalization) {
 			const runtime = nativeFinalizationLaunch(input.nativeFinalization);

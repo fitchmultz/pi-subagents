@@ -545,7 +545,7 @@ async function runSingleStep(
 	const sessionFile = step.sessionFile ?? (sessionDir ? findLatestSessionFile(sessionDir) ?? undefined : undefined);
 	const nativeReport = !initial.model || !isClaudeCodeModel(initial.model);
 	const acceptance = step.effectiveAcceptance ? await evaluateRunAcceptance({
-		acceptance: step.effectiveAcceptance, initial, initialOutput: initial.finalOutput, sessionFile, cwd: step.cwd ?? ctx.cwd, signal: verificationSignal, nativeReport,
+		acceptance: step.effectiveAcceptance, initial, initialOutput: initial.finalOutput, sessionFile, cwd: step.cwd ?? ctx.cwd, signal: verificationSignal, nativeReport, recordedTurns: nativeSegments.length,
 		runTurn: async (prompt, turn, sessionFile) => {
 			const cached = nativeSegments[turn - 1];
 			const reportRuntime = nativeReport && !cached ? createFinalizationReportRuntime() : undefined;
@@ -568,6 +568,12 @@ async function runSingleStep(
 		},
 	}) : undefined;
 	const outcome = resolveExecutionOutcome({ result: execution, acceptance, signal: ctx.signal, interruptSignal });
+	const previousError = modelAttempts.slice(0, -1).reverse().find((attempt) => attempt.error)?.error;
+	if (outcome.exitCode !== 0 && outcome.error && previousError && execution.usage.turns === 0) {
+		const context = `Previous attempt before the empty retry failed with: ${previousError}`;
+		outcome.error += `\n${context}`;
+		output = output ? `${output}\n${context}` : outcome.error;
+	}
 	if (acceptance?.unconfirmedOutput !== undefined) {
 		const auditOutput = resolvedOutput.savedPath && !resolvedOutput.writtenSnapshot ? output : acceptance.unconfirmedOutput;
 		output = formatUnconfirmedFinalizationOutput(auditOutput);
@@ -1375,7 +1381,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				statusPayload.lastUpdate = now;
 				markDynamicGraphGroup(stepIndex, "failed", message);
 				writeStatusPayload();
-				results.push({ agent: step.parallel.agent, output: message, error: message, success: false, exitCode: 1 });
 				break;
 			}
 
@@ -1409,7 +1414,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				statusPayload.lastUpdate = now;
 				markDynamicGraphGroup(stepIndex, "failed", duplicateOutputError);
 				writeStatusPayload();
-				results.push({ agent: step.parallel.agent, output: duplicateOutputError, error: duplicateOutputError, success: false, exitCode: 1 });
 				break;
 			}
 			const dynamicStatusSteps: RunnerStatusStep[] = dynamicSteps.map((task) => ({
@@ -1503,7 +1507,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			Object.assign(outputs, completion.outputs);
 			statusPayload.outputs = outputs;
 			if (completion.error) {
-				results.push({ agent: step.parallel.agent, output: completion.error, error: completion.error, success: false, exitCode: 1, structuredOutput: completion.collection });
 				statusPayload.error = completion.error;
 			}
 			previousOutput = completion.previousOutput;
@@ -1759,9 +1762,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const resultMode = config.resultMode ?? statusPayload.mode;
 	const childText = (result: StepResult) => result.error && !result.output.includes(result.error) ? `${result.error}\n${result.output}`.trim() : result.output;
 	let summary = resultMode === "single" && results.length === 1 ? childText(results[0]!) : results.map((result) => `${result.agent}:\n${childText(result)}`).join("\n\n");
+	if (statusPayload.error && !summary.includes(statusPayload.error)) summary = `${statusPayload.error}\n\n${summary}`.trim();
 	if (statusPayload.timedOut) summary = [
 		`${resultMode === "parallel" ? "Parallel run" : resultMode === "chain" ? "Chain" : "Run"} timed out.`,
-		statusPayload.error && !summary.includes(statusPayload.error) ? statusPayload.error : undefined,
 		summary,
 	].filter(Boolean).join("\n\n");
 	if (worktreeSummaries.length > 0) summary = appendWorktreeSummary(summary, worktreeSummaries.join("\n\n"));

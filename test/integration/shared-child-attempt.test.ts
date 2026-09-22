@@ -26,6 +26,8 @@ async function run(scenario: string, options: { turns?: number; timeoutMs?: numb
 	const resultPath = path.join(root, "result.json");
 	const bin = path.join(root, "bin");
 	fs.mkdirSync(bin);
+	fs.mkdirSync(path.join(root, "agent"));
+	fs.writeFileSync(path.join(root, "agent/settings.json"), JSON.stringify({ retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 }, compaction: { enabled: false } }));
 	fs.writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec '${process.execPath}' '${path.join(sdkRoot, "dist/cli.js")}' "$@"\n`, { mode: 0o755 });
 	fs.writeFileSync(input, JSON.stringify({ scenario, receiptPath, report }));
 	fs.mkdirSync(asyncDir, { recursive: true });
@@ -92,6 +94,43 @@ for (const scenario of ["success", "public-output", "repair", "passive"] as cons
 		assert.deepEqual(child.structuredOutput, { items: ["public payload"] });
 		assert.deepEqual(receipt.sampling[0], { type: "json_schema", strict: "prefer" });
 	}
+});
+
+for (const scenario of ["retry", "linger", "resubmit", "missing-then-repair"]) test(`native owner preserves ${scenario} through same-process review`, async () => {
+	const { result, receipt } = await run(scenario, { turns: scenario === "missing-then-repair" ? 2 : 1 });
+	const child = result.results[0];
+	assert.equal(result.success, true, JSON.stringify(child));
+	assert.equal(child.agentProcessExit.pid, receipt.pid);
+	assert.equal(child.acceptance.status, "checked");
+	assert.equal(child.finalOutput, "Reviewed answer");
+	assert.equal(child.acceptance.finalization.turns.length, scenario === "missing-then-repair" ? 2 : 1);
+	assert.equal(receipt.calls, scenario === "linger" ? 2 : 3);
+	assert.equal(receipt.shutdownStarted, true);
+	assert.equal(receipt.shutdownFinished, scenario !== "linger");
+	if (scenario === "retry") {
+		assert.deepEqual(receipt.errors, ["503 overloaded; native fixture"]);
+		assert.equal(child.modelAttempts.length, 2, "native transport retry remains inside the same review attempt");
+		assert.equal(child.modelAttempts[1].usage.turns, 2);
+	}
+	if (scenario === "missing-then-repair") assert.deepEqual(child.acceptance.finalization.turns.map((turn) => turn.status), ["rejected", "checked"]);
+});
+
+test("native post-submission provider failure remains authoritative", async () => {
+	const { result, receipt } = await run("final-error");
+	assert.equal(result.success, false);
+	assert.equal(receipt.calls, 3);
+	assert.match(result.results[0].error, /Fixture final provider failure/);
+	assert.equal(result.results[0].acceptance.childReport, undefined);
+	assert.match(result.results[0].acceptance.unconfirmedOutput, /Reviewed answer/);
+});
+
+test("per-attempt time allowance resets between initial work and review in one native process", async () => {
+	const { result, receipt } = await run("per-attempt-time", { maxExecutionTimeMs: 3000 });
+	assert.equal(result.success, true, JSON.stringify(result));
+	assert.equal(receipt.calls, 2);
+	assert.equal(result.results[0].agentProcessExit.pid, receipt.pid);
+	assert.ok(result.results[0].progressSummary.durationMs > 3000);
+	assert.equal(result.results[0].resourceLimitExceeded, undefined);
 });
 
 test("nested tool usage is accounted without tightening the assistant-only token limit", async (t) => {

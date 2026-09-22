@@ -625,9 +625,3 @@ export function formatParallelWorktreeSummary(
 export function appendWorktreeSummary(output: string, worktreeSummary: string): string {
 	return worktreeSummary ? `${output}\n\n${worktreeSummary}` : output;
 }
-
-export function extractWorktreeSummary(text: string): string {
-	const marker = "=== Worktree Changes ===";
-	const index = text.indexOf(marker);
-	return index >= 0 ? text.slice(index).trim() : "";
-}

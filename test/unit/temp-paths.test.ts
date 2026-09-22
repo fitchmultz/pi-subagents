@@ -65,7 +65,7 @@ describe("resolveTempRootDir", () => {
 });
 
 describe("temp-root write boundaries", () => {
-	it("refuses foreground artifact writes through a symlinked configured root", () => {
+	it("refuses current launcher artifact paths through a symlinked configured root", () => {
 		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "pi-temp-root-boundary-"));
 		const target = path.join(scratch, "target");
 		const configuredRoot = path.join(scratch, "pi-subagents-unsafe");
@@ -73,7 +73,7 @@ describe("temp-root write boundaries", () => {
 		fs.symlinkSync(target, configuredRoot, "dir");
 		try {
 			const artifactsModule = new URL("../../src/shared/artifacts.ts", import.meta.url).href;
-			const script = `import { ensureArtifactsDir } from ${JSON.stringify(artifactsModule)}; ensureArtifactsDir(${JSON.stringify(path.join(configuredRoot, "artifacts"))});`;
+			const script = `import { getArtifactPaths } from ${JSON.stringify(artifactsModule)}; getArtifactPaths(${JSON.stringify(path.join(configuredRoot, "artifacts"))}, 'run', 'worker');`;
 			const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
 				encoding: "utf-8",
 				env: { ...process.env, PI_SUBAGENT_TEMP_ROOT: configuredRoot },

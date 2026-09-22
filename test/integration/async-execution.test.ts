@@ -13,6 +13,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { executeAsyncChain, executeAsyncSingle } from "../../src/runs/background/async-execution.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
 import { ASYNC_DIR, RESULTS_DIR, RUNNER_ERROR_LOG_FILE, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import { readStatus } from "../../src/shared/utils.ts";
 import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, removeTempDir } from "../support/helpers.ts";
@@ -110,7 +111,7 @@ async function waitForAsyncResultFile(id: string, timeoutMs = 15_000): Promise<s
 }
 
 async function waitForAsyncStatus(id: string, predicate: (status: AsyncStatusPayload) => boolean, timeoutMs = 15_000): Promise<AsyncStatusPayload> {
-	const statusPath = path.join(ASYNC_DIR, id, "status.json");
+	const statusPath = path.join(getRunMetadataDir(id), "status.json");
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() <= deadline) {
 		if (fs.existsSync(statusPath)) {
@@ -178,7 +179,8 @@ describe("async execution utilities", () => {
 	afterEach(() => {
 		removeTempDir(tempDir);
 		const prefix = `itest-ae-${process.pid}-`;
-		if (fs.existsSync(ASYNC_DIR)) for (const dir of fs.readdirSync(ASYNC_DIR).filter((entry) => entry.startsWith(prefix))) fs.rmSync(path.join(ASYNC_DIR, dir), { recursive: true, force: true });
+		const runRoot = path.dirname(getRunMetadataDir("cleanup"));
+		if (fs.existsSync(runRoot)) for (const dir of fs.readdirSync(runRoot).filter((entry) => entry.startsWith(prefix))) fs.rmSync(path.join(runRoot, dir), { recursive: true, force: true });
 		if (fs.existsSync(RESULTS_DIR)) for (const file of fs.readdirSync(RESULTS_DIR).filter((entry) => entry.startsWith(prefix))) fs.rmSync(path.join(RESULTS_DIR, file), { force: true });
 		if (fs.existsSync(TEMP_ROOT_DIR)) for (const file of fs.readdirSync(TEMP_ROOT_DIR).filter((entry) => entry.includes(prefix))) fs.rmSync(path.join(TEMP_ROOT_DIR, file), { recursive: true, force: true });
 	});
@@ -387,7 +389,7 @@ describe("async execution utilities", () => {
 				maxSubagentDepth: 2,
 			});
 			await waitForAsyncResultFile(id, 10_000);
-			assert.match(fs.readFileSync(path.join(ASYNC_DIR, id, RUNNER_ERROR_LOG_FILE), "utf-8"), new RegExp(marker));
+			assert.match(fs.readFileSync(path.join(getRunMetadataDir(id), RUNNER_ERROR_LOG_FILE), "utf-8"), new RegExp(marker));
 		} finally {
 			if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
 			else process.env.NODE_OPTIONS = originalNodeOptions;
@@ -408,7 +410,7 @@ describe("async execution utilities", () => {
 		});
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const statusPath = path.join(ASYNC_DIR, id, "status.json");
+		const statusPath = path.join(getRunMetadataDir(id), "status.json");
 		const status = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as AsyncStatusPayload;
 
 		assert.equal(result.success, false);
@@ -436,7 +438,7 @@ describe("async execution utilities", () => {
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const elapsedMs = Date.now() - startedAt;
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload;
 
 		assert.ok(elapsedMs < 3_000, `resource limit should stop promptly before the 5s mock delay completes; elapsed ${elapsedMs}ms`);
 		assert.equal(result.success, false);
@@ -466,7 +468,7 @@ describe("async execution utilities", () => {
 		});
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload;
 
 		assert.equal(result.success, false);
 		assert.equal(result.results.length, 2);
@@ -501,7 +503,7 @@ describe("async execution utilities", () => {
 		assert.equal(payload.state, "failed");
 		assert.equal(payload.exitCode, 1);
 		assert.doesNotMatch(payload.summary, /Paused after interrupt/);
-		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload;
 		assert.equal(status.state, "failed");
 		assert.match(status.error ?? "", /worker/);
 	});
@@ -521,7 +523,7 @@ describe("async execution utilities", () => {
 		});
 		await waitForAsyncStatus(id, (status) => status.state === "running" && status.steps?.filter((step) => step.status === "running").length === 2, 10_000);
 		await waitForMockPiCalls(mockPi, 2, 10_000);
-		const controlRequestPath = path.join(ASYNC_DIR, id, "control-request.json");
+		const controlRequestPath = path.join(getRunMetadataDir(id), "control-request.json");
 		fs.writeFileSync(controlRequestPath, JSON.stringify({ requestId: "wrong-run", runId: "stale-run", action: "interrupt", createdAt: Date.now() }), "utf-8");
 		await new Promise((resolve) => setTimeout(resolve, 200));
 		assert.equal((await waitForAsyncStatus(id, (status) => status.state === "running", 2_000)).state, "running");
@@ -529,7 +531,7 @@ describe("async execution utilities", () => {
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const finalStatus = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		const finalStatus = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload;
 
 		assert.equal(result.state, "paused");
 		assert.equal(result.exitCode, 0);
@@ -539,7 +541,7 @@ describe("async execution utilities", () => {
 		assert.equal(finalStatus.steps?.every((step) => step.status === "paused"), true);
 		assert.equal(mockPi.callCount(), 2);
 		assert.equal(result.outputs?.firstOutput, undefined);
-		const events = fs.readFileSync(path.join(ASYNC_DIR, id, "events.jsonl"), "utf-8").trim().split("\n").map((line) => JSON.parse(line) as { type?: string; interrupted?: boolean; success?: boolean; state?: string });
+		const events = fs.readFileSync(path.join(getRunMetadataDir(id), "events.jsonl"), "utf-8").trim().split("\n").map((line) => JSON.parse(line) as { type?: string; interrupted?: boolean; success?: boolean; state?: string });
 		assert.equal(events.some((event) => event.type === "subagent.step.completed"), false);
 		assert.ok(events.some((event) => event.type === "subagent.step.paused" && event.interrupted === true));
 		assert.ok(events.some((event) => event.type === "subagent.parallel.completed" && event.success === false && event.state === "paused"));
@@ -564,7 +566,7 @@ describe("async execution utilities", () => {
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const finalStatus = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		const finalStatus = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload;
 		assert.equal(result.state, "paused");
 		assert.equal(result.outputs?.firstOutput, undefined);
 		assert.equal(finalStatus.state, "paused");
@@ -600,7 +602,7 @@ describe("async execution utilities", () => {
 		const asyncId = result.details?.asyncId;
 		assert.ok(asyncId, "expected asyncId");
 		const resultPath = path.join(RESULTS_DIR, `${asyncId}.json`);
-		const statusPath = path.join(ASYNC_DIR, asyncId, "status.json");
+		const statusPath = path.join(getRunMetadataDir(asyncId), "status.json");
 		const deadline = Date.now() + 10_000;
 		while (!fs.existsSync(resultPath)) {
 			if (Date.now() > deadline) assert.fail(`Timed out waiting for async result file: ${resultPath}`);
@@ -801,8 +803,7 @@ describe("async execution utilities", () => {
 			}),
 			"```",
 		].join("\n");
-		mockPi.onCall({ output: report });
-		mockPi.onCall({ output: `Completed the file and verified its content.\n${report}` });
+		mockPi.onCall({ nativeReport: { scenario: "single", initialReport: report, report: `Completed the file and verified its content.\n${report}`, receiptPath: path.join(tempDir, "native.json") } });
 		const id = `itest-ae-${process.pid}-acceptance-guard-${Date.now().toString(36)}`;
 		executeAsyncSingle(id, {
 			agent: "worker",
@@ -825,11 +826,8 @@ describe("async execution utilities", () => {
 		assert.equal(result.results[0]?.output, "Completed the file and verified its content.");
 		assert.equal(result.results[0]?.acceptance?.status, "checked");
 		assert.equal(result.results[0]?.acceptance?.finalization?.status, "completed");
-		assert.equal(mockPi.callCount(), 2);
-		const finalizationArgs = readLastMockPiArgs(mockPi);
-		const modelArg = finalizationArgs.lastIndexOf("--model");
-		assert.ok(modelArg >= 0);
-		assert.equal(finalizationArgs[modelArg + 1], "mock/test-model");
+		assert.equal(mockPi.callCount(), 1);
+		assert.equal(JSON.parse(fs.readFileSync(path.join(tempDir, "native.json"), "utf8")).providerCalls, 2);
 	});
 
 	it("async self-review exhaustion persists the full governing contract including verify", async () => {
@@ -842,8 +840,7 @@ describe("async execution utilities", () => {
 			}),
 			"```",
 		].join("\n");
-		mockPi.onCall({ output: failingReport });
-		mockPi.onCall({ output: failingReport });
+		mockPi.onCall({ nativeReport: { scenario: "single", initialReport: failingReport, report: failingReport, receiptPath: path.join(tempDir, "native.json") } });
 		const id = `itest-ae-${process.pid}-acceptance-exhaust-${Date.now().toString(36)}`;
 		executeAsyncSingle(id, {
 			agent: "worker",
@@ -868,7 +865,7 @@ describe("async execution utilities", () => {
 		assert.equal(result.results[0]?.acceptance?.effectiveAcceptance?.level, "verified");
 		assert.deepEqual(result.results[0]?.acceptance?.effectiveAcceptance?.verify?.map((entry) => entry.id), ["exhaust-verify"]);
 		assert.equal(result.results[0]?.acceptance?.effectiveAcceptance?.finalization?.maxTurns, 1);
-		const finalStatus = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		const finalStatus = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload;
 		assert.equal(finalStatus.steps?.[0]?.acceptance?.effectiveAcceptance?.level, "verified");
 		assert.deepEqual(finalStatus.steps?.[0]?.acceptance?.effectiveAcceptance?.verify?.map((entry) => entry.id), ["exhaust-verify"]);
 	});
@@ -882,8 +879,8 @@ describe("async execution utilities", () => {
 			}),
 			"```",
 		].join("\n");
-		mockPi.onCall({ output: report });
-		mockPi.onCall({ delay: 5_000, output: report });
+		const receipt = path.join(tempDir, "native.json");
+		mockPi.onCall({ nativeReport: { scenario: "cancel", initialReport: report, report: `Pending review\n${report}`, receiptPath: receipt } });
 		const id = `itest-ae-${process.pid}-acceptance-interrupt-${Date.now().toString(36)}`;
 		executeAsyncSingle(id, {
 			agent: "worker",
@@ -895,13 +892,17 @@ describe("async execution utilities", () => {
 			sessionFile: path.join(tempDir, "async-acceptance-interrupt-session.jsonl"),
 			acceptance: { criteria: ["Complete accepted work"], maxFinalizationTurns: 3 },
 		});
-		await waitForMockPiCalls(mockPi, 2, 10_000);
+		const deadline = Date.now() + 10_000;
+		while (!fs.existsSync(receipt) || !JSON.parse(fs.readFileSync(receipt, "utf8")).waiting) {
+			assert.ok(Date.now() < deadline, "native review must be waiting");
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
 		const runningStatus = await waitForAsyncStatus(id, (status) => status.state === "running" && typeof status.pid === "number", 10_000);
 		process.kill(runningStatus.pid!, "SIGUSR2");
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const finalStatus = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		const finalStatus = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload;
 		assert.equal(result.state, "paused");
 		assert.equal(result.exitCode, 0);
 		assert.equal(result.results[0]?.interrupted, true);
@@ -995,7 +996,7 @@ describe("async execution utilities", () => {
 		assert.ok(!result.isError);
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload;
 		assert.deepEqual(payload.results[0]?.structuredOutput, { value: "Alpha structured" });
 		assert.deepEqual(payload.outputs?.data?.structured, { value: "Alpha structured" });
 		assert.match(readMockPiArgs(mockPi, 1).at(-1) ?? "", /Alpha structured/);
@@ -1033,7 +1034,7 @@ describe("async execution utilities", () => {
 		});
 
 		assert.ok(!result.isError);
-		const statusPath = path.join(ASYNC_DIR, id, "status.json");
+		const statusPath = path.join(getRunMetadataDir(id), "status.json");
 		const deadline = Date.now() + 5_000;
 		let status: AsyncStatusPayload | undefined;
 		while (!status) {
@@ -1085,7 +1086,7 @@ describe("async execution utilities", () => {
 		assert.ok(!result.isError);
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload;
 		assert.equal(payload.success, true);
 		assert.equal(mockPi.callCount(), 4);
 		assert.match(readMockPiArgs(mockPi, 1).at(-1) ?? "", /Review src\/a\.ts/);
@@ -1242,7 +1243,8 @@ describe("async execution utilities", () => {
 		assert.ok(!result.isError);
 		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
 		assert.equal(payload.success, false);
-		assert.match(payload.results.map((entry) => `${entry.error ?? ""}\n${entry.output ?? ""}`).join("\n"), /same path/);
+		assert.match(payload.error, /same path/);
+		assert.equal(payload.results.length, 1, "preflight failure does not invent a child");
 		assert.equal(mockPi.callCount(), 1);
 		assert.equal(fs.existsSync(path.join(tempDir, "same.md")), false);
 	});
@@ -1268,7 +1270,7 @@ describe("async execution utilities", () => {
 		assert.ok(!result.isError);
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload;
 		assert.equal(payload.success, true);
 		assert.equal(payload.state, "complete");
 		assert.deepEqual(payload.outputs?.reviews?.structured, []);
@@ -1306,8 +1308,8 @@ describe("async execution utilities", () => {
 
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
-		const events = fs.readFileSync(path.join(ASYNC_DIR, id, "events.jsonl"), "utf-8").trim().split("\n").map((line) => JSON.parse(line) as { type?: string; success?: boolean; state?: string });
+		const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload;
+		const events = fs.readFileSync(path.join(getRunMetadataDir(id), "events.jsonl"), "utf-8").trim().split("\n").map((line) => JSON.parse(line) as { type?: string; success?: boolean; state?: string });
 
 		assert.equal(payload.state, "paused");
 		assert.equal(payload.outputs?.reviews, undefined);
@@ -1376,9 +1378,10 @@ describe("async execution utilities", () => {
 		assert.ok(!result.isError);
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload & { workflowGraph?: AsyncResultPayload["workflowGraph"]; error?: string };
+		const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload & { workflowGraph?: AsyncResultPayload["workflowGraph"]; error?: string };
 		assert.equal(payload.success, false);
-		assert.match(payload.results.at(-1)?.error ?? "", /exceeding maxItems 1/);
+		assert.match(payload.error, /exceeding maxItems 1/);
+		assert.equal(payload.results.length, 1, "expansion failure remains a workflow error");
 		assert.equal(payload.workflowGraph?.nodes?.[1]?.status, "failed");
 		assert.match(payload.workflowGraph?.nodes?.[1]?.error ?? "", /exceeding maxItems 1/);
 		assert.equal(status.state, "failed");
@@ -1409,11 +1412,12 @@ describe("async execution utilities", () => {
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
 		assert.equal(payload.success, false);
-		assert.match(payload.results.at(-1)?.error ?? "", /Collected output validation failed/);
-		assert.ok(Array.isArray(payload.results.at(-1)?.structuredOutput), "failed collect result should preserve ordered collection details");
+		assert.match(payload.error, /Collected output validation failed/);
+		assert.equal(payload.results.length, 2, "collection validation does not invent a failed child");
+		assert.deepEqual(payload.results.map((child) => child.structuredOutput), [{ items: [{ path: "src/a.ts" }] }, { ok: "a" }], "ordered child evidence remains available without publishing an invalid collection");
 		assert.equal(payload.workflowGraph?.nodes?.[1]?.status, "failed");
 		assert.match(payload.workflowGraph?.nodes?.[1]?.error ?? "", /Collected output validation failed/);
-		const completed = fs.readFileSync(path.join(ASYNC_DIR, id, "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
+		const completed = fs.readFileSync(path.join(getRunMetadataDir(id), "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
 			.find((event) => event.type === "subagent.dynamic.completed");
 		assert.equal(completed.success, false);
 		assert.equal(completed.state, "failed");
@@ -1609,7 +1613,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "Recovered asynchronously" });
 		const id = `itest-ae-${process.pid}-fallback-${Date.now().toString(36)}`;
 		const sessionRoot = path.join(tempDir, "sessions");
-		const asyncDir = path.join(ASYNC_DIR, id);
+		const asyncDir = getRunMetadataDir(id);
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 		const run = executeAsyncSingle(id, {
 			agent: "worker",
@@ -1667,7 +1671,7 @@ describe("async execution utilities", () => {
 			exitCode: 0,
 		});
 		const id = `itest-ae-${process.pid}-zero-exit-provider-error-${Date.now().toString(36)}`;
-		const asyncDir = path.join(ASYNC_DIR, id);
+		const asyncDir = getRunMetadataDir(id);
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Do work",
@@ -1705,7 +1709,7 @@ describe("async execution utilities", () => {
 			],
 		});
 		const id = `itest-ae-${process.pid}-recovered-child-error-${Date.now().toString(36)}`;
-		const asyncDir = path.join(ASYNC_DIR, id);
+		const asyncDir = getRunMetadataDir(id);
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Do work",
@@ -1747,7 +1751,7 @@ describe("async execution utilities", () => {
 			],
 		});
 		const id = `itest-ae-${process.pid}-provider-error-empty-stop-${Date.now().toString(36)}`;
-		const asyncDir = path.join(ASYNC_DIR, id);
+		const asyncDir = getRunMetadataDir(id);
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Do work",
@@ -1910,7 +1914,7 @@ describe("async execution utilities", () => {
 		assert.equal(payload.success, false);
 		assert.equal(payload.exitCode, 1);
 		assert.match(payload.results[0]?.error ?? "", /stuck repeating the same failed subagent call 5 times/);
-		const output = fs.readFileSync(path.join(ASYNC_DIR, id, "output-0.log"), "utf-8");
+		const output = fs.readFileSync(path.join(getRunMetadataDir(id), "output-0.log"), "utf-8");
 		assert.equal(output.match(/stuck repeating the same failed subagent call/g)?.length, 1);
 	});
 
@@ -1947,7 +1951,7 @@ describe("async execution utilities", () => {
 		assert.match(String(payload.results[0].error ?? ""), /completed without making edits/);
 		assert.match(String(payload.results[0].modelAttempts?.[0]?.error ?? ""), /completed without making edits/);
 
-		const eventsPath = path.join(ASYNC_DIR, id, "events.jsonl");
+		const eventsPath = path.join(getRunMetadataDir(id), "events.jsonl");
 		const eventsText = fs.readFileSync(eventsPath, "utf-8");
 		assert.match(eventsText, /"reason":"completion_guard"/);
 		assert.match(eventsText, /Subagent failed: worker/);
@@ -2009,7 +2013,7 @@ describe("async execution utilities", () => {
 		assert.equal(payload.results[0].success, true);
 		assert.equal(payload.results[0].output, "cold start test after patch");
 
-		const eventsPath = path.join(ASYNC_DIR, id, "events.jsonl");
+		const eventsPath = path.join(getRunMetadataDir(id), "events.jsonl");
 		const eventsText = fs.readFileSync(eventsPath, "utf-8");
 		assert.doesNotMatch(eventsText, /"reason":"completion_guard"/);
 	});
@@ -2058,7 +2062,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "Done asynchronously" });
 		const taskCwd = createTempDir("pi-subagent-async-task-cwd-");
 		const id = `itest-ae-${process.pid}-skill-cwd-${Date.now().toString(36)}`;
-		const asyncDir = path.join(ASYNC_DIR, id);
+		const asyncDir = getRunMetadataDir(id);
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 		const statusPath = path.join(asyncDir, "status.json");
 
@@ -2148,7 +2152,7 @@ describe("async execution utilities", () => {
 		mockPi.onCall({ output: "Done asynchronously" });
 		const chainCwd = createTempDir("pi-subagent-async-chain-cwd-");
 		const id = `itest-ae-${process.pid}-chain-skill-cwd-${Date.now().toString(36)}`;
-		const asyncDir = path.join(ASYNC_DIR, id);
+		const asyncDir = getRunMetadataDir(id);
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 		const statusPath = path.join(asyncDir, "status.json");
 
@@ -2199,7 +2203,7 @@ describe("async execution utilities", () => {
 		});
 
 		const id = `itest-ae-${process.pid}-parallel-tool-sync-${Date.now().toString(36)}`;
-		const asyncDir = path.join(ASYNC_DIR, id);
+		const asyncDir = getRunMetadataDir(id);
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 
 		executeAsyncChain(id, {
@@ -2242,7 +2246,7 @@ describe("async execution utilities", () => {
 		const id = `itest-ae-${process.pid}-write-fail-${Date.now().toString(36)}`;
 		assert.ok(TEMP_ROOT_DIR, "TEMP_ROOT_DIR should be available for async tests");
 		fs.mkdirSync(TEMP_ROOT_DIR, { recursive: true });
-		fs.mkdirSync(path.join(TEMP_ROOT_DIR, `async-cfg-${id}.json`), { recursive: true });
+		fs.mkdirSync(path.join(getRunMetadataDir(id), "launch.json"), { recursive: true });
 
 		const result = executeAsyncSingle(id, {
 			agent: "worker",
@@ -2256,7 +2260,7 @@ describe("async execution utilities", () => {
 
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /Failed to start async run/);
-		assert.match(result.content[0]?.text ?? "", /async-cfg-/);
+		assert.match(result.content[0]?.text ?? "", /launch\.json/);
 	});
 
 	it("returns a tool error when an async run uses a missing cwd", () => {
@@ -2321,7 +2325,7 @@ describe("async execution utilities", () => {
 		const id = `itest-ae-${process.pid}-chain-write-fail-${Date.now().toString(36)}`;
 		assert.ok(TEMP_ROOT_DIR, "TEMP_ROOT_DIR should be available for async tests");
 		fs.mkdirSync(TEMP_ROOT_DIR, { recursive: true });
-		fs.mkdirSync(path.join(TEMP_ROOT_DIR, `async-cfg-${id}.json`), { recursive: true });
+		fs.mkdirSync(path.join(getRunMetadataDir(id), "launch.json"), { recursive: true });
 
 		const result = executeAsyncChain(id, {
 			chain: [{ agent: "worker", task: "Do work" }],
@@ -2334,7 +2338,7 @@ describe("async execution utilities", () => {
 
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /Failed to start async chain/);
-		assert.match(result.content[0]?.text ?? "", /async-cfg-/);
+		assert.match(result.content[0]?.text ?? "", /launch\.json/);
 	});
 
 	it("background forced drain after final assistant output is cleanup success", async () => {
@@ -2490,7 +2494,7 @@ describe("async execution utilities", () => {
 		});
 
 		const id = `itest-ae-${process.pid}-tool-failures-${Date.now().toString(36)}`;
-		const asyncDir = path.join(ASYNC_DIR, id);
+		const asyncDir = getRunMetadataDir(id);
 		const eventsPath = path.join(asyncDir, "events.jsonl");
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 
@@ -2557,7 +2561,7 @@ describe("async execution utilities", () => {
 		});
 
 		const id = `itest-ae-${process.pid}-tool-failures-false-positive-${Date.now().toString(36)}`;
-		const asyncDir = path.join(ASYNC_DIR, id);
+		const asyncDir = getRunMetadataDir(id);
 
 		executeAsyncSingle(id, {
 			agent: "worker",
@@ -2594,7 +2598,7 @@ describe("async execution utilities", () => {
 		});
 
 		const id = `itest-ae-${process.pid}-stream-${Date.now().toString(36)}`;
-		const asyncDir = path.join(ASYNC_DIR, id);
+		const asyncDir = getRunMetadataDir(id);
 		const eventsPath = path.join(asyncDir, "events.jsonl");
 		const outputPath = path.join(asyncDir, "output-0.log");
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);

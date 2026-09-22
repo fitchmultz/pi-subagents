@@ -7,7 +7,7 @@ import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import * as records from "../../src/runs/shared/run-records.ts";
-import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
+import { getRunMetadataDir, listSupervisorQuestions, saveQuestionAnswer, questionProcessAlive } from "../../src/runs/shared/supervisor-questions.ts";
 import { loadRunsForAgent } from "../../src/runs/shared/run-history.ts";
 import { RESULTS_DIR } from "../../src/shared/types.ts";
 import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, removeTempDir } from "../support/helpers.ts";
@@ -181,17 +181,48 @@ describe("unified owner result retention through actual router", () => {
 		assert.ok(saved(result).summary.includes(patchDir));
 	});
 
-	for (const scenario of ["blocked", "public-output"]) it(`retains actual native ${scenario} acceptance through the router`, async () => {
+	for (const scenario of ["blocked", "public-output", "dynamic", "question-initial", "question-review"]) it(`retains actual native ${scenario} acceptance through the router`, async () => {
 		const before = { PATH: process.env.PATH, PI_DRIVER_FIXTURE: process.env.PI_DRIVER_FIXTURE, PI_INTERCOM_TEST_SDK: process.env.PI_INTERCOM_TEST_SDK };
 		const bin = path.join(cwd, "bin"), input = path.join(cwd, "native.json"); fs.mkdirSync(bin);
 		fs.writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec '${process.execPath}' '${path.join(sdkRoot, "dist/cli.js")}' "$@"\n`, { mode: 0o755 });
-		fs.writeFileSync(input, JSON.stringify({ scenario, receiptPath: path.join(cwd, "receipt.json"), report: { criteriaSatisfied: [{ id: "deliver", status: "satisfied", evidence: "fixture" }] } }));
+		fs.writeFileSync(input, JSON.stringify({ scenario: scenario === "dynamic" ? "public-output" : scenario, ...(scenario === "dynamic" ? { items: ["a", "b"] } : {}), receiptPath: path.join(cwd, "receipt.json"), report: { criteriaSatisfied: [{ id: "deliver", status: "satisfied", evidence: "fixture" }] } }));
 		Object.assign(process.env, { PATH: `${bin}${path.delimiter}${before.PATH}`, PI_DRIVER_FIXTURE: input, PI_INTERCOM_TEST_SDK: sdkRoot });
 		try {
-			const result = await executor(makeAgent("worker", { model: "driver-fixture/faux-1", extensions: [path.join(repo, "test/fixtures/native-child-attempt.mjs")] }))
-				.execute("native", { agent: "worker", task: "Complete fixture", acceptance: { criteria: [{ id: "deliver", must: "Complete fixture" }] },
-					...(scenario === "public-output" ? { output: path.join(cwd, "native-report.md"), outputMode: "file-only", outputSchema: { type: "object", properties: { items: { type: "array", items: { type: "string" } } }, required: ["items"] } } : {}) }, undefined, undefined, makeMinimalCtx(cwd));
+			const launch = executor(makeAgent("worker", { model: "driver-fixture/faux-1", extensions: [path.join(repo, "test/fixtures/native-child-attempt.mjs"), ...(scenario.startsWith("question-") ? ["pi-intercom"] : [])] }));
+			const acceptance = { criteria: [{ id: "deliver", must: "Complete fixture" }] };
+			const outputSchema = { type: "object", properties: { items: { type: "array", items: { type: "string" } } }, required: ["items"] };
+			const result = await launch.execute("native", scenario === "dynamic" ? { chain: [
+				{ agent: "worker", task: "List items", as: "items", outputSchema },
+				{ expand: { from: { output: "items", path: "/items" }, maxItems: 2 }, parallel: { agent: "worker", task: "Review {item}", acceptance, outputSchema }, collect: { as: "reviews" }, concurrency: 1 },
+			] } : { agent: "worker", task: "Complete fixture", acceptance,
+				...(scenario === "public-output" ? { output: path.join(cwd, "native-report.md"), outputMode: "file-only", outputSchema } : {}) }, undefined, undefined, makeMinimalCtx(cwd));
 			assert.equal(result.isError, undefined, JSON.stringify(result.content));
+			if (scenario.startsWith("question-")) {
+				assert.equal(result.details.wait.status, "awaiting_input");
+				const runId = result.details.wait.runId;
+				const question = listSupervisorQuestions("session-123", runId).find((question) => question.state === "awaiting_input")!;
+				assert.ok(question);
+				const receipt = JSON.parse(fs.readFileSync(path.join(cwd, "receipt.json"), "utf8"));
+				assert.equal(receipt.calls, scenario === "question-initial" ? 1 : 2);
+				assert.equal(questionProcessAlive({ pid: receipt.pid }), true);
+				assert.equal(fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")), false);
+				saveQuestionAnswer(question, "Proceed with the fixture.");
+				const deadline = Date.now() + 10_000;
+				while (!fs.existsSync(path.join(getRunMetadataDir(runId), "result.json"))) { assert.ok(Date.now() < deadline, "owner must complete after answer"); await delay(20); }
+				const completed = saved({ details: { runId } });
+				assert.equal(completed.success, true, JSON.stringify(completed));
+				assert.equal(completed.results[0].finalOutput, "Reviewed answer");
+				assert.equal(completed.results[0].acceptance.finalization.turns.length, 1);
+				assert.equal(completed.results[0].agentProcessExit.pid, receipt.pid);
+				const terminalEvents = fs.readFileSync(path.join(getRunMetadataDir(runId), "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+				assert.equal(terminalEvents.filter((event) => event.type === "subagent.run.completed").length, 1);
+				return;
+			}
+			if (scenario === "dynamic") {
+				assert.deepEqual(result.details.workflowGraph.nodes[1].children.map((child) => child.acceptanceStatus), ["checked", "checked"]);
+				assert.equal(result.details.outputs.reviews.structured.length, 2);
+				return;
+			}
 			const child = result.details.results[0];
 			if (scenario === "blocked") {
 				assert.match(result.content[0].text, /Needs your action/);

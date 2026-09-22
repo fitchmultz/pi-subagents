@@ -343,17 +343,12 @@ describe("fork context execution wiring", () => {
 	});
 
 	it("uses local duration history before raising planner foreground budgets", async () => {
-		const agentDir = path.join(tempDir, "agent-dir");
-		process.env.PI_CODING_AGENT_DIR = agentDir;
-		fs.mkdirSync(agentDir, { recursive: true });
-		fs.writeFileSync(path.join(agentDir, "run-history.jsonl"), [
-			JSON.stringify({ agent: "planner", task: "old", ts: 1, status: "ok", duration: 1000 }),
-			JSON.stringify({ agent: "planner", task: "old", ts: 2, status: "ok", duration: 1000 }),
-			JSON.stringify({ agent: "planner", task: "old", ts: 3, status: "ok", duration: 1000 }),
-		].join("\n") + "\n", "utf-8");
+		const { recordRun } = await import("../../src/runs/shared/run-history.ts");
+		const agent = `planner-history-${process.pid}`;
+		for (let index = 0; index < 3; index++) recordRun(agent, "old", 0, 1000);
 		const { manager } = makeSessionManagerRecorder();
 		const executor = makeExecutorWithDiscoverAgents(() => ({
-			agents: [{ name: "planner", description: "Planner" }],
+			agents: [{ name: agent, description: "Planner" }],
 			projectAgentsDir: null,
 		}));
 		mockPi.reset();
@@ -361,13 +356,13 @@ describe("fork context execution wiring", () => {
 
 		const result = await executor.execute(
 			"id",
-			{ agent: "planner", task: "Plan slowly", timeoutMs: 180 },
+			{ agent, task: "Plan slowly", timeoutMs: 180 },
 			new AbortController().signal,
 			undefined,
 			makeCtx(manager),
 		);
 
-		assert.equal(result.isError, undefined);
+		assert.equal(result.isError, undefined, JSON.stringify(result));
 		assert.match(result.content[0]?.text ?? "", /planner complete/);
 	});
 

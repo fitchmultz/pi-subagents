@@ -1,15 +1,13 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
-import { runSync } from "../../src/runs/foreground/execution.ts";
+import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { executeAsyncSingle } from "../../src/runs/background/async-execution.ts";
 import { ASYNC_DIR, RESULTS_DIR, getAsyncConfigPath } from "../../src/shared/types.ts";
 import { getRunMetadataDir, questionProcessAlive } from "../../src/runs/shared/supervisor-questions.ts";
 import { readClaudeCodeSessionMetadata } from "../../src/runs/shared/claude-code.ts";
-import { createStructuredOutputRuntime } from "../../src/runs/shared/structured-output.ts";
-import { makeAgent, createTempDir, removeTempDir, createEventBus } from "../support/helpers.ts";
+import { makeAgent, makeMinimalCtx, createTempDir, removeTempDir, createEventBus } from "../support/helpers.ts";
 
 function installMockClaude(root: string): { callsDir: string; restore: () => void } {
 	const binDir = path.join(root, "bin");
@@ -71,21 +69,35 @@ function readCalls(callsDir: string): Array<{ args: string[]; env: Record<string
 describe("Claude Code child backend", () => {
 	let tempDir: string;
 	let mock: { callsDir: string; restore: () => void };
+	let state;
+	function executor(agent) {
+		return createSubagentExecutor({ pi: { events: createEventBus(), getSessionName: () => undefined }, state,
+			config: {}, asyncByDefault: false, tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir,
+			expandTilde: (value) => value, discoverAgents: () => ({ agents: [agent] }) });
+	}
 
 	beforeEach(() => {
 		tempDir = createTempDir("claude-code-exec-");
 		mock = installMockClaude(tempDir);
+		state = { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), ownedRuns: new Map(), lastForegroundControlId: null };
 	});
 
 	afterEach(() => {
 		mock.restore();
+		for (const run of state.ownedRuns.values()) {
+			removeTempDir(getRunMetadataDir(run.runId));
+			fs.rmSync(path.join(RESULTS_DIR, `${run.runId}.json`), { force: true });
+		}
 		removeTempDir(tempDir);
 	});
 
 	it("runs and resumes claude-code/* models through claude -p", async () => {
-		const sessionFile = path.join(tempDir, "session.jsonl");
 		const agent = makeAgent("echo", { model: "claude-code/sonnet", thinking: "high", tools: ["bash", "read"] });
-		const first = await runSync(tempDir, [agent], "echo", "start", { cwd: tempDir, sessionFile });
+		const launch = executor(agent);
+		const started = await launch.execute("start", { agent: "echo", task: "start" }, undefined, undefined, makeMinimalCtx(tempDir));
+		assert.equal(started.isError, undefined, JSON.stringify(started.content));
+		const first = started.details.results[0];
+		const sessionFile = first.sessionFile;
 		assert.equal(first.exitCode, 0);
 		assert.equal(first.finalOutput, "MOCK_STARTED");
 		assert.equal(first.model, "claude-code/sonnet:high");
@@ -102,10 +114,14 @@ describe("Claude Code child backend", () => {
 		assert.deepEqual(firstCall.args.slice(firstCall.args.indexOf("--setting-sources"), firstCall.args.indexOf("--setting-sources") + 2), ["--setting-sources", ""]);
 		assert.ok(firstCall.args.includes("--disable-slash-commands"));
 		assert.ok(firstCall.args.includes("--disallowedTools=Agent"));
-		assert.ok(firstCall.args.indexOf("--disallowedTools=Agent") < firstCall.args.indexOf("start"));
+		const taskIndex = firstCall.args.indexOf("--tools") - 1;
+		assert.match(firstCall.args[taskIndex], /start/);
+		assert.ok(firstCall.args.indexOf("--disallowedTools=Agent") < taskIndex);
 		assert.equal(firstCall.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "300000");
 
-		const second = await runSync(tempDir, [agent], "echo", "continue", { cwd: tempDir, sessionFile });
+		const continued = await launch.execute("continue", { action: "resume", id: started.details.runId, message: "continue", async: false }, undefined, undefined, makeMinimalCtx(tempDir));
+		assert.equal(continued.isError, undefined, JSON.stringify(continued.content));
+		const second = continued.details.results[0];
 		assert.equal(second.exitCode, 0);
 		assert.equal(second.finalOutput, "MOCK_RESUMED");
 		const secondCall = readCalls(mock.callsDir)[1]!;
@@ -116,24 +132,23 @@ describe("Claude Code child backend", () => {
 
 	it("uses Claude Code native structured output", async () => {
 		const schema = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
-		const result = await runSync(tempDir, [makeAgent("echo", { model: "claude-code/sonnet" })], "echo", "return JSON", {
-			cwd: tempDir,
-			structuredOutput: createStructuredOutputRuntime(schema, path.join(tempDir, "structured")),
-		});
+		const completed = await executor(makeAgent("echo", { model: "mock/pi", tools: ["read"] })).execute("json", { agent: "echo", task: "return JSON", model: "claude-code/sonnet", outputSchema: schema }, undefined, undefined, makeMinimalCtx(tempDir));
+		assert.equal(completed.isError, undefined, JSON.stringify(completed.content));
+		const result = completed.details.results[0];
 		assert.equal(result.exitCode, 0);
 		assert.deepEqual(result.structuredOutput, { ok: true });
 		const args = readCalls(mock.callsDir)[0]!.args;
 		assert.deepEqual(args.slice(args.indexOf("--json-schema"), args.indexOf("--json-schema") + 2), ["--json-schema", JSON.stringify(schema)]);
 	});
 
-	for (const background of [false, true]) it(`${background ? "background" : "foreground"} Claude Code finalization retains its text contract and initial JSON schema`, async () => {
+	it("background Claude Code finalization retains its text contract and initial JSON schema", async () => {
 		const id = path.basename(tempDir);
 		const schema = { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] };
 		const agent = makeAgent("echo", { model: "claude-code/sonnet" });
 		const acceptance = { criteria: ["Deliver the final result"], maxFinalizationTurns: 1 };
 		let result;
 		try {
-			if (background) {
+			{
 				executeAsyncSingle(id, { agent: "echo", task: "Return the result", agentConfig: agent,
 					ctx: { pi: { events: createEventBus() }, cwd: tempDir, currentSessionId: id }, acceptance, outputSchema: schema,
 					sessionFile: path.join(tempDir, "session.jsonl"), shareEnabled: false, maxSubagentDepth: 2 });
@@ -144,14 +159,11 @@ describe("Claude Code child backend", () => {
 					await new Promise((resolve) => setTimeout(resolve, 20));
 				}
 				result = JSON.parse(fs.readFileSync(resultPath, "utf8")).results[0];
-				const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8"));
+				const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf8"));
 				while (questionProcessAlive({ pid: status.pid })) {
 					assert.ok(Date.now() < deadline, "owned Claude fixture runner must exit");
 					await new Promise((resolve) => setTimeout(resolve, 20));
 				}
-			} else {
-				result = await runSync(tempDir, [agent], "echo", "Return the result", { runId: id, acceptance,
-					sessionFile: path.join(tempDir, "session.jsonl"), structuredOutput: createStructuredOutputRuntime(schema, tempDir) });
 			}
 			assert.equal(result.exitCode, 0, result.error);
 			assert.equal(result.finalOutput ?? result.output, "MOCK_RESUMED");
@@ -179,17 +191,17 @@ describe("Claude Code child backend", () => {
 
 	it("fails closed for Claude Code agents with MCP direct tool allowlists", async () => {
 		const agent = makeAgent("echo", { model: "claude-code/sonnet", tools: ["read"], mcpDirectTools: ["github.create_issue"] });
-		const result = await runSync(tempDir, [agent], "echo", "start", { cwd: tempDir });
-		assert.equal(result.exitCode, 1);
-		assert.match(result.error ?? result.finalOutput ?? "", /MCP direct tool allowlist entries: github\.create_issue/);
+		const result = await executor(agent).execute("unsupported-mcp", { agent: "echo", task: "start" }, undefined, undefined, makeMinimalCtx(tempDir));
+		assert.equal(result.isError, true);
+		assert.match(result.content[0].text, /MCP direct tool allowlist entries: github\.create_issue/);
 		assert.deepEqual(readCalls(mock.callsDir), []);
 	});
 
 	it("fails closed for Claude Code agents with nested subagent fanout enabled", async () => {
 		const agent = makeAgent("echo", { model: "claude-code/sonnet", allowSubagents: true });
-		const result = await runSync(tempDir, [agent], "echo", "start", { cwd: tempDir });
-		assert.equal(result.exitCode, 1);
-		assert.match(result.error ?? result.finalOutput ?? "", /does not support nested subagent fanout/);
+		const result = await executor(agent).execute("unsupported-fanout", { agent: "echo", task: "start" }, undefined, undefined, makeMinimalCtx(tempDir));
+		assert.equal(result.isError, true);
+		assert.match(result.content[0].text, /does not support nested subagent fanout/);
 		assert.deepEqual(readCalls(mock.callsDir), []);
 	});
 });

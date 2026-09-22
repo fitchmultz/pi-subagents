@@ -12,7 +12,7 @@ import { buildSubagentResultIntercomPayload, formatSubagentResultReceipt, stripD
 import { buildWorkflowGraphSnapshot } from "../../src/runs/shared/workflow-graph.ts";
 import type { ChainStep } from "../../src/shared/settings.ts";
 import type { SingleResult, SubagentExecutionResult } from "../../src/shared/types.ts";
-import { compactForegroundDetails } from "../../src/shared/utils.ts";
+import { compactForegroundResult } from "../../src/shared/utils.ts";
 import { renderSubagentResult } from "../../src/tui/render.ts";
 import { applySlashUpdate, buildSlashInitialResult, clearSlashSnapshots, finalizeSlashResult, restoreSlashFinalSnapshots } from "../../src/slash/slash-live-state.ts";
 
@@ -280,8 +280,8 @@ test("native stopped chain expansion includes the prefix before the retained par
 			const receipt: SubagentExecutionResult = {
 				content: [{ type: "text", text: `Chain ${status} at step 2 (reviewer).` }],
 				isError: status === "failed",
-				details: compactForegroundDetails({
-					mode: "chain", runId: `stopped-${metadata}-${status}`, results,
+				details: {
+					mode: "chain", runId: `stopped-${metadata}-${status}`, results: results.map(compactForegroundResult),
 					chainAgents: ["scout", metadata === "dynamic" ? "expand:reviewer" : "[reviewer+reviewer]", "writer"],
 					totalSteps: 3, currentStepIndex: 1, progress: results.map((entry) => entry.progress!),
 					workflowGraph: metadata === "labels" ? undefined : buildWorkflowGraphSnapshot({
@@ -292,7 +292,7 @@ test("native stopped chain expansion includes the prefix before the retained par
 							{ agent: "reviewer", flatIndex: 2, itemKey: "b" },
 						] },
 					}),
-				}),
+				},
 			};
 			for (const surface of ["tool", "slash"] as const) {
 				await t.test(`${metadata} ${status} ${surface}`, () => {

@@ -98,7 +98,7 @@ export function resolveIntercomBridge(orchestratorTarget: string): IntercomBridg
 	};
 }
 
-export function applyIntercomBridgeToAgent(agent: AgentConfig, bridge: IntercomBridgeState): AgentConfig {
+export function applyIntercomBridgeToAgent<T extends Pick<AgentConfig, "systemPrompt" | "tools" | "extensions">>(agent: T, bridge: IntercomBridgeState): T {
 	if (!extensionSandboxAllowsIntercom(agent.extensions)) return agent;
 
 	const bridgeTools = ["intercom", "contact_supervisor"];

@@ -22,7 +22,7 @@ import {
 } from "../../shared/agent-context-policy.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { resolveExecutionCwd } from "../../shared/execution-cwd.ts";
-import { applyIntercomBridgeToAgent, resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import { resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
 import { createNestedRoute, resolveInheritedNestedRouteFromEnv } from "../shared/nested-events.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
@@ -310,7 +310,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			resolveAgentContext(effectiveParams.context, agentName, discoveredAgents);
 		const resolveContextForIndex = (index?: number) =>
 			resolveContextForAgent(agentNameAtIndex(index ?? 0));
-		const agents = discoveredAgents.map((agent) => applyIntercomBridgeToAgent({ ...agent, defaultContext: resolveContextForAgent(agent.name) }, intercomBridge));
+		const agents = discoveredAgents.map((agent) => ({ ...agent, defaultContext: resolveContextForAgent(agent.name) }));
 		const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
 		const nestedRoute = inheritedNestedRoute ?? createNestedRoute(runId);
 		const shareEnabled = effectiveParams.share === true;

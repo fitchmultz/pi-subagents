@@ -123,12 +123,13 @@ export async function evaluateRunAcceptance(input: {
 	cwd: string;
 	signal?: AbortSignal;
 	nativeReport?: boolean;
+	recordedTurns?: number;
 	runTurn: (prompt: string, turn: number, sessionFile: string) => Promise<FinalizationReportSubmission & { error?: string }>;
 }): Promise<AcceptanceLedger> {
 	const review = shouldRunAcceptanceFinalization(input.acceptance);
 	const selfReview = review ? acceptanceSelfReviewConfig(input.acceptance) : input.acceptance;
 	const initialLedger = await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: input.initialOutput, report: input.initialReport, cwd: input.cwd, signal: input.signal });
-	if (initialLedger.status === "blocked" || !review || input.initial.exitCode !== 0 || input.initial.error || input.initial.interrupted || input.signal?.aborted) return initialLedger;
+	if (initialLedger.status === "blocked" || !review || input.initial.exitCode !== 0 || input.initial.error || input.initial.interrupted || (input.signal?.aborted && !input.recordedTurns)) return initialLedger;
 
 	const maxTurns = input.acceptance.finalization.maxTurns;
 	const turns: AcceptanceFinalizationTurn[] = [];
@@ -142,7 +143,7 @@ export async function evaluateRunAcceptance(input: {
 	let auditOutput = reportAuditOutput({ output: input.initialOutput, report: input.initialReport });
 	for (let turn = 1; turn <= maxTurns; turn++) {
 		const prompt = formatAcceptanceFinalizationPrompt({ acceptance: input.acceptance, initialOutput: input.initialOutput, initialLedger, turn, maxTurns, previousFailure, nativeReport: input.nativeReport });
-		const result = input.signal?.aborted
+		const result = input.signal?.aborted && turn > (input.recordedTurns ?? 0)
 			? { output: "", error: "Acceptance finalization cancelled." }
 			: await input.runTurn(prompt, turn, input.sessionFile);
 		const retained = result.unconfirmedOutput ?? reportAuditOutput(result);

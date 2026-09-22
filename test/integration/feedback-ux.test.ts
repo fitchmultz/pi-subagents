@@ -214,7 +214,6 @@ for (const childSafe of [false, true]) test(`feedback ${childSafe ? "child-safe"
 
 test("feedback child-safe launch and completion hints do not depend on a live nested route", async () => {
 	const { buildSubagentResultIntercomPayload } = await import("../../src/intercom/result-intercom.ts");
-	const { formatDetachedIntercomGuidance } = await import("../../src/runs/shared/intercom-detach.ts");
 	const keys = ["PI_SUBAGENT_CHILD", "PI_SUBAGENT_FANOUT_CHILD", "PI_SUBAGENT_PARENT_EVENT_SINK", "PI_SUBAGENT_PARENT_ROOT_RUN_ID", "PI_SUBAGENT_PARENT_CAPABILITY_TOKEN"];
 	const previous = keys.map((key) => process.env[key]);
 	process.env.PI_SUBAGENT_CHILD = "1";
@@ -224,7 +223,6 @@ test("feedback child-safe launch and completion hints do not depend on a live ne
 		const fixture = setup("child-safe-hints");
 		const text = [formatAsyncStartedMessage("Started"),
 			buildSubagentResultIntercomPayload({ to: "parent", runId: fixture.run.runId, asyncId: fixture.run.runId, mode: "single", source: "async", children: [{ agent: "worker", status: "completed", summary: "Done", sessionPath: fixture.sessionFile }] }).message,
-			formatDetachedIntercomGuidance({ headline: "Waiting", runId: fixture.run.runId, result: fixture.child, childIndex: 0 }),
 		].join("\n");
 		assert.match(text, /subagent\(\{ action: "status"/);
 		assert.match(text, /subagent\(\{ action: "resume"/);

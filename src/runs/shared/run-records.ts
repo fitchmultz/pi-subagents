@@ -3,24 +3,21 @@ import * as path from "node:path";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext, parseSessionEntries } from "../../shared/native-session.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
-import type { AgentConfig } from "../../agents/agents.ts";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { compactForegroundResult, getFinalOutput, getSingleResultOutput, readStatus } from "../../shared/utils.ts";
-import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { resolveSubagentResultStatus } from "../../intercom/result-intercom.ts";
 import { buildManagementControl, formatAgentProcessExit, formatRunAction } from "../../shared/status-format.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { isDurableRun, readAsyncResultFile } from "../background/async-result-file.ts";
 import { asyncRunRoots, exactAsyncRunLocation } from "../background/async-resume.ts";
 import { reconcileAsyncRun } from "../background/stale-run-reconciler.ts";
-import { applyThinkingSuffix } from "./pi-args.ts";
 import { acceptanceHumanAction } from "./acceptance-evaluation.ts";
 import { sumAttemptUsage } from "./model-fallback.ts";
 import { workflowAgentNodes } from "./workflow-graph.ts";
 import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
-import { getRunMetadataDir, listRunQuestions, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionContract, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
-import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, truncateOutput, type AgentProgress, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type RunSyncOptions, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
+import { getRunMetadataDir, listRunQuestions, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
+import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, truncateOutput, type AgentProgress, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
 
 export const OWNED_RUN_ENTRY = "subagent-run";
 
@@ -62,27 +59,6 @@ export function saveForegroundRun(input: { runId: string; mode: ForegroundResume
 	};
 	writeAtomicJson(path.join(getRunMetadataDir(input.runId), "foreground.json"), run);
 	return run;
-}
-
-export function saveForegroundLaunch(agent: AgentConfig, task: string, systemPrompt: string, skills: string[], models: string[], options: RunSyncOptions, runtimeCwd: string): void {
-	if (!options.runId) return;
-	const model = applyThinkingSuffix(models[0], agent.thinking);
-	const contract = readQuestionContract(options.runId, options.index ?? 0);
-	saveQuestionContract(options.runId, options.index ?? 0, {
-		task, sessionFile: options.sessionFile,
-		launch: {
-			agent, systemPrompt, skills, model, thinking: resolveEffectiveThinking(model, agent.thinking),
-			artifacts: options.artifactsDir !== undefined, artifactsDir: options.artifactsDir, share: options.share === true,
-			modelCandidates: models.map((candidate) => applyThinkingSuffix(candidate, agent.thinking)!),
-			cwd: options.cwd ?? runtimeCwd, context: agent.defaultContext ?? "fresh",
-			output: options.outputPath ?? false, outputMode: options.outputMode ?? "inline", outputSchema: options.structuredOutput?.schema,
-			...(options.outputPathFromAgentDefault && options.outputPath && typeof agent.output === "string" && !path.isAbsolute(agent.output) ? { generatedOutputFilename: path.basename(agent.output) } : {}),
-			effectiveAcceptance: contract?.effectiveAcceptance,
-			maxOutput: { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput }, maxSubagentDepth: options.maxSubagentDepth,
-			maxExecutionTimeMs: options.maxExecutionTimeMs, maxTokens: options.maxTokens,
-			controlConfig: options.controlConfig, projectTrust: options.projectTrust, projectTrusted: options.projectTrusted,
-		},
-	});
 }
 
 function receiptDetails(entry: SessionEntry): Details | undefined {

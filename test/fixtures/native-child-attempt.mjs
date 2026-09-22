@@ -11,7 +11,7 @@ const { fauxProvider, fauxAssistantMessage, fauxToolCall, getCurrentTools } = aw
 export default function (pi) {
 	const config = JSON.parse(fs.readFileSync(process.env.PI_DRIVER_FIXTURE, "utf8"));
 	const { scenario, receiptPath, report } = config;
-	const receipt = { pid: process.pid, calls: 0, networkRequests: 0, errors: [], tools: [], sampling: [] };
+	const receipt = { pid: process.pid, calls: 0, networkRequests: 0, errors: [], tools: [], sampling: [], shutdownStarted: false, shutdownFinished: false, events: [] };
 	const save = () => fs.writeFileSync(receiptPath, JSON.stringify(receipt));
 	globalThis.fetch = async () => { receipt.networkRequests++; save(); throw new Error("Network forbidden in driver fixture"); };
 	const faux = fauxProvider({ provider: "driver-fixture", tokensPerSecond: 1_000_000, tokenSize: { min: 1024, max: 1024 } });
@@ -20,28 +20,39 @@ export default function (pi) {
 	const rejected = { ...report, criteriaSatisfied: [{ id: "deliver", status: "not-satisfied", evidence: "missing proof" }] };
 	const blocked = { ...report, criteriaSatisfied: [{ id: "deliver", status: "blocked", evidence: "Native sign-in requests Touch ID", humanAction: "Complete Touch ID" }] };
 	const responses = [
-		scenario === "public-output" ? fauxAssistantMessage(fauxToolCall("structured_output", { value: { items: ["public payload"] } }), { stopReason: "toolUse" })
+		scenario === "public-output" ? fauxAssistantMessage(fauxToolCall("structured_output", { value: { items: config.items ?? ["public payload"] } }), { stopReason: "toolUse" })
 			: fauxAssistantMessage(textReport(scenario === "blocked" ? blocked : report)),
-		scenario === "repair" ? submit(rejected, "rejected") : scenario === "stale" ? fauxAssistantMessage("Forgot to submit current report") : submit(report, "reviewed"),
-		scenario === "stale-after-report" ? fauxAssistantMessage("Later activity without a current report") : submit(report, "repaired"),
+		scenario === "repair" ? submit(rejected, "rejected") : ["stale", "missing-then-repair"].includes(scenario) ? fauxAssistantMessage("Forgot to submit current report")
+			: scenario === "retry" ? fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded; native fixture" }) : submit(report, "reviewed"),
+		scenario === "stale-after-report" ? fauxAssistantMessage("Later activity without a current report")
+			: scenario === "final-error" ? fauxAssistantMessage("", { stopReason: "error", errorMessage: "Fixture final provider failure" }) : submit(report, "repaired"),
 	];
+	if (scenario === "question-initial") responses.unshift(fauxAssistantMessage(fauxToolCall("contact_supervisor", { reason: "need_decision", message: "Choose before initial work" }), { stopReason: "toolUse" }));
+	if (scenario === "question-review") responses.splice(1, 0, fauxAssistantMessage(fauxToolCall("contact_supervisor", { reason: "need_decision", message: "Choose during review" }), { stopReason: "toolUse" }));
 	faux.setResponses(responses.map((response, index) => async (context) => {
 		receipt.calls++;
 		const tools = context.tools ?? getCurrentTools(context.messages);
 		receipt.tools.push(tools.map((tool) => tool.name));
 		receipt.sampling.push(tools.find((tool) => tool.name === "structured_output")?.constrainedSampling);
 		save();
-		if (index === 1 && scenario === "stale-after-report") pi.sendMessage({ customType: "fixture", content: "Acknowledge this later request.", display: false }, { deliverAs: "steer" });
+		if (index === 1 && ["stale-after-report", "resubmit", "final-error"].includes(scenario)) pi.sendMessage({ customType: "fixture", content: "Acknowledge this later request.", display: false }, { deliverAs: "steer" });
 		if (index === 1 && scenario === "passive") pi.sendMessage({ customType: "fixture", content: "Passive context.", display: false }, { triggerTurn: false });
 		if (scenario === "slow") await delay(1000);
-		if (scenario === "per-attempt-time") await delay(180);
+		if (scenario === "per-attempt-time") await delay(2000);
 		return response;
 	}));
 	pi.registerProvider("driver-fixture", { api: faux.api, baseUrl: faux.getModel().baseUrl, apiKey: "fixture", models: faux.models, streamSimple: faux.provider.streamSimple });
 	pi.on("message_end", (event) => {
 		if (event.message.role !== "assistant") return;
+		if (event.message.errorMessage) { receipt.errors.push(event.message.errorMessage); save(); }
 		return { message: { ...event.message, usage: { input: 11, output: 7, cacheRead: 3, cacheWrite: 5, cacheWrite1h: 2, reasoning: 4,
 			totalTokens: 26, cost: { input: 0.001, output: 0.002, cacheRead: 0.003, cacheWrite: 0.004, total: 0.01 } } } };
 	});
-	pi.on("session_shutdown", () => { save(); if (scenario === "process-error") process.exitCode = 7; });
+	pi.on("agent_settled", (event) => { receipt.events.push(event); save(); });
+	pi.on("session_shutdown", async () => {
+		receipt.shutdownStarted = true; save();
+		if (scenario === "linger") await delay(3000);
+		if (scenario === "process-error") process.exitCode = 7;
+		receipt.shutdownFinished = true; save();
+	});
 }
