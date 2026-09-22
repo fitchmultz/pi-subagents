@@ -6,12 +6,12 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const sdkEntry = pathToFileURL(path.join(process.env.PI_INTERCOM_TEST_SDK, "dist/index.js"));
 const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry));
-const { fauxProvider, fauxAssistantMessage, fauxToolCall } = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
+const { fauxProvider, fauxAssistantMessage, fauxToolCall, getCurrentTools } = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
 
 export default function (pi) {
 	const config = JSON.parse(fs.readFileSync(process.env.PI_DRIVER_FIXTURE, "utf8"));
 	const { scenario, receiptPath, report } = config;
-	const receipt = { pid: process.pid, calls: 0, networkRequests: 0, errors: [], tools: [] };
+	const receipt = { pid: process.pid, calls: 0, networkRequests: 0, errors: [], tools: [], sampling: [] };
 	const save = () => fs.writeFileSync(receiptPath, JSON.stringify(receipt));
 	globalThis.fetch = async () => { receipt.networkRequests++; save(); throw new Error("Network forbidden in driver fixture"); };
 	const faux = fauxProvider({ provider: "driver-fixture", tokensPerSecond: 1_000_000, tokenSize: { min: 1024, max: 1024 } });
@@ -27,7 +27,9 @@ export default function (pi) {
 	];
 	faux.setResponses(responses.map((response, index) => async (context) => {
 		receipt.calls++;
-		receipt.tools.push((context.tools ?? []).map((tool) => tool.name));
+		const tools = context.tools ?? getCurrentTools(context.messages);
+		receipt.tools.push(tools.map((tool) => tool.name));
+		receipt.sampling.push(tools.find((tool) => tool.name === "structured_output")?.constrainedSampling);
 		save();
 		if (index === 1 && scenario === "stale-after-report") pi.sendMessage({ customType: "fixture", content: "Acknowledge this later request.", display: false }, { deliverAs: "steer" });
 		if (index === 1 && scenario === "passive") pi.sendMessage({ customType: "fixture", content: "Passive context.", display: false }, { triggerTurn: false });

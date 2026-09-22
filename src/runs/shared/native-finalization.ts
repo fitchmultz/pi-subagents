@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import type { AcceptanceLedger, ResolvedAcceptanceConfig } from "../../shared/types.ts";
 import { setPromptSection } from "../../shared/prompt-sections.ts";
 import { detectSubagentError, getFinalOutput } from "../../shared/utils.ts";
@@ -65,7 +66,8 @@ export default function registerNativeFinalization(pi: ExtensionAPI): void {
 	let resolvedOutput: ReturnType<typeof resolveSingleOutput> = { fullOutput: "" };
 	const registerOutput = (runtime: StructuredOutputRuntime) => pi.registerTool({
 		name: "structured_output", label: "Structured Output", description: "Submit the complete output matching the current schema.",
-		parameters: { type: "object", properties: { value: runtime.schema }, required: ["value"], additionalProperties: false } as never,
+		parameters: Type.Object({ value: Type.Unsafe(runtime.schema) }, { additionalProperties: false }),
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		execute: async (_id, args: { value: unknown }) => {
 			const validation = validateStructuredOutputValue(runtime.schema, args.value);
 			if (validation.status === "invalid") throw new Error(validation.message);

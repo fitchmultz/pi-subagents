@@ -83,11 +83,15 @@ for (const scenario of ["success", "public-output", "repair", "passive"] as cons
 	assert.equal(child.acceptance.finalization.turns.length, receipt.calls - 1);
 	assert.equal(output, "Reviewed answer");
 	assert.equal(child.modelAttempts.length, receipt.calls);
+	assert.deepEqual(receipt.sampling[1], { type: "json_schema", strict: "prefer" });
 	assert.deepEqual(child.modelAttempts.map((attempt) => attempt.usage.input), Array(receipt.calls).fill(11));
 	const contributions = child.modelAttempts.flatMap((attempt) => attempt.usage.contributions);
 	assert.equal(new Set(contributions.map((item) => item.id)).size, receipt.calls);
 	assert.ok(contributions.every((item) => item.provider === "driver-fixture" && item.usage.reasoning === 4 && item.usage.cacheWrite1h === 2));
-	if (scenario === "public-output") assert.deepEqual(child.structuredOutput, { items: ["public payload"] });
+	if (scenario === "public-output") {
+		assert.deepEqual(child.structuredOutput, { items: ["public payload"] });
+		assert.deepEqual(receipt.sampling[0], { type: "json_schema", strict: "prefer" });
+	}
 });
 
 test("nested tool usage is accounted without tightening the assistant-only token limit", async (t) => {
