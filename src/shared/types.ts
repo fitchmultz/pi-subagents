@@ -590,6 +590,8 @@ export interface Details {
 }
 
 export type SubagentExecutionResult = AgentToolResult<Details> & {
+	/** Public native-async recovery signal, ignored by portable receipt calls. */
+	pending?: boolean;
 	/** Executor error marker; registered tools transfer it through Pi's native tool_result hook. */
 	isError?: boolean;
 };
@@ -933,6 +935,7 @@ export interface SubagentState {
 	asyncJobs: Map<string, AsyncJobState>;
 	waitingRuns?: Map<string, number>;
 	isRunResultConsumed?: (runId: string) => boolean;
+	hasNativeResultOwner?: (runId: string) => boolean;
 	foregroundRuns?: Map<string, ForegroundResumeRun>;
 	ownedRuns?: Map<string, OwnedRun>;
 	persistOwnedRun?: (run: OwnedRun) => void;

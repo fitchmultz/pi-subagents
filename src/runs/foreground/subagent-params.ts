@@ -73,6 +73,8 @@ function isChainStepLike(value: unknown): value is ChainStep {
 }
 
 export interface SubagentParamsLike {
+	/** Native invocation identity supplied by the executor, never accepted from tool arguments. */
+	nativeToolCallId?: string;
 	action?: string;
 	id?: string;
 	runId?: string;

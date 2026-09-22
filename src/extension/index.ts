@@ -32,6 +32,7 @@ import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecut
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { OWNED_RUN_ENTRY, rememberOwnedRun, restoreOwnedRuns } from "../runs/shared/run-records.ts";
 import { getRunMetadataDir, saveAsyncRunResult } from "../runs/shared/supervisor-questions.ts";
+import { nativeInvocationTarget, nativeInvocations } from "../runs/shared/native-async.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { onNativeCheckpoint } from "../shared/native-checkpoint.ts";
 import { subagentCheckpointBlocker } from "../runs/shared/checkpoint.ts";
@@ -291,6 +292,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}) ?? false;
 	};
 
+	state.hasNativeResultOwner = (runId) => Boolean(state.lastUiContext && nativeInvocations(state.lastUiContext)
+		.some((call) => nativeInvocationTarget(state.lastUiContext!, call)?.runId === runId));
+
 	const { startResultWatcher, primeExistingResults, stopResultWatcher, holdCheckpoint } = createResultWatcher(
 		pi,
 		state,
@@ -442,7 +446,16 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	}
 
 	const toRegisteredToolResult = registerToolResultAdapter(pi, [SUBAGENT_TOOL_NAME, "delegate", "agent_runs"]);
+	const nativeAsyncLifecycle = {
+		async: true,
+		resume: async (id: string, _params: unknown, signal: AbortSignal | undefined,
+			onUpdate: ((result: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext) => {
+			const result = await executor.resume(id, {}, signal, onUpdate, ctx);
+			return result && toRegisteredToolResult(result);
+		},
+	};
 	pi.registerTool({
+		...nativeAsyncLifecycle,
 		name: "delegate",
 		label: "Delegate",
 		description: "Delegate one bounded task to a configured agent. Discover profiles with agent_runs({action:'profiles'}). Background by default; completion arrives automatically. Use worktree for an isolated writer, acceptance for explicit requirements, and fresh context for independent review. Advanced workflows and definition management remain behind load_subagent.",
@@ -459,6 +472,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
+		...nativeAsyncLifecycle,
 		name: "agent_runs",
 		label: "Agent Runs",
 		description: "List your delegated runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; async:false waits for its actual result. Overrides apply only to a new continuation, never to live acceptance. profiles lists agents. Results arrive automatically; history survives reload.",
@@ -498,6 +512,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
+		...nativeAsyncLifecycle,
 		name: SUBAGENT_TOOL_NAME,
 		label: "Subagent",
 		description: `Delegate bounded work to configured Pi subagents, chains, or parallel reviewers; manage agent definitions; inspect/control async runs. Use exactly one execution mode (agent, tasks, or chain) or one management/control action. Before execution, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled. Parallel tasks support output?,reads?,progress?. maxOutput accepts { bytes?: number, lines?: number }. Prefer acceptance for goal/spec handoffs and status/resume/interrupt/extend/nudge for active runs. Exact status is concise by default; full:true includes the full task/configuration. Review notes are parent-only, not sent to children; put actionable instructions in resume/nudge. Resume/answer overrides do not amend live acceptance.`,

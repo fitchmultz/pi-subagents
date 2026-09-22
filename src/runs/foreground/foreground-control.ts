@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolveRootSessionId } from "../../shared/session-identity.ts";
 import { writeAsyncControlRequest, writeAsyncInterruptRequest } from "../background/async-control.ts";
-import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readNativeSessionConfiguration, readQuestionContract, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
+import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readNativeSessionConfiguration, readQuestionContract, readRunJson, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -12,6 +12,7 @@ import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { executeAsyncSingle, formatAsyncStartedMessage } from "../background/async-execution.ts";
 import { resolveConfiguredChildProjectTrustPolicy } from "../shared/pi-args.ts";
 import { requestChildExecutionCwd } from "../shared/child-execution-cwd.ts";
+import { bindNativeInvocation } from "../shared/native-async.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { applyIntercomBridgeToAgent, resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget, resolveSubagentIntercomTarget, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import { formatControlIntercomMessage, formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
@@ -363,6 +364,12 @@ function getAsyncInterruptTarget(state: SubagentState, runId: string | undefined
 			newest = { asyncId: job.asyncId, asyncDir: job.asyncDir, updatedAt: job.updatedAt ?? 0 };
 		}
 	}
+	for (const run of state.ownedRuns?.values() ?? []) {
+		if (!run.asyncDir || (newest && run.startedAt <= newest.updatedAt)) continue;
+		const status = readStatus(run.asyncDir);
+		if (status ? status.state !== "running" && status.state !== "queued" : !run.pid || !questionProcessAlive({ pid: run.pid })) continue;
+		newest = { asyncId: run.runId, asyncDir: run.asyncDir, updatedAt: run.startedAt };
+	}
 	return newest ? { asyncId: newest.asyncId, asyncDir: newest.asyncDir } : undefined;
 }
 
@@ -396,7 +403,10 @@ function emitControlNotification(input: {
 export function extendAsyncTimeoutResult(state: SubagentState, runId: string | undefined, extendMs: number): SubagentExecutionResult {
 	const target = getAsyncInterruptTarget(state, runId);
 	const status = target && readStatus(target.asyncDir);
-	if (!target || !status || status.runtimeVersion !== 2 || status.state !== "running" || status.timedOut || !status.timeoutAt) return {
+	const launch = target && readRunJson<{ runtimeVersion?: number; timeoutMs?: number }>(path.join(target.asyncDir, "launch.json"));
+	const extendable = status ? status.runtimeVersion === 2 && status.state === "running" && !status.timedOut && status.timeoutAt
+		: launch?.runtimeVersion === 2 && launch.timeoutMs;
+	if (!target || !extendable) return {
 		content: [{ type: "text", text: "No live run with an extendable timeout was found. No extension was requested." }], isError: true, details: { mode: "management", results: [] },
 	};
 	try {
@@ -620,6 +630,7 @@ function terminalNudgeResult(runId: string, deps: ExecutorDeps): SubagentExecuti
 export async function nudgeSubagentRun(input: {
 	params: SubagentParamsLike;
 	deps: ExecutorDeps;
+	ctx?: ExtensionContext;
 }): Promise<SubagentExecutionResult> {
 	const message = input.params.message?.trim() || "What are you blocked on? Reply with the smallest next step, or state the exact decision you need.";
 	const requestedId = input.params.id ?? input.params.runId;
@@ -702,6 +713,7 @@ export async function nudgeSubagentRun(input: {
 		return { content: [{ type: "text", text }], isError: true, details: { mode: "management", results: [] } };
 	}
 
+	bindNativeInvocation(input.deps.pi, input.ctx, input.params.nativeToolCallId, { runId, index, kind: "delivery" });
 	const result = await sendLiveSubagentMessage(input.deps.pi.events, {
 		to: target,
 		message: `Nudge for subagent run ${runId} (${agent}${index !== undefined ? ` step ${index + 1}` : ""}):\n\n${message}`,
@@ -713,6 +725,7 @@ export async function nudgeSubagentRun(input: {
 		if (terminal) return terminal;
 		return { content: [{ type: "text", text: [`Nudge was not delivered.`, `Run: ${runId}`, `Intercom target: ${target}`, result.reason ? `Reason: ${result.reason}` : undefined].filter((line): line is string => Boolean(line)).join("\n") }], isError: true, details: { mode: "management", results: [] } };
 	}
+	bindNativeInvocation(input.deps.pi, input.ctx, input.params.nativeToolCallId, { runId, index, kind: "delivery", accepted: true });
 	return {
 		content: [{ type: "text", text: [`Nudge delivered to live subagent.`, `Run: ${runId}`, `Agent: ${agent}`, `Intercom target: ${target}`].join("\n") }],
 		details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId, index, intercomTarget: target, canNudge: true, canResume: true, canInterrupt: true }) },
@@ -749,7 +762,7 @@ export async function resumeAsyncRun(input: {
 			const child = view.children.find((entry) => entry.index === (input.params.index ?? 0));
 			if (!child) throw new Error(`Run '${owned.runId}' has no child at index ${input.params.index ?? 0}.`);
 			if (child.state === "live") {
-				const result = await nudgeSubagentRun({ params: { ...input.params, id: owned.runId, message: followUp }, deps: input.deps });
+				const result = await nudgeSubagentRun({ params: { ...input.params, id: owned.runId, message: followUp }, deps: input.deps, ctx: input.ctx });
 				const notice = liveLaunchOverrideNotice(input.params);
 				if (notice) result.content.push({ type: "text", text: notice });
 				return result;
@@ -759,7 +772,7 @@ export async function resumeAsyncRun(input: {
 					if (candidate.runId === owned.runId) continue;
 					const active = ownedRunView(candidate, input.deps.state).children.find((entry) => entry.sessionFile === child.sessionFile && entry.state === "live");
 					if (active) {
-						const result = await nudgeSubagentRun({ params: { ...input.params, id: candidate.runId, index: active.index, message: followUp }, deps: input.deps });
+						const result = await nudgeSubagentRun({ params: { ...input.params, id: candidate.runId, index: active.index, message: followUp }, deps: input.deps, ctx: input.ctx });
 						const notice = liveLaunchOverrideNotice(input.params);
 						if (notice) result.content.push({ type: "text", text: notice });
 						return result;
@@ -776,7 +789,7 @@ export async function resumeAsyncRun(input: {
 		}
 		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
 		if (resolved?.kind === "foreground") {
-			const result = await nudgeSubagentRun({ params: { ...input.params, message: followUp }, deps: input.deps });
+			const result = await nudgeSubagentRun({ params: { ...input.params, message: followUp }, deps: input.deps, ctx: input.ctx });
 			if (input.params.acceptance !== undefined) result.content.push({ type: "text", text: LIVE_ACCEPTANCE_OVERRIDE_NOTICE });
 			return result;
 		}
@@ -807,6 +820,7 @@ export async function resumeAsyncRun(input: {
 	}
 
 	if (target.kind === "live") {
+		bindNativeInvocation(input.deps.pi, input.ctx, input.params.nativeToolCallId, { runId: target.runId, index: target.index, kind: "delivery" });
 		const delivered = await deliverSubagentIntercomMessageEvent(
 			input.deps.pi.events,
 			target.intercomTarget,
@@ -815,6 +829,7 @@ export async function resumeAsyncRun(input: {
 			{ source: "async-resume", runId: target.runId, agent: target.agent, index: target.index },
 		);
 		if (delivered) {
+			bindNativeInvocation(input.deps.pi, input.ctx, input.params.nativeToolCallId, { runId: target.runId, index: target.index, kind: "delivery", accepted: true });
 			return {
 				content: [{ type: "text", text: [`Delivered follow-up to live async child.`, `Run: ${target.runId}`, `Intercom target: ${target.intercomTarget}`, input.params.acceptance !== undefined ? LIVE_ACCEPTANCE_OVERRIDE_NOTICE : undefined].filter(Boolean).join("\n") }],
 				details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: target.runId, index: target.index, intercomTarget: target.intercomTarget, canNudge: true, canResume: true, canInterrupt: true }) },
@@ -895,6 +910,7 @@ export function reviveSavedSubagent(input: {
 		};
 	}
 
+	bindNativeInvocation(input.deps.pi, input.ctx, input.params.nativeToolCallId, { runId, kind: "launch" });
 	saveQuestionOwner(runId, input.ctx.sessionManager.getSessionId());
 	const prior = input.deps.state.ownedRuns?.get(target.runId);
 	rememberOwnedRun(input.deps.state, {

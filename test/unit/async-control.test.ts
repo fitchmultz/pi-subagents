@@ -5,6 +5,16 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { readAsyncControlRequests, writeAsyncControlRequest } from "../../src/runs/background/async-control.ts";
 
+test("commands issued before a durable owner's first status cannot overwrite each other", (t) => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-control-startup-"));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	fs.writeFileSync(path.join(dir, "launch.json"), JSON.stringify({ runtimeVersion: 2 }));
+	writeAsyncControlRequest(dir, "run", "extend", undefined, 500);
+	writeAsyncControlRequest(dir, "run", "extend", undefined, 800);
+	assert.equal(fs.existsSync(path.join(dir, "control-request.json")), false);
+	assert.deepEqual(readAsyncControlRequests(dir, "run").map((request) => request.extendMs).sort(), [500, 800]);
+});
+
 test("durable controls retain each request and validate deadline extensions", (t) => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-control-"));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

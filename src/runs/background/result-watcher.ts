@@ -109,7 +109,7 @@ export function createResultWatcher(
 			if ((data.runId ?? data.id ?? runId) !== runId) throw new Error(`Result identity does not match notification '${runId}'.`);
 			if (data.sessionId ? data.sessionId !== state.currentSessionId : !state.ownedRuns?.has(runId)) return;
 			if (state.isRunResultConsumed?.(runId) || (isDurableRun(data) && state.ownedRuns?.get(runId)?.delivery)) { consumeNotification(); return; }
-			if (state.waitingRuns?.has(runId)) {
+			if (state.waitingRuns?.has(runId) || state.hasNativeResultOwner?.(runId)) {
 				pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { ...data, runId, suppressNotification: true, intercomResultDelivered: false });
 				return;
 			}

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { readStatus } from "../../shared/utils.ts";
+import { readRunJson } from "../shared/supervisor-questions.ts";
 
 interface AsyncControlRequest {
 	requestId: string;
@@ -15,7 +16,7 @@ interface AsyncControlRequest {
 export function writeAsyncControlRequest(asyncDir: string, runId: string, action: AsyncControlRequest["action"], index?: number, extendMs?: number): void {
 	if (action === "extend" && (typeof extendMs !== "number" || !Number.isSafeInteger(extendMs) || extendMs <= 0 || index !== undefined)) throw new Error("extendMs must be a positive integer.");
 	const requestId = randomUUID();
-	const file = readStatus(asyncDir)?.controlRequestFiles === true
+	const file = readStatus(asyncDir)?.controlRequestFiles === true || readRunJson<{ runtimeVersion?: number }>(path.join(asyncDir, "launch.json"))?.runtimeVersion === 2
 		? path.join(asyncDir, "control-requests", `${requestId}.json`)
 		: path.join(asyncDir, "control-request.json");
 	writeAtomicJson(file, { requestId, runId, action, ...(index !== undefined ? { index } : {}), ...(extendMs !== undefined ? { extendMs } : {}), createdAt: Date.now() });

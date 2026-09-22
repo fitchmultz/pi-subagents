@@ -193,7 +193,7 @@ describe("parallel agent execution", () => {
 		const result = await resultPromise;
 
 		assert.equal(extension.isError, undefined, JSON.stringify(extension));
-		assert.match(extension.content[0]?.text ?? "", /Extended foreground run/);
+		assert.match(extension.content[0]?.text ?? "", /Requested 1500ms more for run/);
 		assert.equal(result.isError, undefined);
 		assert.equal(result.details.results.length, 2);
 		assert.equal(result.details.results[0].exitCode, 0);
