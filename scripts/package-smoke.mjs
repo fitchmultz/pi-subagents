@@ -10,14 +10,16 @@ import { hostCli, hostRoot } from "./compat-host.mjs";
 
 const require = createRequire(import.meta.url);
 const packageJson = require("../package.json");
+let productionRoot;
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-	console.log(`Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing.\n\nChecks:\n  - npm pack --dry-run includes subagent and intercom runtime resources\n  - package.json pi manifest points at both extensions and skills without registering example prompts\n  - both compiled dist extension entrypoints load as native ES modules\n  - a packed production install with dev dependencies omitted can load the detached runner and native broker\n\nExit codes:\n  0  smoke passed\n  1  package shape or runtime load check failed`);
+	console.log(`Usage: node scripts/package-smoke.mjs\n\nVerifies the local pi-subagents package shape without publishing.\n\nChecks:\n  - npm pack includes subagent and intercom runtime resources\n  - package.json pi manifest points at both extensions and skills without registering example prompts\n  - both compiled dist extension entrypoints load as native ES modules\n  - a packed production install with dev dependencies omitted can load the detached runner and native broker\n\nExit codes:\n  0  smoke passed\n  1  package shape or runtime load check failed`);
 	process.exit(0);
 }
 
 function fail(message) {
 	console.error(`[package-smoke] ${message}`);
+	if (productionRoot) console.error(`[package-smoke] failure evidence: ${productionRoot}`);
 	process.exit(1);
 }
 
@@ -53,7 +55,10 @@ function assertNotPackedFile(files, path) {
 	if (files.some((file) => file.path === path)) fail(`npm pack output should not include ${path}`);
 }
 
-const packOutput = runOrFail("npm", ["pack", "--dry-run", "--json"]);
+productionRoot = mkdtempSync(join(tmpdir(), "pi-subagents-package-smoke-"));
+const packDir = join(productionRoot, "pack");
+mkdirSync(packDir);
+const packOutput = runOrFail("npm", ["pack", "--json", "--pack-destination", packDir]);
 let packs;
 try {
 	packs = JSON.parse(packOutput);
@@ -104,16 +109,12 @@ for (const entrypoint of ["../dist/extension/index.js", "../dist/pi-intercom/ind
 	if (typeof extensionModule.default !== "function") fail(`${entrypoint} did not load a default registration function`);
 }
 
-const productionRoot = mkdtempSync(join(tmpdir(), "pi-subagents-package-smoke-"));
 let productionImportError;
 try {
-	const packDir = join(productionRoot, "pack");
 	const installDir = join(productionRoot, "install");
-	mkdirSync(packDir);
 	mkdirSync(installDir);
 	writeFileSync(join(installDir, "package.json"), JSON.stringify({ private: true, type: "module" }));
-	const productionPackOutput = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", packDir]));
-	const filename = productionPackOutput?.[0]?.filename;
+	const filename = pack.filename;
 	if (typeof filename !== "string") throw new Error("npm pack did not report a tarball filename");
 	run("npm", ["install", "--ignore-scripts", "--omit=dev", join(packDir, filename)], installDir);
 	const installedRoot = join(installDir, "node_modules", packageJson.name);
@@ -187,8 +188,7 @@ export default function (pi) {
 } catch (error) {
 	productionImportError = error;
 } finally {
-	if (productionImportError) console.error(`[package-smoke] failure evidence: ${productionRoot}`);
-	else rmSync(productionRoot, { recursive: true, force: true });
+	if (!productionImportError) rmSync(productionRoot, { recursive: true, force: true });
 }
 if (productionImportError) {
 	fail(`packed production install could not load runtime paths: ${productionImportError instanceof Error ? productionImportError.message : String(productionImportError)}`);
