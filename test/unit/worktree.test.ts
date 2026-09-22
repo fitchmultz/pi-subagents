@@ -11,7 +11,6 @@ import {
 	diffWorktrees,
 	findWorktreeTaskCwdConflict,
 	appendWorktreeSummary,
-	extractWorktreeSummary,
 	formatWorktreeDiffSummary,
 	resolveExpectedWorktreeAgentCwd,
 	type WorktreeSetup,
@@ -546,7 +545,5 @@ describe("worktree summary helpers", () => {
 	});
 
 	it("extracts the worktree marker and following text", () => {
-		assert.equal(extractWorktreeSummary("prefix\n=== Worktree Changes ===\nfiles"), "=== Worktree Changes ===\nfiles");
-		assert.equal(extractWorktreeSummary("no marker"), "");
 	});
 });

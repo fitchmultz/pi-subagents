@@ -671,21 +671,19 @@ test("before_agent_start adds a bounded hint only for same-project peers", { con
     await harness.emitLifecycle("session_start");
     await waitForSessionByName(related, "ambient-controller");
 
-    const results = await harness.emitLifecycle("before_agent_start", { systemPrompt: "base prompt" });
-    const update = results.find((result) => result && typeof result === "object" && "systemPrompt" in result) as { systemPrompt: string } | undefined;
-    assert.ok(update);
-    assert.match(update.systemPrompt, /^base prompt\n\nOther Pi sessions may be connected to this project\./);
-    assert.doesNotMatch(update.systemPrompt, /same-project-peer|unrelated-peer/);
+    const options = { sections: {} as Record<string, string>, forceSystemPrompt: undefined as string | undefined };
+    const results = await harness.emitLifecycle("before_agent_start", { systemPrompt: "base prompt", systemPromptOptions: options });
+    assert.ok(results.every((result) => result === undefined));
+    assert.match(options.sections.intercom_peers!, /^Other Pi sessions may be connected to this project\./);
+    assert.doesNotMatch(options.sections.intercom_peers!, /same-project-peer|unrelated-peer/);
+    assert.equal(options.forceSystemPrompt, undefined);
 
-    // Prompt-cache regression guard: once peers have been seen, the appended
-    // hint must stay byte-identical on later turns even after fleet membership
-    // changes (here: the only peer disconnects). A varying system prompt
-    // invalidates the provider prompt cache for the entire context.
+    // Fleet churn must not alter the pinned section on later turns.
     await related.disconnect();
-    const afterChurn = await harness.emitLifecycle("before_agent_start", { systemPrompt: "base prompt" });
-    const churnUpdate = afterChurn.find((result) => result && typeof result === "object" && "systemPrompt" in result) as { systemPrompt: string } | undefined;
-    assert.ok(churnUpdate);
-    assert.equal(churnUpdate.systemPrompt, update.systemPrompt);
+    const afterChurn = { sections: {} as Record<string, string>, forceSystemPrompt: "EXACT OVERRIDE" };
+    await harness.emitLifecycle("before_agent_start", { systemPrompt: "EXACT OVERRIDE", systemPromptOptions: afterChurn });
+    assert.equal(afterChurn.sections.intercom_peers, options.sections.intercom_peers);
+    assert.equal(afterChurn.forceSystemPrompt, `EXACT OVERRIDE\n\n<intercom_peers>\n${options.sections.intercom_peers}\n</intercom_peers>`);
   } finally {
     await related.disconnect().catch(() => undefined);
     await unrelated.disconnect().catch(() => undefined);

@@ -14,7 +14,7 @@ fs.mkdirSync(asyncDir);
 // An early terminal status is not durable completion. A live producer still owes its result.
 fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId, mode: "single", state: "complete", startedAt: 1, pid: process.pid, steps: [{ agent: "worker", status: "complete" }] }));
 const run = { runId, rootRunId: runId, ownerSessionId, source: "async", mode: "single", cwd, task: "liveness", startedAt: 1, asyncDir, pid: process.pid, children: [{ agent: "worker", index: 0 }] };
-const state = { currentSessionId: ownerSessionId, ownedRuns: new Map([[runId, run]]), foregroundControls: new Map(), foregroundRuns: new Map(), asyncJobs: new Map(), cleanupTimers: new Map() };
+const state = { currentSessionId: ownerSessionId, ownedRuns: new Map([[runId, run]]), foregroundRuns: new Map(), asyncJobs: new Map(), cleanupTimers: new Map() };
 const pi = { events: createEventBus() };
 const tracker = createAsyncJobTracker(pi, state, cwd);
 tracker.ensurePoller();

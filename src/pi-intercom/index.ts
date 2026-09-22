@@ -18,6 +18,7 @@ import { isDurableSupervisorQuestion, ReplyTracker } from "./reply-tracker.ts";
 import { filterProjectSessions, formatPeerAwarenessHint, formatSessionTarget, formatTargetOptions, PEER_AWARENESS_HINT, resolveSessionProjectId, targetDisplayName, resolveSessionTarget as resolveSessionTargetValue } from "./session-targets.ts";
 import { registerSubagentLiveEventHandlers } from "./subagent-live-events.ts";
 import { formatRunAction } from "../shared/status-format.ts";
+import { setPromptSection } from "../shared/prompt-sections.ts";
 import { onNativeCheckpoint, type NativeCheckpointEvent } from "../shared/native-checkpoint.ts";
 import { cancelSupervisorQuestion, createSupervisorQuestion, getRunMetadataDir, readRunJson, readQuestionState, recordQuestionDelivery, saveQuestionAnswer, type SupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
 
@@ -1820,7 +1821,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const generation = runtimeGeneration;
     if (!getLiveContext(ctx, generation)) return;
     if (peerAwarenessHintPinned) {
-      return { systemPrompt: `${event.systemPrompt}\n\n${PEER_AWARENESS_HINT}` };
+      setPromptSection(event.systemPromptOptions, "intercom_peers", PEER_AWARENESS_HINT);
+      return;
     }
 
     const deadline = Date.now() + PEER_AWARENESS_LIST_TIMEOUT_MS;
@@ -1847,7 +1849,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const hint = formatPeerAwarenessHint(sessions, currentBrokerSessionId);
     if (!hint) return;
     peerAwarenessHintPinned = true;
-    return { systemPrompt: `${event.systemPrompt}\n\n${hint}` };
+    setPromptSection(event.systemPromptOptions, "intercom_peers", hint);
   });
 
   pi.registerMessageRenderer("subagent-human-message", (message, _options, theme) => {

@@ -30,8 +30,10 @@ import { withMouseExpansion } from "../tui/action-hints.ts";
 import { AgentRunsParams, DelegateParams, SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
-import { OWNED_RUN_ENTRY, rememberOwnedRun, restoreOwnedRuns } from "../runs/shared/run-records.ts";
+import { OWNED_RUN_ENTRY, ownedRunView, rememberOwnedRun, restoreOwnedRuns } from "../runs/shared/run-records.ts";
+import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { getRunMetadataDir, saveAsyncRunResult } from "../runs/shared/supervisor-questions.ts";
+import { nativeInvocationTarget, nativeInvocations } from "../runs/shared/native-async.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { onNativeCheckpoint } from "../shared/native-checkpoint.ts";
 import { subagentCheckpointBlocker } from "../runs/shared/checkpoint.ts";
@@ -46,6 +48,7 @@ import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
 import { loadConfig } from "./config.ts";
 import { registerToolResultAdapter } from "./tool-result.ts";
+import { normalizeEverydayParams } from "./tool-input.ts";
 import {
 	type Details,
 	type SubagentExecutionResult,
@@ -59,7 +62,6 @@ import {
 	WIDGET_KEY,
 } from "../shared/types.ts";
 import {
-	clearPendingForegroundControlNotices,
 	formatSubagentControlNotice,
 	handleSubagentControlNotice,
 	SUBAGENT_CONTROL_MESSAGE_TYPE,
@@ -263,9 +265,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		foregroundRuns: new Map(),
 		ownedRuns: new Map(),
 		persistOwnedRun: (run) => pi.appendEntry(OWNED_RUN_ENTRY, run),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		pendingForegroundControlNotices: new Map(),
 		cleanupTimers: new Map(),
 		lastUiContext: null,
 		poller: null,
@@ -278,6 +277,21 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		},
 	};
 
+	state.isRunResultConsumed = (runId) => {
+		const run = state.ownedRuns?.get(runId);
+		return state.lastUiContext?.sessionManager.getEntries().some((entry) => {
+			const details = entry.type === "message" && entry.message.role === "toolResult"
+				? entry.message.details as Details | undefined
+				: entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE
+					? (entry.details as SlashMessageDetails | undefined)?.result?.details : undefined;
+			return details?.wait?.runId === runId && details.wait.status === "completed"
+				&& (details.wait.index === undefined || (run?.mode === "single" && details.wait.index === 0));
+		}) ?? false;
+	};
+
+	state.hasNativeResultOwner = (runId) => Boolean(state.lastUiContext && nativeInvocations(state.lastUiContext)
+		.some((call) => nativeInvocationTarget(state.lastUiContext!, call)?.runId === runId));
+
 	const { startResultWatcher, primeExistingResults, stopResultWatcher, holdCheckpoint } = createResultWatcher(
 		pi,
 		state,
@@ -288,7 +302,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const runtimeCleanup = () => {
 		agentView?.dispose();
 		stopResultWatcher();
-		clearPendingForegroundControlNotices(state);
 		if (state.poller) {
 			clearInterval(state.poller);
 			state.poller = null;
@@ -428,30 +441,49 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}, 0);
 	}
 
-	const toRegisteredToolResult = registerToolResultAdapter(pi, [SUBAGENT_TOOL_NAME, "delegate", "agent_runs"]);
+	const toolNames = [SUBAGENT_TOOL_NAME, "delegate", "agent_runs"];
+	const parentUsage = registerParentUsage(pi, toolNames);
+	const adaptToolResult = registerToolResultAdapter(pi, toolNames);
+	const toRegisteredToolResult = (result: SubagentExecutionResult, ctx: ExtensionContext) => adaptToolResult(
+		result.details.wait?.status === "completed" && result.details.run?.ownerSessionId === ctx.sessionManager.getSessionId()
+			? parentUsage.attach(result, finalizedChildUsage(result.details.run.children, result.details.wait.index), ctx)
+			: result,
+	);
+	const nativeAsyncLifecycle = {
+		async: true,
+		resume: async (id: string, _params: unknown, signal: AbortSignal | undefined,
+			onUpdate: ((result: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext) => {
+			const result = await executor.resume(id, {}, signal, onUpdate, ctx);
+			return result && toRegisteredToolResult(result, ctx);
+		},
+	};
 	pi.registerTool({
+		...nativeAsyncLifecycle,
 		name: "delegate",
 		label: "Delegate",
 		description: "Delegate one bounded task to a configured agent. Discover profiles with agent_runs({action:'profiles'}). Background by default; completion arrives automatically. Use worktree for an isolated writer, acceptance for explicit requirements, and fresh context for independent review. Advanced workflows and definition management remain behind load_subagent.",
 		parameters: DelegateParams,
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		async execute(id, params, signal, onUpdate, ctx) {
-			const { worktree, context, async: background, ...task } = params;
+			const { worktree, context, async: background, ...task } = normalizeEverydayParams(params);
 			const request = worktree
 				? { tasks: [task], worktree: true, context, async: background, cwd: task.cwd }
 				: { ...task, context, async: background };
-			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(request), signal, onUpdate, ctx));
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(request), signal, onUpdate, ctx), ctx);
 		},
 		renderResult: renderSubagentResult,
 	});
 
 	pi.registerTool({
+		...nativeAsyncLifecycle,
 		name: "agent_runs",
 		label: "Agent Runs",
 		description: "List your delegated runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; async:false waits for its actual result. Overrides apply only to a new continuation, never to live acceptance. profiles lists agents. Results arrive automatically; history survives reload.",
 		parameters: AgentRunsParams,
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		async execute(id, params, signal, onUpdate, ctx) {
 			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list", questions: "questions", answer: "answer", review: "review" };
-			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike({ ...params, action: actions[params.action] }), signal, onUpdate, ctx));
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike({ ...normalizeEverydayParams(params, true), action: actions[params.action] }), signal, onUpdate, ctx), ctx);
 		},
 		renderResult: renderSubagentResult,
 	});
@@ -483,13 +515,14 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
+		...nativeAsyncLifecycle,
 		name: SUBAGENT_TOOL_NAME,
 		label: "Subagent",
 		description: `Delegate bounded work to configured Pi subagents, chains, or parallel reviewers; manage agent definitions; inspect/control async runs. Use exactly one execution mode (agent, tasks, or chain) or one management/control action. Before execution, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled. Parallel tasks support output?,reads?,progress?. maxOutput accepts { bytes?: number, lines?: number }. Prefer acceptance for goal/spec handoffs and status/resume/interrupt/extend/nudge for active runs. Exact status is concise by default; full:true includes the full task/configuration. Review notes are parent-only, not sent to children; put actionable instructions in resume/nudge. Resume/answer overrides do not amend live acceptance.`,
 		parameters: SubagentParams,
 
 		async execute(id, params, signal, onUpdate, ctx) {
-			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx));
+			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx), ctx);
 		},
 
 		renderCall(args, theme) {
@@ -564,7 +597,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const controlEventHandler = (payload: unknown) => {
 		handleSubagentControlNotice({
 			pi,
-			state,
 			visibleControlNotices,
 			details: payload as SubagentControlMessageDetails,
 		});
@@ -578,10 +610,12 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}),
 		pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (data) => {
 			handleComplete(data);
-			const result = data as import("../shared/types.ts").AsyncResultFile & { intercomResultDelivered?: boolean };
+			const result = data as import("../shared/types.ts").AsyncResultFile & { intercomResultDelivered?: boolean; suppressNotification?: boolean };
 			const run = state.ownedRuns?.get(result.runId ?? result.id ?? "");
 			if (!run || result.sessionId !== state.currentSessionId) return;
-			if (!fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))) saveAsyncRunResult(run.runId, result);
+			if (state.lastUiContext) parentUsage.record(finalizedChildUsage(ownedRunView(run, state).children), state.lastUiContext);
+			if (result.suppressNotification === true) return;
+			if (result.runtimeVersion !== 2 && !fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))) saveAsyncRunResult(run.runId, result);
 			rememberOwnedRun(state, { ...run, delivery: { notifiedAt: Date.now(), intercomDelivered: result.intercomResultDelivered === true } });
 		}),
 		pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler),
@@ -619,7 +653,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		state.baseCwd = ctx.cwd;
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		state.lastUiContext = ctx;
-		clearPendingForegroundControlNotices(state);
 		resetJobs();
 		try {
 			restoreJobs(state.currentSessionId, ctx);
@@ -681,7 +714,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		stopResultWatcher();
 		if (state.poller) clearInterval(state.poller);
 		state.poller = null;
-		clearPendingForegroundControlNotices(state);
 		for (const timer of state.cleanupTimers.values()) {
 			clearTimeout(timer);
 		}

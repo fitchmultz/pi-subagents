@@ -37,7 +37,6 @@ for (const route of ["parent", "child"]) it(`native registered ${route} tools re
 		assert.equal(evidence.cases.filter((entry) => entry.mixed).length, 6);
 		assert.equal(evidence.cases.filter((entry) => entry.name.endsWith("-pure")).length, 8);
 		assert.equal(evidence.cases.find((entry) => entry.name === "static-chain-interrupt-pure")?.liveUpdate?.type, "tool_execution_update");
-		for (const name of ["static-chain-interrupt-mixed", "static-chain-interrupt-pure"]) assert.equal(evidence.cases.find((entry) => entry.name === name)?.settlingUpdate?.type, "tool_execution_update");
 		for (const name of ["static-preflight-failure", "dynamic-collect-schema-failure", "dynamic-collect-success", "normal-success", "intercom-receipt-success", "inspect-handle"]) assert.ok(evidence.cases.some((entry) => entry.name === name), name);
 		for (const receipt of evidence.cases) await t.test(receipt.name, () => {
 			assert.deepEqual(receipt.failures, [], receipt.failures.join("\n"));

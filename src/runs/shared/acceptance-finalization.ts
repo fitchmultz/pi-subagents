@@ -4,38 +4,63 @@ import { createStructuredOutputRuntime, readStructuredOutput, validateStructured
 import type {
 	AcceptanceFinalizationTurn,
 	AcceptanceLedger,
+	AcceptanceReport,
 	ResolvedAcceptanceConfig,
 } from "../../shared/types.ts";
 import { acceptanceFailureMessage, evaluateAcceptance } from "./acceptance-evaluation.ts";
 import { acceptanceSelfReviewConfig, formatEvidenceReportFieldMapping, shouldRunAcceptanceFinalization } from "./acceptance-contract.ts";
 import type { AttemptOutcome } from "./model-fallback.ts";
 import { isFailFastAbort } from "./parallel-utils.ts";
-import { parseAcceptanceReport, stripAcceptanceReport } from "./acceptance-reports.ts";
+import { ACCEPTANCE_REPORT_SCHEMA, formatAcceptanceReportExample, parseAcceptanceReport, stripAcceptanceReport, validateAcceptanceReportShape } from "./acceptance-reports.ts";
 
 export function createFinalizationReportRuntime(): StructuredOutputRuntime {
 	return createStructuredOutputRuntime({
-		type: "object", properties: { report: { type: "string", minLength: 1 } }, required: ["report"], additionalProperties: false,
+		type: "object", properties: {
+			answer: { type: "string", pattern: "\\S", description: "Complete standalone final answer, including every requested handoff detail." },
+			report: ACCEPTANCE_REPORT_SCHEMA,
+		}, required: ["answer", "report"], additionalProperties: false,
 	});
 }
 
-interface FinalizationReportSubmission {
+export interface FinalizationReportSubmission {
 	output: string;
+	report?: AcceptanceReport;
 	reportSubmissionError?: string;
 	unconfirmedOutput?: string;
 }
 
-export function readFinalizationReport(messages: Message[], runtime: StructuredOutputRuntime): FinalizationReportSubmission {
+function readReportValue(value: unknown): { output: string; report: AcceptanceReport } | undefined {
+	if (!value || typeof value !== "object") return;
+	// Stored legacy runtimes retain their original string schema.
+	if ("report" in value && typeof value.report === "string") {
+		const parsed = parseAcceptanceReport(value.report);
+		if (parsed.report) return { output: value.report, report: parsed.report };
+	}
+	if (!("answer" in value) || typeof value.answer !== "string" || !value.answer.trim() || !("report" in value)) return;
+	if (validateAcceptanceReportShape(value.report)) return;
+	return { output: value.answer, report: value.report as AcceptanceReport };
+}
+
+function reportAuditOutput(submission: { output: string; report?: AcceptanceReport }): string {
+	return submission.report && !parseAcceptanceReport(submission.output).report
+		? `${submission.output}\n\n\`\`\`acceptance-report\n${JSON.stringify(submission.report)}\n\`\`\`` : submission.output;
+}
+
+/** Pass the current attempt's messages, or its starting offset in a shared native session. */
+export function readFinalizationReport(messages: Message[], runtime: StructuredOutputRuntime, options: { messageOffset?: number } = {}): FinalizationReportSubmission {
+	messages = messages.slice(options.messageOffset ?? 0);
 	const captured = readStructuredOutput(runtime);
-	const report = (captured.value as { report: string } | undefined)?.report;
+	const submitted = readReportValue(captured.value);
 	// Older submissions are audit evidence only, never the current output below.
 	const successfulIds = new Set(messages.flatMap((message) => message.role === "toolResult" && message.toolName === "structured_output" && message.isError === false ? [message.toolCallId] : []));
-	let unconfirmedOutput = report && parseAcceptanceReport(report).report ? report : undefined;
+	let unconfirmedOutput = submitted && reportAuditOutput(submitted);
 	for (const message of messages) {
 		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
 		for (const call of message.content) {
 			if (call.type !== "toolCall" || call.name !== "structured_output" || !successfulIds.has(call.id)) continue;
 			const value = call.arguments.value;
-			if (validateStructuredOutputValue(runtime.schema, value).status === "valid" && value && typeof value === "object" && "report" in value && typeof value.report === "string" && parseAcceptanceReport(value.report).report) unconfirmedOutput = value.report;
+			const previous = readReportValue(value);
+			if (previous && validateStructuredOutputValue(runtime.schema, value).status === "valid") unconfirmedOutput = reportAuditOutput(previous);
 		}
 	}
 	const rejected = (reason: string): FinalizationReportSubmission => ({
@@ -53,7 +78,8 @@ export function readFinalizationReport(messages: Message[], runtime: StructuredO
 	if (result?.role !== "toolResult" || result.toolName !== "structured_output" || result.isError !== false) return rejected("the latest structured_output call has no matching successful result.");
 	if (captured.error) return rejected(captured.error);
 	if (!isDeepStrictEqual(captured.value, call.arguments.value)) return rejected("the capture does not match the latest submission.");
-	return { output: report!, unconfirmedOutput };
+	if (!submitted) return rejected("the submission must contain a complete answer and a valid acceptance report.");
+	return { ...submitted, unconfirmedOutput };
 }
 
 export function formatUnconfirmedFinalizationOutput(output: string): string {
@@ -76,6 +102,9 @@ export function resolveExecutionOutcome(input: {
 	interruptSignal?: AbortSignal;
 }): ExecutionOutcome {
 	const { result } = input;
+	if (input.signal?.aborted && input.signal.reason instanceof Error && input.signal.reason.name === "TimeoutError") {
+		return { ...result, exitCode: 124, timedOut: true, interrupted: false, error: input.signal.reason.message || "Subagent timed out." };
+	}
 	if (input.signal?.aborted) return { ...result, exitCode: 1, interrupted: false, error: "Subagent cancelled." };
 	if (isFailFastAbort(input.interruptSignal)) return { ...result, exitCode: -1, interrupted: false, error: "Interrupted due to fail-fast" };
 	if (result.timedOut || result.resourceLimitExceeded) return { ...result, exitCode: result.timedOut ? 124 : 1, interrupted: result.interrupted === undefined ? undefined : false };
@@ -89,16 +118,19 @@ export async function evaluateRunAcceptance(input: {
 	acceptance: ResolvedAcceptanceConfig;
 	initial: ExecutionOutcome;
 	initialOutput: string;
+	initialReport?: AcceptanceReport;
+	initialAcceptance?: AcceptanceLedger;
 	sessionFile?: string;
 	cwd: string;
 	signal?: AbortSignal;
 	nativeReport?: boolean;
-	runTurn: (prompt: string, turn: number, sessionFile: string) => Promise<FinalizationReportSubmission & { error?: string }>;
+	recordedTurns?: number;
+	runTurn: (prompt: string, turn: number, sessionFile: string) => Promise<FinalizationReportSubmission & { error?: string; acceptance?: AcceptanceLedger }>;
 }): Promise<AcceptanceLedger> {
 	const review = shouldRunAcceptanceFinalization(input.acceptance);
 	const selfReview = review ? acceptanceSelfReviewConfig(input.acceptance) : input.acceptance;
-	const initialLedger = await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: input.initialOutput, cwd: input.cwd, signal: input.signal });
-	if (initialLedger.status === "blocked" || !review || input.initial.exitCode !== 0 || input.initial.error || input.initial.interrupted || input.signal?.aborted) return initialLedger;
+	const initialLedger = input.initialAcceptance ?? await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: input.initialOutput, report: input.initialReport, cwd: input.cwd, signal: input.signal });
+	if (initialLedger.status === "blocked" || !review || input.initial.exitCode !== 0 || input.initial.error || input.initial.interrupted || (input.signal?.aborted && !input.recordedTurns)) return initialLedger;
 
 	const maxTurns = input.acceptance.finalization.maxTurns;
 	const turns: AcceptanceFinalizationTurn[] = [];
@@ -109,13 +141,13 @@ export async function evaluateRunAcceptance(input: {
 	}
 	let previousFailure = acceptanceFailureMessage(initialLedger);
 	let authoritativeLedger = initialLedger;
-	let auditOutput = input.initialOutput;
+	let auditOutput = reportAuditOutput({ output: input.initialOutput, report: input.initialReport });
 	for (let turn = 1; turn <= maxTurns; turn++) {
 		const prompt = formatAcceptanceFinalizationPrompt({ acceptance: input.acceptance, initialOutput: input.initialOutput, initialLedger, turn, maxTurns, previousFailure, nativeReport: input.nativeReport });
-		const result = input.signal?.aborted
+		const result = input.signal?.aborted && turn > (input.recordedTurns ?? 0)
 			? { output: "", error: "Acceptance finalization cancelled." }
 			: await input.runTurn(prompt, turn, input.sessionFile);
-		const retained = result.unconfirmedOutput ?? result.output;
+		const retained = result.unconfirmedOutput ?? reportAuditOutput(result);
 		if (input.nativeReport && parseAcceptanceReport(retained).report) auditOutput = retained;
 		if (result.error) {
 			turns.push({ ...createFinalizationProcessFailureTurn({ turn, prompt, rawOutput: result.output, message: result.error }),
@@ -123,7 +155,10 @@ export async function evaluateRunAcceptance(input: {
 			const ledger = buildFinalizationProcessFailureLedger({ initialLedger, turns, maxTurns, message: result.error });
 			return input.nativeReport ? { ...ledger, childReport: undefined, childReportParseError: result.reportSubmissionError, unconfirmedOutput: auditOutput } : ledger;
 		}
-		authoritativeLedger = await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: result.reportSubmissionError ? "" : result.output, cwd: input.cwd, signal: input.signal });
+		// Replay each native boundary's checks, not the workspace left by a later repair.
+		authoritativeLedger = !result.reportSubmissionError && result.acceptance
+			? result.acceptance
+			: await evaluateAcceptance({ acceptance: selfReview, governing: input.acceptance, output: result.reportSubmissionError ? "" : result.output, report: result.reportSubmissionError ? undefined : result.report, cwd: input.cwd, signal: input.signal });
 		if (result.reportSubmissionError) {
 			authoritativeLedger.childReportParseError = result.reportSubmissionError;
 			authoritativeLedger.runtimeChecks = [{ id: "finalization-report", status: "failed", message: result.reportSubmissionError }];
@@ -133,7 +168,7 @@ export async function evaluateRunAcceptance(input: {
 		if (authoritativeLedger.status === "blocked") return attachFinalizationToLedger({ initialLedger, authoritativeLedger, turns, status: "blocked", maxTurns });
 		const failure = acceptanceFailureMessage(authoritativeLedger);
 		if (!failure && !input.signal?.aborted) {
-			if (selfReview !== input.acceptance) authoritativeLedger = await evaluateAcceptance({ acceptance: input.acceptance, output: result.output, cwd: input.cwd, signal: input.signal });
+			if (result.acceptance || selfReview !== input.acceptance) authoritativeLedger = await evaluateAcceptance({ acceptance: input.acceptance, output: result.output, report: result.report, cwd: input.cwd, signal: input.signal });
 			return attachFinalizationToLedger({ initialLedger, authoritativeLedger, turns, status: input.signal?.aborted ? "failed" : "completed", maxTurns });
 		}
 		if (input.signal?.aborted) break;
@@ -184,7 +219,7 @@ export function formatAcceptanceFinalizationPrompt(input: {
 	if (evidence.length > 0) {
 		lines.push(
 			"",
-			"Structured evidence must be present in the final `acceptance-report` JSON fields. Markdown sections in the visible answer do not satisfy required evidence by themselves. If the previous visible output already included the evidence, copy or summarize it into the matching JSON field.",
+			`Structured evidence must be present in the ${input.nativeReport ? "typed report object" : "final `acceptance-report` JSON fields"}. Markdown sections in the visible answer do not satisfy required evidence by themselves. If the previous visible output already included the evidence, copy or summarize it into the matching JSON field.`,
 			"Evidence field mapping:",
 			...formatEvidenceReportFieldMapping(evidence),
 		);
@@ -209,23 +244,9 @@ export function formatAcceptanceFinalizationPrompt(input: {
 	lines.push(
 		"",
 		input.nativeReport
-			? "Now do the self-check. Your final action must be a sole `structured_output` tool call with {\"value\":{\"report\":\"...\"}}. The report string must contain the complete standalone final answer with the current result and every requested handoff detail (including paths, identifiers, findings, and evidence), repairs or remaining blockers, and end with exactly one fenced JSON block tagged `acceptance-report`. This report replaces the initial answer; do not replace useful details with only a statement that you rechecked them. If additional messages prompt more activity after submission, resubmit the complete current report as your final action; a prose-only reply does not finalize the task."
+			? "Now do the self-check. Your final action must be a sole `structured_output` tool call with {value:{answer,report}}. answer must contain the complete standalone final answer with the current result and every requested handoff detail (including paths, identifiers, findings, and evidence), repairs or remaining blockers. report is a typed object matching the schema, never JSON embedded in a string. This answer replaces the initial answer; do not replace useful details with only a statement that you rechecked them. If additional messages prompt more activity after submission, resubmit the complete current answer and report as your final action; a prose-only reply does not finalize the task."
 			: "Now do the self-check. Return a standalone final answer with the current result and every requested handoff detail (including paths, identifiers, findings, and evidence). This answer replaces the initial answer; do not replace useful details with only a statement that you rechecked them. Include repairs or remaining blockers, then finish with exactly one fenced JSON block tagged `acceptance-report`.",
-		"```acceptance-report",
-		JSON.stringify({
-			criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "specific proof from the final state" }],
-			changedFiles: [],
-			testsAddedOrUpdated: [],
-			commandsRun: [{ command: "command", result: "passed", summary: "short result" }],
-			validationOutput: [],
-			residualRisks: [],
-			noStagedFiles: true,
-			diffSummary: "concise summary of changed behavior and important files",
-			reviewFindings: [],
-			manualNotes: "manual notes or external evidence, if any",
-			notes: "final self-review summary",
-		}, null, 2),
-		"```",
+		formatAcceptanceReportExample(input.nativeReport),
 	);
 	return lines.join("\n");
 }

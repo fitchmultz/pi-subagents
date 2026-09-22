@@ -11,7 +11,6 @@ import {
 	type NestedRunState,
 	type NestedStepSummary,
 	type SubagentRunMode,
-	type SubagentState,
 } from "../../shared/types.ts";
 import { ensureTempRoot } from "../../shared/temp-root.ts";
 import { isSafeNestedPathId, parseNestedPathEnv, sanitizeNestedPath, type NestedPathEntry } from "./nested-path.ts";
@@ -26,6 +25,8 @@ import {
 	SUBAGENT_PARENT_RUN_ID_ENV,
 } from "./pi-args.ts";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import { getRunMetadataDir, readRunJson } from "./supervisor-questions.ts";
+import { acceptanceHumanAction } from "./acceptance-evaluation.ts";
 
 export const NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
 const ROUTE_FILE = "route.json";
@@ -164,6 +165,10 @@ export function resolveNestedParentAddressFromEnv(env: NodeJS.ProcessEnv = proce
 export function resolveNestedAsyncDir(rootRunId: string, run: NestedRunSummary): string | undefined {
 	if (!run.asyncDir) return undefined;
 	const resolved = path.resolve(run.asyncDir);
+	if (resolved === getRunMetadataDir(run.id)) {
+		const launch = readRunJson<{ runtimeVersion?: number; nestedRoute?: { rootRunId?: string }; nestedSelf?: { parentRunId?: string } }>(path.join(resolved, "launch.json"));
+		return launch?.runtimeVersion === 2 && launch.nestedRoute?.rootRunId === rootRunId && launch.nestedSelf?.parentRunId === run.parentRunId ? resolved : undefined;
+	}
 	const nestedRoot = path.resolve(TEMP_ROOT_DIR, "nested-subagent-runs", rootRunId, run.id);
 	const relative = path.relative(nestedRoot, resolved);
 	return resolved === nestedRoot || (!relative.startsWith("..") && !path.isAbsolute(relative)) ? resolved : undefined;
@@ -682,12 +687,6 @@ export function updateAsyncJobNestedProjection(job: AsyncJobState): void {
 	attachRootChildrenToSteps(job.asyncId, job.steps, registry.children);
 }
 
-export function updateForegroundNestedProjection(control: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never): void {
-	if (!control.nestedRoute) return;
-	const registry = projectNestedEvents(control.nestedRoute);
-	control.nestedChildren = registry.children;
-}
-
 export function hasLiveNestedDescendants(children: NestedRunSummary[] | undefined): boolean {
 	if (!children?.length) return false;
 	for (const child of children) {
@@ -711,6 +710,7 @@ export function nestedSummaryFromAsyncStatus(status: AsyncStatus, asyncDir: stri
 		...(status.sessionId ? { sessionId: status.sessionId } : {}),
 		mode: status.mode ?? fallback.mode,
 		state: status.state,
+		error: status.error ?? (status.state === "blocked" ? status.steps?.map((step) => acceptanceHumanAction(step.acceptance)).filter(Boolean).join("\n") : undefined),
 		...(status.currentStep !== undefined ? { currentStep: status.currentStep } : {}),
 		...(status.chainStepCount !== undefined ? { chainStepCount: status.chainStepCount } : {}),
 		...(status.activityState ? { activityState: status.activityState } : {}),
@@ -738,7 +738,7 @@ export function nestedSummaryFromAsyncStatus(status: AsyncStatus, asyncDir: stri
 			...(step.toolCount !== undefined ? { toolCount: step.toolCount } : {}),
 			...(step.startedAt !== undefined ? { startedAt: step.startedAt } : {}),
 			...(step.endedAt !== undefined ? { endedAt: step.endedAt } : {}),
-			...(step.error ? { error: step.error } : {}),
+			error: step.error ?? acceptanceHumanAction(step.acceptance),
 		})).slice(0, MAX_STEPS) } : {}),
 	};
 }

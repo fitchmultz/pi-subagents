@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import type { SubagentState } from "../../src/shared/types.ts";
 import { resolveSubagentRunId } from "../../src/runs/background/run-id-resolver.ts";
+import { getRunMetadataDir, saveRunStatus } from "../../src/runs/shared/supervisor-questions.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 
 const routeRoots: string[] = [];
@@ -13,15 +14,13 @@ afterEach(() => {
 	for (const root of routeRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
-function stateWithForeground(id: string): SubagentState {
+function stateWithOwnedRun(id: string): SubagentState {
 	return {
 		baseCwd: "",
 		currentSessionId: null,
 		asyncJobs: new Map(),
 		foregroundRuns: new Map(),
-		foregroundControls: new Map([[id, { runId: id, mode: "single", startedAt: 1, updatedAt: 1 }]]),
-		lastForegroundControlId: id,
-		pendingForegroundControlNotices: new Map(),
+		ownedRuns: new Map([[id, { runId: id, rootRunId: id, ownerSessionId: "parent", source: "async", mode: "single", startedAt: 1, cwd: "", task: "Fixture", children: [] }]]),
 		cleanupTimers: new Map(),
 		lastUiContext: null,
 		poller: null,
@@ -50,13 +49,11 @@ function writeNestedChild(route: ReturnType<typeof createNestedRoute>, parentRun
 }
 
 function stateWithNestedRoute(route: ReturnType<typeof createNestedRoute>): SubagentState {
-	const state = stateWithForeground("foreground-only");
-	state.foregroundControls.set(route.rootRunId, { runId: route.rootRunId, mode: "single", startedAt: 1, updatedAt: 1, nestedRoute: route });
-	return state;
+	return stateWithOwnedRun(route.rootRunId);
 }
 
 describe("subagent run id resolver", () => {
-	it("prefers exact foreground, then exact async, then exact nested before prefix matches", () => {
+	it("prefers exact durable owner locations, then exact nested before prefix matches", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-resolver-"));
 		try {
 			const asyncRoot = path.join(root, "runs");
@@ -65,7 +62,7 @@ describe("subagent run id resolver", () => {
 			nested("root-shared", "shared-id");
 			nested("root-prefix", "shared-id-child");
 
-			assert.equal(resolveSubagentRunId("shared-id", { state: stateWithForeground("shared-id"), asyncDirRoot: asyncRoot, resultsDir })?.kind, "foreground");
+			assert.equal(resolveSubagentRunId("shared-id", { state: stateWithOwnedRun("shared-id"), asyncDirRoot: asyncRoot, resultsDir })?.kind, "async");
 			assert.equal(resolveSubagentRunId("shared-id", { asyncDirRoot: asyncRoot, resultsDir })?.kind, "async");
 			fs.rmSync(path.join(asyncRoot, "shared-id"), { recursive: true, force: true });
 			const resolved = resolveSubagentRunId("shared-id", { asyncDirRoot: asyncRoot, resultsDir });
@@ -73,6 +70,19 @@ describe("subagent run id resolver", () => {
 			assert.equal(resolved?.id, "shared-id");
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	for (const owned of [true, false]) it(`keeps canonical ${owned ? "owned" : "tracked"} async control direct for exact IDs and prefixes`, () => {
+		const id = "direct-canonical-child", route = nested("direct-canonical-root", id), state = stateWithNestedRoute(route);
+		const asyncDir = getRunMetadataDir(id); routeRoots.push(asyncDir);
+		saveRunStatus(id, { runtimeVersion: 2, runId: id, mode: "single", state: "running", pid: process.pid, startedAt: Date.now(), steps: [{ agent: "worker", status: "running" }] });
+		if (owned) state.ownedRuns!.set(id, stateWithOwnedRun(id).ownedRuns!.get(id)!);
+		else state.asyncJobs.set(id, { asyncId: id, asyncDir, status: "running" });
+		for (const requested of [id, "direct-canonical-c"]) {
+			const resolved = resolveSubagentRunId(requested, { state });
+			assert.equal(resolved?.kind, "async");
+			assert.equal(resolved?.id, id);
 		}
 	});
 
@@ -100,10 +110,13 @@ describe("subagent run id resolver", () => {
 			() => resolveSubagentRunId("shared-nested"),
 			/ambiguous across authorized registries|ambiguous across registries/i,
 		);
-		assert.equal(resolveSubagentRunId("shared-nested", { state: stateWithForeground("foreground-only") }), undefined);
+		assert.equal(resolveSubagentRunId("shared-nested", { state: stateWithOwnedRun("owned-only") }), undefined);
 		const resolved = resolveSubagentRunId("shared-nested", { state: stateWithNestedRoute(allowed) });
 		assert.equal(resolved?.kind, "nested");
 		assert.equal(resolved?.kind === "nested" ? resolved.match.rootRunId : undefined, "root-allowed");
+		const ambiguous = stateWithNestedRoute(allowed);
+		ambiguous.ownedRuns!.set("root-outside", stateWithOwnedRun("root-outside").ownedRuns!.get("root-outside")!);
+		assert.throws(() => resolveSubagentRunId("shared-nest", { state: ambiguous }), /Ambiguous subagent run id prefix/, "distinct authorized routes must not collapse into one prefix target");
 	});
 
 	it("limits nested lookup to descendants of a scoped child address", () => {

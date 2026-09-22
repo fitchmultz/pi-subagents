@@ -1,7 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "./pi-args.ts";
+import { setPromptSection } from "../../shared/prompt-sections.ts";
 import { registerChildExecutionCwd } from "./child-execution-cwd.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, validateStructuredOutputValue } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
@@ -25,11 +27,11 @@ export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
 ].join("\n");
 
 export const CHILD_FANOUT_BOUNDARY_INSTRUCTIONS = [
-	"You are a child subagent with explicit fanout responsibility for this assigned task.",
-	"The parent session owns final orchestration, acceptance, and follow-up implementation launches.",
-	"You may use the `subagent` tool only for the fanout work explicitly requested in this task.",
-	"Do not broaden yourself into general parent orchestration. Do not launch follow-up workers unless the task explicitly asks for that.",
-	"The maxSubagentDepth cap still applies and may block further fanout.",
+	"You are a child subagent with delegation enabled for your assigned task.",
+	"You may use the `subagent` tool for useful helper work within that task when it saves time or improves quality.",
+	"You remain responsible for your assigned result. The original parent owns integration, review synthesis, and final delivery.",
+	"Do not broaden the assigned scope or repeat approval requests for already-authorized work.",
+	"The native allowSubagents and maxSubagentDepth settings still apply.",
 	"If you need to edit files, call the actual edit/write tools. Do not print tool-call syntax, patches, or pseudo-tool calls as text.",
 ].join("\n");
 
@@ -41,61 +43,12 @@ const PARENT_ONLY_CUSTOM_MESSAGE_TYPES = new Set([
 	"subagent-control",
 	"subagent-control-notice",
 ]);
-const SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN = /<name>\s*pi-subagents\s*<\/name>/;
-const SKILLS_HEADER = "\n\nThe following skills provide specialized instructions for specific tasks.";
-const DATE_HEADER = "\nCurrent date:";
+const ORCHESTRATION_TOOLS = new Set(["subagent", "delegate", "agent_runs"]);
 
 function readBooleanEnv(name: string): boolean | undefined {
 	const value = process.env[name];
 	if (value === undefined) return undefined;
 	return value !== "0";
-}
-
-function findSectionEnd(prompt: string, startIndex: number, nextHeaders: string[]): number {
-	let endIndex = prompt.length;
-	for (const header of nextHeaders) {
-		const index = prompt.indexOf(header, startIndex);
-		if (index !== -1 && index < endIndex) {
-			endIndex = index;
-		}
-	}
-	return endIndex;
-}
-
-export function stripInheritedSkills(prompt: string): string {
-	const startIndex = prompt.indexOf(SKILLS_HEADER);
-	if (startIndex === -1) return prompt;
-	const endIndex = findSectionEnd(prompt, startIndex + SKILLS_HEADER.length, [DATE_HEADER]);
-	return `${prompt.slice(0, startIndex)}${prompt.slice(endIndex)}`;
-}
-
-export function stripSubagentOrchestrationSkill(prompt: string): string {
-	return prompt
-		.replace(/\n{0,2}<skill\s+name=["']pi-subagents["'][^>]*>[\s\S]*?<\/skill>\n{0,2}/g, "\n\n")
-		.replace(/[ \t]*<skill>\s*[\s\S]*?<\/skill>\s*/g, (block) => SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN.test(block) ? "" : block);
-}
-
-function stripChildBoundaryInstructions(prompt: string): string {
-	let rewritten = prompt;
-	for (const boundary of [CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS, CHILD_FANOUT_BOUNDARY_INSTRUCTIONS]) {
-		rewritten = rewritten.split(boundary).join("");
-	}
-	return rewritten.replace(/^(?:[ \t]*\r?\n)+/, "");
-}
-
-export function rewriteSubagentPrompt(
-	prompt: string,
-	options: { inheritProjectContext: boolean; inheritSkills: boolean; fanoutChild?: boolean },
-): string {
-	let rewritten = prompt;
-	if (!options.inheritSkills) {
-		rewritten = stripInheritedSkills(rewritten);
-	}
-	rewritten = stripSubagentOrchestrationSkill(rewritten);
-	rewritten = stripChildBoundaryInstructions(rewritten);
-	const boundary = options.fanoutChild ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS;
-	const structured = process.env[STRUCTURED_OUTPUT_CAPTURE_ENV] ? `\n\n${STRUCTURED_OUTPUT_INSTRUCTIONS}` : "";
-	return `${boundary}${structured}\n\n${rewritten}`;
 }
 
 function isParentOnlySubagentMessage(message: unknown): boolean {
@@ -107,12 +60,12 @@ function isParentOnlySubagentMessage(message: unknown): boolean {
 
 function isSubagentExecutionResultMessage(message: unknown): boolean {
 	const m = message as { role?: string; toolName?: string };
-	return m?.role === "toolResult" && m.toolName === "subagent";
+	return m?.role === "toolResult" && typeof m.toolName === "string" && ORCHESTRATION_TOOLS.has(m.toolName);
 }
 
 function isSubagentToolCallBlock(block: unknown): boolean {
 	const b = block as { type?: string; name?: string };
-	return b?.type === "toolCall" && b.name === "subagent";
+	return b?.type === "toolCall" && typeof b.name === "string" && ORCHESTRATION_TOOLS.has(b.name);
 }
 
 function stripAssistantSubagentToolCallBlocks(message: unknown): unknown | undefined {
@@ -124,21 +77,21 @@ function stripAssistantSubagentToolCallBlocks(message: unknown): unknown | undef
 	return { ...m, content: filteredContent };
 }
 
-export function stripParentOnlySubagentMessages(messages: unknown[]): unknown[] {
+export function stripParentOnlySubagentMessages<T>(messages: T[], fanoutChild = false): T[] {
 	let changed = false;
-	const filtered: unknown[] = [];
+	const filtered: T[] = [];
 	for (const message of messages) {
-		if (isParentOnlySubagentMessage(message) || isSubagentExecutionResultMessage(message)) {
+		if (isParentOnlySubagentMessage(message) || (!fanoutChild && isSubagentExecutionResultMessage(message))) {
 			changed = true;
 			continue;
 		}
-		const stripped = stripAssistantSubagentToolCallBlocks(message);
+		const stripped = fanoutChild ? message : stripAssistantSubagentToolCallBlocks(message);
 		if (stripped === undefined) {
 			changed = true;
 			continue;
 		}
 		if (stripped !== message) changed = true;
-		filtered.push(stripped);
+		filtered.push(stripped as T);
 	}
 	return changed ? filtered : messages;
 }
@@ -149,24 +102,13 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 	const structuredSchemaPath = process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
 	if (structuredOutputPath && structuredSchemaPath) {
 		const schema = JSON.parse(fs.readFileSync(structuredSchemaPath, "utf-8")) as JsonSchemaObject;
-		const parameters = {
-			type: "object",
-			properties: { value: schema },
-			required: ["value"],
-			additionalProperties: false,
-		};
-		const registerTool = pi.registerTool as unknown as (tool: {
-			name: string;
-			label: string;
-			description: string;
-			parameters: unknown;
-			execute: (_id: string, params: { value: unknown }) => Promise<unknown>;
-		}) => void;
-		registerTool({
+		const parameters = Type.Object({ value: Type.Unsafe(schema) }, { additionalProperties: false });
+		pi.registerTool({
 			name: "structured_output",
 			label: "Structured Output",
 			description: "Submit the required final structured output for this subagent step. This terminates the step.",
-			parameters: parameters as never,
+			parameters,
+			constrainedSampling: { type: "json_schema", strict: "prefer" },
 			async execute(_id: string, params: { value: unknown }) {
 				const validation = validateStructuredOutputValue(schema, params.value);
 				if (validation.status === "invalid") {
@@ -186,18 +128,15 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 		});
 	}
 
-	const onRuntimeEvent = pi.on as unknown as (event: string, handler: (event: unknown) => unknown) => void;
-	onRuntimeEvent("context", (event) => {
-		if (!event || typeof event !== "object" || !Array.isArray((event as { messages?: unknown }).messages)) return undefined;
-		const originalMessages = (event as { messages: unknown[] }).messages;
-		const messages = stripParentOnlySubagentMessages(originalMessages);
-		if (messages === originalMessages) return undefined;
+	pi.on("context", (event) => {
+		// Filtering changes the provider prefix, never the saved journal. Fanout children
+		// need their own nested calls/results on later turns and resumes, so retain tool history.
+		const messages = stripParentOnlySubagentMessages(event.messages, readBooleanEnv(SUBAGENT_FANOUT_CHILD_ENV) === true);
+		if (messages === event.messages) return;
 		return { messages };
 	});
 
-	onRuntimeEvent("before_agent_start", async (event) => {
-		if (!event || typeof event !== "object" || typeof (event as { systemPrompt?: unknown }).systemPrompt !== "string") return undefined;
-		const systemPrompt = (event as { systemPrompt: string }).systemPrompt;
+	pi.on("before_agent_start", (event) => {
 		const intercomSessionName = process.env[SUBAGENT_INTERCOM_SESSION_NAME_ENV]?.trim();
 		if (intercomSessionName && typeof pi.setSessionName === "function") {
 			pi.setSessionName(intercomSessionName);
@@ -207,12 +146,11 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 		const inheritSkills = readBooleanEnv(SUBAGENT_INHERIT_SKILLS_ENV);
 		const fanoutChild = readBooleanEnv(SUBAGENT_FANOUT_CHILD_ENV);
 		if (inheritProjectContext === undefined && inheritSkills === undefined && fanoutChild === undefined) return;
-		const rewritten = rewriteSubagentPrompt(systemPrompt, {
-			inheritProjectContext: inheritProjectContext ?? true,
-			inheritSkills: inheritSkills ?? true,
-			fanoutChild: fanoutChild === true,
-		});
-		if (rewritten === systemPrompt) return;
-		return { systemPrompt: rewritten };
+		const options = event.systemPromptOptions;
+		// --no-skills/--no-context-files govern discovery. Keep explicitly selected
+		// skill bodies and context intact; never parse the rendered prompt to remove resources.
+		options.skills = options.skills.filter((skill) => skill.name !== "pi-subagents");
+		setPromptSection(options, "subagent_role", fanoutChild === true ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS);
+		if (structuredOutputPath) setPromptSection(options, "subagent_output", STRUCTURED_OUTPUT_INSTRUCTIONS);
 	});
 }

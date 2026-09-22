@@ -4,7 +4,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message, Usage as NativeUsage } from "@earendil-works/pi-ai";
 import type { FSWatcher } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -80,7 +80,16 @@ interface TruncationResult {
 	artifactPath?: string;
 }
 
+export interface UsageContribution {
+	id: string;
+	/** Native tool and summary usage may not carry model attribution. */
+	provider?: string;
+	model?: string;
+	usage: NativeUsage;
+}
+
 export interface Usage {
+	contributions?: UsageContribution[];
 	input: number;
 	output: number;
 	cacheRead: number;
@@ -539,12 +548,18 @@ export interface ManagementControl {
 
 export interface Details {
 	mode: SubagentRunMode | "management";
+	/** A receipt only when persisted on a native tool result with matching top-level usage. */
+	parentUsage?: { contributions: UsageContribution[] };
 	runId?: string;
 	context?: "fresh" | "fork";
 	results: SingleResult[];
 	controlEvents?: ControlEvent[];
 	asyncId?: string;
 	asyncDir?: string;
+	asyncPid?: number;
+	shareUrl?: string;
+	gistUrl?: string;
+	shareError?: string;
 	progress?: AgentProgress[];
 	progressSummary?: ProgressSummary;
 	intercomTargets?: string[];
@@ -580,6 +595,8 @@ export interface Details {
 }
 
 export type SubagentExecutionResult = AgentToolResult<Details> & {
+	/** Public native-async recovery signal, ignored by portable receipt calls. */
+	pending?: boolean;
 	/** Executor error marker; registered tools transfer it through Pi's native tool_result hook. */
 	isError?: boolean;
 };
@@ -606,7 +623,12 @@ export interface AsyncParallelGroupStatus {
 
 export type AsyncResultTerminalState = "complete" | "failed" | "blocked" | "paused";
 
-export interface AsyncResultChild {
+export interface AsyncResultChild extends Partial<Pick<SingleResult,
+	"task" | "finalOutput" | "initialOutput" | "outputMode" | "savedOutputPath" | "outputReference" | "outputSaveError" | "outputCleanup"
+	| "toolCalls" | "progressSummary" | "truncation" | "skills" | "skillsWarning"
+>> {
+	usage?: Usage;
+	timedOut?: boolean;
 	agent?: string;
 	agentProcessExit?: AgentProcessExit;
 	exitCode?: number | null;
@@ -631,6 +653,10 @@ export interface AsyncResultChild {
 }
 
 export interface AsyncResultFile {
+	maxOutput?: MaxOutputConfig;
+	error?: string;
+	runtimeVersion?: 2;
+	timedOut?: boolean;
 	id?: string;
 	runId?: string;
 	agent?: string;
@@ -746,6 +772,10 @@ export interface AsyncStartedEvent {
 }
 
 export interface AsyncStatus {
+	runtimeVersion?: 2;
+	error?: string;
+	timeoutAt?: number;
+	timedOut?: boolean;
 	runId: string;
 	indexedControl?: boolean;
 	controlRequestFiles?: boolean;
@@ -881,46 +911,17 @@ export interface TimeoutExtensionResult {
 
 export type TimeoutExtensionCallback = (additionalMs: number) => TimeoutExtensionResult;
 
-export interface ForegroundActiveChildControl {
-	agent: string;
-	interrupt?: () => boolean;
-}
-
-export interface ForegroundControlState {
-	runId: string;
-	mode: SubagentRunMode;
-	startedAt: number;
-	updatedAt: number;
-	currentAgent?: string;
-	currentIndex?: number;
-	currentActivityState?: ActivityState;
-	lastActivityAt?: number;
-	currentTool?: string;
-	currentToolStartedAt?: number;
-	currentPath?: string;
-	turnCount?: number;
-	tokens?: number;
-	toolCount?: number;
-	nestedRoute?: NestedRouteInfo;
-	nestedChildren?: NestedRunSummary[];
-	activeChildren?: Map<number, ForegroundActiveChildControl>;
-	progress?: AgentProgress[];
-	timeoutAt?: number;
-	extendTimeout?: TimeoutExtensionCallback;
-	interrupt?: () => boolean;
-}
-
 export interface SubagentState {
 	baseCwd: string;
 	currentSessionId: string | null;
 	asyncJobs: Map<string, AsyncJobState>;
+	waitingRuns?: Map<string, number>;
+	isRunResultConsumed?: (runId: string) => boolean;
+	hasNativeResultOwner?: (runId: string) => boolean;
 	foregroundRuns?: Map<string, ForegroundResumeRun>;
 	ownedRuns?: Map<string, OwnedRun>;
 	persistOwnedRun?: (run: OwnedRun) => void;
 	onRunsChanged?: () => void;
-	foregroundControls: Map<string, ForegroundControlState>;
-	lastForegroundControlId: string | null;
-	pendingForegroundControlNotices?: Map<string, ReturnType<typeof setTimeout>>;
 	cleanupTimers: Map<string, ReturnType<typeof setTimeout>>;
 	lastUiContext: ExtensionContext | null;
 	poller: NodeJS.Timeout | null;
@@ -991,59 +992,6 @@ export interface SubagentLiveIntercomHealth {
 // ============================================================================
 // Execution Options
 // ============================================================================
-
-export interface RunSyncOptions {
-	rootSessionId?: string;
-	cwd?: string;
-	signal?: AbortSignal;
-	interruptSignal?: AbortSignal;
-	timeoutMs?: number;
-	timeoutAt?: number;
-	registerTimeoutExtension?: (extend: TimeoutExtensionCallback) => void;
-	allowIntercomDetach?: boolean;
-	onDetachedComplete?: (result: SingleResult) => void | Promise<void>;
-	onRunSettled?: () => void;
-	intercomEvents?: IntercomEventBus;
-	onUpdate?: (r: SubagentExecutionResult) => void;
-	onControlEvent?: (event: ControlEvent) => void;
-	controlConfig?: ResolvedControlConfig;
-	intercomSessionName?: string;
-	orchestratorIntercomTarget?: string;
-	maxOutput?: MaxOutputConfig;
-	artifactsDir?: string;
-	runId: string;
-	index?: number;
-	sessionDir?: string;
-	sessionFile?: string;
-	share?: boolean;
-	outputPath?: string;
-	outputPathFromAgentDefault?: boolean;
-	outputMode?: OutputMode;
-	/** When true, an inline output file is left in place (workspace/cwd) instead of being consumed after capture. */
-	persistOutputFile?: boolean;
-	maxSubagentDepth?: number;
-	maxExecutionTimeMs?: number;
-	maxTokens?: number;
-	nestedRoute?: NestedRouteInfo;
-	/** Override the agent's default model (format: "provider/id" or just "id") */
-	modelOverride?: string;
-	/** Registry models available for heuristic bare-model resolution */
-	availableModels?: Array<{ provider: string; id: string; fullId: string }>;
-	/** Current parent-session provider to prefer for ambiguous bare model ids */
-	preferredModelProvider?: string;
-	/** Skills to inject (overrides agent default if provided) */
-	skills?: string[];
-	/** Override whether the child inherits the runtime's discovered skills. */
-	inheritSkills?: boolean;
-	structuredOutput?: {
-		schema: JsonSchemaObject;
-		schemaPath: string;
-		outputPath: string;
-	};
-	projectTrust?: ChildProjectTrustPolicy;
-	projectTrusted?: boolean;
-	acceptance?: AcceptanceInput;
-}
 
 export type ChildProjectTrustPolicy = "inherit" | "approve" | "no-approve";
 

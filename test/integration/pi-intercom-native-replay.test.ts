@@ -38,9 +38,8 @@ const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStor
 const { IntercomClient } = await import("../../src/pi-intercom/broker/client.ts");
 const { buildSubagentResultIntercomPayload, deliverSubagentResultIntercomEvent } = await import("../../src/intercom/result-intercom.ts");
 const { listSupervisorQuestions, questionProcessAlive, readQuestionState, saveQuestionAnswer, saveQuestionOwner } = await import("../../src/runs/shared/supervisor-questions.ts");
-const { runSync } = await import("../../src/runs/foreground/execution.ts");
 const { executeAsyncSingle } = await import("../../src/runs/background/async-execution.ts");
-const { resolveControlConfig, formatControlNoticeMessage } = await import("../../src/runs/shared/subagent-control.ts");
+const { resolveControlConfig } = await import("../../src/runs/shared/subagent-control.ts");
 const { handleSubagentControlNotice } = await import("../../src/extension/control-notices.ts");
 const { makeAgent } = await import("../support/helpers.ts");
 const { createSubagentExecutor } = await import("../../src/runs/foreground/subagent-executor.ts");
@@ -823,8 +822,8 @@ test("fresh native processes resume pending messages once without fork/new-sessi
   t.diagnostic("hard-killed host restores 2 native-queued + 2 staged messages once in 1 turn; second resume/fork/new/passive-only restore run 0 turns; superseded progress stays absent.");
 });
 
-for (const background of [false, true]) for (const scenario of ["question", "tool"] as const) test(`native ${background ? "background" : "foreground"} attention uses observed ${scenario} state and still finishes normally`, async (t) => {
-  const name = `attention-${background ? "bg" : "fg"}-${scenario}`;
+for (const scenario of ["question", "tool"] as const) test(`native owner attention uses observed ${scenario} state and still finishes normally`, async (t) => {
+  const name = `attention-bg-${scenario}`;
   let api: ExtensionAPI;
   const parent = await makeSession(t, name, { configure(pi) { api = pi; } });
   parent.faux.setResponses([fauxAssistantMessage("Synthetic question or attention noted"), ...(scenario === "question" ? [fauxAssistantMessage("Synthetic supervisor wait noted")] : [])]);
@@ -839,7 +838,6 @@ for (const background of [false, true]) for (const scenario of ["question", "too
   saveQuestionOwner(name, owner);
   const controlConfig = resolveControlConfig({ needsAttentionAfterMs: 300 });
   const agent = makeAgent("worker", { model: "feedback-fixture/faux-1", extensions: [], output: false });
-  const notices: Array<{ event: import("../../src/shared/types.ts").ControlEvent; noticeText?: string }> = [];
   let asyncDir: string | undefined, pending: Promise<unknown> | undefined;
   t.after(async () => {
     writeFileSync(release, "released");
@@ -847,7 +845,7 @@ for (const background of [false, true]) for (const scenario of ["question", "too
     await pending;
     for (const [key, value] of Object.entries(savedEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
   });
-  if (background) {
+  {
     const started = executeAsyncSingle(name, { agent: "worker", task: "Synthetic attention check", agentConfig: agent,
       ctx: { pi: api!, cwd: directory, currentSessionId: owner }, sessionFile: path.join(directory, "session.jsonl"), shareEnabled: false, maxSubagentDepth: 1,
       controlConfig, controlIntercomTarget: name, childIntercomTarget: () => `${name}-child` });
@@ -861,22 +859,16 @@ for (const background of [false, true]) for (const scenario of ["question", "too
       await waitFor(() => !questionProcessAlive({ pid: status.pid }), "private runner exit");
       return status;
     })();
-  } else {
-    pending = runSync(directory, [agent], "worker", "Synthetic attention check", { runId: name, sessionFile: path.join(directory, "session.jsonl"), index: 0,
-      controlConfig, orchestratorIntercomTarget: name, intercomSessionName: `${name}-child`, onControlEvent: (event) => notices.push({ event, noticeText: formatControlNoticeMessage(event, `${name}-child`) }) });
   }
   const childReceipt = () => JSON.parse(readFileSync(`${release}.json`, "utf8"));
   await waitFor(() => existsSync(`${release}.json`) && childReceipt().events.some((event: { type: string }) => event.type === "tool_execution_start"), "real native child tool start");
   const toolStartedAt = childReceipt().events.find((event: { type: string }) => event.type === "tool_execution_start").timestamp;
   if (scenario === "question") await waitFor(() => listSupervisorQuestions(owner, name)[0]?.state === "awaiting_input", "real durable contact_supervisor wait");
-  const readNotices = () => background
-    ? existsSync(path.join(asyncDir!, "events.jsonl")) ? readFileSync(path.join(asyncDir!, "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((entry) => entry.type === "subagent.control") : []
-    : notices;
+  const readNotices = () => existsSync(path.join(asyncDir!, "events.jsonl")) ? readFileSync(path.join(asyncDir!, "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((entry) => entry.type === "subagent.control") : [];
   await waitFor(() => readNotices().some(({ event }) => event.ts > toolStartedAt + controlConfig.needsAttentionAfterMs), "runner idle producer event");
   const notice = readNotices().find(({ event }) => event.ts > toolStartedAt + controlConfig.needsAttentionAfterMs)!;
   const event = notice.event;
-  const state = { foregroundControls: new Map([[name, { runId: name, mode: "single", startedAt: toolStartedAt, updatedAt: event.ts, currentAgent: "worker", currentIndex: 0, currentActivityState: "needs_attention" }]]) };
-  handleSubagentControlNotice({ pi: api!, state, visibleControlNotices: new Set(), details: { ...notice, source: background ? "async" : "foreground", childIntercomTarget: `${name}-child` }, foregroundDelayMs: 0 });
+  handleSubagentControlNotice({ pi: api!, visibleControlNotices: new Set(), details: { ...notice, source: "async", childIntercomTarget: `${name}-child` } });
   await waitFor(() => parent.session.sessionManager.getEntries().some((entry: { type: string; customType?: string }) => entry.type === "custom_message" && entry.customType === "subagent_control_notice"), "native attention custom message");
   const message = parent.session.sessionManager.getEntries().find((entry: { customType?: string }) => entry.customType === "subagent_control_notice");
   assert.equal(message.content, notice.noticeText);
@@ -906,7 +898,7 @@ for (const background of [false, true]) for (const scenario of ["question", "too
   await parent.session.waitForIdle();
   for (const message of parent.session.messages) if (message.role === "assistant") assert.equal(message.stopReason, "stop", message.errorMessage);
   assert.deepEqual(parent.errors, []);
-  t.diagnostic(`Real native ${scenario} + ${background ? "async" : "foreground"} idle producer; observed tool/age and actionable notice, then normal completion (no 10-minute wait).`);
+  t.diagnostic(`Real native ${scenario} + owner idle producer; observed tool/age and actionable notice, then normal completion (no 10-minute wait).`);
 });
 
 test("native obsolete completed-child progress stays in raw history without a late model wake", async (t) => {
@@ -1123,14 +1115,13 @@ for (const mode of ["single", "parallel", "chain"] as const) test(`native import
   writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${path.join(repo, "test/fixtures/native-feedback-child.mjs")}" "$@"\n`, { mode: 0o700 });
   const saved = { PATH: process.env.PATH, PI_FEEDBACK_RELEASE_FILE: process.env.PI_FEEDBACK_RELEASE_FILE, PI_FEEDBACK_SCENARIO: process.env.PI_FEEDBACK_SCENARIO };
   process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`; process.env.PI_FEEDBACK_RELEASE_FILE = release; process.env.PI_FEEDBACK_SCENARIO = "tool";
-  const state = { baseCwd: directory, currentSessionId: "", ownedRuns: new Map(), asyncJobs: new Map(), foregroundRuns: new Map(), foregroundControls: new Map(), lastForegroundControlId: null };
-  const notices = [];
+  const state = { baseCwd: directory, currentSessionId: "", ownedRuns: new Map(), asyncJobs: new Map(), foregroundRuns: new Map() };
+  const { getRunMetadataDir } = await import("../../src/runs/shared/supervisor-questions.ts");
   let seen = "", yielded;
-  t.after(async () => { writeFileSync(release, "released"); await waitFor(() => !state.foregroundControls.size, "continued workflow cleanup"); for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  t.after(async () => { writeFileSync(release, "released"); await waitFor(() => [...state.ownedRuns.keys()].every((id) => existsSync(path.join(getRunMetadataDir(id), "result.json"))), "continued workflow cleanup"); for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
   const parent = await makeSession(t, name, { hasUI: true, configure(pi) {
     const executor = createSubagentExecutor({ pi, state, config: {}, asyncByDefault: false, tempArtifactsDir: directory, getSubagentSessionRoot: () => path.join(directory, "sessions"), expandTilde: (value) => value,
       discoverAgents: () => ({ agents: [makeAgent("worker", { model: "feedback-fixture/faux-1", completionGuard: false, output: false, progress: false })] }) });
-    pi.events.on("subagent:result-intercom", (notice) => { notices.push(notice); });
     pi.registerTool({ name: "foreground_agent", label: "Foreground agent", description: "Wait for the real native child fixture", parameters: Type.Object({}), async execute(id, _args, signal, update, ctx) {
       const first = { agent: "worker", task: "STEP_A keep working", output: false }, second = { agent: "worker", task: "STEP_B consume {previous}", output: false };
       return yielded = await executor.execute(id, { ...(mode === "single" ? first : mode === "parallel" ? { tasks: [first, second], concurrency: 1 } : { chain: [first, second] }), async: false, context: "fresh", artifacts: false }, signal, update, ctx);
@@ -1144,19 +1135,23 @@ for (const mode of ["single", "parallel", "chain"] as const) test(`native import
   await parent.send(`important-during-${mode}`, { text: "Important direction: keep the current API.", delivery: "steer" });
   await running;
   assert.match(seen, /Important direction: keep the current API/);
-  assert.match(seen, /continues unchanged, including queued and dependent steps/);
+  assert.match(seen, /Run .* is unchanged.*completion will arrive automatically/);
   assert.equal(questionProcessAlive({ pid: firstPid }), true, "the important message did not kill the child");
   assert.equal(existsSync(release), false);
-  assert.ok(state.foregroundControls.has(yielded.details.runId), "yielding keeps the original workflow control alive");
+  const runId = yielded.details.wait.runId;
+  const resultPath = path.join(getRunMetadataDir(runId), "result.json");
+  assert.equal(ownedRunView(state.ownedRuns.get(runId), state).state, "live");
+  assert.equal(existsSync(resultPath), false, "releasing a wait does not publish an early terminal result");
   writeFileSync(release, "released");
-  await waitFor(() => !state.foregroundControls.size && notices.length === 1, "all original workflow steps and one final result");
-  const view = ownedRunView(state.ownedRuns.get(yielded.details.runId), state);
+  await waitFor(() => existsSync(resultPath), "all original workflow steps publish a final result");
+  const view = ownedRunView(state.ownedRuns.get(runId), state);
   assert.equal(view.state, "completed");
   assert.equal(view.children.length, mode === "single" ? 1 : 2);
   for (const child of view.children) { assert.equal(child.state, "completed"); assert.equal(child.result.finalOutput, "Synthetic child finished normally"); }
   if (mode === "chain") assert.match(view.children[1].task, /STEP_B consume Synthetic child finished normally/, "dependent B receives A's real output");
-  assert.equal(notices[0].status, "completed");
-  assert.equal(notices.length, 1, "yielding must not synthesize a terminal result before real completion");
+  const terminalEvents = readFileSync(path.join(getRunMetadataDir(runId), "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((event) => event.type === "subagent.run.completed");
+  assert.equal(terminalEvents.length, 1, "one durable completion after every original step");
+  assert.equal(terminalEvents[0].status, "complete");
   assert.deepEqual(parent.errors, []);
 });
 

@@ -373,20 +373,5 @@ export function namespaceParallelOutput(output: string | false | undefined, agen
 	return output ? path.isAbsolute(output) ? output : path.join(`parallel-${stepIndex}`, `${taskIndex}-${agent}`, output) : false;
 }
 
-/**
- * Create subdirectories for parallel step outputs
- */
-export function createParallelDirs(
-	chainDir: string,
-	stepIndex: number,
-	taskCount: number,
-	agentNames: string[],
-): void {
-	for (let i = 0; i < taskCount; i++) {
-		const subdir = path.join(chainDir, `parallel-${stepIndex}`, `${i}-${agentNames[i]}`);
-		fs.mkdirSync(subdir, { recursive: true });
-	}
-}
-
 export type { ParallelTaskResult } from "../runs/shared/parallel-utils.ts";
 export { aggregateParallelOutputs } from "../runs/shared/parallel-utils.ts";

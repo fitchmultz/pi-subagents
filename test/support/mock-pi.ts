@@ -7,7 +7,7 @@ interface MockPiResponse {
 	matchArgsIncludes?: string | string[];
 	output?: string;
 	structuredOutput?: unknown;
-	nativeReport?: { scenario: string; report: string; laterReport?: string; receiptPath: string; handoffPath?: string; handoff?: string };
+	nativeReport?: { scenario: string; report: string; initialReport?: string; initialDelay?: number; publicOutput?: unknown; retry?: string; laterReport?: string; receiptPath: string; handoffPath?: string; handoff?: string };
 	stderr?: string;
 	exitCode?: number;
 	delay?: number;

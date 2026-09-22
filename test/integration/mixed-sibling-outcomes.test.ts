@@ -37,13 +37,13 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 					it(`${host} ${shape}: ${failed ? "failed + successful" : "successful"} + ${stop}`, async () => {
 						mock.reset();
 						const detaching = stop.startsWith("detach");
-						const aggregateFailed = failed || stop === "detach-queued";
+						const aggregateFailed = failed;
 						const cwd = createTempDir("mixed-siblings-");
 						const parentFile = path.join(cwd, "parent.jsonl");
 						fs.writeFileSync(parentFile, `${JSON.stringify({ type: "session", version: 3, id: randomUUID(), cwd, timestamp: new Date().toISOString() })}\n`);
 						let parent = SessionManager.open(parentFile);
 						const state = {
-							baseCwd: cwd, currentSessionId: parentFile, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null,
+							baseCwd: cwd, currentSessionId: parentFile, asyncJobs: new Map(),
 							ownedRuns: new Map(), completionSeen: new Map(), cleanupTimers: new Map(), persistOwnedRun: (run) => parent.appendCustomEntry(OWNED_RUN_ENTRY, run),
 						} as SubagentState;
 						const ctx = { ...makeMinimalCtx(cwd), sessionManager: parent };
@@ -75,6 +75,8 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 							{ jsonl: [events.toolStart(detaching ? "contact_supervisor" : "bash", detaching ? { reason: "need_decision" } : { command: "controlled wait" })] },
 							{ delay: detaching ? 1_000 : 20_000, jsonl: [events.assistantMessage("DETACHED_CHILD_FINISHED")] },
 						] });
+						mock.onCall({ matchArgsIncludes: "MIXED_QUEUED", output: "QUEUED_CHILD_FINISHED" });
+						mock.onCall({ matchArgsIncludes: "MIXED_DOWNSTREAM", output: "DOWNSTREAM_FINISHED" });
 						const tasks = tokens.map((task) => ({ agent: "worker", task, output: false }));
 						const prefix = { agent: "worker", task: "MIXED_SOURCE", as: "targets", output: false, outputSchema: { type: "object" } };
 						const downstream = { agent: "worker", task: "MIXED_DOWNSTREAM", output: false };
@@ -103,7 +105,7 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 							const response = await pending;
 							const initial = JSON.parse(JSON.stringify(response));
 							let terminal = initial.details;
-							if (host === "background") {
+							if (host === "background" || detaching) {
 								await waitFor(() => fs.existsSync(path.join(metadata, "result.json")), "durable background result");
 								terminal = readJson(path.join(metadata, "result.json"));
 								await waitFor(() => fs.existsSync(path.join(RESULTS_DIR, `${runId}.json`)), "notification file before the one-time scan");
@@ -111,7 +113,6 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 								await waitFor(() => notifications.some((entry) => entry.runId === runId), "grouped background completion");
 							}
 							const beforeSettlement = await invoke({ action: "status", id: runId });
-							if (detaching) await waitFor(() => !state.foregroundControls.has(runId!), "detached child completion");
 							parent = SessionManager.open(parentFile);
 							ctx.sessionManager = parent;
 							state.foregroundRuns = new Map();
@@ -124,22 +125,25 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 								fs.writeFileSync(path.join(process.env.PI_MIXED_SIBLING_EVIDENCE_DIR, `${host}-${shape}-${stop}-${failed ? "mixed" : "pure"}.json`), JSON.stringify(receipt, null, 2));
 							}
 							const results = terminal.results;
-							assert.equal(calls.length, waitIndex + 1, "queued/downstream children must never launch");
-							assert.deepEqual(calls.map((call) => call.expandedArgs.at(-1).match(/MIXED_(SOURCE|OK|BAD|WAIT|QUEUED|DOWNSTREAM)/)?.[0]), [ ...(prefixCount ? ["MIXED_SOURCE"] : []), ...tokens.slice(0, tokens.indexOf("MIXED_WAIT") + 1) ]);
+							const executed = [ ...(prefixCount ? ["MIXED_SOURCE"] : []), ...tokens.slice(0, detaching ? tokens.length : tokens.indexOf("MIXED_WAIT") + 1), ...(detaching && !failed && shape !== "parallel" ? ["MIXED_DOWNSTREAM"] : []) ];
+							assert.equal(calls.length, executed.length, "detach continues queued work; interruption and timeout stop it");
+							assert.deepEqual(calls.map((call) => call.expandedArgs.at(-1).match(/MIXED_(SOURCE|OK|BAD|WAIT|QUEUED|DOWNSTREAM)/)?.[0]), executed);
 							assert.equal(results[prefixCount].finalOutput ?? results[prefixCount].output, "SUCCESSFUL_SIBLING_EVIDENCE");
 							if (failed) assert.equal(results[prefixCount + 1].error, failureReason);
 							if (stop === "interrupt") {
 								assert.equal(results[waitIndex].interrupted, true);
 								assert.equal(results[waitIndex + 1].interrupted, true, "queued child stays paused");
-							} else assert.equal(results[waitIndex][detaching ? "detached" : "timedOut"], true);
-							if (stop === "detach-queued") {
-								assert.equal(results[waitIndex + 1].exitCode, -1);
-								assert.equal(results[waitIndex + 1].error, "Skipped due to detached");
-							}
+							} else if (detaching) {
+								assert.equal(results[waitIndex].output, "DETACHED_CHILD_FINISHED");
+								if (stop === "detach-queued") assert.equal(results[waitIndex + 1].output, "QUEUED_CHILD_FINISHED");
+							} else assert.equal(results[waitIndex].timedOut, true);
 							if (shape === "static-chain") assert.equal(terminal.outputs.evidence.text, "SUCCESSFUL_SIBLING_EVIDENCE");
-							if (shape === "dynamic-chain") assert.equal(terminal.outputs.collected, undefined, "stopped collections must not publish");
+							if (shape === "dynamic-chain") {
+								if (detaching && !failed) assert.equal(terminal.outputs.collected.structured.length, tokens.length);
+								else assert.equal(terminal.outputs.collected, undefined, "failed or stopped collections must not publish");
+							}
 							const saved = inspection.details.run!;
-							const expectedState = aggregateFailed ? "failed" : detaching && shape === "parallel" ? "completed" : "paused";
+							const expectedState = aggregateFailed ? "failed" : detaching ? "completed" : "paused";
 							assert.equal(saved.state, expectedState);
 							if (detaching) {
 								const notification = notifications.find((entry) => entry.runId === runId);
@@ -151,13 +155,19 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 							assert.equal(saved.children[prefixCount].result?.finalOutput, "SUCCESSFUL_SIBLING_EVIDENCE");
 							if (failed) assert.equal(saved.children[prefixCount + 1].state, "failed");
 							assert.equal(saved.children[waitIndex].state, stop === "interrupt" ? "paused" : detaching ? "completed" : "failed");
-							if (shape !== "parallel") assert.equal(terminal.workflowGraph.nodes[1].status, aggregateFailed ? "failed" : detaching ? "detached" : "paused");
+							if (shape !== "parallel") assert.equal(terminal.workflowGraph.nodes[1].status, aggregateFailed ? "failed" : detaching ? "completed" : "paused");
 							if (host === "foreground") {
-								assert.equal(initial.isError, aggregateFailed ? true : undefined, "aggregate failure must survive a control-state return");
 								const text = initial.content.map((part) => part.text).join("\n");
-								if (failed) assert.ok(text.includes(failureReason), `Missing failed-child reason: ${text}`);
-								if (stop === "detach-queued") assert.match(text, /Skipped due to detached/, "an unstarted task needs its skip reason, not an executed failure");
-								assert.match(text, stop === "interrupt" ? /paused after interrupt/i : detaching ? /detached for intercom coordination/i : /timed out/i);
+								if (detaching) {
+									assert.equal(initial.details.wait.status, "yielded");
+									assert.deepEqual(JSON.parse(JSON.stringify(response)), initial, "later completion must not mutate the yielded wait receipt");
+									assert.match(text, /Released the wait.*completion will arrive automatically/s);
+								} else {
+									assert.equal(initial.isError, aggregateFailed ? true : undefined);
+									if (failed) assert.ok(text.includes(failureReason), `Missing failed-child reason: ${text}`);
+									if (!failed || stop === "timeout") assert.match(text, stop === "interrupt" ? /paused after interrupt/i : /timed out/i);
+								}
+
 							} else {
 								assert.equal(terminal.success, false);
 								assert.equal(terminal.state, failed ? "failed" : "paused");
@@ -169,9 +179,9 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 							}
 						} finally {
 							watcher.stopResultWatcher();
-							if (runId && (state.foregroundControls.has(runId) || host === "background" && !fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")))) {
+							if (runId && !fs.existsSync(path.join(getRunMetadataDir(runId), "result.json"))) {
 								await invoke({ action: "interrupt", id: runId });
-								await waitFor(() => host === "foreground" ? !state.foregroundControls.has(runId!) : fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "owned test run cleanup");
+								await waitFor(() => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "owned test run cleanup");
 							}
 							await pending;
 							tracker.resetJobs();

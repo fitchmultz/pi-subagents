@@ -173,6 +173,7 @@ export function sumAttemptUsage(attempts: readonly ModelAttempt[]): Usage {
 	const usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 	for (const attempt of attempts) {
 		for (const key of ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"] as const) usage[key] += attempt.usage?.[key] ?? 0;
+		if (attempt.usage?.contributions?.length) (usage.contributions ??= []).push(...attempt.usage.contributions);
 	}
 	return usage;
 }

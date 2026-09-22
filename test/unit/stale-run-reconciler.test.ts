@@ -111,6 +111,23 @@ describe("async stale-run reconciliation", () => {
 		}
 	});
 
+	it("preserves unstarted durable workflow rows when final results contain only executed children", () => {
+		const root = tempRoot("pi-durable-unstarted-");
+		try {
+			const status = { runtimeVersion: 2, runId: "run-unstarted", mode: "chain", state: "failed", startedAt: 1000, endedAt: 2000,
+				steps: [{ agent: "producer", status: "complete", exitCode: 0 }, { agent: "consumer", status: "pending" }] };
+			writeStatus(root, status);
+			fs.writeFileSync(path.join(root, "result.json"), JSON.stringify({ runtimeVersion: 2, id: status.runId, mode: "chain", state: "failed", success: false,
+				error: "Expansion exceeded its item limit", results: [{ agent: "producer", success: true, exitCode: 0, output: "Producer evidence" }] }));
+			const result = reconcileAsyncRun(root);
+			assert.equal(result.status?.state, "failed");
+			assert.deepEqual(result.status?.steps?.map((step) => step.status), ["complete", "pending"]);
+			assert.equal(result.status?.steps?.[1]?.exitCode, undefined, "unstarted work has no process exit");
+			assert.equal(result.repaired, false);
+			assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "status.json"), "utf8")), status, "inspection must not rewrite owner evidence");
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
 	it("repairs stale status with per-child result outcomes", () => {
 		const root = tempRoot("pi-stale-mixed-result-");
 		try {

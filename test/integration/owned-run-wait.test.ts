@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import { findPackageJSON } from "node:module";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -13,7 +14,7 @@ import { createAsyncJobTracker } from "../../src/runs/background/async-job-track
 import { ownedRunView, saveForegroundRun } from "../../src/runs/shared/run-records.ts";
 import { interruptAsyncRun } from "../../src/runs/foreground/foreground-control.ts";
 import { createNestedRoute } from "../../src/runs/shared/nested-events.ts";
-import { createSupervisorQuestion, getRunMetadataDir, readQuestionState, recordQuestionDelivery, saveQuestionContract, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
+import { createSupervisorQuestion, getRunMetadataDir, readQuestionState, recordQuestionDelivery, saveAsyncRunResult, saveRunStatus, saveQuestionContract, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
 import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, type OwnedRun, type SubagentState } from "../../src/shared/types.ts";
 
 async function until(check: () => boolean, reason: string) { const end = Date.now() + 10_000; while (!check()) { assert.ok(Date.now() < end, reason); await delay(20); } }
@@ -22,7 +23,7 @@ function setup(t, allowLaunch = false) {
 	fs.writeFileSync(sessionFile, JSON.stringify({ type: "session", version: 3, id: randomUUID(), cwd, timestamp: new Date().toISOString() }) + "\n");
 	const agent = makeAgent("worker", { model: "fixture/original", completionGuard: false });
 	const run: OwnedRun = { runId, rootRunId: runId, ownerSessionId: "session-123", source: "foreground", mode: "single", cwd, task: "Original task", startedAt: 1, children: [{ agent: "worker", index: 0, sessionFile }] };
-	const state = { baseCwd: cwd, currentSessionId: "session-123", ownedRuns: new Map([[runId, run]]), foregroundRuns: new Map(), foregroundControls: new Map(), asyncJobs: new Map(), cleanupTimers: new Map(), completionSeen: new Map(), lastForegroundControlId: null, lastUiContext: null } as SubagentState;
+	const state = { baseCwd: cwd, currentSessionId: "session-123", ownedRuns: new Map([[runId, run]]), foregroundRuns: new Map(), asyncJobs: new Map(), cleanupTimers: new Map(), completionSeen: new Map(), lastUiContext: null } as SubagentState;
 	saveForegroundRun({ ...run, results: [{ agent: "worker", task: run.task, exitCode: 0, sessionFile, finalOutput: "Previous result", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } }] });
 	saveQuestionOwner(runId, run.ownerSessionId);
 	saveQuestionContract(runId, 0, { sessionFile, launch: { agent, systemPrompt: "Saved exact launch", skills: [], model: "fixture/original", modelCandidates: ["fixture/original"], cwd, context: "fresh", artifacts: false, output: false, outputMode: "inline", share: false } });
@@ -139,12 +140,19 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 for (const mode of ["single", "chain"] as const) test(`a nested foreground ${mode} human blocker remains blocked after acknowledged Intercom delivery`, async (t) => {
 	const f = setup(t, true), route = createNestedRoute(randomUUID());
 	const nestedEnv = { PI_SUBAGENT_PARENT_ROOT_RUN_ID: route.rootRunId, PI_SUBAGENT_PARENT_RUN_ID: route.rootRunId, PI_SUBAGENT_PARENT_CHILD_INDEX: "0", PI_SUBAGENT_PARENT_DEPTH: "1", PI_SUBAGENT_PARENT_EVENT_SINK: route.eventSink, PI_SUBAGENT_PARENT_CONTROL_INBOX: route.controlInbox, PI_SUBAGENT_PARENT_CAPABILITY_TOKEN: route.capabilityToken };
-	const saved = Object.fromEntries(Object.keys(nestedEnv).map((key) => [key, process.env[key]]));
-	Object.assign(process.env, nestedEnv);
+	const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
+	const bin = path.join(f.cwd, "native-bin"), input = path.join(f.cwd, "native-blocked.json"), receipt = path.join(f.cwd, "native-receipt.json");
+	fs.mkdirSync(bin);
+	fs.writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec '${process.execPath}' '${path.join(sdkRoot, "dist/cli.js")}' "$@"\n`, { mode: 0o755 });
+	fs.writeFileSync(input, JSON.stringify({ scenario: "blocked", receiptPath: receipt, report: { criteriaSatisfied: [{ id: "deliver", status: "satisfied", evidence: "fixture" }] } }));
+	const runtimeEnv = { ...nestedEnv, PATH: `${bin}${path.delimiter}${process.env.PATH}`, PI_DRIVER_FIXTURE: input, PI_INTERCOM_TEST_SDK: sdkRoot };
+	const saved = Object.fromEntries(Object.keys(runtimeEnv).map((key) => [key, process.env[key]]));
+	Object.assign(process.env, runtimeEnv);
+	f.deps.discoverAgents = () => ({ agents: [makeAgent("worker", { model: "driver-fixture/faux-1", completionGuard: false,
+		extensions: [fileURLToPath(new URL("../fixtures/native-child-attempt.mjs", import.meta.url))] })] });
 	try {
-		f.mock.onCall({ output: '```acceptance-report\n{"criteriaSatisfied":[{"id":"criterion-1","status":"blocked","evidence":"Touch ID prompt is visible","humanAction":"Complete Touch ID"}]}\n```' });
 		f.events.on("subagent:result-intercom", (payload) => f.events.emit("subagent:result-intercom-delivery", { requestId: payload.requestId, delivered: true }));
-		const task = { agent: "worker", task: "Verify authenticated flow", output: false, acceptance: { criteria: ["Verify sign-in"] } };
+		const task = { agent: "worker", task: "Verify authenticated flow", output: false, acceptance: { criteria: [{ id: "deliver", must: "Verify sign-in" }] } };
 		const result = await f.invoke({ ...(mode === "single" ? task : { chain: [task, { agent: "worker", task: "Dependent step must not run", output: false }] }), async: false, artifacts: false });
 		assert.equal(result.isError, undefined);
 		const terminal = fs.readdirSync(route.eventSink).map((file) => JSON.parse(fs.readFileSync(path.join(route.eventSink, file), "utf8"))).filter((event) => event.type === "subagent.nested.completed" && event.child?.id === result.details.runId);
@@ -153,36 +161,36 @@ for (const mode of ["single", "chain"] as const) test(`a nested foreground ${mod
 		assert.equal(terminal[0].child.steps[0].status, "blocked");
 		assert.match(terminal[0].child.steps[0].error, /Complete Touch ID/);
 		assert.match(terminal[0].child.error, /Complete Touch ID/);
-		assert.equal(f.mock.callCount(), 1, "human-only blocker must not enter finalization");
+		const native = JSON.parse(fs.readFileSync(receipt, "utf8"));
+		assert.equal(native.calls, 1, "human-only blocker must not enter finalization");
+		assert.equal(native.networkRequests, 0);
 	} finally { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
 });
 
-for (const background of [false, true]) test(`${background ? "background" : "foreground"} Stop cancels an exited child's durable question without stopping its live sibling`, async (t) => {
+for (const tracked of [false, true]) test(`${tracked ? "tracked" : "restored"} owner Stop cancels an exited child's durable question without stopping its live sibling`, async (t) => {
 	const f = setup(t), id = randomUUID(), exited = spawnSync(process.execPath, ["-e", ""]);
 	assert.equal(exited.status, 0);
 	saveQuestionOwner(id, "session-123");
 	const question = createSupervisorQuestion({ runId: id, ownerTarget: "parent", agent: "worker", index: 0, childSessionId: "exited", childTarget: "child-a", sessionFile: path.join(f.cwd, "exited.jsonl"), cwd: f.cwd, pid: exited.pid, reason: "need_decision", message: "Should A proceed?" });
-	let siblingStops = 0, controlPath;
-	if (background) {
-		const asyncDir = path.join(f.cwd, "question-group"); fs.mkdirSync(asyncDir);
-		const status = { runId: id, mode: "parallel", state: "running", startedAt: 1, indexedControl: false, steps: [{ agent: "worker", status: "failed" }, { agent: "worker", status: "running" }] };
-		fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify(status));
-		f.state.asyncJobs.set(id, { asyncId: id, asyncDir, status: "running" }); controlPath = path.join(asyncDir, "control-request.json");
-		assert.equal((await f.invoke({ action: "interrupt", id, index: 0 })).isError, true, "an unrelated unsupported-control error is retained");
-		assert.equal(readQuestionState(question).state, "awaiting_input");
-		fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ ...status, indexedControl: true }));
-	} else f.state.foregroundControls.set(id, { runId: id, mode: "parallel", startedAt: 1, updatedAt: 1, currentAgent: "worker", currentIndex: 1, interrupt: () => { siblingStops++; return true; }, activeChildren: new Map([[1, { agent: "worker", interrupt: () => { siblingStops++; return true; } }]]) });
+	const asyncDir = getRunMetadataDir(id);
+	const status = { runtimeVersion: 2, runId: id, mode: "parallel", state: "running", pid: process.pid, startedAt: 1, indexedControl: false, controlRequestFiles: true, steps: [{ agent: "worker", status: "failed" }, { agent: "worker", status: "running" }] };
+	saveRunStatus(id, status);
+	f.state.ownedRuns!.set(id, { ...f.state.ownedRuns!.get(f.runId)!, runId: id, rootRunId: id, source: "async", mode: "parallel", asyncDir, children: status.steps.map((step, index) => ({ agent: step.agent, index })) });
+	if (tracked) f.state.asyncJobs.set(id, { asyncId: id, asyncDir, status: "running" });
+	assert.equal((await f.invoke({ action: "interrupt", id, index: 0 })).isError, true, "an unrelated unsupported-control error is retained");
+	assert.equal(readQuestionState(question).state, "awaiting_input");
+	saveRunStatus(id, { ...status, indexedControl: true });
 	const result = await f.invoke({ action: "interrupt", id, index: 0 });
 	assert.equal(result.isError, undefined, result.content[0]?.text);
 	assert.equal(readQuestionState(question).state, "cancelled");
-	assert.equal(siblingStops, 0);
-	if (controlPath) assert.equal(fs.existsSync(controlPath), false, "no sibling control request was sent");
+	assert.equal(fs.existsSync(path.join(asyncDir, "control-requests")), false, "no sibling control request was sent");
 });
 
 test("answer async:false derives the answered question's child index rather than waiting on a sibling", async (t) => {
 	const f = setup(t), id = randomUUID(), run = { ...f.state.ownedRuns!.get(f.runId)!, runId: id, rootRunId: id, mode: "parallel", children: [{ agent: "worker", index: 0 }, { agent: "worker", index: 1 }] };
 	f.state.ownedRuns!.set(id, run);
-	f.state.foregroundControls.set(id, { runId: id, mode: "parallel", startedAt: 1, updatedAt: 1, currentAgent: "worker", currentIndex: 0, activeChildren: new Map([[0, { agent: "worker" }], [1, { agent: "worker" }]]) });
+	run.source = "async"; run.asyncDir = getRunMetadataDir(id);
+	saveRunStatus(id, { runtimeVersion: 2, runId: id, mode: "parallel", state: "running", pid: process.pid, startedAt: Date.now(), steps: run.children.map((child) => ({ agent: child.agent, status: "running" })) });
 	saveQuestionOwner(id, "session-123");
 	const questions = run.children.map((child) => createSupervisorQuestion({ runId: id, ownerTarget: "parent", agent: child.agent, index: child.index, childSessionId: `child-${child.index}`, childTarget: `child-${child.index}`, sessionFile: path.join(f.cwd, `${child.index}.jsonl`), cwd: f.cwd, pid: process.pid, reason: "need_decision", message: `Choose for ${child.index}` }));
 	const pending = f.invoke({ action: "answer", id, questionId: questions[0].questionId, message: "Proceed A", async: false }, AbortSignal.timeout(2_000));
@@ -205,6 +213,21 @@ test("an older multi-child runner cannot receive an index it would ignore", (t) 
 	assert.equal(result?.isError, true);
 	assert.match(result!.content[0]!.text, /older runner.*selected-child stop/);
 	assert.equal(fs.existsSync(path.join(asyncDir, "control-request.json")), false);
+});
+
+for (const terminalState of ["complete", "failed"] as const) test(`waiting returns the durable ${terminalState} workflow result when no children materialized`, async (t) => {
+	const f = setup(t), id = randomUUID();
+	const run = { ...f.state.ownedRuns!.get(f.runId)!, runId: id, rootRunId: id, source: "async" as const, mode: "chain" as const, asyncDir: getRunMetadataDir(id), children: [] };
+	f.state.ownedRuns!.set(id, run);
+	saveAsyncRunResult(id, { runtimeVersion: 2, id, state: terminalState, timestamp: Date.now(), results: [],
+		...(terminalState === "failed" ? { error: "Collection schema rejected the empty group" } : { summary: "Empty fanout completed" }) });
+	const result = await waitForOwnedRun({ id, deps: f.deps, ctx: makeMinimalCtx(f.cwd), executionResult: true });
+	assert.equal(result.details.wait?.status, "completed");
+	assert.equal(result.isError, terminalState === "failed" ? true : undefined);
+	assert.deepEqual(result.details.results, []);
+	assert.match(result.content[0]!.text, terminalState === "failed" ? /Collection schema rejected/ : /Empty fanout completed/);
+	const child = await waitForOwnedRun({ id, index: 0, deps: f.deps, ctx: makeMinimalCtx(f.cwd) });
+	assert.equal(child.details.wait?.status, "unavailable", "an explicit nonexistent child is never fabricated");
 });
 
 test("foreground result collection requires durable publication, not an early terminal status", async (t) => {

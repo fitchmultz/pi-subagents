@@ -539,15 +539,15 @@ interface ChainRenderPlaceholderEntry {
 type ChainRenderEntry = ChainRenderResultEntry | ChainRenderPlaceholderEntry;
 
 function buildChainRenderEntries(details: Details, label: MultiProgressLabel): ChainRenderEntry[] | undefined {
-	if (details.mode !== "chain" || !label.hasParallelInChain || label.showActiveGroupOnly) return undefined;
+	if (details.mode !== "chain" || (!label.hasParallelInChain && !details.workflowGraph?.nodes.length) || label.showActiveGroupOnly) return undefined;
 	const entries: ChainRenderEntry[] = [];
 	for (const span of buildChainStepSpans(details)) {
-		if (span.isParallel && span.count === 0) {
+		if (span.isParallel ? span.count === 0 : !details.results[span.start]) {
 			entries.push({
 				kind: "placeholder",
 				rowNumber: span.stepIndex + 1,
 				stepLabel: `Step ${span.stepIndex + 1}`,
-				agentName: span.label ?? details.chainAgents?.[span.stepIndex] ?? `step-${span.stepIndex + 1}`,
+				agentName: (!span.isParallel ? details.chainAgents?.[span.stepIndex] : undefined) ?? span.label ?? details.chainAgents?.[span.stepIndex] ?? `step-${span.stepIndex + 1}`,
 				status: span.status ?? "pending",
 				error: span.error,
 			});

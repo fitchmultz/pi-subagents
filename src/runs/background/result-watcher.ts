@@ -20,7 +20,7 @@ import {
 } from "../../intercom/result-intercom.ts";
 import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-events.ts";
 import type { NativeCheckpointEvent } from "../../shared/native-checkpoint.ts";
-import { parseAsyncResultFileContent, readAsyncResultFile } from "./async-result-file.ts";
+import { isDurableRun, parseAsyncResultFileContent, readAsyncResultFile } from "./async-result-file.ts";
 
 const WATCHER_RESTART_DELAY_MS = 3000;
 const POLL_INTERVAL_MS = 3000;
@@ -88,15 +88,31 @@ export function createResultWatcher(
 	const inFlight = new Set<Promise<void>>();
 	let checkpoint: NativeCheckpointEvent | undefined;
 
+	const readResult = (file: string) => fsApi === fs ? readAsyncResultFile(file) : parseAsyncResultFileContent(fsApi.readFileSync(file, "utf-8"), file);
+	const pendingResultFiles = () => [
+		...(fsApi.existsSync(resultsDir) ? fsApi.readdirSync(resultsDir).filter((name) => name.endsWith(".json")) : []),
+		...[...(state.ownedRuns?.values() ?? [])].filter((run) => run.source === "async" && !run.delivery && !state.isRunResultConsumed?.(run.runId))
+			.map((run) => path.join(getRunMetadataDir(run.runId), "result.json")).filter((file) => fsApi.existsSync(file)),
+	];
+
 	const handleResult = async (file: string) => {
 		let claimedCompletionKey: string | undefined;
 		let completionEmitted = false;
-		const resultPath = path.join(resultsDir, file);
+		const durableFile = path.isAbsolute(file);
+		const resultPath = durableFile ? file : path.join(resultsDir, file);
+		const consumeNotification = () => { if (!durableFile) fsApi.unlinkSync(resultPath); };
 		if (!fsApi.existsSync(resultPath)) return;
 		try {
-			const data = fsApi === fs ? readAsyncResultFile(resultPath) : parseAsyncResultFileContent(fsApi.readFileSync(resultPath, "utf-8"), resultPath);
-			const runId = data.runId ?? data.id ?? file.replace(/\.json$/i, "");
+			const notification = readResult(resultPath);
+			const runId = notification.runId ?? notification.id ?? path.basename(file, ".json");
+			const data = isDurableRun(notification) && !durableFile ? readResult(path.join(getRunMetadataDir(runId), "result.json")) : notification;
+			if ((data.runId ?? data.id ?? runId) !== runId) throw new Error(`Result identity does not match notification '${runId}'.`);
 			if (data.sessionId ? data.sessionId !== state.currentSessionId : !state.ownedRuns?.has(runId)) return;
+			if (state.isRunResultConsumed?.(runId) || (isDurableRun(data) && state.ownedRuns?.get(runId)?.delivery)) { consumeNotification(); return; }
+			if (state.waitingRuns?.has(runId) || state.hasNativeResultOwner?.(runId)) {
+				pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { ...data, runId, suppressNotification: true, intercomResultDelivered: false });
+				return;
+			}
 			const hasExplicitNestedChildren = data.nestedChildren !== undefined;
 			let nestedChildren = compactNestedResultChildren(sanitizeNestedResultChildren(data.nestedChildren, resultPath, "nestedChildren"));
 			if (!nestedChildren?.length && !hasExplicitNestedChildren) {
@@ -148,7 +164,7 @@ export function createResultWatcher(
 
 			if (processingCompletionKeys.has(completionKey)) return;
 			if (markSeenWithTtl(state.completionSeen, completionKey, now, completionTtlMs)) {
-				fsApi.unlinkSync(resultPath);
+				consumeNotification();
 				return;
 			}
 			processingCompletionKeys.add(completionKey);
@@ -199,7 +215,7 @@ export function createResultWatcher(
 				} : {}),
 			});
 			completionEmitted = true;
-			fsApi.unlinkSync(resultPath);
+			consumeNotification();
 		} catch (error) {
 			if (claimedCompletionKey && !completionEmitted) state.completionSeen.delete(claimedCompletionKey);
 			if (isNotFoundError(error)) return;
@@ -217,10 +233,10 @@ export function createResultWatcher(
 	}, 50);
 
 	const invalidatePendingResults = (event: NativeCheckpointEvent) => {
-		for (const file of fsApi.readdirSync(resultsDir).filter((name) => name.endsWith(".json"))) {
-			const data = fsApi === fs ? readAsyncResultFile(path.join(resultsDir, file)) : parseAsyncResultFileContent(fsApi.readFileSync(path.join(resultsDir, file), "utf-8"), file);
+		for (const file of pendingResultFiles()) {
+			const data = readResult(path.isAbsolute(file) ? file : path.join(resultsDir, file));
 			const runId = data.runId ?? data.id ?? file.replace(/\.json$/i, "");
-			if (data.sessionId ? data.sessionId === state.currentSessionId : state.ownedRuns?.has(runId)) {
+			if (!state.isRunResultConsumed?.(runId) && (data.sessionId ? data.sessionId === state.currentSessionId : state.ownedRuns?.has(runId))) {
 				event.invalidate();
 				break;
 			}
@@ -235,8 +251,7 @@ export function createResultWatcher(
 				invalidatePendingResults(checkpoint);
 				return;
 			}
-			fsApi.readdirSync(resultsDir)
-				.filter((f) => f.endsWith(".json"))
+			pendingResultFiles()
 				.forEach((file) => state.resultFileCoalescer.schedule(file, 0));
 		} catch (error) {
 			checkpoint?.invalidate(); // An unreadable scan cannot establish a safe hold.
@@ -306,6 +321,11 @@ export function createResultWatcher(
 				if (ev !== "rename" || !file) return;
 				const fileName = file.toString();
 				if (!fileName.endsWith(".json")) return;
+				// Our unlink can arrive after delivery and a new hold. An existing
+				// replacement still invalidates, even when the previous result was consumed.
+				const runId = path.basename(fileName, ".json");
+				if ((state.isRunResultConsumed?.(runId) || state.ownedRuns?.get(runId)?.delivery)
+					&& !fsApi.existsSync(path.join(resultsDir, fileName))) return;
 				checkpoint?.invalidate(); // Before accepting result work or deleting a file.
 				state.resultFileCoalescer.schedule(fileName);
 			});

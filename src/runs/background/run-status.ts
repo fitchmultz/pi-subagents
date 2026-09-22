@@ -1,16 +1,16 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { formatAsyncRunList, formatAsyncRunOutputPath, formatAsyncRunProgressLabel, listAsyncRuns } from "./async-status.ts";
+import { formatActivityFacts, formatAsyncRunList, formatAsyncRunOutputPath, formatAsyncRunProgressLabel, listAsyncRuns } from "./async-status.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { formatModelThinking } from "../../shared/formatters.ts";
 import { buildManagementControl, formatActivityLabel, formatLiveIntercomActionLines, formatRunAction } from "../../shared/status-format.ts";
 import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus, type NestedRunSummary, type SubagentLiveIntercomHealth, type SubagentState, type SubagentExecutionResult } from "../../shared/types.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
-import { resolveAsyncRunLocation } from "./async-resume.ts";
+import { exactAsyncRunLocation, resolveAsyncRunLocation } from "./async-resume.ts";
 import { resolveSubagentRunId } from "./run-id-resolver.ts";
 import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
-import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot, type NestedRunResolutionScope } from "../shared/nested-events.ts";
+import { attachRootChildrenToSteps, findNestedRouteForRootId, findNestedRun, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 import { readAsyncResultFile } from "./async-result-file.ts";
 import { readStatus } from "../../shared/utils.ts";
 
@@ -46,11 +46,12 @@ function completionTargetsCurrentSession(run: Pick<AsyncStatus, "sessionId" | "c
 }
 
 function nestedCompletionTargetsCurrentSession(rootRunId: string, asyncDirRoot: string, state: SubagentState | undefined): boolean {
-	if (!state || state.foregroundControls.has(rootRunId)) return true;
+	if (!state || state.ownedRuns?.has(rootRunId)) return true;
 	const tracked = state.asyncJobs.get(rootRunId);
 	if (tracked) return completionTargetsCurrentSession(tracked, state);
 	try {
-		const status = readStatus(path.join(asyncDirRoot, rootRunId));
+		const location = exactAsyncRunLocation(rootRunId, asyncDirRoot, RESULTS_DIR);
+		const status = location.asyncDir ? readStatus(location.asyncDir) : null;
 		return status ? completionTargetsCurrentSession(status, state) : false;
 	} catch {
 		return false;
@@ -163,7 +164,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 	if (!params.id && !params.runId && !params.dir) {
 		if (deps.nested) {
 			return {
-				content: [{ type: "text", text: "Child-safe subagent status requires an id when no foreground run is active." }],
+				content: [{ type: "text", text: "Child-safe subagent status requires a run id." }],
 				isError: true,
 				details: { mode: "single", results: [] },
 			};
@@ -204,10 +205,9 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 		if (!params.dir && requestedId) {
 			const resolved = resolveSubagentRunId(requestedId, { asyncDirRoot, resultsDir, state: deps.state, nested: deps.nested });
 			if (resolved?.kind === "nested") {
-				reconcileNestedAsyncDescendants(resolved.match.route, { resultsDir, kill: deps.kill, now: deps.now });
-				const refreshed = resolveSubagentRunId(requestedId, { asyncDirRoot, resultsDir, state: deps.state, nested: deps.nested });
-				const nested = refreshed?.kind === "nested" ? refreshed : resolved;
-				const run = nested.match.run;
+				const children = reconcileNestedAsyncDescendants(resolved.match.route, { resultsDir, kill: deps.kill, now: deps.now });
+				const nested = resolved;
+				const run = findNestedRun(children, nested.id) ?? nested.match.run;
 				const state = normalizedState(run.state);
 				const intercomTarget = run.intercomTarget ?? run.leafIntercomTarget;
 				const text = formatNestedExactStatus(nested.match.rootRunId, run, childSafe);
@@ -265,8 +265,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			let nestedWarning: string | undefined;
 			try {
 				const nestedRoute = findNestedRouteForRootId(status.runId);
-				if (nestedRoute) reconcileNestedAsyncDescendants(nestedRoute, { resultsDir, kill: deps.kill, now: deps.now });
-				nestedChildren = projectNestedRegistryForRoot(status.runId)?.children ?? [];
+				if (nestedRoute) nestedChildren = reconcileNestedAsyncDescendants(nestedRoute, { resultsDir, kill: deps.kill, now: deps.now });
 				attachRootChildrenToSteps(status.runId, status.steps, nestedChildren);
 			} catch (error) {
 				nestedWarning = `Nested status unavailable: ${error instanceof Error ? error.message : String(error)}`;
@@ -282,7 +281,8 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			});
 			const started = new Date(status.startedAt).toISOString();
 			const updated = status.lastUpdate ? new Date(status.lastUpdate).toISOString() : "n/a";
-			const statusActivityText = status.state === "running" ? formatActivityLabel(status.lastActivityAt, status.activityState) : undefined;
+			const statusActivityText = status.state === "running" ? formatActivityFacts(status) : undefined;
+			const canExtend = status.runtimeVersion === 2 && status.state === "running" && !status.timedOut && Boolean(status.timeoutAt);
 
 			const lines = [
 				...(deps.includeRunHeader !== false ? [`Run: ${status.runId}`, `State: ${status.state}`, `Mode: ${status.mode}`] : []),
@@ -290,6 +290,8 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				`Progress: ${progressLabel}`,
 				`Started: ${started}`,
 				`Updated: ${updated}`,
+				status.timeoutAt ? `Timeout: ${new Date(status.timeoutAt).toISOString()}` : undefined,
+				canExtend ? `Extend: ${formatRunAction("extend", status.runId, { extendMs: 300000 }, childSafe)}` : undefined,
 				`Dir: ${asyncDir}`,
 				`Status: ${formatRunAction("status", status.runId, {}, childSafe)}`,
 				outputPath ? `Output: ${outputPath}` : undefined,
@@ -299,7 +301,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			if (status.state !== "running") lines.push(...formatOutputExcerpt(outputPath));
 
 			for (const [index, step] of (status.steps ?? []).entries()) {
-				const stepActivityText = step.status === "running" ? formatActivityLabel(step.lastActivityAt, step.activityState) : undefined;
+				const stepActivityText = step.status === "running" ? formatActivityFacts(step) : undefined;
 				const modelThinking = formatModelThinking(step.model, step.thinking);
 				const modelText = modelThinking ? ` (${modelThinking})` : "";
 				const errorText = step.error ? `, error: ${step.error}` : "";
@@ -308,6 +310,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				const display = step.label ? `${step.label} (${step.agent})` : step.agent;
 				const phase = step.phase ? `[${step.phase}] ` : "";
 				lines.push(`${stepLineLabel(status, index)}: ${phase}${display} ${step.status}${modelText}${stepActivityText ? `, ${stepActivityText}` : ""}${acceptanceText}${errorText}`);
+				if (step.tokens) lines.push(`  ${step.tokens.total} tokens`);
 				lines.push(...formatNestedRunStatusLines(step.children, { indent: "  ", commandHints: true, maxLines: 20, childSafe }));
 				const stepOutputPath = path.join(asyncDir, `output-${index}.log`);
 				if (stepOutputPath !== outputPath && fs.existsSync(stepOutputPath)) lines.push(`  Output: ${stepOutputPath}`);
@@ -338,7 +341,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				content: [{ type: "text", text: lines.join("\n") }],
 				details: {
 					mode: "single", results: [], intercomTargets,
-					managementControl: buildManagementControl({ state, runId: status.runId, index: runningStep?.index ?? resumableStep?.index, intercomTarget: target, canNudge: Boolean(runningStep), canResume: state === "live" ? Boolean(runningStep) : canResume, canInterrupt: status.state === "running" }),
+					managementControl: buildManagementControl({ state, runId: status.runId, index: runningStep?.index ?? resumableStep?.index, intercomTarget: target, canNudge: Boolean(runningStep), canResume: state === "live" ? Boolean(runningStep) : canResume, canInterrupt: status.state === "running", canExtend }),
 				},
 			};
 		}

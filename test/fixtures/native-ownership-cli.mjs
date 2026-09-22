@@ -1,8 +1,9 @@
-// Controlled child transport. Session reads/writes are native Pi; no provider is invoked.
+// Controlled child transport. Sessions and acceptance use native Pi; no external provider is invoked.
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { findPackageJSON } from "node:module";
 const { SessionManager } = await import(pathToFileURL(path.join(process.env.OWNERSHIP_SDK_ROOT, "dist/core/session-manager.js")).href);
 const args = process.argv.slice(2);
 const value = (flag) => args[args.indexOf(flag) + 1];
@@ -25,6 +26,47 @@ const callName = `call-${Date.now()}-${randomUUID()}.json`;
 const temporaryCall = path.join(process.env.OWNERSHIP_PROBE_DIR, `.${callName}.tmp`);
 fs.writeFileSync(temporaryCall, JSON.stringify(record));
 fs.renameSync(temporaryCall, path.join(process.env.OWNERSHIP_PROBE_DIR, callName));
+const report = { criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "Controlled child returned the requested token." }], manualNotes: "Native-session configuration probe", residualRisks: [] };
+if (process.env.PI_SUBAGENT_FINALIZATION_CONFIG) {
+	const sdkEntry = pathToFileURL(path.join(process.env.OWNERSHIP_SDK_ROOT, "dist/index.js"));
+	const sdk = await import(sdkEntry.href);
+	const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry));
+	const ai = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
+	globalThis.fetch = async () => { throw new Error("Network forbidden in native ownership fixture"); };
+	const faux = ai.fauxProvider({ provider, models: [{ id: modelId, reasoning: true }], tokensPerSecond: 1_000_000, tokenSize: { min: 1024, max: 1024 } });
+	const settingsManager = sdk.SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } });
+	const loader = new sdk.DefaultResourceLoader({ cwd: process.cwd(), agentDir: sdk.getAgentDir(), settingsManager,
+		noExtensions: true, noSkills: true, noContextFiles: true, noThemes: true, noPromptTemplates: true,
+		additionalExtensionPaths: record.extensions, systemPrompt: prompt });
+	await loader.reload();
+	if (loader.getExtensions().errors.length) throw new Error(JSON.stringify(loader.getExtensions().errors));
+	const modelRuntime = await sdk.ModelRuntime.create({ credentials: new ai.InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false });
+	modelRuntime.registerNativeProvider(faux.provider);
+	const { session: driver } = await sdk.createAgentSession({ cwd: process.cwd(), agentDir: sdk.getAgentDir(), settingsManager,
+		resourceLoader: loader, modelRuntime, sessionManager: session, model: faux.getModel(),
+		noTools: "builtin", tools: record.tools?.split(",") });
+	driver.setThinkingLevel(thinking);
+	await driver.bindExtensions({ mode: "json", onError: (error) => { throw new Error(JSON.stringify(error)); } });
+	const answer = task.includes("Supervisor answer to question") ? "ANSWER_RECEIVED" : task.includes("RECALL_TOKEN")
+		? previous.includes("FIRST_SESSION_TOKEN") ? "RECALLED FIRST_SESSION_TOKEN" : "TOKEN_MISSING" : "FIRST_SESSION_TOKEN";
+	faux.setResponses([
+		async () => {
+			if (task.includes("CREATE_QUESTION")) {
+				const { createSupervisorQuestion } = await import(pathToFileURL(path.join(process.env.OWNERSHIP_REPO, "dist/runs/shared/supervisor-questions.js")).href);
+				createSupervisorQuestion({ runId: process.env.PI_SUBAGENT_RUN_ID, ownerTarget: "probe-parent", agent: "probe", index: Number(process.env.PI_SUBAGENT_CHILD_INDEX), childSessionId: session.getSessionId(), childTarget: "probe-child", sessionFile: file, cwd: process.cwd(), pid: process.pid, reason: "need_decision", message: "Choose a stable answer." });
+			}
+			return ai.fauxAssistantMessage(`${answer}\n\n\`\`\`acceptance-report\n${JSON.stringify(report)}\n\`\`\``);
+		},
+		ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: { answer, report } }), { stopReason: "toolUse" }),
+	]);
+	driver.subscribe((event) => { process.stdout.write(`${JSON.stringify(event)}\n`); });
+	try {
+		await driver.prompt(task);
+		await driver.waitForIdle();
+		record.providerCalls = faux.state.callCount;
+		fs.writeFileSync(path.join(process.env.OWNERSHIP_PROBE_DIR, callName), JSON.stringify(record));
+	} finally { driver.dispose(); }
+} else {
 session.appendModelChange(provider, modelId);
 session.appendThinkingLevelChange(thinking);
 session.appendMessage({ role: "user", content: task, timestamp: Date.now() });
@@ -66,14 +108,11 @@ if (workflowResponse) {
 if (task.includes("Supervisor answer to question")) output = "ANSWER_RECEIVED";
 const failed = task.includes("PERMANENT_FAILURE");
 if (failed) output = "Controlled permanent failure";
-if (task.includes("Acceptance Contract") || task.includes("acceptance-report")) output += '\n```acceptance-report\n' + JSON.stringify({ criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "Controlled child returned the requested token." }], manualNotes: "Native-session configuration probe", residualRisks: [] }) + '\n```';
-if (!failed && process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE && task.includes("## Acceptance Finalization")) {
-	for (const message of await submitStructuredOutput({ report: output })) process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`);
-} else {
-	const message = assistant(output, failed ? "error" : "stop");
-	if (failed) message.errorMessage = output;
-	session.appendMessage(message);
-	process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`);
-}
+const message = assistant(output, failed ? "error" : "stop");
+if (failed) message.errorMessage = output;
+session.appendMessage(message);
+process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\n`);
 process.stdout.write(`${JSON.stringify({ type: "agent_settled" })}\n`);
 process.exitCode = failed ? 1 : 0;
+
+}

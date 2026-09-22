@@ -1,5 +1,6 @@
 import { Compile } from "typebox/compile";
 import { AcceptanceOverride } from "../../extension/schemas.ts";
+import { formatAcceptanceReportExample } from "./acceptance-reports.ts";
 import type {
 	AcceptanceConfig,
 	AcceptanceEvidenceKind,
@@ -215,13 +216,15 @@ export function acceptanceSelfReviewConfig(acceptance: ResolvedAcceptanceConfig)
 	};
 }
 
-export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig): string {
+export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig, nativeReport = false): string {
 	if (acceptance.level === "none") return "";
 	const evidence = [...new Set([...acceptance.evidence, ...acceptance.criteria.flatMap((criterion) => criterion.evidence)])];
 	const lines = [
 		"",
 		"## Acceptance Contract",
-		"Completion is not accepted from prose alone. End the initial response with a structured acceptance report.",
+		nativeReport
+			? "Completion is not accepted from prose alone. Finish the initial response with a sole structured_output tool call containing {value:{answer,report}}. answer is the complete standalone visible answer; report is a typed object, never JSON embedded in a string."
+			: "Completion is not accepted from prose alone. End the initial response with a structured acceptance report.",
 		"After the initial response, the runtime will continue this same session for a bounded self-review/repair loop before accepting the run.",
 		"For an observed human-only boundary (such as Touch ID or an unavailable MFA code), report the affected criterion as blocked with concrete evidence and a nonempty humanAction stating the exact user action. Retain completed evidence. This leaves acceptance incomplete and stops finalization/verification until explicit Continue. Do not use blocked for ordinary errors, missing unrelated evidence, or work you can fix.",
 		"",
@@ -233,7 +236,7 @@ export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig): st
 	if (evidence.length > 0) {
 		lines.push(
 			"",
-			"Structured evidence must be present in the `acceptance-report` JSON fields. Markdown sections in your visible answer do not satisfy required evidence by themselves. If you already described evidence in prose, copy or summarize it into the matching JSON field.",
+			`Structured evidence must be present in the ${nativeReport ? "typed report object" : "`acceptance-report` JSON fields"}. Markdown sections in your visible answer do not satisfy required evidence by themselves. If you already described evidence in prose, copy or summarize it into the matching JSON field.`,
 			"Evidence field mapping:",
 			...formatEvidenceReportFieldMapping(evidence),
 		);
@@ -247,22 +250,8 @@ export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig): st
 	}
 	lines.push(
 		"",
-		"Finish with a fenced JSON block tagged `acceptance-report` in this shape:",
-		"```acceptance-report",
-		JSON.stringify({
-			criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "specific proof" }],
-			changedFiles: [],
-			testsAddedOrUpdated: [],
-			commandsRun: [{ command: "command", result: "passed", summary: "short result" }],
-			validationOutput: [],
-			residualRisks: [],
-			noStagedFiles: true,
-			diffSummary: "concise summary of changed behavior and important files",
-			reviewFindings: [],
-			manualNotes: "manual notes or external evidence, if any",
-			notes: "anything else the parent should know",
-		}, null, 2),
-		"```",
+		nativeReport ? "Submit this shape through structured_output; do not emit a fenced acceptance-report:" : "Finish with a fenced JSON block tagged `acceptance-report` in this shape:",
+		formatAcceptanceReportExample(nativeReport),
 	);
 	return lines.join("\n");
 }

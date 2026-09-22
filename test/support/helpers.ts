@@ -131,7 +131,7 @@ export const events = {
 				provider: separator >= 0 ? model.slice(0, separator) : "mock",
 				model: separator >= 0 ? model.slice(separator + 1) : model,
 				stopReason: "stop",
-				usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
+				usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150, cost: { input: 0.001, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 } },
 			},
 		};
 	},

@@ -9,6 +9,7 @@ import path from "node:path";
 import { after, before, test, type TestContext } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { AsyncStatus, OwnedRun, SubagentState } from "../../src/shared/types.ts";
 
 // Opt in: released Pi does not yet expose the additive checkpoint API.
 const sdkRoot = process.env.PI_CHECKPOINT_TEST_SDK;
@@ -82,7 +83,22 @@ async function nativeSession(t: TestContext, name: string, options: { waitForCon
   await sleep(50);
   const invoke = (toolName: string, args: object, signal = new AbortController().signal) => session.agent.state.tools.find((tool: any) => tool.name === toolName).execute("checkpoint-fixture", args, signal);
   const capture = () => session.acquireCheckpoint({ quiesce: () => () => {}, signal: AbortSignal.timeout(5000) });
-  return { session, invoke, capture, close, sdk, cwd, eventBus };
+  const waitForCompletion = async (runId: string) => {
+    // Raw execute() does not journal a native tool result. Join its ordinary
+    // completion delivery before testing an unrelated checkpoint blocker.
+    await waitFor(() => session.sessionManager.getEntries().some((e: any) => e.customType === "subagent-run" && e.data?.runId === runId && e.data?.delivery), "persisted completion delivery");
+    await waitForRunExit(runId);
+    await session.waitForIdle();
+  };
+  return { session, invoke, capture, close, sdk, cwd, eventBus, waitForCompletion };
+}
+
+async function waitForRunExit(runId: string) {
+  const { getRunMetadataDir, questionProcessAlive } = await import("../../src/runs/shared/supervisor-questions.ts");
+  await waitFor(() => {
+    const { pid } = JSON.parse(readFileSync(path.join(getRunMetadataDir(runId), "status.json"), "utf8"));
+    return pid && !questionProcessAlive({ pid });
+  }, "natural run owner exit");
 }
 
 test("real broker startup writes a backward-readable PID identity and stays protected", async () => {
@@ -96,6 +112,29 @@ test("real broker startup writes a backward-readable PID identity and stays prot
   assert.equal(readFileSync(pidPath, "utf8"), record);
   assert.equal(keeper.isConnected(), true);
   await keeper.listSessions();
+});
+
+test("checkpoint uses durable completion instead of a stale queued display, while retaining process and result guards", async () => {
+  const { subagentCheckpointBlocker } = await import("../../src/runs/shared/checkpoint.ts");
+  const { getRunMetadataDir, saveRunStatus, saveAsyncRunResult } = await import("../../src/runs/shared/supervisor-questions.ts");
+  const run: OwnedRun = { runId: "checkpoint-stale-display", rootRunId: "checkpoint-stale-display", ownerSessionId: "stale-display-owner",
+    source: "async", mode: "single", cwd: root, task: "Complete before the next display poll", startedAt: Date.now(), children: [{ agent: "probe", index: 0 }] };
+  run.asyncDir = getRunMetadataDir(run.runId);
+  const state = { asyncJobs: new Map([[run.runId, { asyncId: run.runId, asyncDir: run.asyncDir, status: "queued", pid: 2147483647 }]]),
+    ownedRuns: new Map([[run.runId, run]]) } as SubagentState;
+  const status: AsyncStatus = { runId: run.runId, runtimeVersion: 2, mode: "single", state: "complete", pid: process.pid,
+    startedAt: run.startedAt, lastUpdate: Date.now(), steps: [{ agent: "probe", status: "complete" }] };
+  saveRunStatus(run.runId, status);
+  assert.match(subagentCheckpointBlocker(state, run.ownerSessionId)!, /live/, "terminal status must not hide a live owner");
+  status.pid = 2147483647; saveRunStatus(run.runId, status);
+  assert.ok(subagentCheckpointBlocker(state, run.ownerSessionId), "a dead owner without its result remains unconfirmed");
+  saveAsyncRunResult(run.runId, { runtimeVersion: 2, id: run.runId, state: "complete", timestamp: Date.now(), results: [{ agent: "probe", success: true, exitCode: 0, output: "Done" }] });
+  for (const displayState of ["queued", "running"] as const) {
+    state.asyncJobs.get(run.runId)!.status = displayState;
+    assert.equal(subagentCheckpointBlocker(state, run.ownerSessionId), undefined, `${displayState} presentation must not override a dead owner and its saved result`);
+  }
+  state.asyncJobs.get(run.runId)!.pid = process.pid;
+  assert.match(subagentCheckpointBlocker(state, run.ownerSessionId)!, /live/, "a separately observed live process still blocks");
 });
 
 // Kept as counterexamples to unsafe disconnect/stop approaches, not proposed fixes.
@@ -155,6 +194,41 @@ test("watcher checkpoint invalidates before joining the real delivery tail, then
   } finally { watcher.stopResultWatcher(); }
 });
 
+test("a delayed watch event for a consumed notification does not invalidate a later checkpoint", async () => {
+  const { createResultWatcher } = await import("../../src/runs/background/result-watcher.ts");
+  const { createEventBus } = await import("../support/helpers.ts");
+  const events = createEventBus(), dir = path.join(root, "watcher-deletion"); mkdirSync(dir);
+  const state = { currentSessionId: "deletion-owner", completionSeen: new Map(),
+    ownedRuns: new Map([["before", { runId: "before", source: "async" }]]) } as SubagentState;
+  const deleted: Array<() => void> = [];
+  const watcher = createResultWatcher({ events }, state, dir, 60000, { fs: { ...fs,
+    watch: (directory: fs.PathLike, listener: fs.WatchListener<string>) => fs.watch(directory, (event, file) => {
+      // Delay only the real OS deletion event, after ordinary delivery/unlink.
+      if (event === "rename" && file && !existsSync(path.join(dir, file))) deleted.push(() => listener(event, file));
+      else listener(event, file);
+    }),
+  } });
+  const controller = new AbortController();
+  let completed = 0;
+  events.on("subagent:async-complete", () => {
+    if (completed) assert.equal(controller.signal.aborted, true);
+    state.ownedRuns!.get("before")!.delivery = { notifiedAt: Date.now(), intercomDelivered: false };
+    completed++;
+  });
+  const publish = (summary: string) => writeFileSync(path.join(dir, "before.json"), JSON.stringify({ id: "before", sessionId: "deletion-owner", summary, success: true, nestedChildren: [] }));
+  watcher.startResultWatcher();
+  try {
+    publish("before"); await waitFor(() => completed === 1 && deleted.length > 0, "ordinary delivery and delayed deletion event");
+    await watcher.holdCheckpoint({ type: "session_checkpoint", boundary: "settled", signal: controller.signal, invalidate: () => controller.abort() });
+    assert.equal(controller.signal.aborted, false);
+    deleted.splice(0).forEach(deliver => deliver());
+    assert.equal(controller.signal.aborted, false, "the removed notification has no new result to accept");
+    publish("after");
+    await waitFor(() => completed === 2, "new arrival invalidates before its ordinary delivery");
+    assert.equal(controller.signal.aborted, true);
+  } finally { controller.abort(); watcher.stopResultWatcher(); }
+});
+
 test("native idle package can acquire a resumable checkpoint; broker refuses before mutation and release resumes once", { skip: !sdkRoot }, async (t) => {
   const host = await nativeSession(t, "idle");
   const hold = await host.capture();
@@ -208,9 +282,8 @@ test("accepted queued topic blocks capture until recipient persistence; topic an
   const completed = await host.invoke("delegate", { agent: "probe", task: "Return FIRST_SESSION_TOKEN", async: false, output: false });
   assert.ok(completed.details.runId);
   writeFileSync(path.join(root, "cold-expected.json"), JSON.stringify({ runId: completed.details.runId }));
-  // Delegation's completion notification can still be preparing a native turn.
-  // Join it; the subscription round trip then orders idle presence on that socket.
-  await host.session.waitForIdle();
+  await host.waitForCompletion(completed.details.runId);
+  // The subscription round trip then orders idle presence on that socket.
   await host.invoke("intercom", { action: "subscribe", topic: "checkpoint-resource" });
   const update = { topic: "checkpoint-resource", revision: 1, updatedAt: Date.now(), event: "update" as const, text: "retained owner", resource: "fixture", ownership: "held" as const };
   const snapshot = await keeper.updateTopics({ action: "publish", topic: update });
@@ -422,13 +495,17 @@ test("native checkpoint fails closed when disk discovery cannot establish run ow
 test("native durable supervisor question blocks without being answered or cancelled", { skip: !sdkRoot }, async (t) => {
   const host = await nativeSession(t, "question");
   const result = await host.invoke("delegate", { agent: "probe", task: "CREATE_QUESTION", async: false, output: false });
+  assert.equal(result.details.wait.status, "awaiting_input");
+  const runId = result.details.wait.runId;
+  assert.ok(runId);
+  await host.waitForCompletion(runId);
   const { listSupervisorQuestions } = await import("../../src/runs/shared/supervisor-questions.ts");
   const before = listSupervisorQuestions(host.session.sessionId);
   assert.equal(before.length, 1); assert.equal(before[0].state, "awaiting_input");
   const hold = await host.capture();
   assert.equal(hold.sleepReady, false); assert.match(hold.sleepBlockers.join("\n"), /question is unresolved/); hold.release();
   assert.equal(listSupervisorQuestions(host.session.sessionId)[0].state, "awaiting_input");
-  assert.ok(result.details.runId);
+  assert.equal(before[0].runId, runId);
 });
 
 test("native slash foreground ownership defers capture and preserves its live child", { skip: !sdkRoot }, async (t) => {
@@ -441,7 +518,10 @@ test("native slash foreground ownership defers capture and preserves its live ch
     await assert.rejects(host.session.acquireCheckpoint({ quiesce: () => () => {}, signal: AbortSignal.timeout(100) }), /Checkpoint cancelled/);
     assert.equal(process.kill(call.pid, 0), true);
   } finally { writeFileSync(path.join(root, "calls/release_slash"), "release"); await command; }
-  assert.ok(host.session.sessionManager.getEntries().some((e: any) => e.customType === "subagent-slash-result"));
+  const receipt = host.session.sessionManager.getEntries().findLast((e: any) => e.customType === "subagent-slash-result");
+  assert.ok(receipt);
+  assert.equal(receipt.details.result.details.wait.status, "completed");
+  await waitForRunExit(receipt.details.result.details.runId);
   const hold = await host.capture(); assert.equal(hold.sleepReady, true, hold.sleepBlockers.join("\n")); hold.release();
 });
 

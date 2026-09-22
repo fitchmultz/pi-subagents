@@ -15,27 +15,15 @@ export function getArtifactsDir(sessionFile: string | null): string {
 }
 
 export function getArtifactPaths(artifactsDir: string, runId: string, agent: string, index?: number): ArtifactPaths {
+	ensureSafeTempPath(artifactsDir);
 	const suffix = index !== undefined ? `_${index}` : "";
-	const safeAgent = agent.replace(/[^\w.-]/g, "_");
+	const safeAgent = agent.replace(/[^\w.-]/g, "_").slice(0, 128);
 	const base = `${runId}_${safeAgent}${suffix}`;
 	return {
 		inputPath: path.join(artifactsDir, `${base}_input.md`),
 		outputPath: path.join(artifactsDir, `${base}_output.md`),
 		metadataPath: path.join(artifactsDir, `${base}_meta.json`),
 	};
-}
-
-export function ensureArtifactsDir(dir: string): void {
-	ensureSafeTempPath(dir);
-	fs.mkdirSync(dir, { recursive: true });
-}
-
-export function writeArtifact(filePath: string, content: string): void {
-	fs.writeFileSync(filePath, content, "utf-8");
-}
-
-export function writeMetadata(filePath: string, metadata: object): void {
-	fs.writeFileSync(filePath, JSON.stringify(metadata, null, 2), "utf-8");
 }
 
 export function appendJsonl(filePath: string, line: string): void {

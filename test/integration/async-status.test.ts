@@ -2,8 +2,16 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "node:test";
-import { asyncStatusToSummary, formatAsyncRunList, listAsyncRuns } from "../../src/runs/background/async-status.ts";
+import { after, describe, it } from "node:test";
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+const isolatedAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-status-agent-"));
+process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+const { asyncStatusToSummary, formatAsyncRunList, listAsyncRuns } = await import("../../src/runs/background/async-status.ts");
+after(() => {
+	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	fs.rmSync(isolatedAgentDir, { recursive: true, force: true });
+});
 
 function createAsyncDir(root: string, id: string, status: Record<string, unknown>): string {
 	const dir = path.join(root, id);
@@ -50,6 +58,23 @@ describe("async status helpers", () => {
 			assert.match(formatAsyncRunList(runs), /output: .*output-1\.log/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("lists durable and legacy runs together without duplicating the same handle", async () => {
+		const { QUESTIONS_DIR } = await import("../../src/runs/shared/supervisor-questions.ts");
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-status-union-"));
+		const status = { mode: "single", state: "complete", startedAt: 100, endedAt: 200, lastUpdate: 200, steps: [{ agent: "worker", status: "complete", exitCode: 0 }] };
+		try {
+			createAsyncDir(root, "legacy-union", { ...status, runId: "legacy-union" });
+			createAsyncDir(root, "durable-union", { ...status, runId: "durable-union" });
+			createAsyncDir(QUESTIONS_DIR, "durable-union", { ...status, runId: "durable-union", runtimeVersion: 2 });
+			const runs = listAsyncRuns(root);
+			assert.deepEqual(runs.map((run) => run.id).sort(), ["durable-union", "legacy-union"]);
+			assert.equal(runs.find((run) => run.id === "durable-union")?.asyncDir, path.join(QUESTIONS_DIR, "durable-union"));
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(path.join(QUESTIONS_DIR, "durable-union"), { recursive: true, force: true });
 		}
 	});
 

@@ -7,7 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { formatToolCall } from "./formatters.ts";
-import type { AgentProgress, AsyncStatus, Details, DisplayItem, ErrorInfo, SingleResult, ToolCallSummary } from "./types.ts";
+import type { AsyncStatus, DisplayItem, ErrorInfo, SingleResult, ToolCallSummary } from "./types.ts";
 
 // ============================================================================
 // File System Utilities
@@ -155,25 +155,6 @@ export function getDisplayItems(messages: Message[] | undefined): DisplayItem[] 
 	return items;
 }
 
-function compactCompletedProgress(progress: AgentProgress): AgentProgress {
-	if (progress.status === "running") return progress;
-	return {
-		index: progress.index,
-		agent: progress.agent,
-		status: progress.status,
-		activityState: progress.activityState,
-		task: progress.task,
-		skills: progress.skills,
-		toolCount: progress.toolCount,
-		tokens: progress.tokens,
-		durationMs: progress.durationMs,
-		error: progress.error,
-		failedTool: progress.failedTool,
-		recentTools: [],
-		recentOutput: [],
-	};
-}
-
 function extractToolCallSummaries(messages: Message[] | undefined): ToolCallSummary[] {
 	if (!messages?.length) return [];
 	const summaries: ToolCallSummary[] = [];
@@ -201,16 +182,6 @@ export function compactForegroundResult(result: SingleResult): SingleResult {
 		messages: undefined,
 		progress: undefined,
 		toolCalls: toolCalls.length ? toolCalls : undefined,
-	};
-}
-
-export function compactForegroundDetails(details: Details): Details {
-	return {
-		...details,
-		results: details.results.map(compactForegroundResult),
-		progress: details.progress
-			? details.progress.map(compactCompletedProgress)
-			: undefined,
 	};
 }
 

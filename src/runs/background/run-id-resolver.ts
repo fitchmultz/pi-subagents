@@ -1,11 +1,8 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { ASYNC_DIR, RESULTS_DIR, type SubagentState } from "../../shared/types.ts";
-import { findAsyncRunPrefixMatches, type AsyncRunLocation } from "./async-resume.ts";
-import { assertSafeNestedId, findNestedRunMatchesById, type NestedRoute, type NestedRunMatch, type NestedRunResolutionScope } from "../shared/nested-events.ts";
+import { exactAsyncRunLocation, findAsyncRunPrefixMatches, type AsyncRunLocation } from "./async-resume.ts";
+import { assertSafeNestedId, findNestedRunMatchesById, findNestedRouteForRootId, type NestedRoute, type NestedRunMatch, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 
 export type ResolvedSubagentRunId =
-	| { kind: "foreground"; id: string }
 	| { kind: "async"; id: string; location: AsyncRunLocation }
 	| { kind: "nested"; id: string; match: NestedRunMatch };
 
@@ -14,21 +11,6 @@ export interface ResolveSubagentRunIdDeps {
 	asyncDirRoot?: string;
 	resultsDir?: string;
 	nested?: NestedRunResolutionScope;
-}
-
-function exactAsyncLocation(id: string, asyncDirRoot: string, resultsDir: string): AsyncRunLocation | undefined {
-	const asyncDir = path.join(asyncDirRoot, id);
-	const resultPath = path.join(resultsDir, `${id}.json`);
-	if (!fs.existsSync(asyncDir) && !fs.existsSync(resultPath)) return undefined;
-	return {
-		asyncDir: fs.existsSync(asyncDir) ? asyncDir : null,
-		resultPath: fs.existsSync(resultPath) ? resultPath : null,
-		resolvedId: id,
-	};
-}
-
-function foregroundIds(state: SubagentState | undefined): string[] {
-	return state ? [...state.foregroundControls.keys()] : [];
 }
 
 function nestedScopeFromState(state: SubagentState | undefined): NestedRunResolutionScope | undefined {
@@ -42,7 +24,7 @@ function nestedScopeFromState(state: SubagentState | undefined): NestedRunResolu
 		seen.add(key);
 		routes.push(route);
 	};
-	for (const control of state.foregroundControls.values()) add(control.nestedRoute as NestedRoute | undefined);
+	for (const run of state.ownedRuns?.values() ?? []) add(findNestedRouteForRootId(run.runId));
 	for (const job of state.asyncJobs.values()) add(job.nestedRoute as NestedRoute | undefined);
 	return { routes };
 }
@@ -57,24 +39,27 @@ export function resolveSubagentRunId(id: string, deps: ResolveSubagentRunIdDeps 
 	const resultsDir = deps.resultsDir ?? RESULTS_DIR;
 
 	const nestedScope = deps.nested ?? nestedScopeFromState(deps.state);
-	if (deps.state?.foregroundControls.has(id)) return { kind: "foreground", id };
-	const exactAsync = exactAsyncLocation(id, asyncDirRoot, resultsDir);
-	if (exactAsync) return { kind: "async", id, location: exactAsync };
+	// In a session scope, storage discovery must not hide an authorized descendant route.
+	const preferDirectAsync = (runId: string) => !nestedScope || deps.state?.ownedRuns?.has(runId) || deps.state?.asyncJobs.has(runId);
+	const exactAsync = exactAsyncRunLocation(id, asyncDirRoot, resultsDir);
+	if ((exactAsync.asyncDir || exactAsync.resultPath) && preferDirectAsync(id)) return { kind: "async", id, location: exactAsync };
 	const exactNested = findNestedRunMatchesById(id, nestedScope ? { scope: nestedScope } : {});
 	if (exactNested.length > 1) throw new Error(`Nested run id '${id}' is ambiguous across authorized registries. Provide the full id after stale registries are cleaned up.`);
 	if (exactNested[0]) return { kind: "nested", id, match: exactNested[0] };
+	if (exactAsync.asyncDir || exactAsync.resultPath) return { kind: "async", id, location: exactAsync };
 
+	const asyncMatches = asyncPrefixMatches(id, asyncDirRoot, resultsDir);
+	const nestedMatches = findNestedRunMatchesById(id, nestedScope ? { prefix: true, scope: nestedScope } : { prefix: true });
 	const matches: ResolvedSubagentRunId[] = [];
-	for (const foregroundId of foregroundIds(deps.state).filter((candidate) => candidate.startsWith(id))) {
-		matches.push({ kind: "foreground", id: foregroundId });
-	}
-	for (const match of asyncPrefixMatches(id, asyncDirRoot, resultsDir)) {
+	for (const match of asyncMatches) {
+		if (!preferDirectAsync(match.id) && nestedMatches.some((nested) => nested.run.id === match.id)) continue;
 		matches.push({ kind: "async", id: match.id, location: match.location });
 	}
-	for (const match of findNestedRunMatchesById(id, nestedScope ? { prefix: true, scope: nestedScope } : { prefix: true })) {
+	for (const match of nestedMatches) {
+		if (preferDirectAsync(match.run.id) && asyncMatches.some((candidate) => candidate.id === match.run.id)) continue;
 		matches.push({ kind: "nested", id: match.run.id, match });
 	}
-	const unique = new Map(matches.map((match) => [`${match.kind}:${match.id}`, match]));
+	const unique = new Map(matches.map((match) => [match.kind === "nested" ? `nested:${match.match.rootRunId}:${match.id}` : `async:${match.id}`, match]));
 	const values = [...unique.values()];
 	if (values.length > 1) {
 		throw new Error(`Ambiguous subagent run id prefix '${id}' matched: ${values.map((match) => `${match.kind}:${match.id}`).join(", ")}. Provide a longer id.`);

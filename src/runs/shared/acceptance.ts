@@ -8,12 +8,14 @@ export {
 } from "./acceptance-contract.ts";
 export {
 	parseAcceptanceReport,
+	validateAcceptanceReportShape,
 	stripAcceptanceReport,
 } from "./acceptance-reports.ts";
 export {
 	acceptanceFailureMessage,
 	acceptanceHumanAction,
 	evaluateAcceptance,
+	evaluateAcceptanceReport,
 } from "./acceptance-evaluation.ts";
 export {
 	attachFinalizationToLedger,
@@ -21,6 +23,7 @@ export {
 	createFinalizationProcessFailureTurn,
 	createFinalizationTurn,
 	createFinalizationReportRuntime,
+	type FinalizationReportSubmission,
 	readFinalizationReport,
 	formatUnconfirmedFinalizationOutput,
 	formatAcceptanceFinalizationPrompt,

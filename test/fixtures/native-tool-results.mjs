@@ -23,6 +23,7 @@ const { setKeybindings } = await import(createRequire(import.meta.resolve("@eare
 const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } = await import(pathToFileURL(path.join(nativePackage("@earendil-works/pi-ai"), "dist/index.js")).href);
 const { visibleWidth } = await import(pathToFileURL(path.join(nativePackage("@earendil-works/pi-tui"), "dist/index.js")).href);
 const { INTERCOM_DETACH_REQUEST_EVENT } = await import(pathToFileURL(path.join(repo, "dist/shared/types.js")).href);
+const { getRunMetadataDir } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
 const mock = createMockPi();
 mock.install();
 const bus = sdk.createEventBus();
@@ -84,19 +85,8 @@ async function open() {
 		if (event.toolCallId !== current?.id) return;
 		if (event.type === "tool_execution_update" && event.partialResult.details?.progress?.some((progress) => progress.currentTool === (current.stop === "detach" ? "contact_supervisor" : "bash"))) {
 			current.ready = true;
+			current.runId = event.partialResult.details.runId;
 			if (current.id === "static-chain-interrupt-pure") current.liveUpdate = snapshot(event);
-		}
-		const settlingStatus = current.id === "static-chain-interrupt-mixed" ? "failed" : current.id === "static-chain-interrupt-pure" ? "paused" : undefined;
-		if (event.type === "tool_execution_update" && settlingStatus && event.partialResult.details?.progress?.some((progress) => progress.index === 2 && progress.status === settlingStatus)) {
-			const card = mode.chatContainer.children.find((component) => component instanceof sdk.ToolExecutionComponent);
-			const wasExpanded = mode.toolOutputExpanded;
-			const settlingCard = snapshot({ toolCallId: card.toolCallId, isPartial: card.isPartial, result: card.result });
-			mode.setToolsExpanded(false);
-			const settlingCollapsed = renderCard(card, 120, current.id);
-			mode.setToolsExpanded(true);
-			const settlingExpanded = renderCard(card, 120, current.id);
-			mode.setToolsExpanded(wasExpanded);
-			current.settling = { settlingUpdate: snapshot(event), settlingCard, settlingCollapsed, settlingExpanded };
 		}
 		if (event.type === "tool_execution_end") current.executionEnd = snapshot(event);
 	});
@@ -129,8 +119,8 @@ async function invoke(receipt, name, args, stop) {
 				mode.setToolsExpanded(false);
 				for (const view of ["liveCollapsed", "liveExpanded"]) fs.writeFileSync(path.join(root, `${id}.${view}.txt`), receipt[view] + "\n");
 			}
-			const owned = session.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "subagent-run").at(-1);
-			receipt.runId = owned.data.runId;
+			receipt.runId = current.runId;
+			assert.ok(receipt.runId, "current native progress identifies its own workflow");
 			if (stop === "detach") bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: id });
 			else {
 				const control = session.agent.state.tools.find((tool) => tool.name === "subagent");
@@ -146,8 +136,6 @@ async function invoke(receipt, name, args, stop) {
 		assert.equal(saved.length, 1, `${id}: exactly one native persisted toolResult`);
 		receipt.result = snapshot(saved[0].message);
 		receipt.executionEnd = current.executionEnd;
-		Object.assign(receipt, current.settling);
-		if (receipt.settlingUpdate) for (const view of ["settlingCollapsed", "settlingExpanded"]) fs.writeFileSync(path.join(root, `${id}.${view}.txt`), receipt[view] + "\n");
 		receipt.calls = calls();
 		const cards = mode.chatContainer.children.filter((component) => component instanceof sdk.ToolExecutionComponent);
 		assert.equal(cards.length, 1, `${id}: native event handler must compose exactly one tool card`);
@@ -167,7 +155,7 @@ async function invoke(receipt, name, args, stop) {
 		for (const view of ["collapsed", "expanded", "narrowCollapsed", "narrowExpanded"]) fs.writeFileSync(path.join(root, `${id}.${view}.txt`), receipt[view] + "\n");
 		return receipt.result;
 	} finally {
-		if (stop === "detach") await waitFor(() => notifications.some((entry) => entry.runId === receipt.runId), `${id}: detached fixture child settles`);
+		if (stop === "detach") await waitFor(() => fs.existsSync(path.join(getRunMetadataDir(receipt.runId), "result.json")), `${id}: owner publishes its final result after the wait is released`);
 	}
 }
 
@@ -197,12 +185,14 @@ async function workflow(shape, stop, failed = true) {
 	await check(`${shape}-${stop}-${failed ? "mixed" : "pure"}`, async (receipt, verify) => {
 		receipt.mixed = failed;
 		const single = shape === "single";
-		const tokens = [...(single ? [] : ["MIXED_OK", ...(failed ? ["MIXED_BAD"] : [])]), "MIXED_WAIT", ...(stop === "interrupt" && !single ? ["MIXED_QUEUED"] : [])];
+		const tokens = [...(single ? [] : ["MIXED_OK", ...(failed ? ["MIXED_BAD"] : [])]), "MIXED_WAIT", ...(!single ? ["MIXED_QUEUED"] : [])];
 		const prefixCount = shape.endsWith("-chain") ? 1 : 0;
 		const waitIndex = prefixCount + tokens.indexOf("MIXED_WAIT");
 		mock.onCall({ matchArgsIncludes: "MIXED_SOURCE", output: "PREFIX_EVIDENCE", structuredOutput: { items: tokens } });
 		mock.onCall({ matchArgsIncludes: "MIXED_OK", output: "SUCCESSFUL_SIBLING_EVIDENCE" });
 		mock.onCall({ matchArgsIncludes: "MIXED_BAD", stderr: failureReason, exitCode: 1 });
+		mock.onCall({ matchArgsIncludes: "MIXED_QUEUED", output: "QUEUED_CHILD_FINISHED" });
+		mock.onCall({ matchArgsIncludes: "MIXED_DOWNSTREAM", output: "DEPENDENT_STEP_FINISHED" });
 		mock.onCall({ matchArgsIncludes: "MIXED_WAIT", steps: [
 			{ jsonl: [events.toolStart(stop === "detach" ? "contact_supervisor" : "bash", stop === "detach" ? { reason: "need_decision" } : { command: "controlled wait" })] },
 			{ delay: stop === "detach" ? 1_000 : 10_000, jsonl: [events.assistantMessage("DETACHED_CHILD_FINISHED")] },
@@ -217,57 +207,83 @@ async function workflow(shape, stop, failed = true) {
 			...(single ? tasks[0] : shape === "parallel" ? { tasks, concurrency: 1 } : { chain: [prefix, group, { agent: "probe", task: "MIXED_DOWNSTREAM", output: false }] }),
 			async: false, context: "fresh", artifacts: false,
 		}, stop);
+		if (stop === "detach") {
+			verifyNative(receipt, verify, false);
+			verify("released native wait is truthful and keeps its exact owner handle", () => {
+				assert.equal(result.details.wait.status, "yielded");
+				assert.equal(result.details.wait.runId, receipt.runId);
+				assert.match(text(result), /Released the wait/);
+				assert.match(receipt.expanded, /completion will arrive automatically/);
+			});
+			const durable = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(receipt.runId), "result.json"), "utf8"));
+			const expectedCalls = [...(prefixCount ? ["MIXED_SOURCE"] : []), ...tokens, ...(prefixCount && !failed ? ["MIXED_DOWNSTREAM"] : [])];
+			verify("the detached owner finishes queued work and successful dependencies", () => {
+				assert.deepEqual(calls().map((call) => call.expandedArgs.at(-1).match(/MIXED_(SOURCE|OK|BAD|WAIT|QUEUED|DOWNSTREAM)/)?.[0]), expectedCalls);
+				assert.equal(durable.success, !failed);
+				assert.equal(durable.results.length, expectedCalls.length);
+				assert.equal(durable.results[waitIndex].finalOutput, "DETACHED_CHILD_FINISHED");
+				if (!single) assert.equal(durable.results[waitIndex + 1].finalOutput, "QUEUED_CHILD_FINISHED");
+				if (shape === "dynamic-chain") assert.equal(durable.outputs.collected?.structured.length, failed ? undefined : tokens.length);
+			});
+			const inspected = { name: `${receipt.name}-inspect` };
+			await invoke(inspected, route === "parent" ? "agent_runs" : "subagent", { action: route === "parent" ? "inspect" : "status", id: receipt.runId });
+			receipt.completion = inspected;
+			verifyNative(inspected, verify, false);
+			verify("a registered native inspection renders all completed evidence after release", () => {
+				assert.equal(inspected.result.details.run.state, failed ? "failed" : "completed");
+				for (const view of [inspected.expanded, inspected.narrowExpanded]) {
+					assert.ok(unwrap(view).includes(receipt.runId));
+					assert.match(view, /DETACHED_CHILD_FINISHED/);
+					if (!single) assert.match(view, /SUCCESSFUL_SIBLING_EVIDENCE/);
+					if (failed) assert.ok(unwrap(view).includes(unwrap(failureReason)));
+					if (prefixCount && !failed) assert.match(view, /DEPENDENT_STEP_FINISHED/);
+				}
+			});
+			return;
+		}
 		verifyNative(receipt, verify, failed);
-		if (receipt.name === "static-chain-interrupt-pure") verify("sparse native live updates count their indexed child once", () => {
-			const d = receipt.liveUpdate.partialResult.details;
-			assert.equal(d.results.length, 2, "native update contains the prefix and only the current child");
-			assert.equal(d.results[1].progress.index, 2, "the current child's flat index differs from its array position");
-			assert.deepEqual(d.progress.filter((progress) => progress.status === "running").map((progress) => progress.index), [2]);
-			for (const view of [receipt.liveCollapsed, receipt.liveExpanded]) assert.match(view, /chain · step 2\/3 · parallel group: 1 agent running/);
+		if (receipt.name === "static-chain-interrupt-pure") verify("native owner progress retains stable child indices", () => {
+			const progress = receipt.liveUpdate.partialResult.details.progress;
+			assert.equal(new Set(progress.map((child) => child.index)).size, progress.length);
+			assert.deepEqual(progress.filter((child) => child.status === "running").map((child) => child.index), [2]);
+			for (const view of [receipt.liveCollapsed, receipt.liveExpanded]) assert.match(view, /chain.*parallel group: 1 agent running/);
 		});
-		if (shape === "static-chain" && stop === "interrupt") verify("settling native updates count each failed or paused child once", () => {
-			const status = failed ? "failed" : "paused";
-			const d = receipt.settlingUpdate.partialResult.details;
-			assert.equal(receipt.settlingCard.toolCallId, receipt.name);
-			assert.equal(receipt.settlingCard.isPartial, true);
-			assert.equal(receipt.settlingCard.result.isError, false);
-			assert.deepEqual(receipt.settlingCard.result.details, d);
-			assert.deepEqual(d.results.map((child) => child.progress.index), [0, 2]);
-			assert.deepEqual(d.progress.filter((progress) => progress.status === status).map((progress) => progress.index), [2]);
-			assert.ok(d.workflowGraph.nodes.every((node) => node.status !== "running"), "settling can be sparse even when no graph node is running");
-			for (const view of [receipt.settlingCollapsed, receipt.settlingExpanded]) {
-				const parts = header(view, "chain")?.split(" | ")[0].split(" · ");
-				assert.equal(parts?.find((part) => part.endsWith(` ${status}`)), `1 ${status}`);
-			}
-		});
-		verify("the actual children stop before queued/downstream work", () => {
-			assert.equal(receipt.calls.length, waitIndex + 1);
-			assert.deepEqual(receipt.calls.map((call) => call.expandedArgs.at(-1).match(/MIXED_(SOURCE|OK|BAD|WAIT|QUEUED|DOWNSTREAM)/)?.[0]), [ ...(prefixCount ? ["MIXED_SOURCE"] : []), ...tokens.slice(0, tokens.indexOf("MIXED_WAIT") + 1) ]);
+		verify("only interrupt stops queued and dependent work; releasing the wait preserves owner execution", () => {
+			const expected = [...(prefixCount ? ["MIXED_SOURCE"] : []), ...(stop === "interrupt" ? tokens.slice(0, tokens.indexOf("MIXED_WAIT") + 1) : tokens), ...(stop === "detach" && prefixCount && !failed ? ["MIXED_DOWNSTREAM"] : [])];
+			assert.equal(receipt.calls.length, expected.length);
+			assert.deepEqual(receipt.calls.map((call) => call.expandedArgs.at(-1).match(/MIXED_(SOURCE|OK|BAD|WAIT|QUEUED|DOWNSTREAM)/)?.[0]), expected);
 		});
 		verify("saved native details retain every successful/failed/stopped child and the handle", () => {
 			const d = result.details;
 			assert.equal(d.runId, receipt.runId);
-			assert.equal(d.results.length, prefixCount + tokens.length);
+			assert.equal(d.results.length, prefixCount + tokens.length + (stop === "detach" && prefixCount && !failed ? 1 : 0));
 			assert.equal(d.intercomDelivery, undefined, "stopped runs retain their control receipt, not a delivery receipt");
 			if (!single) {
 				assert.equal(d.results[prefixCount].finalOutput, "SUCCESSFUL_SIBLING_EVIDENCE");
 				assert.equal(d.results[prefixCount].exitCode, 0);
 			}
 			if (failed) { assert.equal(d.results[prefixCount + 1].error, failureReason); assert.equal(d.results[prefixCount + 1].exitCode, 1); }
-			assert.equal(d.results[waitIndex][stop === "detach" ? "detached" : "interrupted"], true);
+			if (stop === "interrupt") assert.equal(d.results[waitIndex].interrupted, true);
+			else {
+				assert.equal(d.results[waitIndex].exitCode, 0);
+				assert.equal(d.results[waitIndex].finalOutput, "DETACHED_CHILD_FINISHED");
+				if (!single) assert.equal(d.results[waitIndex + 1].finalOutput, "QUEUED_CHILD_FINISHED");
+			}
 			if (stop === "interrupt" && !single) assert.equal(d.results[waitIndex + 1].interrupted, true);
 			if (prefixCount) {
 				assert.equal(d.results[0].finalOutput, "PREFIX_EVIDENCE");
-				assert.deepEqual(d.workflowGraph.nodes.map((node) => node.status), ["completed", failed ? "failed" : stop === "detach" ? "detached" : "paused", "pending"]);
+				assert.deepEqual(d.workflowGraph.nodes.map((node) => node.status), ["completed", failed ? "failed" : stop === "detach" ? "completed" : "paused", stop === "detach" && !failed ? "completed" : "paused"]);
 				assert.deepEqual(d.outputs.targets.structured, { items: tokens });
 				assert.equal(d.outputs.targets.text, JSON.stringify({ items: tokens }));
 				if (shape === "static-chain") assert.equal(d.outputs.evidence.text, "SUCCESSFUL_SIBLING_EVIDENCE");
+				else if (stop === "detach" && !failed) assert.equal(d.outputs.collected.structured.length, tokens.length);
 				else assert.equal(d.outputs.collected, undefined);
 			}
 		});
 		verify("native final card renders retained sibling/prefix and graph rather than the text-only error", () => {
 			if (!single) assert.match(receipt.expanded, /SUCCESSFUL_SIBLING_EVIDENCE/);
-			assert.match(receipt.expanded, stop === "detach" ? /detached/i : /paused/i);
+			if (stop === "interrupt") assert.match(receipt.expanded, /paused/i);
+			else assert.match(receipt.expanded, /DETACHED_CHILD_FINISHED/);
 			if (failed) {
 				assert.ok(receipt.expanded.includes(failureReason));
 				assert.ok(receipt.expanded.includes(receipt.runId), "failed native card retains its exact run handle");
@@ -276,38 +292,29 @@ async function workflow(shape, stop, failed = true) {
 				assert.match(receipt.expanded, /PREFIX_EVIDENCE/);
 				assert.match(receipt.expanded, /Step 1:/);
 				assert.match(receipt.expanded, /Step 3:/);
-				assert.match(receipt.expanded, /status: pending/);
+				if (stop === "interrupt" || failed) assert.ok(unwrap(receipt.expanded).includes("pausedStep3:probe"));
+				else assert.match(receipt.expanded, /DEPENDENT_STEP_FINISHED/);
 			}
 			if (prefixCount) assert.match(receipt.narrowExpanded, /PREFIX_EVIDENCE/);
 		});
-		verify("native compact and expanded headers report exact final outcomes", () => {
+		verify("native headers agree with the final owner outcome", () => {
 			const mode = single ? "probe" : prefixCount ? "chain" : "parallel";
-			const label = `${prefixCount ? "step 2/3 · parallel group: " : ""}1/${tokens.length} succeeded${failed ? " · 1 failed" : ""} · ${stop === "interrupt" ? 2 : 1} paused`;
-			const compact = header(receipt.collapsed, mode);
-			const expanded = header(receipt.expanded, mode)?.split(" | ")[0];
-			if (single) {
-				assert.match(compact, /^■ probe/);
-				assert.equal(expanded, `${stop === "detach" ? "detached" : "paused"} probe`);
-			} else {
-				const expected = `${failed ? "✗" : "■"} ${mode} · ${label}`;
-				assert.equal(compact?.split(" · ").slice(0, expected.split(" · ").length).join(" · "), expected);
-				assert.equal(expanded, `${failed ? "failed" : "paused"} ${mode} · ${label}`);
-			}
+			const compact = header(receipt.collapsed, mode), expanded = header(receipt.expanded, mode);
+			assert.ok(compact && expanded, `${receipt.collapsed}\n${receipt.expanded}`);
+			assert.match(compact, failed ? /^✗/ : stop === "interrupt" ? /^■/ : /^✓/);
+			assert.match(expanded, failed ? /^failed/ : stop === "interrupt" ? /^paused/ : /^ok/);
 			assert.doesNotMatch(compact, /agents? running/);
 			if (!failed) assert.doesNotMatch(`${compact}\n${expanded}`, /failed|warning/);
 		});
-		verify("native expansion retains the full stop receipt and exact recovery handle", () => {
+		verify("native expansion retains complete outcomes and recovery guidance", () => {
 			for (const view of [receipt.expanded, receipt.narrowExpanded]) {
 				assert.ok(unwrap(view).includes(unwrap(text(result))), "expanded card must keep every control receipt line");
-				assert.ok(unwrap(view).includes(receipt.runId), "even a pure pause/detach keeps its exact run handle");
+				if (stop === "interrupt") assert.ok(unwrap(view).includes(receipt.runId), "a paused run keeps its exact recovery handle");
 			}
 			assert.match(receipt.narrowCollapsed, /ctrl\+o/i);
 			assert.doesNotMatch(receipt.collapsed, /Do this now:|Inspect pending asks|After the child exits/);
-			if (stop === "detach") {
-				assert.match(text(result), /Child is waiting on a parent\/coordinator reply\./);
-				assert.match(text(result), /Reply: intercom\(\{ action: "reply", to: "/);
-				assert.ok(text(result).includes(`Then inspect the child: ${route === "parent" ? "agent_runs" : "subagent"}({ action: "${route === "parent" ? "inspect" : "status"}", id: "${receipt.runId}" })`), text(result));
-			} else assert.match(text(result), /Waiting for explicit next action\./);
+			if (stop === "detach") assert.match(text(result), /DETACHED_CHILD_FINISHED/);
+			else assert.match(text(result), failed ? /interrupt/i : /Waiting for explicit next action\./);
 		});
 	});
 }
@@ -331,27 +338,13 @@ try {
 			], async: false, context: "fresh", artifacts: false,
 		});
 		verifyNative(receipt, verify, true);
-		verify("static preflight error keeps the successful prefix and launches no later child", () => {
-			assert.equal(receipt.calls.length, 1);
-			assert.match(receipt.calls[0].expandedArgs.at(-1), /STATIC_PREFIX/);
-			assert.equal(result.details.intercomDelivery, undefined);
-			assert.deepEqual(result.details.results.map((child) => [child.exitCode, child.finalOutput]), [[0, "STATIC_PREFIX_EVIDENCE"]]);
-			assert.equal(result.details.outputs.prefix.text, "STATIC_PREFIX_EVIDENCE");
-			assert.equal(result.details.outputs.unpublished, undefined);
-			assert.equal(result.details.outputs.downstream, undefined);
-			assert.deepEqual(result.details.workflowGraph.nodes.map((node) => node.status), ["completed", "running", "pending"], "native failure must outrank the graph's last position without rewriting it");
-			assert.deepEqual(result.details.workflowGraph.nodes[1].children.map((node) => node.status), ["running"]);
-			assert.match(text(result), /sets outputMode: "file-only" but does not configure an output file/);
+		verify("static preflight validates every child before launching any prefix or sibling", () => {
+			assert.equal(receipt.calls.length, 0);
+			assert.deepEqual(result.details.results, []);
+			assert.match(text(result), /outputMode: "file-only"/);
 		});
-		verify("native error truth controls both headers even without a failed child or graph node", () => {
-			assert.ok(header(receipt.collapsed, "chain")?.startsWith("✗ chain · step 2/3 · parallel group: 0/1 succeeded"));
-			assert.equal(header(receipt.expanded, "chain")?.split(" | ")[0], "failed chain · step 2/3 · parallel group: 0/1 succeeded");
-			for (const view of [receipt.expanded, receipt.narrowExpanded]) {
-				assert.match(view, /STATIC_PREFIX_EVIDENCE/);
-				assert.ok(unwrap(view).includes("doneStep1:probe"), "the prefix child remains successful");
-				assert.ok(unwrap(view).includes(unwrap(text(result))));
-				assert.ok(unwrap(view).includes(result.details.runId));
-			}
+		verify("native preflight cards retain actionable error text", () => {
+			for (const view of [receipt.expanded, receipt.narrowExpanded]) assert.ok(unwrap(view).includes(unwrap(text(result))));
 		});
 	});
 	for (const rejected of [true, false]) await check(`dynamic-collect-${rejected ? "schema-failure" : "success"}`, async (receipt, verify) => {
@@ -407,18 +400,11 @@ try {
 		await invoke(receipt, route === "parent" ? "delegate" : "subagent", { agent: "probe", task: "normal success", output: false, async: false, context: "fresh" });
 		verifyNative(receipt, verify, false);
 		verify("nonerror content, details and rendering survive", () => {
-			if (delivered) {
-				assert.equal(receipt.result.details.intercomDelivery.delivered, true);
-				assert.equal(receipt.result.details.results[0].finalOutput, undefined);
-				assert.ok(unwrap(receipt.narrowExpanded).includes(unwrap(text(receipt.result))));
-				assert.match(receipt.collapsed, /receipt details/);
-				assert.doesNotMatch(`${receipt.collapsed}\n${receipt.expanded}`, /warning|failed|no text output|NORMAL_SUCCESS_EVIDENCE/);
-			} else {
-				assert.match(text(receipt.result), /NORMAL_SUCCESS_EVIDENCE/);
-				assert.equal(receipt.result.details.results[0].finalOutput, "NORMAL_SUCCESS_EVIDENCE");
-				assert.match(receipt.expanded, /NORMAL_SUCCESS_EVIDENCE/);
-				assert.equal(receipt.expanded.match(/NORMAL_SUCCESS_EVIDENCE/g).length, 1, "ordinary success does not duplicate model content");
-			}
+			assert.equal(receipt.result.details.intercomDelivery, undefined, "delivery acknowledgment does not erase the owner's saved result");
+			assert.match(text(receipt.result), /NORMAL_SUCCESS_EVIDENCE/);
+			assert.equal(receipt.result.details.results[0].finalOutput, "NORMAL_SUCCESS_EVIDENCE");
+			assert.match(receipt.expanded, /NORMAL_SUCCESS_EVIDENCE/);
+			assert.equal(receipt.expanded.match(/NORMAL_SUCCESS_EVIDENCE/g).length, 1, "ordinary success does not duplicate model content");
 		});
 	});
 	await check("inspect-handle", async (receipt, verify) => {

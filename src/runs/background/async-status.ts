@@ -8,6 +8,8 @@ import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegis
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
+import { asyncRunRoots, exactAsyncRunLocation } from "./async-resume.ts";
+import { RESULTS_DIR } from "../../shared/types.ts";
 
 interface AsyncRunStepSummary {
 	index: number;
@@ -194,14 +196,14 @@ function validateStatusForSummary(status: AsyncStatus, source: string): void {
 	}
 }
 
-export function asyncStatusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string }, nestedWarnings: string[] = []): AsyncRunSummary {
+export function asyncStatusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string }, nestedWarnings: string[] = [], projectedChildren?: NestedRunSummary[]): AsyncRunSummary {
 	validateStatusForSummary(status, path.join(asyncDir, "status.json"));
 	const { activityState, lastActivityAt } = deriveAsyncActivityState(asyncDir, status);
 	const steps = status.steps ?? [];
 	const chainStepCount = status.chainStepCount ?? steps.length;
 	const parallelGroups = normalizeParallelGroups(status.parallelGroups, steps.length, chainStepCount);
-	let nestedChildren: NestedRunSummary[] = [];
-	if (nestedWarnings.length === 0) {
+	let nestedChildren: NestedRunSummary[] = projectedChildren ?? [];
+	if (projectedChildren === undefined && nestedWarnings.length === 0) {
 		try {
 			nestedChildren = projectNestedRegistryForRoot(status.runId || path.basename(asyncDir))?.children ?? [];
 		} catch (error) {
@@ -294,19 +296,19 @@ function sortRuns(runs: AsyncRunSummary[]): AsyncRunSummary[] {
 }
 
 export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions = {}): AsyncRunSummary[] {
-	let entries: string[];
-	try {
-		entries = fs.readdirSync(asyncDirRoot).filter((entry) => {
+	const entries = new Set<string>();
+	for (const root of asyncRunRoots(asyncDirRoot)) try {
+		for (const entry of fs.readdirSync(root).filter((entry) => {
 			try {
-				return isAsyncRunDir(asyncDirRoot, entry);
+				return isAsyncRunDir(root, entry);
 			} catch (error) {
 				if (!options.skipInvalid) throw error;
 				console.error(`Skipping invalid async run '${path.join(asyncDirRoot, entry)}':`, error);
 				return false;
 			}
-		});
+		})) entries.add(entry);
 	} catch (error) {
-		if (isNotFoundError(error)) return [];
+		if (isNotFoundError(error)) continue;
 		throw new Error(`Failed to list async runs in '${asyncDirRoot}': ${getErrorMessage(error)}`, {
 			cause: error instanceof Error ? error : undefined,
 		});
@@ -315,8 +317,9 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 	const allowedStates = options.states ? new Set(options.states) : undefined;
 	const runs: AsyncRunSummary[] = [];
 	for (const entry of entries) {
-		const asyncDir = path.join(asyncDirRoot, entry);
 		try {
+			const asyncDir = exactAsyncRunLocation(entry, asyncDirRoot, options.resultsDir ?? RESULTS_DIR).asyncDir;
+			if (!asyncDir) continue;
 			const reconciliation = options.reconcile === false
 				? undefined
 				: reconcileAsyncRun(asyncDir, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
@@ -324,18 +327,19 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 			if (!status) continue;
 			if (options.sessionId && status.sessionId !== options.sessionId) continue;
 			const nestedWarnings: string[] = [];
+			let nestedChildren: NestedRunSummary[] | undefined;
 			try {
 				const nestedRoute = findNestedRouteForRootId(status.runId || path.basename(asyncDir));
-				if (nestedRoute) reconcileNestedAsyncDescendants(nestedRoute, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
+				if (nestedRoute) nestedChildren = reconcileNestedAsyncDescendants(nestedRoute, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
 			} catch (error) {
 				nestedWarnings.push(`Nested status unavailable: ${getErrorMessage(error)}`);
 			}
-			const summary = asyncStatusToSummary(asyncDir, status, nestedWarnings);
+			const summary = asyncStatusToSummary(asyncDir, status, nestedWarnings, nestedChildren);
 			if (allowedStates && !allowedStates.has(summary.state)) continue;
 			runs.push(summary);
 		} catch (error) {
 			if (!options.skipInvalid) throw error;
-			console.error(`Skipping invalid async run '${asyncDir}':`, error);
+			console.error(`Skipping invalid async run '${entry}':`, error);
 		}
 	}
 
@@ -343,7 +347,7 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 	return options.limit !== undefined ? sorted.slice(0, options.limit) : sorted;
 }
 
-function formatActivityFacts(input: { activityState?: ActivityState; lastActivityAt?: number; currentTool?: string; currentToolStartedAt?: number; currentPath?: string; turnCount?: number; toolCount?: number }): string | undefined {
+export function formatActivityFacts(input: { activityState?: ActivityState; lastActivityAt?: number; currentTool?: string; currentToolStartedAt?: number; currentPath?: string; turnCount?: number; toolCount?: number }): string | undefined {
 	const facts: string[] = [];
 	if (input.currentTool && input.currentToolStartedAt !== undefined) facts.push(`tool ${input.currentTool} ${formatDuration(Math.max(0, Date.now() - input.currentToolStartedAt))}`);
 	else if (input.currentTool) facts.push(`tool ${input.currentTool}`);

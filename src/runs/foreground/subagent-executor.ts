@@ -5,14 +5,12 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { handleManagementAction } from "../../agents/agent-management.ts";
 import { buildDoctorReport } from "../../extension/doctor.ts";
-import { clearPendingForegroundControlNotices } from "../../extension/control-notices.ts";
 import { providerQualifiedModelId, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { getArtifactsDir } from "../../shared/artifacts.ts";
 import {
 	isParallelStep,
 	isDynamicParallelStep,
-	type SequentialStep,
 } from "../../shared/settings.ts";
 import {
 	buildFlatAgentNameResolver,
@@ -24,27 +22,22 @@ import {
 } from "../../shared/agent-context-policy.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { resolveExecutionCwd } from "../../shared/execution-cwd.ts";
-import { applyIntercomBridgeToAgent, resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import { resolveIntercomBridge, resolveIntercomSessionTarget, resolveOrchestratorIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
-import { createNestedRoute, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
+import { createNestedRoute, resolveInheritedNestedRouteFromEnv } from "../shared/nested-events.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
-import { buildManagementControl } from "../../shared/status-format.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
 import { queryLiveIntercomHealth, queryLiveIntercomStatus } from "../../intercom/live-intercom.ts";
 import { saveQuestionOwner } from "../shared/supervisor-questions.ts";
-import { workflowChildSucceeded } from "../shared/workflow-policy.ts";
 import { buildWorkflowGraphSnapshot, workflowAgentNodes } from "../shared/workflow-graph.ts";
-import { acceptanceHumanAction } from "../shared/acceptance.ts";
-import { ownedRunList, ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun, saveForegroundRun, workflowChildren } from "../shared/run-records.ts";
+import { ownedRunList, ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun, workflowChildren } from "../shared/run-records.ts";
 import { cancelSupervisorInput, controlSupervisorQuestion, projectSupervisorQuestions } from "./question-control.ts";
 import {
 	type AgentScope,
 } from "../../agents/agents.ts";
 import {
 	type SubagentExecutionResult,
-	INTERCOM_DETACH_REQUEST_EVENT,
-	INTERCOM_DETACH_RESPONSE_EVENT,
 	SUBAGENT_ACTIONS,
 	checkSubagentDepth,
 } from "../../shared/types.ts";
@@ -56,12 +49,8 @@ import {
 } from "./subagent-params.ts";
 import {
 	MUTATING_MANAGEMENT_ACTIONS,
-	extendForegroundTimeoutResult,
-	foregroundIntercomTarget,
-	foregroundStatusResult,
-	getForegroundControl,
+	extendAsyncTimeoutResult,
 	interruptAsyncRun,
-	interruptForegroundChild,
 	interruptNestedRun,
 	nestedResolutionScopeForExecutor,
 	nudgeSubagentRun,
@@ -80,24 +69,20 @@ import {
 	withForkContext,
 } from "./execution-input.ts";
 import { runAsyncPath } from "./run-async-path.ts";
-import { runChainPath } from "./run-chain-path.ts";
-import { runParallelPath } from "./run-parallel-path.ts";
-import { runSinglePath } from "./run-single-path.ts";
+import { clarifyInvocation } from "./clarify-invocation.ts";
 import { waitForOwnedRun } from "./wait-run.ts";
+import { bindNativeInvocation, isNativeAsyncCall, nativeInvocationTarget, nativeInvocations } from "../shared/native-async.ts";
 
 export type { SubagentParamsLike } from "./subagent-params.ts";
 export { normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "./subagent-params.ts";
 export { writeAsyncInterruptRequest } from "./foreground-control.ts";
 
+type ExecuteSubagent = (id: string, params: SubagentParamsLike, signal: AbortSignal | undefined,
+	onUpdate: ((r: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext, executionCwd?: string) => Promise<SubagentExecutionResult>;
+
 export function createSubagentExecutor(deps: ExecutorDeps): {
-	execute: (
-		id: string,
-		params: SubagentParamsLike,
-		signal: AbortSignal | undefined,
-		onUpdate: ((r: SubagentExecutionResult) => void) | undefined,
-		ctx: ExtensionContext,
-		executionCwd?: string,
-	) => Promise<SubagentExecutionResult>;
+	execute: ExecuteSubagent;
+	resume: (...args: Parameters<ExecuteSubagent>) => Promise<SubagentExecutionResult | undefined>;
 } {
 	const execute = async (
 		_id: string,
@@ -106,15 +91,12 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		onUpdate: ((r: SubagentExecutionResult) => void) | undefined,
 		ctx: ExtensionContext,
 		executionCwd?: string,
-		onForegroundRun?: (runId: string) => void,
 	): Promise<SubagentExecutionResult> => {
 		deps.ensureSessionState?.(ctx);
 		const needsExecutionCwd = !params.action || params.cwd !== undefined || ["list", "get", "create", "update", "delete", "doctor"].includes(params.action);
 		const invocationCwd = needsExecutionCwd ? executionCwd ?? resolveExecutionCwd(deps.pi, ctx) : ctx.cwd;
 		if (needsExecutionCwd) deps.state.baseCwd = invocationCwd;
 		deps.state.foregroundRuns ??= new Map();
-		deps.state.foregroundControls ??= new Map();
-		deps.state.lastForegroundControlId ??= null;
 		const requestCwd = resolveRequestedCwd(invocationCwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
@@ -183,26 +165,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				if (targetRunId) {
 					try {
 						includeRunHeader = Boolean(params.dir) || !resolveOwnedRun(deps.state, targetRunId);
-						const nestedScope = nestedResolutionScopeForExecutor(deps);
-						const resolved = resolveSubagentRunId(targetRunId, { state: deps.state, nested: nestedScope });
-						if (resolved?.kind === "foreground") {
-							const foreground = getForegroundControl(deps.state, resolved.id);
-							if (foreground) {
-								const target = foregroundIntercomTarget(foreground);
-								const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
-								return foregroundStatusResult(foreground, health, includeRunHeader, Boolean(nestedScope));
-							}
-						}
 					} catch (error) {
 						const message = error instanceof Error ? error.message : String(error);
 						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
-					}
-				} else if (deps.allowMutatingManagementActions === false) {
-					const foreground = getForegroundControl(deps.state, undefined);
-					if (foreground) {
-						const target = foregroundIntercomTarget(foreground);
-						const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
-						return foregroundStatusResult(foreground, health, true, true);
 					}
 				}
 				let inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps), includeRunHeader });
@@ -221,23 +186,15 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					}
 				}
 				if (!targetRunId && !params.dir && deps.allowMutatingManagementActions !== false) {
-					const current = getForegroundControl(deps.state, undefined);
-					const target = current ? foregroundIntercomTarget(current) : undefined;
-					const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
-					const foreground = [
-						...[...deps.state.foregroundControls.values()].map((control) => foregroundStatusResult(control, control === current ? health : undefined)),
-						...[...(deps.state.foregroundRuns?.values() ?? [])]
-							.filter((run) => !deps.state.foregroundControls.has(run.runId))
-							.sort((a, b) => b.updatedAt - a.updatedAt)
-							.map((run) => rememberedForegroundStatusResult(run)),
-					];
+					const foreground = [...(deps.state.foregroundRuns?.values() ?? [])]
+						.sort((a, b) => b.updatedAt - a.updatedAt)
+						.map((run) => rememberedForegroundStatusResult(run));
 					if (foreground.length) {
 						inspected = {
 							...inspected,
 							content: [...foreground.flatMap((result) => result.content), ...inspected.content],
 							details: {
 								...inspected.details,
-								managementControl: foreground.find((result) => result.details.managementControl?.runId === current?.runId)?.details.managementControl,
 								managementControls: [...foreground.flatMap((result) => result.details.managementControl ? [result.details.managementControl] : []), ...(inspected.details.managementControls ?? [])],
 							},
 						};
@@ -246,7 +203,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				return inspected;
 			}
 			if (params.action === "nudge") {
-				return nudgeSubagentRun({ params: paramsWithResolvedCwd, deps });
+				return nudgeSubagentRun({ params: paramsWithResolvedCwd, deps, ctx });
 			}
 			if (params.action === "resume") {
 				return resumeAsyncRun({ params: paramsWithResolvedCwd, requestCwd, ctx, deps });
@@ -262,15 +219,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
 					}
 				}
-				const foreground = getForegroundControl(deps.state, resolved?.kind === "foreground" ? resolved.id : targetRunId);
-				if (!foreground) {
-					return {
-						content: [{ type: "text", text: "No extendable foreground run found in this session." }],
-						isError: true,
-						details: { mode: "management", results: [] },
-					};
-				}
-				return extendForegroundTimeoutResult(foreground, paramsWithResolvedCwd.extendMs ?? paramsWithResolvedCwd.timeoutMs ?? paramsWithResolvedCwd.maxRuntimeMs ?? 0);
+				return extendAsyncTimeoutResult(deps.state, resolved?.id ?? targetRunId, paramsWithResolvedCwd.extendMs ?? paramsWithResolvedCwd.timeoutMs ?? paramsWithResolvedCwd.maxRuntimeMs ?? 0);
 			}
 			if (params.action === "interrupt") {
 				const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
@@ -284,24 +233,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					}
 				}
 				if (resolved?.kind === "nested") return interruptNestedRun(resolved, paramsWithResolvedCwd.index);
-				const foreground = getForegroundControl(deps.state, resolved?.kind === "foreground" ? resolved.id : targetRunId);
-				if (foreground) {
-					const index = paramsWithResolvedCwd.index;
-					const interrupted = interruptForegroundChild(foreground, index);
-					if (interrupted) {
-						foreground.updatedAt = Date.now();
-						foreground.currentActivityState = undefined;
-						return {
-							content: [{ type: "text", text: `Interrupt requested for foreground run ${foreground.runId}${index !== undefined ? ` child ${index} only` : ""}. Agent and command exit are not yet confirmed.` }],
-							details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: foreground.runId, index: foreground.currentIndex, intercomTarget: foregroundIntercomTarget(foreground), canNudge: true, canResume: true, canInterrupt: true, canExtend: Boolean(foreground.timeoutAt && foreground.extendTimeout) }) },
-						};
-					}
-					return {
-						content: [{ type: "text", text: `Foreground run ${foreground.runId} has no active child${index !== undefined ? ` at index ${index}` : " step"} to interrupt. No siblings were stopped.` }],
-						isError: true,
-						details: { mode: "management", results: [] },
-					};
-				}
 				const asyncInterruptResult = interruptAsyncRun(deps.state, resolved?.kind === "async" ? resolved.id : targetRunId, paramsWithResolvedCwd.index);
 				if (asyncInterruptResult) return asyncInterruptResult;
 				return {
@@ -373,14 +304,14 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const orchestratorTarget = resolveOrchestratorIntercomTarget(deps.pi.events, fallbackTarget);
 		const intercomBridge = resolveIntercomBridge(orchestratorTarget);
 		const runId = randomUUID();
+		bindNativeInvocation(deps.pi, ctx, params.nativeToolCallId, { runId, kind: "launch", ...(params.includeProgress ? { includeProgress: true } : {}) });
 		const agentNameAtIndex = buildFlatAgentNameResolver(effectiveParams);
 		const resolveContextForAgent = (agentName: string | undefined) =>
 			resolveAgentContext(effectiveParams.context, agentName, discoveredAgents);
 		const resolveContextForIndex = (index?: number) =>
 			resolveContextForAgent(agentNameAtIndex(index ?? 0));
-		const agents = discoveredAgents.map((agent) => applyIntercomBridgeToAgent({ ...agent, defaultContext: resolveContextForAgent(agent.name) }, intercomBridge));
+		const agents = discoveredAgents.map((agent) => ({ ...agent, defaultContext: resolveContextForAgent(agent.name) }));
 		const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
-		const nestedParentAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
 		const nestedRoute = inheritedNestedRoute ?? createNestedRoute(runId);
 		const shareEnabled = effectiveParams.share === true;
 		const hasChain = (effectiveParams.chain?.length ?? 0) > 0;
@@ -416,6 +347,15 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				return toExecutionErrorResult(effectiveParams, new Error(forkModelPolicyError), invocationContext);
 			}
 		}
+
+		try {
+			const clarified = await clarifyInvocation({ params: effectiveParams, agents, ctx, cwd: effectiveCwd, runId });
+			if (!clarified) return { content: [{ type: "text", text: "Cancelled" }], details: { mode: hasChain ? "chain" : hasTasks ? "parallel" : "single", results: [] } };
+			effectiveParams = clarified;
+		} catch (error) {
+			return toExecutionErrorResult(effectiveParams, error, invocationContext);
+		}
+		if (signal?.aborted) return toExecutionErrorResult(effectiveParams, new Error("Subagent cancelled before launch."), invocationContext);
 
 		let sessionFileForIndex: (idx?: number) => string | undefined = () => undefined;
 		let forkSessionFileForAgentIndex: (agentName: string | undefined, idx?: number) => string | undefined = () => undefined;
@@ -473,12 +413,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const onUpdateWithContext = (r: SubagentExecutionResult) => {
 			const owned = deps.state.ownedRuns?.get(runId);
 			if (owned && r.details.workflowGraph) rememberOwnedRun(deps.state, { ...owned, children: workflowChildren(owned.children, r.details.workflowGraph) });
-			const control = deps.state.foregroundControls.get(runId);
-			if (control) {
-				const firstProgress = !control.progress?.length;
-				control.progress = [...new Map([...(control.progress ?? []), ...(r.details.progress ?? [])].map((progress) => [progress.index, progress])).values()];
-				if (firstProgress) deps.state.onRunsChanged?.();
-			}
+
 			onUpdate?.(withForkContext(r, invocationContext));
 		};
 		const assignments = effectiveParams.tasks ?? effectiveParams.chain?.flatMap((step) =>
@@ -486,12 +421,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			?? [{ agent: effectiveParams.agent!, task: effectiveParams.task, label: effectiveParams.label }];
 
 		saveQuestionOwner(runId, ctx.sessionManager.getSessionId());
-		rememberOwnedRun(deps.state, {
-			runId, ownerSessionId: ctx.sessionManager.getSessionId(), rootRunId: runId,
-			source: effectiveAsync ? "async" : "foreground", mode: hasChain ? "chain" : hasTasks ? "parallel" : "single",
-			cwd: effectiveCwd, task: effectiveParams.task ?? effectiveParams.tasks?.map((task) => task.task).join("\n") ?? "Delegated workflow",
-			startedAt: Date.now(), children: assignments.map(({ agent, task, label }, index) => ({ agent, index, task, label, ...(assignmentNodes?.[index] ? { workflowNodeId: assignmentNodes[index]!.id } : {}) })),
-		});
 		const execData: ExecutionContextData = {
 			params: effectiveParams,
 			effectiveCwd,
@@ -515,204 +444,44 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			nestedRoute,
 		};
 
-		const foregroundMode: "single" | "parallel" | "chain" = hasChain ? "chain" : hasTasks ? "parallel" : "single";
-		const foregroundTimeoutAt = !effectiveAsync && foregroundTimeout.timeoutMs !== undefined ? Date.now() + foregroundTimeout.timeoutMs : undefined;
-		const foregroundControl = effectiveAsync
-			? undefined
-			: {
-				runId,
-				mode: foregroundMode,
-				startedAt: Date.now(),
-				updatedAt: Date.now(),
-				currentAgent: undefined,
-				currentIndex: undefined,
-				currentActivityState: undefined,
-				...(foregroundTimeoutAt !== undefined ? { timeoutAt: foregroundTimeoutAt } : {}),
-				nestedRoute,
-				interrupt: undefined,
-				activeChildren: new Map(),
-			};
-		if (foregroundControl) {
-			deps.state.foregroundControls.set(runId, foregroundControl);
-			deps.state.lastForegroundControlId = runId;
-			onForegroundRun?.(runId);
-			deps.state.onRunsChanged?.();
-		}
-		let deferForegroundCleanup = false;
-		let detachedSettled = false;
-		const cleanupForegroundControl = () => {
-			if (!foregroundControl) return;
-			clearPendingForegroundControlNotices(deps.state, runId);
-			deps.state.foregroundControls.delete(runId);
-			if (deps.state.lastForegroundControlId === runId) deps.state.lastForegroundControlId = null;
-			deps.state.onRunsChanged?.();
-		};
-
-		const writeNestedForegroundEvent = (type: "subagent.nested.started" | "subagent.nested.completed", result?: SubagentExecutionResult): void => {
-			if (!inheritedNestedRoute || !nestedParentAddress) return;
-			const now = Date.now();
-			const details = result?.details;
-			const pausedReason = deps.state.foregroundRuns?.get(runId)?.pausedReason;
-			const state = type === "subagent.nested.started"
-				? "running"
-				: result?.isError || details?.results.some((child) => child.exitCode !== 0)
-					? "failed"
-					: details?.results.some((child) => child.acceptance?.status === "blocked") ? "blocked"
-					: pausedReason || details?.results.some((child) => child.interrupted)
-						? "paused"
-						: "complete";
-			const errorText = result?.isError
-				? result.content.find((item) => item.type === "text")?.text
-				: state === "blocked" ? details?.results.map((child) => acceptanceHumanAction(child.acceptance)).filter(Boolean).join("\n") : pausedReason;
-			const agentsForSummary = hasTasks && effectiveParams.tasks
-				? effectiveParams.tasks.map((task) => task.agent)
-				: hasChain && effectiveParams.chain
-					? effectiveParams.chain.flatMap((step) => isParallelStep(step) ? step.parallel.map((task) => task.agent) : [(step as SequentialStep).agent])
-					: effectiveParams.agent ? [effectiveParams.agent] : [];
-			const leafIntercomTarget = agentsForSummary[0]
-				? resolveSubagentIntercomTarget(runId, agentsForSummary[0], 0)
-				: undefined;
-			try {
-				writeNestedEvent(inheritedNestedRoute, {
-					type,
-					ts: now,
-					parentRunId: nestedParentAddress.parentRunId,
-					parentStepIndex: nestedParentAddress.parentStepIndex,
-					child: {
-						id: runId,
-						parentRunId: nestedParentAddress.parentRunId,
-						parentStepIndex: nestedParentAddress.parentStepIndex,
-						depth: nestedParentAddress.depth,
-						path: nestedParentAddress.path,
-						ownerIntercomTarget: process.env.PI_SUBAGENT_INTERCOM_SESSION_NAME,
-						leafIntercomTarget,
-						intercomTarget: leafIntercomTarget,
-						ownerState: state === "running" ? "live" : "gone",
-						indexedControl: true,
-						mode: foregroundMode,
-						state,
-						agent: agentsForSummary[0],
-						agents: agentsForSummary,
-						startedAt: foregroundControl?.startedAt ?? now,
-						...(state !== "running" ? { endedAt: now } : {}),
-						lastUpdate: now,
-						...(errorText ? { error: errorText } : {}),
-						...(details?.results.length ? { steps: details.results.map((child) => ({
-							agent: child.agent,
-							status: child.interrupted ? "paused" : child.exitCode !== 0 ? "failed" : child.acceptance?.status === "blocked" ? "blocked" : "complete",
-							...(child.sessionFile ? { sessionFile: child.sessionFile } : {}),
-							...(child.error || acceptanceHumanAction(child.acceptance) ? { error: child.error || acceptanceHumanAction(child.acceptance) } : {}),
-						})) } : {}),
-					},
-				});
-			} catch (error) {
-				console.error("Failed to emit nested foreground status event:", error);
-			}
-		};
-
-		execData.onDetachedResultsSettled = (mode, results, totalSteps) => {
-			detachedSettled = true;
-			deferForegroundCleanup = false;
-			const failure = results.find((result) => result.exitCode !== 0);
-			writeNestedForegroundEvent("subagent.nested.completed", {
-				content: [{ type: "text", text: failure?.error ?? deps.state.foregroundRuns?.get(runId)?.pausedReason ?? "Detached run completed." }],
-				isError: Boolean(failure),
-				details: { mode, results, ...(totalSteps !== undefined ? { totalSteps } : {}) },
-			});
-			cleanupForegroundControl();
-		};
-
-		const completeNestedForeground = (result: SubagentExecutionResult): void => {
-			result.details.runId ??= runId;
-			if (result.isError && result.details.results.every(workflowChildSucceeded)) {
-				const owned = deps.state.ownedRuns?.get(runId);
-				if (owned) rememberOwnedRun(deps.state, { ...owned, error: result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") });
-			}
-			if (result.details.asyncId) {
-				const owned = deps.state.ownedRuns?.get(runId);
-				if (owned) rememberOwnedRun(deps.state, { ...owned, source: "async", asyncDir: result.details.asyncDir, pid: deps.state.asyncJobs.get(runId)?.pid });
-			} else if (!deps.state.foregroundRuns?.has(runId)) {
-				saveForegroundRun({ runId, mode: foregroundMode, cwd: effectiveCwd, results: result.details.results, error: deps.state.ownedRuns?.get(runId)?.error });
-			}
-			if (result.details.intercomDelivery?.delivered) {
-				const owned = deps.state.ownedRuns?.get(runId);
-				if (owned) rememberOwnedRun(deps.state, { ...owned, delivery: { notifiedAt: Date.now(), intercomDelivered: true } });
-			}
-			if (result.details?.results.some((child) => child.detached)) {
-				deferForegroundCleanup = !detachedSettled;
-				return;
-			}
-			writeNestedForegroundEvent("subagent.nested.completed", result);
-		};
-
-		let nestedForegroundStarted = false;
 		try {
-			const asyncResult = runAsyncPath(execData, deps);
-			if (asyncResult) {
-				completeNestedForeground(asyncResult);
-				return withForkContext(asyncResult, invocationContext);
+			const result = runAsyncPath(execData, deps);
+			if (!result) throw new Error("Invalid subagent execution mode.");
+			if (result.isError) return withForkContext(result, invocationContext);
+			rememberOwnedRun(deps.state, {
+				runId, ownerSessionId: ctx.sessionManager.getSessionId(), rootRunId: runId,
+				source: "async", mode: hasChain ? "chain" : hasTasks ? "parallel" : "single",
+				cwd: effectiveCwd, task: effectiveParams.task ?? effectiveParams.tasks?.map((task) => task.task).join("\n") ?? "Delegated workflow",
+				asyncDir: result.details.asyncDir, pid: result.details.asyncPid ?? deps.state.asyncJobs.get(runId)?.pid,
+				startedAt: Date.now(), children: assignments.map(({ agent, task, label }, index) => ({ agent, index, task, label, ...(assignmentNodes?.[index] ? { workflowNodeId: assignmentNodes[index]!.id } : {}) })),
+			});
+			if ((!effectiveAsync || params.nativeToolCallId) && result.details.asyncId) {
+				return withForkContext(await waitForOwnedRun({ id: runId, deps, ctx, signal, onUpdate: onUpdateWithContext,
+					cancelNewRun: !effectiveAsync, executionResult: true, includeProgress: effectiveParams.includeProgress, nativeAsync: Boolean(params.nativeToolCallId) }), invocationContext);
 			}
-			if (foregroundControl) {
-				writeNestedForegroundEvent("subagent.nested.started");
-				nestedForegroundStarted = true;
-			}
-			if (hasChain && effectiveParams.chain) {
-				const result = await runChainPath(execData, deps);
-				completeNestedForeground(result);
-				return withForkContext(result, invocationContext);
-			}
-			if (hasTasks && effectiveParams.tasks) {
-				const result = await runParallelPath(execData, deps);
-				completeNestedForeground(result);
-				return withForkContext(result, invocationContext);
-			}
-			if (hasSingle) {
-				const result = await runSinglePath(execData, deps);
-				completeNestedForeground(result);
-				return withForkContext(result, invocationContext);
-			}
+			return withForkContext(result, invocationContext);
 		} catch (error) {
-			const errorResult = toExecutionErrorResult(effectiveParams, error, invocationContext);
-			completeNestedForeground(errorResult);
-			if (nestedForegroundStarted) writeNestedForegroundEvent("subagent.nested.completed", errorResult);
-			return errorResult;
-		} finally {
-			if (!deferForegroundCleanup) cleanupForegroundControl();
+			const result = toExecutionErrorResult(effectiveParams, error, invocationContext);
+			const owned = deps.state.ownedRuns?.get(runId);
+			if (owned) rememberOwnedRun(deps.state, { ...owned, error: result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") });
+			return result;
 		}
-
-		return withForkContext({
-			content: [{ type: "text", text: "Invalid params" }],
-			isError: true,
-			details: { mode: "single" as const, results: [] },
-		}, invocationContext);
 	};
 
 	return { execute: async (...args) => {
 		const [id, params, signal, onUpdate, ctx, executionCwd] = args;
-		const waiting = params.async === false && (params.action === "resume" || params.action === "answer");
+		const nativeAsync = isNativeAsyncCall(ctx, id) && (!params.action || params.action === "resume" || params.action === "answer");
+		const request = { ...params, nativeToolCallId: nativeAsync ? id : undefined };
+		const waiting = (params.async === false || nativeAsync) && (params.action === "resume" || params.action === "answer");
 		const before = waiting ? new Set(deps.state.ownedRuns?.keys()) : undefined;
-		const attention = Promise.withResolvers<SubagentExecutionResult>();
-		let unsubscribe: (() => void) | undefined;
-		const work = execute(id, params, signal, onUpdate, ctx, executionCwd, (runId) => {
-			unsubscribe = deps.pi.events.on(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
-				if (!payload || typeof payload !== "object") return;
-				const request = payload as { requestId?: unknown; reason?: unknown };
-				if (request.reason !== "attention" || typeof request.requestId !== "string" || !deps.state.foregroundControls.get(runId)?.currentAgent) return;
-				unsubscribe?.();
-				deps.pi.events.emit(INTERCOM_DETACH_RESPONSE_EVENT, { requestId: request.requestId, accepted: true });
-				attention.resolve({ content: [{ type: "text", text: `Released the foreground wait for an incoming Intercom message. Run ${runId} continues unchanged, including queued and dependent steps. Continue useful work or end the turn; completion will arrive automatically. No stop was requested.` }],
-					details: { mode: "management", results: [], runId, managementControl: buildManagementControl({ state: "live", runId, canInterrupt: true }) } });
-			});
-		});
-		void work.then(() => unsubscribe?.(), () => unsubscribe?.());
-		let result = await Promise.race([work, attention.promise]);
+		let result = await execute(id, request, signal, onUpdate, ctx, executionCwd);
 		// Launch/answer receipts and claims are saved before waiting; execution failure must not undo a successful launch.
 		if (waiting && !result.isError) {
 			const question = result.details.questions?.find((question) => question.delivery || question.state === "answer_pending");
 			const id = result.details.asyncId ?? result.details.managementControl?.runId ?? question?.delivery?.runId ?? question?.runId ?? params.id ?? params.runId;
 			const index = result.details.asyncId || question?.delivery?.kind === "revive" ? 0
 				: result.details.managementControl?.nextActions.find((action) => action.index !== undefined)?.index ?? question?.index ?? params.index;
-			if (id) return waitForOwnedRun({ id, index, deps, ctx, signal, onUpdate, cancelNewRun: !before?.has(id) });
+			if (id) return waitForOwnedRun({ id, index, deps, ctx, signal, onUpdate, cancelNewRun: params.async === false && !before?.has(id) && deps.state.ownedRuns?.has(id), nativeAsync, executionResult: true, includeProgress: params.includeProgress });
 		}
 		if (args[1].action === "interrupt") return cancelSupervisorInput(result, args[1], args[4].sessionManager.getSessionId(), deps.pi.events);
 		if (args[1].action !== "status" || result.details.runList) return result;
@@ -726,5 +495,12 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 		}
 		return projectSupervisorQuestions(result, args[1], args[4].sessionManager.getSessionId(), Boolean(nestedResolutionScopeForExecutor(deps)));
+	}, resume: async (id, _params, signal, onUpdate, ctx) => {
+		deps.ensureSessionState?.(ctx);
+		const invocation = nativeInvocations(ctx).find((call) => call.toolCallId === id);
+		const target = invocation && nativeInvocationTarget(ctx, invocation);
+		if (!target) return undefined;
+		if (!resolveOwnedRun(deps.state, target.runId) && resolveSubagentRunId(target.runId, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) })?.kind !== "nested") return undefined;
+		return waitForOwnedRun({ id: target.runId, index: target.index, deps, ctx, signal, onUpdate, nativeAsync: true, executionResult: true, includeProgress: invocation?.includeProgress });
 	} };
 }

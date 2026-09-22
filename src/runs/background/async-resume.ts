@@ -2,8 +2,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus, type ResolvedAcceptanceConfig } from "../../shared/types.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
-import { reconcileAsyncRun } from "./stale-run-reconciler.ts";
-import { readAsyncResultFile, type ParsedAsyncResultFile } from "./async-result-file.ts";
+import { checkPidLiveness, reconcileAsyncRun } from "./stale-run-reconciler.ts";
+import { isDurableRun, readAsyncResultFile, type ParsedAsyncResultFile } from "./async-result-file.ts";
+import { QUESTIONS_DIR, readQuestionContract, readRunJson } from "../shared/supervisor-questions.ts";
 
 export interface AsyncResumeParams {
 	id?: string;
@@ -99,6 +100,21 @@ function prefixedRunIds(dir: string, prefix: string, suffix = ""): string[] {
 		.sort();
 }
 
+export function asyncRunRoots(asyncDirRoot: string): string[] {
+	return [...new Set([path.resolve(asyncDirRoot), path.resolve(QUESTIONS_DIR)])];
+}
+
+export function exactAsyncRunLocation(runId: string, asyncDirRoot: string, resultsDir: string): AsyncRunLocation {
+	assertRunId(runId, "id");
+	const durableDir = path.join(QUESTIONS_DIR, runId);
+	const legacyDir = path.join(asyncDirRoot, runId);
+	const durableStatus = readRunJson<AsyncStatus>(path.join(durableDir, "status.json"));
+	const durableResult = path.join(durableDir, "result.json");
+	const durable = isDurableRun(durableStatus) || isDurableRun(readRunJson<object>(path.join(durableDir, "launch.json")));
+	const asyncDir = durable ? durableDir : fs.existsSync(legacyDir) ? legacyDir : durableStatus ? durableDir : null;
+	return { asyncDir, resultPath: fs.existsSync(durableResult) ? durableResult : exactResultPath(resultsDir, runId), resolvedId: runId };
+}
+
 function exactResultPath(resultsDir: string, runId: string): string | null {
 	const resultPath = path.join(resultsDir, `${runId}.json`);
 	assertInsideRoot(resultsDir, resultPath, "Async result file");
@@ -112,20 +128,10 @@ export function findAsyncRunPrefixMatches(prefix: string, asyncDirRoot: string, 
 	const resultRoot = path.resolve(resultsDir);
 	const matchingIds = [...new Set([
 		...prefixedRunIds(asyncRoot, requestedId),
+		...prefixedRunIds(QUESTIONS_DIR, requestedId).filter((id) => fs.existsSync(path.join(QUESTIONS_DIR, id, "status.json")) || fs.existsSync(path.join(QUESTIONS_DIR, id, "result.json")) || fs.existsSync(path.join(QUESTIONS_DIR, id, "launch.json"))),
 		...prefixedRunIds(resultRoot, requestedId, ".json"),
 	])].sort();
-	return matchingIds.map((id) => {
-		const asyncDir = path.join(asyncRoot, id);
-		assertInsideRoot(asyncRoot, asyncDir, "Async run directory");
-		return {
-			id,
-			location: {
-				asyncDir: fs.existsSync(asyncDir) ? asyncDir : null,
-				resultPath: exactResultPath(resultRoot, id),
-				resolvedId: id,
-			},
-		};
-	});
+	return matchingIds.map((id) => ({ id, location: exactAsyncRunLocation(id, asyncRoot, resultRoot) }));
 }
 
 export function resolveAsyncRunLocation(params: AsyncResumeParams, asyncDirRoot: string, resultsDir: string): AsyncRunLocation {
@@ -134,25 +140,24 @@ export function resolveAsyncRunLocation(params: AsyncResumeParams, asyncDirRoot:
 	const requestedId = assertRunId(params.id, "id") ?? assertRunId(params.runId, "runId");
 	if (params.dir) {
 		const asyncDir = path.resolve(params.dir);
-		assertInsideRoot(asyncRoot, asyncDir, "Async run directory");
+		if (!asyncRunRoots(asyncRoot).some((root) => {
+			const relative = path.relative(root, asyncDir);
+			return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+		})) {
+			throw new Error(`Async run directory must be inside ${asyncRunRoots(asyncRoot).join(" or ")}.`);
+		}
 		const resolvedId = requestedId ?? path.basename(asyncDir);
 		if (requestedId && requestedId !== path.basename(asyncDir)) {
 			throw new Error(`Async run id '${requestedId}' does not match directory '${path.basename(asyncDir)}'.`);
 		}
-		return { asyncDir, resultPath: exactResultPath(resultRoot, resolvedId), resolvedId };
+		const location = exactAsyncRunLocation(resolvedId, asyncRoot, resultRoot);
+		const canonical = location.asyncDir && isDurableRun(readRunJson<object>(path.join(location.asyncDir, "launch.json")));
+		return { ...location, asyncDir: canonical ? location.asyncDir : asyncDir };
 	}
 	if (!requestedId) return { asyncDir: null, resultPath: null };
 
-	const directAsyncDir = path.join(asyncRoot, requestedId);
-	assertInsideRoot(asyncRoot, directAsyncDir, "Async run directory");
-	const directResultPath = exactResultPath(resultRoot, requestedId);
-	if (fs.existsSync(directAsyncDir) || directResultPath) {
-		return {
-			asyncDir: fs.existsSync(directAsyncDir) ? directAsyncDir : null,
-			resultPath: directResultPath,
-			resolvedId: requestedId,
-		};
-	}
+	const direct = exactAsyncRunLocation(requestedId, asyncRoot, resultRoot);
+	if (direct.asyncDir || direct.resultPath) return direct;
 
 	const matching = findAsyncRunPrefixMatches(requestedId, asyncRoot, resultRoot);
 	if (matching.length === 0) return { asyncDir: null, resultPath: null, resolvedId: requestedId };
@@ -257,6 +262,13 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 	const index = requestedIndex ?? 0;
 	if (!Number.isInteger(index)) throw new Error(`Async run '${runId}' index must be an integer.`);
 	if (index < 0 || index >= stepCount) throw new Error(`Async run '${runId}' has ${stepCount} children. Index ${index} is out of range.`);
+	const contract = readQuestionContract(runId, index);
+	if (contract?.pid && checkPidLiveness(contract.pid, deps.kill) !== "dead") {
+		const agent = statusSteps[index]?.agent ?? resultSteps[index]?.agent ?? result?.agent ?? contract.launch?.agent.name;
+		if (!agent) throw new Error(`Could not determine child agent for async run '${runId}'.`);
+		return { kind: "live", runId, asyncDir: location.asyncDir ?? undefined, state, agent, index,
+			intercomTarget: resolveSubagentIntercomTarget(runId, agent, index), cwd: status?.cwd ?? result?.cwd, sessionFile: contract.sessionFile };
+	}
 	const agent = statusSteps[index]?.agent ?? resultSteps[index]?.agent ?? result?.agent;
 	if (!agent) throw new Error(`Could not determine child agent for async run '${runId}'.`);
 	const sessionFile = statusSteps[index]?.sessionFile

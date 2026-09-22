@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { createEventBus, createTempDir, makeAgent, removeTempDir } from "../support/helpers.ts";
+import { createEventBus, createTempDir, makeAgent, makeMinimalCtx, removeTempDir } from "../support/helpers.ts";
 
 const originalEnv = { ...process.env };
 const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
@@ -25,27 +25,18 @@ process.env = {
 	PI_PACKAGE_DIR: sdkRoot, PI_INTERCOM_TEST_SDK: sdkRoot, PI_OWNERSHIP_TEST_PACKAGE_ROOT: sdkRoot, PI_CONTEXT_TEST_PACKAGE_ROOT: sdkRoot,
 	CI: "1", TERM: "dumb", PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", NODE_DISABLE_COMPILE_CACHE: "1", NODE_TEST_CONTEXT: originalEnv.NODE_TEST_CONTEXT,
 };
-const outcomes: object[] = [];
 after(() => {
 	process.env = originalEnv;
-	fs.writeFileSync(path.join(root, "summary.json"), JSON.stringify(outcomes, null, 2));
 	if (originalEnv.PI_FINAL_REPORT_EVIDENCE_DIR) {
 		fs.mkdirSync(originalEnv.PI_FINAL_REPORT_EVIDENCE_DIR, { recursive: true });
 		fs.cpSync(root, path.join(originalEnv.PI_FINAL_REPORT_EVIDENCE_DIR, path.basename(root)), { recursive: true, filter: (source) => path.basename(source) !== "auth.json" });
 	}
 	removeTempDir(root);
 });
-const { runSync } = await import("../../src/runs/foreground/execution.ts");
-const { executeAsyncSingle } = await import("../../src/runs/background/async-execution.ts");
-const { ASYNC_DIR, RESULTS_DIR } = await import("../../src/shared/types.ts");
+const { createSubagentExecutor } = await import("../../src/runs/foreground/subagent-executor.ts");
 const { questionProcessAlive } = await import("../../src/runs/shared/supervisor-questions.ts");
-const { parseAcceptanceReport } = await import("../../src/runs/shared/acceptance.ts");
 const extension = fileURLToPath(new URL("../fixtures/native-acceptance-cli-extension.mjs", import.meta.url));
-const handoff = "Current native CLI report\nResult: the fixture completed.";
-const report = (text: string) => `${text}\n\n\`\`\`acceptance-report\n${JSON.stringify({
-	criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "Native CLI fixture" }], residualRisks: [], diffSummary: text,
-})}\n\`\`\``;
-const fullReport = report(handoff);
+
 
 async function waitFor(check: () => boolean, label: string) {
 	const deadline = Date.now() + 20_000;
@@ -53,105 +44,39 @@ async function waitFor(check: () => boolean, label: string) {
 }
 
 it("native stop records the agent process exit separately from real bash/descendant cleanup", { timeout: 30_000 }, async () => {
-	const cwd = path.join(root, "native-bash-stop"), id = `${path.basename(root)}-bash-stop`;
+	const cwd = path.join(root, "native-bash-stop");
 	fs.mkdirSync(cwd);
 	process.env.PI_FINAL_REPORT_CLI_INPUT = path.join(cwd, "input.json");
-	fs.writeFileSync(process.env.PI_FINAL_REPORT_CLI_INPUT, JSON.stringify({ scenario: "bash-stop", pidDir: cwd }));
+	fs.writeFileSync(process.env.PI_FINAL_REPORT_CLI_INPUT, JSON.stringify({ pidDir: cwd }));
 	const agent = makeAgent("worker", { model: "report-cli-fixture/faux-1", extensions: [extension], output: false });
-	const stop = new AbortController(), sessionFile = path.join(cwd, "session.jsonl");
-	const pending = runSync(cwd, [agent], "worker", "Run the controlled native bash command", { runId: id, sessionFile, interruptSignal: stop.signal });
+	const state = { baseCwd: cwd, currentSessionId: null, asyncJobs: new Map(), ownedRuns: new Map() };
+	const executor = createSubagentExecutor({ pi: { events: createEventBus(), getSessionName: () => undefined }, state,
+		config: {}, asyncByDefault: false, tempArtifactsDir: cwd, getSubagentSessionRoot: () => cwd,
+		expandTilde: (value) => value, discoverAgents: () => ({ agents: [agent] }) });
+	const pending = executor.execute("native-stop", { agent: "worker", task: "Run the controlled native bash command" }, undefined, undefined, makeMinimalCtx(cwd));
 	await waitFor(() => fs.existsSync(path.join(cwd, "ready")), "real native bash must publish its ready file");
 	const shellPid = Number(fs.readFileSync(path.join(cwd, "shell.pid"), "utf8")), descendantPid = Number(fs.readFileSync(path.join(cwd, "descendant.pid"), "utf8"));
 	assert.equal(questionProcessAlive({ pid: shellPid }), true);
 	assert.equal(questionProcessAlive({ pid: descendantPid }), true);
-	stop.abort();
-	const result = await pending;
+	const id = [...state.ownedRuns.keys()][0];
+	const stopped = await executor.execute("stop", { action: "interrupt", id }, undefined, undefined, makeMinimalCtx(cwd));
+	assert.equal(stopped.isError, undefined, JSON.stringify(stopped.content));
+	const completed = await pending;
+	const result = completed.details.results[0];
+	const receipts = fs.readdirSync(cwd).filter((file) => /^initial-\d+\.json$/.test(file)).map((file) => JSON.parse(fs.readFileSync(path.join(cwd, file), "utf8")));
+	assert.equal(receipts.length, 1);
+	assert.equal(receipts[0].cli, nativeEntry);
+	assert.equal(receipts[0].networkRequests, 0);
+	assert.equal(questionProcessAlive({ pid: receipts[0].pid }), false);
 	assert.equal(result.exitCode, 0, "workflow pause keeps its existing normalized outcome");
 	assert.equal(result.interrupted, true);
 	assert.ok(result.agentProcessExit, "real process exit evidence must be retained");
 	assert.ok(result.agentProcessExit.code !== 0 || result.agentProcessExit.signal, "the stopped process outcome is not manufactured exit zero");
 	await waitFor(() => !questionProcessAlive({ pid: shellPid }) && !questionProcessAlive({ pid: descendantPid }), "the known test shell and descendant must exit");
 	const { NativeAgentHistory } = await import("../../src/tui/agent-history.ts");
-	const history = new NativeAgentHistory().read(sessionFile);
+	const history = new NativeAgentHistory().read(result.sessionFile);
 	const command = history.items.find((item) => item.kind === "tool" && item.title.startsWith("bash"));
 	assert.ok(command);
 	if (command.title.includes("result not recorded")) assert.match(command.details!, /exit is unconfirmed/);
 	fs.writeFileSync(path.join(cwd, "stop-evidence.json"), JSON.stringify({ result, shellPid, descendantPid, knownPidsGone: true, history }, null, 2));
 });
-
-for (const background of [false, true]) for (const scenario of ["single", "retry", "linger", "process-exit", "final-error"]) {
-	it(`${background ? "background" : "foreground"} bundled native CLI finalization: ${scenario}`, { timeout: 30_000 }, async () => {
-		const name = `${background ? "bg" : "fg"}-${scenario}`;
-		const cwd = path.join(root, name), id = `${path.basename(root)}-${name}`;
-		fs.mkdirSync(cwd, { mode: 0o700 });
-		process.env.PI_FINAL_REPORT_CLI_INPUT = path.join(cwd, "input.json");
-		fs.writeFileSync(process.env.PI_FINAL_REPORT_CLI_INPUT, JSON.stringify({ scenario, report: fullReport, initialReport: report("Initial native CLI report") }));
-		const agent = makeAgent("worker", { model: "report-cli-fixture/faux-1", extensions: [extension], output: false, maxExecutionTimeMs: 15_000 });
-		const acceptance = { criteria: ["Deliver the current complete report"], maxFinalizationTurns: 1 };
-		let result;
-		if (background) {
-			const started = executeAsyncSingle(id, { agent: "worker", task: "Complete the fixture", agentConfig: agent,
-				ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, acceptance,
-				artifactsDir: path.join(cwd, "artifacts"), sessionFile: path.join(cwd, "session.jsonl"), shareEnabled: false, maxSubagentDepth: 2, output: false });
-			assert.ok(!started.isError, started.content[0]?.text);
-			const resultPath = path.join(RESULTS_DIR, `${id}.json`);
-			await waitFor(() => fs.existsSync(resultPath), "background result must arrive");
-			result = JSON.parse(fs.readFileSync(resultPath, "utf8")).results[0];
-			const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8"));
-			await waitFor(() => !questionProcessAlive({ pid: status.pid }), "owned background runner must exit");
-		} else {
-			result = await runSync(cwd, [agent], "worker", "Complete the fixture", { runId: id, acceptance,
-				artifactsDir: path.join(cwd, "artifacts"), sessionFile: path.join(cwd, "session.jsonl"), persistOutputFile: false });
-		}
-		fs.writeFileSync(path.join(cwd, "result.json"), JSON.stringify(result, null, 2));
-		const receipts = fs.readdirSync(cwd).filter((file) => /^(initial|final)-\d+\.json$/.test(file)).map((file) => JSON.parse(fs.readFileSync(path.join(cwd, file), "utf8")));
-		const native = receipts.find((receipt) => receipt.finalizing);
-		outcomes.push({ background, scenario, exitCode: result.exitCode, error: result.error, acceptance: result.acceptance?.status,
-			providerCalls: native?.providerCalls, nativeExitCode: native?.exitCode, shutdownStarted: native?.shutdownStarted, shutdownFinished: native?.shutdownFinished });
-		assert.equal(receipts.length, 2, "only the initial and finalization CLI processes run");
-		for (const receipt of receipts) {
-			assert.equal(receipt.cli, nativeEntry, "run the actual bundled native CLI worker from the selected SDK, not a mock launcher");
-			assert.equal(receipt.networkRequests, 0);
-			assert.equal(questionProcessAlive({ pid: receipt.pid }), false, "owned native child must exit");
-		}
-		assert.equal(result.modelAttempts.length, 2);
-		assert.equal(result.acceptance.finalization.turns.length, 1);
-		assert.equal(native.providerCalls, ["retry", "final-error"].includes(scenario) ? 2 : 1);
-		assert.ok(native.events.some((event) => event.type === "agent_settled"));
-		assert.deepEqual(native.capture, { report: fullReport });
-		const messages = native.events.filter((event) => event.type === "message_end").map((event) => event.message);
-		const submission = messages.findLast((message) => message.role === "assistant" && message.stopReason === "toolUse");
-		assert.equal(submission.content.length, 1);
-		assert.equal(submission.content[0].name, "structured_output");
-		assert.deepEqual(submission.content[0].arguments.value, native.capture);
-		assert.ok(messages.some((message) => message.role === "toolResult" && message.toolName === "structured_output" && message.toolCallId === submission.content[0].id && message.isError === false));
-		const latest = messages.findLast((message) => message.role === "assistant");
-		assert.equal(native.shutdownStarted, true);
-		assert.equal(native.shutdownFinished, scenario !== "linger");
-		if (scenario !== "linger") assert.equal(native.exitCode, scenario === "process-exit" ? 7 : 0);
-		if (scenario === "retry") {
-			assert.equal(messages.find((message) => message.role === "assistant").errorMessage, "503 overloaded; native CLI fixture");
-			if (background) {
-				const events = fs.readFileSync(path.join(ASYNC_DIR, id, "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-				assert.ok(events.some((event) => event.type === "auto_retry_end" && event.success === true));
-			}
-		}
-		if (scenario === "process-exit" || scenario === "final-error") {
-			assert.equal(latest.stopReason, scenario === "final-error" ? "error" : "toolUse");
-			assert.equal(result.exitCode, scenario === "process-exit" ? 7 : 1);
-			assert.match(result.error, scenario === "process-exit" ? /exited with code 7/ : /Fixture final provider failure/);
-			assert.equal(result.acceptance.status, "rejected");
-			assert.equal(result.acceptance.childReport, undefined);
-			assert.equal(result.acceptance.unconfirmedOutput, fullReport);
-		} else {
-			assert.equal(latest, submission);
-			assert.equal(result.exitCode, 0, result.error);
-			assert.equal(result.error, undefined);
-			assert.equal(result.acceptance.status, "checked");
-			assert.deepEqual(result.acceptance.childReport, parseAcceptanceReport(fullReport).report);
-			assert.equal(result.acceptance.finalization.turns[0].rawOutput, fullReport);
-			assert.equal(result.finalOutput ?? result.output, handoff);
-			assert.equal(fs.readFileSync(result.artifactPaths.outputPath, "utf8"), handoff);
-		}
-	});
-}

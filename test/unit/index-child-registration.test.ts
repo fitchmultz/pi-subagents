@@ -140,6 +140,59 @@ describe("subagent extension child mode", () => {
 		runProbe(script, { env: parentToolEnv() });
 	});
 
+	it("normalizes registered delegate acceptance before worktree wrapping and preserves advanced input", () => {
+		const script = String.raw`
+			const assert = (await import("node:assert/strict")).default;
+			const { Compile } = await import("typebox/compile");
+			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
+			const registeredTools = new Map();
+			const handlers = new Map();
+			const fakePi = new Proxy({
+				events: { on() { return () => {}; }, emit() {} },
+				registerTool(tool) { registeredTools.set(tool.name, tool); },
+				getAllTools() { return []; },
+				getCommands() { return []; },
+				on(event, handler) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
+			}, { get(target, prop) { return prop in target ? target[prop] : () => undefined; } });
+			registerSubagentExtension(fakePi);
+			const ctx = {
+				cwd: process.cwd(), mode: "json", hasUI: false,
+				isProjectTrusted() { return false; },
+				sessionManager: { getSessionId() { return "acceptance-probe"; }, getSessionFile() { return null; }, getEntries() { return []; }, getHeader() { return null; } },
+			};
+			const delegate = registeredTools.get("delegate");
+			const advanced = registeredTools.get("subagent");
+			const task = { agent: "__missing_acceptance_probe__", task: "Check" };
+			const pairs = [{ name: "EMPTY", value: "" }, { name: "VALUE", value: "a=b" }];
+			const acceptance = { verify: [{ id: "check", command: "true", env: pairs }] };
+			try {
+				// A missing profile stops after the real acceptance validator without launching a child.
+				for (const worktree of [false, true]) {
+					const params = { ...task, acceptance, worktree, context: "fresh", async: false };
+					assert.ok(Compile(delegate.parameters).Check(params));
+					const original = structuredClone(params);
+					const result = await delegate.execute("delegate-check", params, undefined, undefined, ctx);
+					assert.equal(result.content[0].text, "Unknown agent: " + task.agent + (worktree ? " (task 1)" : ""));
+					assert.equal(result.details.mode, worktree ? "parallel" : "single");
+					assert.deepEqual(params, original);
+					await assert.rejects(() => delegate.execute("duplicate", {
+						...params, acceptance: { verify: [{ id: "check", command: "true", env: [...pairs, pairs[0]] }] },
+					}, undefined, undefined, ctx), /Verification environment contains duplicate names/);
+
+					const advancedTask = { ...task, acceptance: { verify: [{ id: "check", command: "true", env: { EMPTY: "", VALUE: "a=b" } }] } };
+					const advancedParams = worktree ? { tasks: [advancedTask], worktree: true } : advancedTask;
+					assert.ok(Compile(advanced.parameters).Check(advancedParams));
+					const advancedResult = await advanced.execute("advanced-check", advancedParams, undefined, undefined, ctx);
+					assert.equal(advancedResult.content[0].text, result.content[0].text);
+					assert.equal(advancedResult.details.mode, result.details.mode);
+				}
+			} finally {
+				for (const shutdown of handlers.get("session_shutdown") ?? []) await shutdown();
+			}
+		`;
+		runProbe(script, { env: { ...parentToolEnv(), PI_SUBAGENT_DEPTH: "0", PI_SUBAGENT_MAX_DEPTH: "1" } });
+	});
+
 	it("renders the effective async default and foreground escapes", () => {
 		const script = String.raw`
 			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");

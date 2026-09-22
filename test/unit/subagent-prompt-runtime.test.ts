@@ -9,10 +9,7 @@ import registerSubagentPromptRuntime, {
 	CHILD_FANOUT_BOUNDARY_INSTRUCTIONS,
 	CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
 	SUBAGENT_INTERCOM_SESSION_NAME_ENV,
-	rewriteSubagentPrompt,
-	stripInheritedSkills,
 	stripParentOnlySubagentMessages,
-	stripSubagentOrchestrationSkill,
 } from "../../src/runs/shared/subagent-prompt-runtime.ts";
 
 const envSnapshot = {
@@ -24,22 +21,29 @@ const envSnapshot = {
 	PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA: process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA,
 };
 
-const SKILLS_SECTION = "\n\nThe following skills provide specialized instructions for specific tasks.\nUse the read tool to load a skill's file when the task matches its description.\nWhen a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\n\n<available_skills>\n  <skill>\n    <name>safe-bash</name>\n    <description>desc</description>\n    <location>/tmp/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>pi-subagents</name>\n    <description>delegate to subagents</description>\n    <location>/tmp/pi-subagents/SKILL.md</location>\n  </skill>\n</available_skills>";
+function promptEvent() {
+	return {
+		systemPrompt: "Opaque prompt is never parsed",
+		systemPromptOptions: {
+			customPrompt: "Selected replacement",
+			appendSystemPrompt: '<skill name="explicit">Selected instructions</skill>',
+			sections: {} as Record<string, string>,
+			skills: [{ name: "safe-bash" }, { name: "pi-subagents" }],
+			contextFiles: [{ path: "/repo/AGENTS.md", content: "Selected project policy" }],
+			forceSystemPrompt: undefined as string | undefined,
+		},
+	};
+}
 
-const BASE_PROMPT = [
-	"You are a subagent.",
-	"\n\n# Project Context\n\nProject-specific instructions and guidelines:\n\n## /repo/AGENTS.md\n\nProject rules\n\n",
-	SKILLS_SECTION,
-	"\nCurrent date: 2026-04-16",
-	"\nCurrent working directory: /repo",
-].join("");
-
-const PROMPT_WITH_EXPLICIT_SKILL = [
-	"You are a subagent.\n\n<skill name=\"explicit\">\nKeep this section\n</skill>",
-	"\n\n# Project Context\n\nProject-specific instructions and guidelines:\n\n## /repo/AGENTS.md\n\nProject rules\n\n",
-	SKILLS_SECTION,
-	"\nCurrent date: 2026-04-16",
-].join("");
+function registerPromptHandler() {
+	let handler: (event: ReturnType<typeof promptEvent>) => unknown;
+	registerSubagentPromptRuntime({
+		on(name: string, callback: typeof handler) {
+			if (name === "before_agent_start") handler = callback;
+		},
+	} as never);
+	return (event: ReturnType<typeof promptEvent>) => handler(event);
+}
 
 afterEach(() => {
 	if (envSnapshot.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT === undefined) delete process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT;
@@ -83,96 +87,42 @@ describe("subagent prompt runtime", () => {
 		}
 	});
 
-	it("leaves selected context intact; native CLI disables inherited context discovery", () => {
-		const rewritten = rewriteSubagentPrompt(BASE_PROMPT, { inheritProjectContext: false, inheritSkills: true });
-		assert.ok(rewritten.includes("# Project Context"));
-		assert.ok(rewritten.includes("Project rules"));
+	it("adds child sections without reparsing selected skills, project policy, or replacement prompts", () => {
+		process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = "0";
+		process.env.PI_SUBAGENT_INHERIT_SKILLS = "0";
+		process.env[SUBAGENT_FANOUT_CHILD_ENV] = "0";
+		const event = promptEvent();
+		assert.equal(registerPromptHandler()(event), undefined);
+		assert.equal(event.systemPromptOptions.sections.subagent_role, CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS);
+		assert.equal(event.systemPromptOptions.forceSystemPrompt, undefined);
+		assert.equal(event.systemPromptOptions.customPrompt, "Selected replacement");
+		assert.equal(event.systemPromptOptions.appendSystemPrompt, '<skill name="explicit">Selected instructions</skill>');
+		assert.deepEqual(event.systemPromptOptions.contextFiles, [{ path: "/repo/AGENTS.md", content: "Selected project policy" }]);
+		assert.deepEqual(event.systemPromptOptions.skills, [{ name: "safe-bash" }]);
 	});
 
-	it("strips only the inherited skills block", () => {
-		const rewritten = stripInheritedSkills(BASE_PROMPT);
-		assert.ok(rewritten.includes("# Project Context"));
-		assert.ok(!rewritten.includes("<available_skills>"));
-		assert.ok(rewritten.includes("Current date: 2026-04-16"));
+	it("replaces only its structured boundary when switching fanout policy", () => {
+		const run = registerPromptHandler();
+		const event = promptEvent();
+		for (const allowed of [false, true, false]) {
+			process.env[SUBAGENT_FANOUT_CHILD_ENV] = allowed ? "1" : "0";
+			run(event);
+			assert.equal(event.systemPromptOptions.sections.subagent_role, allowed ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS);
+			if (allowed) {
+				assert.match(event.systemPromptOptions.sections.subagent_role, /useful helper work within that task/);
+				assert.match(event.systemPromptOptions.sections.subagent_role, /original parent owns integration/);
+				assert.doesNotMatch(event.systemPromptOptions.sections.subagent_role, /only for the fanout work explicitly requested/);
+			}
+			assert.equal(event.systemPromptOptions.forceSystemPrompt, undefined);
+		}
 	});
 
-	it("strips inherited skills without reparsing selected project context", () => {
-		const rewritten = rewriteSubagentPrompt(BASE_PROMPT, {
-			inheritProjectContext: false,
-			inheritSkills: false,
-		});
-		assert.ok(rewritten.includes("# Project Context"));
-		assert.ok(!rewritten.includes("<available_skills>"));
-		assert.ok(rewritten.includes("Current working directory: /repo"));
-	});
-
-	it("injects a child-only boundary that forbids proposing or running subagents", () => {
-		const rewritten = rewriteSubagentPrompt(BASE_PROMPT, {
-			inheritProjectContext: true,
-			inheritSkills: true,
-		});
-
-		assert.ok(rewritten.startsWith(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS));
-		assert.ok(rewritten.includes("Do not propose or run subagents."));
-		assert.ok(rewritten.includes("If you need to edit files, call the actual edit/write tools."));
-		assert.ok(rewritten.includes("Do not print tool-call syntax, patches, or pseudo-tool calls as text."));
-		assert.equal(rewriteSubagentPrompt(rewritten, { inheritProjectContext: true, inheritSkills: true }).indexOf(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS), 0);
-		assert.equal(rewriteSubagentPrompt(rewritten, { inheritProjectContext: true, inheritSkills: true }).lastIndexOf(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS), 0);
-	});
-
-	it("replaces inherited child boundaries with the fanout boundary when authorized", () => {
-		const strictPrompt = `${CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS}\n\n${BASE_PROMPT}`;
-		const rewritten = rewriteSubagentPrompt(strictPrompt, {
-			inheritProjectContext: true,
-			inheritSkills: true,
-			fanoutChild: true,
-		});
-
-		assert.ok(rewritten.startsWith(CHILD_FANOUT_BOUNDARY_INSTRUCTIONS));
-		assert.ok(rewritten.includes("You may use the `subagent` tool only for the fanout work explicitly requested in this task."));
-		assert.ok(!rewritten.includes("Do not propose or run subagents."));
-		assert.equal(rewritten.lastIndexOf(CHILD_FANOUT_BOUNDARY_INSTRUCTIONS), 0);
-	});
-
-	it("replaces inherited fanout boundaries with the strict boundary when fanout is not authorized", () => {
-		const fanoutPrompt = `${CHILD_FANOUT_BOUNDARY_INSTRUCTIONS}\n\n${BASE_PROMPT}`;
-		const rewritten = rewriteSubagentPrompt(fanoutPrompt, {
-			inheritProjectContext: true,
-			inheritSkills: true,
-		});
-
-		assert.ok(rewritten.startsWith(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS));
-		assert.ok(!rewritten.includes("explicit fanout responsibility"));
-		assert.equal(rewritten.lastIndexOf(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS), 0);
-	});
-
-	it("keeps explicitly injected skill content when inherited skills are stripped", () => {
-		const rewritten = rewriteSubagentPrompt(PROMPT_WITH_EXPLICIT_SKILL, {
-			inheritProjectContext: false,
-			inheritSkills: false,
-		});
-		assert.ok(rewritten.includes("<skill name=\"explicit\">"));
-		assert.ok(!rewritten.includes("<available_skills>"));
-		assert.ok(rewritten.includes("# Project Context"));
-	});
-
-	it("strips the subagent orchestration skill even when inherited skills remain", () => {
-		const rewritten = rewriteSubagentPrompt(BASE_PROMPT, {
-			inheritProjectContext: true,
-			inheritSkills: true,
-		});
-
-		assert.ok(rewritten.includes("<name>safe-bash</name>"));
-		assert.ok(!rewritten.includes("<name>pi-subagents</name>"));
-		assert.ok(!rewritten.includes("delegate to subagents"));
-	});
-
-	it("strips explicit pi-subagents skill injection from child prompts", () => {
-		const prompt = "Before\n\n<skill name=\"pi-subagents\">\nDo not keep this.\n</skill>\n\n<skill name=\"safe-bash\">\nKeep this.\n</skill>\nAfter";
-		const rewritten = stripSubagentOrchestrationSkill(prompt);
-
-		assert.ok(!rewritten.includes("Do not keep this"));
-		assert.ok(rewritten.includes("<skill name=\"safe-bash\">"));
+	it("preserves an earlier opaque full override and makes the child boundary visible", () => {
+		process.env[SUBAGENT_FANOUT_CHILD_ENV] = "0";
+		const event = promptEvent();
+		event.systemPromptOptions.forceSystemPrompt = "EXACT OVERRIDE";
+		registerPromptHandler()(event);
+		assert.equal(event.systemPromptOptions.forceSystemPrompt, `EXACT OVERRIDE\n\n<subagent_role>\n${CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS}\n</subagent_role>`);
 	});
 
 	it("strips parent-only subagent custom messages from forked child context", () => {
@@ -233,48 +183,26 @@ describe("subagent prompt runtime", () => {
 			},
 		} as { on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>): void; setSessionName(name: string): void });
 
-		await beforeAgentStart?.({ systemPrompt: BASE_PROMPT });
-
+		await beforeAgentStart?.(promptEvent());
 		assert.equal(sessionName, "subagent-worker-78f659a3");
 	});
 
-	it("rewrites the final child-visible prompt through before_agent_start", async () => {
-		let beforeAgentStart: ((event: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) | undefined;
-		registerSubagentPromptRuntime({
-			on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) {
-				if (event === "before_agent_start") beforeAgentStart = handler;
-			},
-		} as { on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>): void });
-
-		assert.ok(beforeAgentStart, "expected before_agent_start handler");
-		process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = "0";
-		process.env.PI_SUBAGENT_INHERIT_SKILLS = "0";
-
-		const rewritten = await beforeAgentStart?.({ systemPrompt: BASE_PROMPT });
-		assert.ok(rewritten);
-		assert.ok(rewritten.systemPrompt.includes("# Project Context"));
-		assert.ok(!rewritten.systemPrompt.includes("<available_skills>"));
-		assert.ok(rewritten.systemPrompt.includes("Current date: 2026-04-16"));
-	});
-
-	it("uses the fanout boundary through before_agent_start when fanout env is set", async () => {
-		let beforeAgentStart: ((event: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) | undefined;
-		registerSubagentPromptRuntime({
-			on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) {
-				if (event === "before_agent_start") beforeAgentStart = handler;
-			},
-		} as { on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>): void });
-
-		process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = "1";
-		process.env.PI_SUBAGENT_INHERIT_SKILLS = "1";
-		process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
-
-		const rewritten = await beforeAgentStart?.({ systemPrompt: BASE_PROMPT });
-		assert.ok(rewritten);
-		assert.ok(rewritten.systemPrompt.startsWith(CHILD_FANOUT_BOUNDARY_INSTRUCTIONS));
+	it("retains fanout call/result history, including on resumed children", () => {
+		const messages = [
+			{ role: "custom", customType: "subagent-orchestration-instructions", content: "Parent instructions" },
+			...["subagent", "delegate", "agent_runs"].flatMap((name) => [
+				{ role: "assistant", content: [{ type: "toolCall", name, id: `${name}-call` }] },
+				{ role: "toolResult", toolName: name, toolCallId: `${name}-call`, content: "result" },
+			]),
+		];
+		const saved = structuredClone(messages);
+		assert.deepEqual(stripParentOnlySubagentMessages(messages), []);
+		assert.deepEqual(stripParentOnlySubagentMessages(messages, true), messages.slice(1));
+		assert.deepEqual(messages, saved);
 	});
 
 	it("filters parent-only artifacts from polluted fork context while preserving ordinary history", () => {
+		process.env[SUBAGENT_FANOUT_CHILD_ENV] = "0";
 		let contextHandler: ((event: { messages: unknown[] }) => { messages: unknown[] } | undefined) | undefined;
 		registerSubagentPromptRuntime({
 			on(event: string, handler: (payload: { messages: unknown[] }) => { messages: unknown[] } | undefined) {

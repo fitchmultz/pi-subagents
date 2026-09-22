@@ -10,13 +10,13 @@ import type { OwnedRun, SavedLaunchConfig, SubagentState } from "../../src/share
 const root = createTempDir("feedback-ux-");
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
 process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
-const { AgentRunsParams, SubagentParams, AcceptanceOverride } = await import("../../src/extension/schemas.ts");
+const { AgentRunsValidationParams: AgentRunsParams, SubagentParams, AcceptanceOverride } = await import("../../src/extension/schemas.ts");
 const { createSubagentExecutor, normalizeSubagentParamsLike } = await import("../../src/runs/foreground/subagent-executor.ts");
 const { ownedRunList, resolveOwnedRun, saveForegroundRun } = await import("../../src/runs/shared/run-records.ts");
 const questions = await import("../../src/runs/shared/supervisor-questions.ts");
 const { buildControlEvent, formatControlNoticeMessage } = await import("../../src/runs/shared/subagent-control.ts");
 const { resolveEffectiveAcceptance } = await import("../../src/runs/shared/acceptance.ts");
-const { foregroundStatusResult } = await import("../../src/runs/foreground/foreground-control.ts");
+const { inspectSubagentStatus } = await import("../../src/runs/background/run-status.ts");
 const { formatAsyncStartedMessage } = await import("../../src/runs/background/async-execution.ts");
 after(() => removeTempDir(root));
 
@@ -29,7 +29,7 @@ function setup(id: string) {
 		systemPrompt: "PRIVATE-PROMPT-END", skills: [], model: "fixture/original", modelCandidates: ["fixture/original"], cwd: root, context: "fresh", output: false, outputMode: "inline", artifacts: true, share: false };
 	questions.saveQuestionOwner(id, run.ownerSessionId);
 	questions.saveQuestionContract(id, 0, { sessionFile, launch });
-	const state: SubagentState = { baseCwd: root, currentSessionId: run.ownerSessionId, ownedRuns: new Map([[id, run]]), asyncJobs: new Map(), foregroundRuns: new Map(), foregroundControls: new Map(), lastForegroundControlId: null,
+	const state: SubagentState = { baseCwd: root, currentSessionId: run.ownerSessionId, ownedRuns: new Map([[id, run]]), asyncJobs: new Map(), foregroundRuns: new Map(),
 		cleanupTimers: new Map(), lastUiContext: null, poller: null, completionSeen: new Map(), watcher: null, watcherRestartTimer: null, resultFileCoalescer: { schedule: () => false, clear() {} } };
 	const events = createEventBus();
 	const emitted: string[] = [];
@@ -100,7 +100,6 @@ test("feedback explicit continuation never replays a saved parent review as new 
 });
 
 test("feedback completion and compact receipts expose existing result/acceptance metadata without inventing disabled artifacts", async () => {
-	const { maybeBuildForegroundIntercomReceipt } = await import("../../src/runs/foreground/foreground-control.ts");
 	const { createResultWatcher } = await import("../../src/runs/background/result-watcher.ts");
 	const { formatSubagentResultReceipt } = await import("../../src/intercom/result-intercom.ts");
 	const fixture = setup("metadata-pointer");
@@ -114,12 +113,6 @@ test("feedback completion and compact receipts expose existing result/acceptance
 		deliveries.push(payload);
 		bus.emit("subagent:result-intercom-delivery", { requestId: payload.requestId, delivered: true });
 	});
-	const foreground = await maybeBuildForegroundIntercomReceipt({ pi: { events: bus }, intercomBridge: { orchestratorTarget: "parent", instruction: "" }, runId: fixture.run.runId, mode: "single", details: { mode: "single", results: [{ ...fixture.child, artifactPaths }] } });
-	assert.ok(foreground?.text.includes(artifactPaths.metadataPath));
-	assert.ok(deliveries[0]?.message.includes(artifactPaths.metadataPath));
-	assert.ok(deliveries[0]?.resultPath?.endsWith("foreground.json"));
-	assert.ok(fs.existsSync(deliveries[0]!.resultPath!));
-	assert.ok(foreground?.text.includes(deliveries[0]!.resultPath!));
 	const resultsDir = path.join(root, "metadata-results");
 	fs.mkdirSync(resultsDir);
 	const runId = "metadata-async";
@@ -132,16 +125,27 @@ test("feedback completion and compact receipts expose existing result/acceptance
 	try {
 		watcher.primeExistingResults();
 		await completed.promise;
-		const payload = deliveries[1]!;
+		const payload = deliveries[0]!;
 		assert.equal(payload.children[0]?.metadataPath, artifactPaths.metadataPath);
 		assert.ok(payload.message.includes(artifactPaths.metadataPath));
 		assert.ok(payload.resultPath?.endsWith("result.json") && fs.existsSync(payload.resultPath));
 		assert.ok(formatSubagentResultReceipt({ mode: "single", runId, payload }).includes(artifactPaths.metadataPath));
 	} finally { watcher.stopResultWatcher(); }
-	const disabled = await maybeBuildForegroundIntercomReceipt({ pi: { events: bus }, intercomBridge: { orchestratorTarget: "parent", instruction: "" }, runId: fixture.run.runId, mode: "single", details: { mode: "single", results: [fixture.child] } });
-	assert.equal(deliveries[2]?.children[0]?.metadataPath, undefined);
-	assert.doesNotMatch(disabled!.text, /Result metadata \(/);
-	assert.doesNotMatch(deliveries[2]!.message, /Result metadata \(/);
+	const disabledId = "metadata-disabled";
+	const disabled = { ...data, id: disabledId, results: [{ agent: "worker", success: true, exitCode: 0, output: "No artifacts" }] };
+	questions.saveAsyncRunResult(disabledId, disabled);
+	fs.writeFileSync(path.join(resultsDir, `${disabledId}.json`), JSON.stringify(disabled));
+	const disabledDone = Promise.withResolvers<void>();
+	bus.on("subagent:async-complete", (event) => { if (event.runId === disabledId) disabledDone.resolve(); });
+	const disabledWatcher = createResultWatcher({ events: bus }, fixture.state, resultsDir, 60000);
+	try {
+		disabledWatcher.primeExistingResults();
+		await disabledDone.promise;
+		const payload = deliveries.find((delivery) => delivery.runId === disabledId)!;
+		assert.equal(payload.children[0]?.metadataPath, undefined);
+		assert.doesNotMatch(formatSubagentResultReceipt({ mode: "single", runId: disabledId, payload }), /Result metadata \(/);
+		assert.doesNotMatch(payload.message, /Result metadata \(/);
+	} finally { disabledWatcher.stopResultWatcher(); }
 });
 
 test("feedback public and advanced schemas expose full inspection and explain unchanged acceptance/review policies", () => {
@@ -159,10 +163,12 @@ test("feedback public and advanced schemas expose full inspection and explain un
 
 test("feedback live runs precede 31 unreviewed results while history and explicit continuation links remain intact", () => {
 	const fixture = setup("list-live");
-	fixture.state.foregroundControls.set(fixture.run.runId, { runId: fixture.run.runId, mode: "single", startedAt: 1, updatedAt: 1, currentAgent: "worker", currentIndex: 0 });
+	fixture.run.source = "async";
+	fixture.run.asyncDir = questions.getRunMetadataDir(fixture.run.runId);
+	questions.saveRunStatus(fixture.run.runId, { runtimeVersion: 2, runId: fixture.run.runId, mode: "single", state: "running", pid: process.pid, startedAt: Date.now(), lastUpdate: Date.now(), steps: [{ agent: "worker", status: "running" }] });
 	fs.rmSync(path.join(questions.getRunMetadataDir(fixture.run.runId), "foreground.json"));
 	for (let i = 0; i < 31; i++) {
-		const run = { ...fixture.run, runId: `finished-${i}`, rootRunId: `finished-${i}`, startedAt: i + 10 };
+		const run = { ...fixture.run, source: "foreground" as const, asyncDir: undefined, runId: `finished-${i}`, rootRunId: `finished-${i}`, startedAt: i + 10 };
 		fixture.state.ownedRuns!.set(run.runId, run);
 		saveForegroundRun({ ...run, results: [fixture.child] });
 	}
@@ -189,9 +195,10 @@ for (const childSafe of [false, true]) test(`feedback ${childSafe ? "child-safe"
 	const failedTool = formatControlNoticeMessage(buildControlEvent({ runId: "failed-tool", agent: "worker", to: "needs_attention", reason: "tool_failures", message: "Repeated edit failures", currentTool: "edit" }), "worker", childSafe);
 	assert.match(failedTool, /Repeated edit failures/);
 	assert.doesNotMatch(failedTool, /Inspect command progress|still active|long-running tool/, "a completed failed tool is not an active long tool");
-	const control = { runId: "live-control", mode: "single" as const, startedAt: 1, updatedAt: 1, currentAgent: "worker", currentIndex: 0,
-		timeoutAt: Date.now() + 60000, extendTimeout: () => ({ ok: true, message: "extended" }) };
-	const text = [foregroundStatusResult(control, undefined, true, childSafe).content[0]!.text, formatAsyncStartedMessage("Started", childSafe), formatControlNoticeMessage(buildControlEvent({ runId: control.runId, agent: "worker", to: "needs_attention" }), "worker", childSafe)].join("\n");
+	const control = { runtimeVersion: 2 as const, runId: `live-control-${childSafe}`, mode: "single" as const, state: "running" as const, startedAt: Date.now(), lastUpdate: Date.now(), pid: process.pid,
+		timeoutAt: Date.now() + 60000, steps: [{ agent: "worker", status: "running" as const }] };
+	questions.saveRunStatus(control.runId, control);
+	const text = [inspectSubagentStatus({ id: control.runId }, { nested: childSafe ? { routes: [] } : undefined }).content[0]!.text, formatAsyncStartedMessage("Started", childSafe), formatControlNoticeMessage(buildControlEvent({ runId: control.runId, agent: "worker", to: "needs_attention" }), "worker", childSafe)].join("\n");
 	if (childSafe) {
 		assert.match(text, /subagent\(\{ action: "status"/);
 		assert.match(text, /subagent\(\{ action: "interrupt"/);
@@ -207,7 +214,6 @@ for (const childSafe of [false, true]) test(`feedback ${childSafe ? "child-safe"
 
 test("feedback child-safe launch and completion hints do not depend on a live nested route", async () => {
 	const { buildSubagentResultIntercomPayload } = await import("../../src/intercom/result-intercom.ts");
-	const { formatDetachedIntercomGuidance } = await import("../../src/runs/shared/intercom-detach.ts");
 	const keys = ["PI_SUBAGENT_CHILD", "PI_SUBAGENT_FANOUT_CHILD", "PI_SUBAGENT_PARENT_EVENT_SINK", "PI_SUBAGENT_PARENT_ROOT_RUN_ID", "PI_SUBAGENT_PARENT_CAPABILITY_TOKEN"];
 	const previous = keys.map((key) => process.env[key]);
 	process.env.PI_SUBAGENT_CHILD = "1";
@@ -217,7 +223,6 @@ test("feedback child-safe launch and completion hints do not depend on a live ne
 		const fixture = setup("child-safe-hints");
 		const text = [formatAsyncStartedMessage("Started"),
 			buildSubagentResultIntercomPayload({ to: "parent", runId: fixture.run.runId, asyncId: fixture.run.runId, mode: "single", source: "async", children: [{ agent: "worker", status: "completed", summary: "Done", sessionPath: fixture.sessionFile }] }).message,
-			formatDetachedIntercomGuidance({ headline: "Waiting", runId: fixture.run.runId, result: fixture.child, childIndex: 0 }),
 		].join("\n");
 		assert.match(text, /subagent\(\{ action: "status"/);
 		assert.match(text, /subagent\(\{ action: "resume"/);

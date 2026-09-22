@@ -1,19 +1,12 @@
-/**
- * Integration tests for parallel execution.
- *
- * Tests parallel agent spawning via runSync.
- * The top-level parallel mode (params.tasks) lives in index.ts.
- */
+/** Parallel execution through the public executor. */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { runSync } from "../../src/runs/foreground/execution.ts";
-import { INTERCOM_DETACH_REQUEST_EVENT } from "../../src/shared/types.ts";
+import { INTERCOM_DETACH_REQUEST_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../../src/shared/types.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
-import { mapConcurrent } from "../../src/shared/utils.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createEventBus,
@@ -21,7 +14,6 @@ import {
 	createTempDir,
 	events,
 	makeAgent,
-	makeAgentConfigs,
 	makeMinimalCtx,
 	removeTempDir,
 } from "../support/helpers.ts";
@@ -72,10 +64,10 @@ describe("parallel agent execution", () => {
 		try { fs.rmSync(worktreePath, { recursive: true, force: true }); } catch {}
 	}
 
-	function makeExecutor(agents = [makeAgent("echo")], artifactsDir = tempDir) {
+	function makeExecutor(agents = [makeAgent("echo")], artifactsDir = tempDir, eventBus = createEventBus()) {
 		return createSubagentExecutor({
-			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			pi: { events: eventBus, getSessionName: () => undefined },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: artifactsDir,
@@ -91,46 +83,6 @@ describe("parallel agent execution", () => {
 		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
 	}
 
-	it("runs multiple agents concurrently via mapConcurrent + runSync", async () => {
-		mockPi.onCall({ output: "Done" });
-		const agents = makeAgentConfigs(["agent-a", "agent-b", "agent-c"]);
-		const tasks = ["Task A", "Task B", "Task C"];
-
-		const results = await mapConcurrent(
-			tasks.map((task, i) => ({ agent: agents[i].name, task, index: i })),
-			3,
-			async ({ agent, task, index }: any) => {
-				return runSync(tempDir, agents, agent, task, { index });
-			},
-		);
-
-		assert.equal(results.length, 3);
-		assert.ok(results.every((r: any) => r.exitCode === 0));
-		assert.equal(results[0].agent, "agent-a");
-		assert.equal(results[1].agent, "agent-b");
-		assert.equal(results[2].agent, "agent-c");
-	});
-
-	it("all agents get independent results", async () => {
-		mockPi.onCall({ output: "Result" });
-		const agents = makeAgentConfigs(["a", "b"]);
-
-		const results = await mapConcurrent(
-			[
-				{ agent: "a", task: "Task A" },
-				{ agent: "b", task: "Task B" },
-			],
-			2,
-			async ({ agent, task }: any, i: number) => runSync(tempDir, agents, agent, task, { index: i }),
-		);
-
-		assert.equal(results.length, 2);
-		assert.equal(results[0].agent, "a");
-		assert.equal(results[1].agent, "b");
-		const ok = results.filter((r: any) => r.exitCode === 0).length;
-		assert.equal(ok, 2);
-	});
-
 	it("top-level foreground parallel timeout returns completed and timed-out children", async () => {
 		mockPi.onCall({ output: "Fast result" });
 		mockPi.onCall({ delay: 10000 });
@@ -145,7 +97,7 @@ describe("parallel agent execution", () => {
 					{ agent: "slow", task: "Run too long" },
 				],
 				concurrency: 1,
-				timeoutMs: 250,
+				timeoutMs: 1000,
 			},
 			new AbortController().signal,
 			undefined,
@@ -193,7 +145,7 @@ describe("parallel agent execution", () => {
 		const result = await resultPromise;
 
 		assert.equal(extension.isError, undefined, JSON.stringify(extension));
-		assert.match(extension.content[0]?.text ?? "", /Extended foreground run/);
+		assert.match(extension.content[0]?.text ?? "", /Requested 1500ms more for run/);
 		assert.equal(result.isError, undefined);
 		assert.equal(result.details.results.length, 2);
 		assert.equal(result.details.results[0].exitCode, 0);
@@ -209,7 +161,7 @@ describe("parallel agent execution", () => {
 		const bus = createEventBus();
 		const executor = createSubagentExecutor({
 			pi: { events: bus, getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
 			config: {},
 			asyncByDefault: false,
 			tempArtifactsDir: tempDir,
@@ -230,7 +182,7 @@ describe("parallel agent execution", () => {
 			},
 			makeMinimalCtx(tempDir),
 		);
-		assert.match(result.content[0]?.text ?? "", /detached for intercom coordination/i);
+		assert.match(result.content[0]?.text ?? "", /Released the wait for an incoming Intercom message/i);
 		const callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"));
 		assert.ok(callFile);
 		const worktreeCwd = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).cwd as string;
@@ -240,7 +192,8 @@ describe("parallel agent execution", () => {
 		const deadline = Date.now() + 5_000;
 		while (fs.existsSync(worktreeCwd) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
 		assert.equal(fs.existsSync(worktreeCwd), false, "worktree should be cleaned after detached completion");
-		const patch = fs.readFileSync(path.join(result.details.artifacts?.dir ?? path.join(tempDir, "subagent-artifacts"), "worktree-diffs", "task-0-worker.patch"), "utf-8");
+		const { getRunMetadataDir } = await import("../../src/runs/shared/supervisor-questions.ts");
+		const patch = fs.readFileSync(path.join(getRunMetadataDir(result.details.wait.runId), "worktree-diffs", "step-0", "task-0-worker.patch"), "utf-8");
 		assert.match(patch, /edit after top-level detachment/);
 	});
 
@@ -251,10 +204,14 @@ describe("parallel agent execution", () => {
 		fs.writeFileSync(sessionFile, "", "utf-8");
 		const artifactsDir = path.join(sessionRoot, "subagent-artifacts");
 		fs.mkdirSync(artifactsDir, { recursive: true });
-		fs.writeFileSync(path.join(artifactsDir, "worktree-diffs"), "not a directory\n", "utf-8");
+		const eventBus = createEventBus();
+		eventBus.on(SUBAGENT_ASYNC_STARTED_EVENT, (event) => {
+			assert.ok(event.asyncDir, "owner must publish its artifact directory");
+			fs.writeFileSync(path.join(event.asyncDir, "worktree-diffs"), "not a directory\n", "utf-8");
+		});
 		mockPi.onCall({ output: "Fast result" });
 		mockPi.onCall({ delay: 10000 });
-		const executor = makeExecutor([makeAgent("fast"), makeAgent("slow")], artifactsDir);
+		const executor = makeExecutor([makeAgent("fast"), makeAgent("slow")], artifactsDir, eventBus);
 		let preservedWorktree = "";
 		let preservedBranch = "";
 		try {

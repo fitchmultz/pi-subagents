@@ -37,7 +37,7 @@ const parentProvider = ai.fauxProvider();
 const modelRuntime = await sdk.ModelRuntime.create({ credentials: new ai.InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
 modelRuntime.registerNativeProvider(parentProvider.provider);
 let pi, ctx;
-const state = { baseCwd: dirs.A, currentSessionId: null, asyncJobs: new Map(), foregroundRuns: new Map(), foregroundControls: new Map(), lastForegroundControlId: null, ownedRuns: new Map() };
+const state = { baseCwd: dirs.A, currentSessionId: null, asyncJobs: new Map(), foregroundRuns: new Map(), ownedRuns: new Map() };
 const loader = new sdk.DefaultResourceLoader({ cwd: dirs.A, agentDir, settingsManager: settings, eventBus: bus, noExtensions: true,
 	noSkills: true, noContextFiles: true, noThemes: true, noPromptTemplates: true, additionalExtensionPaths: [owner],
 	extensionFactories: [(api) => { pi = api; registerSlashCommands(api, state); api.on("session_start", (_event, context) => { ctx = context; }); }] });

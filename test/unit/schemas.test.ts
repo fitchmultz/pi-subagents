@@ -411,8 +411,8 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.equal(hasAnyOfType(chainReadsSchema, "boolean"), true);
 	});
 
-	it("aligns parent review, paging, and explicit continuation overrides in compact and legacy schemas", { skip: !CompileSchema ? "typebox compiler not available" : undefined }, () => {
-		const compact = CompileSchema!(schemas.AgentRunsParams);
+	it("aligns parent review, paging, and explicit continuation overrides in local compact and legacy validation", { skip: !CompileSchema ? "typebox compiler not available" : undefined }, () => {
+		const compact = CompileSchema!(schemas.AgentRunsValidationParams);
 		const legacy = CompileSchema!(schemas.SubagentParams);
 		for (const schema of [compact, legacy]) {
 			assert.equal(schema.Check({ action: "review", id: "run", decision: "accepted" }), true);

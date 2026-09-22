@@ -3,22 +3,23 @@ import * as path from "node:path";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext, parseSessionEntries } from "../../shared/native-session.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
-import type { AgentConfig } from "../../agents/agents.ts";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { compactForegroundResult, getFinalOutput, getSingleResultOutput, readStatus } from "../../shared/utils.ts";
-import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { resolveSubagentResultStatus } from "../../intercom/result-intercom.ts";
 import { buildManagementControl, formatAgentProcessExit, formatRunAction } from "../../shared/status-format.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
-import { readAsyncResultFile } from "../background/async-result-file.ts";
-import { applyThinkingSuffix } from "./pi-args.ts";
+import { isDurableRun, readAsyncResultFile } from "../background/async-result-file.ts";
+import { asyncRunRoots, exactAsyncRunLocation } from "../background/async-resume.ts";
+import { reconcileAsyncRun } from "../background/stale-run-reconciler.ts";
 import { acceptanceHumanAction } from "./acceptance-evaluation.ts";
+import { resolveFinalizationOutput } from "./acceptance-finalization.ts";
+import { parseAcceptanceReport, validateAcceptanceReportShape } from "./acceptance-reports.ts";
 import { sumAttemptUsage } from "./model-fallback.ts";
 import { workflowAgentNodes } from "./workflow-graph.ts";
 import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
-import { getRunMetadataDir, listRunQuestions, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionContract, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
-import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, type AsyncResultChild, type AsyncResultFile, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type RunSyncOptions, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
+import { getRunMetadataDir, listRunQuestions, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
+import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, truncateOutput, type AgentProgress, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
 
 export const OWNED_RUN_ENTRY = "subagent-run";
 
@@ -62,27 +63,6 @@ export function saveForegroundRun(input: { runId: string; mode: ForegroundResume
 	return run;
 }
 
-export function saveForegroundLaunch(agent: AgentConfig, task: string, systemPrompt: string, skills: string[], models: string[], options: RunSyncOptions, runtimeCwd: string): void {
-	if (!options.runId) return;
-	const model = applyThinkingSuffix(models[0], agent.thinking);
-	const contract = readQuestionContract(options.runId, options.index ?? 0);
-	saveQuestionContract(options.runId, options.index ?? 0, {
-		task, sessionFile: options.sessionFile,
-		launch: {
-			agent, systemPrompt, skills, model, thinking: resolveEffectiveThinking(model, agent.thinking),
-			artifacts: options.artifactsDir !== undefined, artifactsDir: options.artifactsDir, share: options.share === true,
-			modelCandidates: models.map((candidate) => applyThinkingSuffix(candidate, agent.thinking)!),
-			cwd: options.cwd ?? runtimeCwd, context: agent.defaultContext ?? "fresh",
-			output: options.outputPath ?? false, outputMode: options.outputMode ?? "inline", outputSchema: options.structuredOutput?.schema,
-			...(options.outputPathFromAgentDefault && options.outputPath && typeof agent.output === "string" && !path.isAbsolute(agent.output) ? { generatedOutputFilename: path.basename(agent.output) } : {}),
-			effectiveAcceptance: contract?.effectiveAcceptance,
-			maxOutput: { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput }, maxSubagentDepth: options.maxSubagentDepth,
-			maxExecutionTimeMs: options.maxExecutionTimeMs, maxTokens: options.maxTokens,
-			controlConfig: options.controlConfig, projectTrust: options.projectTrust, projectTrusted: options.projectTrusted,
-		},
-	});
-}
-
 function receiptDetails(entry: SessionEntry): Details | undefined {
 	if (entry.type === "message" && entry.message.role === "toolResult" && ["subagent", "delegate", "agent_runs"].includes(entry.message.toolName)) return entry.message.details as Details | undefined;
 	if (entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE) {
@@ -107,17 +87,28 @@ function recoverOutput(sessionFile: string | undefined, outputFile: string | und
 	return getFinalOutput(buildSessionContext(entries.filter((entry): entry is SessionEntry => entry.type !== "session" && Date.parse(entry.timestamp) <= endedAt)).messages.filter((message) => message.role === "assistant"));
 }
 
-function recoverAsyncResult(status: AsyncStatus, asyncDir: string): AsyncResultFile | undefined {
-	if (status.state === "running" || status.state === "queued") return undefined;
-	return {
-		id: status.runId, sessionId: status.sessionId, cwd: status.cwd, mode: status.mode, state: status.state, success: status.state === "complete",
-		timestamp: status.endedAt ?? status.lastUpdate, sessionFile: status.sessionFile,
-		results: status.steps?.map((step, index) => ({
-			agent: step.agent, model: step.model, sessionFile: step.sessionFile, acceptance: step.acceptance,
-			success: step.status === "complete" || step.status === "completed", interrupted: step.status === "paused", exitCode: step.exitCode, error: step.error,
-			output: recoverOutput(step.sessionFile, undefined, step.endedAt ?? status.endedAt ?? status.lastUpdate ?? Date.now()) || recoverOutput(undefined, path.join(asyncDir, `output-${index}.log`), 0),
-		})),
-	};
+function recoverLegacyTerminalOutput(sessionFile: string | undefined, startedAt: number, endedAt: number | undefined, acceptance: SingleResult["acceptance"]): string | undefined {
+	const review = acceptance?.finalization;
+	const reviewedOutput = review?.status === "completed" ? review.turns.at(-1)?.rawOutput : undefined;
+	if (reviewedOutput?.trim()) return resolveFinalizationOutput(reviewedOutput, "") || undefined;
+	// Live and finalization logs are separate, mutable streams, not a final-answer receipt.
+	if (endedAt === undefined || !Number.isFinite(endedAt) || !sessionFile || !fs.existsSync(sessionFile)) return;
+	const entries = parseSessionEntries(fs.readFileSync(sessionFile, "utf8"));
+	if (entries[0]?.type !== "session") return;
+	const messages = buildSessionContext(entries.filter((entry): entry is SessionEntry => entry.type !== "session" && Date.parse(entry.timestamp) >= startedAt && Date.parse(entry.timestamp) <= endedAt)).messages;
+	const index = messages.findLastIndex((message) => message.role === "assistant");
+	const last = messages[index];
+	if (last?.role !== "assistant" || last.errorMessage || !["stop", "toolUse"].includes(last.stopReason) || !Array.isArray(last.content)) return;
+	const calls = last.content.filter((part) => part.type === "toolCall");
+	if (!calls.length) return index === messages.length - 1 && last.stopReason === "stop" ? resolveFinalizationOutput(getFinalOutput([last]), "") || undefined : undefined;
+	if (calls.length !== 1 || calls[0]!.name !== "structured_output") return;
+	const following = messages.slice(index + 1);
+	const result = following.at(-1);
+	if (following.some((message) => message.role !== "toolResult") || result?.role !== "toolResult" || result.toolCallId !== calls[0]!.id || result.toolName !== "structured_output" || result.isError !== false) return;
+	const value = calls[0]!.arguments.value;
+	if (!value || typeof value !== "object" || !("report" in value)) return;
+	if (typeof value.report === "string" && parseAcceptanceReport(value.report).report) return resolveFinalizationOutput(value.report, "") || undefined;
+	if ("answer" in value && typeof value.answer === "string" && value.answer.trim() && !validateAcceptanceReportShape(value.report)) return value.answer;
 }
 
 export function workflowChildren(children: OwnedRun["children"], graph: WorkflowGraphSnapshot | undefined): OwnedRun["children"] {
@@ -181,12 +172,18 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 		rememberOwnedRun(state, run);
 	}
 	// Pre-update background runs may have no parent tool receipt (for example slash launches).
-	for (const name of fs.existsSync(ASYNC_DIR) ? fs.readdirSync(ASYNC_DIR) : []) {
-		const asyncDir = path.join(ASYNC_DIR, name);
+	const runIds = new Set(asyncRunRoots(ASYNC_DIR).flatMap((root) => fs.existsSync(root) ? fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name) : []));
+	for (const name of runIds) {
 		try {
+			const location = exactAsyncRunLocation(name, ASYNC_DIR, RESULTS_DIR);
+			const asyncDir = location.asyncDir;
+			if (!asyncDir) continue;
 			const status = readStatus(asyncDir);
-			if (!status || status.sessionId !== resolveCurrentSessionId(ctx.sessionManager)) continue;
-			saveRunStatus(status.runId, status);
+			const owner = readRunJson<{ sessionId: string }>(path.join(getRunMetadataDir(name), "question-owner.json"));
+			if (!status || (status.sessionId !== resolveCurrentSessionId(ctx.sessionManager) && status.sessionId !== ownerSessionId && owner?.sessionId !== ownerSessionId)) continue;
+			const durable = isDurableRun(status);
+			const terminal = !["running", "queued"].includes(status.state);
+			if (!durable && terminal) saveRunStatus(status.runId, status);
 			const old = state.ownedRuns.get(status.runId);
 			const nodes = savedWorkflowNodes(status);
 			const declared = status.mode === "chain" && nodes && !old?.children.some((child) => child.workflowNodeId) ? [] : old?.children ?? [];
@@ -195,13 +192,24 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 				...old, runId: status.runId, ownerSessionId, rootRunId: old?.rootRunId ?? status.runId,
 				source: "async", mode: status.mode, cwd: status.cwd ?? old?.cwd ?? ctx.cwd,
 				task: old?.task ?? "Recovered background run", startedAt: status.startedAt,
-				asyncDir, pid: status.pid, legacy: old?.legacy ?? true,
+				asyncDir, pid: status.pid, legacy: old?.legacy ?? !durable,
 				children: (status.steps ?? []).map((step, index) => ({ ...children.find((child) => child.index === index), agent: step.agent, index, ...(status.mode === "chain" && nodes?.[index] ? { workflowNodeId: nodes[index]!.id } : {}), label: step.label ?? children[index]?.label, sessionFile: step.sessionFile ?? (status.steps?.length === 1 ? status.sessionFile : undefined) })),
 			});
 			const resultPath = path.join(RESULTS_DIR, `${status.runId}.json`);
-			if (!fs.existsSync(path.join(getRunMetadataDir(status.runId), "result.json"))) {
-				const recovered = fs.existsSync(resultPath) ? readAsyncResultFile(resultPath) : recoverAsyncResult(status, asyncDir);
-				if (recovered) saveAsyncRunResult(status.runId, recovered);
+			if (!durable && terminal && !fs.existsSync(path.join(getRunMetadataDir(status.runId), "result.json"))) {
+				if (fs.existsSync(resultPath)) saveAsyncRunResult(status.runId, readAsyncResultFile(resultPath));
+				else if (status.steps?.length && status.steps.every((step) => !["running", "pending"].includes(step.status))) {
+					const endedAt = status.endedAt ?? status.lastUpdate ?? status.startedAt;
+					const results = status.steps.map((step) => {
+						const sessionFile = step.sessionFile ?? (status.steps!.length === 1 ? status.sessionFile : undefined);
+						return { agent: step.agent, sessionFile, model: step.model, acceptance: step.acceptance,
+							exitCode: step.exitCode, agentProcessExit: step.agentProcessExit, success: step.status === "complete" || step.status === "completed",
+							interrupted: step.status === "paused" || undefined, timedOut: step.status === "timed-out" || undefined, error: step.error,
+							output: recoverLegacyTerminalOutput(sessionFile, step.startedAt ?? status.startedAt, step.endedAt ?? status.endedAt, step.acceptance) ?? "" };
+					});
+					saveAsyncRunResult(status.runId, { id: status.runId, sessionId: status.sessionId, mode: status.mode, state: status.state,
+						success: status.state === "complete", error: status.error, timestamp: endedAt, cwd: status.cwd, asyncDir, sessionFile: status.sessionFile, results });
+				}
 			}
 		} catch (error) {
 			if (options.strict) throw error;
@@ -234,9 +242,10 @@ function processAlive(pid: number | undefined): boolean {
 }
 
 function asyncChildResult(child: AsyncResultChild, task: string) {
+	const { output, ...result } = child;
 	return {
-		...child, agent: child.agent ?? "unknown", task, exitCode: child.exitCode ?? (child.success ? 0 : 1),
-		finalOutput: child.output, usage: sumAttemptUsage(child.modelAttempts ?? []),
+		...result, agent: child.agent ?? "unknown", task: child.task ?? task, exitCode: child.exitCode ?? (child.success ? 0 : 1),
+		finalOutput: child.finalOutput ?? output, usage: child.usage ?? sumAttemptUsage(child.modelAttempts ?? []),
 	};
 }
 
@@ -255,17 +264,21 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 	const foreground = readRunJson<ForegroundResumeRun>(path.join(root, "foreground.json")) ?? state.foregroundRuns?.get(run.runId);
 	const resultPath = path.join(root, "result.json");
 	const result = fs.existsSync(resultPath) ? readAsyncResultFile(resultPath) : undefined;
-	const liveStatus = run.asyncDir ? readStatus(run.asyncDir) : null;
-	const status = liveStatus ?? readRunJson<AsyncStatus>(path.join(root, "status.json"));
+	const location = exactAsyncRunLocation(run.runId, ASYNC_DIR, RESULTS_DIR);
+	const asyncDir = location.asyncDir ?? run.asyncDir;
+	const liveStatus = asyncDir ? readStatus(asyncDir) : null;
+	const savedStatus = liveStatus ?? readRunJson<AsyncStatus>(path.join(root, "status.json"));
+	const durable = isDurableRun(savedStatus) || isDurableRun(readRunJson<object>(path.join(root, "launch.json")));
+	const reconciliation = durable ? reconcileAsyncRun(asyncDir ?? root) : undefined;
+	const status = reconciliation?.status ?? savedStatus;
 	const contracts = new Map<number, SupervisorRunContract>();
 	const contractDir = path.join(root, "contracts");
 	for (const name of fs.existsSync(contractDir) ? fs.readdirSync(contractDir) : []) {
 		if (!/^\d+\.json$/.test(name)) continue;
 		const index = Number(name.slice(0, -5));
-		const contract = readQuestionContract(run.runId, index);
+		const contract = readQuestionContract(run.runId, index, undefined, { endedAt: status?.steps?.[index]?.endedAt ?? result?.timestamp ?? foreground?.updatedAt });
 		if (contract) contracts.set(index, contract);
 	}
-	const control = state.foregroundControls.get(run.runId);
 	const nodes = savedWorkflowNodes(status);
 	const declarations = workflowChildren(run.children, nodes ? status?.workflowGraph : undefined);
 	// Terminal snapshots contain materialized children; declared slots can include an empty fanout or unstarted downstream steps.
@@ -285,30 +298,30 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 		const bg = result?.results?.[index];
 		const step = status?.steps?.[index];
 		const sessionFile = boundSession ?? declared?.sessionFile;
-		const live = control?.activeChildren?.has(index) || (control?.currentAgent !== undefined && control.currentAgent === (declared?.agent ?? fg?.agent) && (control.currentIndex ?? 0) === index) || processAlive(contract?.pid) || ((!step || step.status === "running" || step.status === "pending") && processAlive(status?.pid ?? run.pid));
-		const pending = !fg && !bg && !contract?.pid && !contract?.result && (Boolean(control) && !live || step?.status === "pending" && processAlive(status?.pid ?? run.pid));
+		const live = processAlive(contract?.pid) || ((!step || step.status === "running" || step.status === "pending") && processAlive(status?.pid ?? run.pid));
+		const pending = !fg && !bg && !contract?.pid && !contract?.result && ((!step || step.status === "pending") && processAlive(status?.pid ?? run.pid));
 		const childState = bg ? normalizedState(resolveSubagentResultStatus({ success: bg.success, exitCode: bg.exitCode ?? undefined, interrupted: bg.interrupted, acceptance: bg.acceptance, state: typeof bg.success !== "boolean" && bg.exitCode == null ? result?.terminalState : undefined }))
 			: fg && fg.status !== "detached" ? normalizedState(fg.status)
 			: contract?.result ? normalizedState(resolveSubagentResultStatus(contract.result))
 			: live || pending ? "live"
 			: step && !["running", "pending"].includes(step.status) ? normalizedState(step.status) : "unknown";
 		const task = contract?.task ?? declared?.task ?? fg?.result?.task ?? (run.children.length === 1 ? run.task : undefined);
-		const progress = control?.progress?.find((progress) => progress.index === index);
-		const selection = contract?.modelSelection ?? progress ?? step ?? fg?.result?.progress;
+		const selection = contract?.modelSelection ?? step ?? fg?.result?.progress;
 		return {
 			agent: fg?.agent ?? bg?.agent ?? step?.agent ?? contract?.launch?.agent.name ?? declared?.agent ?? "unknown", index, workflowNodeId: declared?.workflowNodeId, sessionFile,
 			task, label: contract?.label ?? step?.label ?? declared?.label,
 			...(run.mode === "chain" && !declared?.workflowNodeId && (!boundSession || sessionUses.get(boundSession) !== 1) ? { identityUnavailable: true } : {}),
 			modelSelection: selection ? { model: selection.model, thinking: selection.thinking, modelStartedAt: selection.modelStartedAt } : undefined,
-			activity: childState === "live" ? progress ?? (pending ? { status: "pending" as const } : step) : undefined,
+			activity: childState === "live" ? (pending ? { ...step, status: "pending" as const } : step) : undefined,
 			state: childState, result: fg?.status !== "detached" && fg?.result ? fg.result : bg ? asyncChildResult(bg, task ?? "Original child assignment unavailable") : contract?.result ?? fg?.result,
 			launch: contract?.launch, configuration: contract?.launch ? "saved" : "legacy-partial",
 			...(sessionFile && !fs.existsSync(sessionFile) ? { missingSession: true } : {}),
 		};
 	});
-	const live = state.foregroundControls.has(run.runId) || children.some((child) => child.state === "live") || (!result && (!status || status.state === "running" || status.state === "queued") && processAlive(status?.pid ?? run.pid));
-	const error = foreground?.error ?? run.error;
+	const live = children.some((child) => child.state === "live") || (!result && (!status || status.state === "running" || status.state === "queued") && processAlive(status?.pid ?? run.pid));
+	const error = result?.error ?? foreground?.error ?? run.error ?? (status && !["running", "queued"].includes(status.state) ? status.error : undefined);
 	const executionState: ManagementRunState = error ? "failed" : result ? normalizedState(result.terminalState)
+		: durable && !live ? "unknown"
 		: live ? "live"
 		: children.some((child) => child.state === "failed") ? "failed"
 		: children.some((child) => child.state === "blocked") ? "blocked"
@@ -318,12 +331,100 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 	const pendingInput = options.pendingInput ?? listSupervisorQuestions(run.ownerSessionId, run.runId).some((question) => question.state === "awaiting_input" || question.state === "answer_pending");
 	return {
 		...run, state: executionState, children, attention: runAttention(run, executionState, pendingInput),
-		canInterrupt: pendingInput || Boolean(state.foregroundControls.get(run.runId)?.interrupt) || (liveStatus?.state === "running" && state.asyncJobs.has(run.runId)),
+		canInterrupt: pendingInput || (live && status?.state === "running" && status.runId === run.runId),
 		updatedAt: result?.timestamp ?? status?.lastUpdate ?? foreground?.updatedAt ?? run.startedAt,
 		continuations: options.includeContinuations === false ? [] : [...(state.ownedRuns?.values() ?? [])].filter((candidate) => candidate.rootRunId === run.rootRunId && candidate.predecessorRunId).sort((a, b) => a.startedAt - b.startedAt).map((candidate) => ({ runId: candidate.runId, predecessorRunId: candidate.predecessorRunId!, predecessorIndex: candidate.predecessorIndex })),
 		...(result ? { resultPath } : foreground ? { resultPath: path.join(root, "foreground.json") } : {}),
-		...(error ? { diagnosis: error } : executionState === "paused" && foreground?.pausedReason ? { diagnosis: foreground.pausedReason } : executionState === "unknown" ? { diagnosis: "Completion is unconfirmed. Saved sessions are context, not proof of successful execution." } : {}),
+		...(error ? { diagnosis: error } : executionState === "paused" && foreground?.pausedReason ? { diagnosis: foreground.pausedReason } : executionState === "unknown" ? { diagnosis: reconciliation?.message ?? "Completion is unconfirmed. Saved sessions are context, not proof of successful execution." } : {}),
 	};
+}
+
+function workflowDetails(graph: WorkflowGraphSnapshot | undefined): Pick<Details, "workflowGraph" | "chainAgents" | "totalSteps" | "currentStepIndex"> {
+	if (!graph) return {};
+	if (graph.mode !== "chain") return { workflowGraph: graph };
+	const current = graph.nodes.find((node) => node.id === graph.currentNodeId || node.children?.some((child) => child.id === graph.currentNodeId));
+	return { workflowGraph: graph, chainAgents: graph.nodes.map((node) => node.agent ?? node.label), totalSteps: graph.nodes.length,
+		...(current?.stepIndex !== undefined ? { currentStepIndex: current.stepIndex } : {}) };
+}
+
+export function ownedRunExecutionResult(run: OwnedRun, state: SubagentState, index?: number, includeProgress = false): SubagentExecutionResult {
+	const view = ownedRunView(run, state);
+	const location = exactAsyncRunLocation(run.runId, ASYNC_DIR, RESULTS_DIR);
+	const saved = location.resultPath ? readAsyncResultFile(location.resultPath) : undefined;
+	const limits = { ...DEFAULT_MAX_OUTPUT, ...(saved?.maxOutput ?? view.children[0]?.launch?.maxOutput) };
+	const children = view.children.filter((child) => index === undefined || child.index === index);
+	const projected = view.children.map((child) => {
+		if (!child.result) return { ...child, result: undefined };
+		const { artifactPaths, ...result } = child.result;
+		const finalOutput = getSingleResultOutput(result);
+		const truncation = result.outputMode === "file-only" && result.exitCode === 0 && result.outputReference
+			? { text: result.outputReference.message, truncated: false } : truncateOutput(finalOutput, limits, artifactPaths?.outputPath);
+		const compacted = compactForegroundResult({ ...result, finalOutput: truncation.text,
+			...(truncation.truncated ? { truncation } : {}),
+			...(result.initialOutput ? { initialOutput: truncateOutput(result.initialOutput, limits, artifactPaths?.outputPath).text } : {}),
+		});
+		return { ...child, result: { ...compacted, ...(artifactPaths ? { artifactPaths } : {}) } };
+	});
+	const results: SingleResult[] = projected.filter((child) => index === undefined || child.index === index).flatMap((child) => {
+		if (!child.result) return [];
+		const { artifactPaths, ...result } = child.result;
+		return [{ ...result, ...(artifactPaths?.inputPath && artifactPaths.outputPath && artifactPaths.metadataPath
+			? { artifactPaths: { inputPath: artifactPaths.inputPath, outputPath: artifactPaths.outputPath, metadataPath: artifactPaths.metadataPath } } : {}) }];
+	});
+	let text = (index === undefined ? saved?.summary : undefined) || [...children.map((child) => child.result ? getSingleResultOutput(child.result) || child.result.error : undefined), view.diagnosis].filter(Boolean).join("\n\n");
+	const failed = index === undefined ? ["failed", "unknown"].includes(view.state) : children.length === 0 || children.some((child) => ["failed", "unknown"].includes(child.state));
+	if (failed && saved?.error && !text.includes(saved.error)) text = `${saved.error}\n\n${text}`;
+	const logPath = path.join(location.asyncDir ?? run.asyncDir ?? getRunMetadataDir(run.runId), `subagent-log-${run.runId}.md`);
+	const artifactPath = run.mode === "single" ? results[0]?.artifactPaths?.outputPath : fs.existsSync(logPath) ? logPath : undefined;
+	const referenceOnly = view.state === "completed" && run.mode === "single" && results.length === 1 && results[0]?.outputMode === "file-only" && results[0].outputReference;
+	const truncation = referenceOnly ? { text: referenceOnly.message, truncated: false }
+		: view.state === "blocked" ? { text, truncated: false } : truncateOutput(text, limits, artifactPath);
+	const files = results.flatMap((result) => result.artifactPaths ? [result.artifactPaths] : []);
+	const progressSummary = { toolCount: results.reduce((total, result) => total + (result.progressSummary?.toolCount ?? 0), 0),
+		tokens: results.reduce((total, result) => total + (result.progressSummary?.tokens ?? 0), 0),
+		durationMs: saved?.durationMs ?? Math.max(0, ...results.map((result) => result.progressSummary?.durationMs ?? 0)) };
+	const share = saved?.shareUrl ? `Session: ${saved.shareUrl}` : saved?.shareError ? `Session share error: ${saved.shareError}` : undefined;
+	return { content: [{ type: "text", text: [truncation.text || `Run ${run.runId}: ${view.state}.`, share].filter(Boolean).join("\n\n") }],
+		...(failed ? { isError: true } : {}),
+		details: { mode: run.mode, runId: run.runId, asyncId: run.runId, asyncDir: location.asyncDir ?? run.asyncDir, results,
+			run: { ...view, children: projected }, progressSummary,
+			...(includeProgress ? { progress: ownedRunProgressResult(run, state, index).details.progress } : {}),
+			...(saved?.shareUrl ? { shareUrl: saved.shareUrl } : {}),
+			...(saved?.gistUrl ? { gistUrl: saved.gistUrl } : {}),
+			...(saved?.shareError ? { shareError: saved.shareError } : {}),
+			...(files.length ? { artifacts: { dir: saved?.artifactsDir ?? path.dirname(files[0]!.outputPath), files } } : {}),
+			...(truncation.truncated ? { truncation } : {}),
+			...(saved?.outputs ? { outputs: saved.outputs } : {}), ...workflowDetails(saved?.workflowGraph) } };
+}
+
+/** Project the run owner's native activity for waiting callers without copying its journal. */
+export function ownedRunProgressResult(run: OwnedRun, state: SubagentState, index?: number): SubagentExecutionResult {
+	const view = ownedRunView(run, state);
+	const status = readStatus(run.asyncDir ?? getRunMetadataDir(run.runId));
+	const children = view.children.filter((child) => index === undefined || child.index === index);
+	const progress: AgentProgress[] = children.map((child) => {
+		const step = status?.steps?.[child.index];
+		const live = child.state === "live";
+		return {
+			index: child.index, agent: child.agent, task: child.task ?? run.task,
+			status: step?.status ?? (child.state === "live" ? "pending" : child.state === "unknown" ? "failed" : child.state),
+			model: step?.model, thinking: step?.thinking, modelStartedAt: step?.modelStartedAt,
+			activityState: step?.activityState, lastActivityAt: step?.lastActivityAt, skills: step?.skills,
+			...(live ? { currentTool: step?.currentTool, currentToolArgs: step?.currentToolArgs, currentToolStartedAt: step?.currentToolStartedAt,
+				currentPath: step?.currentPath, streamingText: step?.streamingText } : {}),
+			recentTools: live ? step?.recentTools?.slice(-10) ?? [] : [], recentOutput: live ? step?.recentOutput?.slice(-10) ?? [] : [],
+			toolCount: step?.toolCount ?? 0, turnCount: step?.turnCount, tokens: step?.tokens?.total ?? 0,
+			durationMs: step?.durationMs ?? Math.max(0, Date.now() - (step?.startedAt ?? run.startedAt)), error: step?.error,
+		};
+	});
+	const results: SingleResult[] = progress.map((item, position) => ({
+		agent: item.agent, task: item.task, exitCode: children[position]?.result?.exitCode ?? 0,
+		usage: children[position]?.result?.usage ?? { input: status?.steps?.[item.index]?.tokens?.input ?? 0, output: status?.steps?.[item.index]?.tokens?.output ?? 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: item.turnCount ?? 0 },
+		progress: item, model: item.model, sessionFile: children[position]?.sessionFile,
+		finalOutput: getSingleResultOutput(children[position]?.result ?? {}) || item.streamingText || item.recentOutput.at(-1),
+	}));
+	return { content: [{ type: "text", text: progress.map((item) => `${item.agent}: ${item.status}${item.currentTool ? ` — ${item.currentTool}${item.currentToolArgs ? ` ${item.currentToolArgs}` : ""}` : ""}`).join("\n") }],
+		details: { mode: run.mode, runId: run.runId, asyncId: run.runId, asyncDir: run.asyncDir, results, progress, ...workflowDetails(status?.workflowGraph) } };
 }
 
 function compact(value: string, max = 180): string {
@@ -397,7 +498,7 @@ function runListSummary(run: OwnedRun, state: SubagentState, pendingInput: boole
 	}).join("|");
 	const foreground = state.foregroundRuns?.get(run.runId);
 	let cached = listSummaryCache.get(run);
-	if (!cached || cached.stamp !== stamp || cached.foreground !== foreground || state.foregroundControls.has(run.runId) || cached.summary.state === "live" || cached.summary.state === "unknown") {
+	if (!cached || cached.stamp !== stamp || cached.foreground !== foreground || cached.summary.state === "live" || cached.summary.state === "unknown") {
 		const view = ownedRunView(run, state, { pendingInput, includeContinuations: false });
 		cached = { stamp, foreground, summary: { state: view.state, updatedAt: view.updatedAt } };
 		listSummaryCache.set(run, cached);

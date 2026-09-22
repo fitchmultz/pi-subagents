@@ -42,6 +42,7 @@ async function withSdkSession(
 		await session.bindExtensions({ mode: "print" });
 		await check(session);
 	} finally {
+		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		session.dispose();
 		removeTempDir(agentDir);
 	}

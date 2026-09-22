@@ -3,8 +3,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
+import { parseAcceptanceReport, stripAcceptanceReport } from "../../src/runs/shared/acceptance-reports.ts";
 
-// The existing mock CLI chooses the leaf response; finalization itself runs in the real SDK.
+// The mock launcher selects this scenario; initial work and review run in one real SDK session.
 export async function runNativeReport(args, fixture) {
 	const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url));
 	const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
@@ -13,10 +14,11 @@ export async function runNativeReport(args, fixture) {
 	const cwd = process.cwd(), agentDir = sdk.getAgentDir();
 	const { scenario, report, laterReport = report } = fixture;
 	const valueAfter = (flag) => args[args.indexOf(flag) + 1];
-	const schemaPath = process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA;
-	const capturePath = process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE;
+	const nativeConfig = process.env.PI_SUBAGENT_FINALIZATION_CONFIG && JSON.parse(fs.readFileSync(process.env.PI_SUBAGENT_FINALIZATION_CONFIG, "utf8"));
+	const schemaPath = nativeConfig?.reportRuntime.schemaPath ?? process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA;
+	const capturePath = nativeConfig?.reportRuntime.outputPath ?? process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE;
 	const receipt = { scenario, sdkRoot, schema: schemaPath ? JSON.parse(fs.readFileSync(schemaPath, "utf8")) : undefined,
-		providerCalls: 0, networkRequests: 0, extensionErrors: [], events: [], messages: [] };
+		providerCalls: 0, providerCwds: [], networkRequests: 0, extensionErrors: [], events: [], messages: [] };
 	const save = () => {
 		// One writer per receipt; concurrent readers must see a complete snapshot.
 		const temporary = `${fixture.receiptPath}.tmp`;
@@ -51,27 +53,28 @@ export async function runNativeReport(args, fixture) {
 		sessionManager: sdk.SessionManager.open(valueAfter("--session"), undefined, cwd) });
 	await session.bindExtensions({ mode: "json", onError: (error) => receipt.extensionErrors.push(error) });
 	receipt.sessionFile = session.sessionFile;
-	const structured = session.agent.state.tools.some((tool) => tool.name === "structured_output");
-	const submit = (value, id) => structured
-		? ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: { report: value } }, { id }), { stopReason: "toolUse" })
+	const structured = Boolean(nativeConfig) || session.agent.state.tools.some((tool) => tool.name === "structured_output");
+	const typed = (output) => ({ answer: stripAcceptanceReport(output), report: parseAcceptanceReport(output).report ?? { notes: "Malformed report" } });
+	const submit = (value) => structured
+		? ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: typed(value) }), { stopReason: "toolUse" })
 		: ai.fauxAssistantMessage(value);
 	const work = () => ai.fauxAssistantMessage(ai.fauxToolCall("fixture_work", {}), { stopReason: "toolUse" });
 	const plain = ai.fauxAssistantMessage("Coordination acknowledged; no new task report.");
 	const first = Promise.withResolvers(), release = Promise.withResolvers();
-	const initial = scenario === "unsubmitted" ? ai.fauxAssistantMessage(report) : scenario === "child-file" ? work() : submit(report, "first-report");
+	const initial = scenario === "unsubmitted" ? ai.fauxAssistantMessage(report) : scenario === "child-file" ? work() : submit(report);
 	const tails = {
-		resubmit: [submit(laterReport, "current-report")],
-		"not-satisfied": [submit(laterReport, "current-report")],
-		"child-file": [submit(report, "current-report")],
+		resubmit: [submit(laterReport)],
+		"not-satisfied": [submit(laterReport)],
+		"child-file": [submit(report)],
 		"failed-work": [work(), plain],
-		repair: [work(), work(), submit(report, "current-report")],
+		repair: [work(), work(), submit(report)],
 		"user-failed-work": [work(), plain],
 		"different-work": [work()],
 		"malformed-work": [ai.fauxAssistantMessage("```acceptance-report\n{malformed\n```")],
-		"malformed-submission": [submit("```acceptance-report\n{malformed\n```", "malformed-report")],
+		"malformed-submission": [submit("```acceptance-report\n{malformed\n```"), plain],
 		"invalid-tool-submission": [ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: { report: { invalid: true } } }), { stopReason: "toolUse" }), plain],
 		"invalid-submission": [ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: { report: 42 } }), { stopReason: "toolUse" }), plain],
-		mixed: [ai.fauxAssistantMessage([ai.fauxToolCall("structured_output", { value: { report: laterReport } }), ai.fauxToolCall("fixture_work", {})], { stopReason: "toolUse" })],
+		mixed: [ai.fauxAssistantMessage([ai.fauxToolCall("structured_output", { value: typed(laterReport) }), ai.fauxToolCall("fixture_work", {})], { stopReason: "toolUse" })],
 		error: [ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "Fixture provider failed after the report" })],
 		"native-abort": [ai.fauxAssistantMessage("", { stopReason: "aborted", errorMessage: "Fixture native cancellation" })],
 		cancel: [async () => {
@@ -82,7 +85,20 @@ export async function runNativeReport(args, fixture) {
 			return plain;
 		}],
 	};
-	faux.setResponses([async () => { first.resolve(); await release.promise; return initial; }, ...(tails[scenario] ?? [plain])]);
+	faux.setResponses([
+		...(nativeConfig ? [async () => {
+			if (fixture.initialDelay) await new Promise((resolve) => setTimeout(resolve, fixture.initialDelay));
+			return nativeConfig.publicOutput
+				? ai.fauxAssistantMessage([...(fixture.publicOutput ? [{ type: "text", text: fixture.initialReport }] : []), ai.fauxToolCall("structured_output", { value: fixture.publicOutput ?? { items: ["original payload"] } })], { stopReason: "toolUse" })
+				: ai.fauxAssistantMessage(fixture.initialReport);
+		}] : []),
+		async () => { first.resolve(); await release.promise; return initial; },
+		...(tails[scenario] ?? [plain]),
+		...(fixture.retry ? [submit(report)] : []),
+	].map((response) => async (...args) => {
+		receipt.providerCwds.push(session.sessionManager.getCwd());
+		return typeof response === "function" ? response(...args) : response;
+	}));
 	session.subscribe((event) => {
 		if (event.type === "message_end") receipt.messages.push(event.message);
 		if (["message_end", "tool_execution_start", "tool_execution_end", "agent_settled"].includes(event.type)) {
@@ -99,7 +115,8 @@ export async function runNativeReport(args, fixture) {
 	const task = rawTask.startsWith("@") ? fs.readFileSync(rawTask.slice(1), "utf8") : rawTask;
 	const pending = session.prompt(task);
 	try {
-		await first.promise;
+		const enteredReview = await Promise.race([first.promise.then(() => true), pending.then(() => false)]);
+		if (!enteredReview) return;
 		if (scenario === "user-failed-work") await session.steer("New task instruction: run another fixture validation.");
 		else if (!["single", "unsubmitted", "child-file", "capture-mismatch", "missing-result", "missing-capture", "wrong-result-id", "invalid-capture"].includes(scenario)) {
 			await session.sendCustomMessage({ customType: "intercom_message", content: scenario.endsWith("failed-work") ? "New task instruction: run another fixture validation." : "Additive coordination: acknowledge an overlap.", display: true },
@@ -108,7 +125,7 @@ export async function runNativeReport(args, fixture) {
 		release.resolve();
 		await pending;
 		await session.waitForIdle();
-		if (capturePath && scenario === "capture-mismatch") fs.writeFileSync(capturePath, JSON.stringify({ report: laterReport }));
+		if (capturePath && scenario === "capture-mismatch") fs.writeFileSync(capturePath, JSON.stringify(typed(laterReport)));
 		if (capturePath && scenario === "missing-capture") fs.rmSync(capturePath, { force: true });
 		if (capturePath && scenario === "invalid-capture") fs.writeFileSync(capturePath, JSON.stringify({ report: false }));
 		receipt.capture = capturePath && fs.existsSync(capturePath) ? JSON.parse(fs.readFileSync(capturePath, "utf8")) : undefined;

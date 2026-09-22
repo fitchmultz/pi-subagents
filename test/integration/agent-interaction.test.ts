@@ -20,8 +20,8 @@ process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
 const sdkRoot = process.env.PI_OWNERSHIP_TEST_PACKAGE_ROOT ?? path.dirname(path.dirname(new URL(import.meta.resolve("@earendil-works/pi-coding-agent")).pathname));
 const { SessionManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/session-manager.js")).href);
 const { AgentViewController, AgentConversation } = await import("../../src/tui/agent-view.ts");
-const { restoreOwnedRuns, ownedRunView, saveForegroundRun, OWNED_RUN_ENTRY } = await import("../../src/runs/shared/run-records.ts");
-const { getRunMetadataDir, readQuestionState, saveQuestionOwner, saveQuestionContract, createSupervisorQuestion } = await import("../../src/runs/shared/supervisor-questions.ts");
+const { restoreOwnedRuns, ownedRunView, OWNED_RUN_ENTRY } = await import("../../src/runs/shared/run-records.ts");
+const { getRunMetadataDir, readQuestionState, saveRunStatus, saveAsyncRunResult, saveQuestionOwner, saveQuestionContract, createSupervisorQuestion } = await import("../../src/runs/shared/supervisor-questions.ts");
 const { createSubagentExecutor } = await import("../../src/runs/foreground/subagent-executor.ts");
 const { createAsyncJobTracker } = await import("../../src/runs/background/async-job-tracker.ts");
 const { ASYNC_DIR } = await import("../../src/shared/types.ts");
@@ -82,18 +82,18 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, ex
 		assistant(manager, "I found the relevant code.");
 		return manager;
 	});
-	const run: OwnedRun = { runId: randomUUID(), rootRunId: "", ownerSessionId: parent.getSessionId(), source: "foreground", mode: children > 1 ? "parallel" : "single", cwd, task: "Combined tasks must not be used as per-child labels", startedAt: Date.now(),
+	const run: OwnedRun = { runId: randomUUID(), rootRunId: "", ownerSessionId: parent.getSessionId(), source: "async", mode: children > 1 ? "parallel" : "single", cwd, task: "Combined tasks must not be used as per-child labels", startedAt: Date.now(),
 		children: childSessions.map((session, index) => ({ agent: "worker", index, label: index === 0 ? "Fix login" : "Review changes", task: index === 0 ? "Fix the login regression.\nKeep the API unchanged." : "Review the diff carefully.", sessionFile: session.getSessionFile() })) };
 	run.rootRunId = run.runId;
+	run.asyncDir = getRunMetadataDir(run.runId);
 	parent.appendCustomEntry(OWNED_RUN_ENTRY, run);
 	saveQuestionOwner(run.runId, run.ownerSessionId);
 	for (const child of run.children) saveQuestionContract(run.runId, child.index, { task: child.task, sessionFile: child.sessionFile });
-	const state = { ...makeMinimalCtx(cwd), baseCwd: cwd, currentSessionId: parent.getSessionFile(), ownedRuns: new Map([[run.runId, run]]), asyncJobs: new Map(), foregroundControls: new Map(), foregroundRuns: new Map(), lastForegroundControlId: null,
+	const state = { ...makeMinimalCtx(cwd), baseCwd: cwd, currentSessionId: parent.getSessionFile(), ownedRuns: new Map([[run.runId, run]]), asyncJobs: new Map(), foregroundRuns: new Map(),
 		cleanupTimers: new Map(), lastUiContext: null, poller: null, completionSeen: new Map(), watcher: null, watcherRestartTimer: null, resultFileCoalescer: { schedule: () => false, clear() {} } } as unknown as SubagentState;
-	const interrupts = Array(children).fill(0);
-	state.foregroundControls.set(run.runId, { runId: run.runId, mode: run.mode, startedAt: run.startedAt, updatedAt: run.startedAt,
-		activeChildren: new Map(run.children.map((child) => [child.index, { agent: child.agent, interrupt: () => { interrupts[child.index]++; return true; } }])),
-		currentAgent: "worker", currentIndex: 0, interrupt: () => { throw new Error("Unexpected whole-group interrupt"); } });
+	const status = { runtimeVersion: 2, runId: run.runId, mode: run.mode, state: "running", pid: process.pid, startedAt: run.startedAt, lastUpdate: run.startedAt, indexedControl: true, controlRequestFiles: true,
+		steps: run.children.map((child) => ({ agent: child.agent, status: "running", sessionFile: child.sessionFile })) };
+	saveRunStatus(run.runId, status);
 	const terminal = createTestTerminal(), copied: string[] = [];
 	const tui = mode === "fullscreen" ? new TuiAltScreen(terminal, false, undefined, { copySelection: async (text) => { copied.push(text); return true; } }) : new TuiMainScreen(terminal);
 	const events = createEventBus(), commands = new Map(), renderers = new Map(), sent = [], calls = [];
@@ -129,17 +129,19 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, ex
 	state.persistOwnedRun = (owned) => parent.appendCustomEntry(OWNED_RUN_ENTRY, structuredClone(owned));
 	controller.start(ctx);
 	t.after(() => { controller.dispose(); tui.stop(); if (state.poller) clearInterval(state.poller); for (const timer of state.cleanupTimers.values()) clearTimeout(timer); });
-	return { cwd, parent, run, state, childSessions, interrupts, controller, executor, ctx, pi, tui, terminal, mainEditor, sent, calls, commands, renderers, copied,
+	return { cwd, parent, run, state, status, childSessions,
+		get interrupts() { const dir = path.join(run.asyncDir!, "control-requests"); const requests = fs.existsSync(dir) ? fs.readdirSync(dir).map((file) => JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"))) : []; assert.ok(requests.every((request) => request.action === "interrupt" && request.index !== undefined), "selected controls never stop the whole group"); return run.children.map((child) => requests.filter((request) => request.index === child.index).length); }, controller, executor, ctx, pi, tui, terminal, mainEditor, sent, calls, commands, renderers, copied,
 		get overlay() { return overlay; }, get overlayBounds() { return overlayHandle?.getBounds(); }, get strip() { return strip; }, key: `${run.runId}:0`,
-		complete() { state.foregroundControls.clear(); saveForegroundRun({ ...run, results: run.children.map((child) => ({ agent: child.agent, task: child.task!, exitCode: 0, finalOutput: "Finished", sessionFile: child.sessionFile, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } })) }); controller.refresh(true); },
+		complete() { saveAsyncRunResult(run.runId, { runtimeVersion: 2, id: run.runId, state: "complete", timestamp: Date.now(), results: run.children.map((child) => ({ agent: child.agent, task: child.task!, success: true, exitCode: 0, finalOutput: "Finished", sessionFile: child.sessionFile, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } })) }); controller.refresh(true); },
 	};
 }
 
 test("Agents model identity follows native branch settings and tool-only messages, not requested routes", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-01-01T00:00:00Z") });
-	const f = fixture(t, "regular", 2), control = f.state.foregroundControls.get(f.run.runId)!;
+	const f = fixture(t, "regular", 2);
 	t.mock.timers.tick(10);
-	control.progress = f.run.children.map((child) => ({ index: child.index, agent: child.agent, task: child.task!, status: "running", model: `requested-${child.index}/vendor/model:low`, modelStartedAt: Date.now(), recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 0 }));
+	f.status.steps = f.status.steps.map((step, index) => ({ ...step, model: `requested-${index}/vendor/model:low`, modelStartedAt: Date.now() }));
+	saveRunStatus(f.run.runId, f.status);
 	f.controller.refresh(true);
 	assert.match(plain(f.strip, 160), /Fix login.*selected: requested-0\/vendor\/model · thinking low/);
 	assert.equal(f.controller.task(f.key)!.model.summary, "selected: requested-0/vendor/model · thinking low", "old native history is not the current attempt");
@@ -180,10 +182,11 @@ test("Agents model identity follows native branch settings and tool-only message
 
 test("Agents strip spends reclaimed status space on the model at screenshot and narrow widths", (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-01-01T00:00:00Z") });
-	const f = fixture(t, "fullscreen", 2), control = f.state.foregroundControls.get(f.run.runId)!;
+	const f = fixture(t, "fullscreen", 2);
 	f.run.children[0].label = "Live fallback diagnosis";
 	f.run.children[1].label = "Fix streamed-credit failover";
-	control.progress = f.run.children.map((child) => ({ index: child.index, agent: child.agent, task: child.task!, status: "running", model: "openai-codex/gpt-6", modelStartedAt: Date.now(), recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 0 }));
+	f.status.steps = f.status.steps.map((step) => ({ ...step, model: "openai-codex/gpt-6", modelStartedAt: Date.now() }));
+	saveRunStatus(f.run.runId, f.status);
 	t.mock.timers.tick(10);
 	for (const manager of f.childSessions) manager.appendModelChange("openai-codex", "gpt-6");
 	f.controller.refresh(true);
@@ -209,7 +212,8 @@ for (const [name, mode, success] of [["dark", "truecolor", "#a0c880"], ["light",
 	data.colors.success = success;
 	const themeFile = path.join(root, `pulse-${randomUUID()}.json`); fs.writeFileSync(themeFile, JSON.stringify(data));
 	const theme = loadThemeFromPath(themeFile, mode), f = fixture(t, "regular", 3, undefined, undefined, theme);
-	f.state.foregroundControls.get(f.run.runId)!.activeChildren!.delete(1);
+	f.status.steps[1].status = "pending";
+	saveRunStatus(f.run.runId, f.status);
 	createSupervisorQuestion({ runId: f.run.runId, index: 2, agent: "worker", ownerTarget: "fixture-owner", childTarget: "fixture-child", childSessionId: f.childSessions[2].getSessionId(), sessionFile: f.childSessions[2].getSessionFile(), cwd: f.cwd, pid: process.pid, reason: "need_decision", message: "Which fixture choice?" });
 	f.controller.refresh(true);
 	const frames = [f.strip.render(90)];
@@ -326,9 +330,10 @@ test("Agents model details retain an empty-content error model after fallback", 
 });
 
 for (const [columns, rows] of [[110, 38], [24, 18]]) test(`Agents model identity remains fully accessible with native compact controls (${columns}×${rows})`, async (t) => {
-	const f = fixture(t, "fullscreen", 2), control = f.state.foregroundControls.get(f.run.runId)!;
+	const f = fixture(t, "fullscreen", 2);
 	const model = "openrouter/vendor/very-long-model-namespace/long-model-name-with-full-identity-ENDROUTE:high";
-	control.progress = [{ index: 0, agent: "worker", task: "Fix login", status: "running", model, modelStartedAt: Date.now() + 1, recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 0 }];
+	Object.assign(f.status.steps[0], { model, modelStartedAt: Date.now() + 1 });
+	saveRunStatus(f.run.runId, f.status);
 	f.controller.visit(f.key).readThrough = null;
 	f.controller.refresh(true);
 	f.terminal.resize(columns, rows);
@@ -353,14 +358,17 @@ for (const [columns, rows] of [[110, 38], [24, 18]]) test(`Agents model identity
 });
 
 test("Agents model identity leaves bare selections and unavailable metadata honest", (t) => {
-	const f = fixture(t), control = f.state.foregroundControls.get(f.run.runId)!;
+	const f = fixture(t);
 	f.ctx.model = { provider: "not-evidence", id: "qwen2.5-coder:7b" };
-	control.progress = [{ index: 0, agent: "worker", task: "Fix login", status: "running", model: "qwen2.5-coder:7b", modelStartedAt: Date.now() + 1, recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 0 }];
+	Object.assign(f.status.steps[0], { model: "qwen2.5-coder:7b", modelStartedAt: Date.now() + 1 });
+	saveRunStatus(f.run.runId, f.status);
 	f.controller.refresh(true);
 	assert.match(plain(f.strip, 160), /selected: qwen2\.5-coder:7b/);
 	assert.equal(f.controller.task(f.key)!.model.summary, "selected: qwen2.5-coder:7b");
 	assert.doesNotMatch(plain(f.strip, 160), /not-evidence|ollama/);
-	control.progress[0].model = undefined;
+	f.status.steps[0].model = undefined;
+	f.status.steps[0].sessionFile = undefined;
+	saveRunStatus(f.run.runId, f.status);
 	f.run.children[0].sessionFile = undefined;
 	saveQuestionContract(f.run.runId, 0, { sessionFile: undefined });
 	f.controller.refresh(true);
@@ -371,7 +379,7 @@ for (const [background, nativeReply] of [[false, true], [false, false], [true, t
 	const primary = "requested/vendor/primary:high", fallback = "backup/vendor/fallback:low";
 	const f = fixture(t, "regular", 1, undefined, [makeAgent("worker", { model: primary, fallbackModels: [fallback], completionGuard: false })]);
 	const mock = createMockPi(); mock.install();
-	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
+	f.state.ownedRuns!.clear(); f.controller.refresh(true);
 	const releasePrimary = path.join(f.cwd, "release-primary"), releaseFallback = path.join(f.cwd, "release-fallback");
 	mock.onCall({ matchArgsIncludes: primary, waitForFile: releasePrimary, stderr: "quota exceeded", exitCode: 1 });
 	mock.onCall({ matchArgsIncludes: fallback, waitForFile: releaseFallback, output: "Fallback finished" });
@@ -414,11 +422,11 @@ for (const [background, nativeReply] of [[false, true], [false, false], [true, t
 	f.controller.start(f.ctx);
 	assert.equal(f.controller.task(task.key)!.model.summary, completed.model.summary, "completed display uses the frozen per-run snapshot, not later shared-file choices");
 	const owned = f.state.ownedRuns!.get(runId!)!, successorId = randomUUID(), startedAt = Date.now() + 1;
-	const successor = { ...owned, runId: successorId, source: "foreground" as const, asyncDir: undefined, pid: undefined, predecessorRunId: runId, predecessorIndex: 0, startedAt };
+	const successor = { ...owned, runId: successorId, source: "async" as const, asyncDir: getRunMetadataDir(successorId), pid: process.pid, predecessorRunId: runId, predecessorIndex: 0, startedAt };
 	f.state.ownedRuns!.set(successorId, successor);
 	saveQuestionContract(successorId, 0, { task: "New continuation", sessionFile: task.child.sessionFile, launch: completed.child.launch });
-	f.state.foregroundControls.set(successorId, { runId: successorId, mode: "single", startedAt, updatedAt: startedAt, currentAgent: "worker", currentIndex: 0,
-		progress: [{ index: 0, agent: "worker", task: "New continuation", status: "running", model: "next-provider/vendor/model", modelStartedAt: startedAt, recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 0 }] });
+	saveRunStatus(successorId, { ...f.status, runId: successorId, mode: "single", startedAt, lastUpdate: startedAt,
+		steps: [{ agent: "worker", status: "running", sessionFile: task.child.sessionFile, model: "next-provider/vendor/model", modelStartedAt: startedAt }] });
 	f.controller.refresh(true);
 	assert.equal(f.controller.tasks.length, 1);
 	assert.equal(f.controller.task(task.key)!.run.runId, successorId);
@@ -428,37 +436,25 @@ for (const [background, nativeReply] of [[false, true], [false, false], [true, t
 	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
 });
 
-test("Agents model identity does not reuse an earlier native remap after response-less foreground finalization", async (t) => {
+test("Agents model identity keeps the owner's latest selection after response-less finalization", async (t) => {
 	const requested = "requested/vendor/finalization:low";
-	const f = fixture(t, "regular", 1, undefined, [makeAgent("worker", { model: requested, completionGuard: false })]);
-	const mock = createMockPi(); mock.install();
-	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
-	const initial = path.join(f.cwd, "release-initial"), review = path.join(f.cwd, "release-review");
-	mock.onCall({ matchArgsIncludes: "Original model task", waitForFile: initial, output: "Initial report" });
-	mock.onCall({ matchArgsIncludes: "Acceptance Finalization", waitForFile: review, stderr: "quota exceeded", exitCode: 1 });
-	const pending = f.executor.execute("finalization-model-view", { agent: "worker", task: "Original model task", async: false, artifacts: false, output: false,
-		acceptance: { criteria: ["Complete the original task"], maxFinalizationTurns: 1 } }, undefined, undefined, f.ctx);
-	t.after(async () => {
-		fs.writeFileSync(initial, "released"); fs.writeFileSync(review, "released"); await pending;
-		if (process.env.PI_AGENT_VIEW_EVIDENCE_DIR) fs.cpSync(mock.dir, path.join(f.cwd, "mock-receipts"), { recursive: true });
-		mock.uninstall();
-	});
-	await until(() => mock.callCount() === 1, "initial model attempt starts");
-	f.controller.refresh(true);
-	const task = f.controller.tasks[0]!, native = SessionManager.open(task.child.sessionFile!, undefined, f.cwd);
+	const f = fixture(t), native = f.childSessions[0];
 	native.appendMessage({ role: "assistant", content: [{ type: "text", text: "Initial report" }], provider: "observed", model: "vendor/earlier-remap", api: "openai-responses", stopReason: "stop", usage, timestamp: Date.now() });
-	fs.writeFileSync(initial, "released");
-	await until(() => mock.callCount() === 2, "foreground finalization starts");
+	const modelSelection = { model: requested, modelStartedAt: Date.now() + 1 };
+	saveQuestionContract(f.run.runId, 0, { modelSelection });
+	Object.assign(f.status.steps[0], modelSelection);
+	saveRunStatus(f.run.runId, f.status);
 	f.controller.refresh(true);
-	assert.equal(f.controller.task(task.key)!.model.summary, "selected: requested/vendor/finalization · thinking low");
-	fs.writeFileSync(review, "released");
-	const result = await pending; f.controller.start(f.ctx);
-	assert.equal(result.details.results[0].model, requested);
-	assert.equal(f.controller.task(task.key)!.child.state, "failed");
-	const opening = f.controller.open(task.key);
+	assert.equal(f.controller.task(f.key)!.model.summary, "selected: requested/vendor/finalization · thinking low");
+	saveAsyncRunResult(f.run.runId, { runtimeVersion: 2, id: f.run.runId, state: "failed", timestamp: modelSelection.modelStartedAt + 1,
+		results: [{ agent: "worker", task: f.run.children[0].task, model: requested, sessionFile: native.getSessionFile(), success: false, exitCode: 1, error: "quota exceeded" }] });
+	f.controller.start(f.ctx);
+	assert.equal(f.controller.task(f.key)!.child.result?.model, requested);
+	assert.equal(f.controller.task(f.key)!.child.state, "failed");
+	const opening = f.controller.open(f.key);
 	assert.match(plain(f.overlay, 160), /selected: requested\/vendor\/finalization · thinking low/, "the completed snapshot must keep the latest selected attempt when finalization saves no native response");
 	f.overlay.handleInput("\x1b"); await opening;
-	assert.equal(mock.callCount(), 2); assert.equal(f.calls.length, 0);
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
 });
 
 for (const mode of ["regular", "fullscreen"] as const) test(`Agents strip and single-child open are native, read-only, and preserve the parent (${mode})`, async (t) => {
@@ -795,7 +791,8 @@ test("clickable Agents hints: remapped picker Up owns its displayed cell, not a 
 test("clickable Agents hints: ordinary activity stays literal and cannot jump to latest", async (t) => {
 	const f = fixture(t, "fullscreen"); f.terminal.resize(120, 48);
 	for (let i = 0; i < 30; i++) assistant(f.childSessions[0], `Saved message ${i}`);
-	f.state.foregroundControls.get(f.run.runId).progress = [{ index: 0, agent: "worker", task: "fixture", status: "running", streamingText: "Alt+L latest is the old label", toolCount: 0, tokens: 0, durationMs: 0, lastActivityAt: 0, recentTools: [] }];
+	Object.assign(f.status.steps[0], { streamingText: "Alt+L latest is the old label", lastActivityAt: 0 });
+	saveRunStatus(f.run.runId, f.status);
 	f.controller.refresh(true);
 	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
 	assert.equal(f.overlay.scroll.isFollowingEnd, true);
@@ -938,8 +935,7 @@ for (const nativeAnswer of [false, true]) test(`completed structured-output hist
 	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "final-report", name: "structured_output", arguments: { value: { report: submitted } } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
 	manager.appendMessage({ role: "toolResult", toolCallId: "final-report", toolName: "structured_output", content: [{ type: "text", text: "Structured output captured." }], details: { stored: true }, isError: false, timestamp: Date.now() });
 	const original = fs.readFileSync(manager.getSessionFile(), "utf8");
-	f.state.foregroundControls.clear();
-	saveForegroundRun({ ...f.run, results: [{ agent: "worker", task: f.run.children[0].task!, exitCode: 0, finalOutput: report, sessionFile: manager.getSessionFile(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } }] });
+	saveAsyncRunResult(f.run.runId, { runtimeVersion: 2, id: f.run.runId, state: "complete", timestamp: Date.now(), results: [{ agent: "worker", task: f.run.children[0].task!, success: true, exitCode: 0, finalOutput: report, sessionFile: manager.getSessionFile(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } }] });
 	f.controller.refresh(true);
 	const opening = f.controller.open(), view = f.overlay;
 	const first = plain(view);
@@ -1088,8 +1084,8 @@ test("active Agents rows distinguish running, queued and needs-action work, then
 	t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-01-01T00:00:00Z") });
 	const f = fixture(t, "fullscreen", 4);
 	for (const [index, label] of ["Fix login", "Queued docs", "Approve change", "Finished report"].entries()) f.run.children[index].label = label;
-	const control = f.state.foregroundControls.get(f.run.runId)!;
-	for (const index of [1, 2, 3]) control.activeChildren!.delete(index);
+	for (const index of [1, 2, 3]) f.status.steps[index].status = "pending";
+	saveRunStatus(f.run.runId, f.status);
 	const { resolveEffectiveAcceptance } = await import("../../src/runs/shared/acceptance.ts");
 	const effectiveAcceptance = resolveEffectiveAcceptance({ explicit: { criteria: ["Confirm the user action"] } })!;
 	const result = { agent: "worker", task: "Saved assignment", exitCode: 0, finalOutput: "Saved report", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } };
@@ -1259,13 +1255,14 @@ test("configured Agents shortcut registration, hint and native overlay closing u
 });
 
 for (const surface of ["widget", "picker"]) test(`64-column ${surface} keeps task identity, full state and unread badges ahead of activity`, async (t) => {
-	const f = fixture(t, "fullscreen", 2), control = f.state.foregroundControls.get(f.run.runId)!;
+	const f = fixture(t, "fullscreen", 2);
 	f.terminal.resize(64, 78);
 	f.run.children[0].label = "Build native Agents experience";
 	f.run.children[1].label = "Review current UX changes and preserve every public interface";
-	f.run.children[1].agent = "reviewer"; control.activeChildren!.get(1)!.agent = "reviewer";
-	control.progress = f.run.children.map((child) => ({ index: child.index, agent: child.agent, task: child.task!, status: "running" as const, recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 1,
+	f.run.children[1].agent = "reviewer"; f.status.steps[1].agent = "reviewer";
+	f.status.steps = f.run.children.map((child) => ({ index: child.index, agent: child.agent, task: child.task!, status: "running" as const, recentTools: [], recentOutput: [], toolCount: 0, tokens: { input: 0, output: 0, total: 0 }, durationMs: 1,
 		...(child.index === 0 ? { currentTool: "bash", currentToolArgs: "export VERY_VERBOSE_COMMAND_PREVIEW=the_command_must_not_replace_task_identity; printf finished" } : {}) }));
+	saveRunStatus(f.run.runId, f.status);
 	for (const child of f.run.children) f.controller.visit(`${f.run.runId}:${child.index}`).readThrough = null;
 	f.controller.refresh(true); f.tui.start();
 	const opening = surface === "picker" ? f.controller.open() : undefined;
@@ -1280,7 +1277,8 @@ for (const surface of ["widget", "picker"]) test(`64-column ${surface} keeps tas
 	if (surface === "picker") {
 		assert.match(writer, /worker/); assert.match(reviewer, /reviewer/);
 		assert.match(plain(component, width), /bash export/, "selected preview retains activity detail");
-		control.progress![0].currentToolArgs = "export UPDATED_ACTIVITY_PROOF=1";
+		f.status.steps[0].currentToolArgs = "export UPDATED_ACTIVITY_PROOF=1";
+		saveRunStatus(f.run.runId, f.status);
 		f.controller.refresh(true); f.tui.renderNow();
 		assert.match(plain(component, width), /UPDATED_ACTIVITY_PROOF/, "selected activity stays fresh when state and badge have not changed");
 	} else assert.match(rows[0], /2 running/);
@@ -1329,20 +1327,25 @@ test("completion during compose keeps the draft, and viewing a finished child ne
 });
 
 test("a first foreground launch updates the strip without a manual open", async (t) => {
-	const f = fixture(t), mock = createMockPi(); mock.install(); t.after(() => mock.uninstall());
-	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
-	mock.onCall({ delay: 1200, output: "Fresh foreground completed" });
+	const f = fixture(t), mock = createMockPi(); mock.install();
+	f.state.ownedRuns!.clear(); f.controller.refresh(true);
+	const release = path.join(f.cwd, "first-launch-release");
+	mock.onCall({ waitForFile: release, output: "Fresh foreground completed" });
 	const pending = f.executor.execute("first-launch", { agent: "worker", task: "A first foreground task", label: "Fresh foreground", async: false, artifacts: false, output: false }, undefined, undefined, f.ctx);
-	t.after(async () => { await pending; });
-	await new Promise((resolve) => setTimeout(resolve, 650));
+	t.after(async () => { fs.writeFileSync(release, "released"); await pending; mock.uninstall(); });
+	await until(() => mock.callCount() === 1 && f.controller.tasks[0]?.child.activity?.status === "running", "the real child starts and the strip observes it without a manual refresh");
 	assert.match(plain(f.strip), /1 running[\s\S]*● Fresh foreground/);
 	assert.equal(f.controller.tasks[0]?.child.state, "live");
-	await pending;
+	assert.equal(f.tui.hasOverlay(), false);
+	fs.writeFileSync(release, "released");
+	const result = await pending;
+	assert.equal(result.isError, undefined);
+	assert.match(result.content[0].text, /Fresh foreground completed/);
 });
 
 test("new async chain preserves its launch identity, draft and pin through first status persistence", async (t) => {
 	const f = fixture(t), mock = createMockPi(); mock.install();
-	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
+	f.state.ownedRuns!.clear(); f.controller.refresh(true);
 	const release = path.join(f.cwd, "startup-release"), draft = "Keep the existing public API";
 	mock.onCall({ matchArgsIncludes: "Fix login with original assignment", waitForFile: release, output: "Fixed" });
 	let initial, opening, runId: string | undefined;
@@ -1384,7 +1387,7 @@ test("new async chain preserves its launch identity, draft and pin through first
 
 test("the first native streaming response is readable before its session file exists", async (t) => {
 	const f = fixture(t), native = nativeChild(f.cwd, "streaming"), { release } = native;
-	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
+	f.state.ownedRuns!.clear(); f.controller.refresh(true);
 	const requested = "requested/vendor/streaming:high";
 	const pending = f.executor.execute("initial-stream", { agent: "worker", model: requested, task: "Read initial streaming output", async: false, artifacts: false, output: false }, undefined, undefined, f.ctx);
 	t.after(async () => { fs.writeFileSync(release, "released"); await pending; native.restore(); });
@@ -1456,7 +1459,7 @@ test("explicit Continue uses the saved launch and follows the active successor w
 
 test("answering in the view releases the real native durable question with human provenance", async (t) => {
 	const f = fixture(t), native = nativeChild(f.cwd, "question");
-	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
+	f.state.ownedRuns!.clear(); f.controller.refresh(true);
 	const pending = f.executor.execute("question", { agent: "worker", task: "Ask for the required choice", async: false, artifacts: false, output: false }, undefined, undefined, f.ctx);
 	t.after(async () => { await pending; native.restore(); });
 	await until(() => { f.controller.refresh(true); return Boolean(f.controller.tasks[0]?.question); }, "real native durable question");
@@ -1479,7 +1482,7 @@ test("answering in the view releases the real native durable question with human
 
 test("foreground chain parallel updates retain both live children's unfinished text", async (t) => {
 	const f = fixture(t), native = nativeChild(f.cwd, "streaming");
-	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
+	f.state.ownedRuns!.clear(); f.controller.refresh(true);
 	const seen = new Set<number>(); let observation;
 	const pending = f.executor.execute("parallel-stream", { chain: [{ parallel: [{ agent: "worker", task: "A streaming", output: false }, { agent: "worker", task: "B streaming", output: false }] }], async: false, artifacts: false }, undefined, (update) => {
 		for (const progress of update.details.progress ?? []) if (progress.streamingText?.includes("Second live text")) seen.add(progress.index);
@@ -1495,7 +1498,7 @@ test("foreground chain parallel updates retain both live children's unfinished t
 for (const background of [false, true]) test(`${background ? "background" : "foreground"} queued child is waiting to start, keeps its draft, and cannot create duplicate continuation`, async (t) => {
 	const f = fixture(t), native = nativeChild(f.cwd, "tool"), releaseA = `${native.release}-0`, releaseB = `${native.release}-1`;
 	process.env.PI_FEEDBACK_RELEASE_FILE = `${native.release}-{index}`;
-	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
+	f.state.ownedRuns!.clear(); f.controller.refresh(true);
 	const pending = f.executor.execute("queued-child", { tasks: [{ agent: "worker", task: "Held original A", output: false }, { agent: "worker", task: "Queued original B", output: false }], concurrency: 1, async: background, artifacts: false }, undefined, undefined, f.ctx);
 	t.after(async () => { fs.writeFileSync(releaseA, "released"); fs.writeFileSync(releaseB, "released"); await pending; if (background) await until(() => [...f.state.ownedRuns!.keys()].every((id) => fs.existsSync(path.join(getRunMetadataDir(id), "result.json"))), "queued workflow cleanup"); native.restore(); });
 	await until(() => fs.existsSync(`${releaseA}.json`) && JSON.parse(fs.readFileSync(`${releaseA}.json`, "utf8")).events.some((event) => event.type === "tool_execution_start"), "first native child holds the queue");
@@ -1528,7 +1531,7 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 
 for (const background of [false, true]) test(`${background ? "background" : "foreground"} dynamic expansion preserves a later assignment's open view, draft, pin and controls`, async (t) => {
 	const f = fixture(t), mock = createMockPi(); mock.install();
-	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear(); f.controller.refresh(true);
+	f.state.ownedRuns!.clear(); f.controller.refresh(true);
 	const discover = path.join(f.cwd, "discover-release"), reviews = path.join(f.cwd, "reviews-release"), final = path.join(f.cwd, "final-release");
 	mock.onCall({ matchArgsIncludes: "Discover two targets", waitForFile: discover, structuredOutput: { items: [{ name: "alpha" }, { name: "beta" }] }, output: "Targets ready" });
 	mock.onCall({ matchArgsIncludes: "Review alpha", waitForFile: reviews, output: "Alpha review complete" });
@@ -1598,7 +1601,7 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 for (const identity of ["graph", "session", "missing"]) test(`restored legacy dynamic assignments ${identity === "missing" ? "keep unidentifiable drafts unavailable" : `recover saved ${identity} identities`} instead of reusing child slots`, async (t) => {
 	const graphAvailable = identity === "graph";
 	const f = fixture(t), id = randomUUID(), asyncDir = path.join(ASYNC_DIR, id);
-	f.state.ownedRuns!.clear(); f.state.foregroundControls.clear();
+	f.state.ownedRuns!.clear();
 	fs.mkdirSync(asyncDir, { recursive: true });
 	const finalSession = path.join(f.cwd, "legacy-final.jsonl");
 	// d57's saved graph excludes an unexpanded group from flatIndex, but status.steps includes its placeholder.

@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { after, before, beforeEach, afterEach, describe, it } from "node:test";
-import { runSync } from "../../src/runs/foreground/execution.ts";
+import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
-import { executeChain } from "../../src/runs/foreground/chain-execution.ts";
 import { executeAsyncChain, executeAsyncSingle } from "../../src/runs/background/async-execution.ts";
-import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, RESULTS_DIR, type ForegroundControlState } from "../../src/shared/types.ts";
+import { ASYNC_DIR, RESULTS_DIR } from "../../src/shared/types.ts";
 import { resolveSubagentIntercomTarget } from "../../src/intercom/intercom-bridge.ts";
 import { createMockPi, createTempDir, createEventBus, events, makeAgent, makeMinimalCtx, removeTempDir } from "../support/helpers.ts";
 
@@ -51,7 +50,7 @@ describe("result contracts", () => {
 			.map((file) => JSON.parse(fs.readFileSync(path.join(mock.dir, file), "utf8")));
 	}
 
-	for (const background of [false, true]) {
+	for (const background of [true]) {
 		it(`${background ? "background" : "foreground"} falls back after exhausted short-lived transport recovery`, async () => {
 			mock.onCall({ exitCode: 143 });
 			mock.onCall({ exitCode: 143 });
@@ -63,8 +62,6 @@ describe("result contracts", () => {
 					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id },
 					shareEnabled: false, maxSubagentDepth: 2 });
 				result = (await waitForResult(id)).results[0];
-			} else {
-				result = await runSync(cwd, [agent], "worker", "Deliver the result", { runId: id });
 			}
 			assert.equal(result.exitCode, 0, result.error);
 			assert.deepEqual(result.attemptedModels, ["mock/primary", "mock/primary", "mock/fallback"]);
@@ -80,16 +77,13 @@ describe("result contracts", () => {
 					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id },
 					shareEnabled: false, maxSubagentDepth: 2 });
 				assert.equal((await waitForResult(id)).success, true);
-			} else {
-				assert.equal((await runSync(cwd, [agent], "worker", "Deliver the result", { runId: id })).exitCode, 0);
 			}
 			const args = calls()[0].args;
 			assert.equal(args[args.indexOf("--model") + 1], "mock/primary:high");
 		});
 
 		it(`${background ? "background" : "foreground"} interruption during verification pauses before publishing terminal metadata`, async () => {
-			mock.onCall({ output: `Initial report\n${report()}` });
-			mock.onCall({ output: `Reviewed report\n${report()}` });
+			mock.onCall({ nativeReport: { scenario: "single", initialReport: `Initial report\n${report()}`, report: `Reviewed report\n${report()}`, receiptPath: path.join(cwd, "native.json") } });
 			const marker = path.join(cwd, "verification-started");
 			const contract = { ...acceptance, verify: [{ id: "wait", command: `touch '${marker}'; sleep 20`, timeoutMs: 30_000 }] };
 			const controller = new AbortController();
@@ -102,9 +96,6 @@ describe("result contracts", () => {
 					assert.equal(payload.state, "paused");
 					return payload.results[0];
 				});
-			} else {
-				completion = runSync(cwd, [makeAgent("worker")], "worker", "Deliver the result", { runId: id,
-					acceptance: contract, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), interruptSignal: controller.signal });
 			}
 			const deadline = Date.now() + 10_000;
 			while (!fs.existsSync(marker)) {
@@ -112,7 +103,7 @@ describe("result contracts", () => {
 				await new Promise((resolve) => setTimeout(resolve, 10));
 			}
 			if (background) {
-				const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8"));
+				const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf8"));
 				assert.ok(Number.isSafeInteger(status.pid) && status.pid > 0);
 				process.kill(status.pid, "SIGUSR2");
 			} else controller.abort();
@@ -122,13 +113,12 @@ describe("result contracts", () => {
 			const metadata = JSON.parse(fs.readFileSync(result.artifactPaths.metadataPath, "utf8"));
 			assert.equal(metadata.exitCode, result.exitCode);
 			assert.equal(metadata.interrupted, true);
-			assert.equal(mock.callCount(), 2, "must not start another review after interruption");
+			assert.equal(mock.callCount(), 1, "initial work and review use one native process");
 		});
 
 		for (const satisfied of [true, false]) {
 			it(`${background ? "background" : "foreground"} finalization publishes authoritative output, acceptance and usage (${satisfied ? "accepted" : "rejected"})`, async () => {
-				mock.onCall({ output: `Initial incomplete answer\n${report(false)}` });
-				mock.onCall({ output: `Final ${satisfied ? "repaired" : "blocked"} answer\n${report(satisfied)}` });
+				mock.onCall({ nativeReport: { scenario: "single", initialReport: `Initial incomplete answer\n${report(false)}`, report: `Final ${satisfied ? "repaired" : "blocked"} answer\n${report(satisfied)}`, receiptPath: path.join(cwd, "native.json") } });
 				const expectedOutput = `Final ${satisfied ? "repaired" : "blocked"} answer`;
 				const childCwd = path.join(cwd, "child");
 				fs.mkdirSync(childCwd);
@@ -142,13 +132,9 @@ describe("result contracts", () => {
 					assert.ok(!started.isError, started.content[0]?.text);
 					const payload = await waitForResult(id);
 					result = payload.results[0];
-					const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8"));
+					const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf8"));
 					assert.equal(status.steps[0].acceptance.status, satisfied ? "checked" : "rejected");
 					assert.equal(payload.exitCode, satisfied ? 0 : 1);
-				} else {
-					result = await runSync(cwd, [makeAgent("worker")], "worker", "Deliver the result", {
-						runId: id, cwd: childCwd, acceptance, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"),
-					});
 				}
 				const metadata = JSON.parse(fs.readFileSync(result.artifactPaths.metadataPath, "utf8"));
 				assert.equal(result.exitCode, satisfied ? 0 : 1);
@@ -156,65 +142,54 @@ describe("result contracts", () => {
 				assert.deepEqual(metadata.acceptance, result.acceptance);
 				assert.equal(metadata.usage.turns, 2);
 				assert.equal(result.modelAttempts.reduce((turns, attempt) => turns + attempt.usage.turns, 0), 2);
-				if (!background) {
-					assert.deepEqual(metadata.usage, result.usage);
-					assert.equal(result.progress.turnCount, 2);
-				}
 				assert.match(result.finalOutput ?? result.output, new RegExp(expectedOutput));
 				assert.equal(fs.readFileSync(result.artifactPaths.outputPath, "utf8"), expectedOutput);
 				assert.equal(metadata.initialOutput, "Initial incomplete answer");
 				const attempts = calls();
-				assert.equal(attempts.length, 2);
+				assert.equal(attempts.length, 1);
 				for (const call of attempts) {
 					assert.equal(call.cwd, fs.realpathSync(childCwd));
 					assert.equal(call.args[call.args.indexOf("--session") + 1], path.join(cwd, "child.jsonl"));
-					// This mock creates an empty file, not a native session header. Initial launch
-					// inherits spawn cwd; the later unreadable header conservatively needs an override.
 					assert.equal(call.args.includes("--session-cwd"), false);
-					assert.equal(call.sessionCwd?.cwd, call !== attempts[0] ? childCwd : undefined);
+					assert.equal(call.sessionCwd?.cwd, undefined);
 				}
 			});
 		}
 
-		it(`${background ? "background" : "foreground"} report-only finalization preserves the useful answer`, async () => {
-			mock.onCall({ output: `Useful answer\n${report()}` });
-			mock.onCall({ output: report() });
+		it(`${background ? "background" : "foreground"} report-only native review is rejected while retaining the initial answer for audit`, async () => {
+			mock.onCall({ nativeReport: { scenario: "single", initialReport: `Useful answer\n${report()}`, report: report(), receiptPath: path.join(cwd, "native.json") } });
 			if (background) {
 				executeAsyncSingle(id, {
 					agent: "worker", task: "Deliver the result", agentConfig: makeAgent("worker"),
 					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, acceptance,
 					sessionFile: path.join(cwd, "child.jsonl"), shareEnabled: false, maxSubagentDepth: 2,
 				});
-				assert.equal((await waitForResult(id)).results[0].output, "Useful answer");
-			} else {
-				const result = await runSync(cwd, [makeAgent("worker")], "worker", "Deliver the result", { runId: id, acceptance });
-				assert.equal(result.finalOutput, "Useful answer");
+				const result = (await waitForResult(id)).results[0];
+				assert.equal(result.acceptance.status, "rejected");
+				assert.match(result.output, /^UNCONFIRMED task report[\s\S]*Useful answer/);
 			}
 		});
 
-		it(`${background ? "background" : "foreground"} report-only repair summaries replace stale initial prose`, async () => {
-			mock.onCall({ output: `Still incomplete\n${report(false)}` });
-			mock.onCall({ output: "```acceptance-report\n" + JSON.stringify({
+		it(`${background ? "background" : "foreground"} report-only native repair summary cannot replace a complete current answer`, async () => {
+			mock.onCall({ nativeReport: { scenario: "single", initialReport: `Still incomplete\n${report(false)}`, report: "```acceptance-report\n" + JSON.stringify({
 				criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "Repaired and verified" }], diffSummary: "Repaired the missing work and verified the final result.",
-			}) + "\n```" });
+			}) + "\n```", receiptPath: path.join(cwd, "native.json") } });
 			let result;
 			if (background) {
 				executeAsyncSingle(id, { agent: "worker", task: "Deliver the result", agentConfig: makeAgent("worker"),
 					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, acceptance,
 					artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), shareEnabled: false, maxSubagentDepth: 2 });
 				result = (await waitForResult(id)).results[0];
-			} else {
-				result = await runSync(cwd, [makeAgent("worker")], "worker", "Deliver the result", { runId: id, acceptance, artifactsDir: cwd });
 			}
-			assert.equal(result.finalOutput ?? result.output, "Repaired the missing work and verified the final result.");
+			assert.equal(result.acceptance.status, "rejected");
+			assert.match(result.finalOutput ?? result.output, /^UNCONFIRMED task report[\s\S]*Still incomplete/);
 			const metadata = JSON.parse(fs.readFileSync(result.artifactPaths.metadataPath, "utf8"));
 			assert.equal(metadata.initialOutput, "Still incomplete");
-			assert.equal(metadata.acceptance.finalization.turns[0].report.diffSummary, "Repaired the missing work and verified the final result.");
+			assert.equal(metadata.acceptance.finalization.turns[0].report, undefined);
 		});
 
 		it(`${background ? "background" : "foreground"} finalization preserves an unchanged detailed handoff instead of overwriting it with review prose`, async () => {
-			mock.onCall({ output: `Wrote the report\n${report()}`, delay: 300 });
-			mock.onCall({ output: `Report is complete; no changes needed.\n${report()}` });
+			mock.onCall({ nativeReport: { scenario: "single", initialReport: `Wrote the report\n${report()}`, initialDelay: 300, report: `Report is complete; no changes needed.\n${report()}`, receiptPath: path.join(cwd, "native.json") } });
 			const outputPath = path.join(cwd, "report.md");
 			const contract = { ...acceptance, verify: [{ id: "contents", command: `grep -q 'CRITICAL DETAIL' '${outputPath}'` }] };
 			let completion;
@@ -223,9 +198,6 @@ describe("result contracts", () => {
 					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, acceptance: contract, output: outputPath, outputMode: "file-only",
 					artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), shareEnabled: false, maxSubagentDepth: 2 });
 				completion = waitForResult(id).then((payload) => payload.results[0]);
-			} else {
-				completion = runSync(cwd, [makeAgent("worker")], "worker", "Write the report", { runId: id, acceptance: contract,
-					outputPath, outputMode: "file-only", artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl") });
 			}
 			const deadline = Date.now() + 10_000;
 			while (!mock.callCount()) {
@@ -241,9 +213,8 @@ describe("result contracts", () => {
 		});
 
 		it(`${background ? "background" : "foreground"} finalization recaptures repaired output files before verification and file-only publication`, async () => {
-			mock.onCall({ output: `Old content\n${report()}` });
-			mock.onCall({ output: report(), delay: 400 });
 			const outputPath = path.join(cwd, "repaired.md");
+			mock.onCall({ nativeReport: { scenario: "child-file", initialReport: `Old content\n${report()}`, report: `Repaired file content\n${report()}`, handoffPath: outputPath, handoff: "Repaired file content", receiptPath: path.join(cwd, "native.json") } });
 			const contract = { ...acceptance, verify: [{ id: "repaired", command: `grep -q 'Repaired file content' '${outputPath}'` }] };
 			let completion;
 			if (background) {
@@ -251,16 +222,7 @@ describe("result contracts", () => {
 					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, acceptance: contract, output: outputPath, outputMode: "file-only",
 					artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), shareEnabled: false, maxSubagentDepth: 2 });
 				completion = waitForResult(id).then((payload) => payload.results[0]);
-			} else {
-				completion = runSync(cwd, [makeAgent("worker")], "worker", "Deliver the result", { runId: id, acceptance: contract,
-					outputPath, outputMode: "file-only", artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl") });
 			}
-			const deadline = Date.now() + 10_000;
-			while (mock.callCount() < 2) {
-				assert.ok(Date.now() < deadline, "finalization should continue the session");
-				await new Promise((resolve) => setTimeout(resolve, 10));
-			}
-			fs.writeFileSync(outputPath, "Repaired file content");
 			const result = await completion;
 			assert.equal(result.exitCode, 0, result.error);
 			assert.equal(result.acceptance.status, "verified");
@@ -278,10 +240,6 @@ describe("result contracts", () => {
 				executeAsyncChain(id, { chain, task: "Owner supplied task", agents: [makeAgent("worker")],
 					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, shareEnabled: false, maxSubagentDepth: 2 });
 				assert.equal((await waitForResult(id)).success, true);
-			} else {
-				const result = await executeChain({ chain, task: "Owner supplied task", agents: [makeAgent("worker")], ctx: makeMinimalCtx(cwd), runId: id,
-					shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2 });
-				assert.ok(!result.isError, result.content[0]?.text);
 			}
 			assert.match(calls()[0].expandedArgs.at(-1), /Owner supplied task/);
 			assert.match(calls()[1].expandedArgs.at(-1), /Continue without a placeholder[\s\S]*Previous step output:\nFirst answer/);
@@ -297,10 +255,6 @@ describe("result contracts", () => {
 				executeAsyncChain(id, { chain, task, agents: [makeAgent("worker")],
 					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, shareEnabled: false, maxSubagentDepth: 2 });
 				assert.equal((await waitForResult(id)).success, true);
-			} else {
-				const result = await executeChain({ chain, task, agents: [makeAgent("worker")], ctx: makeMinimalCtx(cwd), runId: id,
-					shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2 });
-				assert.ok(!result.isError, result.content[0]?.text);
 			}
 			assert.equal(calls()[1].expandedArgs.at(-1).replace(/^@[^\n]+\n/, "").replace(/^Task: /, ""), `BEGIN ${text} MID ${text} END ${task}`);
 		});
@@ -317,10 +271,6 @@ describe("result contracts", () => {
 				executeAsyncChain(id, { chain, task, agents: [makeAgent("worker")],
 					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, shareEnabled: false, maxSubagentDepth: 2 });
 				assert.equal((await waitForResult(id)).success, true);
-			} else {
-				const result = await executeChain({ chain, task, agents: [makeAgent("worker")], ctx: makeMinimalCtx(cwd), runId: id,
-					shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2 });
-				assert.ok(!result.isError, result.content[0]?.text);
 			}
 			assert.equal(calls()[1].expandedArgs.at(-1).replace(/^@[^\n]+\n/, "").replace(/^Task: /, ""),
 				`Review ${item} / Named ${JSON.stringify({ items: [item] })} / Previous ${source} / Original ${task}`);
@@ -348,16 +298,11 @@ describe("result contracts", () => {
 				const payload = await waitForResult(id);
 				({ results, outputs, workflowGraph: graph } = payload);
 				assert.equal(payload.state, "failed");
-				const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8"));
+				const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf8"));
 				assert.equal(status.steps.length, 5);
 				assert.equal(status.steps[4].status, "failed");
 				assert.equal(status.currentStep, 4);
 				assert.deepEqual(status.parallelGroups, [{ start: 1, count: 0, stepIndex: 1 }, { start: 1, count: 2, stepIndex: 2 }, { start: 3, count: 1, stepIndex: 3 }]);
-			} else {
-				const result = await executeChain({ chain, agents: [makeAgent("worker")], ctx: makeMinimalCtx(cwd), runId: id, childIntercomTarget,
-					artifactsDir: cwd, shareEnabled: false, sessionDirForIndex: () => undefined, sessionFileForIndex: (index) => sessions[index], maxSubagentDepth: 2 });
-				assert.equal(result.isError, true);
-				({ results, outputs, workflowGraph: graph } = result.details);
 			}
 			assert.equal(results.length, 5);
 			assert.deepEqual(outputs.empty.structured, []);
@@ -385,7 +330,7 @@ describe("result contracts", () => {
 			if (background) {
 				executeAsyncChain(id, { chain, agents: [makeAgent("worker")],
 					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, shareEnabled: false, maxSubagentDepth: 2 });
-				const statusPath = path.join(ASYNC_DIR, id, "status.json");
+				const statusPath = path.join(getRunMetadataDir(id), "status.json");
 				const deadline = Date.now() + 10_000;
 				while (Date.now() < deadline) {
 					if (fs.existsSync(statusPath)) {
@@ -398,12 +343,6 @@ describe("result contracts", () => {
 					await new Promise((resolve) => setTimeout(resolve, 10));
 				}
 				await waitForResult(id);
-			} else {
-				await executeChain({ chain, agents: [makeAgent("worker")], ctx: makeMinimalCtx(cwd), runId: id,
-					shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2,
-					onUpdate: (update) => {
-						if (!children && update.details?.results?.some((result) => result.exitCode === 1)) children = update.details.workflowGraph.nodes[1].children;
-					} });
 			}
 			assert.ok(children, "must observe the second child failing while the first is still running");
 			assert.deepEqual(children.map((child) => [child.flatIndex, child.status]), [[1, "running"], [2, "failed"]]);
@@ -423,11 +362,6 @@ describe("result contracts", () => {
 				const payload = await waitForResult(id);
 				({ results, outputs, workflowGraph: graph } = payload);
 				assert.equal(payload.state, "failed");
-			} else {
-				const result = await executeChain({ chain, agents: [makeAgent("worker")], ctx: makeMinimalCtx(cwd), runId: id,
-					artifactsDir: cwd, shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2 });
-				assert.equal(result.isError, true);
-				({ results, outputs, workflowGraph: graph } = result.details);
 			}
 			assert.equal(outputs?.evidence?.text, "Preserved sibling evidence");
 			assert.equal(outputs?.failed, undefined);
@@ -455,23 +389,10 @@ describe("result contracts", () => {
 					assert.ok(Date.now() < deadline, "second child must start");
 					await new Promise((resolve) => setTimeout(resolve, 10));
 				}
-				fs.writeFileSync(path.join(ASYNC_DIR, id, "control-request.json"), JSON.stringify({ requestId: id, runId: id, action: "interrupt" }));
+				fs.writeFileSync(path.join(getRunMetadataDir(id), "control-request.json"), JSON.stringify({ requestId: id, runId: id, action: "interrupt" }));
 				const payload = await waitForResult(id);
 				({ results, outputs } = payload);
 				assert.equal(payload.state, "paused");
-			} else {
-				const control: ForegroundControlState = { runId: id, mode: "chain", startedAt: Date.now(), updatedAt: Date.now() };
-				let paused = false;
-				const result = await executeChain({ chain, agents: [makeAgent("worker")], ctx: makeMinimalCtx(cwd), runId: id,
-					artifactsDir: cwd, shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2, foregroundControl: control,
-					onUpdate: (update) => {
-						if (!paused && update.details?.progress?.some((progress) => progress.currentTool === "read")) {
-							paused = true;
-							assert.equal(control.interrupt?.(), true);
-						}
-					} });
-				({ results, outputs } = result.details);
-				assert.match(result.content[0].text, /Chain paused/);
 			}
 			assert.equal(outputs.evidence.text, "Completed evidence");
 			assert.equal(outputs.unfinished, undefined);
@@ -481,38 +402,8 @@ describe("result contracts", () => {
 			assert.equal(fs.readFileSync(results[0].artifactPaths.outputPath, "utf8"), "Completed evidence");
 		});
 
-		if (!background) it("foreground detached groups retain completed evidence and stop queued work without losing the live child", async () => {
-			mock.onCall({ matchArgsIncludes: "Keep evidence", output: "Completed evidence" });
-			mock.onCall({ matchArgsIncludes: "Ask sibling", steps: [
-				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need input" })] },
-				{ delay: 200, jsonl: [events.assistantMessage("Completed after reply")] },
-			] });
-			const bus = createEventBus();
-			const finished = Promise.withResolvers<Awaited<ReturnType<typeof runSync>>>();
-			let detached = false;
-			const chain = [{ parallel: [{ agent: "worker", task: "Keep evidence", as: "evidence" }, { agent: "worker", task: "Ask sibling", as: "unfinished" },
-				{ agent: "worker", task: "Queued must not run" }], concurrency: 1 }, { agent: "worker", task: "Downstream must not run" }];
-			const result = await executeChain({ chain, agents: [makeAgent("worker", { systemPrompt: "Intercom orchestration channel:" })], ctx: makeMinimalCtx(cwd), runId: id,
-				artifactsDir: cwd, shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2, intercomEvents: bus,
-				onDetachedComplete: finished.resolve,
-				onUpdate: (update) => {
-					if (!detached && update.details?.progress?.some((progress) => progress.currentTool === "contact_supervisor")) {
-						detached = true;
-						bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: id });
-					}
-				} });
-			const completed = await finished.promise;
-			assert.match(result.content[0].text, /Chain detached/);
-			assert.equal(result.details.outputs.evidence.text, "Completed evidence");
-			assert.equal(result.details.outputs.unfinished, undefined);
-			assert.equal(result.details.results[1].detached, true);
-			assert.equal(result.details.results[2].exitCode, -1);
-			assert.equal(completed.finalOutput, "Completed after reply");
-			assert.equal(mock.callCount(), 2);
-		});
-
 		it(`${background ? "background" : "foreground"} fail-fast during sibling verification stops the verifier without publishing a pause`, async () => {
-			for (const model of ["mock/fail", "mock/slow"]) for (let turn = 0; turn < 2; turn++) mock.onCall({ matchArgsIncludes: model, output: report() });
+			for (const model of ["mock/fail", "mock/slow"]) mock.onCall({ matchArgsIncludes: model, nativeReport: { scenario: "single", initialReport: `Initial\n${report()}`, report: `Reviewed\n${report()}`, receiptPath: path.join(cwd, `${model.split("/")[1]}.json`) } });
 			const verifying = path.join(cwd, "verifying");
 			const survived = path.join(cwd, "verifier-survived");
 			const chain = [{ parallel: [
@@ -529,15 +420,10 @@ describe("result contracts", () => {
 				const payload = await waitForResult(id);
 				results = payload.results;
 				assert.equal(payload.state, "failed");
-			} else {
-				const result = await executeChain({ chain, agents, ctx: makeMinimalCtx(cwd), runId: id, artifactsDir: cwd, shareEnabled: false,
-					sessionDirForIndex: () => undefined, sessionFileForIndex: (index) => sessions[index], maxSubagentDepth: 2 });
-				results = result.details.results;
-				assert.equal(result.isError, true);
 			}
 			assert.equal(fs.existsSync(verifying), true);
 			assert.equal(fs.existsSync(survived), false);
-			assert.equal(mock.callCount(), 4);
+			assert.equal(mock.callCount(), 2);
 			assert.equal(results[1].exitCode, -1);
 			assert.ok(!results[1].interrupted);
 			assert.match(results[1].error, /Interrupted due to fail-fast/);
@@ -564,11 +450,6 @@ describe("result contracts", () => {
 					const payload = await waitForResult(id);
 					({ results, outputs } = payload);
 					assert.equal(payload.state, "failed");
-				} else {
-					const result = await executeChain({ chain, agents: [makeAgent("worker")], ctx: makeMinimalCtx(cwd), runId: id,
-						artifactsDir: cwd, shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2 });
-					assert.equal(result.isError, true);
-					({ results, outputs } = result.details);
 				}
 				const offset = dynamic ? 1 : 0;
 				assert.equal(mock.callCount(), offset + 2);
@@ -603,11 +484,6 @@ describe("result contracts", () => {
 					const payload = await waitForResult(id);
 					({ results, outputs, workflowGraph: graph } = payload);
 					assert.equal(payload.state, "failed");
-				} else {
-					const result = await executeChain({ chain, agents, ctx: makeMinimalCtx(cwd), runId: id, artifactsDir: cwd,
-						shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2 });
-					assert.equal(result.isError, true);
-					({ results, outputs, workflowGraph: graph } = result.details);
 				}
 				assert.match(results[1]?.error ?? "", /Resource limit exceeded/);
 				assert.equal(results[1]?.resourceLimitExceeded?.kind, limit);
@@ -644,9 +520,7 @@ describe("result contracts", () => {
 			mock.onCall({ output: "Items", structuredOutput: { items: ["a"] } });
 			const chain = [{ agent: "worker", task: "Produce", as: "items", outputSchema: { type: "object" } },
 				{ expand: { from: { output: "items", path: "/items" }, maxItems: 1 }, parallel: { agent: "worker", task: "Review {item}" }, collect: { as: "answers" }, acceptance }];
-			const result = background
-				? executeAsyncChain(id, { chain, agents: [makeAgent("worker")], ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, shareEnabled: false, maxSubagentDepth: 2 })
-				: await executeChain({ chain, agents: [makeAgent("worker")], ctx: makeMinimalCtx(cwd), runId: id, shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2 });
+			const result = executeAsyncChain(id, { chain, agents: [makeAgent("worker")], ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, shareEnabled: false, maxSubagentDepth: 2 });
 			if (background && !result.isError) await waitForResult(id);
 			assert.equal(result.isError, true);
 			assert.match(result.content[0].text, /does not support group-level acceptance/);
@@ -667,10 +541,6 @@ describe("result contracts", () => {
 					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, shareEnabled: false, maxSubagentDepth: 2 });
 				assert.ok(!started.isError, started.content[0]?.text);
 				assert.equal((await waitForResult(id)).success, true);
-			} else {
-				const result = await executeChain({ chain, chainDir, agents: [makeAgent("worker")], ctx: makeMinimalCtx(cwd), runId: id,
-					shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2 });
-				assert.ok(!result.isError, result.content[0]?.text);
 			}
 			for (const [index, output] of ["One", "Two"].entries()) {
 				assert.equal(fs.readFileSync(path.join(chainDir, id, "parallel-1", `${index}-worker`, "answer.md"), "utf8"), output);
@@ -681,9 +551,7 @@ describe("result contracts", () => {
 			const output = path.join(cwd, "shared.md");
 			const chain = [{ parallel: [{ agent: "worker", task: "First" }, { agent: "worker", task: "Second" }] }];
 			const agents = [makeAgent("worker", { output })];
-			const result = background
-				? executeAsyncChain(id, { chain, agents, ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, shareEnabled: false, maxSubagentDepth: 2 })
-				: await executeChain({ chain, agents, ctx: makeMinimalCtx(cwd), runId: id, shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2 });
+			const result = executeAsyncChain(id, { chain, agents, ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, shareEnabled: false, maxSubagentDepth: 2 });
 			assert.equal(result.isError, true);
 			assert.ok(result.content[0].text.includes(`same path: ${output}`));
 			assert.equal(mock.callCount(), 0);
@@ -705,10 +573,6 @@ describe("result contracts", () => {
 				});
 				assert.ok(!started.isError, started.content[0]?.text);
 				assert.equal((await waitForResult(id)).success, true);
-			} else {
-				const result = await executeChain({ chain, chainDir, agents: [makeAgent("worker")], ctx: makeMinimalCtx(cwd), runId: id,
-					shareEnabled: false, sessionDirForIndex: () => undefined, maxSubagentDepth: 2 });
-				assert.ok(!result.isError, result.content[0]?.text);
 			}
 			assert.deepEqual(calls().map((call) => fs.realpathSync(call.cwd)), ["group", "group/child"].map((dir) => fs.realpathSync(path.join(cwd, dir))));
 			for (const [index, output] of ["One", "Two"].entries()) {
@@ -717,25 +581,10 @@ describe("result contracts", () => {
 		});
 	}
 
-	it("foreground timeout extensions carry into recovery attempts", async () => {
-		mock.onCall({ exitCode: 1, stderr: "connection reset", delay: 350 });
-		mock.onCall({ output: "Recovered inside the extended deadline", delay: 350 });
-		let registered = 0;
-		const result = await runSync(cwd, [makeAgent("worker", { model: "mock/primary" })], "worker", "Deliver the result", {
-			runId: id, timeoutMs: 250,
-			registerTimeoutExtension: (extend) => {
-				if (registered++ === 0) assert.equal(extend(1500).ok, true);
-			},
-		});
-		assert.equal(result.exitCode, 0, result.error);
-		assert.equal(result.finalOutput, "Recovered inside the extended deadline");
-		assert.equal(mock.callCount(), 2);
-	});
-
 	it("background cancellation after a successful prefix never reports the pending workflow complete", async () => {
 		mock.onCall({ output: "Completed first step" });
 		const preloadPath = path.join(cwd, "cancel-prefix.cjs");
-		const statusPath = path.join(ASYNC_DIR, id, "status.json");
+		const statusPath = path.join(getRunMetadataDir(id), "status.json");
 		// Stop at the published successful prefix, before the next child can start.
 		fs.writeFileSync(preloadPath, `
 if (process.argv[1]?.endsWith("subagent-runner.ts")) {
@@ -774,46 +623,10 @@ if (process.argv[1]?.endsWith("subagent-runner.ts")) {
 		}
 	});
 
-	for (const questionPhase of ["initial", "finalization"]) it(`a question during ${questionPhase} releases the parent while the complete acceptance operation keeps running`, { timeout: 10_000 }, async () => {
-		for (const [phase, output] of [["initial", "Initial answer"], ["finalization", "Final detached answer"]]) {
-			mock.onCall(phase === questionPhase ? { steps: [
-				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
-				{ delay: 300, jsonl: [events.assistantMessage(`${output}\n${report()}`)] },
-			] } : { output: `${output}\n${report()}` });
-		}
-		const bus = createEventBus();
-		const completion = Promise.withResolvers<Awaited<ReturnType<typeof runSync>>>();
-		let detached = false;
-		let settled = 0;
-		const immediate = await runSync(cwd, [makeAgent("worker")], "worker", "Deliver the result", {
-			runId: id, acceptance, artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), allowIntercomDetach: true, intercomEvents: bus,
-			onDetachedComplete: completion.resolve,
-			onRunSettled: () => settled++,
-			onUpdate: (update) => {
-				if (!detached && update.details?.progress?.some((progress) => progress.currentTool === "contact_supervisor")) {
-					detached = true;
-					bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: id });
-				}
-			},
-		});
-		assert.equal(immediate.detached, true);
-		assert.equal(settled, 0);
-		const result = await completion.promise;
-		assert.equal(settled, 1);
-		assert.equal(result.finalOutput, "Final detached answer");
-		assert.equal(result.usage.turns, 2);
-		assert.equal(result.modelAttempts.reduce((turns, attempt) => turns + attempt.usage.turns, 0), 2);
-		const metadata = JSON.parse(fs.readFileSync(result.artifactPaths.metadataPath, "utf8"));
-		assert.deepEqual(metadata.usage, result.usage);
-		assert.deepEqual(metadata.acceptance, result.acceptance);
-		assert.equal(metadata.initialOutput, "Initial answer");
-		assert.equal(immediate.detached, true);
-	});
-
 	function executor() {
 		return createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: cwd, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			state: { baseCwd: cwd, currentSessionId: null, asyncJobs: new Map() },
 			config: {}, asyncByDefault: false, tempArtifactsDir: cwd, getSubagentSessionRoot: () => cwd,
 			expandTilde: (value) => value, discoverAgents: () => ({ agents: [makeAgent("worker")] }),
 		});
@@ -836,8 +649,7 @@ if (process.argv[1]?.endsWith("subagent-runner.ts")) {
 	}
 
 	it("clarify switching single to background preserves the acceptance contract", async () => {
-		mock.onCall({ output: report() });
-		mock.onCall({ output: report() });
+		mock.onCall({ nativeReport: { scenario: "single", initialReport: `Initial\n${report()}`, report: `Reviewed\n${report()}`, receiptPath: path.join(cwd, "native.json") } });
 		const ctx = { ...makeMinimalCtx(cwd), hasUI: true, ui: { custom: async () => ({ confirmed: true, templates: ["Deliver the result"], behaviorOverrides: [{}], runInBackground: true }) } };
 		const result = await executor().execute("test", { agent: "worker", task: "Deliver the result", clarify: true, acceptance }, undefined, undefined, ctx);
 		assert.ok(!result.isError, result.content[0]?.text);
@@ -846,6 +658,6 @@ if (process.argv[1]?.endsWith("subagent-runner.ts")) {
 		assert.equal(path.basename(path.dirname(path.dirname(completed.results[0].sessionFile))), id);
 		assert.equal(completed.results[0].acceptance.status, "checked");
 		assert.equal(completed.results[0].acceptance.finalization.turns.length, 1);
-		assert.equal(mock.callCount(), 2);
+		assert.equal(mock.callCount(), 1);
 	});
 });
