@@ -9,7 +9,9 @@ import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readQ
 export function subagentCheckpointBlocker(state: SubagentState, ownerSessionId: string): string | undefined {
 	const alive = (pid?: number) => Boolean(pid && questionProcessAlive({ pid }));
 	for (const job of state.asyncJobs.values()) {
-		if (alive(job.pid) || job.status === "running" || job.status === "queued" || hasLiveNestedDescendants(job.nestedChildren)) return `Background subagent ${job.asyncId} is live`;
+		// Owned runs have durable authority below; their display can lag a consumed native result.
+		const unownedActiveJob = !state.ownedRuns?.has(job.asyncId) && (job.status === "running" || job.status === "queued");
+		if (alive(job.pid) || unownedActiveJob || hasLiveNestedDescendants(job.nestedChildren)) return `Background subagent ${job.asyncId} is live`;
 	}
 	if (listSupervisorQuestions(ownerSessionId).some((q) => q.state === "awaiting_input" || q.state === "answer_pending")) return "Subagent supervisor question is unresolved";
 	for (const run of state.ownedRuns?.values() ?? []) {

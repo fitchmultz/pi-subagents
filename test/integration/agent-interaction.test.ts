@@ -1327,15 +1327,20 @@ test("completion during compose keeps the draft, and viewing a finished child ne
 });
 
 test("a first foreground launch updates the strip without a manual open", async (t) => {
-	const f = fixture(t), mock = createMockPi(); mock.install(); t.after(() => mock.uninstall());
+	const f = fixture(t), mock = createMockPi(); mock.install();
 	f.state.ownedRuns!.clear(); f.controller.refresh(true);
-	mock.onCall({ delay: 1200, output: "Fresh foreground completed" });
+	const release = path.join(f.cwd, "first-launch-release");
+	mock.onCall({ waitForFile: release, output: "Fresh foreground completed" });
 	const pending = f.executor.execute("first-launch", { agent: "worker", task: "A first foreground task", label: "Fresh foreground", async: false, artifacts: false, output: false }, undefined, undefined, f.ctx);
-	t.after(async () => { await pending; });
-	await new Promise((resolve) => setTimeout(resolve, 650));
+	t.after(async () => { fs.writeFileSync(release, "released"); await pending; mock.uninstall(); });
+	await until(() => mock.callCount() === 1 && f.controller.tasks[0]?.child.activity?.status === "running", "the real child starts and the strip observes it without a manual refresh");
 	assert.match(plain(f.strip), /1 running[\s\S]*● Fresh foreground/);
 	assert.equal(f.controller.tasks[0]?.child.state, "live");
-	await pending;
+	assert.equal(f.tui.hasOverlay(), false);
+	fs.writeFileSync(release, "released");
+	const result = await pending;
+	assert.equal(result.isError, undefined);
+	assert.match(result.content[0].text, /Fresh foreground completed/);
 });
 
 test("new async chain preserves its launch identity, draft and pin through first status persistence", async (t) => {

@@ -321,6 +321,11 @@ export function createResultWatcher(
 				if (ev !== "rename" || !file) return;
 				const fileName = file.toString();
 				if (!fileName.endsWith(".json")) return;
+				// Our unlink can arrive after delivery and a new hold. An existing
+				// replacement still invalidates, even when the previous result was consumed.
+				const runId = path.basename(fileName, ".json");
+				if ((state.isRunResultConsumed?.(runId) || state.ownedRuns?.get(runId)?.delivery)
+					&& !fsApi.existsSync(path.join(resultsDir, fileName))) return;
 				checkpoint?.invalidate(); // Before accepting result work or deleting a file.
 				state.resultFileCoalescer.schedule(fileName);
 			});
