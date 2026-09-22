@@ -4,7 +4,7 @@
 
 ## Installation
 
-`pi-subagents` works with official Pi **0.85.1**, including saved-child continuation in a different directory. No Pi fork is required. Known Intercom host limitations are listed in the [Intercom guide](docs/intercom.md#limitations).
+`pi-subagents` works with official Pi **0.87.0**, including saved-child continuation in a different directory. No Pi fork is required. Known Intercom host limitations are listed in the [Intercom guide](docs/intercom.md#limitations).
 
 New sessions inherit the child process's working directory. Saved sessions retain their file, identity, header, and history; a requested directory change uses Pi's native SDK cwd override before startup. Same-directory resumes, including symlink and trailing-slash spellings, need no override. Structured-output startup preserves active tools and enables its capture tool. Use an explicit tool policy for restricted child runs; Pi can restore default built-ins when resuming without one.
 
@@ -31,13 +31,13 @@ Use the normal development workflow below for editing and validation, then rerun
 
 Supported platforms: **macOS and Linux**. Termux on Android is unverified; Windows is not supported.
 
-Pi core packages remain optional wildcard peers. Development dependencies are pinned to the coherent official Pi 0.86.1 cohort for compilation and package checks.
+Pi core packages remain optional wildcard peers. Development dependencies are pinned to the coherent official Pi 0.87.0 cohort for compilation and package checks.
 
 ## Local validation
 
 `npm run check:compat` uses the selected host installed in this checkout, never a hidden Pi from PATH. It checks host SDK/manifest-bin identity, builds, typechecks, runs all unit tests, packs a runtime-only consumer, and qualifies both compiled entries with a private Intercom broker through the native SDK and bundled RPC CLI. It also exercises same/different-cwd resume, acceptance, structured output, native result routing/ownership and tool activation using the existing integration tests. No provider credentials or inference services are used.
 
-The compatibility runner supplies `PI_COMPAT_HOST=official|fork`, `PI_COMPAT_EXPECTED_VERSION`, `PI_COMPAT_EXPECTED_PACKAGE_DIR`, `PI_HOST_INDEX`, and `PI_HOST_CLI`. Types, SDK imports, and child CLI must resolve to that installed graph. `PI_COMPAT_HOST=fork` additionally runs the **entire** integration suite and requires native checkpoint hooks instead of silently skipping them. The ordinary official lane does **not** certify the extended replay/working-session contract: full official 0.86.1 integration still exposes five unchanged queue visibility, prompt-preparation ownership/startup, and `newContext` failures. See [host limitations](docs/intercom.md#limitations).
+The compatibility runner supplies `PI_COMPAT_HOST=official|fork`, `PI_COMPAT_EXPECTED_VERSION`, `PI_COMPAT_EXPECTED_PACKAGE_DIR`, `PI_HOST_INDEX`, and `PI_HOST_CLI`. Types, SDK imports, and child CLI must resolve to that installed graph. `PI_COMPAT_HOST=fork` additionally runs the **entire** integration suite and requires native checkpoint hooks instead of silently skipping them. The ordinary official lane does **not** certify the extended replay/working-session contract: full official 0.87.0 integration still exposes five unchanged queue visibility, prompt-preparation ownership/startup, and `newContext` failures. The maintained fork target is [`fitchmultz/pi` at `afed789dded723566b6ecb1c77a06e8561504f7a`](https://github.com/fitchmultz/pi/commit/afed789dded723566b6ecb1c77a06e8561504f7a) (Pi 0.87.0). See [host limitations](docs/intercom.md#limitations).
 
 Use an empty HOME outside your real home ancestry and a short temporary directory. Child tests use local fixtures and their own broker/profile. Preserve the separate Node 22.19 and Linux qualification lanes; a Node 24 macOS run is not evidence for every advertised platform.
 
@@ -54,7 +54,7 @@ npm ci
 npm run ci
 ```
 
-Some native queue and prompt-preparation regressions still expose the [known host limitations](docs/intercom.md#limitations) on official Pi 0.86.1. Retain those checks and report their failures; a focused passing check does not establish a full-suite pass.
+Some native queue and prompt-preparation regressions still expose the [known host limitations](docs/intercom.md#limitations) on official Pi 0.87.0. Retain those checks and report their failures; a focused passing check does not establish a full-suite pass.
 
 That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
