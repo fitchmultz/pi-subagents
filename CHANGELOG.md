@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.40.0] - Unreleased
+## [0.40.0] - 2026-09-22
 
 ### Changed
 - Use one durable detached owner for single, parallel, chain, and continued runs, with a shared Pi JSON CLI/Claude Code child-attempt lifecycle. Foreground calls now wait on the same saved work instead of using separate execution engines.
