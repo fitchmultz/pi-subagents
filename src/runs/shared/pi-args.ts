@@ -6,6 +6,7 @@ import { encodeNestedPathEnv, parseNestedPathEnv, type NestedPathEntry } from ".
 import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
 import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
+import { prepareChildExecutionCwd } from "./child-execution-cwd.ts";
 import type { ChildProjectTrustPolicy, JsonSchemaObject } from "../../shared/types.ts";
 // Managed macOS environments can SIGKILL Node when one argv entry reaches ~930 UTF-8 bytes.
 // Measure the full entry (including the `Task: ` prefix), not just the task body.
@@ -163,6 +164,7 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	args.push(...resolveChildProjectTrustArgs(input.projectTrust));
 
 	if (input.sessionFile) {
+		prepareChildExecutionCwd(input.sessionFile, input.cwd);
 		fs.mkdirSync(path.dirname(input.sessionFile), { recursive: true });
 		args.push("--session", input.sessionFile);
 		if (input.cwd) {

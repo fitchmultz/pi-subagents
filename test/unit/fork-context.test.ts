@@ -123,6 +123,7 @@ describe("createForkContextResolver", () => {
 			assert.ok(childSessionFile);
 			assert.notEqual(childSessionFile, parentSessionFile);
 			assert.equal(fs.existsSync(childSessionFile), true);
+			assert.deepEqual(JSON.parse(fs.readFileSync(`${childSessionFile}.subagent-cwd-init`, "utf8")), {});
 		} finally {
 			fs.rmSync(tempDir, { recursive: true, force: true });
 		}
@@ -210,7 +211,9 @@ describe("createForkContextResolver", () => {
 			});
 
 			const first = resolver.sessionFileForIndex(7);
+			fs.unlinkSync(`${first}.subagent-cwd-init`);
 			const second = resolver.sessionFileForIndex(7);
+			assert.equal(fs.existsSync(`${second}.subagent-cwd-init`), false, "a cached fork never resets later child selection");
 			assert.equal(first, second);
 			assert.equal(calls, 1);
 		} finally {
