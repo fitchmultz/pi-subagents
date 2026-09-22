@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { createSupervisorQuestion, questionProcessAlive, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
+import { createSupervisorQuestion, getRunMetadataDir, saveRunStatus, questionProcessAlive, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import { createNestedRoute, projectNestedEvents, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import {
@@ -124,8 +124,6 @@ describe("intercom result delivery cutover", () => {
 			currentSessionId: null,
 			asyncJobs: new Map(),
 			foregroundRuns: new Map(),
-			foregroundControls: new Map(),
-			lastForegroundControlId: null,
 			cleanupTimers: new Map(),
 			lastUiContext: null,
 			poller: null,
@@ -683,14 +681,14 @@ describe("intercom result delivery cutover", () => {
 		}
 	});
 
-	it("status lists completed foreground and owned async runs even while another foreground run is active", async () => {
+	it("status lists completed owned runs while another durable owner is active", async () => {
 		mockPi.onCall({ output: "Saved foreground evidence" });
 		const { executor, state, events } = makeExecutor();
 		const ctx = makeMinimalCtx(tempDir);
 		ctx.sessionManager.getSessionId = () => `owned-parent-${path.basename(tempDir)}`;
 		const completed = await executor.execute("completed-foreground", { agent: "worker", task: "Report status" }, new AbortController().signal, undefined, ctx);
-		state.foregroundControls.set("another-live-run", { runId: "another-live-run", mode: "single", currentAgent: "worker", startedAt: 100, updatedAt: 100 });
-		rememberOwnedRun(state, { runId: "another-live-run", ownerSessionId: ctx.sessionManager.getSessionId(), source: "foreground", mode: "single", cwd: tempDir, task: "Active work", startedAt: 100, rootRunId: "another-live-run", children: [{ agent: "worker", index: 0 }] });
+		saveRunStatus("another-live-run", { runtimeVersion: 2, runId: "another-live-run", mode: "single", state: "running", pid: process.pid, startedAt: Date.now(), steps: [{ agent: "worker", status: "running" }] });
+		rememberOwnedRun(state, { runId: "another-live-run", asyncDir: getRunMetadataDir("another-live-run"), ownerSessionId: ctx.sessionManager.getSessionId(), source: "async", mode: "single", cwd: tempDir, task: "Active work", startedAt: 100, rootRunId: "another-live-run", children: [{ agent: "worker", index: 0 }] });
 		const runId = `owned-recent-${Date.now()}`;
 		const asyncDir = path.join(ASYNC_DIR, runId);
 		try {
@@ -713,17 +711,10 @@ describe("intercom result delivery cutover", () => {
 		}
 	});
 
-	it("nudge action rejects non-current foreground child indexes", async () => {
+	it("nudge action rejects child indexes with no live owner child", async () => {
 		const { executor, state } = makeExecutor({ acknowledgeLive: true });
-		state.foregroundControls.set("fg-nudge", {
-			runId: "fg-nudge",
-			mode: "parallel",
-			startedAt: Date.now(),
-			updatedAt: Date.now(),
-			currentAgent: "worker",
-			currentIndex: 0,
-		});
-		state.lastForegroundControlId = "fg-nudge";
+		saveRunStatus("fg-nudge", { runtimeVersion: 2, runId: "fg-nudge", mode: "parallel", state: "running", pid: process.pid, startedAt: Date.now(), steps: [{ agent: "worker", status: "running" }] });
+		rememberOwnedRun(state, { runId: "fg-nudge", rootRunId: "fg-nudge", asyncDir: getRunMetadataDir("fg-nudge"), ownerSessionId: "session-123", source: "async", mode: "parallel", cwd: tempDir, task: "Active work", startedAt: 100, children: [{ agent: "worker", index: 0 }] });
 
 		const result = await executor.execute(
 			"nudge-foreground-wrong-index",
@@ -734,7 +725,7 @@ describe("intercom result delivery cutover", () => {
 		);
 
 		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /has no live child at index 1/);
+		assert.match(result.content[0]?.text ?? "", /has 0 matching live children/);
 	});
 
 	it("status action includes live intercom health when the bridge responds", async () => {
@@ -771,20 +762,13 @@ describe("intercom result delivery cutover", () => {
 		}
 	});
 
-	it("status action includes live foreground intercom health when the bridge responds", async () => {
+	it("status action includes durable owner intercom health without a host tracker", async () => {
 		const target = "subagent-worker-fg-health-1";
 		const { executor, state, events } = makeExecutor({
 			health: [{ target, status: "registered", sessionStatus: "tool:edit", acceptsAsks: false, pendingAsks: 1 }],
 		});
-		state.foregroundControls.set("fg-health", {
-			runId: "fg-health",
-			mode: "single",
-			startedAt: Date.now(),
-			updatedAt: Date.now(),
-			currentAgent: "worker",
-			currentIndex: 0,
-		});
-		state.lastForegroundControlId = "fg-health";
+		saveRunStatus("fg-health", { runtimeVersion: 2, runId: "fg-health", mode: "single", state: "running", pid: process.pid, startedAt: Date.now(), steps: [{ agent: "worker", status: "running" }] });
+		rememberOwnedRun(state, { runId: "fg-health", rootRunId: "fg-health", asyncDir: getRunMetadataDir("fg-health"), ownerSessionId: "session-123", source: "async", mode: "single", cwd: tempDir, task: "Active work", startedAt: 100, children: [{ agent: "worker", index: 0 }] });
 
 		const result = await executor.execute(
 			"status-foreground-health",
@@ -907,8 +891,7 @@ describe("intercom result delivery cutover", () => {
 				child: { id: nestedRunId, parentRunId: rootRunId, parentStepIndex: 0, depth: 1, path: [{ runId: rootRunId, stepIndex: 0 }], state: "complete", agent: "worker", ownerState: "gone", asyncDir, sessionFile },
 			});
 			const { executor, state } = makeExecutor({ acknowledgeResults: false });
-			state.foregroundControls.set(rootRunId, { runId: rootRunId, mode: "single", startedAt: 1, updatedAt: 1, nestedRoute: route });
-			state.lastForegroundControlId = rootRunId;
+			rememberOwnedRun(state, { runId: rootRunId, rootRunId, ownerSessionId: "session-123", source: "async", mode: "single", cwd: tempDir, task: "Nested owner", startedAt: 1, children: [] });
 			const testCtx = {
 				...makeMinimalCtx(tempDir),
 				sessionManager: { getSessionId: () => "session-123", getSessionFile: () => parentSessionFile },

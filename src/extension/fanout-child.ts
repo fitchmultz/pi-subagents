@@ -5,11 +5,12 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-w
 import { discoverAgents } from "../agents/agents.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
-import { interruptAsyncRun, interruptForegroundChild } from "../runs/foreground/foreground-control.ts";
+import { interruptAsyncRun } from "../runs/foreground/foreground-control.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV, SUBAGENT_PARENT_CHILD_INDEX_ENV } from "../runs/shared/pi-args.ts";
 import { readNestedControlRequests, resolveNestedRouteFromEnv, writeNestedControlResult } from "../runs/shared/nested-events.ts";
 import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.ts";
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
+import { readStatus } from "../shared/utils.ts";
 import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
 import { registerToolResultAdapter } from "./tool-result.ts";
@@ -38,9 +39,6 @@ function createChildSafeState(): SubagentState {
 		currentSessionId: null,
 		asyncJobs: new Map(),
 		foregroundRuns: new Map(),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		pendingForegroundControlNotices: new Map(),
 		cleanupTimers: new Map(),
 		lastUiContext: null,
 		poller: null,
@@ -78,9 +76,9 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 			for (const request of readNestedControlRequests(route, seenFiles)) {
 				if (seen.has(request.requestId) || inFlight.has(request.requestId)) continue;
 				if (request.targetChildIndex !== undefined && request.targetChildIndex !== localChildIndex) continue;
-				const foregroundControl = state.foregroundControls.get(request.targetRunId);
+				const owned = state.ownedRuns?.get(request.targetRunId);
 				const asyncJob = state.asyncJobs.get(request.targetRunId);
-				if (!foregroundControl && !asyncJob && (request.targetChildIndex !== undefined || Date.now() - request.ts < 400)) continue;
+				if (!owned && !asyncJob && (request.targetChildIndex !== undefined || Date.now() - request.ts < 400)) continue;
 				inFlight.add(request.requestId);
 				void (async () => {
 					const claimPath = `${request.filePath}.claimed`;
@@ -116,25 +114,20 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 							let ok = false;
 							let message = "Control request failed.";
 							try {
-								const control = state.foregroundControls.get(request.targetRunId);
-								const liveAsyncJob = state.asyncJobs.get(request.targetRunId);
-								if (!control && !liveAsyncJob) {
+								const asyncDir = state.ownedRuns?.get(request.targetRunId)?.asyncDir ?? state.asyncJobs.get(request.targetRunId)?.asyncDir;
+								const status = asyncDir ? readStatus(asyncDir) : null;
+								if (!status || status.state !== "running") {
 									message = `Nested run ${request.targetRunId} is not active in this fanout child.`;
-								} else if (liveAsyncJob && request.action === "interrupt") {
-									const receipt = interruptAsyncRun(state, liveAsyncJob.asyncId, request.index);
+								} else if (request.action === "interrupt") {
+									const receipt = interruptAsyncRun(state, request.targetRunId, request.index);
 									ok = Boolean(receipt && !receipt.isError);
 									message = receipt?.content.map((part) => part.type === "text" ? part.text : "").join("\n") ?? "Nested run is not interruptible.";
-								} else if (control && request.action === "interrupt") {
-									ok = interruptForegroundChild(control, request.index);
-									message = ok
-										? `Interrupt requested for nested run ${request.targetRunId}.`
-										: `Nested run ${request.targetRunId} has no active child step to interrupt.`;
 								} else if (!request.message?.trim()) {
 									message = "Nested resume requires message.";
 								} else {
-									const asyncIndex = liveAsyncJob?.steps?.findIndex((step) => step.status === "running") ?? -1;
-									const index = control?.currentIndex ?? (asyncIndex >= 0 ? asyncIndex : 0);
-									const agent = control?.currentAgent ?? liveAsyncJob?.steps?.[index]?.agent ?? liveAsyncJob?.agents?.[index];
+									const index = request.index ?? status.steps?.findIndex((step) => step.status === "running") ?? -1;
+									const step = status.steps?.[index];
+									const agent = step?.status === "running" ? step.agent : undefined;
 									if (!agent) {
 										message = `Nested run ${request.targetRunId} has no active child message route.`;
 									} else {

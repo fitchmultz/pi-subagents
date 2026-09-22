@@ -28,11 +28,10 @@ import {
 } from "../../intercom/result-intercom.ts";
 import { sendLiveSubagentMessage } from "../../intercom/live-intercom.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
-import { readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNestedAsyncDir, resolveNestedParentAddressFromEnv, updateForegroundNestedProjection, writeNestedControlRequest, type NestedRunResolutionScope } from "../shared/nested-events.ts";
+import { readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNestedAsyncDir, resolveNestedParentAddressFromEnv, writeNestedControlRequest, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
-import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
-import { buildManagementControl, formatAgentProcessExit, formatLiveIntercomActionLines, formatRunAction } from "../../shared/status-format.ts";
+import { buildManagementControl, formatAgentProcessExit, formatRunAction } from "../../shared/status-format.ts";
 import { acceptanceInputFromResolved } from "../shared/acceptance.ts";
 import { ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun, saveForegroundRun } from "../shared/run-records.ts";
 import {
@@ -42,8 +41,6 @@ import {
 	type ControlEvent,
 	type Details,
 	type SubagentExecutionResult,
-	type SubagentLiveIntercomHealth,
-	type ForegroundControlState,
 	type ForegroundResumeRun,
 	type IntercomEventBus,
 	type NestedRunSummary,
@@ -71,42 +68,6 @@ export function resolveRequestedCwd(runtimeCwd: string, requestedCwd: string | u
 	return requestedCwd ? path.resolve(runtimeCwd, requestedCwd) : runtimeCwd;
 }
 
-export function getForegroundControl(state: SubagentState, runId: string | undefined) {
-	if (runId) return state.foregroundControls.get(runId);
-	if (state.lastForegroundControlId) {
-		const latest = state.foregroundControls.get(state.lastForegroundControlId);
-		if (latest) return latest;
-	}
-	let newest: ForegroundControlState | undefined;
-	for (const control of state.foregroundControls.values()) {
-		if (!newest || control.updatedAt > newest.updatedAt) newest = control;
-	}
-	return newest;
-}
-
-export function interruptForegroundChild(control: ForegroundControlState, index?: number): boolean {
-	const interrupt = index === undefined ? control.interrupt : control.activeChildren?.get(index)?.interrupt
-		?? (!control.activeChildren?.size && (control.currentIndex ?? 0) === index ? control.interrupt : undefined);
-	return interrupt?.() === true;
-}
-
-function formatForegroundActivity(control: ForegroundControlState): string | undefined {
-	const facts: string[] = [];
-	if (control.currentTool && control.currentToolStartedAt) facts.push(`tool ${control.currentTool} for ${Math.floor(Math.max(0, Date.now() - control.currentToolStartedAt) / 1000)}s`);
-	else if (control.currentTool) facts.push(`tool ${control.currentTool}`);
-	if (control.currentPath) facts.push(`path ${control.currentPath}`);
-	if (control.turnCount !== undefined) facts.push(`${control.turnCount} turns`);
-	if (control.tokens !== undefined) facts.push(`${control.tokens} tokens`);
-	if (control.toolCount !== undefined) facts.push(`${control.toolCount} tools`);
-	if (!control.lastActivityAt) {
-		if (control.currentActivityState === "needs_attention") return ["needs attention", ...facts].join(" | ");
-		return facts.length ? facts.join(" | ") : undefined;
-	}
-	const seconds = Math.floor(Math.max(0, Date.now() - control.lastActivityAt) / 1000);
-	if (control.currentActivityState === "needs_attention") return [`no activity for ${seconds}s`, ...facts].join(" | ");
-	return [`active ${seconds}s ago`, ...facts].join(" | ");
-}
-
 export function nestedResolutionScopeForExecutor(deps: ExecutorDeps): NestedRunResolutionScope | undefined {
 	if (deps.allowMutatingManagementActions !== false) return undefined;
 	const route = resolveInheritedNestedRouteFromEnv();
@@ -114,72 +75,6 @@ export function nestedResolutionScopeForExecutor(deps: ExecutorDeps): NestedRunR
 	return {
 		routes: route ? [route] : [],
 		...(address ? { descendantOf: { parentRunId: address.parentRunId, ...(address.parentStepIndex !== undefined ? { parentStepIndex: address.parentStepIndex } : {}) } } : {}),
-	};
-}
-
-export function foregroundIntercomTarget(control: ForegroundControlState): string | undefined {
-	return control.currentAgent ? resolveSubagentIntercomTarget(control.runId, control.currentAgent, control.currentIndex ?? 0) : undefined;
-}
-
-export function foregroundStatusResult(control: ForegroundControlState, health?: SubagentLiveIntercomHealth, includeRunHeader = true, childSafe = false): SubagentExecutionResult {
-	let nestedWarning: string | undefined;
-	try {
-		updateForegroundNestedProjection(control);
-	} catch (error) {
-		nestedWarning = `Nested status unavailable: ${error instanceof Error ? error.message : String(error)}`;
-	}
-	const activity = formatForegroundActivity(control);
-	const intercomTarget = foregroundIntercomTarget(control);
-	const lines = [
-		...(includeRunHeader ? [`Run: ${control.runId}`, "State: running", `Mode: ${control.mode}`] : []),
-		control.currentAgent ? `Current: ${control.currentAgent}${control.currentIndex !== undefined ? ` step ${control.currentIndex + 1}` : ""}` : undefined,
-		(control.activeChildren?.size ?? 0) > 1
-			? `Active: ${[...control.activeChildren!.entries()].map(([index, child]) => `${index}:${child.agent}`).join(", ")}`
-			: undefined,
-		activity ? `Activity: ${activity}` : undefined,
-		control.timeoutAt ? `Timeout: ${new Date(control.timeoutAt).toISOString()}` : undefined,
-		control.timeoutAt && control.extendTimeout ? `Extend: ${formatRunAction("extend", control.runId, { extendMs: 300000 }, childSafe)}` : undefined,
-	].filter((line): line is string => Boolean(line));
-	if (intercomTarget) lines.push(...formatLiveIntercomActionLines({ runId: control.runId, target: intercomTarget, index: control.currentIndex, health, childSafe }));
-	lines.push(...formatNestedRunStatusLines(control.nestedChildren, { indent: "", commandHints: true, maxLines: 20, childSafe }));
-	if (nestedWarning) lines.push(`Warning: ${nestedWarning}`);
-	return {
-		content: [{ type: "text", text: lines.join("\n") }],
-		details: {
-			mode: "management", results: [],
-			managementControl: buildManagementControl({ state: "live", runId: control.runId, index: control.currentIndex, intercomTarget, canNudge: true, canResume: true, canInterrupt: true, canExtend: Boolean(control.timeoutAt && control.extendTimeout) }),
-		},
-	};
-}
-
-export function extendForegroundTimeoutResult(control: ForegroundControlState, additionalMs: number): SubagentExecutionResult {
-	if (!Number.isInteger(additionalMs) || additionalMs <= 0) {
-		return {
-			content: [{ type: "text", text: "action='extend' requires extendMs or timeoutMs to be a positive integer number of milliseconds." }],
-			isError: true,
-			details: { mode: "management", results: [] },
-		};
-	}
-	if (!control.extendTimeout) {
-		return {
-			content: [{ type: "text", text: `Foreground run ${control.runId} does not currently have an extendable timeout.` }],
-			isError: true,
-			details: { mode: "management", results: [] },
-		};
-	}
-	const result = control.extendTimeout(additionalMs);
-	if (!result.ok) {
-		return {
-			content: [{ type: "text", text: result.message }],
-			isError: true,
-			details: { mode: "management", results: [] },
-		};
-	}
-	control.timeoutAt = result.timeoutAt;
-	control.updatedAt = Date.now();
-	return {
-		content: [{ type: "text", text: `Extended foreground run ${control.runId} by ${additionalMs}ms.${result.timeoutAt ? ` New timeout: ${new Date(result.timeoutAt).toISOString()}.` : ""}` }],
-		details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: control.runId, index: control.currentIndex, intercomTarget: foregroundIntercomTarget(control), canNudge: true, canResume: true, canInterrupt: true, canExtend: true }) },
 	};
 }
 
@@ -615,7 +510,6 @@ function terminalNudgeResult(runId: string, deps: ExecutorDeps): SubagentExecuti
 		return { ...result, content: [{ type: "text", text: `Nudge not sent: ${state === "unknown" ? "completion is unconfirmed" : `run is already ${state}`}. No child was restarted.\n\n${result.content.map((part) => part.type === "text" ? part.text : "").join("\n")}` }] };
 	}
 	const remembered = deps.state.foregroundRuns?.get(runId);
-	if (!remembered && deps.state.foregroundControls.get(runId)?.currentAgent) return undefined;
 	const status = remembered
 		? rememberedForegroundStatusResult(remembered, Boolean(nestedResolutionScopeForExecutor(deps)))
 		: inspectSubagentStatus({ id: runId }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
@@ -641,7 +535,7 @@ export async function nudgeSubagentRun(input: {
 	let resolvedRunId: string | undefined;
 
 	try {
-		const owned = requestedId ? resolveOwnedRun(input.deps.state, requestedId) : undefined;
+		const owned = input.params.dir ? undefined : resolveOwnedRun(input.deps.state, requestedId ?? getAsyncInterruptTarget(input.deps.state, undefined)?.asyncId ?? "latest");
 		if (owned) {
 			resolvedRunId = owned.runId;
 			const terminal = terminalNudgeResult(owned.runId, input.deps);
@@ -654,48 +548,27 @@ export async function nudgeSubagentRun(input: {
 			runId = owned.runId; agent = child.agent; index = child.index;
 			target = resolveSubagentIntercomTarget(runId, agent, index);
 		} else {
-		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
-		const remembered = !resolved && requestedId ? resolveRememberedForegroundRun(requestedId, input.deps.state) : undefined;
-		resolvedRunId = resolved?.id ?? remembered?.runId;
-		const terminal = resolvedRunId ? terminalNudgeResult(resolvedRunId, input.deps) : undefined;
-		if (terminal) return terminal;
-		if (resolved?.kind === "nested") {
-			const run = resolved.match.run;
-			const state = run.state === "running" || run.state === "queued" ? "live" : run.state === "complete" ? "completed" : run.state === "paused" || run.state === "blocked" || run.state === "failed" ? run.state : "unknown";
-			const intercomTarget = run.intercomTarget ?? run.leafIntercomTarget;
-			const childSafe = Boolean(nestedResolutionScopeForExecutor(input.deps));
-			const valid = [formatRunAction("status", run.id, {}, childSafe)];
-			if (state === "live" || run.sessionFile) valid.push(formatRunAction("resume", run.id, { message: "..." }, childSafe));
-			if (state === "live") valid.push(formatRunAction("interrupt", run.id, {}, childSafe));
-			return {
-				content: [{ type: "text", text: `Nested run ${run.id} cannot be nudged. Valid actions: ${valid.join(" or ")}${intercomTarget ? `. Intercom target: ${intercomTarget}` : "."}` }],
-				isError: true,
-				details: { mode: "management", results: [], managementControl: buildManagementControl({ state, runId: run.id, intercomTarget, canNudge: false, canResume: state === "live" || Boolean(run.sessionFile), canInterrupt: state === "live", unavailableActions: { nudge: "Nested runs do not support nudge; use an advertised exact action or intercom target." } }) },
-			};
-		}
-		if (resolved?.kind === "foreground" || remembered || (!resolved && !requestedId)) {
-			const control = getForegroundControl(input.deps.state, resolved?.kind === "foreground" ? resolved.id : requestedId);
-			if (control?.currentAgent) {
-				const currentIndex = input.params.index ?? control.currentIndex ?? 0;
-				const activeChild = control.activeChildren?.get(currentIndex);
-				if (input.params.index !== undefined) {
-					if (control.activeChildren?.size ? !activeChild : currentIndex !== (control.currentIndex ?? 0)) {
-						throw new Error(`Foreground run '${control.runId}' has no live child at index ${currentIndex}. Inspect status before targeting another child.`);
-					}
-				}
-				runId = control.runId;
-				agent = activeChild?.agent ?? control.currentAgent;
-				index = currentIndex;
-				target = resolveSubagentIntercomTarget(runId, agent, index);
-			} else if (resolved?.kind === "foreground" || remembered) {
-				const rememberedRun = remembered ?? resolveRememberedForegroundRun(resolved?.id, input.deps.state);
-				if (!rememberedRun) throw new Error(`Foreground run '${resolved?.id}' has no live child to nudge.`);
-				return rememberedForegroundStatusResult(rememberedRun, Boolean(nestedResolutionScopeForExecutor(input.deps)));
-			} else {
-				throw new Error("No live foreground child found. Provide id for a running async child or inspect status first.");
+			const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
+			const remembered = !resolved && requestedId ? resolveRememberedForegroundRun(requestedId, input.deps.state) : undefined;
+			resolvedRunId = resolved?.id ?? remembered?.runId;
+			const terminal = resolvedRunId ? terminalNudgeResult(resolvedRunId, input.deps) : undefined;
+			if (terminal) return terminal;
+			if (resolved?.kind === "nested") {
+				const run = resolved.match.run;
+				const state = run.state === "running" || run.state === "queued" ? "live" : run.state === "complete" ? "completed" : run.state === "paused" || run.state === "blocked" || run.state === "failed" ? run.state : "unknown";
+				const intercomTarget = run.intercomTarget ?? run.leafIntercomTarget;
+				const childSafe = Boolean(nestedResolutionScopeForExecutor(input.deps));
+				const valid = [formatRunAction("status", run.id, {}, childSafe)];
+				if (state === "live" || run.sessionFile) valid.push(formatRunAction("resume", run.id, { message: "..." }, childSafe));
+				if (state === "live") valid.push(formatRunAction("interrupt", run.id, {}, childSafe));
+				return {
+					content: [{ type: "text", text: `Nested run ${run.id} cannot be nudged. Valid actions: ${valid.join(" or ")}${intercomTarget ? `. Intercom target: ${intercomTarget}` : "."}` }],
+					isError: true,
+					details: { mode: "management", results: [], managementControl: buildManagementControl({ state, runId: run.id, intercomTarget, canNudge: false, canResume: state === "live" || Boolean(run.sessionFile), canInterrupt: state === "live", unavailableActions: { nudge: "Nested runs do not support nudge; use an advertised exact action or intercom target." } }) },
+				};
 			}
-		} else {
-			const asyncTarget = resolveAsyncResumeTarget({ id: input.params.id, runId: input.params.runId, dir: input.params.dir, index: input.params.index });
+			if (remembered) return rememberedForegroundStatusResult(remembered, Boolean(nestedResolutionScopeForExecutor(input.deps)));
+			const asyncTarget = resolveAsyncResumeTarget({ id: input.params.id ?? (!requestedId ? getAsyncInterruptTarget(input.deps.state, undefined)?.asyncId : undefined), runId: input.params.runId, dir: input.params.dir, index: input.params.index });
 			if (asyncTarget.kind !== "live") {
 				return terminalNudgeResult(asyncTarget.runId, input.deps)
 					?? inspectSubagentStatus({ id: asyncTarget.runId }, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) });
@@ -704,7 +577,6 @@ export async function nudgeSubagentRun(input: {
 			agent = asyncTarget.agent;
 			index = asyncTarget.index;
 			target = asyncTarget.intercomTarget;
-		}
 		}
 	} catch (error) {
 		const terminal = resolvedRunId ? terminalNudgeResult(resolvedRunId, input.deps) : undefined;
@@ -788,11 +660,6 @@ export async function resumeAsyncRun(input: {
 			});
 		}
 		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
-		if (resolved?.kind === "foreground") {
-			const result = await nudgeSubagentRun({ params: { ...input.params, message: followUp }, deps: input.deps, ctx: input.ctx });
-			if (input.params.acceptance !== undefined) result.content.push({ type: "text", text: LIVE_ACCEPTANCE_OVERRIDE_NOTICE });
-			return result;
-		}
 		if (resolved?.kind === "nested") {
 			if (resolved.match.run.state === "running" || resolved.match.run.state === "queued") {
 				return resumeLiveNestedRun({ target: resolved, message: followUp, acceptanceOverrideSupplied: input.params.acceptance !== undefined, events: input.deps.pi.events, childSafe: Boolean(nestedResolutionScopeForExecutor(input.deps)) });

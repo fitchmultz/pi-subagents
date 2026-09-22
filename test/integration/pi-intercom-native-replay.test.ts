@@ -875,8 +875,7 @@ for (const background of [false, true]) for (const scenario of ["question", "too
   await waitFor(() => readNotices().some(({ event }) => event.ts > toolStartedAt + controlConfig.needsAttentionAfterMs), "runner idle producer event");
   const notice = readNotices().find(({ event }) => event.ts > toolStartedAt + controlConfig.needsAttentionAfterMs)!;
   const event = notice.event;
-  const state = { foregroundControls: new Map([[name, { runId: name, mode: "single", startedAt: toolStartedAt, updatedAt: event.ts, currentAgent: "worker", currentIndex: 0, currentActivityState: "needs_attention" }]]) };
-  handleSubagentControlNotice({ pi: api!, state, visibleControlNotices: new Set(), details: { ...notice, source: background ? "async" : "foreground", childIntercomTarget: `${name}-child` }, foregroundDelayMs: 0 });
+  handleSubagentControlNotice({ pi: api!, visibleControlNotices: new Set(), details: { ...notice, source: "async", childIntercomTarget: `${name}-child` } });
   await waitFor(() => parent.session.sessionManager.getEntries().some((entry: { type: string; customType?: string }) => entry.type === "custom_message" && entry.customType === "subagent_control_notice"), "native attention custom message");
   const message = parent.session.sessionManager.getEntries().find((entry: { customType?: string }) => entry.customType === "subagent_control_notice");
   assert.equal(message.content, notice.noticeText);

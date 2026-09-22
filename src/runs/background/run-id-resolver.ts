@@ -1,9 +1,8 @@
 import { ASYNC_DIR, RESULTS_DIR, type SubagentState } from "../../shared/types.ts";
 import { exactAsyncRunLocation, findAsyncRunPrefixMatches, type AsyncRunLocation } from "./async-resume.ts";
-import { assertSafeNestedId, findNestedRunMatchesById, type NestedRoute, type NestedRunMatch, type NestedRunResolutionScope } from "../shared/nested-events.ts";
+import { assertSafeNestedId, findNestedRunMatchesById, findNestedRouteForRootId, type NestedRoute, type NestedRunMatch, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 
 export type ResolvedSubagentRunId =
-	| { kind: "foreground"; id: string }
 	| { kind: "async"; id: string; location: AsyncRunLocation }
 	| { kind: "nested"; id: string; match: NestedRunMatch };
 
@@ -12,10 +11,6 @@ export interface ResolveSubagentRunIdDeps {
 	asyncDirRoot?: string;
 	resultsDir?: string;
 	nested?: NestedRunResolutionScope;
-}
-
-function foregroundIds(state: SubagentState | undefined): string[] {
-	return state ? [...state.foregroundControls.keys()] : [];
 }
 
 function nestedScopeFromState(state: SubagentState | undefined): NestedRunResolutionScope | undefined {
@@ -29,7 +24,7 @@ function nestedScopeFromState(state: SubagentState | undefined): NestedRunResolu
 		seen.add(key);
 		routes.push(route);
 	};
-	for (const control of state.foregroundControls.values()) add(control.nestedRoute as NestedRoute | undefined);
+	for (const run of state.ownedRuns?.values() ?? []) add(findNestedRouteForRootId(run.runId));
 	for (const job of state.asyncJobs.values()) add(job.nestedRoute as NestedRoute | undefined);
 	return { routes };
 }
@@ -44,7 +39,6 @@ export function resolveSubagentRunId(id: string, deps: ResolveSubagentRunIdDeps 
 	const resultsDir = deps.resultsDir ?? RESULTS_DIR;
 
 	const nestedScope = deps.nested ?? nestedScopeFromState(deps.state);
-	if (deps.state?.foregroundControls.has(id)) return { kind: "foreground", id };
 	const exactAsync = exactAsyncRunLocation(id, asyncDirRoot, resultsDir);
 	if (exactAsync.asyncDir || exactAsync.resultPath) return { kind: "async", id, location: exactAsync };
 	const exactNested = findNestedRunMatchesById(id, nestedScope ? { scope: nestedScope } : {});
@@ -52,9 +46,6 @@ export function resolveSubagentRunId(id: string, deps: ResolveSubagentRunIdDeps 
 	if (exactNested[0]) return { kind: "nested", id, match: exactNested[0] };
 
 	const matches: ResolvedSubagentRunId[] = [];
-	for (const foregroundId of foregroundIds(deps.state).filter((candidate) => candidate.startsWith(id))) {
-		matches.push({ kind: "foreground", id: foregroundId });
-	}
 	for (const match of asyncPrefixMatches(id, asyncDirRoot, resultsDir)) {
 		matches.push({ kind: "async", id: match.id, location: match.location });
 	}

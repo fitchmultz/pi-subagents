@@ -908,35 +908,6 @@ export interface TimeoutExtensionResult {
 
 export type TimeoutExtensionCallback = (additionalMs: number) => TimeoutExtensionResult;
 
-export interface ForegroundActiveChildControl {
-	agent: string;
-	interrupt?: () => boolean;
-}
-
-export interface ForegroundControlState {
-	runId: string;
-	mode: SubagentRunMode;
-	startedAt: number;
-	updatedAt: number;
-	currentAgent?: string;
-	currentIndex?: number;
-	currentActivityState?: ActivityState;
-	lastActivityAt?: number;
-	currentTool?: string;
-	currentToolStartedAt?: number;
-	currentPath?: string;
-	turnCount?: number;
-	tokens?: number;
-	toolCount?: number;
-	nestedRoute?: NestedRouteInfo;
-	nestedChildren?: NestedRunSummary[];
-	activeChildren?: Map<number, ForegroundActiveChildControl>;
-	progress?: AgentProgress[];
-	timeoutAt?: number;
-	extendTimeout?: TimeoutExtensionCallback;
-	interrupt?: () => boolean;
-}
-
 export interface SubagentState {
 	baseCwd: string;
 	currentSessionId: string | null;
@@ -948,9 +919,6 @@ export interface SubagentState {
 	ownedRuns?: Map<string, OwnedRun>;
 	persistOwnedRun?: (run: OwnedRun) => void;
 	onRunsChanged?: () => void;
-	foregroundControls: Map<string, ForegroundControlState>;
-	lastForegroundControlId: string | null;
-	pendingForegroundControlNotices?: Map<string, ReturnType<typeof setTimeout>>;
 	cleanupTimers: Map<string, ReturnType<typeof setTimeout>>;
 	lastUiContext: ExtensionContext | null;
 	poller: NodeJS.Timeout | null;

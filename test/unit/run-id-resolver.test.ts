@@ -13,15 +13,13 @@ afterEach(() => {
 	for (const root of routeRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
-function stateWithForeground(id: string): SubagentState {
+function stateWithOwnedRun(id: string): SubagentState {
 	return {
 		baseCwd: "",
 		currentSessionId: null,
 		asyncJobs: new Map(),
 		foregroundRuns: new Map(),
-		foregroundControls: new Map([[id, { runId: id, mode: "single", startedAt: 1, updatedAt: 1 }]]),
-		lastForegroundControlId: id,
-		pendingForegroundControlNotices: new Map(),
+		ownedRuns: new Map([[id, { runId: id, rootRunId: id, ownerSessionId: "parent", source: "async", mode: "single", startedAt: 1, cwd: "", task: "Fixture", children: [] }]]),
 		cleanupTimers: new Map(),
 		lastUiContext: null,
 		poller: null,
@@ -50,13 +48,11 @@ function writeNestedChild(route: ReturnType<typeof createNestedRoute>, parentRun
 }
 
 function stateWithNestedRoute(route: ReturnType<typeof createNestedRoute>): SubagentState {
-	const state = stateWithForeground("foreground-only");
-	state.foregroundControls.set(route.rootRunId, { runId: route.rootRunId, mode: "single", startedAt: 1, updatedAt: 1, nestedRoute: route });
-	return state;
+	return stateWithOwnedRun(route.rootRunId);
 }
 
 describe("subagent run id resolver", () => {
-	it("prefers exact foreground, then exact async, then exact nested before prefix matches", () => {
+	it("prefers exact durable owner locations, then exact nested before prefix matches", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-resolver-"));
 		try {
 			const asyncRoot = path.join(root, "runs");
@@ -65,7 +61,7 @@ describe("subagent run id resolver", () => {
 			nested("root-shared", "shared-id");
 			nested("root-prefix", "shared-id-child");
 
-			assert.equal(resolveSubagentRunId("shared-id", { state: stateWithForeground("shared-id"), asyncDirRoot: asyncRoot, resultsDir })?.kind, "foreground");
+			assert.equal(resolveSubagentRunId("shared-id", { state: stateWithOwnedRun("shared-id"), asyncDirRoot: asyncRoot, resultsDir })?.kind, "async");
 			assert.equal(resolveSubagentRunId("shared-id", { asyncDirRoot: asyncRoot, resultsDir })?.kind, "async");
 			fs.rmSync(path.join(asyncRoot, "shared-id"), { recursive: true, force: true });
 			const resolved = resolveSubagentRunId("shared-id", { asyncDirRoot: asyncRoot, resultsDir });
@@ -100,7 +96,7 @@ describe("subagent run id resolver", () => {
 			() => resolveSubagentRunId("shared-nested"),
 			/ambiguous across authorized registries|ambiguous across registries/i,
 		);
-		assert.equal(resolveSubagentRunId("shared-nested", { state: stateWithForeground("foreground-only") }), undefined);
+		assert.equal(resolveSubagentRunId("shared-nested", { state: stateWithOwnedRun("owned-only") }), undefined);
 		const resolved = resolveSubagentRunId("shared-nested", { state: stateWithNestedRoute(allowed) });
 		assert.equal(resolved?.kind, "nested");
 		assert.equal(resolved?.kind === "nested" ? resolved.match.rootRunId : undefined, "root-allowed");

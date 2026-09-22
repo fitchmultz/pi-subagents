@@ -18,6 +18,7 @@ const { inspectSubagentStatus } = await import("../../src/runs/background/run-st
 const { reconcileAsyncRun, reconcileNestedAsyncDescendants } = await import("../../src/runs/background/stale-run-reconciler.ts");
 const { createNestedRoute, writeNestedEvent, projectNestedEvents } = await import("../../src/runs/shared/nested-events.ts");
 const { ownedRunView, ownedRunExecutionResult, restoreOwnedRuns } = await import("../../src/runs/shared/run-records.ts");
+const { subagentCheckpointBlocker } = await import("../../src/runs/shared/checkpoint.ts");
 const { createResultWatcher } = await import("../../src/runs/background/result-watcher.ts");
 const { createEventBus } = await import("../support/helpers.ts");
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -35,8 +36,7 @@ function snapshot(dir: string): unknown {
 	});
 }
 function state(): SubagentState {
-	return { baseCwd: root, currentSessionId: "parent-file", asyncJobs: new Map(), foregroundControls: new Map(),
-		lastForegroundControlId: null, cleanupTimers: new Map(), lastUiContext: null, poller: null,
+	return { baseCwd: root, currentSessionId: "parent-file", asyncJobs: new Map(), cleanupTimers: new Map(), lastUiContext: null, poller: null,
 		completionSeen: new Map(), watcher: null, watcherRestartTimer: null, ownedRuns: new Map(),
 		resultFileCoalescer: { schedule: () => false, clear() {} } };
 }
@@ -106,6 +106,19 @@ it("v2 final results survive temporary cleanup and supply full execution results
 	assert.deepEqual(execution.details.outputs, { report: { path: "report.md" } });
 	assert.match(execution.content[0]!.text!, /Worktree changes retained/);
 	assert.deepEqual(snapshot(dir), before);
+});
+
+it("checkpoint guard follows durable process and completion evidence without a live host map", () => {
+	const { dir, status, run } = fixture("checkpoint-owner");
+	const local = state(); local.ownedRuns!.set(run.runId, run);
+	write(path.join(dir, "status.json"), { ...status, state: "running", pid: process.pid, steps: [{ agent: "worker", status: "running" }] });
+	assert.match(subagentCheckpointBlocker(local, "parent")!, /process is live/);
+	write(path.join(dir, "status.json"), { ...status, state: "complete", pid: process.pid });
+	assert.match(subagentCheckpointBlocker(local, "parent")!, /process is live/, "a terminal label does not prove process exit");
+	write(path.join(dir, "status.json"), { ...status, state: "complete" });
+	assert.match(subagentCheckpointBlocker(local, "parent")!, /completion is unconfirmed/, "an exited owner still needs its durable result");
+	write(path.join(dir, "result.json"), { runtimeVersion: 2, id: run.runId, state: "complete", timestamp: 300, results: [{ agent: "worker", success: true, exitCode: 0, output: "Done" }] });
+	assert.equal(subagentCheckpointBlocker(local, "parent"), undefined);
 });
 
 it("active legacy runs remain in their original directory and keep partial configuration", () => {

@@ -11,7 +11,6 @@ import {
 	type NestedRunState,
 	type NestedStepSummary,
 	type SubagentRunMode,
-	type SubagentState,
 } from "../../shared/types.ts";
 import { ensureTempRoot } from "../../shared/temp-root.ts";
 import { isSafeNestedPathId, parseNestedPathEnv, sanitizeNestedPath, type NestedPathEntry } from "./nested-path.ts";
@@ -686,12 +685,6 @@ export function updateAsyncJobNestedProjection(job: AsyncJobState): void {
 	const registry = projectNestedEvents(job.nestedRoute);
 	job.nestedChildren = registry.children;
 	attachRootChildrenToSteps(job.asyncId, job.steps, registry.children);
-}
-
-export function updateForegroundNestedProjection(control: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never): void {
-	if (!control.nestedRoute) return;
-	const registry = projectNestedEvents(control.nestedRoute);
-	control.nestedChildren = registry.children;
 }
 
 export function hasLiveNestedDescendants(children: NestedRunSummary[] | undefined): boolean {

@@ -4,6 +4,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { discoverAgents } from "../../src/agents/agents.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import { readAsyncResultFile } from "../../src/runs/background/async-result-file.ts";
+import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
 import { INTERCOM_DETACH_REQUEST_EVENT } from "../../src/shared/types.ts";
 import type { MockPi } from "../support/helpers.ts";
 import { createEventBus, createMockPi, createTempDir, events, removeTempDir } from "../support/helpers.ts";
@@ -126,6 +128,12 @@ describe("fork context execution wiring", () => {
 			expandTilde: (p: string) => p,
 			discoverAgents: discoverAgentsImpl,
 		}), { eventsApi });
+	}
+
+	async function savedOwnerResult(runId: string) {
+		const file = path.join(getRunMetadataDir(runId), "result.json"), deadline = Date.now() + 10_000;
+		while (!fs.existsSync(file)) { assert.ok(Date.now() < deadline, "owner publishes its terminal result after wait detachment"); await new Promise((resolve) => setTimeout(resolve, 20)); }
+		return readAsyncResultFile(file);
 	}
 
 	function readCallArgs(): string[] {
@@ -1152,15 +1160,16 @@ describe("fork context execution wiring", () => {
 		}
 	});
 
-	it("detaches parallel child runs cleanly on intercom handoff", async () => {
+	it("releases the parallel wait on intercom handoff while its owner finishes both children", async () => {
 		mockPi.reset();
 		mockPi.onCall({
+			matchArgsIncludes: "send handoff",
 			steps: [
 				{ jsonl: [events.toolStart("intercom", { action: "ask", to: "orchestrator" })] },
 				{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
 			],
 		});
-		mockPi.onCall({ output: "other done" });
+		mockPi.onCall({ matchArgsIncludes: "continue", output: "other done" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
 				{ name: "echo", description: "Echo", systemPrompt: "Intercom orchestration channel:" },
@@ -1188,20 +1197,25 @@ describe("fork context execution wiring", () => {
 		);
 
 		assert.equal(result.isError, undefined);
-		assert.match(result.content[0]?.text ?? "", /Parallel run detached for intercom coordination/);
+		assert.match(result.content[0]?.text ?? "", /Released the wait/);
+		assert.equal(result.details.wait?.status, "yielded");
 		assert.equal(detachEmitted, true);
-		assert.equal(result.details?.results?.some((entry) => entry.detached === true && entry.exitCode === 0), true);
+		const saved = await savedOwnerResult(result.details.wait!.runId);
+		assert.equal(saved.terminalState, "complete");
+		assert.deepEqual(saved.results.map((child) => child.output), ["after handoff", "other done"]);
+		assert.ok(saved.results.every((child) => !child.detached && child.exitCode === 0));
 	});
 
-	it("reports failed siblings when a parallel child detaches for intercom handoff", async () => {
+	it("keeps a sibling failure in the owner result after the parallel wait is released", async () => {
 		mockPi.reset();
 		mockPi.onCall({
+			matchArgsIncludes: "send handoff",
 			steps: [
 				{ jsonl: [events.toolStart("intercom", { action: "ask", to: "orchestrator" })] },
 				{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
 			],
 		});
-		mockPi.onCall({ stderr: "sibling exploded", exitCode: 1 });
+		mockPi.onCall({ matchArgsIncludes: "fail", stderr: "sibling exploded", exitCode: 1 });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
 				{ name: "echo", description: "Echo", systemPrompt: "Intercom orchestration channel:" },
@@ -1222,13 +1236,17 @@ describe("fork context execution wiring", () => {
 			makeCtx(makeSessionManagerRecorder().manager),
 		);
 
-		const text = result.content[0]?.text ?? "";
-		assert.equal(result.isError, true);
-		assert.match(text, /Parallel run detached for intercom coordination/);
-		assert.match(text, /second.*sibling exploded/s);
-		assert.equal(result.details?.results?.length, 2);
-		assert.equal(result.details?.results?.some((entry) => entry.detached === true && entry.exitCode === 0), true);
-		assert.equal(result.details?.results?.some((entry) => entry.exitCode === 1 && entry.error?.includes("sibling exploded")), true);
+		assert.equal(result.isError, undefined, "releasing a wait is not a terminal result");
+		assert.equal(result.details.wait?.status, "yielded");
+		assert.match(result.content[0]?.text ?? "", /Released the wait/);
+		const saved = await savedOwnerResult(result.details.wait!.runId);
+		assert.equal(saved.terminalState, "failed");
+		assert.equal(saved.results.length, 2);
+		assert.equal(saved.results.some((child) => child.exitCode === 0 && child.output === "after handoff"), true);
+		assert.equal(saved.results.some((child) => child.exitCode === 1 && child.error?.includes("sibling exploded")), true);
+		const inspection = await executor.execute("inspect-after-handoff", { action: "status", id: result.details.wait!.runId }, undefined, undefined, makeCtx(makeSessionManagerRecorder().manager));
+		assert.equal(inspection.details.run?.state, "failed");
+		assert.match(inspection.content[0]?.text ?? "", /second[\s\S]*sibling exploded/);
 	});
 
 	it("runs top-level parallel async requests in the background", async () => {
@@ -1364,7 +1382,7 @@ describe("fork context execution wiring", () => {
 		await waitForTaskCalls(["async chain task one", "async chain task two"]);
 	});
 
-	it("keeps explicit clarify async chain requests in the foreground", async () => {
+	it("waits for explicit clarify async chain requests through the durable owner", async () => {
 		const executor = makeExecutor();
 
 		const result = await executor.execute(
@@ -1384,7 +1402,9 @@ describe("fork context execution wiring", () => {
 
 		assert.equal(result.isError, undefined);
 		assert.equal(result.details?.mode, "chain");
-		assert.equal(result.details?.asyncId, undefined);
+		assert.equal(result.details.wait?.status, "completed");
+		assert.equal(result.details.asyncId, result.details.wait?.runId);
+		assert.equal(result.details.results.length, 2);
 		assert.doesNotMatch(result.content[0]?.text ?? "", /Async chain:/);
 	});
 

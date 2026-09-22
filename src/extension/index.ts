@@ -62,7 +62,6 @@ import {
 	WIDGET_KEY,
 } from "../shared/types.ts";
 import {
-	clearPendingForegroundControlNotices,
 	formatSubagentControlNotice,
 	handleSubagentControlNotice,
 	SUBAGENT_CONTROL_MESSAGE_TYPE,
@@ -266,9 +265,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		foregroundRuns: new Map(),
 		ownedRuns: new Map(),
 		persistOwnedRun: (run) => pi.appendEntry(OWNED_RUN_ENTRY, run),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		pendingForegroundControlNotices: new Map(),
 		cleanupTimers: new Map(),
 		lastUiContext: null,
 		poller: null,
@@ -306,7 +302,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const runtimeCleanup = () => {
 		agentView?.dispose();
 		stopResultWatcher();
-		clearPendingForegroundControlNotices(state);
 		if (state.poller) {
 			clearInterval(state.poller);
 			state.poller = null;
@@ -602,7 +597,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const controlEventHandler = (payload: unknown) => {
 		handleSubagentControlNotice({
 			pi,
-			state,
 			visibleControlNotices,
 			details: payload as SubagentControlMessageDetails,
 		});
@@ -659,7 +653,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		state.baseCwd = ctx.cwd;
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		state.lastUiContext = ctx;
-		clearPendingForegroundControlNotices(state);
 		resetJobs();
 		try {
 			restoreJobs(state.currentSessionId, ctx);
@@ -721,7 +714,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		stopResultWatcher();
 		if (state.poller) clearInterval(state.poller);
 		state.poller = null;
-		clearPendingForegroundControlNotices(state);
 		for (const timer of state.cleanupTimers.values()) {
 			clearTimeout(timer);
 		}

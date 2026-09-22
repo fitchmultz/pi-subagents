@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { formatAsyncRunList, formatAsyncRunOutputPath, formatAsyncRunProgressLabel, listAsyncRuns } from "./async-status.ts";
+import { formatActivityFacts, formatAsyncRunList, formatAsyncRunOutputPath, formatAsyncRunProgressLabel, listAsyncRuns } from "./async-status.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { formatModelThinking } from "../../shared/formatters.ts";
 import { buildManagementControl, formatActivityLabel, formatLiveIntercomActionLines, formatRunAction } from "../../shared/status-format.ts";
@@ -46,7 +46,7 @@ function completionTargetsCurrentSession(run: Pick<AsyncStatus, "sessionId" | "c
 }
 
 function nestedCompletionTargetsCurrentSession(rootRunId: string, asyncDirRoot: string, state: SubagentState | undefined): boolean {
-	if (!state || state.foregroundControls.has(rootRunId)) return true;
+	if (!state || state.ownedRuns?.has(rootRunId)) return true;
 	const tracked = state.asyncJobs.get(rootRunId);
 	if (tracked) return completionTargetsCurrentSession(tracked, state);
 	try {
@@ -164,7 +164,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 	if (!params.id && !params.runId && !params.dir) {
 		if (deps.nested) {
 			return {
-				content: [{ type: "text", text: "Child-safe subagent status requires an id when no foreground run is active." }],
+				content: [{ type: "text", text: "Child-safe subagent status requires a run id." }],
 				isError: true,
 				details: { mode: "single", results: [] },
 			};
@@ -281,7 +281,8 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			});
 			const started = new Date(status.startedAt).toISOString();
 			const updated = status.lastUpdate ? new Date(status.lastUpdate).toISOString() : "n/a";
-			const statusActivityText = status.state === "running" ? formatActivityLabel(status.lastActivityAt, status.activityState) : undefined;
+			const statusActivityText = status.state === "running" ? formatActivityFacts(status) : undefined;
+			const canExtend = status.runtimeVersion === 2 && status.state === "running" && !status.timedOut && Boolean(status.timeoutAt);
 
 			const lines = [
 				...(deps.includeRunHeader !== false ? [`Run: ${status.runId}`, `State: ${status.state}`, `Mode: ${status.mode}`] : []),
@@ -289,6 +290,8 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				`Progress: ${progressLabel}`,
 				`Started: ${started}`,
 				`Updated: ${updated}`,
+				status.timeoutAt ? `Timeout: ${new Date(status.timeoutAt).toISOString()}` : undefined,
+				canExtend ? `Extend: ${formatRunAction("extend", status.runId, { extendMs: 300000 }, childSafe)}` : undefined,
 				`Dir: ${asyncDir}`,
 				`Status: ${formatRunAction("status", status.runId, {}, childSafe)}`,
 				outputPath ? `Output: ${outputPath}` : undefined,
@@ -298,7 +301,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			if (status.state !== "running") lines.push(...formatOutputExcerpt(outputPath));
 
 			for (const [index, step] of (status.steps ?? []).entries()) {
-				const stepActivityText = step.status === "running" ? formatActivityLabel(step.lastActivityAt, step.activityState) : undefined;
+				const stepActivityText = step.status === "running" ? formatActivityFacts(step) : undefined;
 				const modelThinking = formatModelThinking(step.model, step.thinking);
 				const modelText = modelThinking ? ` (${modelThinking})` : "";
 				const errorText = step.error ? `, error: ${step.error}` : "";
@@ -307,6 +310,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				const display = step.label ? `${step.label} (${step.agent})` : step.agent;
 				const phase = step.phase ? `[${step.phase}] ` : "";
 				lines.push(`${stepLineLabel(status, index)}: ${phase}${display} ${step.status}${modelText}${stepActivityText ? `, ${stepActivityText}` : ""}${acceptanceText}${errorText}`);
+				if (step.tokens) lines.push(`  ${step.tokens.total} tokens`);
 				lines.push(...formatNestedRunStatusLines(step.children, { indent: "  ", commandHints: true, maxLines: 20, childSafe }));
 				const stepOutputPath = path.join(asyncDir, `output-${index}.log`);
 				if (stepOutputPath !== outputPath && fs.existsSync(stepOutputPath)) lines.push(`  Output: ${stepOutputPath}`);
@@ -337,7 +341,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				content: [{ type: "text", text: lines.join("\n") }],
 				details: {
 					mode: "single", results: [], intercomTargets,
-					managementControl: buildManagementControl({ state, runId: status.runId, index: runningStep?.index ?? resumableStep?.index, intercomTarget: target, canNudge: Boolean(runningStep), canResume: state === "live" ? Boolean(runningStep) : canResume, canInterrupt: status.state === "running" }),
+					managementControl: buildManagementControl({ state, runId: status.runId, index: runningStep?.index ?? resumableStep?.index, intercomTarget: target, canNudge: Boolean(runningStep), canResume: state === "live" ? Boolean(runningStep) : canResume, canInterrupt: status.state === "running", canExtend }),
 				},
 			};
 		}

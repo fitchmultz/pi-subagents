@@ -27,7 +27,6 @@ import { resolveControlConfig } from "../shared/subagent-control.ts";
 import { createNestedRoute, resolveInheritedNestedRouteFromEnv } from "../shared/nested-events.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
-import { buildManagementControl } from "../../shared/status-format.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
 import { queryLiveIntercomHealth, queryLiveIntercomStatus } from "../../intercom/live-intercom.ts";
 import { saveQuestionOwner } from "../shared/supervisor-questions.ts";
@@ -50,13 +49,8 @@ import {
 } from "./subagent-params.ts";
 import {
 	MUTATING_MANAGEMENT_ACTIONS,
-	extendForegroundTimeoutResult,
 	extendAsyncTimeoutResult,
-	foregroundIntercomTarget,
-	foregroundStatusResult,
-	getForegroundControl,
 	interruptAsyncRun,
-	interruptForegroundChild,
 	interruptNestedRun,
 	nestedResolutionScopeForExecutor,
 	nudgeSubagentRun,
@@ -103,8 +97,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const invocationCwd = needsExecutionCwd ? executionCwd ?? resolveExecutionCwd(deps.pi, ctx) : ctx.cwd;
 		if (needsExecutionCwd) deps.state.baseCwd = invocationCwd;
 		deps.state.foregroundRuns ??= new Map();
-		deps.state.foregroundControls ??= new Map();
-		deps.state.lastForegroundControlId ??= null;
 		const requestCwd = resolveRequestedCwd(invocationCwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
@@ -173,26 +165,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				if (targetRunId) {
 					try {
 						includeRunHeader = Boolean(params.dir) || !resolveOwnedRun(deps.state, targetRunId);
-						const nestedScope = nestedResolutionScopeForExecutor(deps);
-						const resolved = resolveSubagentRunId(targetRunId, { state: deps.state, nested: nestedScope });
-						if (resolved?.kind === "foreground") {
-							const foreground = getForegroundControl(deps.state, resolved.id);
-							if (foreground) {
-								const target = foregroundIntercomTarget(foreground);
-								const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
-								return foregroundStatusResult(foreground, health, includeRunHeader, Boolean(nestedScope));
-							}
-						}
 					} catch (error) {
 						const message = error instanceof Error ? error.message : String(error);
 						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
-					}
-				} else if (deps.allowMutatingManagementActions === false) {
-					const foreground = getForegroundControl(deps.state, undefined);
-					if (foreground) {
-						const target = foregroundIntercomTarget(foreground);
-						const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
-						return foregroundStatusResult(foreground, health, true, true);
 					}
 				}
 				let inspected = inspectSubagentStatus({ ...paramsWithResolvedCwd, action: "status" }, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps), includeRunHeader });
@@ -211,23 +186,15 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					}
 				}
 				if (!targetRunId && !params.dir && deps.allowMutatingManagementActions !== false) {
-					const current = getForegroundControl(deps.state, undefined);
-					const target = current ? foregroundIntercomTarget(current) : undefined;
-					const health = target ? (await queryLiveIntercomHealth(deps.pi.events, [target])).get(target) : undefined;
-					const foreground = [
-						...[...deps.state.foregroundControls.values()].map((control) => foregroundStatusResult(control, control === current ? health : undefined)),
-						...[...(deps.state.foregroundRuns?.values() ?? [])]
-							.filter((run) => !deps.state.foregroundControls.has(run.runId))
-							.sort((a, b) => b.updatedAt - a.updatedAt)
-							.map((run) => rememberedForegroundStatusResult(run)),
-					];
+					const foreground = [...(deps.state.foregroundRuns?.values() ?? [])]
+						.sort((a, b) => b.updatedAt - a.updatedAt)
+						.map((run) => rememberedForegroundStatusResult(run));
 					if (foreground.length) {
 						inspected = {
 							...inspected,
 							content: [...foreground.flatMap((result) => result.content), ...inspected.content],
 							details: {
 								...inspected.details,
-								managementControl: foreground.find((result) => result.details.managementControl?.runId === current?.runId)?.details.managementControl,
 								managementControls: [...foreground.flatMap((result) => result.details.managementControl ? [result.details.managementControl] : []), ...(inspected.details.managementControls ?? [])],
 							},
 						};
@@ -252,9 +219,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
 					}
 				}
-				const foreground = getForegroundControl(deps.state, resolved?.kind === "foreground" ? resolved.id : targetRunId);
-				if (!foreground) return extendAsyncTimeoutResult(deps.state, resolved?.id ?? targetRunId, paramsWithResolvedCwd.extendMs ?? paramsWithResolvedCwd.timeoutMs ?? paramsWithResolvedCwd.maxRuntimeMs ?? 0);
-				return extendForegroundTimeoutResult(foreground, paramsWithResolvedCwd.extendMs ?? paramsWithResolvedCwd.timeoutMs ?? paramsWithResolvedCwd.maxRuntimeMs ?? 0);
+				return extendAsyncTimeoutResult(deps.state, resolved?.id ?? targetRunId, paramsWithResolvedCwd.extendMs ?? paramsWithResolvedCwd.timeoutMs ?? paramsWithResolvedCwd.maxRuntimeMs ?? 0);
 			}
 			if (params.action === "interrupt") {
 				const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
@@ -268,24 +233,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					}
 				}
 				if (resolved?.kind === "nested") return interruptNestedRun(resolved, paramsWithResolvedCwd.index);
-				const foreground = getForegroundControl(deps.state, resolved?.kind === "foreground" ? resolved.id : targetRunId);
-				if (foreground) {
-					const index = paramsWithResolvedCwd.index;
-					const interrupted = interruptForegroundChild(foreground, index);
-					if (interrupted) {
-						foreground.updatedAt = Date.now();
-						foreground.currentActivityState = undefined;
-						return {
-							content: [{ type: "text", text: `Interrupt requested for foreground run ${foreground.runId}${index !== undefined ? ` child ${index} only` : ""}. Agent and command exit are not yet confirmed.` }],
-							details: { mode: "management", results: [], managementControl: buildManagementControl({ state: "live", runId: foreground.runId, index: foreground.currentIndex, intercomTarget: foregroundIntercomTarget(foreground), canNudge: true, canResume: true, canInterrupt: true, canExtend: Boolean(foreground.timeoutAt && foreground.extendTimeout) }) },
-						};
-					}
-					return {
-						content: [{ type: "text", text: `Foreground run ${foreground.runId} has no active child${index !== undefined ? ` at index ${index}` : " step"} to interrupt. No siblings were stopped.` }],
-						isError: true,
-						details: { mode: "management", results: [] },
-					};
-				}
 				const asyncInterruptResult = interruptAsyncRun(deps.state, resolved?.kind === "async" ? resolved.id : targetRunId, paramsWithResolvedCwd.index);
 				if (asyncInterruptResult) return asyncInterruptResult;
 				return {

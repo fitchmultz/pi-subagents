@@ -410,9 +410,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		}
 		state.cleanupTimers.clear();
 		state.asyncJobs.clear();
-		state.foregroundControls?.clear();
 		state.foregroundRuns?.clear();
-		state.lastForegroundControlId = null;
 		state.resultFileCoalescer.clear();
 		if (ctx && isTuiContext(ctx)) {
 			state.lastUiContext = ctx;

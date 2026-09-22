@@ -28,8 +28,6 @@ function statusState(baseCwd: string, currentSessionId: string): SubagentState {
 		baseCwd,
 		currentSessionId,
 		asyncJobs: new Map(),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
 		cleanupTimers: new Map(),
 		lastUiContext: null,
 		poller: null,

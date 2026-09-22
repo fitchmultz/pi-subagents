@@ -7,7 +7,6 @@ import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readQ
 
 /** Read existing run authorities; a terminal label alone is not process exit. */
 export function subagentCheckpointBlocker(state: SubagentState, ownerSessionId: string): string | undefined {
-	if (state.foregroundControls.size) return "Foreground subagent control is live";
 	const alive = (pid?: number) => Boolean(pid && questionProcessAlive({ pid }));
 	for (const job of state.asyncJobs.values()) {
 		if (alive(job.pid) || job.status === "running" || job.status === "queued" || hasLiveNestedDescendants(job.nestedChildren)) return `Background subagent ${job.asyncId} is live`;

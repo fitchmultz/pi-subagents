@@ -55,7 +55,7 @@ export async function waitForOwnedRun(input: {
 			try {
 				const view = ownedRunView(target, deps.state);
 				const children = view.children.filter((child) => index === undefined || child.index === index);
-				if (!children.length) { finish("unavailable", `Run ${target.runId} has no child at index ${index}.`); return; }
+				if (index !== undefined && !children.length) { finish("unavailable", `Run ${target.runId} has no child at index ${index}.`); return; }
 				const result = ownedRunStatusResult(target, deps.state);
 				const questions = listSupervisorQuestions(owner, target.runId).filter((question) => (index === undefined || question.index === index) && question.state === "awaiting_input");
 				if (questions.length && !input.nativeAsync) { result.details.questions = questions; finish("awaiting_input", `Run ${target.runId} needs input; waiting ended without stopping it.\n\n${questions.map((question) => `Question ${question.questionId}: ${question.message}`).join("\n\n")}`, result); return; }
@@ -65,7 +65,7 @@ export async function waitForOwnedRun(input: {
 					return;
 				}
 				const pid = target.pid ?? (target.asyncDir ? readStatus(target.asyncDir)?.pid : undefined);
-				const producerAlive = deps.state.foregroundControls.has(target.runId) || (pid ? questionProcessAlive({ pid }) : children.some((child) => child.state === "live"));
+				const producerAlive = pid ? questionProcessAlive({ pid }) : children.some((child) => child.state === "live");
 				if (!producerAlive) { finish("unavailable", `No saved final result is available for ${target.runId}; completion is unconfirmed. Inspect the saved session. No work was started.`, result); return; }
 				const update = `Waiting for ${target.runId}${index !== undefined ? ` child ${index}` : ""}: ${children.map((child) => child.state).join(", ")}. ${input.cancelNewRun ? "Cancelling requests cancellation of this newly launched run; process exit still needs confirmation." : "Cancelling this wait leaves existing work alive."}`;
 				if (input.onUpdate) {

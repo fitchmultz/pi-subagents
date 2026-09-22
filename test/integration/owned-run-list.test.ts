@@ -15,8 +15,8 @@ after(() => removeTempDir(root));
 
 test("owned pages skip unchanged off-page results/contracts while keeping fresh attention, questions, review and lineage", (t) => {
 	const state: SubagentState = {
-		baseCwd: root, currentSessionId: "parent", ownedRuns: new Map(), asyncJobs: new Map(), foregroundControls: new Map(),
-		lastForegroundControlId: null, cleanupTimers: new Map(), lastUiContext: null, poller: null, completionSeen: new Map(), watcher: null,
+		baseCwd: root, currentSessionId: "parent", ownedRuns: new Map(), asyncJobs: new Map(),
+		cleanupTimers: new Map(), lastUiContext: null, poller: null, completionSeen: new Map(), watcher: null,
 		watcherRestartTimer: null, resultFileCoalescer: { schedule: () => false, clear() {} },
 	};
 	const sessionFile = path.join(root, "child.jsonl");

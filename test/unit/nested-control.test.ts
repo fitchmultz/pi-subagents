@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it, mock } from "node:test";
 import registerFanoutChildSubagentExtension from "../../src/extension/fanout-child.ts";
+import { getRunMetadataDir, saveRunStatus } from "../../src/runs/shared/supervisor-questions.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { createNestedRoute, projectNestedEvents, readNestedControlRequests, readNestedControlResults, writeNestedControlRequest, writeNestedControlResult, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import {
@@ -44,9 +45,7 @@ function createState(): SubagentState {
 		currentSessionId: null,
 		asyncJobs: new Map(),
 		foregroundRuns: new Map(),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		pendingForegroundControlNotices: new Map(),
+		ownedRuns: new Map(),
 		cleanupTimers: new Map(),
 		lastUiContext: null,
 		poller: null,
@@ -97,14 +96,7 @@ function createNestedRun(id = "nested-live", state: "running" | "complete" | "fa
 
 function stateWithNestedRoute(route: ReturnType<typeof createNestedRoute>): SubagentState {
 	const state = createState();
-	state.foregroundControls.set(route.rootRunId, {
-		runId: route.rootRunId,
-		mode: "single",
-		startedAt: 1,
-		updatedAt: 1,
-		nestedRoute: route,
-	});
-	state.lastForegroundControlId = route.rootRunId;
+	state.ownedRuns!.set(route.rootRunId, { runId: route.rootRunId, rootRunId: route.rootRunId, ownerSessionId: "session", mode: "single", source: "async", startedAt: 1, cwd: "", task: "Nested owner", children: [] });
 	return state;
 }
 
@@ -231,21 +223,15 @@ describe("nested control routing", () => {
 		}
 	});
 
-	it("renders nested children in foreground status output", async () => {
+	it("renders nested children from the durable owner's status output", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-foreground-status-"));
 		try {
 			const route = createNestedRun("nested-foreground");
-			const state = createState();
-			state.foregroundControls.set("root-control", {
-				runId: "root-control",
-				mode: "single",
-				startedAt: 1,
-				updatedAt: 1,
-				currentAgent: "orchestrator",
-				currentIndex: 0,
-				nestedRoute: route,
-			});
-			state.lastForegroundControlId = "root-control";
+			const state = stateWithNestedRoute(route);
+			const run = state.ownedRuns!.get(route.rootRunId)!;
+			run.asyncDir = getRunMetadataDir(run.runId);
+			routeRoots.push(run.asyncDir);
+			saveRunStatus(run.runId, { runtimeVersion: 2, runId: run.runId, mode: "single", state: "running", pid: process.pid, startedAt: Date.now(), steps: [{ agent: "orchestrator", status: "running" }] });
 
 			const result = await createExecutor(state).execute("status", { action: "status", id: "root-control" }, new AbortController().signal, undefined, ctx(root));
 
@@ -303,7 +289,7 @@ describe("nested control routing", () => {
 			const result = await createExecutor(createState(), [], false).execute("status", { action: "status" }, new AbortController().signal, undefined, ctx(root));
 
 			assert.equal(result.isError, true);
-			assert.match(text(result), /requires an id/);
+			assert.match(text(result), /requires a run id/);
 			assert.doesNotMatch(text(result), new RegExp(runId));
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
@@ -464,7 +450,7 @@ describe("nested control routing", () => {
 		}
 	});
 
-	it("emits a failed completed nested event when foreground execution throws after start", async () => {
+	it("records admission failure without inventing a nested start", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-foreground-throw-"));
 		try {
 			const route = createNestedRoute("root-parent");
@@ -475,15 +461,19 @@ describe("nested control routing", () => {
 				modelRegistry: { getAvailable() { throw new Error("model registry exploded"); } },
 			};
 
-			const result = await createExecutor(createState(), [{ name: "worker", description: "Worker", prompt: "Do work" }])
+			const state = createState();
+			const result = await createExecutor(state, [{ name: "worker", description: "Worker", prompt: "Do work" }])
 				.execute("run", { agent: "worker", task: "go" }, new AbortController().signal, undefined, throwingCtx);
 
 			assert.equal(result.isError, true);
 			assert.match(text(result), /model registry exploded/);
 			const registry = projectNestedEvents(route);
-			assert.equal(registry.children.length, 1);
-			assert.equal(registry.children[0]?.state, "failed");
-			assert.match(registry.children[0]?.error ?? "", /model registry exploded/);
+			assert.deepEqual(registry.children, [], "admission failed before the owner started; no phantom live or completed child");
+			assert.equal(state.ownedRuns!.size, 1, "retain the failed assignment for parent inspection");
+			const failed = [...state.ownedRuns!.values()][0]!;
+			assert.match(failed.error!, /model registry exploded/);
+			assert.equal(failed.asyncDir, undefined, "no execution owner was launched");
+			assert.equal(state.asyncJobs.size, 0);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
