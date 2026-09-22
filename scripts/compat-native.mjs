@@ -42,6 +42,10 @@ try {
   for (const args of checks) {
     const result = spawnSync(process.execPath, args, { env, stdio: "inherit", timeout: fork && !shard && !core ? 930_000 : 330_000 });
     if (result.error) throw result.error;
-    if (result.status !== 0) { process.exitCode = result.status ?? 1; break; }
+    if (result.status !== 0) {
+      console.error(`[compat-native] ${args.join(" ")} exited ${result.status ?? "without status"}${result.signal ? ` (${result.signal})` : ""}`);
+      process.exitCode = result.status ?? 1;
+      break;
+    }
   }
 } finally { rmSync(root, { recursive: true, force: true }); }

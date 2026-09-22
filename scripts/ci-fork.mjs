@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -33,7 +34,11 @@ try {
   run("npm", ["run", "build"], { cwd: development, env: testEnv });
 
   if (suite === "core") {
-    run(process.execPath, ["scripts/compat-native.mjs", "--core"], { cwd: development, env: testEnv });
+    const result = spawnSync(process.execPath, ["scripts/compat-native.mjs", "--core"], {
+      cwd: development, env: testEnv, stdio: "inherit", timeout: 480_000,
+    });
+    if (result.error) throw result.error;
+    assert.equal(result.status, 0, `Core contracts exited ${result.status ?? result.signal}`);
   } else {
     const consumer = join(root, "consumer");
     stageSource(source, consumer);
