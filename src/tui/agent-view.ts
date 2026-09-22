@@ -6,7 +6,7 @@ import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
 import { loadConfig as loadIntercomConfig } from "../pi-intercom/config.ts";
 import { sendLiveSubagentMessage } from "../intercom/live-intercom.ts";
 import { ownedRunView } from "../runs/shared/run-records.ts";
-import { listRunQuestions, getRunMetadataDir, questionProcessAlive, type SupervisorQuestionView } from "../runs/shared/supervisor-questions.ts";
+import { listOwnedRunQuestions, questionProcessAlive, type SupervisorQuestionView } from "../runs/shared/supervisor-questions.ts";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-params.ts";
 import { getSingleResultOutput } from "../shared/utils.ts";
 import { formatModelThinking } from "../shared/formatters.ts";
@@ -279,7 +279,7 @@ export class AgentViewController {
 		const predecessor = run.predecessorRunId && this.state.ownedRuns?.get(run.predecessorRunId);
 		if (!predecessor) return `${run.runId}:${child.workflowNodeId ?? (run.mode === "chain" && child.sessionFile && !child.identityUnavailable ? `session:${child.sessionFile}` : child.index)}`;
 		const index = run.predecessorIndex ?? 0;
-		const previous = (this.views.get(predecessor.runId)?.view ?? ownedRunView(predecessor, this.state)).children.find((candidate) => candidate.index === index);
+		const previous = (this.views.get(predecessor.runId)?.view ?? ownedRunView(predecessor, this.state, { pendingInput: false, includeContinuations: false, readConfiguration: (file, endedAt) => this.history.configuration(file, endedAt) })).children.find((candidate) => candidate.index === index);
 		return this.taskKey(predecessor, previous ?? { index });
 	}
 
@@ -292,8 +292,11 @@ export class AgentViewController {
 			let view: OwnedRunView;
 			let questions: SupervisorQuestionView[] = [];
 			try {
-				questions = listRunQuestions(getRunMetadataDir(run.runId));
-				view = !force && cached?.run === run && !["live", "unknown"].includes(cached.view.state) ? cached.view : ownedRunView(run, this.state);
+				questions = listOwnedRunQuestions(run.ownerSessionId, run.runId);
+				view = !force && cached?.run === run && !["live", "unknown"].includes(cached.view.state) ? cached.view : ownedRunView(run, this.state, {
+					pendingInput: questions.some((question) => question.state === "awaiting_input" || question.state === "answer_pending"),
+					includeContinuations: false, readConfiguration: (file, endedAt) => this.history.configuration(file, endedAt),
+				});
 				this.views.set(run.runId, { run, view });
 			} catch (error) {
 				view = { ...run, state: "unknown", updatedAt: run.startedAt, attention: ["unknown"], canInterrupt: false, continuations: [],

@@ -18,7 +18,7 @@ import { sumAttemptUsage } from "./model-fallback.ts";
 import { workflowAgentNodes } from "./workflow-graph.ts";
 import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
-import { getRunMetadataDir, listRunQuestions, listSupervisorQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
+import { getRunMetadataDir, listRunQuestions, listOwnedRunQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
 import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, truncateOutput, type AgentProgress, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
 
 export const OWNED_RUN_ENTRY = "subagent-run";
@@ -258,7 +258,7 @@ function runAttention(run: OwnedRun, executionState: ManagementRunState, pending
 	];
 }
 
-export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pendingInput?: boolean; includeContinuations?: boolean } = {}): OwnedRunView {
+export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pendingInput?: boolean; includeContinuations?: boolean; readConfiguration?: import("./supervisor-questions.ts").NativeConfigurationReader } = {}): OwnedRunView {
 	run = state.ownedRuns?.get(run.runId) ?? run;
 	const root = getRunMetadataDir(run.runId);
 	const foreground = readRunJson<ForegroundResumeRun>(path.join(root, "foreground.json")) ?? state.foregroundRuns?.get(run.runId);
@@ -276,7 +276,7 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 	for (const name of fs.existsSync(contractDir) ? fs.readdirSync(contractDir) : []) {
 		if (!/^\d+\.json$/.test(name)) continue;
 		const index = Number(name.slice(0, -5));
-		const contract = readQuestionContract(run.runId, index, undefined, { endedAt: status?.steps?.[index]?.endedAt ?? result?.timestamp ?? foreground?.updatedAt });
+		const contract = readQuestionContract(run.runId, index, undefined, { endedAt: status?.steps?.[index]?.endedAt ?? result?.timestamp ?? foreground?.updatedAt, readConfiguration: options.readConfiguration });
 		if (contract) contracts.set(index, contract);
 	}
 	const nodes = savedWorkflowNodes(status);
@@ -328,7 +328,7 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 		: children.some((child) => child.state === "paused") ? "paused"
 		: children.length && children.every((child) => child.state === "completed") ? (foreground?.pausedReason ? "paused" : "completed")
 		: status && !["running", "queued"].includes(status.state) ? normalizedState(status.state) : "unknown";
-	const pendingInput = options.pendingInput ?? listSupervisorQuestions(run.ownerSessionId, run.runId).some((question) => question.state === "awaiting_input" || question.state === "answer_pending");
+	const pendingInput = options.pendingInput ?? listOwnedRunQuestions(run.ownerSessionId, run.runId).some((question) => question.state === "awaiting_input" || question.state === "answer_pending");
 	return {
 		...run, state: executionState, children, attention: runAttention(run, executionState, pendingInput),
 		canInterrupt: pendingInput || (live && status?.state === "running" && status.runId === run.runId),

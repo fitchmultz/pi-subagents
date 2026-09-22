@@ -53,6 +53,8 @@ test("migrated questions keep an old waiter working and survive deletion of temp
 			const question = q.createSupervisorQuestion({ ...input, runId: "migration-owned" }, legacy);
 			q.saveQuestionOwner("migration-foreign", "another-parent", legacy);
 			q.createSupervisorQuestion({ ...input, runId: "migration-foreign" }, legacy);
+			assert.equal(q.listOwnedRunQuestions("owner", "migration-owned").length, 1, "exact UI access migrates the known legacy run");
+			assert.equal(q.listOwnedRunQuestions("owner", "migration-foreign").length, 0);
 			assert.equal(q.listSupervisorQuestions("owner").length, 1);
 			q.saveQuestionAnswer(question, "Stable API");
 			assert.equal(q.readQuestionState(question, legacy).answer.message, "Stable API");
@@ -105,6 +107,15 @@ test("native selection is projected without rewriting frozen launch or racing ow
 		assert.equal(fs.readFileSync(file, "utf8"), afterOwnerUpdate);
 		assert.deepEqual(JSON.parse(afterOwnerUpdate).launch, launch);
 		assert.equal(readQuestionContract(question.runId, 0, root)?.pid, 456);
+	} finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("contracts without a launch do not read discarded native configuration", () => {
+	const { root, question } = fixture();
+	try {
+		saveQuestionContract(question.runId, 0, { task: "Legacy assignment", sessionFile: root }, root);
+		assert.equal(readQuestionContract(question.runId, 0, root)?.task, "Legacy assignment", "a transcript that cannot be read is irrelevant without a launch to project");
+		assert.equal(readQuestionContract(question.runId, 0, root, { readConfiguration() { assert.fail("unused configuration must not be projected"); } })?.task, "Legacy assignment");
 	} finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
