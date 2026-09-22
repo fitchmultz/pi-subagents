@@ -742,7 +742,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("repairs stale running jobs during polling", async () => {
+	it("repairs stale running jobs during polling", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-stale-");
 		try {
 			const resultsDir = path.join(asyncRoot, "results");
@@ -771,11 +772,12 @@ describe("async job tracker", () => {
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-stale", asyncDir: runDir, agent: "worker" });
 
-			await new Promise((resolve) => setTimeout(resolve, 80));
-
-			assert.equal(state.asyncJobs.size, 0);
+			t.mock.timers.tick(10);
+			assert.equal(state.asyncJobs.get("run-stale")?.status, "failed");
 			assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "status.json"), "utf-8")).state, "failed");
 			assert.equal(JSON.parse(fs.readFileSync(path.join(resultsDir, "run-stale.json"), "utf-8")).success, false);
+			t.mock.timers.tick(5);
+			assert.equal(state.asyncJobs.size, 0);
 			assert.ok(ui.renderRequests > 0, "expected stale repair cleanup to request a rerender");
 		} finally {
 			removeTempDir(asyncRoot);

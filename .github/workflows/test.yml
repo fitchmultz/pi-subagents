@@ -39,4 +39,4 @@ jobs:
           mkdir -p "$fixture/home" "$fixture/agent" "$fixture/tmp"
           env -i PATH="$PATH" HOME="$fixture/home" USERPROFILE="$fixture/home" \
             TMPDIR="$fixture/tmp" PI_CODING_AGENT_DIR="$fixture/agent" \
-            PI_OFFLINE=1 PI_TELEMETRY=0 PI_COMPAT_HOST=official npm run check:compat
+            CI=true PI_OFFLINE=1 PI_TELEMETRY=0 PI_COMPAT_HOST=official npm run check:compat
