@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.40.0] - Unreleased
+
+### Changed
+- Use one durable detached owner for single, parallel, chain, and continued runs, with a shared Pi JSON CLI/Claude Code child-attempt lifecycle. Foreground calls now wait on the same saved work instead of using separate execution engines.
+- Keep Pi acceptance self-review in the same child process and submit a typed answer/report. Retain current-attempt evidence, bounded repair, human-only blockers, and cancellable owner-run verification when configured.
+- Give everyday delegation/control tools strict-compatible acceptance criteria and environment fields while retaining arbitrary schemas and detailed overrides in the lazy advanced tool.
+- Store new runs in canonical persistent version-2 records. Preserve native history, saved launch choices, per-child evidence, durable questions, and read access to legacy runs while old owners finish.
+- Use native prompt sections and allow delegation-enabled children to use useful helpers within their assigned scope and depth limit. Retain their tool history; bundled profiles remain leaf-only.
+
+### Added
+- Optional native asynchronous results bound to the original pending call across parent restart, compaction, and branch navigation, gated by actual host/model capability. Portable receipts and abort-aware waiting remain available; native delivery suppresses duplicate completion notices.
+- Idempotent parent usage contributions on hosts with `recordUsage`, with once-only finalized tool-result accounting on portable hosts. Inspection stays read-only; inherited history and nested usage are not counted twice.
+
 ## [0.39.1] - 2026-09-22
 
 ### Fixed
