@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "./pi-args.ts";
 import { setPromptSection } from "../../shared/prompt-sections.ts";
+import { registerChildExecutionCwd } from "./child-execution-cwd.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, validateStructuredOutputValue } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 
@@ -96,6 +97,7 @@ export function stripParentOnlySubagentMessages<T>(messages: T[], fanoutChild = 
 }
 
 export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
+	registerChildExecutionCwd(pi);
 	const structuredOutputPath = process.env[STRUCTURED_OUTPUT_CAPTURE_ENV];
 	const structuredSchemaPath = process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
 	if (structuredOutputPath && structuredSchemaPath) {
