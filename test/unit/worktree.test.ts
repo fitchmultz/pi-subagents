@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import {
 	cleanupWorktrees,
@@ -50,12 +51,16 @@ function createHookScript(_repoDir: string, fileName: string, source: string): s
 }
 
 describe("worktree", () => {
-	it("binary patches reconstruct the complete edited tree after cleanup", () => {
+	for (const textconv of [false, true]) it(`binary patches reconstruct the complete edited tree after cleanup (textconv: ${textconv})`, () => {
 		const repoDir = createRepo("pi-worktree-binary-");
 		let setup: WorktreeSetup | undefined;
 		try {
 			fs.writeFileSync(path.join(repoDir, "modify.bin"), Buffer.from([0, 1, 2, 3]));
 			fs.writeFileSync(path.join(repoDir, "delete.bin"), Buffer.from([0, 4, 5, 6]));
+			if (textconv) {
+				fs.writeFileSync(path.join(repoDir, ".gitattributes"), "*.bin diff=hex\n");
+				git(repoDir, ["config", "diff.hex.textconv", "od -An -tx1"]);
+			}
 			git(repoDir, ["add", "-A"]);
 			git(repoDir, ["commit", "-m", "binary baseline"]);
 			setup = createWorktrees(repoDir, "binary-roundtrip", 1);
@@ -544,24 +549,38 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [] }));
 		}
 	});
 
-	it("fails when the hook exceeds the configured timeout", () => {
+	it("stops hook descendants when the configured timeout expires", async () => {
 		const repoDir = createRepo("pi-worktree-hook-timeout-");
+		const pidFile = path.join(repoDir, "child.pid");
+		const lateWrite = path.join(repoDir, "late-write");
 		const hookPath = createHookScript(repoDir, "slow-hook.mjs", `
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 JSON.parse(fs.readFileSync(0, "utf-8"));
-setTimeout(() => {
-	process.stdout.write(JSON.stringify({ syntheticPaths: [] }));
-}, 1000);
+spawn(process.execPath, ["-e", ${JSON.stringify(`
+require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(lateWrite)}, "still running"), 1500);
+setTimeout(() => {}, 10000);
+`)}], { stdio: "inherit" });
+setTimeout(() => {}, 10000);
 `);
 		const runId = `hook-timeout-${Date.now().toString(36)}`;
 		try {
 			assert.throws(
 				() => createWorktrees(repoDir, runId, 1, {
-					setupHook: { hookPath: path.relative(repoDir, hookPath), timeoutMs: 50 },
+					setupHook: { hookPath: path.relative(repoDir, hookPath), timeoutMs: 1000 },
 				}),
 				/timed out/i,
 			);
+			assert.ok(fs.existsSync(pidFile), "the descendant must have started before the timeout");
+			await delay(1000);
+			assert.equal(fs.existsSync(lateWrite), false, "timed-out setup must not leave a descendant writing afterward");
+			assert.equal(git(repoDir, ["branch", "--list", `pi-parallel-${runId}-*`]), "");
 		} finally {
+			if (fs.existsSync(pidFile)) {
+				try { process.kill(Number(fs.readFileSync(pidFile, "utf8")), "SIGKILL"); } catch {}
+			}
+			fs.rmSync(path.dirname(hookPath), { recursive: true, force: true });
 			cleanupRepo(repoDir);
 		}
 	});

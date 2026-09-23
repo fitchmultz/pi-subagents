@@ -309,7 +309,7 @@ describe("saved output choices", () => {
 	});
 
 	for (const clarify of [false, true]) {
-		it(`async absolute default remains fixed in inline mode (clarify:${clarify})`, async () => {
+		for (const output of [undefined, true]) it(`async absolute default remains fixed in inline mode (clarify:${clarify}, resume output:${output})`, async () => {
 			profile.output = path.join(tempDir, "absolute.md");
 			ctx.hasUI = clarify;
 			ctx.ui.custom = async () => ({ confirmed: true, templates: [writer.task], behaviorOverrides: [], runInBackground: true });
@@ -318,7 +318,7 @@ describe("saved output choices", () => {
 			assert.equal(savedLaunch(original.details.asyncId!).generatedOutputFilename, undefined);
 			assert.equal(fs.readFileSync(profile.output, "utf8"), "Absolute predecessor");
 			mockPi.onCall({ output: "Absolute successor" });
-			const continued = await run({ action: "resume", id: original.details.asyncId, message: "Replace fixed output" });
+			const continued = await run({ action: "resume", id: original.details.asyncId, message: "Replace fixed output", output });
 			assert.equal(savedLaunch(continued.details.asyncId!).output, profile.output);
 			assert.equal(fs.readFileSync(profile.output, "utf8"), "Absolute successor");
 		});

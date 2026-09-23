@@ -690,9 +690,10 @@ export function executeAsyncSingle(
 	}
 
 	const outputUsesAgentDefault = usesAgentDefaultOutput(params.output) || params.outputFromAgentDefault === true;
+	const agentDefaultOutput = params.generatedOutputFilename ?? agentConfig.output;
 	const effectiveOutput = resolveAsyncOutput({
 		requestedOutput: params.output,
-		agentDefaultOutput: params.generatedOutputFilename ?? agentConfig.output,
+		agentDefaultOutput,
 		artifactsDir,
 		asyncDir,
 		runId: id,
@@ -740,7 +741,7 @@ export function executeAsyncSingle(
 						skills: params.savedLaunch && params.skills === undefined ? params.savedLaunch.skills : resolvedSkills.map((r) => r.name),
 						outputPath,
 						outputMode,
-						...(outputUsesAgentDefault && outputPath ? { outputPathFromAgentDefault: true } : {}),
+						...(outputUsesAgentDefault && outputPath && typeof agentDefaultOutput === "string" && !path.isAbsolute(agentDefaultOutput) ? { outputPathFromAgentDefault: true } : {}),
 						...(params.outputSchema ? { structuredOutputSchema: params.outputSchema } : {}),
 						...(params.outputSchema ? { structuredOutput: createStructuredOutputRuntime(params.outputSchema, path.join(asyncDir, "structured-output")) } : {}),
 						sessionFile,

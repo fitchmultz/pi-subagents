@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnOptions, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -277,13 +277,23 @@ function runWorktreeSetupHook(
 	hook: ResolvedWorktreeSetupHook,
 	input: WorktreeSetupHookInput,
 ): string[] {
-	const result = spawnSync(hook.hookPath, [], {
+	// Node's shared spawn normalization accepts detached; the sync typings omit it.
+	const options: SpawnSyncOptionsWithStringEncoding & Pick<SpawnOptions, "detached"> = {
 		cwd: input.worktreePath,
 		encoding: "utf-8",
 		input: JSON.stringify(input),
 		timeout: hook.timeoutMs,
+		killSignal: "SIGKILL",
+		detached: true,
 		shell: false,
-	});
+	};
+	const result = spawnSync(hook.hookPath, [], options);
+
+	if (result.pid && (result.error || result.status !== 0)) {
+		try { process.kill(-result.pid, "SIGKILL"); } catch {
+			// The hook's process group may already have exited.
+		}
+	}
 
 	if (result.error) {
 		const code = "code" in result.error ? result.error.code : undefined;
@@ -463,7 +473,7 @@ function captureWorktreeDiff(
 	removeSyntheticPathsBeforeDiff(worktree);
 	runGitChecked(worktree.path, ["add", "-A"]);
 	const diffStat = runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit]).trim();
-	const patch = runGitChecked(worktree.path, ["diff", "--cached", "--binary", setup.baseCommit]);
+	const patch = runGitChecked(worktree.path, ["diff", "--cached", "--binary", "--no-textconv", setup.baseCommit]);
 	const numstat = runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit]);
 	fs.writeFileSync(patchPath, patch, "utf-8");
 
