@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Fixed
-- Preserve acceptance checks and working directories on sequential steps launched from saved JSON chains with `/run-chain`.
+- Preserve acceptance checks, working directories, and inherited tasks on sequential steps launched from saved chains with `/run-chain`.
 - Preserve absolute agent-default output files after inline chain and parallel runs instead of cleaning them up as temporary files.
 - Prevent worktree diff capture from deleting files outside the worktree through symlinked synthetic paths.
 - Preserve isolated worktrees when the runner throws before saving their patches, preventing loss of uncommitted edits.
