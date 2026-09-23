@@ -15,6 +15,7 @@ function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
 	const taskLines = blankIndex === -1 ? [] : lines.slice(blankIndex + 1);
 
 	const step: ChainStepConfig = { agent, task: "" };
+	let encodedTask: string | undefined;
 	for (const line of configLines) {
 		const match = line.match(/^([\w-]+):\s*(.*)$/);
 		if (!match) {
@@ -24,6 +25,13 @@ function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
 		const key = match[1].trim().toLowerCase();
 		const rawValue = match[2].trim();
 
+		if (key === "task-json") {
+			if (encodedTask !== undefined) throw new Error(`Duplicate task-json for step '${agent}'.`);
+			const value: unknown = JSON.parse(rawValue);
+			if (typeof value !== "string") throw new Error(`task-json for step '${agent}' must be a JSON string.`);
+			encodedTask = value;
+			continue;
+		}
 		if (key === "output") {
 			if (rawValue === "false") step.output = false;
 			else if (rawValue) step.output = rawValue;
@@ -89,7 +97,9 @@ function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
 		leadingTaskLines.push(line);
 	}
 
-	step.task = [...leadingTaskLines, ...taskLines].join("\n").trim();
+	const proseTask = [...leadingTaskLines, ...taskLines].join("\n").trim();
+	if (encodedTask !== undefined && proseTask) throw new Error(`Step '${agent}' cannot combine task-json with task prose.`);
+	step.task = encodedTask ?? proseTask;
 	return step;
 }
 
@@ -303,8 +313,13 @@ export function serializeChain(config: ChainConfig): string {
 		if (step.skills === false) lines.push("skills: false");
 		else if (Array.isArray(step.skills) && step.skills.length > 0) lines.push(`skills: ${step.skills.join(", ")}`);
 		if (step.progress !== undefined) lines.push(`progress: ${step.progress ? "true" : "false"}`);
-		lines.push("");
-		lines.push(step.task ?? "");
+		const task = step.task ?? "";
+		if (/^##\s+/m.test(task)) {
+			lines.push(`task-json: ${JSON.stringify(task)}`);
+		} else {
+			lines.push("");
+			lines.push(task);
+		}
 		if (i < config.steps.length - 1) lines.push("");
 	}
 

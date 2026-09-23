@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { handleCreate, handleManagementAction, handleUpdate } from "../../src/agents/agent-management.ts";
+import { discoverAgentsAll } from "../../src/agents/agents.ts";
 
 let tempDir = "";
 
@@ -212,6 +213,25 @@ Inspect
 		const got = handleManagementAction("get", { chainName: "review-flow" }, ctx);
 		assert.equal(got.isError, false);
 		assert.match(readText(got), /Skills: code-review, security/);
+	});
+
+	it("preserves task headings through managed chain creation and updates", () => {
+		fs.mkdirSync(path.join(tempDir, ".git"));
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
+		const task = "Review this change.\n\n## Requirements\nDo not modify any files.";
+		const steps = [{ agent: "worker", task, outputSchema: "./schema.json" }];
+		const created = handleCreate({
+			config: { name: "heading-repro", description: "Heading round trip", scope: "project", steps },
+		}, ctx);
+		assert.equal(created.isError, false);
+		const load = () => discoverAgentsAll(tempDir, { projectTrusted: true }, "project").chains
+			.find((chain) => chain.name === "heading-repro");
+		assert.deepEqual(load()?.steps, steps);
+
+		const updatedSteps = [{ ...steps[0]!, task: `${task}\n\n## Report\nReturn findings.` }];
+		const updated = handleUpdate({ chainName: "heading-repro", config: { steps: updatedSteps } }, ctx);
+		assert.equal(updated.isError, false);
+		assert.deepEqual(load()?.steps, updatedSteps);
 	});
 
 	it("rejects singular step skill in saved-chain management config", () => {
