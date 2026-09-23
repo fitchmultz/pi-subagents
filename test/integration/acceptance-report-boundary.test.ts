@@ -8,6 +8,8 @@ import { parseAcceptanceReport, stripAcceptanceReport } from "../../src/runs/sha
 import { getRunMetadataDir, questionProcessAlive, readQuestionContract } from "../../src/runs/shared/supervisor-questions.ts";
 import { ASYNC_DIR, RESULTS_DIR, getAsyncConfigPath } from "../../src/shared/types.ts";
 import { createEventBus, createMockPi, createTempDir, makeAgent, removeTempDir } from "../support/helpers.ts";
+import { completeWorkflowStep } from "../../src/runs/shared/workflow-policy.ts";
+import { materializeDynamicParallelStep } from "../../src/runs/shared/dynamic-fanout.ts";
 
 const details = "Result path: /fixture/deliverable.md\nIdentifier: task-42\nFinding: all requested handoff details survive coordination.\nValidation: fixture checks passed.\nRisks: none.";
 const handoff = `Full final task report\n${details}`;
@@ -49,7 +51,7 @@ describe("background native acceptance report boundary", () => {
 
 	async function run(scenario: string, options: {
 		maxTurns?: number; retry?: string; laterReport?: string; outputMode?: "inline" | "file-only"; generated?: boolean;
-		publicSchema?: boolean; verify?: boolean; handoff?: string; initialHandoff?: string; initialReport?: string; finalReport?: string;
+		publicSchema?: boolean; publicOutput?: unknown; finalAnswer?: unknown; verify?: boolean; handoff?: string; initialHandoff?: string; initialReport?: string; finalReport?: string;
 	} = {}) {
 		const outputPath = options.outputMode ? path.join(cwd, "requested.md") : undefined;
 		const schema = { type: "object", properties: { items: { type: "array", items: { type: "string" } } }, required: ["items"] };
@@ -58,7 +60,7 @@ describe("background native acceptance report boundary", () => {
 			receipts.push(receiptPath);
 			mock.onCall({ nativeReport: { scenario: name, initialReport: options.initialReport ?? initialReport, initialDelay: options.initialHandoff ? 300 : undefined,
 				retry: options.retry, report: options.finalReport ?? fullReport, laterReport: options.laterReport,
-				receiptPath, handoffPath: outputPath, handoff: options.handoff } });
+				receiptPath, handoffPath: outputPath, handoff: options.handoff, publicOutput: options.publicOutput, finalAnswer: options.finalAnswer } });
 		}
 		const agent = makeAgent("worker", { model: "report-fixture/faux-1", tools: ["fixture_work"], extensions: [],
 			...(options.generated ? { output: "requested.md" } : {}) });
@@ -279,13 +281,37 @@ describe("background native acceptance report boundary", () => {
 		assert.equal(mock.callCount(), 1);
 	});
 
-	it("keeps the initial public structured payload separate from the private report capture", async () => {
-		const { result, native } = await run("resubmit", { publicSchema: true });
+	it("publishes the repaired public payload to named outputs and fanout separately from the private report", async () => {
+		const repaired = { items: ["A", "B"] };
+		const { result, native } = await run("resubmit", { publicSchema: true, publicOutput: { items: ["A"] }, finalAnswer: repaired, initialReport: report('{"items":["A"]}', false) });
 		assert.equal(result.exitCode, 0, result.error);
-		assert.deepEqual(result.structuredOutput, { items: ["original payload"] });
+		assert.deepEqual(result.structuredOutput, repaired);
 		assert.deepEqual(JSON.parse(fs.readFileSync(result.structuredOutputPath, "utf8")), result.structuredOutput);
 		assert.ok(JSON.parse(fs.readFileSync(result.structuredOutputSchemaPath, "utf8")).properties.items);
-		assert.deepEqual(native[0].capture, { answer: handoff, report: parseAcceptanceReport(fullReport).report });
+		assert.deepEqual(native[0].capture, { answer: repaired, report: parseAcceptanceReport(fullReport).report });
 		assert.deepEqual(native[0].schema.required, ["answer", "report"]);
+		const workflow = completeWorkflowStep({ stepIndex: 0, stepCount: 2, results: [result], outputNames: ["plan"], previousOutput: "" });
+		assert.deepEqual(workflow.outputs.plan.structured, repaired);
+		const fanout = materializeDynamicParallelStep({ expand: { from: { output: "plan", path: "/items" }, maxItems: 10 }, parallel: { agent: "worker", task: "Process {item}" }, collect: { as: "results" } }, workflow.outputs, 1);
+		assert.deepEqual(fanout.items.map((item) => item.item), repaired.items);
+	});
+
+	for (const scenario of ["single", "plain"]) it(`rejects ${scenario === "single" ? "schema-invalid" : "obsolete"} repaired public output`, async () => {
+		const initial = { items: ["A"] };
+		const { result } = await run(scenario, { publicSchema: true, publicOutput: initial, finalAnswer: { items: scenario === "single" ? [42] : ["A", "B"] } });
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.acceptance.status, "rejected");
+		assert.deepEqual(result.structuredOutput, initial, "an invalid or obsolete submission cannot replace the last validated payload");
+		assert.deepEqual(JSON.parse(fs.readFileSync(result.structuredOutputPath, "utf8")), initial);
+	});
+
+	it("updates the public payload without replacing a child-written output file", async () => {
+		const repaired = { items: ["A", "B"] };
+		const handoff = "Child-authored handoff remains authoritative.\n";
+		const { result, artifact, outputPath } = await run("child-file", { publicSchema: true, publicOutput: { items: ["A"] }, finalAnswer: repaired, outputMode: "file-only", handoff });
+		assert.equal(result.exitCode, 0, result.error);
+		assert.deepEqual(result.structuredOutput, repaired);
+		assert.equal(fs.readFileSync(outputPath!, "utf8"), handoff);
+		assert.equal(artifact, handoff.trimEnd());
 	});
 });

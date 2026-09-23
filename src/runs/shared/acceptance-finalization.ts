@@ -5,6 +5,7 @@ import type {
 	AcceptanceFinalizationTurn,
 	AcceptanceLedger,
 	AcceptanceReport,
+	JsonSchemaObject,
 	ResolvedAcceptanceConfig,
 } from "../../shared/types.ts";
 import { acceptanceFailureMessage, evaluateAcceptance } from "./acceptance-evaluation.ts";
@@ -13,31 +14,42 @@ import type { AttemptOutcome } from "./model-fallback.ts";
 import { isFailFastAbort } from "./parallel-utils.ts";
 import { ACCEPTANCE_REPORT_SCHEMA, formatAcceptanceReportExample, parseAcceptanceReport, stripAcceptanceReport, validateAcceptanceReportShape } from "./acceptance-reports.ts";
 
-export function createFinalizationReportRuntime(): StructuredOutputRuntime {
-	return createStructuredOutputRuntime({
+type FinalizationReportRuntime = StructuredOutputRuntime & { publicOutputSchema?: JsonSchemaObject };
+
+export function createFinalizationReportRuntime(publicOutputSchema?: JsonSchemaObject): FinalizationReportRuntime {
+	const runtime = createStructuredOutputRuntime({
 		type: "object", properties: {
-			answer: { type: "string", pattern: "\\S", description: "Complete standalone final answer, including every requested handoff detail." },
+			// A schema resource keeps root-local references (including recursive "#") scoped to the public answer.
+			answer: publicOutputSchema ? { $id: "urn:pi-subagents:public-output", ...publicOutputSchema }
+				: { type: "string", pattern: "\\S", description: "Complete standalone final answer, including every requested handoff detail." },
 			report: ACCEPTANCE_REPORT_SCHEMA,
 		}, required: ["answer", "report"], additionalProperties: false,
 	});
+	return { ...runtime, publicOutputSchema };
 }
 
 export interface FinalizationReportSubmission {
 	output: string;
+	structuredOutput?: unknown;
 	report?: AcceptanceReport;
 	reportSubmissionError?: string;
 	unconfirmedOutput?: string;
 }
 
-function readReportValue(value: unknown): { output: string; report: AcceptanceReport } | undefined {
+function readReportValue(value: unknown, publicOutputSchema?: JsonSchemaObject): (FinalizationReportSubmission & { report: AcceptanceReport }) | undefined {
 	if (!value || typeof value !== "object") return;
 	// Stored legacy runtimes retain their original string schema.
-	if ("report" in value && typeof value.report === "string") {
+	if (!publicOutputSchema && "report" in value && typeof value.report === "string") {
 		const parsed = parseAcceptanceReport(value.report);
 		if (parsed.report) return { output: value.report, report: parsed.report };
 	}
-	if (!("answer" in value) || typeof value.answer !== "string" || !value.answer.trim() || !("report" in value)) return;
+	if (!("answer" in value) || !("report" in value)) return;
 	if (validateAcceptanceReportShape(value.report)) return;
+	if (publicOutputSchema) {
+		if (validateStructuredOutputValue(publicOutputSchema, value.answer).status === "invalid") return;
+		return { output: JSON.stringify(value.answer), structuredOutput: value.answer, report: value.report as AcceptanceReport };
+	}
+	if (typeof value.answer !== "string" || !value.answer.trim()) return;
 	return { output: value.answer, report: value.report as AcceptanceReport };
 }
 
@@ -47,10 +59,10 @@ function reportAuditOutput(submission: { output: string; report?: AcceptanceRepo
 }
 
 /** Pass the current attempt's messages, or its starting offset in a shared native session. */
-export function readFinalizationReport(messages: Message[], runtime: StructuredOutputRuntime, options: { messageOffset?: number } = {}): FinalizationReportSubmission {
+export function readFinalizationReport(messages: Message[], runtime: FinalizationReportRuntime, options: { messageOffset?: number; structuredResult?: boolean } = {}): FinalizationReportSubmission {
 	messages = messages.slice(options.messageOffset ?? 0);
 	const captured = readStructuredOutput(runtime);
-	const submitted = readReportValue(captured.value);
+	const submitted = readReportValue(captured.value, runtime.publicOutputSchema);
 	// Older submissions are audit evidence only, never the current output below.
 	const successfulIds = new Set(messages.flatMap((message) => message.role === "toolResult" && message.toolName === "structured_output" && message.isError === false ? [message.toolCallId] : []));
 	let unconfirmedOutput = submitted && reportAuditOutput(submitted);
@@ -59,7 +71,7 @@ export function readFinalizationReport(messages: Message[], runtime: StructuredO
 		for (const call of message.content) {
 			if (call.type !== "toolCall" || call.name !== "structured_output" || !successfulIds.has(call.id)) continue;
 			const value = call.arguments.value;
-			const previous = readReportValue(value);
+			const previous = readReportValue(value, runtime.publicOutputSchema);
 			if (previous && validateStructuredOutputValue(runtime.schema, value).status === "valid") unconfirmedOutput = reportAuditOutput(previous);
 		}
 	}
@@ -70,6 +82,11 @@ export function readFinalizationReport(messages: Message[], runtime: StructuredO
 	const last = messages[index];
 	if (last?.role !== "assistant" || last.errorMessage || !["stop", "toolUse"].includes(last.stopReason) || !Array.isArray(last.content)) {
 		return rejected("the latest assistant turn did not finish successfully.");
+	}
+	// Claude Code returns its schema-constrained payload in the terminal result event, not a Pi tool call.
+	if (options.structuredResult) {
+		if (captured.error) return rejected(captured.error);
+		return submitted ? { ...submitted, unconfirmedOutput } : rejected("the submission must contain a complete answer and a valid acceptance report.");
 	}
 	const calls = last.content.filter((part) => part.type === "toolCall");
 	if (calls.length !== 1 || calls[0]!.name !== "structured_output") return rejected("the latest assistant turn must submit structured_output as its only tool call.");
@@ -124,6 +141,7 @@ export async function evaluateRunAcceptance(input: {
 	cwd: string;
 	signal?: AbortSignal;
 	nativeReport?: boolean;
+	outputSchema?: JsonSchemaObject;
 	recordedTurns?: number;
 	runTurn: (prompt: string, turn: number, sessionFile: string) => Promise<FinalizationReportSubmission & { error?: string; acceptance?: AcceptanceLedger }>;
 }): Promise<AcceptanceLedger> {
@@ -143,7 +161,7 @@ export async function evaluateRunAcceptance(input: {
 	let authoritativeLedger = initialLedger;
 	let auditOutput = reportAuditOutput({ output: input.initialOutput, report: input.initialReport });
 	for (let turn = 1; turn <= maxTurns; turn++) {
-		const prompt = formatAcceptanceFinalizationPrompt({ acceptance: input.acceptance, initialOutput: input.initialOutput, initialLedger, turn, maxTurns, previousFailure, nativeReport: input.nativeReport });
+		const prompt = formatAcceptanceFinalizationPrompt({ acceptance: input.acceptance, initialOutput: input.initialOutput, initialLedger, turn, maxTurns, previousFailure, nativeReport: input.nativeReport, outputSchema: input.outputSchema });
 		const result = input.signal?.aborted && turn > (input.recordedTurns ?? 0)
 			? { output: "", error: "Acceptance finalization cancelled." }
 			: await input.runTurn(prompt, turn, input.sessionFile);
@@ -198,6 +216,7 @@ export function formatAcceptanceFinalizationPrompt(input: {
 	maxTurns: number;
 	previousFailure?: string;
 	nativeReport?: boolean;
+	outputSchema?: JsonSchemaObject;
 }): string {
 	const evidence = [...new Set([...input.acceptance.evidence, ...input.acceptance.criteria.flatMap((criterion) => criterion.evidence)])];
 	const lines = [
@@ -219,7 +238,7 @@ export function formatAcceptanceFinalizationPrompt(input: {
 	if (evidence.length > 0) {
 		lines.push(
 			"",
-			`Structured evidence must be present in the ${input.nativeReport ? "typed report object" : "final `acceptance-report` JSON fields"}. Markdown sections in the visible answer do not satisfy required evidence by themselves. If the previous visible output already included the evidence, copy or summarize it into the matching JSON field.`,
+			`Structured evidence must be present in the ${input.nativeReport || input.outputSchema ? "typed report object" : "final `acceptance-report` JSON fields"}. Markdown sections in the visible answer do not satisfy required evidence by themselves. If the previous visible output already included the evidence, copy or summarize it into the matching JSON field.`,
 			"Evidence field mapping:",
 			...formatEvidenceReportFieldMapping(evidence),
 		);
@@ -243,10 +262,12 @@ export function formatAcceptanceFinalizationPrompt(input: {
 	}
 	lines.push(
 		"",
-		input.nativeReport
+		input.outputSchema
+			? `${input.nativeReport ? "Your final action must be a sole `structured_output` tool call with {value:{answer,report}}." : "Return the schema-constrained JSON object {answer,report}."} answer must be the complete current public payload matching outputSchema below, including all repairs; do not embed it in a prose string. report is the private typed acceptance object. This submission replaces the initial payload. If more activity follows submission, resubmit the complete current answer and report.\noutputSchema: ${JSON.stringify(input.outputSchema)}`
+			: input.nativeReport
 			? "Now do the self-check. Your final action must be a sole `structured_output` tool call with {value:{answer,report}}. answer must contain the complete standalone final answer with the current result and every requested handoff detail (including paths, identifiers, findings, and evidence), repairs or remaining blockers. report is a typed object matching the schema, never JSON embedded in a string. This answer replaces the initial answer; do not replace useful details with only a statement that you rechecked them. If additional messages prompt more activity after submission, resubmit the complete current answer and report as your final action; a prose-only reply does not finalize the task."
 			: "Now do the self-check. Return a standalone final answer with the current result and every requested handoff detail (including paths, identifiers, findings, and evidence). This answer replaces the initial answer; do not replace useful details with only a statement that you rechecked them. Include repairs or remaining blockers, then finish with exactly one fenced JSON block tagged `acceptance-report`.",
-		formatAcceptanceReportExample(input.nativeReport),
+		...(input.outputSchema ? [] : [formatAcceptanceReportExample(input.nativeReport)]),
 	);
 	return lines.join("\n");
 }

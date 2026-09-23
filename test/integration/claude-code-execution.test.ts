@@ -27,6 +27,10 @@ const valueAfter = (flag) => {
 const sessionId = valueAfter("--resume") || valueAfter("--session-id") || "00000000-0000-4000-8000-000000000000";
 const fence = String.fromCharCode(96).repeat(3);
 const report = args.at(-1).includes("## Acceptance Contract") ? "\\n" + [fence + "acceptance-report", JSON.stringify({ criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "Claude fixture proof" }] }), fence].join("\\n") : "";
+const schema = valueAfter("--json-schema");
+const structured = schema && JSON.parse(schema).properties?.answer
+  ? { answer: { ok: false }, report: { criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "Corrected Claude fixture payload" }] } }
+  : { ok: true };
 fs.writeFileSync(path.join(callsDir, \`call-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ args, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW ?? null } }), "utf-8");
 process.stdout.write(JSON.stringify({
   type: "result",
@@ -38,7 +42,7 @@ process.stdout.write(JSON.stringify({
   total_cost_usd: 0.01,
   usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 3, cache_creation_input_tokens: 5 },
   modelUsage: { "claude-sonnet-5": { contextWindow: 1000000, maxOutputTokens: 64000 } },
-  ...(args.includes("--json-schema") ? { structured_output: { ok: true } } : {})
+  ...(schema ? { structured_output: structured } : {})
 }) + "\\n");
 `, "utf-8");
 	const launcher = path.join(binDir, "claude");
@@ -141,7 +145,7 @@ describe("Claude Code child backend", () => {
 		assert.deepEqual(args.slice(args.indexOf("--json-schema"), args.indexOf("--json-schema") + 2), ["--json-schema", JSON.stringify(schema)]);
 	});
 
-	it("background Claude Code finalization retains its text contract and initial JSON schema", async () => {
+	for (const publicSchema of [true, false]) it(`background Claude Code finalization returns the current ${publicSchema ? "schema-validated payload" : "text answer"}`, async () => {
 		const id = path.basename(tempDir);
 		const schema = { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] };
 		const agent = makeAgent("echo", { model: "claude-code/sonnet" });
@@ -150,7 +154,7 @@ describe("Claude Code child backend", () => {
 		try {
 			{
 				executeAsyncSingle(id, { agent: "echo", task: "Return the result", agentConfig: agent,
-					ctx: { pi: { events: createEventBus() }, cwd: tempDir, currentSessionId: id }, acceptance, outputSchema: schema,
+					ctx: { pi: { events: createEventBus() }, cwd: tempDir, currentSessionId: id }, acceptance, outputSchema: publicSchema ? schema : undefined,
 					sessionFile: path.join(tempDir, "session.jsonl"), shareEnabled: false, maxSubagentDepth: 2 });
 				const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 				const deadline = Date.now() + 15_000;
@@ -166,11 +170,11 @@ describe("Claude Code child backend", () => {
 				}
 			}
 			assert.equal(result.exitCode, 0, result.error);
-			assert.equal(result.finalOutput ?? result.output, "MOCK_RESUMED");
+			assert.equal(result.finalOutput ?? result.output, publicSchema ? '{"ok":false}' : "MOCK_RESUMED");
 			assert.equal(result.acceptance.status, "checked");
 			assert.equal(result.acceptance.finalization.turns.length, 1);
-			assert.deepEqual(result.structuredOutput, { ok: true });
-			assert.deepEqual(JSON.parse(fs.readFileSync(result.structuredOutputPath, "utf8")), { ok: true });
+			assert.deepEqual(result.structuredOutput, publicSchema ? { ok: false } : undefined);
+			if (publicSchema) assert.deepEqual(JSON.parse(fs.readFileSync(result.structuredOutputPath, "utf8")), { ok: false });
 			const calls = readCalls(mock.callsDir);
 			assert.equal(calls.length, 2);
 			for (const call of calls) {
@@ -178,8 +182,12 @@ describe("Claude Code child backend", () => {
 				assert.ok(call.args.includes("--disable-slash-commands"));
 				assert.ok(call.args.includes("--disallowedTools=Agent"));
 			}
-			assert.equal(calls[0].args[calls[0].args.indexOf("--json-schema") + 1], JSON.stringify(schema));
-			assert.ok(!calls[1].args.includes("--json-schema"));
+			if (publicSchema) {
+				assert.equal(calls[0].args[calls[0].args.indexOf("--json-schema") + 1], JSON.stringify(schema));
+				const reviewSchema = JSON.parse(calls[1].args[calls[1].args.indexOf("--json-schema") + 1]);
+				assert.deepEqual(reviewSchema.properties.answer, { $id: "urn:pi-subagents:public-output", ...schema });
+				assert.deepEqual(reviewSchema.required, ["answer", "report"]);
+			} else assert.ok(!calls[1].args.includes("--json-schema"));
 			assert.doesNotMatch(calls[1].args.at(-1)!, /sole `structured_output`/);
 		} finally {
 			removeTempDir(getRunMetadataDir(id));

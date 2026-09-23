@@ -51,7 +51,7 @@ import {
 	type ClaudeCodeInvocation,
 } from "../shared/claude-code.ts";
 import { renderChainTask } from "../shared/chain-outputs.ts";
-import { createStructuredOutputRuntime, readStructuredOutput, type StructuredOutputRuntime } from "../shared/structured-output.ts";
+import { createStructuredOutputRuntime, readStructuredOutput } from "../shared/structured-output.ts";
 import { DynamicFanoutError, materializeDynamicParallelStep } from "../shared/dynamic-fanout.ts";
 import { completeWorkflowStep, runParallelTasks, workflowChildSucceeded, type ParallelStopReason } from "../shared/workflow-policy.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
@@ -429,7 +429,7 @@ async function runSingleStep(
 			resolvedOutput: segment.event.resolvedOutput, finalization: undefined,
 		};
 	};
-	async function runAttempt(prompt: string, model: string | undefined, review?: { turn: number; sessionFile: string; previousOutput: string; reportRuntime?: StructuredOutputRuntime; outputSnapshot?: ReturnType<typeof captureSingleOutputSnapshot> }): Promise<StepAttempt> {
+	async function runAttempt(prompt: string, model: string | undefined, review?: { turn: number; sessionFile: string; previousOutput: string; reportRuntime?: ReturnType<typeof createFinalizationReportRuntime>; outputSnapshot?: ReturnType<typeof captureSingleOutputSnapshot> }): Promise<StepAttempt> {
 		if (verificationSignal.aborted) {
 			const outcome = resolveExecutionOutcome({ result: { exitCode: 1 }, signal: ctx.signal, interruptSignal });
 			return { stderr: "", messages: [], usage: emptyUsage(), durationMs: 0, observedCompletedMutation: false, finalOutput: outcome.error ?? "Interrupted. Waiting for explicit next action.",
@@ -498,7 +498,7 @@ async function runSingleStep(
 			nativeSegments = run.finalization!.slice(1);
 			run = nativeAttempt(initialSegment);
 		}
-		const reportSubmission = review?.reportRuntime ? readFinalizationReport(run.messages, review.reportRuntime) : undefined;
+		const reportSubmission = review?.reportRuntime ? readFinalizationReport(run.messages, review.reportRuntime, { structuredResult: Boolean(claudeCodeInvocation) }) : undefined;
 		const hiddenError = run.exitCode === 0 && !run.error && !reportSubmission?.output ? detectSubagentError(run.messages) : undefined;
 		let structuredOutput: unknown;
 		let structuredError: string | undefined;
@@ -539,17 +539,18 @@ async function runSingleStep(
 			exitCode: attempt.exitCode, error: attempt.error, usage: { ...attempt.usage } });
 	}
 	let execution = initial;
+	let structuredOutput = initial.structuredOutput;
 	let resolvedOutput = initial.resolvedOutput;
 	let output = stripAcceptanceReport(resolvedOutput.fullOutput);
 	const initialOutput = output;
 	const sessionFile = step.sessionFile ?? (sessionDir ? findLatestSessionFile(sessionDir) ?? undefined : undefined);
 	const nativeReport = !initial.model || !isClaudeCodeModel(initial.model);
 	const acceptance = step.effectiveAcceptance ? await evaluateRunAcceptance({
-		acceptance: step.effectiveAcceptance, initial, initialOutput: initial.finalOutput, sessionFile, cwd: step.cwd ?? ctx.cwd, signal: verificationSignal, nativeReport, recordedTurns: nativeSegments.length,
+		acceptance: step.effectiveAcceptance, initial, initialOutput: initial.finalOutput, sessionFile, cwd: step.cwd ?? ctx.cwd, signal: verificationSignal, nativeReport, outputSchema: effectiveStructuredOutput?.schema, recordedTurns: nativeSegments.length,
 		initialAcceptance: nativeExecution?.finalization?.[0]?.event.acceptance,
 		runTurn: async (prompt, turn, sessionFile) => {
 			const cached = nativeSegments[turn - 1];
-			const reportRuntime = nativeReport && !cached ? createFinalizationReportRuntime() : undefined;
+			const reportRuntime = !cached && (nativeReport || effectiveStructuredOutput) ? createFinalizationReportRuntime(effectiveStructuredOutput?.schema) : undefined;
 			let reviewed: StepAttempt;
 			try {
 				reviewed = cached ? nativeAttempt(cached) : await runAttempt(prompt, initial.model ?? step.model, { turn, sessionFile, previousOutput: output, reportRuntime,
@@ -563,6 +564,10 @@ async function runSingleStep(
 			if (reviewed.exitCode !== 0 || reviewed.error || reviewed.interrupted) return { ...reviewed.reportSubmission, output: reviewed.finalOutput,
 				error: reviewed.error ?? reviewed.resourceLimitExceeded?.message ?? "Acceptance finalization turn did not complete successfully." };
 			if (reviewed.reportSubmission?.reportSubmissionError) return reviewed.reportSubmission;
+			if (effectiveStructuredOutput && reviewed.reportSubmission?.structuredOutput !== undefined) {
+				structuredOutput = reviewed.reportSubmission.structuredOutput;
+				fs.writeFileSync(effectiveStructuredOutput.outputPath, JSON.stringify(structuredOutput), { mode: 0o600 });
+			}
 			resolvedOutput = reviewed.resolvedOutput;
 			output = stripAcceptanceReport(resolvedOutput.fullOutput);
 			return { ...reviewed.reportSubmission, output: reviewed.finalOutput, acceptance: cached?.event.acceptance };
@@ -619,7 +624,7 @@ async function runSingleStep(
 		sessionFile, intercomTarget: ctx.childIntercomTarget, model: initial.model,
 		attemptedModels: attemptedModels.length ? attemptedModels : undefined, modelAttempts, artifactPaths,
 		interrupted: outcome.interrupted, completionGuardTriggered: initial.completionGuardTriggered,
-		structuredOutput: initial.structuredOutput, structuredOutputPath: effectiveStructuredOutput?.outputPath,
+		structuredOutput, structuredOutputPath: effectiveStructuredOutput?.outputPath,
 		structuredOutputSchemaPath: effectiveStructuredOutput?.schemaPath, acceptance, resourceLimitExceeded: outcome.resourceLimitExceeded,
 	};
 	saveQuestionContract(ctx.id, ctx.flatIndex, { result: { ...result, task: step.task, usage, finalOutput: result.finalOutput }, updatedAt: Date.now() });
