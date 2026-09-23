@@ -121,7 +121,10 @@ async function invoke(receipt, name, args, stop) {
 			}
 			receipt.runId = current.runId;
 			assert.ok(receipt.runId, "current native progress identifies its own workflow");
-			if (stop === "detach") bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: id });
+			if (stop === "detach") {
+				bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: id });
+				fs.writeFileSync(path.join(root, `${id}.release`), "");
+			}
 			else {
 				const control = session.agent.state.tools.find((tool) => tool.name === "subagent");
 				const result = await control.execute(`${id}-interrupt`, { action: "interrupt", id: receipt.runId }, new AbortController().signal);
@@ -195,7 +198,7 @@ async function workflow(shape, stop, failed = true) {
 		mock.onCall({ matchArgsIncludes: "MIXED_DOWNSTREAM", output: "DEPENDENT_STEP_FINISHED" });
 		mock.onCall({ matchArgsIncludes: "MIXED_WAIT", steps: [
 			{ jsonl: [events.toolStart(stop === "detach" ? "contact_supervisor" : "bash", stop === "detach" ? { reason: "need_decision" } : { command: "controlled wait" })] },
-			{ delay: stop === "detach" ? 1_000 : 10_000, jsonl: [events.assistantMessage("DETACHED_CHILD_FINISHED")] },
+			{ ...(stop === "detach" ? { waitForFile: path.join(root, `${receipt.name}.release`) } : { delay: 10_000 }), jsonl: [events.assistantMessage("DETACHED_CHILD_FINISHED")] },
 		] });
 		const tasks = tokens.map((task) => ({ agent: "probe", task, output: false }));
 		const prefix = { agent: "probe", task: "MIXED_SOURCE", as: "targets", output: false, outputSchema: { type: "object" } };
