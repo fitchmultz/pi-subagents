@@ -473,7 +473,7 @@ function captureWorktreeDiff(
 	removeSyntheticPathsBeforeDiff(worktree);
 	runGitChecked(worktree.path, ["add", "-A"]);
 	const diffStat = runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit]).trim();
-	const patch = runGitChecked(worktree.path, ["diff", "--cached", "--binary", "--no-textconv", setup.baseCommit]);
+	const patch = runGitChecked(worktree.path, ["diff", "--cached", "--binary", "--no-textconv", "--no-ext-diff", setup.baseCommit]);
 	const numstat = runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit]);
 	fs.writeFileSync(patchPath, patch, "utf-8");
 

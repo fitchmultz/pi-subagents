@@ -51,16 +51,17 @@ function createHookScript(_repoDir: string, fileName: string, source: string): s
 }
 
 describe("worktree", () => {
-	for (const textconv of [false, true]) it(`binary patches reconstruct the complete edited tree after cleanup (textconv: ${textconv})`, () => {
+	for (const diffDriver of ["default", "textconv", "external"]) it(`binary patches reconstruct the complete edited tree after cleanup (${diffDriver})`, () => {
 		const repoDir = createRepo("pi-worktree-binary-");
 		let setup: WorktreeSetup | undefined;
 		try {
 			fs.writeFileSync(path.join(repoDir, "modify.bin"), Buffer.from([0, 1, 2, 3]));
 			fs.writeFileSync(path.join(repoDir, "delete.bin"), Buffer.from([0, 4, 5, 6]));
-			if (textconv) {
+			if (diffDriver === "textconv") {
 				fs.writeFileSync(path.join(repoDir, ".gitattributes"), "*.bin diff=hex\n");
 				git(repoDir, ["config", "diff.hex.textconv", "od -An -tx1"]);
 			}
+			if (diffDriver === "external") git(repoDir, ["config", "diff.external", "echo external diff viewer"]);
 			git(repoDir, ["add", "-A"]);
 			git(repoDir, ["commit", "-m", "binary baseline"]);
 			setup = createWorktrees(repoDir, "binary-roundtrip", 1);
