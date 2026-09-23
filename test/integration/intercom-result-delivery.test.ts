@@ -615,7 +615,7 @@ describe("intercom result delivery cutover", () => {
 	for (const asyncMode of [false, true]) it(`questions preserve launch-time acceptance through ${asyncMode ? "background" : "foreground"} child death and answer revival`, async () => {
 		mockPi.onCall({ delay: 60_000, output: "unfinished" });
 		const report = '```acceptance-report\n{"criteriaSatisfied":[{"id":"criterion-1","status":"satisfied","evidence":"fixture"}]}\n```';
-		mockPi.onCall({ nativeReport: { scenario: "single", initialReport: `Answered with original acceptance\n${report}`, report: `Final validation\n${report}`, publicOutput: { answer: "stable" }, receiptPath: path.join(tempDir, "native.json") } });
+		mockPi.onCall({ nativeReport: { scenario: "single", initialReport: `Answered with original acceptance\n${report}`, report: `Final validation\n${report}`, publicOutput: { answer: "stable" }, finalAnswer: { answer: "stable" }, receiptPath: path.join(tempDir, "native.json") } });
 		const ctx = makeMinimalCtx(tempDir);
 		const parentSession = path.join(tempDir, "supervisor.jsonl");
 		fs.writeFileSync(parentSession, "");
@@ -651,7 +651,7 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(result.results[0].acceptance.effectiveAcceptance.criteria[0].must, "Keep the original contract");
 		assert.equal(result.results[0].acceptance.verifyRuns[0].exitCode, 23);
 		assert.deepEqual(result.results[0].structuredOutput, { answer: "stable" });
-		assert.equal(fs.readFileSync(outputPath, "utf8"), "Final validation");
+		assert.equal(fs.readFileSync(outputPath, "utf8"), '{"answer":"stable"}');
 		assert.equal(JSON.parse(fs.readFileSync(result.results[0].artifactPaths.metadataPath, "utf8")).initialOutput, "Answered with original acceptance");
 	});
 
