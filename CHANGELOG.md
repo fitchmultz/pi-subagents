@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Let Stop terminate recorded live children after their background runner exits, while preserving selected-child control and checking process identity.
 - Keep workspace tests on the child's code by leaving dependency installation to its package manager or setup hook instead of sharing the original checkout's `node_modules`.
 - Preserve binary edits in worktree patches even when Git text conversions are configured.
 - Preserve absolute default report files when continuations explicitly select the profile's output.

@@ -27,7 +27,7 @@ const contracts = ["native-context-contract", "native-same-cwd-resume", "native-
 const coreFiles = [
   "native-checkpoint-idle", "pi-intercom-native-replay", "native-async-host", "parent-usage",
   "async-execution", "parallel-execution", "chain-execution", "intercom-result-delivery",
-  "owned-result-retention", "process-lifecycle", "real-pi-smoke-cleanup",
+  "owned-result-retention", "process-lifecycle", "orphan-stop", "real-pi-smoke-cleanup",
 ];
 if (core) Object.assign(env, { PI_NATIVE_ASYNC_TEST_SDK: hostRoot, PI_NATIVE_ASYNC_REQUIRE_HOST: "1", PI_PARENT_USAGE_TEST_SDK: hostRoot, PI_PARENT_USAGE_REQUIRE_NATIVE: "1" });
 try {
