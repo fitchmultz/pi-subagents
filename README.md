@@ -781,6 +781,8 @@ Create an implementation plan based on {outputs.context}
 
 Each `.chain.md` `## agent-name` section is a step. Config lines such as `phase`, `label`, `as`, `outputSchema`, `output`, `outputMode`, `reads`, `model`, `skills`, and `progress` go immediately after the header. A blank line separates config from task text. In saved `.chain.md` files, `outputSchema` is a path to a JSON Schema file; direct tool calls and `.chain.json` files can pass the schema object inline.
 
+For task text containing `##` headings, use a `task-json` config line containing a JSON string instead of a prose body, for example `task-json: "Review the change.\n\n## Requirements\nDo not modify files."`. Managed create/update saves use this form automatically when needed, preserving the headings as task text rather than extra steps.
+
 For `output`, `reads`, `skills`, and `progress`, chain behavior is three-state: omitted inherits from the agent, a value overrides, and `false` disables.
 
 Use `phase` to group related work in status output, `label` for a readable step name, and `as` to store a successful step or parallel task result for later `{outputs.name}` references. Duplicate `as` names, invalid identifiers, and unknown output references fail before child execution.

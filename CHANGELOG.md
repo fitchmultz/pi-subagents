@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Preserve Markdown headings inside saved chain tasks when creating or updating workflows, instead of interpreting them as additional agent steps.
+
 ## [0.40.1] - 2026-09-22
 
 ### Fixed

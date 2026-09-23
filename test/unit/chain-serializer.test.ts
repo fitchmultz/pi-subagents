@@ -15,6 +15,36 @@ Review the diff
 `;
 
 describe("chain serializer", () => {
+	it("preserves headings inside task text when saving and loading", () => {
+		const task = 'Review this change.\n\n## Requirements\nDo not modify any files.\n\n```md\n## "Example"\\path\n```\n\u2028## Line separator\u2029## Paragraph separator\n';
+		const config = {
+			name: "heading-repro",
+			description: "Heading round trip",
+			source: "project" as const,
+			filePath: "/tmp/heading-repro.chain.md",
+			steps: [
+				{ agent: "worker", task, outputSchema: "./schemas/review.json", skills: ["review"] },
+				{ agent: "reviewer", task: "" },
+			],
+		};
+		const loaded = parseChain(serializeChain(config), config.source, config.filePath);
+		assert.deepEqual(loaded.steps, config.steps);
+	});
+
+	it("rejects invalid or ambiguous encoded tasks", () => {
+		for (const body of [
+			"task-json: 123",
+			'task-json: "unterminated',
+			'task-json: "one"\ntask-json: "two"',
+			'task-json: "one"\n\nAnother task',
+		]) {
+			assert.throws(() => parseChain(
+				`---\nname: invalid\ndescription: Invalid\n---\n\n## worker\n${body}\n`,
+				"project", "/tmp/invalid.chain.md",
+			));
+		}
+	});
+
 	it("round-trips step outputMode", () => {
 		const parsed = parseChain(chainContent, "project", "/tmp/review-chain.md");
 
