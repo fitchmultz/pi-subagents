@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Preserve isolated worktrees when the runner throws before saving their patches, preventing loss of uncommitted edits.
 - Preserve Markdown headings inside saved chain tasks when creating or updating workflows, instead of interpreting them as additional agent steps.
 
 ## [0.40.1] - 2026-09-22
