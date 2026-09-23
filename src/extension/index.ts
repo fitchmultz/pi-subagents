@@ -463,7 +463,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		label: "Delegate",
 		description: "Delegate one bounded task to a configured agent. Discover profiles with agent_runs({action:'profiles'}). Background by default; completion arrives automatically. Use worktree for an isolated writer, acceptance for explicit requirements, and fresh context for independent review. Advanced workflows and definition management remain behind load_subagent.",
 		parameters: DelegateParams,
-		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		async execute(id, params, signal, onUpdate, ctx) {
 			const { worktree, context, async: background, ...task } = normalizeEverydayParams(params);
 			const request = worktree
@@ -480,7 +479,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		label: "Agent Runs",
 		description: "List your delegated runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; async:false waits for its actual result. Overrides apply only to a new continuation, never to live acceptance. profiles lists agents. Results arrive automatically; history survives reload.",
 		parameters: AgentRunsParams,
-		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		async execute(id, params, signal, onUpdate, ctx) {
 			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list", questions: "questions", answer: "answer", review: "review" };
 			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike({ ...normalizeEverydayParams(params, true), action: actions[params.action] }), signal, onUpdate, ctx), ctx);

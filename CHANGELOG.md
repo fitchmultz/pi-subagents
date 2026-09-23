@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Let Claude models use `delegate` and `agent_runs` by sending their bounded integer parameters without provider-side strict sampling.
 - Preserve acceptance checks, working directories, and inherited tasks on sequential steps launched from saved chains with `/run-chain`.
 - Preserve absolute agent-default output files after inline chain and parallel runs instead of cleaning them up as temporary files.
 - Prevent worktree diff capture from deleting files outside the worktree through symlinked synthetic paths.

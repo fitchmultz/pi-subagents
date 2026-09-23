@@ -293,7 +293,6 @@ export const AgentRunsValidationParams = Type.Object({
 	],
 });
 
-// Conditional action requirements remain locally validated; native strict sampling covers this closed shape.
 export const AgentRunsParams = Type.Object({
 	...AgentRunsValidationParams.properties,
 	acceptance: Type.Optional(DelegateAcceptance),

@@ -74,11 +74,14 @@ describe("subagent lazy activation with SDK tool filters", () => {
 		}
 	});
 
-	it("exposes compact delegation and run control without loading the advanced schema", async () => {
+	it("exposes compact tools without strict sampling that rejects bounded integers on Anthropic", async () => {
 		await withSdkSession({}, async (session) => {
-			assert.ok(activeTool(session, "delegate"));
+			const delegate = activeTool(session, "delegate");
+			assert.ok(delegate);
+			assert.equal(delegate.constrainedSampling, undefined);
 			const runs = activeTool(session, "agent_runs");
 			assert.ok(runs);
+			assert.equal(runs.constrainedSampling, undefined);
 			const profiles = await runs.execute("profiles", { action: "profiles" }, new AbortController().signal);
 			assert.match(JSON.stringify(profiles.content), /Executable agents/);
 			assert.equal(session.getActiveToolNames().includes("subagent"), false);
