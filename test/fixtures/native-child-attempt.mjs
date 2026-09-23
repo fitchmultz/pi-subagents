@@ -28,7 +28,7 @@ export default function (pi) {
 	globalThis.fetch = async () => { receipt.networkRequests++; save(); throw new Error("Network forbidden in driver fixture"); };
 	const faux = fauxProvider({ provider: "driver-fixture", models: [{ id: "faux-1" }, { id: "faux-2" }], tokensPerSecond: 1_000_000, tokenSize: { min: 1024, max: 1024 } });
 	const textReport = (value) => `Initial answer\n\n\`\`\`acceptance-report\n${JSON.stringify(value)}\n\`\`\``;
-	const submit = (value, id, answer = "Reviewed answer") => fauxAssistantMessage(fauxToolCall("structured_output", { value: { answer, report: value } }, { id }), { stopReason: "toolUse" });
+	const submit = (value, id, answer = scenario === "public-output" ? { items: ["reviewed payload"] } : "Reviewed answer") => fauxAssistantMessage(fauxToolCall("structured_output", { value: { answer, report: value } }, { id }), { stopReason: "toolUse" });
 	const rejected = { ...report, criteriaSatisfied: [{ id: "deliver", status: "not-satisfied", evidence: "missing proof" }] };
 	const blocked = { ...report, criteriaSatisfied: [{ id: "deliver", status: "blocked", evidence: "Native sign-in requests Touch ID", humanAction: "Complete Touch ID" }] };
 	const responses = [
@@ -43,6 +43,8 @@ export default function (pi) {
 	];
 	if (scenario === "question-initial") responses.unshift(fauxAssistantMessage(fauxToolCall("contact_supervisor", { reason: "need_decision", message: "Choose before initial work" }), { stopReason: "toolUse" }));
 	if (scenario === "question-review") responses.splice(1, 0, fauxAssistantMessage(fauxToolCall("contact_supervisor", { reason: "need_decision", message: "Choose during review" }), { stopReason: "toolUse" }));
+	const reviewSchema = process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA;
+	if (!process.env.PI_SUBAGENT_FINALIZATION_CONFIG && reviewSchema && JSON.parse(fs.readFileSync(reviewSchema, "utf8")).properties?.answer) responses.shift();
 	faux.setResponses(responses.map((response, index) => async (context) => {
 		receipt.calls++;
 		const tools = context.tools ?? getCurrentTools(context.messages);

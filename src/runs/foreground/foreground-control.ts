@@ -584,6 +584,19 @@ export async function resumeAsyncRun(input: {
 
 	let target: ResumeSourceTarget;
 	const parentSessionFile = input.ctx.sessionManager.getSessionFile() ?? null;
+	const nudgeContinuation = (runId: string, sessionFile?: string) => {
+		if (!sessionFile) return;
+		for (const candidate of input.deps.state.ownedRuns?.values() ?? []) {
+			if (candidate.runId === runId) continue;
+			const active = ownedRunView(candidate, input.deps.state).children.find((entry) => entry.sessionFile === sessionFile && entry.state === "live");
+			if (!active) continue;
+			return nudgeSubagentRun({ params: { ...input.params, dir: undefined, id: candidate.runId, index: active.index, message: followUp }, deps: input.deps, ctx: input.ctx }).then((result) => {
+				const notice = liveLaunchOverrideNotice(input.params);
+				if (notice) result.content.push({ type: "text", text: notice });
+				return result;
+			});
+		}
+	};
 	try {
 		const requestedId = input.params.id ?? input.params.runId;
 		const pendingQuestions = requestedId && !input.params.dir
@@ -602,18 +615,8 @@ export async function resumeAsyncRun(input: {
 				if (notice) result.content.push({ type: "text", text: notice });
 				return result;
 			}
-			if (child.sessionFile) {
-				for (const candidate of input.deps.state.ownedRuns?.values() ?? []) {
-					if (candidate.runId === owned.runId) continue;
-					const active = ownedRunView(candidate, input.deps.state).children.find((entry) => entry.sessionFile === child.sessionFile && entry.state === "live");
-					if (active) {
-						const result = await nudgeSubagentRun({ params: { ...input.params, id: candidate.runId, index: active.index, message: followUp }, deps: input.deps, ctx: input.ctx });
-						const notice = liveLaunchOverrideNotice(input.params);
-						if (notice) result.content.push({ type: "text", text: notice });
-						return result;
-					}
-				}
-			}
+			const continuation = nudgeContinuation(owned.runId, child.sessionFile);
+			if (continuation) return await continuation;
 			const contract = readQuestionContract(owned.runId, child.index);
 			return reviveSavedSubagent(input, {
 				...contract, runId: owned.runId, agent: child.agent, index: child.index, source: owned.source,
@@ -672,7 +675,7 @@ export async function resumeAsyncRun(input: {
 		};
 	}
 
-	return reviveSavedSubagent(input, target);
+	return nudgeContinuation(target.runId, target.sessionFile) ?? reviveSavedSubagent(input, target);
 }
 
 function continueQuestionSession(input: Parameters<typeof reviveSavedSubagent>[0], questions: SupervisorQuestionView[]): SubagentExecutionResult {

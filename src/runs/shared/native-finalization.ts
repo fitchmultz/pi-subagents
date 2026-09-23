@@ -22,7 +22,7 @@ export const FINALIZATION_EVENT = "subagent.finalization";
 export interface NativeFinalizationConfig {
 	nonce: string;
 	acceptance: ResolvedAcceptanceConfig;
-	reportRuntime: StructuredOutputRuntime;
+	reportRuntime: ReturnType<typeof createFinalizationReportRuntime>;
 	publicOutput?: StructuredOutputRuntime;
 	outputPath?: string;
 	outputSnapshot?: SingleOutputSnapshot;
@@ -42,7 +42,7 @@ export interface NativeFinalizationEvent {
 }
 
 export function createNativeFinalization(acceptance: ResolvedAcceptanceConfig, publicOutput?: StructuredOutputRuntime, outputPath?: string): NativeFinalizationConfig {
-	return { nonce: randomUUID(), acceptance, reportRuntime: createFinalizationReportRuntime(), publicOutput,
+	return { nonce: randomUUID(), acceptance, reportRuntime: createFinalizationReportRuntime(publicOutput?.schema), publicOutput,
 		outputPath, outputSnapshot: captureSingleOutputSnapshot(outputPath) };
 }
 
@@ -107,7 +107,7 @@ export default function registerNativeFinalization(pi: ExtensionAPI): void {
 			&& (turn === 0 || Boolean(submission.reportSubmissionError) || ledger.status === "rejected");
 		const nextPrompt = continueReview ? formatAcceptanceFinalizationPrompt({ acceptance, initialOutput, initialLedger,
 			turn: turn + 1, maxTurns: acceptance.finalization.maxTurns,
-			previousFailure: submission.reportSubmissionError ?? acceptanceFailureMessage(ledger), nativeReport: true }) : undefined;
+			previousFailure: submission.reportSubmissionError ?? acceptanceFailureMessage(ledger), nativeReport: true, outputSchema: config.publicOutput?.schema }) : undefined;
 		const marker: NativeFinalizationEvent = { type: FINALIZATION_EVENT, nonce: config.nonce, turn, lastEntryId: ctx.sessionManager.getLeafId() ?? undefined, messageCount: messages.length, at: Date.now(), submission, acceptance: ledger, resolvedOutput, nextPrompt };
 		fs.appendFileSync(path.join(path.dirname(reportRuntime.schemaPath), "boundaries.jsonl"), `${JSON.stringify(marker)}\n`, { mode: 0o600 });
 		if (!nextPrompt) return;

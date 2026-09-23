@@ -54,7 +54,11 @@ export async function runNativeReport(args, fixture) {
 	await session.bindExtensions({ mode: "json", onError: (error) => receipt.extensionErrors.push(error) });
 	receipt.sessionFile = session.sessionFile;
 	const structured = Boolean(nativeConfig) || session.agent.state.tools.some((tool) => tool.name === "structured_output");
-	const typed = (output) => ({ answer: stripAcceptanceReport(output), report: parseAcceptanceReport(output).report ?? { notes: "Malformed report" } });
+	const typed = (output) => {
+		const answer = fixture.finalAnswer ?? stripAcceptanceReport(output);
+		return { answer: typeof answer !== "string" && receipt.schema?.properties?.answer?.type === "string" ? JSON.stringify(answer) : answer,
+			report: parseAcceptanceReport(output).report ?? { notes: "Malformed report" } };
+	};
 	const submit = (value) => structured
 		? ai.fauxAssistantMessage(ai.fauxToolCall("structured_output", { value: typed(value) }), { stopReason: "toolUse" })
 		: ai.fauxAssistantMessage(value);

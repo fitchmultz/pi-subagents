@@ -78,6 +78,31 @@ it("accepts a typed report and complete visible answer from the current successf
 	}
 });
 
+it("validates the current public answer with its original recursive schema scope", () => {
+	const schema = { type: "object", properties: { name: { type: "string" }, next: { $ref: "#" } }, required: ["name"], additionalProperties: false };
+	const runtime = createFinalizationReportRuntime(schema);
+	const repaired = { name: "A", next: { name: "B" } };
+	try {
+		assert.equal(validateStructuredOutputValue(schema, repaired).status, "valid");
+		const current = { answer: repaired, report };
+		assert.equal(validateStructuredOutputValue(runtime.schema, current).status, "valid");
+		fs.writeFileSync(runtime.outputPath, JSON.stringify(current));
+		const submission = readFinalizationReport([submit(current), resultMessage()], runtime);
+		assert.deepEqual(submission.structuredOutput, repaired);
+		assert.deepEqual(JSON.parse(submission.output), repaired);
+		assert.deepEqual(submission.report, report);
+		assert.equal(readFinalizationReport([submit(current), resultMessage(), fauxAssistantMessage("Acknowledged")], runtime).structuredOutput, undefined);
+		for (const invalid of [JSON.stringify(repaired), { name: "A", next: { name: 42 } }, undefined]) {
+			const bad = { answer: invalid, report };
+			fs.writeFileSync(runtime.outputPath, JSON.stringify(bad));
+			assert.ok(readFinalizationReport([submit(bad), resultMessage()], runtime).reportSubmissionError);
+			assert.ok(readFinalizationReport([fauxAssistantMessage("Result")], runtime, { structuredResult: true }).reportSubmissionError);
+		}
+	} finally {
+		fs.rmSync(path.dirname(runtime.schemaPath), { recursive: true, force: true });
+	}
+});
+
 it("invalidates old reports on later assistant activity but accepts passive context and explicit resubmission", () => {
 	const runtime = createFinalizationReportRuntime();
 	try {

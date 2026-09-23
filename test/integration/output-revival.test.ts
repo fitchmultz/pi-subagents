@@ -157,6 +157,33 @@ describe("saved output choices", () => {
 		return successorId;
 	}
 
+	it("reuses a live continuation when resuming the original async directory again", async () => {
+		mockPi.onCall({ output: "Original report" });
+		const original = await run({ ...writer, async: true });
+		mockPi.onCall({ output: "Continued report", delay: 2_000 });
+		const continuations: SubagentExecutionResult[] = [];
+		try {
+			const first = await executor.execute("resume-dir", { action: "resume", dir: original.details.asyncDir, message: "First follow-up", async: true }, undefined, undefined, ctx);
+			assert.ok(!first.isError);
+			continuations.push(first);
+			runIds.add(first.details.asyncId!);
+			await waitFor(() => mockPi.callCount() === 2, "the continuation must start");
+			const second = await executor.execute("resume-dir-again", { action: "resume", dir: original.details.asyncDir, message: "Second follow-up", async: true }, undefined, undefined, ctx);
+			if (second.details.asyncId) {
+				continuations.push(second);
+				runIds.add(second.details.asyncId);
+			}
+			assert.equal(second.details.asyncId, undefined, "resume by dir must steer the same live continuation, not start another child");
+			assert.match(second.content.map((part) => part.text).join("\n"), /Nudge was not delivered/, "the fixture has no intercom endpoint");
+			assert.equal(mockPi.callCount(), 2);
+		} finally {
+			for (const continuation of continuations) {
+				await waitFor(() => fs.existsSync(path.join(RESULTS_DIR, `${continuation.details.asyncId}.json`)), "continuation cleanup");
+				await waitFor(() => !questionProcessAlive({ pid: readStatus(continuation.details.asyncDir!)?.pid }), "continuation runner must exit");
+			}
+		}
+	});
+
 	for (const async of [true, false]) {
 		for (const route of routes) {
 			it(`${async ? "async" : "foreground"} ${route.name} regenerates default outputs from saved launches`, async () => {

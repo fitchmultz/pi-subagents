@@ -19,7 +19,7 @@ const runtimeExtension = process.env.PI_DRIVER_TEST_DIST ? "js" : "ts";
 const report = { criteriaSatisfied: [{ id: "deliver", status: "satisfied", evidence: "Native fixture completed" }], residualRisks: [], diffSummary: "Implemented fixture" };
 
 async function run(scenario: string, options: { turns?: number; timeoutMs?: number; extendMs?: number; verify?: string; maxTokens?: number; maxExecutionTimeMs?: number; omitSessionFile?: boolean;
-	staged?: boolean; withoutAcceptance?: boolean; fallback?: boolean; startupExit?: { code: number; once?: boolean; stderr?: string; model?: string } } = {}) {
+	staged?: boolean; withoutAcceptance?: boolean; fallback?: boolean; legacy?: boolean; startupExit?: { code: number; once?: boolean; stderr?: string; model?: string } } = {}) {
 	const root = createTempDir("driver-native-");
 	const id = path.basename(root);
 	const asyncDir = getRunMetadataDir(id);
@@ -41,7 +41,7 @@ async function run(scenario: string, options: { turns?: number; timeoutMs?: numb
 		...(options.staged ? { evidence: ["no-staged-files"] } : {}),
 		...(options.verify ? { verify: [{ id: "check", command: options.verify }] } : {}) } });
 	const configPath = path.join(asyncDir, "launch.json");
-	fs.writeFileSync(configPath, JSON.stringify({ id, runtimeVersion: 2, timeoutMs: options.timeoutMs, cwd: root, asyncDir, resultPath,
+	fs.writeFileSync(configPath, JSON.stringify({ id, runtimeVersion: options.legacy ? undefined : 2, timeoutMs: options.timeoutMs, cwd: root, asyncDir, resultPath,
 		placeholder: "{previous}", resultMode: "single", steps: [{ agent: "worker", task: "Complete synthetic fixture", model: "driver-fixture/faux-1",
 			modelCandidates: options.fallback ? ["driver-fixture/faux-1", "driver-fixture/faux-2"] : undefined,
 			inheritProjectContext: false, inheritSkills: false, tools: options.staged ? ["read", "bash"] : ["read"], extensions: [path.join(repo, "test/fixtures/native-child-attempt.mjs")],
@@ -69,7 +69,7 @@ async function run(scenario: string, options: { turns?: number; timeoutMs?: numb
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
 		const receipt = fs.existsSync(receiptPath) ? JSON.parse(fs.readFileSync(receiptPath, "utf8")) : undefined;
 		const status = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf8"));
-		assert.ok(fs.existsSync(configPath), "v2 owner retains frozen launch");
+		if (!options.legacy) assert.ok(fs.existsSync(configPath), "v2 owner retains frozen launch");
 		assert.equal(receipt?.networkRequests ?? 0, 0);
 		const pids = fs.readFileSync(path.join(root, "pids"), "utf8").trim().split("\n").map(Number);
 		return { result, receipt, status, pids, output: fs.existsSync(path.join(root, "output.md")) ? fs.readFileSync(path.join(root, "output.md"), "utf8") : undefined };
@@ -177,7 +177,7 @@ for (const scenario of ["success", "public-output", "repair", "passive"] as cons
 	assert.equal(result.success, true, JSON.stringify(child));
 	assert.equal(receipt.calls, scenario === "repair" ? 3 : 2);
 	assert.equal(child.acceptance.finalization.turns.length, receipt.calls - 1);
-	assert.equal(output, "Reviewed answer");
+	assert.equal(output, scenario === "public-output" ? '{"items":["reviewed payload"]}' : "Reviewed answer");
 	assert.equal(child.modelAttempts.length, receipt.calls);
 	assert.deepEqual(receipt.sampling[1], { type: "json_schema", strict: "prefer" });
 	assert.deepEqual(child.modelAttempts.map((attempt) => attempt.usage.input), Array(receipt.calls).fill(11));
@@ -185,9 +185,17 @@ for (const scenario of ["success", "public-output", "repair", "passive"] as cons
 	assert.equal(new Set(contributions.map((item) => item.id)).size, receipt.calls);
 	assert.ok(contributions.every((item) => item.provider === "driver-fixture" && item.usage.reasoning === 4 && item.usage.cacheWrite1h === 2));
 	if (scenario === "public-output") {
-		assert.deepEqual(child.structuredOutput, { items: ["public payload"] });
+		assert.deepEqual(child.structuredOutput, { items: ["reviewed payload"] });
 		assert.deepEqual(receipt.sampling[0], { type: "json_schema", strict: "prefer" });
 	}
+});
+
+test("legacy Pi review publishes its current schema-validated payload across process continuation", async () => {
+	const { result, pids, output } = await run("public-output", { legacy: true });
+	assert.equal(result.success, true, JSON.stringify(result));
+	assert.equal(pids.length, 2);
+	assert.deepEqual(result.results[0].structuredOutput, { items: ["reviewed payload"] });
+	assert.equal(output, '{"items":["reviewed payload"]}');
 });
 
 for (const scenario of ["retry", "linger", "resubmit", "missing-then-repair"]) test(`native owner preserves ${scenario} through same-process review`, async () => {

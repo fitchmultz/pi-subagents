@@ -285,8 +285,8 @@ describe("unified owner result retention through actual router", () => {
 				assert.equal(child.outputMode, "file-only");
 				assert.equal(child.savedOutputPath, path.join(cwd, "native-report.md"));
 				assert.equal(child.finalOutput, child.outputReference.message);
-				assert.equal(fs.readFileSync(child.savedOutputPath, "utf8"), "Reviewed answer");
-				assert.deepEqual(child.structuredOutput, { items: ["public payload"] });
+				assert.equal(fs.readFileSync(child.savedOutputPath, "utf8"), '{"items":["reviewed payload"]}');
+				assert.deepEqual(child.structuredOutput, { items: ["reviewed payload"] });
 				assert.equal(child.acceptance.finalization.turns.length, 1);
 				assert.equal(child.initialOutput, "");
 				assert.equal(child.usage.turns, 2);
