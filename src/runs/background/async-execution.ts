@@ -386,7 +386,7 @@ export function executeAsyncChain(
 			outputPath,
 			output: behavior.output,
 			outputMode: behavior.outputMode,
-			...(outputUsesAgentDefault && outputPath ? { outputPathFromAgentDefault: true } : {}),
+			...(outputUsesAgentDefault && outputPath && typeof a.output === "string" && !path.isAbsolute(a.output) ? { outputPathFromAgentDefault: true } : {}),
 			sessionFile,
 			maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, a.maxSubagentDepth),
 			maxExecutionTimeMs: a.maxExecutionTimeMs,
