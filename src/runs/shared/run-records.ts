@@ -345,7 +345,7 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 	const pendingInput = options.pendingInput ?? listOwnedRunQuestions(run.ownerSessionId, run.runId).some((question) => question.state === "awaiting_input" || question.state === "answer_pending");
 	return {
 		...run, state: executionState, children, attention: runAttention(run, executionState, pendingInput),
-		canInterrupt: pendingInput || (live && status?.state === "running" && status.runId === run.runId),
+		canInterrupt: pendingInput || (live && savedStatus?.state === "running" && savedStatus.runId === run.runId),
 		updatedAt: result?.timestamp ?? status?.lastUpdate ?? foreground?.updatedAt ?? run.startedAt,
 		continuations: options.includeContinuations === false ? [] : [...(state.ownedRuns?.values() ?? [])].filter((candidate) => candidate.rootRunId === run.rootRunId && candidate.predecessorRunId).sort((a, b) => a.startedAt - b.startedAt).map((candidate) => ({ runId: candidate.runId, predecessorRunId: candidate.predecessorRunId!, predecessorIndex: candidate.predecessorIndex })),
 		...(result ? { resultPath } : foreground ? { resultPath: path.join(root, "foreground.json") } : {}),

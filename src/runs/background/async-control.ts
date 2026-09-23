@@ -3,7 +3,9 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { readStatus } from "../../shared/utils.ts";
-import { readRunJson } from "../shared/supervisor-questions.ts";
+import { readQuestionContract, readRunJson } from "../shared/supervisor-questions.ts";
+import { checkPidLiveness } from "./stale-run-reconciler.ts";
+import { readChildProcessIdentity, trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
 
 interface AsyncControlRequest {
 	requestId: string;
@@ -23,6 +25,36 @@ export function writeAsyncControlRequest(asyncDir: string, runId: string, action
 }
 
 export function writeAsyncInterruptRequest(asyncDir: string, runId: string, index?: number): void {
+	const status = readStatus(asyncDir);
+	if (status?.runId === runId && status.state === "running" && status.pid && checkPidLiveness(status.pid) === "dead") {
+		if (index !== undefined && (!Number.isSafeInteger(index) || index < 0 || status.steps?.[index]?.status !== "running")) {
+			throw new Error(`No running child at index ${index}. No siblings were stopped.`);
+		}
+		// Validate every target before signaling any: stale PIDs must never stop unrelated work.
+		const children = (status.steps ?? []).flatMap((step, childIndex) => {
+			if (step.status !== "running" || (index !== undefined && index !== childIndex)) return [];
+			const contract = readQuestionContract(runId, childIndex, undefined, { readConfiguration: false });
+			if (!contract?.pid || !Number.isSafeInteger(contract.pid) || contract.pid <= 0) throw new Error(`Cannot verify process ownership for child ${childIndex}.`);
+			if (checkPidLiveness(contract.pid) === "dead") return [];
+			if (!contract.processIdentity || readChildProcessIdentity(contract.pid) !== contract.processIdentity) {
+				throw new Error(`Cannot verify process ownership for child ${childIndex}. No stop was sent.`);
+			}
+			return [{ pid: contract.pid, identity: contract.processIdentity }];
+		});
+		for (const { pid, identity } of children) {
+			const child = { pid, kill: (signal?: NodeJS.Signals | number) => process.kill(pid, signal) };
+			if (!trySignalChildTree(child, "SIGTERM")) throw new Error(`Could not signal orphaned child process ${pid}. Exit is unconfirmed.`);
+			// Match normal Stop escalation, including descendants surviving their group leader.
+			setTimeout(() => {
+				if (checkPidLiveness(pid) === "dead") {
+					try { process.kill(-pid, "SIGKILL"); } catch {}
+				} else if (readChildProcessIdentity(pid) === identity) {
+					trySignalChildTree(child, "SIGKILL");
+				}
+			}, 3000).unref();
+		}
+		return;
+	}
 	writeAsyncControlRequest(asyncDir, runId, "interrupt", index);
 }
 

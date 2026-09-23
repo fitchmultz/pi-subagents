@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readChildProcessIdentity } from "../../shared/post-exit-stdio-guard.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -229,7 +230,7 @@ async function runPiStreaming(
 		return await runChildAttempt({
 			...options,
 			onStart: (control, result) => {
-				if (control.pid) saveQuestionContract(context.runId, context.stepIndex, { pid: control.pid, sessionFile: options.sessionFile, updatedAt: Date.now() });
+				if (control.pid) saveQuestionContract(context.runId, context.stepIndex, { pid: control.pid, processIdentity: readChildProcessIdentity(control.pid), sessionFile: options.sessionFile, updatedAt: Date.now() });
 				options.onStart?.(control, result);
 			},
 			onOutput: (text) => outputStream.write(text),
