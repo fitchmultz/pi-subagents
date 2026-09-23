@@ -391,6 +391,13 @@ function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): voi
 		throw error;
 	}
 
+	const realRoot = fs.realpathSync(worktree.path);
+	const realParent = fs.realpathSync(path.dirname(resolved));
+	const parentRelative = path.relative(realRoot, realParent);
+	if (parentRelative === ".." || parentRelative.startsWith(`..${path.sep}`) || path.isAbsolute(parentRelative)) {
+		throw new Error(`synthetic path resolves outside the worktree: ${syntheticPath}`);
+	}
+
 	if (stat.isSymbolicLink()) {
 		fs.unlinkSync(resolved);
 		return;
