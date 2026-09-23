@@ -491,6 +491,35 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [".env.local"] }));
 		}
 	});
 
+	it("does not delete files outside the worktree through a synthetic path's symlinked parent", () => {
+		const repoDir = createRepo("pi-worktree-hook-symlink-");
+		const nodeModulesDir = path.join(repoDir, "node_modules");
+		fs.mkdirSync(nodeModulesDir);
+		const victim = path.join(nodeModulesDir, "victim.txt");
+		fs.writeFileSync(victim, "keep this file\n");
+		const hookPath = createHookScript(repoDir, "symlink-hook.mjs", `
+import * as fs from "node:fs";
+import * as path from "node:path";
+const payload = JSON.parse(fs.readFileSync(0, "utf-8"));
+fs.symlinkSync(path.join(payload.repoRoot, "node_modules"), path.join(payload.worktreePath, "linked"));
+process.stdout.write(JSON.stringify({ syntheticPaths: ["linked/victim.txt"] }));
+`);
+
+		let setup: WorktreeSetup | undefined;
+		try {
+			setup = createWorktrees(repoDir, "hook-symlink", 1, { setupHook: { hookPath } });
+			const [diff] = diffWorktrees(setup, ["worker"], path.join(repoDir, "patches"));
+			assert.equal(fs.readFileSync(victim, "utf-8"), "keep this file\n");
+			assert.match(diff.captureError ?? "", /synthetic path.*outside the worktree/);
+		} finally {
+			if (setup) {
+				setup.preserveOnCleanup = false;
+				cleanupWorktrees(setup);
+			}
+			cleanupRepo(repoDir);
+		}
+	});
+
 	it("cleans up created worktrees when a later hook setup fails", () => {
 		const repoDir = createRepo("pi-worktree-hook-cleanup-");
 		const runId = `hook-cleanup-${Date.now().toString(36)}`;
