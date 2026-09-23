@@ -905,7 +905,7 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
 
 ### Everyday and advanced schemas
 
-`delegate` and `agent_runs` use closed, strict-compatible schemas and request native JSON-schema sampling when the model supports it. Their acceptance criteria use `{ id, must, evidence?, severity? }` objects, and verification environments use unique `{ name, value }` pairs. Duplicate environment names are rejected before execution.
+`delegate` and `agent_runs` use closed parameter schemas with local validation, without provider-side strict sampling. Their acceptance criteria use `{ id, must, evidence?, severity? }` objects, and verification environments use unique `{ name, value }` pairs. Duplicate environment names are rejected before execution.
 
 ```ts
 delegate({

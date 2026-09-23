@@ -1,18 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AgentRunsParams, DelegateParams } from "../../src/extension/schemas.ts";
 import { normalizeEverydayParams } from "../../src/extension/tool-input.ts";
-
-// Inspect the same native converter that constructs the provider's tool declarations.
-const { convertResponsesTools } = await import(new URL("api/openai-responses-shared.js", import.meta.resolve("@earendil-works/pi-ai")).href);
-
-test("everyday tool declarations request native strict sampling", () => {
-	for (const [name, parameters] of Object.entries({ delegate: DelegateParams, agent_runs: AgentRunsParams })) {
-		const [wire] = convertResponsesTools([{ name, description: "test", parameters, constrainedSampling: { type: "json_schema", strict: "prefer" } }]);
-		assert.equal(wire.strict, true, name);
-		assert.equal(wire.parameters.additionalProperties, false);
-	}
-});
 
 test("verification environment pairs preserve values and reject duplicate names", () => {
 	const params = { agent: "worker", task: "Check", acceptance: { verify: [{ id: "check", command: "check", env: [{ name: "EMPTY", value: "" }, { name: "VALUE", value: "a=b" }] }] } };
