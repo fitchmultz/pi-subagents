@@ -15,7 +15,7 @@ import { ownedRunView, saveForegroundRun } from "../../src/runs/shared/run-recor
 import { interruptAsyncRun } from "../../src/runs/foreground/foreground-control.ts";
 import { createNestedRoute } from "../../src/runs/shared/nested-events.ts";
 import { createSupervisorQuestion, getRunMetadataDir, readQuestionState, recordQuestionDelivery, saveAsyncRunResult, saveRunStatus, saveQuestionContract, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
-import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, type OwnedRun, type SubagentState } from "../../src/shared/types.ts";
+import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, POLL_INTERVAL_MS, type OwnedRun, type SubagentState } from "../../src/shared/types.ts";
 
 async function until(check: () => boolean, reason: string) { const end = Date.now() + 10_000; while (!check()) { assert.ok(Date.now() < end, reason); await delay(20); } }
 function setup(t, allowLaunch = false) {
@@ -256,7 +256,7 @@ test("waiting polls one fresh view without reading transcripts or enumerating un
 		steps: [{ agent: "worker", status: "running" as const, sessionFile, model: "fixture/original" }] };
 	saveRunStatus(id, status);
 	let tick: () => void = () => { throw new Error("Wait timer was not registered"); };
-	t.mock.method(globalThis, "setInterval", (callback, interval) => { assert.equal(interval, 100); tick = callback; return {} as NodeJS.Timeout; });
+	t.mock.method(globalThis, "setInterval", (callback, interval) => { assert.equal(interval, POLL_INTERVAL_MS); tick = callback; return {} as NodeJS.Timeout; });
 	t.mock.method(globalThis, "clearInterval", () => {});
 	const readFile = fs.readFileSync, readdir = fs.readdirSync;
 	let transcriptReads = 0, contractReads = 0, globalListings = 0;
