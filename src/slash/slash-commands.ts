@@ -199,7 +199,8 @@ const mapSavedChainSteps = (chain: ChainConfig, worktree = false): ChainStep[] =
 		const outputSchema = loadSavedOutputSchema(chain, step.agent, (step as { outputSchema?: unknown }).outputSchema);
 		return {
 			agent: step.agent,
-			task: step.task || undefined,
+			...(step.task ? { task: step.task } : {}),
+			...(step.cwd !== undefined ? { cwd: step.cwd } : {}),
 			...(step.phase ? { phase: step.phase } : {}),
 			...(step.label ? { label: step.label } : {}),
 			...(step.as ? { as: step.as } : {}),
@@ -210,6 +211,7 @@ const mapSavedChainSteps = (chain: ChainConfig, worktree = false): ChainStep[] =
 			progress: step.progress,
 			skill: step.skill ?? step.skills,
 			model: step.model,
+			...(step.acceptance !== undefined ? { acceptance: step.acceptance } : {}),
 		};
 	});
 };

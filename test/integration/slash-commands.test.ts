@@ -4,7 +4,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { beforeEach, describe, it } from "node:test";
 
+import { validateExecutionInput } from "../../src/runs/foreground/execution-input.ts";
 import { ASYNC_DIR } from "../../src/shared/types.ts";
+import { makeAgent } from "../support/helpers.ts";
 
 const SLASH_RESULT_TYPE = "subagent-slash-result";
 const SLASH_SUBAGENT_REQUEST_EVENT = "subagent:slash:request";
@@ -604,6 +606,23 @@ Review {previous}
 			assert.equal(runParams.chain?.[0]?.agent, "scout");
 			assert.deepEqual(runParams.chain?.[1]?.expand, { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 });
 			assert.deepEqual(runParams.chain?.[1]?.collect, { as: "reviews" });
+		});
+	});
+
+	it("/run-chain preserves saved sequential acceptance, cwd, and inherited tasks", async () => {
+		await withTempProject("pi-run-chain-acceptance-", async (root) => {
+			const acceptance = { criteria: [{ id: "verified", must: "Pass the required check" }], verify: [{ id: "reject", command: "exit 17" }] };
+			writeProjectChain(root, "gated.chain.json", JSON.stringify({
+				name: "gated",
+				description: "Gated review flow",
+				chain: [{ agent: "scout", task: "Gather context" }, { agent: "reviewer", cwd: "subdir", acceptance }],
+			}));
+
+			const { params } = await captureSlashCommandParams("run-chain", "gated -- Inspect", root);
+			const step = (params as { chain?: Array<{ cwd?: string; acceptance?: unknown }> }).chain?.[1];
+			assert.deepEqual(step?.acceptance, acceptance);
+			assert.equal(step?.cwd, "subdir");
+			assert.equal(validateExecutionInput(params as Parameters<typeof validateExecutionInput>[0], [makeAgent("scout"), makeAgent("reviewer")], true, false, false, false), null);
 		});
 	});
 
