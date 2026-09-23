@@ -16,7 +16,7 @@ Review the diff
 
 describe("chain serializer", () => {
 	it("preserves headings inside task text when saving and loading", () => {
-		const task = 'Review this change.\n\n## Requirements\nDo not modify any files.\n\n```md\n## "Example"\\path\n```\n';
+		const task = 'Review this change.\n\n## Requirements\nDo not modify any files.\n\n```md\n## "Example"\\path\n```\n\u2028## Line separator\u2029## Paragraph separator\n';
 		const config = {
 			name: "heading-repro",
 			description: "Heading round trip",

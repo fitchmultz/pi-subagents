@@ -216,7 +216,6 @@ Inspect
 	});
 
 	it("preserves task headings through managed chain creation and updates", () => {
-		fs.mkdirSync(path.join(tempDir, ".git"));
 		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const task = "Review this change.\n\n## Requirements\nDo not modify any files.";
 		const steps = [{ agent: "worker", task, outputSchema: "./schema.json" }];

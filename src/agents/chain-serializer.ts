@@ -315,7 +315,9 @@ export function serializeChain(config: ChainConfig): string {
 		if (step.progress !== undefined) lines.push(`progress: ${step.progress ? "true" : "false"}`);
 		const task = step.task ?? "";
 		if (/^##\s+/m.test(task)) {
-			lines.push(`task-json: ${JSON.stringify(task)}`);
+			// JSON leaves these separators raw, but the Markdown header regex treats them as line breaks.
+			const encoded = JSON.stringify(task).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+			lines.push(`task-json: ${encoded}`);
 		} else {
 			lines.push("");
 			lines.push(task);
