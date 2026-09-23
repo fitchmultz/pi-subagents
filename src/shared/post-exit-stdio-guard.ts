@@ -1,4 +1,5 @@
-import type { ChildProcess } from "node:child_process";
+import { execFileSync, type ChildProcess } from "node:child_process";
+import { readLinuxProcess } from "../pi-intercom/broker/pid.ts";
 import type { AgentProcessExit } from "./types.ts";
 
 interface PostExitStdioGuardOptions {
@@ -15,6 +16,21 @@ interface ChildWithPipedStdio {
 interface ChildWithKill {
 	pid?: number;
 	kill(signal?: NodeJS.Signals | number): boolean;
+}
+
+/** Capture the detached group leader's birth identity; Pi may replace its command-line title. */
+export function readChildProcessIdentity(pid: number): string | undefined {
+	if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+	if (process.platform === "linux") return readLinuxProcess(pid)?.identity;
+	try {
+		const identity = execFileSync("ps", ["-p", String(pid), "-o", "lstart=", "-o", "pgid="], {
+			encoding: "utf8", timeout: 1000, stdio: ["ignore", "pipe", "ignore"],
+			env: { ...process.env, LC_ALL: "C" },
+		}).trim().replace(/\s+/g, " ");
+		return Number(identity.split(" ").at(-1)) === pid ? identity : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 export function trySignalChild(child: ChildWithKill, signal: NodeJS.Signals): boolean {

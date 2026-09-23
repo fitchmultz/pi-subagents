@@ -219,7 +219,7 @@ describe("nested control routing", () => {
 			const result = await createExecutor(stateWithNestedRoute(route)).execute("interrupt", { action: "interrupt", id: "nested-direct" }, new AbortController().signal, undefined, ctx(root));
 
 			assert.equal(result.isError, undefined);
-			assert.equal(kill.mock.callCount(), 0);
+			assert.ok(kill.mock.calls.every((call) => call.arguments[1] === 0), "live runners may only be probed for liveness");
 			const request = JSON.parse(fs.readFileSync(path.join(asyncDir, "control-request.json"), "utf-8"));
 			assert.equal(request.runId, "nested-direct");
 			assert.equal(request.action, "interrupt");

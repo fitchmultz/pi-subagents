@@ -24,6 +24,7 @@ export interface SupervisorRunContract {
 	modelSelection?: Pick<AgentProgress, "model" | "thinking" | "modelStartedAt">;
 	sessionFile?: string;
 	pid?: number;
+	processIdentity?: string;
 	updatedAt?: number;
 }
 

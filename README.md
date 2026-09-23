@@ -182,6 +182,8 @@ agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "C
 
 Stop receipts mean **requested**, not process exit. Saved results separately record the actual agent-process exit code/signal when observed. A returned tool result is not proof that every command descendant exited, and an unrecorded command result means **exit unconfirmed**, not “still running” or exit zero.
 
+If a background runner exits while its children remain alive, Stop signals those recorded child process groups directly after checking their saved process identities. Selected-child Stop still leaves siblings running. Older runs without saved process identities report that ownership cannot be verified.
+
 `agent_runs({ action: "list" })` puts unanswered questions first, then failures, interrupted or unconfirmed work, live work, completed-but-unreviewed results, and other runs. It returns 20 runs by default. Use `offset` and `limit` (1–100) to page; `details.runList.nextOffset` points to the next page. Paging never discards history or disables exact-ID lookup. After the first read, unchanged finished runs reuse compact ordering facts instead of reloading every result and launch contract. Live or unconfirmed work, questions, and the displayed page stay fresh. `inspect` shows a concise task/result summary, acceptance outcome, questions, errors, paths, review, continuation links, and available live diagnostics. Use `full: true` for the full task and saved launch configuration (also supported by exact `subagent` status). Stored details and history are unchanged. Explicit continuation links identify separate work; a successor's result or review never satisfies the predecessor automatically.
 
 `review` records `decision: "accepted"` or `"needs_changes"`, with an optional `message`. Review a finished result, not a live run. The decision is separate from execution status, runtime acceptance checks, and delivery. It returns a short saved-decision receipt, not another inspection. The review note is parent-only and is **not sent to the child**, including on revival. Put actionable instructions in `continue` or `nudge`. Review does not run checks, launch another child, or mark a follow-up accepted; inspect and late nudges do not restart anything.
@@ -1146,7 +1148,7 @@ Requirements:
 
 - run inside a git repo
 - working tree must be clean
-- `node_modules/` is symlinked into each worktree when present
+- dependencies belong to each worktree; install them there with the project's package manager, or automate installation with `worktreeSetupHook`. The original checkout's `node_modules/` is not shared, so workspace imports resolve the child's code
 - task-level `cwd` overrides must be omitted or match the shared cwd
 - configured `worktreeSetupHook` must return valid JSON before timeout
 

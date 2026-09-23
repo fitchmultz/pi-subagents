@@ -109,7 +109,6 @@ describe("worktree", () => {
 				assert.equal(worktree.branch, `pi-parallel-structure-${i}`);
 				assert.equal(worktree.index, i);
 				assert.equal(worktree.agentCwd, worktree.path);
-				assert.equal(worktree.nodeModulesLinked, false);
 				assert.deepEqual(worktree.syntheticPaths, []);
 				assert.ok(fs.existsSync(worktree.path), `worktree path missing: ${worktree.path}`);
 			}
@@ -209,12 +208,8 @@ describe("worktree", () => {
 		});
 	});
 
-	it("diffWorktrees captures committed, modified, and new files without staging the node_modules symlink", () => {
+	it("diffWorktrees captures committed, modified, and new files", () => {
 		const repoDir = createRepo("pi-worktree-diff-");
-		const nodeModulesDir = path.join(repoDir, "node_modules");
-		fs.mkdirSync(nodeModulesDir, { recursive: true });
-		fs.writeFileSync(path.join(nodeModulesDir, "fixture.txt"), "fixture\n", "utf-8");
-
 		let setup: WorktreeSetup | undefined;
 		try {
 			setup = createWorktrees(repoDir, "diff", 1);
@@ -237,7 +232,6 @@ describe("worktree", () => {
 			assert.match(patch, /committed\.ts/);
 			assert.match(patch, /tracked\.txt/);
 			assert.match(patch, /new-file\.ts/);
-			assert.doesNotMatch(patch, /diff --git a\/node_modules b\/node_modules/);
 
 			const summary = formatWorktreeDiffSummary(diffs);
 			assert.match(summary, /=== Worktree Changes ===/);
@@ -332,21 +326,32 @@ describe("worktree", () => {
 		}
 	});
 
-	it("createWorktrees creates node_modules symlink when node_modules exists", () => {
+	it("workspace tests load the child's edited package instead of the original checkout", () => {
 		const repoDir = createRepo("pi-worktree-node-modules-");
-		const nodeModulesDir = path.join(repoDir, "node_modules");
-		fs.mkdirSync(nodeModulesDir, { recursive: true });
-		fs.writeFileSync(path.join(nodeModulesDir, "fixture.txt"), "fixture\n", "utf-8");
-
 		let setup: WorktreeSetup | undefined;
+		const install = (cwd: string) => {
+			const result = spawnSync("npm", ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false"], { cwd, encoding: "utf8" });
+			assert.equal(result.status, 0, result.stderr);
+		};
 		try {
+			fs.mkdirSync(path.join(repoDir, "packages", "lib"), { recursive: true });
+			fs.writeFileSync(path.join(repoDir, "package.json"), JSON.stringify({ private: true, workspaces: ["packages/*"] }));
+			fs.writeFileSync(path.join(repoDir, "packages", "lib", "package.json"), JSON.stringify({ name: "fixture-lib", version: "1.0.0", main: "index.cjs" }));
+			fs.writeFileSync(path.join(repoDir, "packages", "lib", "index.cjs"), "module.exports = 2;\n");
+			fs.writeFileSync(path.join(repoDir, "test.cjs"), "require('node:assert/strict').equal(require('fixture-lib'), 2);\n");
+			install(repoDir);
+			git(repoDir, ["add", "-A"]);
+			git(repoDir, ["commit", "-m", "workspace fixture"]);
 			setup = createWorktrees(repoDir, "node-modules", 1);
-			const symlinkPath = path.join(setup.worktrees[0]!.path, "node_modules");
-			assert.equal(setup.worktrees[0]!.nodeModulesLinked, true);
-			assert.deepEqual(setup.worktrees[0]!.syntheticPaths, ["node_modules"]);
-			assert.ok(fs.existsSync(symlinkPath), "node_modules link should exist");
-			assert.equal(fs.lstatSync(symlinkPath).isSymbolicLink(), true, "node_modules should be a symlink");
-			assert.equal(fs.realpathSync(symlinkPath), fs.realpathSync(nodeModulesDir));
+			const childCwd = setup.worktrees[0]!.path;
+			fs.writeFileSync(path.join(childCwd, "packages", "lib", "index.cjs"), "module.exports = 999;\n");
+			const beforeInstall = spawnSync(process.execPath, ["test.cjs"], { cwd: childCwd, encoding: "utf8" });
+			assert.notEqual(beforeInstall.status, 0, "missing local dependencies must not silently test the original package");
+			install(childCwd);
+			const childTest = spawnSync(process.execPath, ["test.cjs"], { cwd: childCwd, encoding: "utf8" });
+			assert.equal(childTest.status, 1);
+			assert.match(childTest.stderr, /999 !== 2/);
+			assert.equal(spawnSync(process.execPath, ["test.cjs"], { cwd: repoDir }).status, 0, "the original package must stay unchanged");
 		} finally {
 			if (setup) cleanupWorktrees(setup);
 			cleanupRepo(repoDir);
@@ -365,7 +370,6 @@ describe("worktree", () => {
 		let setup: WorktreeSetup | undefined;
 		try {
 			setup = createWorktrees(repoDir, "tracked-node-modules", 1);
-			assert.equal(setup.worktrees[0]!.nodeModulesLinked, false);
 			assert.deepEqual(setup.worktrees[0]!.syntheticPaths, []);
 			fs.writeFileSync(path.join(setup.worktrees[0]!.path, "tracked.txt"), "modified\n", "utf-8");
 

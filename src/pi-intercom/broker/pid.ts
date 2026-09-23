@@ -4,7 +4,7 @@ import { closeSync, openSync, readFileSync, readlinkSync } from "node:fs";
 // starttime is /proc/<pid>/stat field 22, in clock ticks; never round it to Number.
 const IDENTITY = /^linux-v1 ([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}) (pid:\[\d+\]) (time:\[\d+\]) (\d+)$/;
 
-function readLinuxProcess(pid: number): { tgid: number; identity?: string } | undefined {
+export function readLinuxProcess(pid: number): { tgid: number; identity?: string } | undefined {
   if (process.platform !== "linux") return undefined;
   let fd: number | undefined;
   try {
