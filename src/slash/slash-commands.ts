@@ -200,6 +200,7 @@ const mapSavedChainSteps = (chain: ChainConfig, worktree = false): ChainStep[] =
 		return {
 			agent: step.agent,
 			task: step.task || undefined,
+			...(step.cwd !== undefined ? { cwd: step.cwd } : {}),
 			...(step.phase ? { phase: step.phase } : {}),
 			...(step.label ? { label: step.label } : {}),
 			...(step.as ? { as: step.as } : {}),
@@ -210,6 +211,7 @@ const mapSavedChainSteps = (chain: ChainConfig, worktree = false): ChainStep[] =
 			progress: step.progress,
 			skill: step.skill ?? step.skills,
 			model: step.model,
+			...(step.acceptance !== undefined ? { acceptance: step.acceptance } : {}),
 		};
 	});
 };

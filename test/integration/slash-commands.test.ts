@@ -607,6 +607,22 @@ Review {previous}
 		});
 	});
 
+	it("/run-chain preserves saved sequential acceptance and cwd", async () => {
+		await withTempProject("pi-run-chain-acceptance-", async (root) => {
+			const acceptance = { criteria: [{ id: "verified", must: "Pass the required check" }], verify: [{ id: "reject", command: "exit 17" }] };
+			writeProjectChain(root, "gated.chain.json", JSON.stringify({
+				name: "gated",
+				description: "Gated review flow",
+				chain: [{ agent: "scout", task: "Inspect", cwd: "subdir", acceptance }],
+			}));
+
+			const { params } = await captureSlashCommandParams("run-chain", "gated -- Inspect", root);
+			const step = (params as { chain?: Array<{ cwd?: string; acceptance?: unknown }> }).chain?.[0];
+			assert.deepEqual(step?.acceptance, acceptance);
+			assert.equal(step?.cwd, "subdir");
+		});
+	});
+
 	it("/run-chain launches and completes packaged saved chains by dotted runtime name", async () => {
 		await withTempProject("pi-run-chain-packaged-", async (root) => {
 			writeProjectChain(root, "code-analysis.review-flow.chain.md", `---
