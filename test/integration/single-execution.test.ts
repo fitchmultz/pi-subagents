@@ -323,6 +323,24 @@ describe("single owner execution", () => {
 		assert.match(readCallArgs().join("\n"), /requested-outputs/);
 	});
 
+	it("keeps absolute agent-default output files after chain and parallel runs", async () => {
+		for (const mode of ["chain", "parallel"] as const) {
+			const outputPath = path.join(tempDir, `${mode}-report.md`);
+			fs.writeFileSync(outputPath, "previous report", "utf-8");
+			mockPi.onCall({ output: `${mode} report` });
+			const executor = makeExecutor([makeAgent("echo", { output: outputPath })]);
+			const params = mode === "chain"
+				? { chain: [{ agent: "echo", task: "Write report" }], async: false }
+				: { tasks: [{ agent: "echo", task: "Write report" }], async: false };
+			const result = await executor.execute(`absolute-${mode}`, params, undefined, undefined, makeMinimalCtx(tempDir));
+
+			assert.equal(result.isError, undefined, JSON.stringify(result.content));
+			assert.equal(result.details.results[0]?.outputCleanup, undefined);
+			assert.equal(result.details.results[0]?.savedOutputPath, outputPath);
+			assert.equal(fs.readFileSync(outputPath, "utf-8"), `${mode} report`);
+		}
+	});
+
 	it("uses a run-artifact path for agent-default single file-only output", async () => {
 		mockPi.onCall({ output: "full default file-only report" });
 		const executor = makeExecutor([makeAgent("echo", { output: "default-file-only.md" })]);

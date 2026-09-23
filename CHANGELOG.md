@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Preserve absolute agent-default output files after inline chain and parallel runs instead of cleaning them up as temporary files.
 - Prevent worktree diff capture from deleting files outside the worktree through symlinked synthetic paths.
 - Preserve isolated worktrees when the runner throws before saving their patches, preventing loss of uncommitted edits.
 - Preserve Markdown headings inside saved chain tasks when creating or updating workflows, instead of interpreting them as additional agent steps.
