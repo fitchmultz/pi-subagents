@@ -1118,11 +1118,12 @@ describe("fork context execution wiring", () => {
 			{ name: "per-call", configConcurrency: 3, paramsConcurrency: 1, expectedMaxRunning: 1 },
 		]) {
 			mockPi.reset();
+			const release = path.join(tempDir, `release-${testCase.name}`);
 			for (let i = 0; i < 3; i++) {
 				mockPi.onCall({
 					steps: [
 						{ jsonl: [events.toolStart("bash", { command: `${testCase.name}-${i}` })] },
-						{ delay: 250 },
+						{ waitForFile: release },
 						{ jsonl: [events.toolEnd("bash"), events.assistantMessage(`done-${i}`)] },
 					],
 				});
@@ -1146,6 +1147,7 @@ describe("fork context execution wiring", () => {
 					const progress = update.details?.progress ?? [];
 					const running = progress.filter((entry) => entry.status === "running").length;
 					maxRunning = Math.max(maxRunning, running);
+					if (running === testCase.expectedMaxRunning) fs.writeFileSync(release, "");
 				},
 				makeCtx(makeSessionManagerRecorder().manager),
 			);
@@ -1157,11 +1159,12 @@ describe("fork context execution wiring", () => {
 
 	it("releases the parallel wait on intercom handoff while its owner finishes both children", async () => {
 		mockPi.reset();
+		const release = path.join(tempDir, "release-child");
 		mockPi.onCall({
 			matchArgsIncludes: "send handoff",
 			steps: [
 				{ jsonl: [events.toolStart("intercom", { action: "ask", to: "orchestrator" })] },
-				{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
+				{ waitForFile: release, jsonl: [events.assistantMessage("after handoff")] },
 			],
 		});
 		mockPi.onCall({ matchArgsIncludes: "continue", output: "other done" });
@@ -1195,6 +1198,7 @@ describe("fork context execution wiring", () => {
 		assert.match(result.content[0]?.text ?? "", /Released the wait/);
 		assert.equal(result.details.wait?.status, "yielded");
 		assert.equal(detachEmitted, true);
+		fs.writeFileSync(release, "");
 		const saved = await savedOwnerResult(result.details.wait!.runId);
 		assert.equal(saved.terminalState, "complete");
 		assert.deepEqual(saved.results.map((child) => child.output), ["after handoff", "other done"]);
@@ -1203,11 +1207,12 @@ describe("fork context execution wiring", () => {
 
 	it("keeps a sibling failure in the owner result after the parallel wait is released", async () => {
 		mockPi.reset();
+		const release = path.join(tempDir, "release-child");
 		mockPi.onCall({
 			matchArgsIncludes: "send handoff",
 			steps: [
 				{ jsonl: [events.toolStart("intercom", { action: "ask", to: "orchestrator" })] },
-				{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
+				{ waitForFile: release, jsonl: [events.assistantMessage("after handoff")] },
 			],
 		});
 		mockPi.onCall({ matchArgsIncludes: "fail", stderr: "sibling exploded", exitCode: 1 });
@@ -1234,6 +1239,7 @@ describe("fork context execution wiring", () => {
 		assert.equal(result.isError, undefined, "releasing a wait is not a terminal result");
 		assert.equal(result.details.wait?.status, "yielded");
 		assert.match(result.content[0]?.text ?? "", /Released the wait/);
+		fs.writeFileSync(release, "");
 		const saved = await savedOwnerResult(result.details.wait!.runId);
 		assert.equal(saved.terminalState, "failed");
 		assert.equal(saved.results.length, 2);

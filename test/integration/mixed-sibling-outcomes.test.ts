@@ -39,6 +39,7 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 						const detaching = stop.startsWith("detach");
 						const aggregateFailed = failed;
 						const cwd = createTempDir("mixed-siblings-");
+						const release = path.join(cwd, "release-child");
 						const parentFile = path.join(cwd, "parent.jsonl");
 						fs.writeFileSync(parentFile, `${JSON.stringify({ type: "session", version: 3, id: randomUUID(), cwd, timestamp: new Date().toISOString() })}\n`);
 						let parent = SessionManager.open(parentFile);
@@ -73,7 +74,7 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 						mock.onCall({ matchArgsIncludes: "MIXED_BAD", stderr: failureReason, exitCode: 1 });
 						mock.onCall({ matchArgsIncludes: "MIXED_WAIT", steps: [
 							{ jsonl: [events.toolStart(detaching ? "contact_supervisor" : "bash", detaching ? { reason: "need_decision" } : { command: "controlled wait" })] },
-							{ delay: detaching ? 1_000 : 20_000, jsonl: [events.assistantMessage("DETACHED_CHILD_FINISHED")] },
+							{ ...(detaching ? { waitForFile: release } : { delay: 20_000 }), jsonl: [events.assistantMessage("DETACHED_CHILD_FINISHED")] },
 						] });
 						mock.onCall({ matchArgsIncludes: "MIXED_QUEUED", output: "QUEUED_CHILD_FINISHED" });
 						mock.onCall({ matchArgsIncludes: "MIXED_DOWNSTREAM", output: "DOWNSTREAM_FINISHED" });
@@ -103,6 +104,7 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 								assert.equal(interrupted.isError, undefined, JSON.stringify(interrupted));
 							} else if (detaching) bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: randomUUID() });
 							const response = await pending;
+							if (detaching) fs.writeFileSync(release, "");
 							const initial = JSON.parse(JSON.stringify(response));
 							let terminal = initial.details;
 							if (host === "background" || detaching) {
