@@ -4,7 +4,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ownedRunExecutionResult, ownedRunProgressResult, ownedRunStatusResult, ownedRunView, resolveOwnedRun } from "../shared/run-records.ts";
 import { getRunMetadataDir, listOwnedRunQuestions, questionProcessAlive, readRunJson } from "../shared/supervisor-questions.ts";
 import { getSingleResultOutput, readStatus } from "../../shared/utils.ts";
-import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT, type OwnedRun, type SubagentExecutionResult } from "../../shared/types.ts";
+import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT, POLL_INTERVAL_MS, type OwnedRun, type SubagentExecutionResult } from "../../shared/types.ts";
 import { resolveSubagentRunId } from "../background/run-id-resolver.ts";
 import { resolveNestedAsyncDir } from "../shared/nested-events.ts";
 import { nestedResolutionScopeForExecutor } from "./foreground-control.ts";
@@ -118,6 +118,6 @@ export async function waitForOwnedRun(input: {
 		if (input.signal?.aborted) abort(); else check();
 		// Unlike passive background tracking, this foreground call owes a result.
 		// The detached runner cannot keep this process alive; finish() releases the timer.
-		if (!finished) timer = setInterval(check, 100);
+		if (!finished) timer = setInterval(check, POLL_INTERVAL_MS);
 	});
 }

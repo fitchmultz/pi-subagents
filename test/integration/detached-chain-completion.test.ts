@@ -45,6 +45,7 @@ describe("detached chain workflow completion", { timeout: 30_000 }, () => {
 	for (const scenario of cases) it(scenario.name, async () => {
 		mock.reset();
 		const cwd = createTempDir("detached-chain-");
+		const release = path.join(cwd, "release-child");
 		const parentFile = path.join(cwd, "parent.jsonl");
 		fs.writeFileSync(parentFile, `${JSON.stringify({ type: "session", version: 3, id: randomUUID(), cwd, timestamp: new Date().toISOString() })}\n`);
 		let parent = SessionManager.open(parentFile);
@@ -79,7 +80,7 @@ describe("detached chain workflow completion", { timeout: 30_000 }, () => {
 		mock.onCall({ matchArgsIncludes: "WF_OK", output: "SUCCESSFUL_SIBLING_EVIDENCE" });
 		mock.onCall({ matchArgsIncludes: "WF_DOWNSTREAM", output: "DEPENDENT_STEP_FINISHED" });
 		mock.onCall({ matchArgsIncludes: "WF_WAIT", steps: [
-			...(scenario.detach ? [{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision" })] }, { delay: 350 }] : []),
+			...(scenario.detach ? [{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision" })] }, { waitForFile: release }] : []),
 			{ jsonl: [events.assistantMessage("DETACHED_CHILD_FINISHED")] },
 		] });
 		const task = (token: string) => ({ agent: "worker", task: token, output: false });
@@ -110,6 +111,7 @@ describe("detached chain workflow completion", { timeout: 30_000 }, () => {
 				assert.equal(detached, true);
 				assert.equal(initial.details.wait.status, "yielded");
 				assert.equal(fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")), false);
+				fs.writeFileSync(release, "");
 			}
 			await waitFor(() => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")));
 			const beforeReload = await invoke({ action: "status", id: runId });

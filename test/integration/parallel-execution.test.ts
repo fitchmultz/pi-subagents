@@ -154,9 +154,10 @@ describe("parallel agent execution", () => {
 
 	it("keeps a detached child's worktree until that child exits", async () => {
 		initGitRepo(tempDir);
+		const release = path.join(tempDir, "release-child");
 		mockPi.onCall({ steps: [
 			{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need input" })] },
-			{ delay: 500, jsonl: [events.assistantMessage("finished in worktree")] },
+			{ waitForFile: release, jsonl: [events.assistantMessage("finished in worktree")] },
 		] });
 		const bus = createEventBus();
 		const executor = createSubagentExecutor({
@@ -189,6 +190,7 @@ describe("parallel agent execution", () => {
 		assert.notEqual(worktreeCwd, tempDir);
 		assert.equal(fs.existsSync(worktreeCwd), true, "worktree must remain while the detached child is active");
 		fs.writeFileSync(path.join(worktreeCwd, "tracked.txt"), "edit after top-level detachment\n", "utf-8");
+		fs.writeFileSync(release, "");
 		const deadline = Date.now() + 5_000;
 		while (fs.existsSync(worktreeCwd) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
 		assert.equal(fs.existsSync(worktreeCwd), false, "worktree should be cleaned after detached completion");

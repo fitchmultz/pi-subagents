@@ -19,6 +19,7 @@ interface MockPiResponse {
 	jsonl?: unknown[];
 	steps?: Array<{
 		delay?: number;
+		waitForFile?: string;
 		jsonl?: unknown[];
 		stderr?: string;
 	}>;

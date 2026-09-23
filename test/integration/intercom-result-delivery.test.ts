@@ -217,8 +217,9 @@ describe("intercom result delivery cutover", () => {
 	});
 
 	it("releasing the wait leaves indexed siblings, downstream work and one grouped completion with the owner", async () => {
+		const release = path.join(tempDir, "release-child");
 		mockPi.onCall({ matchArgsIncludes: "FIRST", output: "FIRST_EVIDENCE" });
-		mockPi.onCall({ matchArgsIncludes: "WAIT", steps: [{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision" })] }, { delay: 800, jsonl: [events.assistantMessage("WAIT_FINISHED")] }] });
+		mockPi.onCall({ matchArgsIncludes: "WAIT", steps: [{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision" })] }, { waitForFile: release, jsonl: [events.assistantMessage("WAIT_FINISHED")] }] });
 		mockPi.onCall({ matchArgsIncludes: "DOWNSTREAM", output: "DEPENDENT_EVIDENCE" });
 		const { executor, events: bus, state } = makeExecutor();
 		let yielded = false;
@@ -227,6 +228,7 @@ describe("intercom result delivery cutover", () => {
 		}, makeMinimalCtx(tempDir));
 		assert.equal(initial.details.wait.status, "yielded");
 		const runId = initial.details.wait.runId;
+		fs.writeFileSync(release, "");
 		await waitFor(() => fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")));
 		const durable = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(runId), "result.json"), "utf8"));
 		assert.deepEqual(durable.results.map((child) => child.finalOutput), ["FIRST_EVIDENCE", "WAIT_FINISHED", "DEPENDENT_EVIDENCE"]);
@@ -1207,10 +1209,11 @@ describe("intercom result delivery cutover", () => {
 	});
 
 	it("resume steers a live detached foreground child without starting another process",  async () => {
+		const release = path.join(tempDir, "release-child");
 		mockPi.onCall({
 			steps: [
 				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
-				{ delay: 1000, jsonl: [events.assistantMessage("after reply")] },
+				{ waitForFile: release, jsonl: [events.assistantMessage("after reply")] },
 			],
 		});
 		const { executor, events: bus } = makeExecutor({ acknowledgeLive: true, agents: [makeAgent("a", { systemPrompt: "Intercom orchestration channel:" })] });
@@ -1242,6 +1245,7 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(resumed.isError, undefined);
 		assert.match(resumed.content[0]?.text ?? "", /Nudge delivered to live subagent/);
 		assert.equal(mockPi.callCount(), 1);
+		fs.writeFileSync(release, "");
 		await waitFor(() => fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")));
 	});
 

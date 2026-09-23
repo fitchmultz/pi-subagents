@@ -9,6 +9,15 @@ function fail(message, exitCode = 1) {
 	process.exit(exitCode);
 }
 
+async function waitForFile(file) {
+	if (!file) return;
+	const deadline = Date.now() + 15000;
+	while (!fs.existsSync(file)) {
+		if (Date.now() >= deadline) fail("Timed out waiting for mock response release.");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
 function listPendingFiles(dir) {
 	return fs.readdirSync(dir)
 		.filter((name) => name.startsWith("pending-") && name.endsWith(".json"))
@@ -239,13 +248,7 @@ async function main() {
 		}
 	}
 
-	if (response.waitForFile) {
-		const deadline = Date.now() + 15000;
-		while (!fs.existsSync(response.waitForFile)) {
-			if (Date.now() >= deadline) fail("Timed out waiting for mock response release.");
-			await new Promise((resolve) => setTimeout(resolve, 10));
-		}
-	}
+	await waitForFile(response.waitForFile);
 
 	if (response.ignoreSignals === true) {
 		process.on("SIGINT", () => {});
@@ -260,6 +263,7 @@ async function main() {
 		await runNativeReport(args, response.nativeReport);
 	} else if (Array.isArray(response.steps) && response.steps.length > 0) {
 		for (const step of response.steps) {
+			await waitForFile(step.waitForFile);
 			if (typeof step?.delay === "number" && step.delay > 0) {
 				await new Promise((resolve) => setTimeout(resolve, step.delay));
 				}
