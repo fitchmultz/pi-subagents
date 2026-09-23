@@ -18,7 +18,6 @@ interface WorktreeInfo {
 	agentCwd: string;
 	branch: string;
 	index: number;
-	nodeModulesLinked: boolean;
 	syntheticPaths: string[];
 }
 
@@ -180,19 +179,6 @@ export function resolveExpectedWorktreeAgentCwd(cwd: string, runId: string, inde
 	return cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
 }
 
-function linkNodeModulesIfPresent(toplevel: string, worktreePath: string): boolean {
-	const nodeModulesPath = path.join(toplevel, "node_modules");
-	const nodeModulesLinkPath = path.join(worktreePath, "node_modules");
-	if (!fs.existsSync(nodeModulesPath) || fs.existsSync(nodeModulesLinkPath)) return false;
-	try {
-		fs.symlinkSync(nodeModulesPath, nodeModulesLinkPath);
-		return true;
-	} catch {
-		// Symlink creation is optional (e.g., unsupported filesystems on CI runners).
-		return false;
-	}
-}
-
 function parseHookTimeout(timeoutMs: number | undefined): number {
 	if (timeoutMs === undefined) return DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS;
 	if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
@@ -348,8 +334,7 @@ function createSingleWorktree(
 
 	const agentCwd = cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
 	try {
-		const nodeModulesLinked = linkNodeModulesIfPresent(toplevel, worktreePath);
-		const syntheticPaths = nodeModulesLinked ? ["node_modules"] : [];
+		const syntheticPaths: string[] = [];
 
 		if (setupHook) {
 			const hookSyntheticPaths = runWorktreeSetupHook(setupHook, {
@@ -371,7 +356,6 @@ function createSingleWorktree(
 			agentCwd,
 			branch,
 			index,
-			nodeModulesLinked,
 			syntheticPaths,
 		};
 	} catch (error) {

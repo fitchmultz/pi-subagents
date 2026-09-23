@@ -1146,7 +1146,7 @@ Requirements:
 
 - run inside a git repo
 - working tree must be clean
-- `node_modules/` is symlinked into each worktree when present
+- dependencies belong to each worktree; install them there with the project's package manager, or automate installation with `worktreeSetupHook`. The original checkout's `node_modules/` is not shared, so workspace imports resolve the child's code
 - task-level `cwd` overrides must be omitted or match the shared cwd
 - configured `worktreeSetupHook` must return valid JSON before timeout
 

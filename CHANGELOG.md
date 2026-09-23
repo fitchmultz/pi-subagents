@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Keep workspace tests on the child's code by leaving dependency installation to its package manager or setup hook instead of sharing the original checkout's `node_modules`.
 - Preserve binary edits in worktree patches even when Git text conversions are configured.
 - Preserve absolute default report files when continuations explicitly select the profile's output.
 - Stop setup-hook descendants after a timeout or process failure before removing their worktree.
