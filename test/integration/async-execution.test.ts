@@ -7,7 +7,9 @@
 
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -1561,6 +1563,53 @@ describe("async execution utilities", () => {
 			for (const entry of preserved) assert.equal(fs.existsSync(entry.path), true, `preserved worktree should exist: ${entry.path}`);
 		} finally {
 			for (const entry of preserved) bestEffortRemovePreservedWorktree(repoDir, entry.path, entry.branch);
+			removeTempDir(repoDir);
+		}
+	});
+
+	it("preserves uncommitted worktree edits when saving a child artifact throws", async () => {
+		const repoDir = createRepo("pi-subagent-async-worktree-artifact-fail-");
+		const id = `artifact-failure-${process.pid}-${Date.now()}`;
+		const worktreePath = path.join(TEMP_ROOT_DIR, "worktrees", `pi-worktree-${id}-s0-0`);
+		const branch = `pi-parallel-${id}-s0-0`;
+		const artifactsDir = path.join(tempDir, "artifacts");
+		const asyncDir = path.join(tempDir, "run");
+		const gate = path.join(tempDir, "finish-child");
+		const configPath = path.join(tempDir, "config.json");
+		// A directory where the report should be guarantees a write failure, even as root.
+		fs.mkdirSync(path.join(artifactsDir, `${id}_worker_output.md`), { recursive: true });
+		fs.writeFileSync(configPath, JSON.stringify({
+			id, cwd: repoDir, asyncDir, artifactsDir, resultPath: path.join(tempDir, "result.json"),
+			placeholder: "{previous}",
+			steps: [{ worktree: true, parallel: [{
+				agent: "worker", task: "Edit input.md", completionGuard: false,
+				inheritProjectContext: false, inheritSkills: false,
+			}] }],
+		}));
+		mockPi.onCall({ output: "Finished editing", waitForFile: gate });
+		const runner = spawn(process.execPath, [
+			"--experimental-strip-types",
+			fileURLToPath(new URL("../../src/runs/background/subagent-runner.ts", import.meta.url)),
+			configPath,
+		], { stdio: ["ignore", "ignore", "pipe"] });
+		const closed = once(runner, "close");
+		let stderr = "";
+		runner.stderr.setEncoding("utf8").on("data", (text) => { stderr += text; });
+		try {
+			await waitForMockPiCalls(mockPi, 1);
+			fs.writeFileSync(path.join(worktreePath, "input.md"), "valuable uncommitted edit\n");
+			fs.writeFileSync(gate, "");
+			const [exitCode] = await closed;
+			assert.equal(exitCode, 1);
+			assert.match(stderr, /EISDIR/);
+			assert.equal(fs.existsSync(path.join(asyncDir, "worktree-diffs")), false);
+			assert.equal(fs.readFileSync(path.join(worktreePath, "input.md"), "utf8"), "valuable uncommitted edit\n");
+			assert.equal(git(repoDir, ["branch", "--format=%(refname:short)", "--list", branch]), branch);
+			assert.equal(fs.readFileSync(path.join(repoDir, "input.md"), "utf8"), "input\n");
+		} finally {
+			if (runner.exitCode === null) runner.kill();
+			await closed;
+			bestEffortRemovePreservedWorktree(repoDir, worktreePath, branch);
 			removeTempDir(repoDir);
 		}
 	});

@@ -1643,6 +1643,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				}));
 				writeStatusPayload();
 				if (!completion.advance) break;
+			} catch (error) {
+				if (worktreeSetup) worktreeSetup.preserveOnCleanup = true;
+				throw error;
 			} finally {
 				if (worktreeSetup) cleanupWorktrees(worktreeSetup);
 			}
