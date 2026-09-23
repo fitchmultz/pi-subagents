@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Fixed
+- Preserve binary edits in worktree patches even when Git text conversions are configured.
+- Preserve absolute default report files when continuations explicitly select the profile's output.
+- Stop setup-hook descendants after a timeout or process failure before removing their worktree.
 - Let Claude models use `delegate` and `agent_runs` by sending their bounded integer parameters without provider-side strict sampling.
 - Preserve acceptance checks, working directories, and inherited tasks on sequential steps launched from saved chains with `/run-chain`.
 - Preserve absolute agent-default output files after inline chain and parallel runs instead of cleaning them up as temporary files.
