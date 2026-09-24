@@ -323,10 +323,9 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	if (input.mcpDirectTools?.length) {
 		env.MCP_DIRECT_TOOLS = input.mcpDirectTools.join(",");
 	}
-	if (input.structuredOutput) {
-		env[STRUCTURED_OUTPUT_CAPTURE_ENV] = input.structuredOutput.outputPath;
-		env[STRUCTURED_OUTPUT_SCHEMA_ENV] = input.structuredOutput.schemaPath;
-	}
+	// A nested helper must never submit into its parent's capture.
+	env[STRUCTURED_OUTPUT_CAPTURE_ENV] = input.structuredOutput?.outputPath ?? "";
+	env[STRUCTURED_OUTPUT_SCHEMA_ENV] = input.structuredOutput?.schemaPath ?? "";
 
 	return { args, env, tempDir };
 }

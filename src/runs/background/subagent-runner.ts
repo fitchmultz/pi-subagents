@@ -353,6 +353,7 @@ function writeRunLog(
 /** Context for running a single step */
 interface SingleStepContext {
 	nativeFinalization?: boolean;
+	worktreePath?: string;
 	rootSessionId?: string;
 	cwd: string;
 	sessionEnabled: boolean;
@@ -595,6 +596,15 @@ async function runSingleStep(
 	const cleanup = effectiveFinalExitCode === 0 && !outcome.interrupted && resolvedOutput.savedPath && step.outputMode !== "file-only" && step.outputPathFromAgentDefault === true
 		? cleanupSingleOutputFile(resolvedOutput.savedPath, output, undefined)
 		: undefined;
+	if (ctx.worktreePath && resolvedOutput.savedPath && (!cleanup || cleanup.action === "skipped")) {
+		const relative = path.relative(ctx.worktreePath, resolvedOutput.savedPath);
+		if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+			const savedPath = path.join(path.dirname(ctx.outputFile), "outputs", String(ctx.flatIndex), path.basename(resolvedOutput.savedPath));
+			fs.mkdirSync(path.dirname(savedPath), { recursive: true });
+			fs.copyFileSync(resolvedOutput.savedPath, savedPath);
+			resolvedOutput.savedPath = savedPath;
+		}
+	}
 	const outputReference = resolvedOutput.savedPath
 		? cleanup ? formatConsumedOutputReference(resolvedOutput.savedPath, output, cleanup) : formatSavedOutputReference(resolvedOutput.savedPath, output)
 		: undefined;
@@ -1261,6 +1271,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 	const runParallelChild = async (input: {
 		task: SubagentStep;
+		worktreePath?: string;
 		flatIndex: number;
 		interruptSignal: AbortSignal;
 		item?: { name: string; value: unknown };
@@ -1293,6 +1304,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 		const singleResult = await runSingleStep({ ...task, task: renderTask(task.task, input.item) }, {
 			nativeFinalization: config.runtimeVersion === 2,
+			worktreePath: input.worktreePath,
 			cwd: input.taskCwd, sessionEnabled,
 			sessionDir: input.sessionDir,
 			artifactsDir, id,
@@ -1623,6 +1635,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						const { taskForRun, taskCwd } = prepareParallelTaskRun(task, groupCwd, worktreeSetup, taskIdx);
 						return runParallelChild({
 							task: taskForRun,
+							worktreePath: worktreeSetup?.worktrees[taskIdx]?.path,
 							flatIndex: groupStartFlatIndex + taskIdx,
 							interruptSignal: failFastSignal,
 							taskCwd,
