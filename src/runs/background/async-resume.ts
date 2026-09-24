@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { formatRunIdAmbiguity } from "../shared/run-id-ambiguity.ts";
 import * as path from "node:path";
 import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus, type ResolvedAcceptanceConfig } from "../../shared/types.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
@@ -183,7 +184,7 @@ export function resolveAsyncRunLocation(params: AsyncResumeParams, asyncDirRoot:
 	const matching = findAsyncRunPrefixMatches(requestedId, asyncRoot, resultRoot);
 	if (matching.length === 0) return { asyncDir: null, resultPath: null, resolvedId: requestedId };
 	if (matching.length > 1) {
-		throw new Error(`Ambiguous async run id prefix '${requestedId}' matched: ${matching.map((match) => match.id).join(", ")}. Provide a longer id.`);
+		throw new Error(formatRunIdAmbiguity("async", requestedId, matching.map((match) => match.id)));
 	}
 	return matching[0]!.location;
 }

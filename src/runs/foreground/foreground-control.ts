@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { formatRunIdAmbiguity } from "../shared/run-id-ambiguity.ts";
 import { resolveRootSessionId } from "../../shared/session-identity.ts";
 import { writeAsyncControlRequest, writeAsyncInterruptRequest } from "../background/async-control.ts";
 import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readNativeSessionConfiguration, readQuestionContract, readRunJson, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
@@ -73,7 +74,7 @@ export function resolveRememberedForegroundRun(requested: string | undefined, st
 	const direct = state.foregroundRuns.get(normalized);
 	const matches = direct ? [direct] : [...state.foregroundRuns.values()].filter((run) => run.runId.startsWith(normalized));
 	if (matches.length === 0) return undefined;
-	if (matches.length > 1) throw new Error(`Ambiguous foreground run id prefix '${normalized}' matched: ${matches.map((run) => run.runId).join(", ")}. Provide a longer id.`);
+	if (matches.length > 1) throw new Error(formatRunIdAmbiguity("foreground", normalized, matches.map((run) => run.runId)));
 	return matches[0]!;
 }
 
