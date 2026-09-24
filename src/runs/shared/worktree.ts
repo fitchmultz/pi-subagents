@@ -1,9 +1,13 @@
-import { spawnSync, type SpawnOptions, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { addAbortListener } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { TEMP_ROOT_DIR } from "../../shared/types.ts";
 import { ensureTempRoot } from "../../shared/temp-root.ts";
+import { trySignalChildTree } from "../../shared/post-exit-stdio-guard.ts";
+
+export class WorktreeCleanupError extends Error {}
 
 export interface WorktreeSetup {
 	cwd: string;
@@ -48,6 +52,7 @@ interface WorktreeSetupHookConfig {
 interface CreateWorktreesOptions {
 	agents?: string[];
 	setupHook?: WorktreeSetupHookConfig;
+	signal?: AbortSignal;
 }
 
 interface ResolvedWorktreeSetupHook {
@@ -104,16 +109,75 @@ function runGitChecked(cwd: string, args: string[]): string {
 	return result.stdout;
 }
 
-function resolveRepoState(cwd: string): RepoState {
-	const cwdRelative = resolveRepoCwdRelative(cwd);
-	const toplevel = runGitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim();
+function runSetupCommand(
+	command: string, args: string[], cwd: string, signal?: AbortSignal, input?: string, timeoutMs?: number,
+): Promise<GitResult> {
+	signal?.throwIfAborted();
+	return new Promise((resolve, reject) => {
+		let stdout = "";
+		let stderr = "";
+		let outputBytes = 0;
+		let failure: Error | undefined;
+		const child = spawn(command, args, { cwd, detached: true, stdio: "pipe" });
+		const terminate = () => { trySignalChildTree(child, "SIGKILL"); };
+		const abortListener = signal && addAbortListener(signal, terminate);
+		const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+			failure = new Error(`worktree setup hook timed out after ${timeoutMs}ms`);
+			terminate();
+		}, timeoutMs);
+		timer?.unref();
+		for (const stream of [child.stdout, child.stderr]) {
+			stream.setEncoding("utf8");
+			stream.on("data", (chunk: string) => {
+				outputBytes += Buffer.byteLength(chunk);
+				// Keep the previous spawnSync output bound.
+				if (outputBytes > 1024 * 1024) {
+					failure ??= new Error(`${command} output exceeded 1048576 bytes`);
+					terminate();
+				} else if (stream === child.stdout) stdout += chunk;
+				else stderr += chunk;
+			});
+		}
+		child.on("error", (error) => { failure = error; terminate(); });
+		child.on("exit", (status) => { if (status !== 0) terminate(); });
+		child.on("close", (status) => {
+			clearTimeout(timer);
+			abortListener?.[Symbol.dispose]();
+			if (signal?.aborted) reject(signal.reason);
+			else if (failure) reject(failure);
+			else resolve({ stdout, stderr, status });
+		});
+		child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+			if (error.code === "EPIPE") return; // The hook can exit without reading its payload.
+			failure = error;
+			terminate();
+		});
+		child.stdin.end(input);
+	});
+}
 
-	const status = runGitChecked(toplevel, ["status", "--porcelain"]);
+async function runSetupGit(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
+	const result = await runSetupCommand("git", ["-C", cwd, ...args], cwd, signal);
+	if (result.status !== 0) {
+		throw new Error(result.stderr.trim() || result.stdout.trim() || `git -C ${cwd} ${args.join(" ")} failed`);
+	}
+	return result.stdout;
+}
+
+async function resolveRepoState(cwd: string, signal?: AbortSignal): Promise<RepoState> {
+	const repoCheck = await runSetupCommand("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"], cwd, signal);
+	if (repoCheck.status !== 0 || repoCheck.stdout.trim() !== "true") {
+		throw new Error("worktree isolation requires a git repository");
+	}
+	const cwdRelative = (await runSetupGit(cwd, ["rev-parse", "--show-prefix"], signal)).trim().replace(/[\\/]+$/, "");
+	const toplevel = (await runSetupGit(cwd, ["rev-parse", "--show-toplevel"], signal)).trim();
+
+	const status = await runSetupGit(toplevel, ["status", "--porcelain"], signal);
 	if (status.trim().length > 0) {
 		throw new Error("worktree isolation requires a clean git working tree. Commit or stash changes first, or rerun without worktree isolation if shared-checkout edits are intentional.");
 	}
 
-	const baseCommit = runGitChecked(toplevel, ["rev-parse", "HEAD"]).trim();
+	const baseCommit = (await runSetupGit(toplevel, ["rev-parse", "HEAD"], signal)).trim();
 	return { toplevel, cwdRelative, baseCommit };
 }
 
@@ -236,8 +300,8 @@ function normalizeSyntheticPath(worktreePath: string, rawPath: string): string {
 	return path.normalize(relative);
 }
 
-function hasTrackedEntries(worktreePath: string, relativePath: string): boolean {
-	const result = runGit(worktreePath, ["ls-files", "--", relativePath]);
+async function hasTrackedEntries(worktreePath: string, relativePath: string, signal?: AbortSignal): Promise<boolean> {
+	const result = await runSetupCommand("git", ["-C", worktreePath, "ls-files", "--", relativePath], worktreePath, signal);
 	return result.status === 0 && result.stdout.trim().length > 0;
 }
 
@@ -259,34 +323,17 @@ function parseWorktreeSetupHookOutput(rawStdout: string): WorktreeSetupHookOutpu
 	return parsed as WorktreeSetupHookOutput;
 }
 
-function runWorktreeSetupHook(
+async function runWorktreeSetupHook(
 	hook: ResolvedWorktreeSetupHook,
 	input: WorktreeSetupHookInput,
-): string[] {
-	// Node's shared spawn normalization accepts detached; the sync typings omit it.
-	const options: SpawnSyncOptionsWithStringEncoding & Pick<SpawnOptions, "detached"> = {
-		cwd: input.worktreePath,
-		encoding: "utf-8",
-		input: JSON.stringify(input),
-		timeout: hook.timeoutMs,
-		killSignal: "SIGKILL",
-		detached: true,
-		shell: false,
-	};
-	const result = spawnSync(hook.hookPath, [], options);
-
-	if (result.pid && (result.error || result.status !== 0)) {
-		try { process.kill(-result.pid, "SIGKILL"); } catch {
-			// The hook's process group may already have exited.
-		}
-	}
-
-	if (result.error) {
-		const code = "code" in result.error ? result.error.code : undefined;
-		if (code === "ETIMEDOUT") {
-			throw new Error(`worktree setup hook timed out after ${hook.timeoutMs}ms`);
-		}
-		throw new Error(`worktree setup hook failed: ${result.error.message}`);
+	signal?: AbortSignal,
+): Promise<string[]> {
+	let result: GitResult;
+	try {
+		result = await runSetupCommand(hook.hookPath, [], input.worktreePath, signal, JSON.stringify(input), hook.timeoutMs);
+	} catch (error) {
+		signal?.throwIfAborted();
+		throw new Error(`worktree setup hook failed: ${getErrorMessage(error)}`);
 	}
 
 	if (result.status !== 0) {
@@ -306,67 +353,12 @@ function runWorktreeSetupHook(
 			throw new Error("worktree setup hook output field 'syntheticPaths' must contain only strings");
 		}
 		const normalizedPath = normalizeSyntheticPath(input.worktreePath, candidate);
-		if (hasTrackedEntries(input.worktreePath, normalizedPath)) {
+		if (await hasTrackedEntries(input.worktreePath, normalizedPath, signal)) {
 			throw new Error(`worktree setup hook cannot mark tracked paths as synthetic: ${normalizedPath}`);
 		}
 		uniquePaths.add(normalizedPath);
 	}
 	return [...uniquePaths];
-}
-
-function createSingleWorktree(
-	toplevel: string,
-	cwdRelative: string,
-	runId: string,
-	index: number,
-	baseCommit: string,
-	setupHook: ResolvedWorktreeSetupHook | undefined,
-	agent: string | undefined,
-): WorktreeInfo {
-	const branch = buildWorktreeBranch(runId, index);
-	const worktreePath = buildWorktreePath(runId, index);
-	ensureTempRoot();
-	const add = runGit(toplevel, ["worktree", "add", worktreePath, "-b", branch, "HEAD"]);
-	if (add.status !== 0) {
-		const message = add.stderr.trim() || add.stdout.trim() || `failed to create worktree ${worktreePath}`;
-		throw new Error(message);
-	}
-
-	const agentCwd = cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
-	try {
-		const syntheticPaths: string[] = [];
-
-		if (setupHook) {
-			const hookSyntheticPaths = runWorktreeSetupHook(setupHook, {
-				version: 1,
-				repoRoot: toplevel,
-				worktreePath,
-				agentCwd,
-				branch,
-				index,
-				runId,
-				baseCommit,
-				agent,
-			});
-			syntheticPaths.push(...hookSyntheticPaths);
-		}
-
-		return {
-			path: worktreePath,
-			agentCwd,
-			branch,
-			index,
-			syntheticPaths,
-		};
-	} catch (error) {
-		try { runGitChecked(toplevel, ["worktree", "remove", "--force", worktreePath]); } catch {
-			// Best-effort rollback; preserve the original setup failure.
-		}
-		try { runGitChecked(toplevel, ["branch", "-D", branch]); } catch {
-			// Best-effort rollback; preserve the original setup failure.
-		}
-		throw error;
-	}
 }
 
 function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): void {
@@ -511,37 +503,52 @@ function markWorktreesForPreservation(setup: WorktreeSetup, reason: string): voi
 		: reason;
 }
 
-export function createWorktrees(cwd: string, runId: string, count: number, options?: CreateWorktreesOptions): WorktreeSetup {
-	const repo = resolveRepoState(cwd);
+export async function createWorktrees(cwd: string, runId: string, count: number, options?: CreateWorktreesOptions): Promise<WorktreeSetup> {
+	const signal = options?.signal;
+	const repo = await resolveRepoState(cwd, signal);
 	const setupHook = resolveWorktreeSetupHook(repo.toplevel, options?.setupHook);
 	const worktrees: WorktreeInfo[] = [];
+	const rollback: Array<{ path?: string; branch?: string }> = [];
 
 	try {
 		for (let index = 0; index < count; index++) {
-			worktrees.push(createSingleWorktree(
-				repo.toplevel,
-				repo.cwdRelative,
-				runId,
-				index,
-				repo.baseCommit,
-				setupHook,
-				options?.agents?.[index],
-			));
+			const branch = buildWorktreeBranch(runId, index);
+			const worktreePath = buildWorktreePath(runId, index);
+			ensureTempRoot();
+			const pathExisted = fs.existsSync(worktreePath);
+			const branchExisted = (await runSetupGit(repo.toplevel, ["branch", "--list", branch], signal)).trim().length > 0;
+			rollback.push({ path: pathExisted ? undefined : worktreePath, branch: branchExisted ? undefined : branch });
+			await runSetupGit(repo.toplevel, ["worktree", "add", worktreePath, "-b", branch, "HEAD"], signal);
+			const agentCwd = repo.cwdRelative ? path.join(worktreePath, repo.cwdRelative) : worktreePath;
+			const syntheticPaths = setupHook ? await runWorktreeSetupHook(setupHook, {
+				version: 1, repoRoot: repo.toplevel, worktreePath, agentCwd, branch, index, runId,
+				baseCommit: repo.baseCommit, agent: options?.agents?.[index],
+			}, signal) : [];
+			worktrees.push({ path: worktreePath, agentCwd, branch, index, syntheticPaths });
 		}
 	} catch (error) {
-		cleanupWorktrees({
-			cwd: repo.toplevel,
-			worktrees,
-			baseCommit: repo.baseCommit,
-		});
+		// Rollback still runs after Stop, but its own Git hooks must not hang the owner.
+		const cleanupSignal = AbortSignal.timeout(setupHook?.timeoutMs ?? DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS);
+		const failures: string[] = [];
+		for (const entry of rollback.reverse()) {
+			if (entry.path && fs.existsSync(entry.path)) {
+				try {
+					// Interrupted checkout can leave Git's "initializing" lock on this new worktree.
+					await runSetupGit(repo.toplevel, ["worktree", "remove", "--force", "--force", entry.path], cleanupSignal);
+				} catch (cleanupError) { failures.push(`Could not remove worktree '${entry.path}': ${getErrorMessage(cleanupError)}`); }
+			}
+			if (entry.branch) {
+				try {
+					const exists = (await runSetupGit(repo.toplevel, ["branch", "--list", entry.branch], cleanupSignal)).trim();
+					if (exists) await runSetupGit(repo.toplevel, ["branch", "-D", entry.branch], cleanupSignal);
+				} catch (cleanupError) { failures.push(`Could not delete worktree branch '${entry.branch}': ${getErrorMessage(cleanupError)}`); }
+			}
+		}
+		if (failures.length) throw new WorktreeCleanupError(`${getErrorMessage(error)}\n\nWorktree rollback incomplete:\n${failures.join("\n")}`);
 		throw error;
 	}
 
-	return {
-		cwd: repo.toplevel,
-		worktrees,
-		baseCommit: repo.baseCommit,
-	};
+	return { cwd: repo.toplevel, worktrees, baseCommit: repo.baseCommit };
 }
 
 export function diffWorktrees(setup: WorktreeSetup, agents: string[], diffsDir: string): WorktreeDiff[] {
