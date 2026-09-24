@@ -17,7 +17,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { keyText, type ExtensionAPI, type ExtensionContext, type MessageRenderOptions, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.ts";
 import { ARTIFACT_CLEANUP_DAYS, cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
@@ -27,7 +26,7 @@ import { cleanupOldRunStorage, ensureSafeTempPath, ensureTempRoot } from "../sha
 import { renderSubagentResult } from "../tui/render.ts";
 import { AgentViewController } from "../tui/agent-view.ts";
 import { withMouseExpansion } from "../tui/action-hints.ts";
-import { AgentRunsParams, DelegateParams, SubagentParams } from "./schemas.ts";
+import { SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { OWNED_RUN_ENTRY, ownedRunView, rememberOwnedRun, restoreOwnedRuns } from "../runs/shared/run-records.ts";
@@ -48,7 +47,7 @@ import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
 import { loadConfig } from "./config.ts";
 import { registerToolResultAdapter } from "./tool-result.ts";
-import { normalizeEverydayParams } from "./tool-input.ts";
+import { registerCompactSubagentTools, subagentToolLifecycle } from "./compact-tools.ts";
 import {
 	type Details,
 	type SubagentExecutionResult,
@@ -71,7 +70,6 @@ import {
 export { loadConfig } from "./config.ts";
 
 const SUBAGENT_TOOL_NAME = "subagent";
-const SUBAGENT_LOADER_TOOL_NAME = "load_subagent";
 const SUBAGENT_GUIDELINES = [
 	"Use subagent for materially parallelizable scouting, review, or implementation work where another focused agent adds value.",
 	"Top-level subagent execution uses the stock async default unless configuration opts out. Launch a small bounded fanout of independent agents as separate single-agent runs so each completion wakes the parent, with at most one writer. Use one tasks call for non-review fanout when all child results are required together, when shared concurrency/task limits are needed, or when multiple writers require worktree isolation; the parent receives one aggregate completion. If no useful parent work remains, end the turn and wait instead of polling; completion wakes the parent. This also applies when an incomplete active Pi goal needs child evidence: yield, then continue the goal after automatic completion delivery. Set async:false only for explicitly chosen foreground execution.",
@@ -459,68 +457,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			? parentUsage.attach(result, finalizedChildUsage(result.details.run.children, result.details.wait.index), ctx)
 			: result,
 	);
-	const nativeAsyncLifecycle = {
-		async: true,
-		resume: async (id: string, _params: unknown, signal: AbortSignal | undefined,
-			onUpdate: ((result: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext) => {
-			const result = await executor.resume(id, {}, signal, onUpdate, ctx);
-			return result && toRegisteredToolResult(result, ctx);
-		},
-	};
-	pi.registerTool({
-		...nativeAsyncLifecycle,
-		name: "delegate",
-		label: "Delegate",
-		description: "Delegate one bounded task to a configured agent. Discover profiles with agent_runs({action:'profiles'}). Background by default; completion arrives automatically. Use worktree for an isolated writer, acceptance for explicit requirements, and fresh context for independent review. Advanced workflows and definition management remain behind load_subagent.",
-		parameters: DelegateParams,
-		async execute(id, params, signal, onUpdate, ctx) {
-			const { worktree, context, async: background, ...task } = normalizeEverydayParams(params);
-			const request = worktree
-				? { tasks: [task], worktree: true, context, async: background, cwd: task.cwd }
-				: { ...task, context, async: background };
-			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(request), signal, onUpdate, ctx), ctx);
-		},
-		renderResult: renderSubagentResult,
-	});
-
-	pi.registerTool({
-		...nativeAsyncLifecycle,
-		name: "agent_runs",
-		label: "Agent Runs",
-		description: "List your delegated runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; async:false waits for its actual result. Overrides apply only to a new continuation, never to live acceptance. profiles lists agents. Results arrive automatically; history survives reload.",
-		parameters: AgentRunsParams,
-		async execute(id, params, signal, onUpdate, ctx) {
-			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list", questions: "questions", answer: "answer", review: "review" };
-			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike({ ...normalizeEverydayParams(params, true), action: actions[params.action] }), signal, onUpdate, ctx), ctx);
-		},
-		renderResult: renderSubagentResult,
-	});
-
-	pi.registerTool({
-		name: SUBAGENT_LOADER_TOOL_NAME,
-		label: "Load Subagent",
-		description: "Enable advanced subagent orchestration: parallel groups, chains, saved workflows, or agent-definition management. Ordinary delegation and control use delegate and agent_runs. After loading, call subagent with { action: \"list\" } before execution.",
-		promptSnippet: "Load advanced subagent orchestration and definition management; use delegate and agent_runs for ordinary work.",
-		parameters: Type.Object({}),
-		async execute() {
-			if (!pi.getAllTools().some((tool) => tool.name === SUBAGENT_TOOL_NAME)) {
-				throw new Error("Subagent is unavailable because the full tool is excluded from this session.");
-			}
-			const activeTools = pi.getActiveTools();
-			const added = activeTools.includes(SUBAGENT_TOOL_NAME) ? [] : [SUBAGENT_TOOL_NAME];
-			if (added.length > 0) pi.setActiveTools([...activeTools, ...added]);
-			return {
-				content: [{
-					type: "text" as const,
-					text: [
-						`Subagent ${added.length > 0 ? "enabled" : "already enabled"}.`,
-						...SUBAGENT_GUIDELINES.map((guideline) => `- ${guideline}`),
-					].join("\n"),
-				}],
-				details: {},
-			};
-		},
-	});
+	const nativeAsyncLifecycle = subagentToolLifecycle(executor, toRegisteredToolResult);
+	registerCompactSubagentTools(pi, { executor, adapt: toRegisteredToolResult, guidelines: SUBAGENT_GUIDELINES, asyncByDefault });
 
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		...nativeAsyncLifecycle,
@@ -569,18 +507,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.registerTool(tool);
-
-	const resetSubagentToolActivation = () => {
-		if (!pi.getAllTools().some((tool) => tool.name === SUBAGENT_LOADER_TOOL_NAME)) return;
-		const activeTools = pi.getActiveTools();
-		const resetTools = activeTools.filter((name) => name !== SUBAGENT_TOOL_NAME);
-		if (!resetTools.includes(SUBAGENT_LOADER_TOOL_NAME)) resetTools.push(SUBAGENT_LOADER_TOOL_NAME);
-		if (resetTools.length === activeTools.length && resetTools.every((name, index) => name === activeTools[index])) return;
-		pi.setActiveTools(resetTools);
-	};
-	pi.on("session_start", resetSubagentToolActivation);
-	pi.on("session_tree", resetSubagentToolActivation);
-	pi.on("session_compact", resetSubagentToolActivation);
 
 	registerSlashCommands(pi, state);
 

@@ -109,7 +109,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					const reviewed = { ...run, review: { decision: params.decision, ...(params.message ? { message: params.message } : {}), reviewedAt: Date.now() } };
 					rememberOwnedRun(deps.state, reviewed);
 					const result = ownedRunStatusResult(reviewed, deps.state, undefined, { childSafe: Boolean(nestedResolutionScopeForExecutor(deps)) });
-					return { ...result, content: [{ type: "text", text: `Saved parent review for ${run.runId}: ${params.decision}.\nThe review note is parent-only and was not sent to the child. Put actionable instructions in ${deps.allowMutatingManagementActions === false ? "subagent resume/nudge" : "agent_runs continue/nudge"}. No work started.` }] };
+					return { ...result, content: [{ type: "text", text: `Saved parent review for ${run.runId}: ${params.decision}.\nThe review note is parent-only and was not sent to the child. Put actionable instructions in ${deps.allowMutatingManagementActions === false && deps.config.compactChildTools === false ? "subagent resume/nudge" : "agent_runs continue/nudge"}. No work started.` }] };
 				} catch (error) {
 					return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
 				}

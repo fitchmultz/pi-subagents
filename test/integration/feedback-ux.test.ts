@@ -18,6 +18,7 @@ const { buildControlEvent, formatControlNoticeMessage } = await import("../../sr
 const { resolveEffectiveAcceptance } = await import("../../src/runs/shared/acceptance.ts");
 const { inspectSubagentStatus } = await import("../../src/runs/background/run-status.ts");
 const { formatAsyncStartedMessage } = await import("../../src/runs/background/async-execution.ts");
+const { formatRunAction } = await import("../../src/shared/status-format.ts");
 after(() => removeTempDir(root));
 
 function setup(id: string) {
@@ -191,15 +192,20 @@ test("feedback live runs precede 31 unreviewed results while history and explici
 	assert.equal(resolveOwnedRun(fixture.state, "finished-30")?.runId, "finished-30");
 });
 
-for (const childSafe of [false, true]) test(`feedback ${childSafe ? "child-safe" : "parent"} controls only advertise callable tool/action pairs`, () => {
+for (const surface of ["parent", "child-compact", "child-legacy"]) test(`feedback ${surface} controls only advertise callable tool/action pairs`, (t) => {
+	const childSafe = surface !== "parent", legacy = surface === "child-legacy";
+	const configPath = path.join(root, "agent/extensions/subagent/config.json");
+	fs.mkdirSync(path.dirname(configPath), { recursive: true });
+	fs.writeFileSync(configPath, JSON.stringify({ compactChildTools: !legacy }));
+	t.after(() => fs.rmSync(configPath));
 	const failedTool = formatControlNoticeMessage(buildControlEvent({ runId: "failed-tool", agent: "worker", to: "needs_attention", reason: "tool_failures", message: "Repeated edit failures", currentTool: "edit" }), "worker", childSafe);
 	assert.match(failedTool, /Repeated edit failures/);
 	assert.doesNotMatch(failedTool, /Inspect command progress|still active|long-running tool/, "a completed failed tool is not an active long tool");
 	const control = { runtimeVersion: 2 as const, runId: `live-control-${childSafe}`, mode: "single" as const, state: "running" as const, startedAt: Date.now(), lastUpdate: Date.now(), pid: process.pid,
 		timeoutAt: Date.now() + 60000, steps: [{ agent: "worker", status: "running" as const }] };
 	questions.saveRunStatus(control.runId, control);
-	const text = [inspectSubagentStatus({ id: control.runId }, { nested: childSafe ? { routes: [] } : undefined }).content[0]!.text, formatAsyncStartedMessage("Started", childSafe), formatControlNoticeMessage(buildControlEvent({ runId: control.runId, agent: "worker", to: "needs_attention" }), "worker", childSafe)].join("\n");
-	if (childSafe) {
+	const text = [inspectSubagentStatus({ id: control.runId }, { nested: childSafe ? { routes: [] } : undefined }).content[0]!.text, formatAsyncStartedMessage("Started", childSafe), formatControlNoticeMessage(buildControlEvent({ runId: control.runId, agent: "worker", to: "needs_attention" }), "worker", childSafe), formatRunAction("extend", control.runId, { extendMs: 1000 }, childSafe)].join("\n");
+	if (legacy) {
 		assert.match(text, /subagent\(\{ action: "status"/);
 		assert.match(text, /subagent\(\{ action: "interrupt"/);
 		assert.doesNotMatch(text, /agent_runs|load_subagent/);
@@ -224,9 +230,9 @@ test("feedback child-safe launch and completion hints do not depend on a live ne
 		const text = [formatAsyncStartedMessage("Started"),
 			buildSubagentResultIntercomPayload({ to: "parent", runId: fixture.run.runId, asyncId: fixture.run.runId, mode: "single", source: "async", children: [{ agent: "worker", status: "completed", summary: "Done", sessionPath: fixture.sessionFile }] }).message,
 		].join("\n");
-		assert.match(text, /subagent\(\{ action: "status"/);
-		assert.match(text, /subagent\(\{ action: "resume"/);
-		assert.doesNotMatch(text, /agent_runs|load_subagent/);
+		assert.match(text, /agent_runs\(\{ action: "inspect"/);
+		assert.match(text, /agent_runs\(\{ action: "continue"/);
+		assert.doesNotMatch(text, /subagent\(\{ action: "(?:status|resume)"/);
 	} finally { keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; }); }
 });
 

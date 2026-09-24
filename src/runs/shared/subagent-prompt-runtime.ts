@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "./pi-args.ts";
 import { setPromptSection } from "../../shared/prompt-sections.ts";
+import { loadConfig } from "../../extension/config.ts";
 import { registerChildExecutionCwd } from "./child-execution-cwd.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, validateStructuredOutputValue } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
@@ -28,7 +29,7 @@ export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
 
 export const CHILD_FANOUT_BOUNDARY_INSTRUCTIONS = [
 	"You are a child subagent with delegation enabled for your assigned task.",
-	"You may use the `subagent` tool for useful helper work within that task when it saves time or improves quality.",
+	"You may delegate useful helper work within that task when it saves time or improves quality, using the available delegation tools.",
 	"You remain responsible for your assigned result. The original parent owns integration, review synthesis, and final delivery.",
 	"Do not broaden the assigned scope or repeat approval requests for already-authorized work.",
 	"The native allowSubagents and maxSubagentDepth settings still apply.",
@@ -43,7 +44,7 @@ const PARENT_ONLY_CUSTOM_MESSAGE_TYPES = new Set([
 	"subagent-control",
 	"subagent-control-notice",
 ]);
-const ORCHESTRATION_TOOLS = new Set(["subagent", "delegate", "agent_runs"]);
+const ORCHESTRATION_TOOLS = new Set(["subagent", "delegate", "agent_runs", "load_subagent"]);
 
 function readBooleanEnv(name: string): boolean | undefined {
 	const value = process.env[name];
@@ -150,7 +151,11 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 		// --no-skills/--no-context-files govern discovery. Keep explicitly selected
 		// skill bodies and context intact; never parse the rendered prompt to remove resources.
 		options.skills = options.skills.filter((skill) => skill.name !== "pi-subagents");
-		setPromptSection(options, "subagent_role", fanoutChild === true ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS);
+		setPromptSection(options, "subagent_role", fanoutChild === true
+			? `${CHILD_FANOUT_BOUNDARY_INSTRUCTIONS}\n${loadConfig().compactChildTools === false
+				? "Use subagent({action:'list'}) to discover agents before delegation."
+				: "Use agent_runs({action:'profiles'}) to discover agents, delegate for ordinary work, and load_subagent for advanced workflows and controls."}`
+			: CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS);
 		if (structuredOutputPath) setPromptSection(options, "subagent_output", STRUCTURED_OUTPUT_INSTRUCTIONS);
 	});
 }

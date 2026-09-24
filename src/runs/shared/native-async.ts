@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { listSupervisorQuestions } from "./supervisor-questions.ts";
 
 /** Optional public fork ABI; official Pi retains ordinary receipts and abort-aware waits. */
-type AsyncContext = ExtensionContext & {
+export type AsyncContext = ExtensionContext & {
 	getPendingToolCalls?: () => readonly { toolCallId: string; toolName: string; state: "pending" | "started" | "detached" }[];
 };
 

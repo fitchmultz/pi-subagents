@@ -407,7 +407,7 @@ Packaged `oracle` defaults to forked context; the other Fitch role profiles defa
 
 Child boundaries are enforced at runtime. Spawned children do not receive the parent-only `pi-subagents` skill. Their model context omits parent-only orchestration, slash-result, notification, and control messages without deleting saved history. Leaf children also omit orchestration tool calls/results. Delegation-enabled children retain that tool history so their own helper calls remain usable on later turns and resumes.
 
-Children do not receive `subagent` by default. When a profile enables delegation and the depth limit allows it, the child may use helpful agents within its assigned scope without repeating approval requests for already-authorized work. It remains responsible for its assigned result; the original parent owns integration, review synthesis, and final delivery.
+Children do not receive delegation tools by default. When a profile enables delegation and the depth limit allows it, the child starts with `delegate`, `agent_runs`, and `load_subagent`. Advanced workflows and controls remain available through `load_subagent`; nested execution still waits by default. The child may use helpful agents within its assigned scope without repeating approval requests for already-authorized work. It remains responsible for its assigned result; the original parent owns integration, review synthesis, and final delivery.
 
 ## Example prompts
 
@@ -723,10 +723,11 @@ All bundled agents omit `tools` and `extensions` allowlists. If `tools` is omitt
 Examples:
 
 - `tools` omitted and `extensions` omitted: configured builtins and normal extensions, including their tools.
-- `allowSubagents: true` with `tools` omitted: normal tools plus the child-safe `subagent` tool, but a first-level child remains blocked until both the agent and installation set `maxSubagentDepth` to at least `2`.
+- `allowSubagents: true` with `tools` omitted: normal tools plus child-safe `delegate`, `agent_runs`, and `load_subagent`. The full `subagent` tool loads on demand. A first-level child remains blocked until both the agent and installation set `maxSubagentDepth` to at least `2`.
 - `tools: mcp:chrome-devtools`: normal builtins plus direct Chrome DevTools MCP tools.
 - `tools: read, bash, mcp:chrome-devtools`: only `read` and `bash` as builtins, plus direct Chrome DevTools MCP tools.
-- `tools: subagent, read`: a child-safe `subagent` tool is available inside that child, but a first-level child remains blocked until both the agent and installation set `maxSubagentDepth` to at least `2`.
+- `tools: subagent, read`: the explicitly requested child-safe `subagent` tool stays active, alongside compact delegation tools. A first-level child remains blocked until both the agent and installation set `maxSubagentDepth` to at least `2`.
+- `allowSubagents: true` with an explicit regular tool allowlist: the launcher adds compact delegation tools and permits the advanced tool for lazy loading. Other tools retain their existing selection.
 
 Direct MCP tools require [pi-mcp-adapter](https://github.com/fitchmultz/pi-mcp-adapter). By default, children preserve the adapter’s configured direct tools and any inherited `MCP_DIRECT_TOOLS` setting. Explicit `mcp:` entries override that selection; explicit `tools` and `extensions` allowlists still apply. The generic `mcp` and `mcp_script` tools remain available when enabled by the adapter and not excluded by an explicit allowlist. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. An `mcp:` entry named `subagent` does not authorize nested fanout; explicit opt-in requires `allowSubagents: true` or the builtin `subagent` tool name plus both agent and global depth limits of at least `2`.
 
@@ -1116,7 +1117,7 @@ subagent({ action: "status", offset: 20, limit: 20 })
 subagent({ action: "doctor" })
 ```
 
-`status` resolves exact run IDs, including legacy foreground IDs and nested run IDs, before falling back to prefix matching. Completed, failed, and interrupted owned runs remain inspectable after reload or restart of the same saved parent. `id: "latest"` / `id: "last"` selects the latest owned run; exact IDs are retained regardless of list size. Nested status shows the root/parent path, nested children, session/artifact paths when known, and nested control commands. Inside child-safe fanout mode, use an explicit run ID for `status`; children cannot enumerate unrelated top-level runs. Bare `interrupt` still targets only the visible top-level run; interrupting a nested run requires its explicit nested id.
+`status` resolves exact run IDs, including legacy foreground IDs and nested run IDs, before falling back to prefix matching. Completed, failed, and interrupted owned runs remain inspectable after reload or restart of the same saved parent. `id: "latest"` / `id: "last"` selects the latest owned run; exact IDs are retained regardless of list size. Nested status shows the root/parent path, nested children, session/artifact paths when known, and nested control commands. Inside child-safe fanout mode, `agent_runs({ action: "list" })` lists only the child's directly owned runs restored from its saved session. Use an explicit run ID for advanced `status`; children cannot enumerate unrelated top-level runs. Bare `interrupt` still targets only the visible top-level run; interrupting a nested run requires its explicit nested id.
 
 `extend` targets an active run with an existing timeout and requests more milliseconds on its deadline. The receipt says **requested** until the owner applies it. It is useful when progress or a needs-attention notice shows useful work still happening and throwing away the child session would waste context. It cannot revive an already-timed-out run; use `resume` after timeout.
 
@@ -1169,6 +1170,18 @@ Background delivery is the stock top-level default. Make calls wait by default i
 ```
 
 The setting applies when a top-level tool or slash call does not explicitly set `async`. Child-safe nested calls default to waiting unless `asyncByDefault: true` is explicitly configured; set `async: false` when their result must appear in the calling child's report. Top-level callers can request a wait with `async: false` unless `forceTopLevelAsync` is enabled. The run owner and child driver are the same either way.
+
+### `compactChildTools`
+
+Authorized children start with `delegate`, `agent_runs`, and `load_subagent`; the full `subagent` schema loads on demand. Advanced tools reset to the compact selection on session start, tree navigation, and compaction. A pending native `subagent` call keeps that tool active so its original result can recover; the next reset after completion hides it again. Explicit `tools: subagent` profiles keep the advanced tool active. Agent-definition mutations remain blocked in children, including after loading.
+
+Set this flag to `false` to restore the previous full `subagent`-only child surface:
+
+```json
+{ "compactChildTools": false }
+```
+
+The default is `true`. Restart children after changing the setting. It does not change models, thinking levels, depth limits, execution defaults, run ownership, or the parent tool surface.
 
 ### `forceTopLevelAsync`
 

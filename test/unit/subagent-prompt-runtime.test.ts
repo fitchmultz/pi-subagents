@@ -107,7 +107,10 @@ describe("subagent prompt runtime", () => {
 		for (const allowed of [false, true, false]) {
 			process.env[SUBAGENT_FANOUT_CHILD_ENV] = allowed ? "1" : "0";
 			run(event);
-			assert.equal(event.systemPromptOptions.sections.subagent_role, allowed ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS);
+			if (allowed) {
+				assert.ok(event.systemPromptOptions.sections.subagent_role.startsWith(CHILD_FANOUT_BOUNDARY_INSTRUCTIONS + "\n"));
+				assert.match(event.systemPromptOptions.sections.subagent_role, /agent_runs.*profiles.*delegate.*load_subagent/);
+			} else assert.equal(event.systemPromptOptions.sections.subagent_role, CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS);
 			if (allowed) {
 				assert.match(event.systemPromptOptions.sections.subagent_role, /useful helper work within that task/);
 				assert.match(event.systemPromptOptions.sections.subagent_role, /original parent owns integration/);
@@ -190,7 +193,7 @@ describe("subagent prompt runtime", () => {
 	it("retains fanout call/result history, including on resumed children", () => {
 		const messages = [
 			{ role: "custom", customType: "subagent-orchestration-instructions", content: "Parent instructions" },
-			...["subagent", "delegate", "agent_runs"].flatMap((name) => [
+			...["subagent", "delegate", "agent_runs", "load_subagent"].flatMap((name) => [
 				{ role: "assistant", content: [{ type: "toolCall", name, id: `${name}-call` }] },
 				{ role: "toolResult", toolName: name, toolCallId: `${name}-call`, content: "result" },
 			]),

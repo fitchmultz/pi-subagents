@@ -8,6 +8,7 @@ import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./s
 import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
 import { prepareChildExecutionCwd } from "./child-execution-cwd.ts";
 import type { ChildProjectTrustPolicy, JsonSchemaObject } from "../../shared/types.ts";
+import { loadConfig } from "../../extension/config.ts";
 // Managed macOS environments can SIGKILL Node when one argv entry reaches ~930 UTF-8 bytes.
 // Measure the full entry (including the `Task: ` prefix), not just the task body.
 const TASK_ARG_LIMIT_BYTES = 900;
@@ -22,6 +23,7 @@ export const SUBAGENT_RUN_ID_ENV = "PI_SUBAGENT_RUN_ID";
 export const SUBAGENT_CHILD_AGENT_ENV = "PI_SUBAGENT_CHILD_AGENT";
 export const SUBAGENT_CHILD_INDEX_ENV = "PI_SUBAGENT_CHILD_INDEX";
 export const SUBAGENT_FANOUT_CHILD_ENV = "PI_SUBAGENT_FANOUT_CHILD";
+export const SUBAGENT_EAGER_TOOL_ENV = "PI_SUBAGENT_EAGER_TOOL";
 export const SUBAGENT_PARENT_EVENT_SINK_ENV = "PI_SUBAGENT_PARENT_EVENT_SINK";
 export const SUBAGENT_PARENT_CONTROL_INBOX_ENV = "PI_SUBAGENT_PARENT_CONTROL_INBOX";
 export const SUBAGENT_PARENT_ROOT_RUN_ID_ENV = "PI_SUBAGENT_PARENT_ROOT_RUN_ID";
@@ -208,10 +210,17 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 
 	const declaredBuiltinTools = input.tools?.filter((tool) => !(tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) ?? [];
 	const fanoutAuthorized = input.allowSubagents === true || declaredBuiltinTools.includes("subagent");
+	const compactChildTools = fanoutAuthorized && loadConfig().compactChildTools !== false;
+	// Preserve an explicit advanced-tool policy, but never inherit it into another profile.
+	env[SUBAGENT_EAGER_TOOL_ENV] = declaredBuiltinTools.includes("subagent") ? "1" : undefined;
 	const toolExtensionPaths: string[] = [];
 	if (input.tools?.length) {
 		const builtinTools = [...declaredBuiltinTools];
-		if (input.allowSubagents === true && declaredBuiltinTools.length > 0 && !builtinTools.includes("subagent")) builtinTools.push("subagent");
+		if (fanoutAuthorized && declaredBuiltinTools.length > 0) {
+			for (const tool of compactChildTools ? ["subagent", "delegate", "agent_runs", "load_subagent"] : ["subagent"]) {
+				if (!builtinTools.includes(tool)) builtinTools.push(tool);
+			}
+		}
 		if (input.structuredOutput && builtinTools.length > 0 && !builtinTools.includes("structured_output")) builtinTools.push("structured_output");
 		for (const tool of input.tools) {
 			if (!declaredBuiltinTools.includes(tool) && (tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) {

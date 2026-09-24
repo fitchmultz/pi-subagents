@@ -680,7 +680,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		assert.ok(extensionArgs.some((arg) => arg.endsWith(path.join("src", "extension", "fanout-child.ts"))));
 	});
 
-	it("adds subagent to explicit tool allowlists when allowSubagents is true", () => {
+	it("adds compact tools and the loadable advanced tool to authorized explicit allowlists", () => {
 		const { args, env } = buildPiArgs({
 			baseArgs: ["-p"],
 			task: "hello",
@@ -691,7 +691,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
 			allowSubagents: true,
 		});
 
-		assert.equal(args[args.indexOf("--tools") + 1], "read,subagent");
+		assert.equal(args[args.indexOf("--tools") + 1], "read,subagent,delegate,agent_runs,load_subagent");
 		assert.equal(env[SUBAGENT_FANOUT_CHILD_ENV], "1");
 	});
 
@@ -712,8 +712,9 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		});
 
 		const extensionArgs = args.filter((arg, index) => args[index - 1] === "--extension");
-		assert.equal(args[args.indexOf("--tools") + 1], "read,subagent");
+		assert.equal(args[args.indexOf("--tools") + 1], "read,subagent,delegate,agent_runs,load_subagent");
 		assert.equal(env[SUBAGENT_FANOUT_CHILD_ENV], "1");
+		assert.equal(env.PI_SUBAGENT_EAGER_TOOL, "1");
 		assert.equal(env[SUBAGENT_PARENT_EVENT_SINK_ENV], "/tmp/root/events");
 		assert.equal(env[SUBAGENT_PARENT_CONTROL_INBOX_ENV], "/tmp/root/control");
 		assert.equal(env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV], "root-run");
