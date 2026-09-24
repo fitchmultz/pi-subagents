@@ -1958,19 +1958,19 @@ describe("async execution utilities", () => {
 		assert.equal(payload.results[0].success, false);
 	});
 
-	it("background runs stop repeated failed subagent calls", async () => {
-		const args = { agent: "delegate", task: "nested work", async: false };
+	for (const toolName of ["subagent", "delegate", "agent_runs"]) it(`background runs stop repeated failed ${toolName} calls`, async () => {
+		const args = toolName === "agent_runs" ? { action: "inspect", id: "missing-run" } : { agent: "delegate", task: "nested work", async: false };
 		mockPi.onCall({
 			jsonl: Array.from({ length: 6 }, (_, index) => {
 				const toolCallId = `call-${index}`;
 				return [
-					{ type: "tool_execution_start", toolCallId, toolName: "subagent", args },
-					{ type: "tool_execution_end", toolCallId, toolName: "subagent", isError: true },
+					{ type: "tool_execution_start", toolCallId, toolName, args },
+					{ type: "tool_execution_end", toolCallId, toolName, isError: true },
 				];
 			}).flat(),
 		});
 
-		const id = `itest-ae-${process.pid}-subagent-loop-${Date.now().toString(36)}`;
+		const id = `itest-ae-${process.pid}-${toolName}-loop-${Date.now().toString(36)}`;
 		executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Delegate nested work",
@@ -1984,9 +1984,9 @@ describe("async execution utilities", () => {
 		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf-8")) as AsyncResultPayload;
 		assert.equal(payload.success, false);
 		assert.equal(payload.exitCode, 1);
-		assert.match(payload.results[0]?.error ?? "", /stuck repeating the same failed subagent call 5 times/);
+		assert.match(payload.results[0]?.error ?? "", new RegExp(`stuck repeating the same failed ${toolName} call 5 times`));
 		const output = fs.readFileSync(path.join(getRunMetadataDir(id), "output-0.log"), "utf-8");
-		assert.equal(output.match(/stuck repeating the same failed subagent call/g)?.length, 1);
+		assert.equal(output.match(new RegExp(`stuck repeating the same failed ${toolName} call`, "g"))?.length, 1);
 	});
 
 	it("background runs enforce explicitly required mutation evidence", async () => {
