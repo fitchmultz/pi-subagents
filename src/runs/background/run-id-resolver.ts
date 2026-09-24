@@ -1,4 +1,5 @@
 import { ASYNC_DIR, RESULTS_DIR, type SubagentState } from "../../shared/types.ts";
+import { formatRunIdAmbiguity } from "../shared/run-id-ambiguity.ts";
 import { exactAsyncRunLocation, findAsyncRunPrefixMatches, type AsyncRunLocation } from "./async-resume.ts";
 import { assertSafeNestedId, findNestedRunMatchesById, findNestedRouteForRootId, type NestedRoute, type NestedRunMatch, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 
@@ -62,7 +63,7 @@ export function resolveSubagentRunId(id: string, deps: ResolveSubagentRunIdDeps 
 	const unique = new Map(matches.map((match) => [match.kind === "nested" ? `nested:${match.match.rootRunId}:${match.id}` : `async:${match.id}`, match]));
 	const values = [...unique.values()];
 	if (values.length > 1) {
-		throw new Error(`Ambiguous subagent run id prefix '${id}' matched: ${values.map((match) => `${match.kind}:${match.id}`).join(", ")}. Provide a longer id.`);
+		throw new Error(formatRunIdAmbiguity("subagent", id, values.map((match) => `${match.kind}:${match.id}`)));
 	}
 	return values[0];
 }

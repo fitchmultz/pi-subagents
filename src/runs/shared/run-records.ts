@@ -13,6 +13,7 @@ import { exactAsyncRunLocation, type AsyncRunRecord } from "../background/async-
 import { createAsyncRunDiscovery } from "../background/async-status.ts";
 import { reconcileAsyncRun } from "../background/stale-run-reconciler.ts";
 import { acceptanceHumanAction } from "./acceptance-evaluation.ts";
+import { formatRunIdAmbiguity } from "./run-id-ambiguity.ts";
 import { resolveFinalizationOutput } from "./acceptance-finalization.ts";
 import { parseAcceptanceReport, validateAcceptanceReportShape } from "./acceptance-reports.ts";
 import { sumAttemptUsage } from "./model-fallback.ts";
@@ -41,7 +42,7 @@ export function resolveOwnedRun(state: SubagentState, requested: string): OwnedR
 	const runs = [...(state.ownedRuns?.values() ?? [])];
 	if (id === "latest" || id === "last") return runs.sort((a, b) => b.startedAt - a.startedAt)[0];
 	const matches = runs.filter((run) => run.runId.startsWith(id));
-	if (matches.length > 1) throw new Error(`Ambiguous owned run id prefix '${id}' matched: ${matches.map((run) => run.runId).join(", ")}. Provide a longer id.`);
+	if (matches.length > 1) throw new Error(formatRunIdAmbiguity("owned", id, matches.map((run) => run.runId)));
 	return matches[0];
 }
 
