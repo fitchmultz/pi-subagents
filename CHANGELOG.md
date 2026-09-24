@@ -7,6 +7,7 @@
 
 ### Fixed
 - Keep the advanced delegation tool active while a native call awaits recovery, so lazy activation does not strand its original result after restart or context navigation.
+- Bound ambiguous run-ID errors to five candidate previews and the total match count, preserving full-ID lookup and saved history.
 - Preserve requested reports before worktree cleanup and return their durable paths, including file-only runs with debug artifacts disabled.
 - Keep nested helpers from inheriting their parent's structured-output capture.
 - Deliver whole-run completion after child-specific native calls finish, while retaining pending whole-run result ownership.
