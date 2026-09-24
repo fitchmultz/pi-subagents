@@ -33,7 +33,7 @@ process.env.JITI_FS_CACHE = path.join(root, "jiti");
 const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
 const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
 const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry)!);
-const { createAgentSession, createEventBus, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } = await import(sdkEntry.href);
+const { createAgentSession, createEventBus, DefaultResourceLoader, ModelRuntime, parseSessionEntries, SessionManager, SettingsManager } = await import(sdkEntry.href);
 const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore, Type } = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
 const { IntercomClient } = await import("../../src/pi-intercom/broker/client.ts");
 const { buildSubagentResultIntercomPayload, deliverSubagentResultIntercomEvent } = await import("../../src/intercom/result-intercom.ts");
@@ -455,6 +455,57 @@ test("native idle multi-ask batch keeps the selected first ask as the default re
   t.diagnostic("Two queued asks append once in one delivery run; the real intercom reply tool targets the originally selected first ask.");
 });
 
+test("native concurrent asks reserve one reply waiter after a completed ask", async (t) => {
+  const results: Array<{ toolCallId: string; isError: boolean; content: unknown }> = [];
+  const asker = await makeSession(t, "concurrent-asks", { configure(pi) {
+    pi.on("tool_result", (event) => { results.push(event); });
+  } });
+  const received: Array<{ id: string; content: { text: string } }> = [];
+  asker.sender.on("message", (_from, message) => { if (message.expectsReply) received.push(message); });
+  const ask = (id: string) => fauxToolCall("intercom", {
+    action: "ask", to: "sender-concurrent-asks", message: id, delivery: "steer",
+  }, { id });
+  const reply = async (question: typeof received[number]) => {
+    const receipt = await asker.sender.send("concurrent-asks", { text: `answer:${question.content.text}`, replyTo: question.id });
+    assert.equal(receipt.accepted, true);
+  };
+  const completedAsk = async (id: string) => {
+    asker.faux.setResponses([
+      fauxAssistantMessage(ask(id), { stopReason: "toolUse" }),
+      fauxAssistantMessage("Reply received"),
+    ]);
+    const running = asker.session.prompt(id);
+    await waitFor(() => received.some((message) => message.content.text === id), id);
+    await reply(received.find((message) => message.content.text === id)!);
+    await running;
+    assert.equal(results.find((result) => result.toolCallId === id)?.isError, false);
+    assert.match(JSON.stringify(results.find((result) => result.toolCallId === id)?.content), new RegExp(`answer:${id}`));
+  };
+  await completedAsk("before");
+
+  asker.faux.setResponses([
+    fauxAssistantMessage([ask("contender-a"), ask("contender-b")], { stopReason: "toolUse" }),
+    fauxAssistantMessage("Concurrent asks handled"),
+  ]);
+  const concurrent = asker.session.prompt("Ask both peers concurrently");
+  await waitFor(() => received.length >= 2 && results.some((result) => result.toolCallId.startsWith("contender-") && result.isError), "contender rejection");
+  const rejected = results.filter((result) => result.toolCallId.startsWith("contender-") && result.isError);
+  assert.equal(rejected.length, 1, "rejecting the contender must not reject the winning waiter");
+  assert.match(JSON.stringify(rejected[0].content), /Already waiting for a reply/);
+  assert.equal(received.length, 2, "only one concurrent ask may reach the peer");
+  const winner = received[1];
+  assert.notEqual(winner.content.text, rejected[0].toolCallId);
+  await reply(winner);
+  await concurrent;
+  const winningResult = results.find((result) => result.toolCallId === winner.content.text);
+  assert.equal(winningResult?.isError, false);
+  assert.match(JSON.stringify(winningResult?.content), new RegExp(`answer:${winner.content.text}`));
+
+  await completedAsk("after");
+  assert.deepEqual(received.map((message) => message.content.text), ["before", winner.content.text, "after"]);
+  assert.deepEqual(asker.errors, []);
+});
+
 test("native rejected input leaves the active intercom run and idle wait intact", async (t) => {
   const inputRelease = gate(t);
   const responseRelease = gate(t);
@@ -775,7 +826,7 @@ test("fresh native processes resume pending messages once without fork/new-sessi
   assert.equal(snapshot.publicPending, true);
   assert.match(snapshot.status, /Pending inbound messages: 4/);
   assert.deepEqual(snapshot.visibleIds, []);
-  const saved = readFileSync(ready.sessionFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const saved = parseSessionEntries(readFileSync(ready.sessionFile, "utf8"));
   seed.child.kill("SIGKILL");
   await seed.exited;
 
@@ -820,6 +871,108 @@ test("fresh native processes resume pending messages once without fork/new-sessi
   assert.deepEqual(passiveResult.visibleIds, ["passive-only"]);
   assert.deepEqual(passiveResult.errors, []);
   t.diagnostic("hard-killed host restores 2 native-queued + 2 staged messages once in 1 turn; second resume/fork/new/passive-only restore run 0 turns; superseded progress stays absent.");
+});
+
+for (const scenario of ["completed", "live", "guard", "question"] as const) test(`native queued idle attention rechecks ${scenario} child before waking the parent`, async (t) => {
+  const hold = gate(t);
+  let api: ExtensionAPI, started = false;
+  const parent = await makeSession(t, `idle-notice-${scenario}`, {
+    subagents: process.env.PI_INTERCOM_TEST_SUBAGENTS ?? true,
+    configure(pi) { api = pi; },
+  });
+  const seen: string[] = [];
+  parent.faux.setResponses([
+    async () => { started = true; await hold.promise; return fauxAssistantMessage("Parent work finished"); },
+    (context: unknown) => { seen.push(JSON.stringify(context)); return fauxAssistantMessage("Saved work considered"); },
+  ]);
+  const runId = randomUUID(), asyncDir = path.join(root, runId);
+  mkdirSync(asyncDir);
+  const status = { runId, state: "running", mode: "single", startedAt: Date.now(), steps: [{ agent: "worker", status: "running" }] };
+  writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify(status));
+  const event = { type: "needs_attention", to: "needs_attention", ts: Date.now(), runId, agent: "worker", index: 0,
+    reason: scenario === "guard" ? "completion_guard" : "idle",
+    ...(scenario === "question" ? { supervisorQuestion: { questionId: "unanswered", state: "awaiting_input" } } : {}),
+    message: `NOTICE_${scenario}`,
+  };
+  const details = { source: "async", asyncDir, event, noticeText: `NOTICE_${scenario}` };
+  const raw = JSON.stringify({ type: "subagent.control", ...details, channels: ["event"] }) + "\n";
+  writeFileSync(path.join(asyncDir, "events.jsonl"), raw);
+  const pending = parent.session.prompt("Finish current parent work");
+  await waitFor(() => started, "busy native parent");
+  api!.events.emit("subagent:control-event", details);
+  if (scenario !== "live") {
+    writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ ...status, state: scenario === "guard" ? "failed" : "complete", steps: [{ agent: "worker", status: "completed" }] }));
+    api!.sendMessage({ customType: "fixture-child-result", content: "SAVED_CHILD_RESULT", display: true }, { triggerTurn: false });
+  }
+  hold.resolve();
+  await pending;
+  await parent.session.waitForIdle();
+  const shouldWake = scenario === "live" || scenario === "question";
+  assert.equal(parent.faux.state.callCount, shouldWake ? 2 : 1, "obsolete idle notices must not start another model turn");
+  if (!shouldWake) await parent.session.prompt("Read saved work");
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].includes(`NOTICE_${scenario}`), scenario !== "completed");
+  if (scenario !== "live") assert.ok(seen[0].includes("SAVED_CHILD_RESULT"), "terminal result remains visible");
+  assert.equal(readFileSync(path.join(asyncDir, "events.jsonl"), "utf8"), raw, "raw control history is preserved");
+  assert.deepEqual(parent.errors, []);
+});
+
+test("native unread terminal idle notices are discarded while guard findings and raw history survive", async (t) => {
+  let api: ExtensionAPI;
+  const parent = await makeSession(t, "idle-notice-unread", {
+    subagents: process.env.PI_INTERCOM_TEST_SUBAGENTS ?? true,
+    configure(pi) { api = pi; },
+  });
+  const runId = randomUUID(), asyncDir = path.join(root, runId);
+  mkdirSync(asyncDir);
+  writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+    runId, state: "failed", mode: "single", startedAt: Date.now(),
+    steps: [{ agent: "worker", status: "failed" }],
+  }));
+  const raw = ["idle", "completion_guard"].map((reason) => JSON.stringify({
+    type: "subagent.control", channels: ["event", "intercom"],
+    event: { type: "needs_attention", to: "needs_attention", reason, ts: Date.now(), runId, agent: "worker", index: 0, message: `UNREAD_${reason}` },
+    noticeText: `UNREAD_${reason}`,
+    intercom: { to: "idle-notice-unread", message: `UNREAD_${reason}` },
+  })).join("\n") + "\n";
+  writeFileSync(path.join(asyncDir, "events.jsonl"), raw);
+  api!.events.emit("subagent:async-started", { id: runId, asyncDir, agent: "worker" });
+  await waitFor(() => parent.session.sessionManager.getEntries().some((entry: { content?: unknown }) => entry.content === "UNREAD_completion_guard"), "unread control events consumed");
+  await parent.session.waitForIdle();
+  assert.equal(parent.faux.state.callCount, 0, "terminal idle events cannot wake the parent");
+  assert.equal(parent.session.sessionManager.getEntries().some((entry: { content?: unknown }) => entry.content === "UNREAD_idle"), false);
+  assert.equal(readFileSync(path.join(asyncDir, "events.jsonl"), "utf8"), raw);
+  assert.deepEqual(parent.errors, []);
+});
+
+test("native context omits previously delivered idle attention for a finished child without changing history", async (t) => {
+  let api: ExtensionAPI;
+  const parent = await makeSession(t, "idle-notice-history", {
+    subagents: process.env.PI_INTERCOM_TEST_SUBAGENTS ?? true,
+    configure(pi) { api = pi; },
+  });
+  const runId = randomUUID(), asyncDir = path.join(root, runId);
+  mkdirSync(asyncDir);
+  const status = { runId, state: "running", mode: "parallel", startedAt: Date.now(), steps: [{ agent: "worker", status: "running" }, { agent: "sibling", status: "running" }] };
+  writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify(status));
+  const seen: string[] = [];
+  parent.faux.setResponses([fauxAssistantMessage("Active child needs attention"), (context: unknown) => {
+    seen.push(JSON.stringify(context)); return fauxAssistantMessage("Sibling still working");
+  }]);
+  api!.events.emit("subagent:control-event", { source: "async", asyncDir,
+    event: { type: "needs_attention", to: "needs_attention", reason: "idle", ts: Date.now(), runId, agent: "worker", index: 0 },
+    noticeText: "PREVIOUS_IDLE_NOTICE",
+  });
+  await waitFor(() => parent.faux.state.callCount === 1, "live notice delivered");
+  await parent.session.waitForIdle();
+  const original = parent.session.sessionManager.getEntries().find((entry: { content?: unknown }) => entry.content === "PREVIOUS_IDLE_NOTICE");
+  assert.ok(original);
+  status.steps[0].status = "completed";
+  writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify(status));
+  await parent.session.prompt("Consider the remaining sibling");
+  assert.equal(seen[0].includes("PREVIOUS_IDLE_NOTICE"), false, "a completed child cannot stay idle just because its sibling is running");
+  assert.deepEqual(parent.session.sessionManager.getEntries().find((entry: { id: string }) => entry.id === original.id), original);
+  assert.deepEqual(parent.errors, []);
 });
 
 for (const scenario of ["question", "tool"] as const) test(`native owner attention uses observed ${scenario} state and still finishes normally`, async (t) => {

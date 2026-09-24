@@ -697,10 +697,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   } | null = null;
   function waitForReply(from: string, replyTo: string, signal?: AbortSignal, question?: SupervisorQuestion): Promise<Message> {
     if (replyWaiter) {
-      return Promise.reject(new Error("Already waiting for a reply"));
+      throw new Error("Already waiting for a reply");
     }
     if (signal?.aborted) {
-      return Promise.reject(new Error("Cancelled"));
+      throw new Error("Cancelled");
     }
     return new Promise((resolve, reject) => {
       const timeout = question ? undefined : setTimeout(() => {
@@ -792,7 +792,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       onSent(result);
       return await replyPromise;
     } catch (error) {
-      rejectReplyWaiter(toError(error));
+      if (replyWaiter?.replyTo === questionId) rejectReplyWaiter(toError(error));
       try {
         await replyPromise;
       } catch {

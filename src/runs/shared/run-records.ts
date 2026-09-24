@@ -399,7 +399,8 @@ export function ownedRunExecutionResult(run: OwnedRun, state: SubagentState, ind
 		tokens: results.reduce((total, result) => total + (result.progressSummary?.tokens ?? 0), 0),
 		durationMs: saved?.durationMs ?? Math.max(0, ...results.map((result) => result.progressSummary?.durationMs ?? 0)) };
 	const share = saved?.shareUrl ? `Session: ${saved.shareUrl}` : saved?.shareError ? `Session share error: ${saved.shareError}` : undefined;
-	return { content: [{ type: "text", text: [truncation.text || `Run ${run.runId}: ${view.state}.`, share].filter(Boolean).join("\n\n") }],
+	const identity = run.predecessorRunId ? `Run: ${run.runId}\nPredecessor: ${run.predecessorRunId} (child ${run.predecessorIndex ?? 0})` : undefined;
+	return { content: [{ type: "text", text: [identity, truncation.text || `Run ${run.runId}: ${view.state}.`, share].filter(Boolean).join("\n\n") }],
 		...(failed ? { isError: true } : {}),
 		details: { mode: run.mode, runId: run.runId, asyncId: run.runId, asyncDir: location.asyncDir ?? run.asyncDir, results,
 			run: { ...view, children: projected }, progressSummary,

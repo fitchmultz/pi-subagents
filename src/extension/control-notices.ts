@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { controlNotificationKey, formatControlNoticeMessage } from "../runs/shared/subagent-control.ts";
+import { controlNotificationKey, formatControlNoticeMessage, isObsoleteIdleNotice } from "../runs/shared/subagent-control.ts";
 import type { ControlEvent } from "../shared/types.ts";
 
 export const SUBAGENT_CONTROL_MESSAGE_TYPE = "subagent_control_notice";
@@ -25,7 +25,7 @@ export function handleSubagentControlNotice(input: {
 	visibleControlNotices: Set<string>;
 	details: SubagentControlMessageDetails;
 }): void {
-	if (!input.details?.event) return;
+	if (!input.details?.event || isObsoleteIdleNotice(input.details)) return;
 	const childIntercomTarget = controlNoticeTarget(input.details);
 	const key = controlNotificationKey(input.details.event, childIntercomTarget);
 	if (input.visibleControlNotices.has(key)) return;

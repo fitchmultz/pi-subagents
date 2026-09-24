@@ -349,6 +349,11 @@ try {
 		assert.equal(resultEntries()[0].message.isError, false);
 		assert.equal(resultEntries()[0].message.details.runId, seed.runId, "original call receives its own run's result");
 		assert.match(resultEntries()[0].message.content[0].text, /NATIVE_ORIGINAL_CALL_RESULT/);
+		if (continuation) {
+			assert.ok(resultEntries()[0].message.content[0].text.includes(`Run: ${seed.runId}\nPredecessor: ${args.id} (child 0)`),
+				"native resume returns the actual continuation handle and predecessor in model-visible content");
+			evidence.checks.push("resumed continuation receipt visibly maps the predecessor to the new reviewable run");
+		}
 		assert.equal(resultEntries()[0].message.usage, undefined, "recordUsage and tool-result usage cannot charge the same work");
 		assert.equal(manager.getEntries().filter((entry) => entry.type === "usage" && entry.kind === "subagent").length, expectedChildren);
 		assert.equal(session.getSessionStats().cost, expectedChildren, "each launch contributes exactly one charge, including only new usage from a continued journal");
