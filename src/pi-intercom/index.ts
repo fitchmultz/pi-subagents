@@ -691,6 +691,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     from: string;
     replyTo: string;
     question?: SupervisorQuestion;
+    retryNotification?: () => void;
     resolve: (message: Message) => void;
     reject: (error: Error) => void;
   } | null = null;
@@ -714,6 +715,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
             return rejectReplyWaiter(new Error("Cancelled"));
           }
           if (saved.answer) replyWaiter?.resolve({ id: replyTo, replyTo, timestamp: saved.answer.answeredAt, content: { text: saved.answer.message } });
+          else replyWaiter?.retryNotification?.();
         } catch (error) {
           rejectReplyWaiter(toError(error));
         }
@@ -1753,7 +1755,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         content: errorMessage,
       }],
     }).then((result) => {
-      if (result.delivered) {
+      if (result.delivered && !isDurableSupervisorQuestion(context.message)) {
         replyTracker.markReplied(replyTo);
       }
     }).catch(() => {
@@ -1934,20 +1936,34 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     ].join("\n"));
     const replyPromise = waitForReply(metadata.orchestratorTarget, question.questionId, signal, question);
     // Persistence is the delivery path; intercom only wakes the supervisor. Going offline does not end the wait.
-    void (async () => {
+    let retryAfter = 0;
+    const notifySupervisor = async () => {
+      const waiter = currentReplyWaiter();
+      if (waiter?.replyTo !== question.questionId || Date.now() < retryAfter) return;
+      waiter.retryNotification = undefined;
+      let retry = true;
       try {
         const connectedClient = await ensureConnected("tool");
-        if (currentReplyWaiter()?.replyTo !== question.questionId) return;
+        if (currentReplyWaiter() !== waiter) return;
         const to = await resolveSessionTarget(connectedClient, metadata.orchestratorTarget) ?? metadata.orchestratorTarget;
-        const waiter = currentReplyWaiter();
-        if (waiter?.replyTo !== question.questionId) return;
+        if (currentReplyWaiter() !== waiter) return;
         waiter.from = to;
+        // Once dispatched, an exception may mean a lost acknowledgement. Only explicit rejection is safe to replay.
+        retry = false;
         const sent = await connectedClient.send(to, { text: requestText, messageId: question.questionId, expectsReply: true, delivery: "steer" });
+        if (currentReplyWaiter() !== waiter) return;
+        retry = !sent.accepted;
         pi.appendEntry("intercom_sent", { to, messageId: question.questionId, message: { text: requestText, reason }, accepted: sent.accepted, timestamp: Date.now() });
       } catch (error) {
-        if (getLiveContext()) pi.appendEntry("intercom_question_notification_error", { questionId: question.questionId, error: getErrorMessage(error) });
+        if (currentReplyWaiter() === waiter) pi.appendEntry("intercom_question_notification_error", { questionId: question.questionId, error: getErrorMessage(error) });
+      } finally {
+        if (retry && currentReplyWaiter() === waiter) {
+          retryAfter = Date.now() + 1000;
+          waiter.retryNotification = () => { void notifySupervisor(); };
+        }
       }
-    })();
+    };
+    void notifySupervisor();
     const replyMessage = await replyPromise;
     const replyText = replyMessage.content.text;
     const replyAttachments = replyMessage.content.attachments?.length ? formatAttachments(replyMessage.content.attachments) : "";
