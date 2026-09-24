@@ -396,7 +396,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
 	});
 
 	it("keeps structured_output available with explicit tool allowlists", () => {
-		const { args } = buildPiArgs({
+		const { args, env } = buildPiArgs({
 			baseArgs: ["-p"],
 			task: "hello",
 			sessionEnabled: false,
@@ -411,6 +411,8 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		});
 
 		assert.equal(args[args.indexOf("--tools") + 1], "read,structured_output");
+		assert.equal(env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE, "/tmp/output.json");
+		assert.equal(env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA, "/tmp/schema.json");
 	});
 
 	it("leaves configured and inherited MCP tools unchanged without a profile selection", () => {

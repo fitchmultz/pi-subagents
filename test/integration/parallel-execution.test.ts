@@ -310,6 +310,41 @@ describe("parallel agent execution", () => {
 		assert.equal(fs.readFileSync(outputPath, "utf-8"), "Parallel full report\nwith details");
 	});
 
+	for (const outputMode of ["inline", "file-only"] as const) it(`preserves ignored worktree reports without debug artifacts (${outputMode})`, async () => {
+		fs.writeFileSync(path.join(tempDir, ".gitignore"), ".scratchpad/\n");
+		initGitRepo(tempDir);
+		const release = path.join(tempDir, "release");
+		mockPi.onCall({ waitForFile: release, output: "Report written." });
+		const pending = makeExecutor().execute("worktree-report", {
+			tasks: [{ agent: "echo", task: "Write the requested report", output: ".scratchpad/report.md", outputMode }],
+			worktree: true, artifacts: false, async: false,
+		}, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		let callFile: string | undefined;
+		const deadline = Date.now() + 10_000;
+		while (!(callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-")))) {
+			assert.ok(Date.now() < deadline, "worktree child starts");
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		const childCwd = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf8")).cwd;
+		const report = "ONLY_COPY_OF_THE_REQUESTED_REPORT\n";
+		const outputPath = path.join(childCwd, ".scratchpad/report.md");
+		fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+		fs.writeFileSync(outputPath, report);
+		fs.writeFileSync(release, "go");
+		const result = await pending;
+		const child = result.details.results[0];
+		assert.equal(child.exitCode, 0);
+		assert.equal(fs.existsSync(childCwd), false, "successful worktree cleanup still runs");
+		assert.ok(child.savedOutputPath);
+		assert.equal(fs.readFileSync(child.savedOutputPath, "utf8"), report);
+		assert.equal(child.outputReference?.path, child.savedOutputPath);
+		assert.equal(child.artifactPaths, undefined);
+		if (outputMode === "file-only") {
+			assert.ok(child.finalOutput.includes(child.savedOutputPath));
+			assert.ok(result.content[0].text.includes(child.savedOutputPath));
+		}
+	});
+
 	it("rejects top-level parallel file-only output without an output path", async () => {
 		const executor = makeExecutor();
 

@@ -289,8 +289,18 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}) ?? false;
 	};
 
-	state.hasNativeResultOwner = (runId) => Boolean(state.lastUiContext && nativeInvocations(state.lastUiContext)
-		.some((call) => nativeInvocationTarget(state.lastUiContext!, call)?.runId === runId));
+	state.hasNativeResultOwner = (runId) => {
+		const ctx = state.lastUiContext;
+		if (!ctx) return false;
+		// Detached calls retain their durable binding until a tool result is journaled.
+		const completedCalls = new Set(ctx.sessionManager.getEntries().flatMap((entry) =>
+			entry.type === "message" && entry.message.role === "toolResult" ? [entry.message.toolCallId] : []));
+		return nativeInvocations(ctx).some((call) => {
+			const target = nativeInvocationTarget(ctx, call);
+			return !completedCalls.has(call.toolCallId) && target?.runId === runId
+				&& (target.index === undefined || (state.ownedRuns?.get(runId)?.mode === "single" && target.index === 0));
+		});
+	};
 
 	const { startResultWatcher, primeExistingResults, stopResultWatcher, holdCheckpoint } = createResultWatcher(
 		pi,

@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Fixed
+- Preserve requested reports before worktree cleanup and return their durable paths, including file-only runs with debug artifacts disabled.
+- Keep nested helpers from inheriting their parent's structured-output capture.
+- Deliver whole-run completion after child-specific native calls finish, while retaining pending whole-run result ownership.
 - Let Stop terminate recorded live children after their background runner exits, while preserving selected-child control and checking process identity.
 - Keep workspace tests on the child's code by leaving dependency installation to its package manager or setup hook instead of sharing the original checkout's `node_modules`.
 - Preserve binary edits in worktree patches even when Git text conversions are configured.
