@@ -6,19 +6,20 @@ import { discoverAgents } from "../agents/agents.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { interruptAsyncRun } from "../runs/foreground/foreground-control.ts";
-import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV, SUBAGENT_PARENT_CHILD_INDEX_ENV } from "../runs/shared/pi-args.ts";
+import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV, SUBAGENT_EAGER_TOOL_ENV, SUBAGENT_PARENT_CHILD_INDEX_ENV } from "../runs/shared/pi-args.ts";
 import { readNestedControlRequests, resolveNestedRouteFromEnv, writeNestedControlResult } from "../runs/shared/nested-events.ts";
 import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.ts";
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
 import { readStatus } from "../shared/utils.ts";
 import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
+import { registerCompactSubagentTools, subagentToolLifecycle } from "./compact-tools.ts";
 import { registerToolResultAdapter } from "./tool-result.ts";
 import { renderSubagentResult } from "../tui/render.ts";
 import { type Details, type SubagentExecutionResult, type SubagentState } from "../shared/types.ts";
 import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
-import { OWNED_RUN_ENTRY, restoreOwnedRuns } from "../runs/shared/run-records.ts";
+import { OWNED_RUN_ENTRY, ownedRunList, restoreOwnedRuns } from "../runs/shared/run-records.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
@@ -230,39 +231,44 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		ensureSessionState,
 	});
 
-	const parentUsage = registerParentUsage(pi, ["subagent"]);
-	const adaptToolResult = registerToolResultAdapter(pi, ["subagent"]);
+	const compact = config.compactChildTools !== false;
+	const toolNames = compact ? ["subagent", "delegate", "agent_runs"] : ["subagent"];
+	const parentUsage = registerParentUsage(pi, toolNames);
+	const adaptToolResult = registerToolResultAdapter(pi, toolNames);
 	const toRegisteredToolResult = (result: SubagentExecutionResult, ctx: ExtensionContext) => adaptToolResult(
 		result.details.wait?.status === "completed" && result.details.run?.ownerSessionId === ctx.sessionManager.getSessionId()
 			? parentUsage.attach(result, finalizedChildUsage(result.details.run.children, result.details.wait.index), ctx)
 			: result,
 	);
-	const nativeAsyncLifecycle = {
-		async: true,
-		resume: async (id: string, _params: unknown, signal: AbortSignal | undefined,
-			onUpdate: ((result: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext) => {
-			const result = await executor.resume(id, {}, signal, onUpdate, ctx);
-			return result && toRegisteredToolResult(result, ctx);
-		},
-	};
+	const nativeAsyncLifecycle = subagentToolLifecycle(executor, toRegisteredToolResult);
+	const acceptanceGuidelines = [
+		"For goal-style requests such as /goal, goal, active goal, or work until evidence says done, use explicit acceptance on the delegated run: criteria for the target, evidence/verify for proof, stopRules for constraints, and maxFinalizationTurns for the bounded loop.",
+		"For implementation handoffs from a plan, PRD, spec, issue, or broad fix, put implementation instructions and plan paths in task, and put the definition of done, evidence, verification commands, constraints, and loop cap in acceptance.",
+	];
+	const guidelines = [
+		"Delegate useful helper work within your assigned task when it saves time or improves quality; the original parent owns integration and final delivery.",
+		"Nested execution defaults to foreground unless configuration explicitly opts into async. Set async:false whenever the nested result must appear in this child's report; use async:true only for intentionally detached work.",
+		compact
+			? "Use agent_runs({action:'profiles'}) before delegation unless the executable agent is already known. Use load_subagent for advanced workflows and controls."
+			: "Use subagent action:list before nested execution unless the executable nested agent is already known from the task context.",
+		"Do not use subagent child-safe mode for agent config mutation actions; create, update, and delete are blocked here.",
+	];
+	if (compact) registerCompactSubagentTools(pi, { executor, adapt: toRegisteredToolResult, guidelines: [...guidelines, ...acceptanceGuidelines], childSafe: true,
+		asyncByDefault: config.asyncByDefault === true, keepAdvancedActive: process.env[SUBAGENT_EAGER_TOOL_ENV] === "1",
+		listRuns: (params, ctx) => { ensureSessionState(ctx); return ownedRunList(state, params); },
+	});
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		...nativeAsyncLifecycle,
 		name: "subagent",
 		label: "Subagent",
 		description: [
 			"Delegate to subagents from child-safe fanout mode.",
-			"For goal-style requests such as /goal, goal, active goal, or work until evidence says done, use explicit acceptance on the delegated run: criteria for the target, evidence/verify for proof, stopRules for constraints, and maxFinalizationTurns for the bounded loop.",
-			"For implementation handoffs from a plan, PRD, spec, issue, or broad fix, put implementation instructions and plan paths in task, and put the definition of done, evidence, verification commands, constraints, and loop cap in acceptance.",
+			...acceptanceGuidelines,
 			"Allowed management/control actions: list, get, status, nudge, interrupt, extend, resume, questions, answer, review, doctor. Exact status is concise; full:true includes the full task/configuration. Review notes are parent-only, not sent to children. Put actionable instructions in resume/nudge. Resume/answer overrides do not amend live acceptance.",
 			"Agent config mutation actions create, update, and delete are blocked in this mode.",
 		].join("\n"),
 		promptSnippet: "Delegate nested child-safe subagent work from an explicitly allowed fanout child.",
-		promptGuidelines: [
-			"Delegate useful helper work within your assigned task when it saves time or improves quality; the original parent owns integration and final delivery.",
-			"Nested execution defaults to foreground unless configuration explicitly opts into async. Set async:false whenever the nested result must appear in this child's report; use async:true only for intentionally detached work.",
-			"Use subagent action:list before nested execution unless the executable nested agent is already known from the task context.",
-			"Do not use subagent child-safe mode for agent config mutation actions; create, update, and delete are blocked here.",
-		],
+		promptGuidelines: guidelines,
 		parameters: SubagentParams,
 		async execute(id, params, signal, onUpdate, ctx) {
 			return toRegisteredToolResult(await executor.execute(id, normalizeSubagentParamsLike(params), signal, onUpdate, ctx), ctx);

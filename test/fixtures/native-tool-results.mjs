@@ -23,7 +23,7 @@ const { setKeybindings } = await import(createRequire(import.meta.resolve("@eare
 const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } = await import(pathToFileURL(path.join(nativePackage("@earendil-works/pi-ai"), "dist/index.js")).href);
 const { visibleWidth } = await import(pathToFileURL(path.join(nativePackage("@earendil-works/pi-tui"), "dist/index.js")).href);
 const { INTERCOM_DETACH_REQUEST_EVENT } = await import(pathToFileURL(path.join(repo, "dist/shared/types.js")).href);
-const { getRunMetadataDir } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
+const { getRunMetadataDir, createSupervisorQuestion, readQuestionContract, readQuestionState } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
 const mock = createMockPi();
 mock.install();
 const bus = sdk.createEventBus();
@@ -126,8 +126,8 @@ async function invoke(receipt, name, args, stop) {
 				fs.writeFileSync(path.join(root, `${id}.release`), "");
 			}
 			else {
-				const control = session.agent.state.tools.find((tool) => tool.name === "subagent");
-				const result = await control.execute(`${id}-interrupt`, { action: "interrupt", id: receipt.runId }, new AbortController().signal);
+				const control = session.agent.state.tools.find((tool) => tool.name === "agent_runs");
+				const result = await control.execute(`${id}-interrupt`, { action: "stop", id: receipt.runId }, new AbortController().signal);
 				assert.equal(result.isError, undefined, text(result));
 			}
 		} catch (error) { await session.abort(); await pending; throw error; }
@@ -206,9 +206,9 @@ async function workflow(shape, stop, failed = true) {
 			expand: { from: { output: "targets", path: "/items" }, maxItems: tokens.length },
 			parallel: { agent: "probe", task: "{item}", output: false }, collect: { as: "collected" }, concurrency: 1, failFast: false,
 		} : { parallel: tasks.map((task, index) => ({ ...task, ...(index === 0 ? { as: "evidence" } : {}) })), concurrency: 1, failFast: false };
-		const result = await invoke(receipt, "subagent", {
+		const result = await invoke(receipt, single ? "delegate" : "subagent", {
 			...(single ? tasks[0] : shape === "parallel" ? { tasks, concurrency: 1 } : { chain: [prefix, group, { agent: "probe", task: "MIXED_DOWNSTREAM", output: false }] }),
-			async: false, context: "fresh", artifacts: false,
+			async: false, context: "fresh", ...(!single ? { artifacts: false } : {}),
 		}, stop);
 		if (stop === "detach") {
 			verifyNative(receipt, verify, false);
@@ -229,7 +229,7 @@ async function workflow(shape, stop, failed = true) {
 				if (shape === "dynamic-chain") assert.equal(durable.outputs.collected?.structured.length, failed ? undefined : tokens.length);
 			});
 			const inspected = { name: `${receipt.name}-inspect` };
-			await invoke(inspected, route === "parent" ? "agent_runs" : "subagent", { action: route === "parent" ? "inspect" : "status", id: receipt.runId });
+			await invoke(inspected, "agent_runs", { action: "inspect", id: receipt.runId });
 			receipt.completion = inspected;
 			verifyNative(inspected, verify, false);
 			verify("a registered native inspection renders all completed evidence after release", () => {
@@ -324,7 +324,9 @@ async function workflow(shape, stop, failed = true) {
 
 try {
 	await open();
-	if (route === "parent") await check("load-success", async (receipt, verify) => {
+	for (const name of ["delegate", "agent_runs", "load_subagent"]) assert.ok(session.agent.state.tools.some((tool) => tool.name === name), `${name} is active by default`);
+	assert.equal(session.agent.state.tools.some((tool) => tool.name === "subagent"), false, "advanced orchestration remains lazy");
+	await check("load-success", async (receipt, verify) => {
 		await invoke(receipt, "load_subagent", {});
 		verifyNative(receipt, verify, false);
 		verify("loader still enables the actual registered tool", () => assert.ok(session.agent.state.tools.some((tool) => tool.name === "subagent")));
@@ -400,7 +402,7 @@ try {
 	});
 	for (const delivered of [false, true]) await check(delivered ? "intercom-receipt-success" : "normal-success", async (receipt, verify) => {
 		mock.onCall({ output: "NORMAL_SUCCESS_EVIDENCE" });
-		await invoke(receipt, route === "parent" ? "delegate" : "subagent", { agent: "probe", task: "normal success", output: false, async: false, context: "fresh" });
+		await invoke(receipt, "delegate", { agent: "probe", task: "normal success", output: false, async: false, context: "fresh" });
 		verifyNative(receipt, verify, false);
 		verify("nonerror content, details and rendering survive", () => {
 			assert.equal(receipt.result.details.intercomDelivery, undefined, "delivery acknowledgment does not erase the owner's saved result");
@@ -412,7 +414,7 @@ try {
 	});
 	await check("inspect-handle", async (receipt, verify) => {
 		const runId = evidence.cases.find((entry) => entry.name === "static-chain-interrupt-mixed").runId;
-		await invoke(receipt, route === "parent" ? "agent_runs" : "subagent", { action: route === "parent" ? "inspect" : "status", id: runId });
+		await invoke(receipt, "agent_runs", { action: "inspect", id: runId });
 		verifyNative(receipt, verify, false);
 		verify("native inspection renders the exact saved run handle without restarting it", () => {
 			assert.equal(receipt.result.details.run.runId, runId);
@@ -420,6 +422,33 @@ try {
 			assert.ok(receipt.expanded.includes(runId));
 			assert.match(receipt.expanded, /SUCCESSFUL_SIBLING_EVIDENCE/);
 			assert.equal(receipt.calls.length, 0);
+		});
+	});
+	for (const action of ["continue", "answer"]) await check(`agent-runs-${action}`, async (receipt, verify) => {
+		const previous = evidence.cases.find((entry) => entry.name === (action === "continue" ? "normal-success" : "intercom-receipt-success")).result;
+		const id = previous.details.runId;
+		const contract = readQuestionContract(id, 0);
+		assert.ok(contract.sessionFile, "continuation uses the original saved child session");
+		const question = action === "answer" ? createSupervisorQuestion({
+			runId: id, index: 0, agent: "probe", ownerTarget: "fixture-parent", childTarget: "fixture-child", childSessionId: "fixture-session",
+			sessionFile: contract.sessionFile, cwd, pid: contract.pid, reason: "need_decision", message: "May I continue?",
+		}) : undefined;
+		mock.onCall({ output: "CONTINUATION_EVIDENCE" });
+		await invoke(receipt, "agent_runs", { action, id, message: "Continue the controlled work", async: false, ...(question ? { questionId: question.questionId } : {}) });
+		verifyNative(receipt, verify, false);
+		verify("native compact continuation waits for one saved-session child and retains its result", () => {
+			assert.equal(receipt.calls.length, 1);
+			const args = receipt.calls[0].expandedArgs;
+			assert.equal(args[args.indexOf("--session") + 1], contract.sessionFile);
+			assert.match(text(receipt.result), /CONTINUATION_EVIDENCE/);
+			assert.match(receipt.expanded, /CONTINUATION_EVIDENCE/);
+			assert.notEqual(receipt.result.details.runId, id, "continuation has its own owned run");
+			if (question) {
+				const saved = readQuestionState(question);
+				assert.equal(saved.state, "answered");
+				assert.equal(saved.answer.message, "Continue the controlled work");
+				assert.equal(saved.delivery.runId, receipt.result.details.runId);
+			}
 		});
 	});
 	if (route === "parent") {

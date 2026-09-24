@@ -1,3 +1,4 @@
+import { loadConfig } from "../extension/config.ts";
 import type { AgentProcessExit, ActivityState, AsyncJobStep, ManagementAction, ManagementControl, ManagementRunState, SubagentLiveIntercomHealth } from "./types.ts";
 
 export function formatAgentProcessExit(exit: AgentProcessExit | undefined): string {
@@ -6,11 +7,12 @@ export function formatAgentProcessExit(exit: AgentProcessExit | undefined): stri
 }
 
 export function formatRunAction(action: ManagementAction | "questions" | "answer", id: string, fields: Record<string, string | number | boolean> = {}, childSafe = false): string {
+	const legacyChild = childSafe && loadConfig().compactChildTools === false;
 	const parentAction = { status: "inspect", resume: "continue", interrupt: "stop" };
-	const name = childSafe ? action : parentAction[action as keyof typeof parentAction] ?? action;
+	const name = legacyChild ? action : parentAction[action as keyof typeof parentAction] ?? action;
 	const args = Object.entries({ action: name, id, ...fields }).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join(", ");
-	const call = `${childSafe || action === "extend" ? "subagent" : "agent_runs"}({ ${args} })`;
-	return action === "extend" && !childSafe ? `load_subagent({}), then ${call}` : call;
+	const call = `${legacyChild || action === "extend" ? "subagent" : "agent_runs"}({ ${args} })`;
+	return action === "extend" && !legacyChild ? `load_subagent({}), then ${call}` : call;
 }
 
 export function buildManagementControl(input: {

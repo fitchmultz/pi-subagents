@@ -8,7 +8,10 @@ import { setTimeout as delay } from "node:timers/promises";
 const [root, repo, sdkRoot, phase, variant] = process.argv.slice(2);
 const cwd = path.join(root, "project"), agentDir = path.join(root, "agent");
 const portableChild = phase.startsWith("portable-child");
-const childSafe = portableChild || variant === "fork" || variant === "child-restart";
+const continuation = variant === "continue-restart" || variant === "answer-restart";
+const advanced = variant === "advanced-child-restart" || variant === "advanced-parent-restart";
+const expectedChildren = continuation ? 2 : 1;
+const childSafe = portableChild || continuation || variant === "fork" || variant === "child-restart" || variant === "advanced-child-restart";
 const providerSteering = variant.startsWith("steering");
 for (const dir of [cwd, agentDir, path.join(cwd, ".pi/agents"), path.join(root, "bin")]) fs.mkdirSync(dir, { recursive: true });
 for (const key of Object.keys(process.env)) if (key.startsWith("PI_SUBAGENT_")) delete process.env[key];
@@ -24,7 +27,7 @@ const { default: subagents } = await import(pathToFileURL(path.join(repo, "dist/
 const { default: fanoutChild } = await import(pathToFileURL(path.join(repo, "dist/extension/fanout-child.js")).href);
 const nativeSession = await import(pathToFileURL(path.join(repo, "dist/shared/native-session.js")).href);
 const { RESULTS_DIR } = await import(pathToFileURL(path.join(repo, "dist/shared/types.js")).href);
-const { createSupervisorQuestion, listSupervisorQuestions, saveQuestionAnswer, recordQuestionDelivery } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
+const { createSupervisorQuestion, listSupervisorQuestions, saveQuestionAnswer, recordQuestionDelivery, readQuestionContract } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
 assert.equal(nativeSession.SessionManager, sdk.SessionManager, "extension native readers must use the selected SDK");
 if (childSafe) Object.assign(process.env, { PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_FANOUT_CHILD: "1", PI_SUBAGENT_DEPTH: "1", PI_SUBAGENT_MAX_DEPTH: "2" });
 const evidence = { phase, variant, sdkRoot, nativeSessionManagerMatches: nativeSession.SessionManager === sdk.SessionManager,
@@ -51,6 +54,9 @@ if (inheritedEntries) {
 }
 const { session } = await sdk.createAgentSession({ cwd, agentDir, settingsManager, modelRuntime, model: faux.getModel(), resourceLoader: loader, sessionManager: manager });
 await session.bindExtensions({ mode: "json", onError: (error) => evidence.errors.push(error) });
+for (const name of ["delegate", "agent_runs", "load_subagent"]) assert.ok(session.agent.state.tools.some((tool) => tool.name === name), `${name} is active by default`);
+evidence.activeTools = session.agent.state.tools.map((tool) => tool.name);
+assert.equal(evidence.activeTools.includes("subagent"), advanced && phase === "resume", "advanced orchestration is active on startup only for its pending native call");
 session.subscribe((event) => {
 	if (event.type === "steering") evidence.steering.push(structuredClone(event));
 });
@@ -64,8 +70,9 @@ if (!portableChild) {
 	};
 }
 const originalCallId = "delegate_original|fc_delegate_original";
-const toolName = childSafe ? "subagent" : "delegate";
-const args = { agent: "fixture", task: "Return the controlled fixture result", output: false, ...(childSafe ? { async: true } : {}) };
+const toolName = continuation ? "agent_runs" : advanced ? "subagent" : "delegate";
+const args = continuation ? { ...seed?.continuationArgs }
+	: { agent: "fixture", task: "Return the controlled fixture result", output: false, ...(childSafe ? { async: true } : {}) };
 const wireCall = { type: "function_call", id: "fc_delegate_original", call_id: "delegate_original", name: toolName,
 	arguments: JSON.stringify(args), async: true, status: "completed" };
 const resultEntries = () => manager.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === originalCallId);
@@ -114,14 +121,14 @@ try {
 		const { readNativeUsage, snapshotNativeUsage } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/native-usage.js")).href);
 		const baseline = snapshotNativeUsage(manager.getSessionFile());
 		if (phase === "portable-child") fs.writeFileSync(path.join(root, "release-child"), "release");
-		const args = { agent: "fixture", task: "Return the controlled fixture result", output: false, async: false };
-		faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: originalCallId, name: "subagent", arguments: args }], { stopReason: "toolUse" }), fauxAssistantMessage("Nested work collected")]);
+		const args = { agent: "fixture", task: "Return the controlled fixture result", output: false };
+		faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: originalCallId, name: "delegate", arguments: args }], { stopReason: "toolUse" }), fauxAssistantMessage("Nested work collected")]);
 		const launch = session.prompt("Delegate one bounded nested task");
 		if (phase === "portable-child-control") {
 			await until(() => children().length === 1, "nested child starts before interruption");
 			const run = manager.getEntries().find((entry) => entry.type === "custom" && entry.customType === "subagent-run").data;
-			const control = session.agent.state.tools.find((tool) => tool.name === "subagent");
-			const receipt = await control.execute("stop_nested", { action: "interrupt", id: run.runId }, new AbortController().signal);
+			const control = session.agent.state.tools.find((tool) => tool.name === "agent_runs");
+			const receipt = await control.execute("stop_nested", { action: "stop", id: run.runId }, new AbortController().signal);
 			assert.notEqual(receipt.isError, true, JSON.stringify(receipt));
 		}
 		await launch;
@@ -137,7 +144,7 @@ try {
 			assert.match(resultEntries()[0].message.content[0].text, /NATIVE_ORIGINAL_CALL_RESULT/);
 			assert.equal(session.getSessionStats().cost, 1, "paid grandchild work must reach the child native journal");
 			const runId = resultEntries()[0].message.details.runId;
-			faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "inspect_result", name: "subagent", arguments: { action: "status", id: runId } }], { stopReason: "toolUse" }), fauxAssistantMessage("Saved result inspected")]);
+			faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "inspect_result", name: "agent_runs", arguments: { action: "inspect", id: runId } }], { stopReason: "toolUse" }), fauxAssistantMessage("Saved result inspected")]);
 			await session.prompt("Read the same completed nested work");
 			const inspected = manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === "inspect_result").message;
 			assert.equal(inspected.isError, false, JSON.stringify(inspected));
@@ -150,8 +157,40 @@ try {
 			evidence.checks.push("actual child-safe tool records grandchild usage once through native journal; inspection stays pure and never relaunches");
 		}
 	} else if (phase === "seed") {
+		if (advanced) {
+			faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "load_advanced", name: "load_subagent", arguments: {} }], { stopReason: "toolUse" }),
+				fauxAssistantMessage("Advanced delegation enabled")]);
+			await session.prompt("Load advanced delegation before launching the pending call");
+			assert.equal(manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === "load_advanced").message.isError, false);
+			assert.ok(session.agent.state.tools.some((tool) => tool.name === "subagent"));
+			assert.equal(process.env.PI_SUBAGENT_EAGER_TOOL, undefined, "recovery must work without eager activation");
+		}
+		if (continuation) {
+			fs.writeFileSync(path.join(root, "release-child"), "release");
+			faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "predecessor", name: "delegate",
+				arguments: { agent: "fixture", task: "Create the saved child session", output: false, async: false } }], { stopReason: "toolUse" }),
+				fauxAssistantMessage("Saved child completed")]);
+			await session.prompt("Complete the predecessor before continuing its saved session");
+			await session.waitForIdle();
+			fs.unlinkSync(path.join(root, "release-child"));
+			const previous = manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === "predecessor").message;
+			assert.equal(previous.isError, false, JSON.stringify(previous));
+			assert.equal(childStarts().length, 1);
+			assert.equal(session.getSessionStats().cost, 1, "predecessor contributes one charge before continuation");
+			assert.equal(session.getPendingToolCalls().length, 0);
+			Object.assign(args, { action: variant === "answer-restart" ? "answer" : "continue", id: previous.details.runId,
+				message: "Continue the saved fixture session", async: true });
+			if (variant === "answer-restart") {
+				const contract = readQuestionContract(args.id, 0);
+				const question = createSupervisorQuestion({ runId: args.id, ownerTarget: "parent", agent: "fixture", index: 0,
+					childSessionId: sdk.SessionManager.open(contract.sessionFile).getSessionId(), childTarget: "child",
+					sessionFile: contract.sessionFile, cwd, pid: contract.pid, reason: "need_decision", message: "May the fixture continue?" });
+				args.questionId = question.questionId;
+			}
+			wireCall.arguments = JSON.stringify(args);
+		}
 		if (variant === "fork") {
-			faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "inherited_inspection", name: "subagent", arguments: { action: "list" } }], { stopReason: "toolUse" }),
+			faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "inherited_inspection", name: "agent_runs", arguments: { action: "profiles" } }], { stopReason: "toolUse" }),
 				fauxAssistantMessage("Inherited completed fanout inspection")]);
 			await session.prompt("Inspect available child profiles");
 			assert.equal(manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "toolResult"
@@ -160,8 +199,8 @@ try {
 		const call = { type: "toolCall", id: originalCallId, name: toolName, arguments: args, async: true, responsesItem: wireCall };
 		faux.setResponses([fauxAssistantMessage([call, { type: "text", text: "Independent parent answer while the child runs" }], { responseId: "initial-response", stopReason: "toolUse" }), fauxAssistantMessage("Ready for child result")]);
 		const run = session.prompt("Delegate controlled work");
-		await until(() => children().length === 1 && session.getPendingToolCalls().some((call) => call.toolCallId === originalCallId), "one owned native call starts");
-		const binding = manager.getEntries().find((entry) => entry.type === "custom" && entry.customType === "subagent-invocation")?.data;
+		await until(() => children().length === expectedChildren && session.getPendingToolCalls().some((call) => call.toolCallId === originalCallId), "one owned native call starts");
+		const binding = manager.getEntries().find((entry) => entry.type === "custom" && entry.customType === "subagent-invocation" && entry.data.toolCallId === originalCallId)?.data;
 		assert.equal(binding.toolCallId, originalCallId);
 		assert.ok(fs.readFileSync(manager.getSessionFile(), "utf8").includes('"executionStarted":true'));
 		assert.equal(resultEntries().length, 0, "native delegation cannot publish an ordinary launch receipt");
@@ -194,8 +233,16 @@ try {
 			const kept = manager.appendMessage({ role: "user", content: "Retained after controlled compaction", timestamp: Date.now() });
 			manager.appendCompaction("Controlled compaction with one unresolved native delegation", kept, 100);
 		}
-		const seed = { sessionFile: manager.getSessionFile(), sessionId: manager.getSessionId(), runId: binding.runId, pid: process.pid, originalLeaf,
+		const seed = { sessionFile: manager.getSessionFile(), sessionId: manager.getSessionId(), runId: continuation ? childStarts().at(-1).runId : binding.runId, pid: process.pid, originalLeaf,
+			...(continuation ? { continuationArgs: args } : {}),
 			beforeCall: manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "user").id };
+		if (continuation) {
+			assert.notEqual(seed.runId, args.id, "continuation gets a distinct owned run");
+			assert.equal(childStarts().filter((child) => child.runId === seed.runId).length, 1, "continuation launches exactly once");
+			assert.equal(childStarts()[0].sessionFile, childStarts()[1].sessionFile, "continuation uses the completed child's saved journal");
+			assert.equal(session.getSessionStats().cost, 1, "pending continuation has not charged usage");
+			evidence.checks.push(`native agent_runs ${args.action} launches one saved-session continuation and remains pending on its original call`);
+		}
 		if (variant === "question-restart") {
 			const child = childStarts()[0];
 			const question = createSupervisorQuestion({ runId: binding.runId, ownerTarget: "parent", agent: "fixture", index: 0,
@@ -226,7 +273,8 @@ try {
 		assert.equal(inheritedCall.executionDetached, true);
 		const beforeStarts = childStarts();
 		const inspect = async () => {
-			const result = await registered.execute("fork_inspection", { action: "status", id: seed.runId }, new AbortController().signal);
+			const control = session.agent.state.tools.find((tool) => tool.name === "agent_runs");
+			const result = await control.execute("fork_inspection", { action: "inspect", id: seed.runId }, new AbortController().signal);
 			(evidence.forkInspections ??= []).push(result);
 			assert.notEqual(result.isError, true, JSON.stringify(result));
 			assert.equal(result.details.run, undefined, "explicit inspection cannot project the original run as fork-owned");
@@ -253,6 +301,21 @@ try {
 	} else {
 		assert.notEqual(process.pid, seed.pid, "reattachment must use a fresh parent process");
 		assert.equal(session.getPendingToolCalls()[0].toolCallId, originalCallId);
+		if (continuation) {
+			const pendingCall = manager.buildSessionProjection().messages.flatMap((message) => message.role === "assistant" ? message.content : [])
+				.find((block) => block.type === "toolCall" && block.id === originalCallId);
+			assert.equal(pendingCall.name, "agent_runs");
+			assert.equal(pendingCall.executionStarted, true);
+			assert.equal(pendingCall.executionDetached, true);
+			assert.equal(typeof session.agent.state.tools.find((tool) => tool.name === "agent_runs").resume, "function");
+			assert.equal(session.getSessionStats().cost, 1, "reopening has only the predecessor's usage");
+			if (variant === "answer-restart") {
+				const question = listSupervisorQuestions(manager.getSessionId(), args.id).find((question) => question.questionId === args.questionId);
+				assert.equal(question.state, "answered");
+				assert.equal(question.answer.message, args.message);
+				assert.equal(question.delivery.runId, seed.runId);
+			}
+		}
 		if (variant === "question-restart") {
 			const question = listSupervisorQuestions(manager.getSessionId(), seed.runId).find((question) => question.questionId === seed.questionId);
 			assert.equal(question.state, "answer_pending");
@@ -278,13 +341,17 @@ try {
 		await session.prompt("Collect the pending work");
 		await session.waitForIdle();
 		assert.equal(session.getPendingToolCalls().length, 0);
-		assert.equal(children().length, 1, "recovery must not create a second child");
-		assert.equal(childStarts().length, 1, "recovery cannot re-execute even the same run ID");
+		assert.equal(children().length, expectedChildren, "recovery must not create another child");
+		assert.equal(childStarts().length, expectedChildren, "recovery cannot re-execute even the same run ID");
+		assert.equal(childStarts().filter((child) => child.runId === seed.runId).length, 1, "the pending run launches exactly once");
 		assert.equal(resultEntries().length, 1);
+		assert.equal(resultEntries()[0].message.toolName, toolName);
+		assert.equal(resultEntries()[0].message.isError, false);
+		assert.equal(resultEntries()[0].message.details.runId, seed.runId, "original call receives its own run's result");
 		assert.match(resultEntries()[0].message.content[0].text, /NATIVE_ORIGINAL_CALL_RESULT/);
 		assert.equal(resultEntries()[0].message.usage, undefined, "recordUsage and tool-result usage cannot charge the same work");
-		assert.equal(manager.getEntries().filter((entry) => entry.type === "usage" && entry.kind === "subagent").length, 1);
-		assert.equal(session.getSessionStats().cost, 1);
+		assert.equal(manager.getEntries().filter((entry) => entry.type === "usage" && entry.kind === "subagent").length, expectedChildren);
+		assert.equal(session.getSessionStats().cost, expectedChildren, "each launch contributes exactly one charge, including only new usage from a continued journal");
 		assert.ok(!manager.getEntries().some((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify"));
 		if (providerSteering) {
 			assert.equal(provider.requests.filter((body) => body.type === "response.steer").length, 0, "reopening must not resend accepted steering");
@@ -295,7 +362,7 @@ try {
 		evidence.checks.push("fresh parent attaches the same owner and emits one original-call result with one native usage contribution");
 	}
 	if (provider) assert.deepEqual(provider.errors, []);
-	assert.equal(childStarts().length, 1, "every scenario must execute exactly one child process");
+	assert.equal(childStarts().length, expectedChildren, "exactly one process per launch, plus a completed predecessor for continuation scenarios");
 	assert.equal(evidence.networkRequests, 0);
 	assert.deepEqual(evidence.errors, []);
 } finally {

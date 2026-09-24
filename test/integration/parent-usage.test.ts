@@ -191,7 +191,8 @@ test("native grandchild usage reaches the parent once through the child's own jo
 	assert.equal(parent.session.sessionManager.getEntries().filter((entry: any) => entry.type === "usage").length, 1);
 });
 
-for (const childSafe of [false, true]) test(`${childSafe ? "child-safe" : "parent"} nested continuation charges only the later direct-child journal delta`, async (t) => {
+for (const surface of ["parent", "child-advanced", "child-compact"]) test(`${surface} nested continuation charges only the later direct-child journal delta`, async (t) => {
+	const childSafe = surface !== "parent", advanced = surface === "child-advanced";
 	const h = await harness(t), child = await h.open(), original = await h.open();
 	await child.wait({ inspect: true });
 	// Native journals buffer pre-response entries; persist the parent before reopening it.
@@ -214,7 +215,7 @@ for (const childSafe of [false, true]) test(`${childSafe ? "child-safe" : "paren
 	if (childSafe) Object.assign(process.env, env);
 	await h.close(original.session);
 	let directUsage;
-	const parent = await h.open(savedParentFile, { tool: childSafe ? "subagent" : "agent_runs", register(pi) {
+	const parent = await h.open(savedParentFile, { tool: advanced ? "subagent" : "agent_runs", register(pi) {
 		(childSafe ? registerFanoutSubagent : registerSubagents)(pi);
 		for (const [send, delivered] of [[SUBAGENT_LIVE_INTERCOM_EVENT, SUBAGENT_LIVE_INTERCOM_DELIVERY_EVENT], [SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT]]) {
 			pi.events.on(send, (request) => {
@@ -231,7 +232,7 @@ for (const childSafe of [false, true]) test(`${childSafe ? "child-safe" : "paren
 		writeNestedControlResult(route, { ts: Date.now(), requestId: request.requestId, targetRunId: nestedId, ok: true, message: "Nested guidance delivered" });
 	}, 10);
 	t.after(() => { clearInterval(reply); for (const [key, value] of Object.entries(savedEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } for (const dir of [rootDir, nestedDir, path.dirname(route.eventSink)]) rmSync(dir, { recursive: true, force: true }); });
-	const tool = childSafe ? "subagent" : "agent_runs", action = childSafe ? "resume" : "continue";
+	const tool = advanced ? "subagent" : "agent_runs", action = advanced ? "resume" : "continue";
 	await parent.invoke(tool, { action, id: nestedId, message: "Finish grandchild", async: false });
 	const nestedResult = toolMessages(parent.session).at(-1);
 	assert.equal(nestedResult.isError, false, nestedResult.content[0]?.text);
@@ -245,6 +246,6 @@ for (const childSafe of [false, true]) test(`${childSafe ? "child-safe" : "paren
 	await parent.invoke(tool, { action, id: rootId, message: "Finish direct child", async: false });
 	assert.match(toolMessages(parent.session).at(-1).content[0]?.text, /Direct child completed/);
 	assert.equal(parent.session.getSessionStats().cost, 10, "the direct child's native journal delta is charged exactly once");
-	await parent.invoke(tool, { action: childSafe ? "status" : "inspect", id: rootId });
+	await parent.invoke(tool, { action: advanced ? "status" : "inspect", id: rootId });
 	assert.equal(parent.session.getSessionStats().cost, 10);
 });

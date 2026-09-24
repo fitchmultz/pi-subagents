@@ -27,7 +27,7 @@ for (const [phase, title] of [["portable-child", "persists nested usage once"], 
 		console.log(`Native nested usage evidence: ${root}`);
 	}
 });
-for (const variant of ["restart", "child-restart", "canonical-result", "question-restart", "compaction", "branch", "fork", "steering", "steering-disconnect"]) test(`native delegation survives ${variant} with the original call and one usage charge`, { timeout: 90_000 }, (t) => {
+for (const variant of ["restart", "child-restart", "advanced-child-restart", "advanced-parent-restart", "continue-restart", "answer-restart", "canonical-result", "question-restart", "compaction", "branch", "fork", "steering", "steering-disconnect"]) test(`native delegation survives ${variant} with the original call and one charge per launch`, { timeout: 90_000 }, (t) => {
 	if (typeof AgentSession.prototype.getPendingToolCalls !== "function") {
 		assert.notEqual(process.env.PI_NATIVE_ASYNC_REQUIRE_HOST, "1", "native async host required by this invocation");
 		t.skip("host lacks public native async lifecycle; application and portable contracts run separately"); return;

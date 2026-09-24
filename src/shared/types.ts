@@ -1011,6 +1011,8 @@ interface ExtensionChainConfig {
 }
 
 export interface ExtensionConfig {
+	/** Start authorized children with everyday tools; false restores the full subagent-only surface. */
+	compactChildTools?: boolean;
 	asyncByDefault?: boolean;
 	forceTopLevelAsync?: boolean;
 	defaultSessionDir?: string;

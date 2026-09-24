@@ -544,10 +544,10 @@ describe("async run status inspection", () => {
 			assert.match(text, /Root: run-nested-exact-root/);
 			assert.match(text, /Agent: validator/);
 			assert.match(text, /1\. leaf running/);
-			assert.match(text, /Root status: subagent\(\{ action: "status", id: "run-nested-exact-root" \}\)/);
+			assert.match(text, /Root status: agent_runs\(\{ action: "inspect", id: "run-nested-exact-root" \}\)/);
 			assert.match(text, /end your turn instead of polling status again/);
-			assert.match(text, /Interrupt: subagent\(\{ action: "interrupt", id: "nested-exact-child" \}\)/);
-			assert.match(text, /Resume: subagent\(\{ action: "resume", id: "nested-exact-child", message: "\.\.\." \}\)/);
+			assert.match(text, /Interrupt: agent_runs\(\{ action: "stop", id: "nested-exact-child" \}\)/);
+			assert.match(text, /Resume: agent_runs\(\{ action: "continue", id: "nested-exact-child", message: "\.\.\." \}\)/);
 
 			const foreign = inspectSubagentStatus({ id: "nested-exact-child" }, {
 				asyncDirRoot: asyncRoot,
