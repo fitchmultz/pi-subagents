@@ -443,6 +443,8 @@ try {
 			assert.match(text(receipt.result), /CONTINUATION_EVIDENCE/);
 			assert.match(receipt.expanded, /CONTINUATION_EVIDENCE/);
 			assert.notEqual(receipt.result.details.runId, id, "continuation has its own owned run");
+			assert.ok(text(receipt.result).includes(`Run: ${receipt.result.details.runId}\nPredecessor: ${id} (child 0)`),
+				"the final model-visible receipt identifies the new run and its predecessor");
 			if (question) {
 				const saved = readQuestionState(question);
 				assert.equal(saved.state, "answered");

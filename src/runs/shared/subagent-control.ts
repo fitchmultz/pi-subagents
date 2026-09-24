@@ -8,6 +8,24 @@ import {
 } from "../../shared/types.ts";
 
 import { formatRunAction } from "../../shared/status-format.ts";
+import { readStatus } from "../../shared/utils.ts";
+import { getRunMetadataDir } from "./supervisor-questions.ts";
+
+export function isObsoleteIdleNotice(details: { event: ControlEvent; asyncDir?: string }): boolean {
+	const event = details?.event;
+	if (!event || event.reason !== "idle" || event.supervisorQuestion) return false;
+	let status;
+	try {
+		status = readStatus(details.asyncDir ?? getRunMetadataDir(event.runId));
+	} catch {
+		// Without readable terminal evidence, retain the actionable notice.
+		return false;
+	}
+	if (!status || status.runId !== event.runId) return false;
+	const child = event.index === undefined ? undefined : status.steps?.[event.index];
+	return ["complete", "failed", "blocked", "paused"].includes(status.state)
+		|| Boolean(child && ["complete", "completed", "failed", "blocked", "paused", "timed-out"].includes(child.status));
+}
 
 const CONTROL_EVENT_TYPES: ControlEventType[] = ["needs_attention"];
 const CONTROL_NOTIFICATION_CHANNELS: ControlNotificationChannel[] = ["event", "async", "intercom"];

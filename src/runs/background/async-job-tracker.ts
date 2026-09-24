@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { renderWidget, widgetRenderKey } from "../../tui/render.ts";
-import { formatControlNoticeMessage } from "../shared/subagent-control.ts";
+import { formatControlNoticeMessage, isObsoleteIdleNotice } from "../shared/subagent-control.ts";
 import {
 	type AsyncJobState,
 	type AsyncStartedEvent,
@@ -114,6 +114,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 					childIntercomTarget: record.childIntercomTarget,
 					noticeText: record.noticeText ?? formatControlNoticeMessage(record.event, record.childIntercomTarget),
 				};
+				if (isObsoleteIdleNotice(payload)) continue;
 				if (record.channels.includes("event")) {
 					pi.events.emit(SUBAGENT_CONTROL_EVENT, payload);
 				}

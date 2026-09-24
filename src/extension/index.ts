@@ -36,6 +36,7 @@ import { nativeInvocationTarget, nativeInvocations } from "../runs/shared/native
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { onNativeCheckpoint } from "../shared/native-checkpoint.ts";
 import { subagentCheckpointBlocker } from "../runs/shared/checkpoint.ts";
+import { isObsoleteIdleNotice } from "../runs/shared/subagent-control.ts";
 import { applyForceTopLevelAsyncOverride } from "../runs/background/top-level-async.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
@@ -528,13 +529,35 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const existingVisibleControlNotices = globalStore[controlNoticeSeenStoreKey];
 	const visibleControlNotices = existingVisibleControlNotices instanceof Set ? existingVisibleControlNotices as Set<string> : new Set<string>();
 	globalStore[controlNoticeSeenStoreKey] = visibleControlNotices;
-	const controlEventHandler = (payload: unknown) => {
+	const pendingIdleNotices = new Map<string, SubagentControlMessageDetails>();
+	const deliverControlNotice = (details: SubagentControlMessageDetails) => {
 		handleSubagentControlNotice({
 			pi,
 			visibleControlNotices,
-			details: payload as SubagentControlMessageDetails,
+			details,
 		});
 	};
+	const controlEventHandler = (payload: unknown) => {
+		const details = payload as SubagentControlMessageDetails;
+		// The runner's event log retains the raw notice. Keep only its reference here
+		// until the current turn ends, rather than admitting stale work to Pi's queue.
+		if (details?.source === "async" && details.event?.reason === "idle" && !details.event.supervisorQuestion && state.lastUiContext && !state.lastUiContext.isIdle()) {
+			pendingIdleNotices.set(`${details.event.runId}:${details.event.index ?? ""}`, details);
+			return;
+		}
+		deliverControlNotice(details);
+	};
+	const flushIdleNotices = () => {
+		for (const details of pendingIdleNotices.values()) deliverControlNotice(details);
+		pendingIdleNotices.clear();
+	};
+	pi.on("turn_end", flushIdleNotices);
+	pi.on("agent_before_settle", flushIdleNotices);
+	pi.on("context", (event) => ({
+		messages: event.messages.filter((message) => message.role !== "custom"
+			|| message.customType !== SUBAGENT_CONTROL_MESSAGE_TYPE
+			|| !isObsoleteIdleNotice(message.details as SubagentControlMessageDetails)),
+	}));
 	const subscribeEvents = () => [
 		pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (data) => {
 			handleStarted(data);
@@ -581,6 +604,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	};
 
 	function resetSessionState(ctx: ExtensionContext) {
+		pendingIdleNotices.clear();
 		agentView?.dispose();
 		ensureAccessibleDir(RESULTS_DIR);
 		ensureAccessibleDir(ASYNC_DIR);
