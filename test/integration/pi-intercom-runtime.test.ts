@@ -3349,17 +3349,36 @@ async function waitForIntercomEntry(harness: ReturnType<typeof createExtensionHa
   throw new Error(`Timed out waiting for ${type}`);
 }
 
-for (const unavailable of ["offline", "checkpoint"] as const) {
-  test(`supervisor notification retries explicit rejection after ${unavailable} recovery`, { concurrency: false }, async () => {
+for (const unavailable of ["offline", "checkpoint", "lookup-error"] as const) {
+  test(`supervisor notification bounds retry logs and recovers after ${unavailable}`, { concurrency: false }, async (t) => {
     const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
-    const { orchestrator, cleanup } = await setupClients();
+    const { planner, orchestrator, cleanup } = await setupClients();
+    let failures = 0;
+    let failLookup = unavailable === "lookup-error";
+    const send = IntercomClient.prototype.send;
+    t.mock.method(IntercomClient.prototype, "send", async function (this: InstanceType<typeof IntercomClient>, to, options) {
+      const result = await send.call(this, to, options);
+      if (options.expectsReply && !result.accepted) failures += 1;
+      return result;
+    });
     try {
       if (unavailable === "offline") await orchestrator.disconnect();
-      else assert.equal(await orchestrator.holdCheckpoint(), true);
+      else if (unavailable === "checkpoint") assert.equal(await orchestrator.holdCheckpoint(), true);
       await withChildOrchestratorEnv({ orchestratorTarget: "orchestrator", runId: `retry-${unavailable}`, agent: "worker", index: "0" }, async () => {
         const harness = createExtensionHarness(`retry-${unavailable}-child`);
         piIntercomExtension(harness.pi as never);
         await harness.emitLifecycle("session_start");
+        if (failLookup) {
+          const child = await waitForSessionByName(planner, `retry-${unavailable}-child`);
+          const listSessions = IntercomClient.prototype.listSessions;
+          t.mock.method(IntercomClient.prototype, "listSessions", function (this: InstanceType<typeof IntercomClient>) {
+            if (failLookup && this.sessionId === child.id) {
+              failures += 1;
+              return Promise.reject(new Error("Temporary session lookup failure"));
+            }
+            return listSessions.call(this);
+          });
+        }
         const controller = new AbortController();
         const waiting = harness.tools.find((tool) => tool.name === "contact_supervisor")!.execute("retry", {
           reason: "need_decision", message: "Which API?",
@@ -3367,19 +3386,29 @@ for (const unavailable of ["offline", "checkpoint"] as const) {
         const received: Message[] = [];
         orchestrator.on("message", (_from, message) => received.push(message));
         try {
-          const rejected = await waitForIntercomEntry(harness, "intercom_sent");
-          assert.equal(rejected.accepted, false);
+          const diagnosticType = failLookup ? "intercom_question_notification_error" : "intercom_sent";
+          const rejected = await waitForIntercomEntry(harness, diagnosticType);
+          if (!failLookup) assert.equal(rejected.accepted, false);
+          const deadline = Date.now() + 5000;
+          while (failures < 3) {
+            assert.ok(Date.now() < deadline, "notification must keep retrying while unavailable");
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          assert.equal(harness.entries.filter((entry) => entry.type === diagnosticType).length, 1);
           const notification = once(orchestrator, "message", { signal: AbortSignal.timeout(5000) }) as Promise<[SessionInfo, Message]>;
           if (unavailable === "offline") await connectClient(orchestrator, "orchestrator");
-          else await orchestrator.releaseCheckpoint();
+          else if (unavailable === "checkpoint") await orchestrator.releaseCheckpoint();
+          else failLookup = false;
           const [from, message] = await notification;
-          assert.equal(message.id, rejected.messageId);
+          assert.equal(message.id, rejected.messageId ?? rejected.questionId);
           assert.equal(message.delivery, "steer");
           assert.equal(message.expectsReply, true);
           // Acceptance stops retrying even while the supervisor is still deciding.
           await new Promise((resolve) => setTimeout(resolve, 1300));
           assert.equal(received.length, 1);
-          assert.equal(harness.entries.filter((entry) => entry.type === "intercom_sent").length, 2);
+          const receipts = harness.entries.filter((entry) => entry.type === "intercom_sent");
+          assert.equal(receipts.length, unavailable === "lookup-error" ? 1 : 2);
+          assert.equal((receipts.at(-1)!.data as { accepted: boolean }).accepted, true);
           await orchestrator.send(from.id, { text: "Use the stable API.", replyTo: message.id });
           assert.equal((await waiting).isError, false);
         } finally {

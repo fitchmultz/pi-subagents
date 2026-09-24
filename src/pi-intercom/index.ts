@@ -1937,6 +1937,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const replyPromise = waitForReply(metadata.orchestratorTarget, question.questionId, signal, question);
     // Persistence is the delivery path; intercom only wakes the supervisor. Going offline does not end the wait.
     let retryAfter = 0;
+    let notificationFailureLogged = false;
     const notifySupervisor = async () => {
       const waiter = currentReplyWaiter();
       if (waiter?.replyTo !== question.questionId || Date.now() < retryAfter) return;
@@ -1953,9 +1954,15 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         const sent = await connectedClient.send(to, { text: requestText, messageId: question.questionId, expectsReply: true, delivery: "steer" });
         if (currentReplyWaiter() !== waiter) return;
         retry = !sent.accepted;
-        pi.appendEntry("intercom_sent", { to, messageId: question.questionId, message: { text: requestText, reason }, accepted: sent.accepted, timestamp: Date.now() });
+        if (sent.accepted || !notificationFailureLogged) {
+          pi.appendEntry("intercom_sent", { to, messageId: question.questionId, message: { text: requestText, reason }, accepted: sent.accepted, timestamp: Date.now() });
+        }
+        notificationFailureLogged ||= !sent.accepted;
       } catch (error) {
-        if (currentReplyWaiter() === waiter) pi.appendEntry("intercom_question_notification_error", { questionId: question.questionId, error: getErrorMessage(error) });
+        if (currentReplyWaiter() === waiter && !notificationFailureLogged) {
+          pi.appendEntry("intercom_question_notification_error", { questionId: question.questionId, error: getErrorMessage(error) });
+          notificationFailureLogged = true;
+        }
       } finally {
         if (retry && currentReplyWaiter() === waiter) {
           retryAfter = Date.now() + 1000;
