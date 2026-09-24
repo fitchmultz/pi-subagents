@@ -3339,6 +3339,197 @@ test("child supervisor tool resolves target and includes run metadata", { concur
   }
 });
 
+async function waitForIntercomEntry(harness: ReturnType<typeof createExtensionHarness>, type: string): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const entry = harness.entries.find((entry) => entry.type === type);
+    if (entry) return entry.data as Record<string, unknown>;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for ${type}`);
+}
+
+for (const unavailable of ["offline", "checkpoint"] as const) {
+  test(`supervisor notification retries explicit rejection after ${unavailable} recovery`, { concurrency: false }, async () => {
+    const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+    const { orchestrator, cleanup } = await setupClients();
+    try {
+      if (unavailable === "offline") await orchestrator.disconnect();
+      else assert.equal(await orchestrator.holdCheckpoint(), true);
+      await withChildOrchestratorEnv({ orchestratorTarget: "orchestrator", runId: `retry-${unavailable}`, agent: "worker", index: "0" }, async () => {
+        const harness = createExtensionHarness(`retry-${unavailable}-child`);
+        piIntercomExtension(harness.pi as never);
+        await harness.emitLifecycle("session_start");
+        const controller = new AbortController();
+        const waiting = harness.tools.find((tool) => tool.name === "contact_supervisor")!.execute("retry", {
+          reason: "need_decision", message: "Which API?",
+        }, controller.signal, undefined, harness.ctx);
+        const received: Message[] = [];
+        orchestrator.on("message", (_from, message) => received.push(message));
+        try {
+          const rejected = await waitForIntercomEntry(harness, "intercom_sent");
+          assert.equal(rejected.accepted, false);
+          const notification = once(orchestrator, "message", { signal: AbortSignal.timeout(5000) }) as Promise<[SessionInfo, Message]>;
+          if (unavailable === "offline") await connectClient(orchestrator, "orchestrator");
+          else await orchestrator.releaseCheckpoint();
+          const [from, message] = await notification;
+          assert.equal(message.id, rejected.messageId);
+          assert.equal(message.delivery, "steer");
+          assert.equal(message.expectsReply, true);
+          // Acceptance stops retrying even while the supervisor is still deciding.
+          await new Promise((resolve) => setTimeout(resolve, 1300));
+          assert.equal(received.length, 1);
+          assert.equal(harness.entries.filter((entry) => entry.type === "intercom_sent").length, 2);
+          await orchestrator.send(from.id, { text: "Use the stable API.", replyTo: message.id });
+          assert.equal((await waiting).isError, false);
+        } finally {
+          controller.abort();
+          await waiting;
+          await harness.emitLifecycle("session_shutdown");
+        }
+      });
+    } finally {
+      await cleanup();
+    }
+  });
+}
+
+for (const finish of ["abort", "saved-answer", "shutdown"] as const) {
+  test(`rejected supervisor notification stops retrying after ${finish}`, { concurrency: false }, async () => {
+    const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+    const { orchestrator, cleanup } = await setupClients();
+    await orchestrator.disconnect();
+    try {
+      await withChildOrchestratorEnv({ orchestratorTarget: "orchestrator", runId: `retry-stop-${finish}`, agent: "worker", index: "0" }, async () => {
+        const harness = createExtensionHarness(`retry-stop-${finish}-child`);
+        piIntercomExtension(harness.pi as never);
+        await harness.emitLifecycle("session_start");
+        const controller = new AbortController();
+        const waiting = harness.tools.find((tool) => tool.name === "contact_supervisor")!.execute("retry-stop", {
+          reason: "need_decision", message: "Which API?",
+        }, controller.signal, undefined, harness.ctx);
+        const received: Message[] = [];
+        orchestrator.on("message", (_from, message) => received.push(message));
+        try {
+          const rejected = await waitForIntercomEntry(harness, "intercom_sent");
+          assert.equal(rejected.accepted, false);
+          if (finish === "abort") controller.abort();
+          else if (finish === "shutdown") await harness.emitLifecycle("session_shutdown");
+          else {
+            const question = listSupervisorQuestions("supervisor-session-test", `retry-stop-${finish}`).find((question) => question.questionId === rejected.messageId)!;
+            saveQuestionAnswer(question, "Use the stable API.");
+          }
+          assert.equal((await waiting).isError, finish !== "saved-answer");
+          await connectClient(orchestrator, "orchestrator");
+          await new Promise((resolve) => setTimeout(resolve, 1300));
+          assert.equal(received.length, 0);
+          assert.equal(harness.entries.filter((entry) => entry.type === "intercom_sent").length, 1);
+        } finally {
+          controller.abort();
+          await waiting;
+          await harness.emitLifecycle("session_shutdown");
+        }
+      });
+    } finally {
+      await cleanup();
+    }
+  });
+}
+
+test("supervisor notification does not replay an uncertain send", { concurrency: false }, async (t) => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { orchestrator, cleanup } = await setupClients();
+  const send = IntercomClient.prototype.send;
+  let attempts = 0;
+  t.mock.method(IntercomClient.prototype, "send", async function (this: InstanceType<typeof IntercomClient>, to, options) {
+    const result = await send.call(this, to, options);
+    if (options.expectsReply) {
+      attempts += 1;
+      throw new Error("Delivery acknowledgement lost after dispatch");
+    }
+    return result;
+  });
+  try {
+    await withChildOrchestratorEnv({ orchestratorTarget: "orchestrator", runId: "uncertain-notification", agent: "worker", index: "0" }, async () => {
+      const harness = createExtensionHarness("uncertain-notification-child");
+      piIntercomExtension(harness.pi as never);
+      await harness.emitLifecycle("session_start");
+      const controller = new AbortController();
+      const notification = once(orchestrator, "message", { signal: AbortSignal.timeout(5000) }) as Promise<[SessionInfo, Message]>;
+      const waiting = harness.tools.find((tool) => tool.name === "contact_supervisor")!.execute("uncertain", {
+        reason: "need_decision", message: "Which API?",
+      }, controller.signal, undefined, harness.ctx);
+      try {
+        const [, message] = await notification;
+        await waitForIntercomEntry(harness, "intercom_question_notification_error");
+        await new Promise((resolve) => setTimeout(resolve, 1300));
+        assert.equal(attempts, 1);
+        const question = listSupervisorQuestions("supervisor-session-test", "uncertain-notification").find((question) => question.questionId === message.id)!;
+        assert.equal(question.state, "awaiting_input");
+        saveQuestionAnswer(question, "Use the stable API.");
+        assert.equal((await waiting).isError, false);
+      } finally {
+        controller.abort();
+        await waiting;
+        await harness.emitLifecycle("session_shutdown");
+      }
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("supervisor provider failure preserves the pending question for a real reply", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
+  const { planner, cleanup } = await setupClients();
+  const parent = createExtensionHarness("provider-error-parent", { hasUI: true });
+  piIntercomExtension(parent.pi as never);
+  await parent.emitLifecycle("session_start");
+  await waitForSessionByName(planner, "provider-error-parent");
+  try {
+    await withChildOrchestratorEnv({ orchestratorTarget: "provider-error-parent", runId: "provider-error-question", agent: "worker", index: "0" }, async () => {
+      const child = createExtensionHarness("provider-error-child");
+      piIntercomExtension(child.pi as never);
+      await child.emitLifecycle("session_start");
+      const controller = new AbortController();
+      const waiting = child.tools.find((tool) => tool.name === "contact_supervisor")!.execute("provider-error", {
+        reason: "need_decision", message: "Which API?",
+      }, controller.signal, undefined, child.ctx);
+      try {
+        await waitForSentMessages(parent, 1);
+        const questionId = (parent.sentMessages[0]!.message.details as { message: Message }).message.id;
+        persistSentIntercom(parent);
+        await parent.emitLifecycle("message_end", { message: parent.sentMessages[0]!.message });
+        await parent.emitLifecycle("agent_start");
+        await parent.emitLifecycle("turn_start");
+        await parent.emitLifecycle("message_end", { message: { role: "assistant", stopReason: "error", errorMessage: "Temporary provider 503" } });
+        await parent.emitLifecycle("turn_end");
+        await parent.emitLifecycle("agent_settled");
+        await waitForIntercomEntry(child, "intercom_question_notification_error");
+        const question = listSupervisorQuestions("supervisor-session-test", "provider-error-question").find((question) => question.questionId === questionId)!;
+        assert.equal(question.state, "awaiting_input");
+        assert.equal(question.answer, undefined);
+        const tool = parent.tools.find((tool) => tool.name === "intercom")!;
+        const pending = await tool.execute("pending", { action: "pending" }, controller.signal, undefined, parent.ctx);
+        assert.match(pending.content[0]!.text, new RegExp(questionId));
+        const reply = await tool.execute("reply", { action: "reply", replyTo: questionId, message: "Use the stable API." }, controller.signal, undefined, parent.ctx);
+        assert.equal(reply.isError, false);
+        assert.equal((await waiting).isError, false);
+        assert.equal(readQuestionState(question).answer?.message, "Use the stable API.");
+        const after = await tool.execute("after", { action: "pending" }, controller.signal, undefined, parent.ctx);
+        assert.doesNotMatch(after.content[0]!.text, new RegExp(questionId));
+      } finally {
+        controller.abort();
+        await waiting;
+        await child.emitLifecycle("session_shutdown");
+      }
+    });
+  } finally {
+    await parent.emitLifecycle("session_shutdown");
+    await cleanup();
+  }
+});
+
 test("contact supervisor survives supervisor disconnect and the ordinary ask timeout", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { orchestrator, cleanup } = await setupClients();
