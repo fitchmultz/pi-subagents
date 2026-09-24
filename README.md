@@ -1152,6 +1152,8 @@ Requirements:
 - task-level `cwd` overrides must be omitted or match the shared cwd
 - configured `worktreeSetupHook` must return valid JSON before timeout
 
+Stop and run deadlines also cancel Git checkout and setup hooks. Failed or interrupted setup rolls back newly created worktrees within the setup-hook timeout and reports anything it cannot remove.
+
 After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to artifacts. Worktrees and temp branches are then cleaned up. Runner exceptions or diff-capture failures preserve them so edits remain recoverable.
 
 ## Configuration

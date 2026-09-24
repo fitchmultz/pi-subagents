@@ -79,6 +79,7 @@ import {
 	findWorktreeTaskCwdConflict,
 	formatParallelWorktreeSummary,
 	formatWorktreeTaskCwdConflict,
+	WorktreeCleanupError,
 	type WorktreeSetup,
 } from "../shared/worktree.ts";
 import { recordRun } from "../shared/run-history.ts";
@@ -780,6 +781,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			: renderChainTask(template, { originalTask: config.originalTask, previousOutput, chainDir: config.chainDir, outputs, item }, placeholder);
 	const results: StepResult[] = [];
 	const worktreeSummaries: string[] = [];
+	let setupCleanupWarning = "";
 	const overallStartTime = Date.now();
 	const shareEnabled = config.share === true;
 	const asyncDir = config.asyncDir;
@@ -1558,14 +1560,25 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					break;
 				}
 				try {
-					worktreeSetup = createWorktrees(groupCwd, `${id}-s${stepIndex}`, group.parallel.length, {
+					worktreeSetup = await createWorktrees(groupCwd, `${id}-s${stepIndex}`, group.parallel.length, {
 						agents: group.parallel.map((task) => task.agent),
+						signal: AbortSignal.any([cancellation.signal, interruption.signal]),
 						setupHook: config.worktreeSetupHook
 							? { hookPath: config.worktreeSetupHook, timeoutMs: config.worktreeSetupHookTimeoutMs }
 							: undefined,
 					});
 				} catch (error) {
 					const setupError = error instanceof Error ? error.message : String(error);
+					if (interrupted && !cancellation.signal.aborted) {
+						if (error instanceof WorktreeCleanupError) setupCleanupWarning = setupError;
+						for (const [index, task] of group.parallel.entries()) {
+							const stopped = stoppedParallelChild(task, groupStartFlatIndex + index, "interrupted");
+							if (error instanceof WorktreeCleanupError) stopped.output += `\n\n${setupError}`;
+							results.push({ ...stopped, success: false });
+						}
+						flatIndex += group.parallel.length;
+						break;
+					}
 					const failedAt = Date.now();
 					markParallelGroupSetupFailure({
 						statusPayload,
@@ -1917,7 +1930,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			mode: resultMode,
 			success: finalRunState === "complete",
 			state: finalRunState,
-			summary: finalRunState === "blocked" ? `Needs your action — acceptance incomplete.\n${results.map((result) => acceptanceHumanAction(result.acceptance)).filter(Boolean).join("\n")}` : finalRunState === "paused" ? "Paused after interrupt. Waiting for explicit next action." : summary,
+			summary: finalRunState === "blocked" ? `Needs your action — acceptance incomplete.\n${results.map((result) => acceptanceHumanAction(result.acceptance)).filter(Boolean).join("\n")}` : finalRunState === "paused" ? `Paused after interrupt. Waiting for explicit next action.${setupCleanupWarning ? `\n\n${setupCleanupWarning}` : ""}` : summary,
 			results: results.map((r) => {
 				const referenceOnly = r.outputMode === "file-only" && r.exitCode === 0 && r.outputReference;
 				const childOutput = referenceOnly ? { text: referenceOnly.message, truncated: false } : truncateOutput(r.output, outputLimits, r.artifactPaths?.outputPath);
