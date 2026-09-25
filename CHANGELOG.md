@@ -25,6 +25,7 @@
 - Prevent worktree diff capture from deleting files outside the worktree through symlinked synthetic paths.
 - Preserve isolated worktrees when the runner throws before saving their patches, preventing loss of uncommitted edits.
 - Preserve Markdown headings inside saved chain tasks when creating or updating workflows, instead of interpreting them as additional agent steps.
+- Stop an Intercom broker that no session ever registers with, such as one whose spawning session exited during startup, instead of leaving it running indefinitely.
 
 ## [0.40.1] - 2026-09-22
 

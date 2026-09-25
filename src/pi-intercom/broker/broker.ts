@@ -61,6 +61,8 @@ class IntercomBroker {
       chmodSync(this.socketPath, 0o600);
       writeFileSync(PID_PATH, brokerPidRecord(), { mode: 0o600 });
       console.log(`Intercom broker started (pid: ${process.pid})`);
+      // A broker no session ever registers with (for example, its spawning client exited first) must still exit.
+      this.scheduleShutdownCheck();
     });
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
