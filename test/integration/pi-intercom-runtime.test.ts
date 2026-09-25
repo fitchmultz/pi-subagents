@@ -907,6 +907,23 @@ test("plain sends wake by default, passive sends do not, and only asks show repl
   }
 });
 
+test("broker exits when no session ever registers", { concurrency: false }, async () => {
+  const broker = await setupBroker();
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    const [code] = await Promise.race([
+      once(broker, "exit"),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Broker kept running without sessions")), 10_000);
+      }),
+    ]);
+    assert.equal(code, 0);
+  } finally {
+    clearTimeout(timeout);
+    await stopBroker(broker);
+  }
+});
+
 test("broker returns a clean delivery failure when forwarding would exceed the frame cap", { concurrency: false }, async () => {
   const broker = await setupBroker();
   const sender = new IntercomClient({ sendTimeoutMs: 2000 });
