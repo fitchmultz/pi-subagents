@@ -4,6 +4,7 @@
 
 ### Changed
 - Start delegation-enabled children with compact `delegate`, `agent_runs`, and `load_subagent` tools. Full advanced workflows load on demand, explicit `tools: subagent` profiles stay eager, and `compactChildTools: false` restores the prior child surface. Nested execution defaults, permissions, durable ownership, and native result accounting are preserved.
+- Stop writing streaming `message_update` deltas and cumulative `tool_execution_update` progress to durable `events.jsonl` run records. They were most of the record volume, and final `message_end` and `tool_execution_end` events still record the same content. In-process event consumers still receive every event.
 
 ### Fixed
 - Reserve Intercom's reply waiter before sending concurrent asks, so a rejected contender neither sends its question nor cancels the active wait.
