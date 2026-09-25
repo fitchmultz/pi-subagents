@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";

@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 /** Single-agent contracts through the public executor and detached owner. */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";

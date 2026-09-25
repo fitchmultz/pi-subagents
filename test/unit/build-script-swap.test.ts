@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";

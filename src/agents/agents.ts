@@ -170,8 +170,11 @@ function hasProjectPiSubagentResource(dir: string): boolean {
 function findNearestProjectRoot(cwd: string): string | null {
 	let currentDir = cwd;
 	const homeDir = path.resolve(os.homedir());
+	const startedAtHome = path.resolve(cwd) === homeDir;
 	while (true) {
 		const resolvedCurrent = path.resolve(currentDir);
+		// Like Pi, ~/.pi is project config only for a home cwd, never for projects below it.
+		if (resolvedCurrent === homeDir && !startedAtHome) return null;
 		const hasProjectPi = hasProjectPiSubagentResource(currentDir);
 		const hasProjectAgents = resolvedCurrent !== homeDir && isDirectory(path.join(currentDir, ".agents"));
 		if (hasProjectPi || hasProjectAgents) return currentDir;

@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import { describe, test, before, after } from "node:test";
 import * as assert from "node:assert";
 import * as fs from "node:fs";
@@ -116,5 +117,33 @@ describe("Path resolution for .agents and ~/.agents", () => {
 		assert.equal(projectResult.agents.some((a) => a.name === "home-agent"), false);
 		const userResult = discoverAgents(nestedCwd, "user");
 		assert.ok(userResult.agents.find((a) => a.name === "home-agent"));
+	});
+
+	test("should read ~/.pi agents and chains as project resources only when cwd is home", () => {
+		const nestedCwd = path.join(fakeHomeDir, "repo", "subdir");
+		const homePiDir = path.join(fakeHomeDir, ".pi");
+		fs.mkdirSync(nestedCwd, { recursive: true });
+		fs.mkdirSync(path.join(homePiDir, "agents"), { recursive: true });
+		fs.mkdirSync(path.join(homePiDir, "chains"), { recursive: true });
+		fs.writeFileSync(
+			path.join(homePiDir, "agents", "home-pi-agent.md"),
+			"---\nname: home-pi-agent\ndescription: Home Pi agent\n---\nHome content"
+		);
+		fs.writeFileSync(
+			path.join(homePiDir, "chains", "home-pi-chain.chain.md"),
+			"---\nname: home-pi-chain\ndescription: Home Pi chain\n---\n\n## worker\n\nDo the work"
+		);
+		try {
+			const nested = discoverAgentsAll(nestedCwd, {}, "project");
+			assert.equal(nested.project.some((a) => a.name === "home-pi-agent"), false);
+			assert.equal(nested.chains.some((c) => c.name === "home-pi-chain"), false);
+			assert.equal(nested.projectDir, null);
+
+			const atHome = discoverAgentsAll(fakeHomeDir, {}, "project");
+			assert.ok(atHome.project.some((a) => a.name === "home-pi-agent"));
+			assert.ok(atHome.chains.some((c) => c.name === "home-pi-chain"));
+		} finally {
+			fs.rmSync(homePiDir, { recursive: true, force: true });
+		}
 	});
 });

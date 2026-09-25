@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 /**
  * Tests for chain template resolution and variable substitution.
  *

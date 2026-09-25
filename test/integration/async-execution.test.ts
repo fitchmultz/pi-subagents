@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 /**
  * Integration tests for async (background) agent execution.
  *

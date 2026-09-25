@@ -6,6 +6,7 @@
 - Start delegation-enabled children with compact `delegate`, `agent_runs`, and `load_subagent` tools. Full advanced workflows load on demand, explicit `tools: subagent` profiles stay eager, and `compactChildTools: false` restores the prior child surface. Nested execution defaults, permissions, durable ownership, and native result accounting are preserved.
 
 ### Fixed
+- Stop treating `~/.pi` agents, chains and settings as project resources for directories below home. Like Pi, they apply only when the cwd is home itself; stray files there previously replaced built-in agents such as `delegate` in every project without its own `.pi`.
 - Reserve Intercom's reply waiter before sending concurrent asks, so a rejected contender neither sends its question nor cancels the active wait.
 - Include the current run ID and predecessor in final continuation and answer results, including recovered native waits.
 - Recheck idle attention at delivery boundaries and omit notices for finished children from model context, preserving raw history, unresolved questions, and completion-guard findings.

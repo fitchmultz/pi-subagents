@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { IntercomTopics } from "../../src/pi-intercom/topics.ts";
