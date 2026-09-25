@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import * as fs from "node:fs";

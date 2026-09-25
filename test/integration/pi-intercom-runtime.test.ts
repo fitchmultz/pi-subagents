@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

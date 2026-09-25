@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { getPiSpawnCommand } from "../../src/runs/shared/pi-spawn.ts";

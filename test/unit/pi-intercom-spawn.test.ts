@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";

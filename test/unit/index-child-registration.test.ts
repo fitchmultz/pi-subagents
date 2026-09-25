@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import * as os from "node:os";

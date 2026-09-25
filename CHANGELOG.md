@@ -7,6 +7,7 @@
 - Stop writing streaming `message_update` deltas and cumulative `tool_execution_update` progress to durable `events.jsonl` run records. They were most of the record volume, and final `message_end` and `tool_execution_end` events still record the same content. In-process event consumers still receive every event.
 
 ### Fixed
+- Stop treating `~/.pi` agents, chains and settings as project resources for directories below home. Like Pi, they apply only when the cwd is home itself; stray files there previously replaced built-in agents such as `delegate` in every project without its own `.pi`.
 - Reserve Intercom's reply waiter before sending concurrent asks, so a rejected contender neither sends its question nor cancels the active wait.
 - Include the current run ID and predecessor in final continuation and answer results, including recovered native waits.
 - Recheck idle attention at delivery boundaries and omit notices for finished children from model context, preserving raw history, unresolved questions, and completion-guard findings.

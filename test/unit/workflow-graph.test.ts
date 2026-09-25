@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildWorkflowGraphSnapshot } from "../../src/runs/shared/workflow-graph.ts";

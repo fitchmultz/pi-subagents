@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import * as fs from "node:fs";

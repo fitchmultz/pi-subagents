@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ReplyTracker } from "../../src/pi-intercom/reply-tracker.ts";

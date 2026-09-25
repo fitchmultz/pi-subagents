@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";

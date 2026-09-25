@@ -1,3 +1,4 @@
+import "../support/isolated-home.ts";
 /** Parallel execution through the public executor. */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
