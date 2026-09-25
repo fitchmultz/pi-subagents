@@ -2722,4 +2722,49 @@ describe("async execution utilities", () => {
 		assert.deepEqual(status.steps[0].recentTools.map((tool: { tool: string; args: string }) => ({ tool: tool.tool, args: tool.args })), [{ tool: "bash", args: "ls" }]);
 		assert.deepEqual(status.steps[0].recentOutput, ["file-a", "file-b", "Done streaming"]);
 	});
+
+	it("background runs keep final child events but not streaming deltas in events.jsonl", async () => {
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.toolStart("bash", { command: "ls" })] },
+				{ jsonl: [{ type: "tool_execution_update", toolName: "bash", partialResult: { content: [{ type: "text", text: "file-a" }] } }] },
+				{ jsonl: [events.toolEnd("bash"), events.toolResult("bash", "file-a\nfile-b")] },
+				{ jsonl: [{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Done" } }] },
+				{ jsonl: [events.assistantMessage("Done streaming")] },
+			],
+		});
+
+		const id = `itest-ae-${process.pid}-transient-${Date.now().toString(36)}`;
+		const eventsPath = path.join(getRunMetadataDir(id), "events.jsonl");
+		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
+
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Stream progress",
+			agentConfig: makeAgent("worker"),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			shareEnabled: false,
+			sessionRoot: path.join(tempDir, "sessions"),
+			maxSubagentDepth: 2,
+		});
+
+		const doneDeadline = Date.now() + 10_000;
+		while (!fs.existsSync(resultPath)) {
+			if (Date.now() > doneDeadline) {
+				assert.fail(`Timed out waiting for async result file: ${resultPath}`);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+
+		assert.equal(JSON.parse(fs.readFileSync(resultPath, "utf-8")).results[0].output, "Done streaming");
+		const childTypes = fs.readFileSync(eventsPath, "utf-8").trim().split("\n")
+			.map((line) => JSON.parse(line) as { type?: string; subagentSource?: string })
+			.filter((event) => event.subagentSource === "child")
+			.map((event) => event.type);
+		assert.ok(childTypes.includes("tool_execution_start"));
+		assert.ok(childTypes.includes("tool_execution_end"));
+		assert.ok(childTypes.includes("message_end"));
+		assert.equal(childTypes.includes("tool_execution_update"), false);
+		assert.equal(childTypes.includes("message_update"), false);
+	});
 });

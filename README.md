@@ -1309,7 +1309,7 @@ ${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions/subagent-runs/<run-id>/
   subagent-log-<run-id>.md
 ```
 
-`status.json` powers the Agents view and run inspection. Reloading or resuming the same saved parent restores its active runs from durable records. `events.jsonl` contains owner and child JSON events annotated with run and step metadata; `output-<n>.log` is a live readable tail. Results retain per-child outcomes, acceptance evidence, fallback attempts, output references, and worktree patch paths, including completed siblings when a workflow fails or pauses. Nested summaries reference compact sidecar records rather than copying recursive status snapshots.
+`status.json` powers the Agents view and run inspection. Reloading or resuming the same saved parent restores its active runs from durable records. `events.jsonl` contains owner and child JSON events annotated with run and step metadata, except streaming `message_update` deltas and cumulative `tool_execution_update` progress, whose final content `message_end` and `tool_execution_end` record; `output-<n>.log` is a live readable tail. Results retain per-child outcomes, acceptance evidence, fallback attempts, output references, and worktree patch paths, including completed siblings when a workflow fails or pauses. Nested summaries reference compact sidecar records rather than copying recursive status snapshots.
 
 Temporary cleanup does not remove these canonical records. Legacy temporary run directories and `foreground.json` snapshots remain readable. Active old owners drain on their original runtime; recovery does not replay their side effects, guess missing launch settings, or delete native session history. Missing or ambiguous evidence remains unavailable.
 

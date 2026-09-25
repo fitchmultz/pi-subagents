@@ -217,6 +217,10 @@ type AsyncParallelStepResult = RunSingleStepResult & {
 	skipped?: boolean;
 };
 
+// Durable run records have no age cleanup. Streaming deltas and cumulative tool
+// progress repeat what message_end and tool_execution_end already record.
+const TRANSIENT_CHILD_EVENT_TYPES = new Set(["message_update", "tool_execution_update"]);
+
 async function runPiStreaming(
 	options: Parameters<typeof runChildAttempt>[0],
 	outputFile: string,
@@ -237,7 +241,10 @@ async function runPiStreaming(
 			onOutput: (text) => outputStream.write(text),
 			onStderr: (text) => outputStream.write(text),
 			onRawLine: (stream, line) => appendEvent({ type: `subagent.child.${stream}`, line }),
-			onEvent: (event, result, mutation) => { appendEvent(event); options.onEvent?.(event, result, mutation); },
+			onEvent: (event, result, mutation) => {
+				if (!TRANSIENT_CHILD_EVENT_TYPES.has(event.type ?? "")) appendEvent(event);
+				options.onEvent?.(event, result, mutation);
+			},
 		});
 	} finally {
 		await new Promise<void>((resolve) => outputStream.end(resolve));
