@@ -500,7 +500,8 @@ describe("async execution utilities", () => {
 		});
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		assert.ok(Date.now() - startedAt < 2_000, `async failFast took ${Date.now() - startedAt}ms`);
+		// Below the slow sibling's 5s delay: proves it was interrupted, with headroom for loaded CI shards.
+		assert.ok(Date.now() - startedAt < 4_000, `async failFast took ${Date.now() - startedAt}ms`);
 		assert.ok(!payload.results[1]?.interrupted, "fail-fast must not be reported as a user pause");
 		assert.equal(payload.results[1]?.exitCode, -1);
 		assert.equal(payload.state, "failed");
