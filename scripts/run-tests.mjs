@@ -4,11 +4,11 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 
-// A full local integration run takes about six minutes on a loaded laptop; match compat-native's full-suite budget.
-const DEFAULT_TIMEOUT_MS = 900_000;
+// Units must report before compat-native's 330s kill; a full local integration run takes about six minutes on a loaded laptop.
+const DEFAULT_TIMEOUT_MS = { unit: 300_000, integration: 900_000 };
 
 function usage() {
-  console.log(`Usage: node scripts/run-tests.mjs [unit|integration|all] [--timeout-ms <ms>]\n\nRuns the local TypeScript test suites through Node's test runner.\n\nModes:\n  unit         Run test/unit/*.test.ts\n  integration  Run test/integration/*.test.ts\n  all          Run unit, then integration\n\nOptions:\n  --timeout-ms <ms>  Per-suite watchdog timeout in milliseconds\n  -h, --help         Show this help\n\nEnvironment:\n  PI_TEST_TIMEOUT_MS  Default per-suite timeout when --timeout-ms is omitted\n\nExit codes:\n  0  selected suite(s) passed\n  1  tests failed, timed out, or could not start\n  2  invalid arguments`);
+  console.log(`Usage: node scripts/run-tests.mjs [unit|integration|all] [--timeout-ms <ms>]\n\nRuns the local TypeScript test suites through Node's test runner.\n\nModes:\n  unit         Run test/unit/*.test.ts\n  integration  Run test/integration/*.test.ts\n  all          Run unit, then integration\n\nOptions:\n  --timeout-ms <ms>  Per-suite watchdog timeout in milliseconds\n  -h, --help         Show this help\n\nEnvironment:\n  PI_TEST_TIMEOUT_MS  Per-suite timeout when --timeout-ms is omitted (default: unit 300000, integration 900000)\n\nExit codes:\n  0  selected suite(s) passed\n  1  tests failed, timed out, or could not start\n  2  invalid arguments`);
 }
 
 function parsePositiveInteger(value, source) {
@@ -28,7 +28,7 @@ function parseArgs(argv) {
   let mode = "unit";
   let timeoutMs = process.env.PI_TEST_TIMEOUT_MS
     ? parsePositiveInteger(process.env.PI_TEST_TIMEOUT_MS, "PI_TEST_TIMEOUT_MS")
-    : DEFAULT_TIMEOUT_MS;
+    : undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -130,8 +130,8 @@ function runNodeTest(label, imports, files, timeoutMs, concurrency) {
 }
 
 const { mode, timeoutMs } = parseArgs(process.argv.slice(2));
-const unit = () => runNodeTest("unit tests", [], testFiles("test/unit"), timeoutMs);
-const integration = () => runNodeTest("integration tests", [], testFiles("test/integration"), timeoutMs, Math.min(4, Math.max(1, availableParallelism() - 1)));
+const unit = () => runNodeTest("unit tests", [], testFiles("test/unit"), timeoutMs ?? DEFAULT_TIMEOUT_MS.unit);
+const integration = () => runNodeTest("integration tests", [], testFiles("test/integration"), timeoutMs ?? DEFAULT_TIMEOUT_MS.integration, Math.min(4, Math.max(1, availableParallelism() - 1)));
 
 let status;
 switch (mode) {
