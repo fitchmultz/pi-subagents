@@ -40,7 +40,7 @@ try {
   checks.push(["--test", `--test-concurrency=${Math.min(4, Math.max(1, availableParallelism() - 1))}`, ...(shard ? [`--test-shard=${shard}`] : []), ...files]);
   console.log(`[compat-native] ${core ? "core fork contracts" : shard ? `integration shard ${shard}` : fork ? "full integration suite" : "portable host contracts"}`);
   for (const args of checks) {
-    const result = spawnSync(process.execPath, args, { env, stdio: "inherit", timeout: fork && !shard && !core ? 930_000 : 330_000 });
+    const result = spawnSync(process.execPath, args, { env, stdio: "inherit", timeout: fork && !core ? 930_000 : 330_000 });
     if (result.error) throw result.error;
     if (result.status !== 0) {
       console.error(`[compat-native] ${args.join(" ")} exited ${result.status ?? "without status"}${result.signal ? ` (${result.signal})` : ""}`);

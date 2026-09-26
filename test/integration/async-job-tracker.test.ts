@@ -733,7 +733,10 @@ describe("async job tracker", () => {
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-2", asyncDir: runDir, agent: "worker" });
 
-			await new Promise((resolve) => setTimeout(resolve, 80));
+			// Loaded CI runners can miss a fixed 80ms window for a 10ms poll plus 5ms retention.
+			for (const deadline = Date.now() + 2000; state.asyncJobs.size > 0 && Date.now() < deadline;) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
 
 			assert.equal(state.asyncJobs.size, 0);
 			assert.ok(ui.renderRequests > 0, "expected polling cleanup to request a rerender");
