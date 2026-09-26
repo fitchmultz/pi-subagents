@@ -51,30 +51,13 @@ describe("builtin agent overrides", () => {
 			],
 		);
 		const astra = { model: "openai-codex/gpt-6-astra", fallbackModels: ["openai/gpt-6-astra"], thinking: "medium" };
-		const expectedRoutes = {
-			"context-builder": astra,
-			debugger: astra,
-			fixer: astra,
-			oracle: astra,
-			planner: astra,
-			researcher: astra,
-			reviewer: astra,
-			"reviewer-claude": { model: "anthropic/claude-opus-5-5", fallbackModels: ["anthropic/claude-fable-5-1", "cloudflare-ai-gateway/claude-opus-5-5", "cloudflare-ai-gateway/claude-fable-5-1", "cloudflare-ai-gateway/claude-opus-5"], thinking: "high" },
-			"reviewer-gpt": astra,
-			"reviewer-ponytail": astra,
-			"reviewer-security": astra,
-			scout: astra,
-			"ui-designer": astra,
-			watcher: astra,
-			worker: astra,
-			writer: astra,
-		};
-		for (const [name, expected] of Object.entries(expectedRoutes)) {
-			const agent = builtins.find((candidate) => candidate.name === name);
+		const claude = { model: "anthropic/claude-opus-5-5", fallbackModels: ["anthropic/claude-fable-5-1", "cloudflare-ai-gateway/claude-opus-5-5", "cloudflare-ai-gateway/claude-fable-5-1", "cloudflare-ai-gateway/claude-opus-5"], thinking: "high" };
+		for (const agent of builtins) {
+			if (agent.name === "delegate") continue;
 			assert.deepEqual(
-				{ model: agent?.model, fallbackModels: agent?.fallbackModels, thinking: agent?.thinking },
-				expected,
-				`${name} route drift`,
+				{ model: agent.model, fallbackModels: agent.fallbackModels, thinking: agent.thinking },
+				agent.name === "reviewer-claude" ? claude : astra,
+				`${agent.name} route drift`,
 			);
 		}
 		const watcher = builtins.find((agent) => agent.name === "watcher");
