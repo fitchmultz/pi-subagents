@@ -51,7 +51,7 @@ describe("builtin agent overrides", () => {
 			],
 		);
 		const astra = { model: "openai-codex/gpt-6-astra", fallbackModels: ["openai/gpt-6-astra"], thinking: "medium" };
-		const claude = { model: "anthropic/claude-opus-5-5", fallbackModels: ["anthropic/claude-fable-5-1", "cloudflare-ai-gateway/claude-opus-5-5", "cloudflare-ai-gateway/claude-fable-5-1", "cloudflare-ai-gateway/claude-opus-5"], thinking: "high" };
+		const claude = { model: "anthropic/claude-opus-5-5", fallbackModels: ["anthropic/claude-fable-5-1", "cloudflare-ai-gateway/claude-opus-5"], thinking: "high" };
 		for (const agent of builtins) {
 			if (agent.name === "delegate") continue;
 			assert.deepEqual(
