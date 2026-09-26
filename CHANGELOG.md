@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.41.0] - 2026-09-25
 
 ### Changed
 - Sync bundled role routing with the maintainer's active profiles. Every role except `reviewer-claude` and `delegate` now prefers GPT-6 Astra through a ChatGPT/Codex subscription (`openai-codex`) at medium thinking, falling back to the OpenAI API route, so either account works. `reviewer-claude` uses Claude Opus 5.5 at high thinking, falling back to Fable 5.1, the matching Cloudflare AI Gateway routes, and finally gateway Opus 5, the newest Claude that official Pi's gateway catalog names with a working id. Routes that no longer ship (Grok 4.6, GPT-5.6 Sol, Kimi K3) are removed from the defaults.
