@@ -328,7 +328,7 @@ The bundled Fitch role profiles pin explicit primary and fallback routes. `deleg
 | Primary route | Fallbacks | Thinking | Agents |
 |---------------|-----------|----------|--------|
 | `openai-codex/gpt-6-astra` | `openai/gpt-6-astra` | medium | every role except `reviewer-claude` and `delegate` |
-| `anthropic/claude-opus-5-5` | `anthropic/claude-fable-5-1`, then the same two models through `cloudflare-ai-gateway` | high | `reviewer-claude` |
+| `anthropic/claude-opus-5-5` | `anthropic/claude-fable-5-1`, the same two models through `cloudflare-ai-gateway`, then `cloudflare-ai-gateway/claude-opus-5` | high | `reviewer-claude` |
 | Current Pi model | — | inherited | `delegate` |
 
 Roles prefer a ChatGPT/Codex subscription (`openai-codex`) and fall back to OpenAI API-key access (`openai`), so either account works. Models must be present in Pi's catalog and available to the selected provider account. Refresh the catalog with `pi update --models` or add custom entries in `~/.pi/agent/models.json`. Override a role when its routes are unavailable; you do not need to copy the bundled agent file.

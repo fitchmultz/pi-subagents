@@ -59,7 +59,7 @@ describe("builtin agent overrides", () => {
 			planner: astra,
 			researcher: astra,
 			reviewer: astra,
-			"reviewer-claude": { model: "anthropic/claude-opus-5-5", fallbackModels: ["anthropic/claude-fable-5-1", "cloudflare-ai-gateway/claude-opus-5-5", "cloudflare-ai-gateway/claude-fable-5-1"], thinking: "high" },
+			"reviewer-claude": { model: "anthropic/claude-opus-5-5", fallbackModels: ["anthropic/claude-fable-5-1", "cloudflare-ai-gateway/claude-opus-5-5", "cloudflare-ai-gateway/claude-fable-5-1", "cloudflare-ai-gateway/claude-opus-5"], thinking: "high" },
 			"reviewer-gpt": astra,
 			"reviewer-ponytail": astra,
 			"reviewer-security": astra,
