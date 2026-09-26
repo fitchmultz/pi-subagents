@@ -4,7 +4,8 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 
-const DEFAULT_TIMEOUT_MS = 300_000;
+// A full local integration run takes about six minutes on a loaded laptop; match compat-native's full-suite budget.
+const DEFAULT_TIMEOUT_MS = 900_000;
 
 function usage() {
   console.log(`Usage: node scripts/run-tests.mjs [unit|integration|all] [--timeout-ms <ms>]\n\nRuns the local TypeScript test suites through Node's test runner.\n\nModes:\n  unit         Run test/unit/*.test.ts\n  integration  Run test/integration/*.test.ts\n  all          Run unit, then integration\n\nOptions:\n  --timeout-ms <ms>  Per-suite watchdog timeout in milliseconds\n  -h, --help         Show this help\n\nEnvironment:\n  PI_TEST_TIMEOUT_MS  Default per-suite timeout when --timeout-ms is omitted\n\nExit codes:\n  0  selected suite(s) passed\n  1  tests failed, timed out, or could not start\n  2  invalid arguments`);
@@ -102,7 +103,12 @@ function runNodeTest(label, imports, files, timeoutMs, concurrency) {
       killSignal: "SIGTERM",
     });
   } finally {
-    rmSync(tempRoot, { recursive: true, force: true });
+    // Children of a killed runner can still be writing here; cleanup must not hide the timeout report.
+    try {
+      rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch (error) {
+      console.error(`Could not remove ${tempRoot}: ${error.message}`);
+    }
   }
   const elapsedMs = Date.now() - startedAt;
   if (result.error) {

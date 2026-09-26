@@ -121,12 +121,12 @@ That also verifies real parallel, chain, file output, and acceptance flows. It c
 
 ## Local test watchdog
 
-`npm test`, `npm run test:unit`, `npm run test:integration`, and `npm run test:all` run through `scripts/run-tests.mjs`, which applies a per-suite local watchdog so hung child-process or worktree tests fail with the command context instead of hanging forever. The default is 300000ms. Override it when debugging slow local runs:
+`npm test`, `npm run test:unit`, `npm run test:integration`, and `npm run test:all` run through `scripts/run-tests.mjs`, which applies a per-suite local watchdog so hung child-process or worktree tests fail with the command context instead of hanging forever. The default is 900000ms. Override it when debugging slow local runs:
 
 ```bash
-PI_TEST_TIMEOUT_MS=600000 npm run test:integration
+PI_TEST_TIMEOUT_MS=1800000 npm run test:integration
 # or
-node scripts/run-tests.mjs integration --timeout-ms 600000
+node scripts/run-tests.mjs integration --timeout-ms 1800000
 ```
 
 ## Try this first
