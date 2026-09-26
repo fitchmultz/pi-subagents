@@ -1,4 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>fitchmultz/.github:pi-extensions"]
+  "extends": ["github>fitchmultz/.github:pi-extensions"],
+  "packageRules": [
+    {
+      "description": "Node 24 is the runtime floor; newer @types/node majors describe unavailable APIs.",
+      "matchPackageNames": ["@types/node"],
+      "allowedVersions": "24.x"
+    }
+  ]
 }

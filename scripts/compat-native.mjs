@@ -15,8 +15,8 @@ const env = { ...process.env, HOME: root, USERPROFILE: root, PI_CODING_AGENT_DIR
   PI_INTERCOM_TEST_SDK: hostRoot, PI_OWNERSHIP_TEST_PACKAGE_ROOT: hostRoot, PI_CONTEXT_TEST_PACKAGE_ROOT: hostRoot };
 for (const key of Object.keys(env)) if (key.startsWith("PI_SUBAGENT_")) delete env[key];
 env.PI_SUBAGENT_TEMP_ROOT = join(root, "pi-subagents-runs");
-// These are the three fork lanes in the shared compatibility matrix.
-const shard = ci && fork && !core ? { "linux:22": "1/3", "linux:24": "2/3", "darwin:24": "3/3" }[`${process.platform}:${process.versions.node.split(".")[0]}`] : undefined;
+// These are the two fork lanes in the shared compatibility matrix.
+const shard = ci && fork && !core ? { "linux:24": "1/2", "darwin:24": "2/2" }[`${process.platform}:${process.versions.node.split(".")[0]}`] : undefined;
 if (ci && fork && !core && !shard) throw new Error("No integration shard assigned to this fork CI lane");
 if (fork) {
   Object.assign(env, { PI_CHECKPOINT_TEST_SDK: hostRoot, PI_CHECKPOINT_TEST_REQUIRED: "1" });
@@ -34,7 +34,7 @@ try {
   const files = core ? coreFiles.map(name => `test/integration/${name}.test.ts`) : fork
     ? readdirSync("test/integration").filter(name => name.endsWith(".test.ts")).sort().map(name => `test/integration/${name}`)
     : contracts.map(name => `test/integration/${name}.test.ts`);
-  const checks = core || !ci || shard === "2/3"
+  const checks = core || !ci || shard === "1/2"
     ? [["scripts/run-tests.mjs", "unit"], ["scripts/package-smoke.mjs"], ["scripts/local-install-smoke.mjs"]]
     : [["scripts/native-package-smoke.mjs"]];
   checks.push(["--test", `--test-concurrency=${Math.min(4, Math.max(1, availableParallelism() - 1))}`, ...(shard ? [`--test-shard=${shard}`] : []), ...files]);
