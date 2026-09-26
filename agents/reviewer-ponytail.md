@@ -1,9 +1,9 @@
 ---
 name: reviewer-ponytail
 description: Over-engineering and slop review for diffs, gated on preserving intended behavior
-model: openai/gpt-6-astra
-fallbackModels: cloudflare-ai-gateway/claude-fable-5-1, anthropic/claude-opus-5, openai-codex/gpt-6-astra, openai/gpt-6-astra
-thinking: xhigh
+model: openai-codex/gpt-6-astra
+fallbackModels: openai/gpt-6-astra
+thinking: medium
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true

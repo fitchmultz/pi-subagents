@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- Sync bundled role routing with the maintainer's active profiles. Every role except `reviewer-claude` and `delegate` now prefers GPT-6 Astra through a ChatGPT/Codex subscription (`openai-codex`) at medium thinking, falling back to the OpenAI API route, so either account works. `reviewer-claude` uses Claude Opus 5.5 at high thinking, falling back to Fable 5.1 and then the matching Cloudflare AI Gateway routes. Routes that no longer ship (Grok 4.6, GPT-5.6 Sol, Kimi K3) are removed from the defaults.
 - Start delegation-enabled children with compact `delegate`, `agent_runs`, and `load_subagent` tools. Full advanced workflows load on demand, explicit `tools: subagent` profiles stay eager, and `compactChildTools: false` restores the prior child surface. Nested execution defaults, permissions, durable ownership, and native result accounting are preserved.
 - Stop writing streaming `message_update` deltas and cumulative `tool_execution_update` progress to durable `events.jsonl` run records. They were most of the record volume, and final `message_end` and `tool_execution_end` events still record the same content. In-process event consumers still receive every event.
 

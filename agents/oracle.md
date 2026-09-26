@@ -3,7 +3,7 @@ name: oracle
 description: High-context decision-consistency oracle that protects inherited state and prevents drift
 model: openai-codex/gpt-6-astra
 fallbackModels: openai/gpt-6-astra
-thinking: xhigh
+thinking: medium
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
