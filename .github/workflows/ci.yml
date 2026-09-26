@@ -21,7 +21,7 @@ env:
 jobs:
   official:
     name: Official Pi / Linux / Node 24
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,7 +63,7 @@ jobs:
       fail-fast: false
       # PRs run Linux core and macOS smoke; main pushes run Linux smoke only.
       matrix:
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-24.04","suite":"core"},{"os":"macos-latest","suite":"smoke"}]' || '[{"os":"ubuntu-24.04","suite":"smoke"}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-26.04","suite":"core"},{"os":"macos-latest","suite":"smoke"}]' || '[{"os":"ubuntu-26.04","suite":"smoke"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 9
     steps:
