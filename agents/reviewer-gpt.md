@@ -1,9 +1,9 @@
 ---
 name: reviewer-gpt
 description: Maintainability and correctness reviewer for completed changes
-model: openai/gpt-6-astra
+model: openai-codex/gpt-6-astra
 fallbackModels: openai/gpt-6-astra
-thinking: xhigh
+thinking: medium
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true

@@ -325,17 +325,13 @@ Use the narrowest role that fits the task. Keep implementation to one writer and
 
 The bundled Fitch role profiles pin explicit primary and fallback routes. `delegate` inherits the current Pi model.
 
-| Primary route | Agents |
-|---------------|--------|
-| `openai-codex/gpt-6-astra` | `context-builder`, `oracle`, `planner`, `researcher`, `worker` |
-| `openai/gpt-6-astra` | `debugger`, `fixer`, `reviewer`, `reviewer-gpt`, `reviewer-ponytail`, `ui-designer` |
-| `anthropic/claude-fable-5-1` | `reviewer-claude` |
-| `cloudflare-ai-gateway/claude-fable-5-1` | `writer` |
-| `xai/grok-4.6` | `reviewer-security` |
-| `cloudflare-ai-gateway/gpt-5.6-sol` | `scout`, `watcher` |
-| Current Pi model | `delegate` |
+| Primary route | Fallbacks | Thinking | Agents |
+|---------------|-----------|----------|--------|
+| `openai-codex/gpt-6-astra` | `openai/gpt-6-astra` | medium | every role except `reviewer-claude` and `delegate` |
+| `anthropic/claude-opus-5-5` | `anthropic/claude-fable-5-1`, then `cloudflare-ai-gateway/claude-opus-5` | high | `reviewer-claude` |
+| Current Pi model | — | inherited | `delegate` |
 
-Each role keeps its own ordered fallback list and thinking level. Models must be present in Pi's catalog and available to the selected provider account; API-key access through `openai` does not imply ChatGPT access through `openai-codex`. Refresh the catalog with `pi update --models` or add custom entries in `~/.pi/agent/models.json`. Override a role when its routes are unavailable; you do not need to copy the bundled agent file.
+Roles prefer a ChatGPT/Codex subscription (`openai-codex`) and fall back to OpenAI API-key access (`openai`), so either account works. Models must be present in Pi's catalog and available to the selected provider account. Refresh the catalog with `pi update --models` or add custom entries in `~/.pi/agent/models.json`. Override a role when its routes are unavailable; you do not need to copy the bundled agent file.
 
 For one run, put the override in the command:
 

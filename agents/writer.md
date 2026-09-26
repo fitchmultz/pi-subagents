@@ -1,9 +1,9 @@
 ---
 name: writer
 description: Human-facing writing specialist for documentation, announcements, guides, and polished copy
-model: cloudflare-ai-gateway/claude-fable-5-1
-fallbackModels: anthropic/claude-fable-5-1, cloudflare-ai-gateway/claude-opus-5
-thinking: high
+model: openai-codex/gpt-6-astra
+fallbackModels: openai/gpt-6-astra
+thinking: medium
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true

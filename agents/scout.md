@@ -1,9 +1,9 @@
 ---
 name: scout
 description: Fast codebase recon that returns compressed context for handoff
-model: cloudflare-ai-gateway/gpt-5.6-sol
-fallbackModels: openai/gpt-5.6-sol, openai-codex/gpt-5.6-sol
-thinking: high
+model: openai-codex/gpt-6-astra
+fallbackModels: openai/gpt-6-astra
+thinking: medium
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true

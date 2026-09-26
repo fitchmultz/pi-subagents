@@ -3,7 +3,7 @@ name: researcher
 description: Evidence-driven technical researcher for consequential decisions
 model: openai-codex/gpt-6-astra
 fallbackModels: openai/gpt-6-astra
-thinking: xhigh
+thinking: medium
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
