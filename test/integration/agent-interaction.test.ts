@@ -478,8 +478,9 @@ test("Agents model details preserve a provider-matching model namespace in assis
 test("Agents model details retain an empty-content error model after fallback", async (t) => {
 	const f = fixture(t), manager = f.childSessions[0];
 	const catalog = JSON.parse(fs.readFileSync(new URL("./providers/data/openrouter.json", import.meta.resolve("@earendil-works/pi-ai")), "utf8"));
-	const failed = catalog["anthropic-messages"]["anthropic/claude-3-haiku"], fallback = catalog["openai-completions"]["openrouter/free"];
-	assert.equal(failed.provider, "openrouter"); assert.equal(failed.id, "anthropic/claude-3-haiku");
+	// The fork regenerates this catalog from live provider data, so a hardcoded model can disappear.
+	const [failed] = Object.values<{ provider: string; id: string; api: string }>(catalog["anthropic-messages"]), fallback = catalog["openai-completions"]["openrouter/free"];
+	assert.equal(failed.provider, "openrouter"); assert.notEqual(failed.id, fallback.id);
 	manager.appendMessage({ role: "assistant", content: [], provider: failed.provider, model: failed.id, api: failed.api, stopReason: "error", errorMessage: "quota exceeded", usage, timestamp: Date.now() });
 	manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fallback completed" }], provider: fallback.provider, model: fallback.id, api: fallback.api, stopReason: "stop", usage, timestamp: Date.now() });
 	const saved = fs.readFileSync(manager.getSessionFile(), "utf8");
@@ -489,7 +490,7 @@ test("Agents model details retain an empty-content error model after fallback", 
 	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160); view.handleInput("\x1b[A"); view.render(160); view.handleInput("\r");
 	const detail = readDetails(view, 160);
 	assert.match(detail, /Agenterror[\s\S]*quotaexceeded/);
-	assert.match(detail, /Messagemodel:openrouter\/anthropic\/claude-3-haiku/, "the empty error still identifies the failed message's own provider/model");
+	assert.ok(detail.includes(`Messagemodel:openrouter/${failed.id}`), "the empty error still identifies the failed message's own provider/model");
 	view.handleInput("\x1b"); view.handleInput("\x1b"); await opening;
 	assert.equal(fs.readFileSync(manager.getSessionFile(), "utf8"), saved);
 	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
