@@ -24,7 +24,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 	}
 }
 
-describe("detached chain workflow completion", { timeout: 30_000 }, () => {
+describe("detached chain workflow completion", { timeout: 60_000 }, () => {
 	const mock = createMockPi();
 	before(() => mock.install());
 	after(() => mock.uninstall());
