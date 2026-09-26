@@ -1589,7 +1589,6 @@ describe("async execution utilities", () => {
 		}));
 		mockPi.onCall({ output: "Finished editing", waitForFile: gate });
 		const runner = spawn(process.execPath, [
-			"--experimental-strip-types",
 			fileURLToPath(new URL("../../src/runs/background/subagent-runner.ts", import.meta.url)),
 			configPath,
 		], { stdio: ["ignore", "ignore", "pipe"] });

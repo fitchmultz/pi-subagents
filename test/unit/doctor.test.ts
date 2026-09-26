@@ -128,7 +128,7 @@ describe("buildDoctorReport", () => {
 				},
 			});
 
-			assert.match(report, /- async support: available \(Node >=22\.19\)/);
+			assert.match(report, /- async support: available \(Node >=24\)/);
 			assert.match(report, /- async runs: failed .*Error: not a directory:/);
 			assert.match(report, /- results: missing /);
 			assert.match(report, /- agents\/chains: failed — Error: discovery exploded/);

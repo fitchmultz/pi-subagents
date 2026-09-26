@@ -179,7 +179,7 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		"- native queue contract: not verified (version alone does not identify fork patches)",
 		`- loaded pi-subagents build: ${EXTENSION_BUILD.version && EXTENSION_BUILD.sha256 ? `${EXTENSION_BUILD.version} (runtime SHA-256 ${EXTENSION_BUILD.sha256})` : "unknown (unbuilt source)"}`,
 		`- extension module: ${EXTENSION_MODULE}`,
-		"- async support: available (Node >=22.19)",
+		"- async support: available (Node >=24)",
 		...formatSessionLines(input),
 		"",
 		"Filesystem",

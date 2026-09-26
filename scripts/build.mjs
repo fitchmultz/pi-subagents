@@ -3,8 +3,9 @@
  * Purpose: Produce the compiled runtime files that the Pi extension manifest loads.
  * Responsibilities: Run TypeScript emit into a staging directory, then atomically swap it
  * into dist/ so a failed TypeScript emit never destroys a previously working dist.
- * Usage: `npm run build`; also invoked by scripts/prepare.mjs during install lifecycles.
- * Invariants/Assumptions: `node_modules` provides `typescript`; deleting `dist/` is safe generated output.
+ * Usage: `npm run build`; also invoked by scripts/prepare.mjs during install lifecycles, which may pass
+ * the path of a throwaway compiler's `bin/tsc` as the first argument.
+ * Invariants/Assumptions: `node_modules` (or that argument) provides `typescript`; deleting `dist/` is safe generated output.
  */
 
 import { execFile as execFileCallback } from "node:child_process";
@@ -21,7 +22,7 @@ const RM_OPTIONS = { force: true, maxRetries: 5, recursive: true, retryDelay: 10
 const RENAME_RETRY_LIMIT = 50;
 const RENAME_RETRY_MS = 50;
 // Use the current Node binary without a shell, including install paths with spaces.
-const tscPath = join(process.cwd(), "node_modules", "typescript", "bin", "tsc");
+const tscPath = process.argv[2] ?? join(process.cwd(), "node_modules", "typescript", "bin", "tsc");
 
 async function discardStaging(path) {
 	try {

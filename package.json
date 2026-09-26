@@ -1,6 +1,6 @@
 {
   "name": "pi-subagents",
-  "version": "0.41.0",
+  "version": "0.42.0",
   "description": "Pi extension for subagent orchestration and local session coordination",
   "license": "MIT",
   "type": "module",
@@ -43,7 +43,7 @@
     "test:unit": "node scripts/run-tests.mjs unit",
     "test:integration": "node scripts/run-tests.mjs integration",
     "test:all": "node scripts/run-tests.mjs all",
-    "check:compat": "node scripts/compat-host.mjs && npm run build && node scripts/compat-native.mjs",
+    "check:compat": "node scripts/compat-host.mjs && npm run typecheck && npm run build && node scripts/compat-native.mjs",
     "typecheck": "tsc --noEmit",
     "smoke:package": "node scripts/package-smoke.mjs",
     "smoke:install": "node scripts/local-install-smoke.mjs",
@@ -80,23 +80,18 @@
     }
   },
   "dependencies": {
-    "typebox": "^1.1.39"
+    "typebox": "^1.3.34"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "0.87.0",
-    "@earendil-works/pi-ai": "0.87.0",
-    "@earendil-works/pi-coding-agent": "0.87.0",
-    "@earendil-works/pi-tui": "0.87.0",
-    "@types/node": "^24.13.2",
-    "typescript": "^6.0.3"
+    "@earendil-works/pi-agent-core": "0.87.1",
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@earendil-works/pi-tui": "0.87.1",
+    "@types/node": "24.19.0",
+    "typescript": "7.0.2"
   },
-  "overrides": {
-    "brace-expansion": "^5.0.6",
-    "ws": "^8.20.1"
-  },
-  "packageManager": "npm@11.16.0",
   "private": true,
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24"
   }
 }

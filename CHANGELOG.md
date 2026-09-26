@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.42.0] - 2026-09-26
+
+### Breaking Changes
+- Require Node 24 or later. CI and the shared compatibility fleet qualify only Node 24.
+
+### Changed
+- Install and update from Git without downloading Pi's development graph: the `prepare` lifecycle now installs only the pinned TypeScript compiler into a temporary directory and emits without typechecking, instead of installing and pruning the full Pi development graph. Emitted `dist/` is byte-identical. Typechecking moved to `npm run typecheck`, `check:compat`, and CI.
+- Build and typecheck with TypeScript 7.0.2 targeting ES2025. `verbatimModuleSyntax` and `erasableSyntaxOnly` now enforce the syntax Node's type stripping runs.
+- Develop and qualify against official Pi 0.87.1 and the `fitchmultz/pi` fork at `06a19597`, with `typebox` 1.3.34 and `@types/node` 24.19.0. Renovate keeps `@types/node` on 24.x.
+- Regenerate the lockfile from scratch with only public npm registry URLs, and drop the obsolete `brace-expansion` and `ws` overrides and the unused `packageManager` pin.
+
 ## [0.41.0] - 2026-09-25
 
 ### Changed

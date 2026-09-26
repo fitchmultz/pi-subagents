@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${PI_LINUX_PI_ARCHIVE:?Set PI_LINUX_PI_ARCHIVE to an absolute path to a credential-free prebuilt Linux Pi .tar.gz (top-level pi/) containing Pi 0.87.0 at afed789dded723566b6ecb1c77a06e8561504f7a (https://github.com/fitchmultz/pi/commit/afed789dded723566b6ecb1c77a06e8561504f7a); the full native suite requires its custom-queue, prompt-admission, and context-window contracts.}"
+: "${PI_LINUX_PI_ARCHIVE:?Set PI_LINUX_PI_ARCHIVE to an absolute path to a credential-free prebuilt Linux Pi .tar.gz (top-level pi/) containing Pi 0.87.1 at 06a195979349ae6da54752b562b5c8b4cfc32f35 (https://github.com/fitchmultz/pi/commit/06a195979349ae6da54752b562b5c8b4cfc32f35); the full native suite requires its custom-queue, prompt-admission, and context-window contracts.}"
 
 # Validate committed HEAD without passing host credentials or mounting the checkout.
 git -C "$(dirname "$0")/.." archive HEAD | docker run --rm --init -i \

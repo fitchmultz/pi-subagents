@@ -55,9 +55,7 @@ test("direct @earendil-works runtime imports are declared for local installs", (
 });
 
 test("detached runtimes install only their production dependency", () => {
-	const dependencies = readPackageJson().dependencies as Record<string, unknown>;
-	assert.equal(dependencies.typebox, "^1.1.39");
-	assert.equal(dependencies.tsx, undefined);
+	assert.deepEqual(Object.keys(readPackageJson().dependencies as Record<string, unknown>), ["typebox"]);
 });
 
 test("Pi development dependencies use one exact baseline with optional wildcard peers", () => {

@@ -4,7 +4,7 @@
 
 ## Installation
 
-`pi-subagents` works with official Pi **0.87.0**, including saved-child continuation in a different directory. No Pi fork is required. Optional native asynchronous results and immediate usage accounting require additional public host capabilities; see [host capabilities and result delivery](#host-capabilities-and-result-delivery). Known Intercom host limitations are listed in the [Intercom guide](docs/intercom.md#limitations).
+`pi-subagents` works with official Pi **0.87.1** on Node 24 or later, including saved-child continuation in a different directory. No Pi fork is required. Optional native asynchronous results and immediate usage accounting require additional public host capabilities; see [host capabilities and result delivery](#host-capabilities-and-result-delivery). Known Intercom host limitations are listed in the [Intercom guide](docs/intercom.md#limitations).
 
 New sessions inherit the child process's working directory. Saved sessions retain their file, identity, header, and history; a requested directory change uses Pi's native SDK cwd override before startup. Same-directory resumes, including symlink and trailing-slash spellings, need no override. Structured-output startup preserves active tools and enables its capture tool. Use an explicit tool policy for restricted child runs; Pi can restore default built-ins when resuming without one.
 
@@ -25,27 +25,27 @@ To restart the bundled broker too, close every Pi session using the same agent d
 To load a local checkout into Pi, build it as a runtime-only package:
 
 ```bash
-npm install --omit=dev   # prepare builds dist/ and removes development dependencies
+npm install --omit=dev   # prepare builds dist/ with a throwaway TypeScript compiler
 pi install /absolute/path/to/pi-subagents
 ```
 
-Local path registration does not run npm for you. Run `npm install --omit=dev` before loading the checkout and again after source edits; the existing prepare lifecycle obtains build dependencies, builds `dist/`, and leaves only runtime dependencies. This also works after a normal development install. A bare `npm run build` is not the runtime rebuild recipe because TypeScript is removed afterward.
+Local path registration does not run npm for you. Run `npm install --omit=dev` before loading the checkout and again after source edits; the prepare lifecycle installs only the pinned TypeScript compiler into a temporary directory, builds `dist/`, and deletes it, leaving only runtime dependencies. This also works after a normal development install. A bare `npm run build` is not the runtime rebuild recipe because TypeScript is removed afterward.
 
 Use the normal development workflow below for editing and validation, then rerun `npm install --omit=dev` before loading that checkout into Pi. Leaving the development Pi packages present can load their UI instead of the running Pi's UI. The runtime-only recipe avoids that mismatch; it does not repair Pi's loader when development packages remain installed.
 
 Supported platforms: **macOS and Linux**. Termux on Android is unverified; Windows is not supported.
 
-Pi core packages remain optional wildcard peers. Development dependencies are pinned to the coherent official Pi 0.87.0 cohort for compilation and package checks.
+Pi core packages remain optional wildcard peers. Development dependencies are pinned to the coherent official Pi 0.87.1 cohort for typechecking and package checks.
 
 ## Local validation
 
-`npm run check:compat` uses the selected host installed in this checkout, never a hidden Pi from PATH. It checks host SDK/manifest-bin identity, builds with TypeScript typechecking, and qualifies both compiled entries with a private Intercom broker through the native SDK and bundled RPC CLI. Official hosts exercise same/different-cwd resume, acceptance, structured output, native result routing/ownership and tool activation. No provider credentials or inference services are used.
+`npm run check:compat` uses the selected host installed in this checkout, never a hidden Pi from PATH. It checks host SDK/manifest-bin identity, typechecks, builds, and qualifies both compiled entries with a private Intercom broker through the native SDK and bundled RPC CLI. Official hosts exercise same/different-cwd resume, acceptance, structured output, native result routing/ownership and tool activation. No provider credentials or inference services are used.
 
-Repository CI runs three parallel pull-request checks: Linux Node 24 with the pinned fork runs units, package/install smokes, and focused integration for delegation, Intercom delivery, checkpoint/replay, native async usage, and process cleanup; Linux Node 22.19 checks the locked official Pi graph with its portable native contracts and a clean production source install; macOS Node 24 checks a pruned fork installation, broker/checkpoint startup, and macOS process identity. Main pushes run only official and fork installation/startup checks. The complete integration suite remains available locally through `npm run test:integration` against the fork; it is not repeated across pull-request jobs.
+Repository CI runs three parallel pull-request checks: Linux Node 24 with the pinned fork runs units, package/install smokes, and focused integration for delegation, Intercom delivery, checkpoint/replay, native async usage, and process cleanup; Linux Node 24 typechecks and checks the locked official Pi graph with its portable native contracts and a clean production source install; macOS Node 24 checks a pruned fork installation, broker/checkpoint startup, and macOS process identity. Main pushes run only official and fork installation/startup checks. The complete integration suite remains available locally through `npm run test:integration` against the fork; it is not repeated across pull-request jobs.
 
-The fork CI job supplies `PI_COMPAT_HOST=fork`, `PI_COMPAT_EXPECTED_VERSION`, `PI_COMPAT_EXPECTED_PACKAGE_DIR`, `PI_HOST_INDEX`, and `PI_HOST_CLI` to verify the selected SDK and CLI. The official job uses the locked Pi cohort installed by `npm ci` with `PI_COMPAT_HOST=official`. Fork CI requires native checkpoint, asynchronous tool, and immediate usage APIs instead of silently skipping them. The ordinary official lane does **not** certify the extended replay/working-session contract: full official 0.87.0 integration still exposes five unchanged queue visibility, prompt-preparation ownership/startup, and `newContext` failures. The fork CI target is [`fitchmultz/pi` at `870f4f667bb0135f2d9d935c087dc45b6e48ff74`](https://github.com/fitchmultz/pi/commit/870f4f667bb0135f2d9d935c087dc45b6e48ff74) (Pi 0.87.0). See [host capabilities](#host-capabilities-and-result-delivery) and [limitations](docs/intercom.md#limitations).
+The fork CI job supplies `PI_COMPAT_HOST=fork`, `PI_COMPAT_EXPECTED_VERSION`, `PI_COMPAT_EXPECTED_PACKAGE_DIR`, `PI_HOST_INDEX`, and `PI_HOST_CLI` to verify the selected SDK and CLI. The official job uses the locked Pi cohort installed by `npm ci` with `PI_COMPAT_HOST=official`. Fork CI requires native checkpoint, asynchronous tool, and immediate usage APIs instead of silently skipping them. The ordinary official lane does **not** certify the extended replay/working-session contract: full official 0.87.1 integration still exposes five unchanged queue visibility, prompt-preparation ownership/startup, and `newContext` failures. The fork CI target is the qualified enhanced host, [`fitchmultz/pi` at `06a195979349ae6da54752b562b5c8b4cfc32f35`](https://github.com/fitchmultz/pi/commit/06a195979349ae6da54752b562b5c8b4cfc32f35) (Pi 0.87.1). See [host capabilities](#host-capabilities-and-result-delivery) and [limitations](docs/intercom.md#limitations).
 
-Use an empty HOME outside your real home ancestry and a short temporary directory. Child tests use local fixtures and their own broker/profile. Linux Node 22.19 checks the declared support floor; macOS Node 24 checks the other supported platform without claiming a full platform-by-host matrix.
+Use an empty HOME outside your real home ancestry and a short temporary directory. Child tests use local fixtures and their own broker/profile. CI runs the latest Node 24 release on Linux and macOS without claiming a full platform-by-host matrix.
 
 The completion guard recognizes verified `modifiedFiles` receipts from pi-apply-edits v1's `apply_patch`, `replace_text`, and `write_files`, including partial publication errors. Previews and unchanged results do not count as mutations. To exercise the real editor through native SDK events, use an installed v1 editor checkout:
 
@@ -69,7 +69,7 @@ npm ci
 npm run ci
 ```
 
-Some native queue and prompt-preparation regressions still expose the [known host limitations](docs/intercom.md#limitations) on official Pi 0.87.0. Retain those checks and report their failures; a focused passing check does not establish a full-suite pass.
+Some native queue and prompt-preparation regressions still expose the [known host limitations](docs/intercom.md#limitations) on official Pi 0.87.1. Retain those checks and report their failures; a focused passing check does not establish a full-suite pass.
 
 That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
@@ -81,14 +81,11 @@ Prepare that checkout in a clean Linux build environment matching the image's CP
 tar -czf /absolute/path/native-pi-linux-node24.tar.gz -C /clean/linux-build pi
 ```
 
-Run with a matching archive for each image:
+Run with an archive matching the image:
 
 ```bash
 PI_LINUX_PI_ARCHIVE=/absolute/path/native-pi-linux-node24.tar.gz \
   bash scripts/linux-smoke.sh
-PI_LINUX_IMAGE=node:22.19.0-bookworm \
-PI_LINUX_PI_ARCHIVE=/absolute/path/native-pi-linux-node22.tar.gz \
-  bash scripts/linux-smoke.sh # Node support floor
 ```
 
 The archive is mounted read-only and extracted to `/native-pi`. The unprivileged `node` user installs locked package dependencies in `/workspace`, points the private CLI link and all SDK overrides at the supplied build, and runs the full, unchanged `npm run ci` gate. No host home, source mount, credentials, or model calls are passed into it. The gate does not patch Pi/Jiti or skip native cases.
@@ -234,15 +231,15 @@ When you finish implementing, run a reviewer subagent before summarizing.
 
 ## Host capabilities and result delivery
 
-**Portable Pi:** ordinary background calls return a launch receipt. The detached owner keeps working, saves its result, and notifies the same saved parent. Use `async: false` or `--fg` when the calling tool must wait for the result, including one-shot callers that need it on stdout. These waits are abort-aware. Official Pi 0.87.0 supports this path, but its [idle-message and prompt-preparation limitations](docs/intercom.md#limitations) still apply to automatic wakeups.
+**Portable Pi:** ordinary background calls return a launch receipt. The detached owner keeps working, saves its result, and notifies the same saved parent. Use `async: false` or `--fg` when the calling tool must wait for the result, including one-shot callers that need it on stdout. These waits are abort-aware. Official Pi 0.87.1 supports this path, but its [idle-message and prompt-preparation limitations](docs/intercom.md#limitations) still apply to automatic wakeups.
 
 **Native asynchronous tools:** an enhanced host must expose `Tool.async`, `Tool.resume`, and `ctx.getPendingToolCalls()`, and the selected model must advertise `supportsAsyncTools`. The extension enables this path only when the actual invocation appears in the host's pending calls. `async: true` alone is not evidence of native support.
 
 For an admitted native call, the parent journals the original tool-call ID and immutable run identity before launching or delivering work. The host can continue other work while the call is pending. Completion returns to that original call, without a second ordinary completion notice. Resuming the same parent after restart, compaction, or branch navigation reconnects to the saved work when that call is selected; it does not launch it again. A forked parent cannot adopt the original parent's calls. A call that already returned an ordinary receipt never becomes a pending native call retroactively.
 
-Native immediate parent accounting separately requires the public idempotent `recordUsage` API. Without it, usage is carried by finalized tool-result receipts; see [usage accounting](#usage-accounting). Neither official Pi 0.87.0 nor the existing `afed789` fork baseline establishes support for these newer APIs.
+Native immediate parent accounting separately requires the public idempotent `recordUsage` API. Without it, usage is carried by finalized tool-result receipts; see [usage accounting](#usage-accounting). Official Pi 0.87.1 does not provide these APIs.
 
-**Qualified enhanced host:** [`fitchmultz/pi` at `8fb7886130ff1fedc415bdd6fea03aef8a8957d8`](https://github.com/fitchmultz/pi/commit/8fb7886130ff1fedc415bdd6fea03aef8a8957d8) (Pi 0.87.0), tested on macOS arm64 with Node 24.21.0 and Linux arm64 with Node 22.19.0 and 24.21.0. Native tests cover original-call recovery across restart, compaction and branch navigation, fork ownership, accepted steering and disconnect recovery, and once-only accounting, including usage saved before the first parent assistant turn.
+**Qualified enhanced host:** [`fitchmultz/pi` at `06a195979349ae6da54752b562b5c8b4cfc32f35`](https://github.com/fitchmultz/pi/commit/06a195979349ae6da54752b562b5c8b4cfc32f35) (Pi 0.87.1), with the full suite on macOS arm64 with Node 24.21.0 and the core fork contracts in Linux CI on Node 24. Native tests cover original-call recovery across restart, compaction and branch navigation, fork ownership, accepted steering and disconnect recovery, and once-only accounting, including usage saved before the first parent assistant turn.
 
 To require these APIs during enhanced-host qualification, set `PI_NATIVE_ASYNC_REQUIRE_HOST=1` and `PI_PARENT_USAGE_REQUIRE_NATIVE=1` alongside `PI_COMPAT_HOST=fork` when running `npm run check:compat` against that installed host graph. Missing capabilities then fail instead of skipping their tests.
 

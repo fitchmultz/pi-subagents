@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-/** Additive native API; published Pi 0.85.1 does not yet declare this event. */
+/** Additive native API; official Pi 0.87.1 does not declare this event. */
 export interface NativeCheckpointEvent {
 	type: "session_checkpoint";
 	boundary: "turn" | "settled";
