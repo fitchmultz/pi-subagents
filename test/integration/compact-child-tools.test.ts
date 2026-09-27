@@ -48,11 +48,14 @@ test("native child startup reduces serialized definitions and preserves lazy, le
 		try {
 			const active = session.getActiveToolNames();
 			assert.equal(active.includes("subagent"), !compact);
-			for (const name of ["delegate", "agent_runs", "load_subagent"]) assert.equal(active.includes(name), compact);
+			for (const name of ["delegate", "load_subagent"]) assert.equal(active.includes(name), compact);
+			assert.equal(active.includes("agent_runs"), false);
 			const definitions = session.getAllTools().filter((tool: any) => active.includes(tool.name))
 				.map(({ name, description, parameters, promptSnippet, promptGuidelines }: any) => ({ name, description, parameters, promptSnippet, promptGuidelines }));
 			measurements[compact ? "compactChars" : "legacyChars"] = JSON.stringify(definitions).length;
 			if (compact) {
+				await activeTool(session, "load_subagent").execute("load-controls", { advanced: false }, new AbortController().signal);
+				assert.equal(session.getActiveToolNames().includes("subagent"), false);
 				const list = await activeTool(session, "agent_runs").execute("child-list", { action: "list" }, new AbortController().signal);
 				assert.equal(list.details.runList.total, 0);
 				await activeTool(session, "load_subagent").execute("load", {}, new AbortController().signal);

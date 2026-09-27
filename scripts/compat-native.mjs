@@ -23,11 +23,11 @@ if (fork) {
   delete env.PI_CODING_AGENT_DIR; // Fork fixtures deliberately substitute HOME, as run-tests.mjs does.
 }
 else { delete env.PI_CHECKPOINT_TEST_SDK; delete env.PI_CHECKPOINT_TEST_REQUIRED; }
-const contracts = ["native-context-contract", "native-same-cwd-resume", "native-acceptance-cli", "native-structured-output", "native-run-ownership", "native-completion-ownership", "native-result-routing", "native-tool-results", "tool-activation", "lazy-coordination"];
+const contracts = ["native-context-contract", "native-same-cwd-resume", "native-acceptance-cli", "native-structured-output", "native-run-ownership", "native-completion-ownership", "native-result-routing", "native-tool-results", "tool-activation", "lazy-coordination", "compact-child-tools"];
 const coreFiles = [
   "native-checkpoint-idle", "pi-intercom-native-replay", "native-async-host", "native-completion-ownership", "parent-usage",
   "async-execution", "parallel-execution", "chain-execution", "intercom-result-delivery",
-  "owned-result-retention", "process-lifecycle", "orphan-stop", "real-pi-smoke-cleanup",
+  "owned-result-retention", "process-lifecycle", "orphan-stop", "real-pi-smoke-cleanup", "compact-child-tools",
 ];
 if (core) Object.assign(env, { PI_NATIVE_ASYNC_TEST_SDK: hostRoot, PI_NATIVE_ASYNC_REQUIRE_HOST: "1", PI_PARENT_USAGE_TEST_SDK: hostRoot, PI_PARENT_USAGE_REQUIRE_NATIVE: "1" });
 try {
