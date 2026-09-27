@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.42.1] - 2026-09-26
+
+### Changed
+- Avoid unnecessary peer-listing model rounds for routine standalone read-only tasks. Keep coordination guidance before shared-state changes or known overlapping work, with unchanged count-free prompt caching, broker presence, message delivery, approvals, and child recovery on official Pi 0.87.1 and the fork.
+
 ## [0.42.0] - 2026-09-26
 
 ### Breaking Changes
