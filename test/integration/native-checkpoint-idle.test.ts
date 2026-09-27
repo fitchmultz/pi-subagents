@@ -84,7 +84,12 @@ async function nativeSession(t: TestContext, name: string, options: { waitForCon
   await session.bindExtensions({ mode: "print", onError: (e: unknown) => errors.push(e) });
   if (options.waitForConnection !== false) await waitFor(async () => (await keeper.listSessions()).some((s) => s.name === name), "native registration");
   await sleep(50);
-  const invoke = (toolName: string, args: object, signal = new AbortController().signal) => session.agent.state.tools.find((tool: any) => tool.name === toolName).execute("checkpoint-fixture", args, signal);
+  const invoke = async (toolName: string, args: object, signal = new AbortController().signal) => {
+    if (toolName === "intercom" && !session.agent.state.tools.some((tool: any) => tool.name === toolName)) {
+      await session.agent.state.tools.find((tool: any) => tool.name === "load_intercom").execute("checkpoint-discovery", {}, signal);
+    }
+    return session.agent.state.tools.find((tool: any) => tool.name === toolName).execute("checkpoint-fixture", args, signal);
+  };
   const capture = () => session.acquireCheckpoint({ quiesce: () => () => {}, signal: AbortSignal.timeout(5000) });
   const waitForCompletion = async (runId: string) => {
     // Raw execute() does not journal a native tool result. Join its ordinary

@@ -181,6 +181,13 @@ async function makeSession(t: TestContext, name: string, options: {
     onError: (error: { event: string; error: string }) => errors.push(error),
   });
   await waitFor(async () => (await sender.listSessions()).some((peer) => peer.name === name), "receiver registration");
+  // These are messaging/recovery contracts; the dedicated lazy-coordination suite owns untouched startup.
+  const loadControls = async () => {
+    for (const toolName of ["load_intercom", ...(options.subagents ? ["load_subagent"] : [])]) {
+      await session.agent.state.tools.find((tool) => tool.name === toolName)!.execute("fixture-load", { advanced: false }, new AbortController().signal);
+    }
+  };
+  await loadControls();
   return {
     session, faux, events, errors, sender, sends,
     context: () => ctx!,
@@ -193,6 +200,7 @@ async function makeSession(t: TestContext, name: string, options: {
       return receipt;
     },
     status: async () => {
+      if (!session.agent.state.tools.some((tool) => tool.name === "intercom")) await loadControls();
       const tool = session.agent.state.tools.find((tool: { name: string }) => tool.name === "intercom");
       return JSON.stringify(await tool.execute("fixture-status", { action: "status" }, new AbortController().signal));
     },

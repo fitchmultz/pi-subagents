@@ -16,7 +16,9 @@ Sometimes you're running multiple pi sessions — one researching, one executing
 
 Unlike pi-messenger (a shared chat room for multi-agent swarms), pi-intercom is for targeted 1:1 communication where you pick the recipient.
 
-Intercom is bundled with `pi-subagents`: delegated child agents get a child-only `contact_supervisor` tool when the subagent extension supplies bridge metadata. Use blocking `need_decision` or `interview_request` only when the ephemeral child cannot safely continue and must remain alive for the reply. Use `progress_update` only for a discovery or change the supervisor needs while working. It steers at the next tool boundary; skip starts, redundant narration, and routine completion, and retain material findings in the final result. Normal sessions only see the regular `intercom` tool.
+Intercom is bundled with `pi-subagents`: delegated child agents get a child-only `contact_supervisor` tool when the subagent extension supplies bridge metadata. Use blocking `need_decision` or `interview_request` only when the ephemeral child cannot safely continue and must remain alive for the reply. Use `progress_update` only for a discovery or change the supervisor needs while working. It steers at the next tool boundary; skip starts, redundant narration, and routine completion, and retain material findings in the final result. Fresh normal sessions see `load_intercom`, a small entry that enables the full `intercom` tool without sending or checking anything.
+
+The broker, presence, receipts and keyboard UI stay active while the model schema is hidden. Call `load_intercom({})` for explicit peer checks, messaging or topics. Actionable peer inbound and recovered reply obligations enable `intercom` before model delivery; mere presence, passive breadcrumbs, routine synthetic child notices, and human-origin messages answered in chat do not. Managed-child `contact_supervisor` remains eager. If an explicit tool policy permits only `intercom` without its loader, it stays eager; excluded tools never reactivate. Selection follows native session/branch declarations and stays stable between turns.
 
 ## In One Minute
 
@@ -54,7 +56,7 @@ PI_REAL_SMOKE_MODEL=openai/gpt-6-astra node scripts/real-pi-smoke.mjs --llm
 
 The `--llm` mode copies local `auth.json` and `models.json` into the isolated Pi agent dir. Set `PI_REAL_SMOKE_AUTH_AGENT_DIR` if your auth files are not in `~/.pi/agent`.
 
-Pi-intercom automatically gives ordinary agents a bounded presence hint when another connected session is working in the same Git repository, including separate worktrees. The hint is a constant count-free string; agents use `intercom({ action: "list" })` before changing shared state or coordinating known overlapping work. Routine standalone read-only tasks do not need a peer check. No message is sent automatically. This guidance applies on official Pi and the fork; broker presence, delivery, approvals, and child recovery are unchanged. Both the tool and `/intercom` overlay default to that repository/worktree scope. Use `intercom({ action: "list", scope: "all" })` or `/intercom all` only when intentionally discovering sessions in other projects. Managed `pi-subagents` children keep their dedicated supervisor channel instead of receiving the peer hint. Project matching is an advisory presence signal, not an authorization boundary. Add project instructions only when you want a stricter mandatory coordination policy.
+Pi-intercom automatically gives ordinary agents a bounded presence hint when another connected session is working in the same Git repository, including separate worktrees. The hint is a constant count-free string; agents load `load_intercom({})` if needed, then use `intercom({ action: "list" })` before changing shared state or coordinating known overlapping work. Routine standalone read-only tasks do not need a peer check. No message is sent automatically. This guidance applies on official Pi and the fork; broker presence, delivery, approvals, and child recovery are unchanged. Both the tool and `/intercom` overlay default to that repository/worktree scope. Use `intercom({ action: "list", scope: "all" })` or `/intercom all` only when intentionally discovering sessions in other projects. Managed `pi-subagents` children keep their dedicated supervisor channel instead of receiving the peer hint. Project matching is an advisory presence signal, not an authorization boundary. Add project instructions only when you want a stricter mandatory coordination policy.
 
 A session becomes intercom-connected when all of these are true:
 - the bundled intercom extension is enabled through `pi config`
@@ -99,6 +101,8 @@ Topics require an updated broker. If an older broker is still serving open sessi
 The agent can list sessions and send messages using the `intercom` tool. Tool calls and results render as compact transcript rows so send/ask/reply flows are easy to scan. Successful `list` results show only the session count by default in the TUI; press Ctrl+O (or the configured tool-expansion key) to show the full list. For common patterns like planner-worker delegation, the bundled `pi-intercom` skill provides copy-paste ready examples:
 
 ```typescript
+// Enable the peer tool if it is not already available
+load_intercom({})
 // List connected sessions in this repository and its worktrees
 intercom({ action: "list" })
 // → **Current session:**
@@ -363,6 +367,10 @@ For `interview_request`, the supervisor message includes the structured question
 The supervisor can reply with plain JSON or a fenced `json` block. If the reply matches the `{ "responses": [...] }` shape and references valid question ids/options, the child tool result includes it in `details.structuredReply` while still showing the raw reply text.
 
 ## Tool Reference
+
+### load_intercom
+
+`load_intercom({})` enables the full peer schema without sending messages or checking sessions. Then use `intercom` for all existing actions. Ordinary peer asks restored after reload retain their configured expiry. Saved replies, peer disconnects, recipient-error feedback, and durable supervisor answers retire the reply obligation without replaying consumed messages.
 
 ### intercom
 

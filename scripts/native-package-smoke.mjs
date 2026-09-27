@@ -36,7 +36,12 @@ try {
   ({ session } = await sdk.createAgentSession({ cwd: root, agentDir, settingsManager, resourceLoader: loader, modelRuntime, sessionManager: sdk.SessionManager.create(root, join(root, "sessions")), noTools: "builtin" }));
   const errors = [];
   await session.bindExtensions({ mode: "print", onError: error => errors.push(error) });
-  for (const name of ["delegate", "agent_runs", "load_subagent", "intercom"]) assert.ok(session.getActiveToolNames().includes(name), name);
+  for (const name of ["delegate", "load_subagent", "load_intercom"]) assert.ok(session.getActiveToolNames().includes(name), name);
+  for (const name of ["agent_runs", "subagent", "intercom"]) assert.ok(!session.getActiveToolNames().includes(name), `${name} starts lazy`);
+  await session.agent.state.tools.find(tool => tool.name === "load_subagent").execute("controls", { advanced: false }, new AbortController().signal);
+  assert.ok(session.getActiveToolNames().includes("agent_runs"));
+  assert.ok(!session.getActiveToolNames().includes("subagent"));
+  await session.agent.state.tools.find(tool => tool.name === "load_intercom").execute("peers", {}, new AbortController().signal);
   const status = await session.agent.state.tools.find(tool => tool.name === "intercom").execute("status", { action: "status" }, new AbortController().signal);
   assert.match(JSON.stringify(status.content), /Connected: Yes/);
   assert.deepEqual(errors, []);
@@ -59,7 +64,8 @@ ctx.shutdown();
   assert.equal(child.status, 0, `${child.error ?? ""}\n${child.stderr}`);
   assert.doesNotMatch(child.stderr, /Failed to load extension|ERR_INTERNAL_ASSERTION|Extension error/);
   const observed = JSON.parse(readFileSync(marker, "utf8"));
-  for (const name of ["delegate", "agent_runs", "load_subagent", "intercom"]) assert.ok(observed.tools.includes(name), name);
+  for (const name of ["delegate", "load_subagent", "load_intercom"]) assert.ok(observed.tools.includes(name), name);
+  for (const name of ["agent_runs", "subagent", "intercom"]) assert.ok(!observed.tools.includes(name), `${name} starts lazy in CLI`);
   assert.ok(observed.commands.includes("subagents-doctor"));
   console.log("[native-package-smoke] both compiled entries, broker registration/status, bundled RPC startup, and shutdown passed");
 } finally {

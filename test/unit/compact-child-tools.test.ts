@@ -15,6 +15,7 @@ const { formatRunAction } = await import("../../src/shared/status-format.ts");
 const { buildPiArgs } = await import("../../src/runs/shared/pi-args.ts");
 const { default: registerPrompt } = await import("../../src/runs/shared/subagent-prompt-runtime.ts");
 const { OWNED_RUN_ENTRY } = await import("../../src/runs/shared/run-records.ts");
+const { SessionManager } = await import("@earendil-works/pi-coding-agent");
 const configPath = path.join(root, "extensions/subagent/config.json");
 fs.mkdirSync(path.dirname(configPath), { recursive: true });
 const shutdowns: Array<() => unknown> = [];
@@ -23,6 +24,8 @@ after(() => { process.env = savedEnv; fs.rmSync(root, { recursive: true, force: 
 
 function fixture(config: object = {}, allowed?: string[], entries: any[] = []) {
 	fs.writeFileSync(configPath, JSON.stringify(config));
+	const manager = SessionManager.inMemory(root, { id: "child-owner" });
+	for (const entry of entries) manager.appendCustomEntry(entry.customType, entry.data);
 	const tools = new Map<string, any>();
 	const handlers = new Map<string, any[]>();
 	let active = ["read"];
@@ -30,7 +33,7 @@ function fixture(config: object = {}, allowed?: string[], entries: any[] = []) {
 		events: { on() { return () => {}; }, emit() {} },
 		registerTool(tool: any) { tools.set(tool.name, tool); if (!allowed || allowed.includes(tool.name)) active.push(tool.name); },
 		on(event: string, handler: any) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); if (event === "session_shutdown") shutdowns.push(handler); },
-		appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
+		appendEntry(customType: string, data: unknown) { manager.appendCustomEntry(customType, data); },
 		getActiveTools() { return [...active]; },
 		getAllTools() { return [...tools.values()].filter((tool) => !allowed || allowed.includes(tool.name)); },
 		setActiveTools(names: string[]) { active = names.filter((name) => name === "read" || !allowed || allowed.includes(name)); },
@@ -38,7 +41,7 @@ function fixture(config: object = {}, allowed?: string[], entries: any[] = []) {
 	};
 	const ctx = {
 		cwd: root, mode: "json", hasUI: false, isProjectTrusted() { return false; },
-		sessionManager: { getSessionId() { return "child-owner"; }, getSessionFile() { return null; }, getEntries() { return entries; }, getHeader() { return null; } },
+		sessionManager: manager,
 		modelRegistry: { getAvailable() { return []; } },
 	};
 	register(pi as any);
@@ -51,7 +54,7 @@ function fixture(config: object = {}, allowed?: string[], entries: any[] = []) {
 it("starts compact, lazily activates the complete advanced schema, and resets additively", async () => {
 	const f = fixture();
 	await f.emit("session_start");
-	assert.deepEqual(f.pi.getActiveTools(), ["read", "delegate", "agent_runs", "load_subagent"]);
+	assert.deepEqual(f.pi.getActiveTools(), ["read", "delegate", "load_subagent"]);
 	assert.match(f.tools.get("delegate").description, /Foreground by default/);
 	assert.match(f.tools.get("delegate").parameters.properties.async.description, /Foreground by default/);
 	assert.match(f.tools.get("delegate").promptGuidelines.join("\n"), /original parent owns integration/);
@@ -73,9 +76,11 @@ it("starts compact, lazily activates the complete advanced schema, and resets ad
 		assert.equal(blocked.isError, true);
 		assert.match(blocked.content[0].text, /not available from child-safe/);
 	}
-	for (const lifecycle of ["session_tree", "session_compact", "session_start"]) {
+	await f.emit("session_compact");
+	assert.ok(f.pi.getActiveTools().includes("subagent"), "compaction preserves explicit current selection");
+	for (const lifecycle of ["session_tree", "session_start"]) {
 		await f.emit(lifecycle);
-		assert.deepEqual(f.pi.getActiveTools(), ["read", "delegate", "agent_runs", "load_subagent"]);
+		assert.deepEqual(f.pi.getActiveTools(), ["read", "delegate", "load_subagent"]);
 		await f.call("load_subagent");
 	}
 });
@@ -99,7 +104,7 @@ it("restores the old full surface with the flag and honors eager/filtered advanc
 	await assert.rejects(() => denied.call("load_subagent"), /full tool is excluded/);
 });
 
-it("retains permitted advanced tools for pending native recovery and hides them once settled", async () => {
+it("retains permitted original tools for pending native recovery without overriding exclusions", async () => {
 	const f = fixture();
 	let pending = [{ toolCallId: "advanced-call", toolName: "subagent", state: "detached" }];
 	Object.assign(f.ctx, { getPendingToolCalls: () => pending });
@@ -110,7 +115,7 @@ it("retains permitted advanced tools for pending native recovery and hides them 
 	assert.ok(f.pi.getActiveTools().includes("subagent"), "a selected native call remains recoverable even if prior selection hid it");
 	pending = [];
 	await f.emit("session_compact");
-	assert.equal(f.pi.getActiveTools().includes("subagent"), false);
+	assert.equal(f.pi.getActiveTools().includes("subagent"), true, "settlement does not churn the active schema");
 	const denied = fixture({}, ["load_subagent"]);
 	Object.assign(denied.ctx, { getPendingToolCalls: () => [{ toolName: "subagent" }] });
 	await denied.emit("session_start");
