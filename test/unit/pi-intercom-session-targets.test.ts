@@ -128,6 +128,8 @@ test("formatPeerAwarenessHint detects only same-project sessions without exposin
 
   assert.equal(hint, PEER_AWARENESS_HINT);
   assert.match(hint ?? "", /intercom\(\{ action: "list" \}\)/);
+  assert.match(hint ?? "", /before changing shared state or coordinating known overlapping work/);
+  assert.match(hint ?? "", /Routine standalone read-only tasks do not need a peer check/);
   assert.doesNotMatch(hint ?? "", /ignore previous instructions|secret-project-name|unrelated-session-name/);
   assert.equal(formatPeerAwarenessHint([{ id: "current", cwd: "/repo", projectId: "project-a" }], "current"), undefined);
 });

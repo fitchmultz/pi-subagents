@@ -107,7 +107,7 @@ export function targetDisplayName(session: TargetIdentity, allSessions: TargetId
 // variation there (live peer counts, checkout counts) invalidates the entire
 // cached context for every turn in which fleet membership changed, which is
 // expensive on large sessions. Live details belong behind intercom list.
-export const PEER_AWARENESS_HINT = `Other Pi sessions may be connected to this project. If you have not checked them for this task, use intercom({ action: "list" }) before duplicating substantial work or changing shared state. Coordinate only when work overlaps; use subagent controls for managed child runs.`;
+export const PEER_AWARENESS_HINT = `Other Pi sessions may be connected to this project. Use intercom({ action: "list" }) before changing shared state or coordinating known overlapping work. Routine standalone read-only tasks do not need a peer check. Coordinate only when work overlaps; use subagent controls for managed child runs.`;
 
 export function filterProjectSessions<T extends ProjectSessionIdentity>(sessions: T[], currentSessionId: string): T[] {
   const current = sessions.find((session) => session.id === currentSessionId);
