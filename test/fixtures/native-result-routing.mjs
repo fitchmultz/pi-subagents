@@ -31,7 +31,13 @@ const events = (channel) => evidence.events.filter((event) => event.channel === 
 const resultPath = (run) => path.join(RESULTS_DIR, `${run.id}.json`);
 const calls = () => fs.readdirSync(callsDir).filter((name) => name.startsWith("call-")).map((name) => JSON.parse(fs.readFileSync(path.join(callsDir, name), "utf8")));
 let session, reservation;
-const invoke = (name, args) => session.agent.state.tools.find((tool) => tool.name === name).execute(randomUUID(), args, new AbortController().signal);
+const invoke = async (name, args) => {
+	if (!session.agent.state.tools.some((tool) => tool.name === name)) {
+		const loader = name === "intercom" ? "load_intercom" : "load_subagent";
+		await session.agent.state.tools.find((tool) => tool.name === loader).execute(randomUUID(), { advanced: false }, new AbortController().signal);
+	}
+	return session.agent.state.tools.find((tool) => tool.name === name).execute(randomUUID(), args, new AbortController().signal);
+};
 const visible = (run) => session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && ["intercom_message", "subagent-notify"].includes(entry.customType) && String(entry.content).includes(run.output));
 const completed = (run) => events("subagent:async-complete").filter((event) => event.runId === run.id);
 const errorsFor = (run) => session.sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "intercom_result_error" && entry.data.message.includes(run.output));

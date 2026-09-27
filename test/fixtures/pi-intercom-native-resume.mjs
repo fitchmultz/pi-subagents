@@ -42,6 +42,9 @@ const { session } = await createAgentSession({
   modelRuntime, model: faux.getModel(), settingsManager, resourceLoader: loader, sessionManager, noTools: "builtin",
 });
 const summary = async () => {
+  if (!session.agent.state.tools.some((tool) => tool.name === "intercom")) {
+    await session.agent.state.tools.find((tool) => tool.name === "load_intercom").execute("fixture-load", {}, new AbortController().signal);
+  }
   const intercom = session.agent.state.tools.find((tool) => tool.name === "intercom");
   const status = await intercom.execute("fixture-status", { action: "status" }, new AbortController().signal);
   const entries = sessionManager.getEntries();

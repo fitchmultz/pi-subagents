@@ -459,7 +459,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			: result,
 	);
 	const nativeAsyncLifecycle = subagentToolLifecycle(executor, toRegisteredToolResult);
-	registerCompactSubagentTools(pi, { executor, adapt: toRegisteredToolResult, guidelines: SUBAGENT_GUIDELINES, asyncByDefault });
+	const reconcileRunTools = registerCompactSubagentTools(pi, { executor, state, adapt: toRegisteredToolResult, guidelines: SUBAGENT_GUIDELINES, asyncByDefault });
 
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		...nativeAsyncLifecycle,
@@ -619,6 +619,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			console.error("Failed to restore active async jobs:", error);
 			resetJobs(ctx);
 		}
+		reconcileRunTools();
 		agentView?.start(ctx);
 		cleanupOldRunStorage();
 		cleanupOldChainDirs();

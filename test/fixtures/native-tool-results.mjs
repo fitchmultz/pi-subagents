@@ -324,7 +324,8 @@ async function workflow(shape, stop, failed = true) {
 
 try {
 	await open();
-	for (const name of ["delegate", "agent_runs", "load_subagent"]) assert.ok(session.agent.state.tools.some((tool) => tool.name === name), `${name} is active by default`);
+	for (const name of ["delegate", "load_subagent"]) assert.ok(session.agent.state.tools.some((tool) => tool.name === name), `${name} is active by default`);
+	assert.equal(session.agent.state.tools.some((tool) => tool.name === "agent_runs"), false, "run controls load on demand");
 	assert.equal(session.agent.state.tools.some((tool) => tool.name === "subagent"), false, "advanced orchestration remains lazy");
 	await check("load-success", async (receipt, verify) => {
 		await invoke(receipt, "load_subagent", {});

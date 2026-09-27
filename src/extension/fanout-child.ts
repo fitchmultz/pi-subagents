@@ -249,11 +249,11 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		"Delegate useful helper work within your assigned task when it saves time or improves quality; the original parent owns integration and final delivery.",
 		"Nested execution defaults to foreground unless configuration explicitly opts into async. Set async:false whenever the nested result must appear in this child's report; use async:true only for intentionally detached work.",
 		compact
-			? "Use agent_runs({action:'profiles'}) before delegation unless the executable agent is already known. Use load_subagent for advanced workflows and controls."
+			? "Use load_subagent({advanced:false}), then agent_runs({action:'profiles'}) before delegation unless the executable agent is already known. Use load_subagent for advanced workflows."
 			: "Use subagent action:list before nested execution unless the executable nested agent is already known from the task context.",
 		"Do not use subagent child-safe mode for agent config mutation actions; create, update, and delete are blocked here.",
 	];
-	if (compact) registerCompactSubagentTools(pi, { executor, adapt: toRegisteredToolResult, guidelines: [...guidelines, ...acceptanceGuidelines], childSafe: true,
+	if (compact) registerCompactSubagentTools(pi, { executor, state, adapt: toRegisteredToolResult, guidelines: [...guidelines, ...acceptanceGuidelines], childSafe: true,
 		asyncByDefault: config.asyncByDefault === true, keepAdvancedActive: process.env[SUBAGENT_EAGER_TOOL_ENV] === "1",
 		listRuns: (params, ctx) => { ensureSessionState(ctx); return ownedRunList(state, params); },
 	});

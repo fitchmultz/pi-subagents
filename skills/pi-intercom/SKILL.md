@@ -11,6 +11,7 @@ Coordinate named Pi sessions on the same machine with the least context loss and
 
 ## Source of truth
 
+- Fresh sessions keep the peer schema behind `load_intercom({})`; presence and delivery remain active. Actionable inbound/recovered reply needs load it automatically. Presence alone, passive or routine child notices, and human chat messages do not.
 - A bounded ambient hint may report that same-project peers are connected. It is a constant count-free string and never sends a message; use `intercom({ action: "list" })` before choosing a target.
 - `intercom({ action: "list" })` is the source of truth for targetable sessions in the current Git repository and its worktrees. Use `intercom({ action: "list", scope: "all" })` only when intentionally discovering connected sessions in other projects. Both scopes show only intercom-connected sessions, not every Pi process, with live ask capability, busy/idle/unknown state, recent intercom activity, and delivery guidance. The current-session row is not targetable; choose a peer from Other sessions.
 - Tool call shapes and options live in the live `intercom` / `contact_supervisor` schemas, `docs/intercom.md`, and `src/pi-intercom/index.ts`. Read those when a parameter detail is needed; do not invent fields.
@@ -36,7 +37,7 @@ Coordinate named Pi sessions on the same machine with the least context loss and
 ## Default workflow
 
 1. Decide whether a peer is actually needed. If not, keep working locally.
-2. Discover targets with `intercom({ action: "list" })` before sending. This defaults to the current repository and its worktrees; use `scope: "all"` only for intentional cross-project coordination.
+2. Call `load_intercom({})` if `intercom` is inactive, then discover targets with `intercom({ action: "list" })` before sending. This defaults to the current repository and its worktrees; use `scope: "all"` only for intentional cross-project coordination.
 3. Pick the displayed name or target ID exactly. If names collide, use the target shown by `list`. Never message the current session.
 4. Choose the lightest action:
 

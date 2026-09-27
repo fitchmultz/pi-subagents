@@ -154,7 +154,7 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 		setPromptSection(options, "subagent_role", fanoutChild === true
 			? `${CHILD_FANOUT_BOUNDARY_INSTRUCTIONS}\n${loadConfig().compactChildTools === false
 				? "Use subagent({action:'list'}) to discover agents before delegation."
-				: "Use agent_runs({action:'profiles'}) to discover agents, delegate for ordinary work, and load_subagent for advanced workflows and controls."}`
+				: "Use load_subagent({advanced:false}), then agent_runs({action:'profiles'}) to discover agents, delegate for ordinary work, and load_subagent for advanced workflows."}`
 			: CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS);
 		if (structuredOutputPath) setPromptSection(options, "subagent_output", STRUCTURED_OUTPUT_INSTRUCTIONS);
 	});

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+## [0.43.0] - 2026-09-27
+
+### Changed
+- Keep fresh coordination schemas lean: delegation exposes run controls automatically; `load_subagent({ advanced: false })` discovers profiles/history without the advanced schema, and `load_intercom({})` enables peer coordination explicitly. Restore controls for actionable owned work and peer reply needs while preserving broker presence, full schemas, native selection, tool policies, and managed-child supervisor contact.
+
 ## [0.42.1] - 2026-09-26
 
 ### Changed

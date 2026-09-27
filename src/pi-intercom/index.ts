@@ -19,8 +19,10 @@ import { filterProjectSessions, formatPeerAwarenessHint, formatSessionTarget, fo
 import { registerSubagentLiveEventHandlers } from "./subagent-live-events.ts";
 import { formatRunAction } from "../shared/status-format.ts";
 import { setPromptSection } from "../shared/prompt-sections.ts";
+import { activateTools, restoreLazyTools } from "../shared/lazy-tools.ts";
+import type { AsyncContext } from "../runs/shared/native-async.ts";
 import { onNativeCheckpoint, type NativeCheckpointEvent } from "../shared/native-checkpoint.ts";
-import { cancelSupervisorQuestion, createSupervisorQuestion, getRunMetadataDir, readRunJson, readQuestionState, recordQuestionDelivery, saveQuestionAnswer, type SupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
+import { cancelSupervisorQuestion, createSupervisorQuestion, getRunMetadataDir, listSupervisorQuestions, readRunJson, readQuestionState, recordQuestionDelivery, saveQuestionAnswer, type SupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -76,7 +78,7 @@ interface PendingInboundMessage extends InboundMessageEntry {
 }
 
 type InboundCheckpoint = { entry: PendingInboundMessage }
-  | { messageId: string; stage: PendingInboundMessage["stage"] | "discarded" };
+  | { messageId: string; stage: PendingInboundMessage["stage"] | "discarded" | "reply-retired" };
 
 type RequestedDelivery = MessageDelivery | "auto";
 type InboundDelivery = "trigger" | "followUp" | "steer" | "passive";
@@ -965,6 +967,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   function checkpointInbound(update: InboundCheckpoint): void {
     if (currentSessionId) pi.appendEntry(INBOUND_CHECKPOINT_TYPE, { sessionId: currentSessionId, ...update });
   }
+  function retireReply(messageId: string, stage: "reply-retired" | "discarded" = "reply-retired"): void {
+    replyTracker.markReplied(messageId);
+    checkpointInbound({ messageId, stage });
+  }
   function keepInbound(entry: PendingInboundMessage): void {
     if (entry.stage === "queued" && entry.message.queueMode === "replace" && entry.message.threadId) {
       for (const pending of pendingInbound.values()) {
@@ -1016,6 +1022,14 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     checkpointInbound({ messageId: message.id, stage: "discarded" });
     return true;
   }
+  function needsIntercom(entry: Pick<InboundMessageEntry, "from" | "message">): boolean {
+    return entry.message.human === undefined && shouldTriggerTurn(entry.message)
+      && entry.from.id !== "subagent-result" && entry.from.id !== "subagent-control";
+  }
+  function reconcileIntercom(ctx: ExtensionContext): void {
+    if ([...pendingInbound.values()].some(needsIntercom) || replyTracker.listPending().some(needsIntercom)
+      || (ctx as AsyncContext).getPendingToolCalls?.().some((call) => call.toolName === "intercom")) activateTools(pi, ["intercom"]);
+  }
   function restoreInbound(ctx: ExtensionContext): void {
     consumedInboundIds.clear();
     completedChildren.clear();
@@ -1034,19 +1048,32 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         if (data?.sessionId !== currentSessionId) continue;
         if ("entry" in data) {
           rememberCompletedChildren(data.entry);
+          replyTracker.recordIncomingMessage(data.entry.from, data.entry.message, data.entry.receivedAt);
           if (!consumedInboundIds.has(data.entry.message.id)) keepInbound({ ...data.entry });
+        } else if (data.stage === "reply-retired") {
+          replyTracker.markReplied(data.messageId);
         } else if (data.stage === "discarded") {
           pendingInbound.delete(data.messageId);
+          replyTracker.markReplied(data.messageId);
         } else {
           const pending = pendingInbound.get(data.messageId);
           if (pending) pendingInbound.set(data.messageId, { ...pending, stage: data.stage });
         }
+      } else if (item.type === "custom" && item.customType === "intercom_sent") {
+        const sent = item.data as { message?: { replyTo?: string } } | undefined;
+        if (sent?.message?.replyTo) replyTracker.markReplied(sent.message.replyTo);
       }
     }
     reconciledLeafId = ctx.sessionManager.getLeafId();
     for (const entry of pendingInbound.values()) {
-      if (!discardObsoleteProgress(entry)) replyTracker.recordIncomingMessage(entry.from, entry.message, entry.receivedAt);
+      discardObsoleteProgress(entry);
     }
+    if (replyTracker.hasReplyContext) {
+      for (const question of listSupervisorQuestions(ctx.sessionManager.getSessionId())) {
+        if (question.answer || question.state === "cancelled") replyTracker.markReplied(question.questionId);
+      }
+    }
+    reconcileIntercom(ctx);
   }
   function sendIncomingMessage(entry: InboundMessageEntry, delivery: InboundDelivery, generation = runtimeGeneration): void {
     if (runtimeStarted && !getLiveContext(runtimeContext, generation)) {
@@ -1058,6 +1085,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (delivery !== "passive") {
       replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
     }
+    if (delivery !== "passive" && needsIntercom(entry)) activateTools(pi, ["intercom"]);
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
     const bodyText = entry.bodyText;
     const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
@@ -1306,6 +1334,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       invalidateCheckpoint();
       topics.disconnected(sessionId);
       rejectReplyWaiterForPeer(sessionId);
+      for (const pending of replyTracker.listPending()) {
+        if (pending.from.id === sessionId && !isDurableSupervisorQuestion(pending.message)
+          && pendingInbound.get(pending.message.id)?.stage !== "queued") retireReply(pending.message.id);
+      }
       replyTracker.expireSender(sessionId);
       for (const pending of queuedInbound()) {
         if (pending.from.id === sessionId && pending.message.expectsReply && !isDurableSupervisorQuestion(pending.message)) {
@@ -1588,8 +1620,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       pi.events.on(SUBAGENT_SUPERVISOR_QUESTION_RESOLVED_EVENT, (payload) => {
         const questionId = payload && typeof payload === "object" ? (payload as { questionId?: unknown }).questionId : undefined;
         if (typeof questionId !== "string") return;
-        replyTracker.markReplied(questionId);
-        if (pendingInbound.delete(questionId)) checkpointInbound({ messageId: questionId, stage: "discarded" });
+        retireReply(questionId, pendingInbound.delete(questionId) ? "discarded" : "reply-retired");
         syncPresenceStatus();
       }),
       pi.events.on("intercom:open", () => {
@@ -1644,6 +1675,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     lastIntercomActivity = 0;
     activeTools.clear();
     pendingInbound.clear();
+    replyTracker.reset();
+    restoreLazyTools(pi, ctx, "load_intercom", ["intercom"]);
     restoreInbound(ctx);
     // A fresh runtime has no inherited native queues. Reload keeps those queues
     // and in-flight prompts, so only its intercom-staged entries are flushed here.
@@ -1723,8 +1756,11 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     currentSessionId = null;
   });
   pi.on("session_tree", (_event, ctx) => {
+    restoreLazyTools(pi, ctx, "load_intercom", ["intercom"]);
     if (getLiveContext(ctx)) reconcileConsumedInbound(ctx, true);
+    reconcileIntercom(ctx);
   });
+  pi.on("session_compact", (_event, ctx) => reconcileIntercom(ctx));
   pi.on("turn_end", () => {
     if (!getLiveContext()) {
       return;
@@ -1756,7 +1792,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       }],
     }).then((result) => {
       if (result.delivered && !isDurableSupervisorQuestion(context.message)) {
-        replyTracker.markReplied(replyTo);
+        retireReply(replyTo);
       }
     }).catch(() => {
       // Best-effort failure propagation; the local error remains visible in the recipient session.
@@ -2166,6 +2202,18 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       },
     } as never);
   }
+
+  pi.registerTool({
+    name: "load_intercom",
+    label: "Load Intercom",
+    description: "Enable local peer coordination: list/check sessions before shared-state work, send or reply to messages, and inspect/publish topics. Does not send a message or check peers itself.",
+    parameters: Type.Object({}),
+    async execute() {
+      if (!pi.getAllTools().some((tool) => tool.name === "intercom" && !("namespace" in tool && tool.namespace))) throw new Error("Intercom is excluded from this session.");
+      activateTools(pi, ["intercom"]);
+      return { content: [{ type: "text" as const, text: "Intercom enabled. Use intercom({action:'list'}) to check peers, or status, pending, reply, send, ask and topics for coordination." }], details: {} };
+    },
+  });
 
   pi.registerTool({
     name: "intercom",

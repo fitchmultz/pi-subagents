@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import net from "node:net";
 import type { Readable } from "node:stream";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { ReplyTracker } from "../../src/pi-intercom/reply-tracker.ts";
 import { cancelSupervisorQuestion, listSupervisorQuestions, readQuestionState, saveQuestionAnswer, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
 import { resolveSessionProjectId } from "../../src/pi-intercom/session-targets.ts";
@@ -251,6 +252,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
   const lifecycleHandlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
   const commands = new Map<string, (args: string, ctx: unknown) => unknown>();
   const tools: CapturedTool[] = [];
+  let activeTools: string[] = [];
   const entries: Array<{ type: string; data: unknown }> = [];
   const sessionEntries: Array<{ id: string; parentId: string | null; type: string; customType?: string; details?: unknown; data?: unknown }> = [];
   const sentMessages: Array<{ message: { customType?: string; content?: string; details?: unknown }; options?: { triggerTurn?: boolean; deliverAs?: string } }> = [];
@@ -269,7 +271,11 @@ function createExtensionHarness(sessionName = "child-worker", options: {
       lifecycleHandlers.set(event, handlers);
     },
     registerMessageRenderer: () => undefined,
+    getAllTools: () => tools,
+    getActiveTools: () => [...activeTools],
+    setActiveTools: (names: string[]) => { activeTools = names.filter((name) => tools.some((tool) => tool.name === name)); },
     registerTool: (tool: CapturedTool) => {
+      activeTools.push(tool.name);
       if (options.wrapToolErrors === false) {
         tools.push(tool);
         return;
@@ -310,6 +316,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
     cwd: repoDir,
     model: { id: "child-model" },
     sessionManager: { getSessionId: () => "session-child-test", getSessionFile: () => sessionFile, getEntries: () => sessionEntries,
+      buildSessionProjection: () => SessionManager.inMemory(repoDir, { id: "session-child-test" }, sessionEntries as never).buildSessionProjection(),
       getLeafId: () => sessionEntries.at(-1)?.id ?? null, getEntry: (id: string) => sessionEntries.find((entry) => entry.id === id) },
     isIdle: options.isIdle ?? (() => true),
     hasPendingMessages: () => false,
@@ -3187,7 +3194,7 @@ test("supervisor tool registers only when child metadata is present", async () =
   await withChildOrchestratorEnv({}, () => {
     const harness = createExtensionHarness();
     piIntercomExtension(harness.pi as never);
-    assert.deepEqual(harness.tools.map((tool) => tool.name), ["intercom"]);
+    assert.deepEqual(harness.tools.map((tool) => tool.name), ["load_intercom", "intercom"]);
   });
 
   await withChildOrchestratorEnv({
@@ -3199,7 +3206,7 @@ test("supervisor tool registers only when child metadata is present", async () =
   }, () => {
     const harness = createExtensionHarness();
     piIntercomExtension(harness.pi as never);
-    assert.deepEqual(harness.tools.map((tool) => tool.name), ["contact_supervisor", "intercom"]);
+    assert.deepEqual(harness.tools.map((tool) => tool.name), ["contact_supervisor", "load_intercom", "intercom"]);
     const supervisorTool = harness.tools.find((tool) => tool.name === "contact_supervisor");
     assert.match(JSON.stringify(supervisorTool?.parameters), /interview_request/);
     assert.match(JSON.stringify(supervisorTool?.parameters), /questions/);
@@ -3220,7 +3227,7 @@ test("subagent intercom session name env controls registered presence target", {
     }, async () => {
       const harness = createExtensionHarness("fallback-visible-name");
       piIntercomExtension(harness.pi as never);
-      assert.deepEqual(harness.tools.map((tool) => tool.name), ["intercom"]);
+      assert.deepEqual(harness.tools.map((tool) => tool.name), ["load_intercom", "intercom"]);
       await harness.emitLifecycle("session_start");
 
       const registered = await waitForSessionByName(planner, "subagent-worker-78f659a3-1");

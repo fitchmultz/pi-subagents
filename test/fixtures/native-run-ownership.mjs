@@ -62,6 +62,9 @@ async function close() {
 	session.dispose(); session = undefined;
 }
 const invoke = async (name, args) => {
+	if (name === "agent_runs" && !session.agent.state.tools.some((tool) => tool.name === name)) {
+		await session.agent.state.tools.find((tool) => tool.name === "load_subagent").execute(randomUUID(), { advanced: false }, new AbortController().signal);
+	}
 	const tool = session.agent.state.tools.find((entry) => entry.name === name);
 	assert.ok(tool, `Missing ${name}`);
 	return tool.execute(randomUUID(), args, new AbortController().signal);

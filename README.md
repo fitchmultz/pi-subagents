@@ -158,9 +158,10 @@ Queued children say **waiting to start**. Their drafts stay available until they
 
 Human messages are marked as user direction in the child's own conversation. Broker acceptance means **waiting**, not read or acted upon; a native receipt confirms delivery to the conversation, and an actual subsequent response is separate. The parent receives one small informational breadcrumb with the direction, not an approval or relay request. Working-tree diffs are explicitly workspace-wide, not attributed to one child when agents share a directory.
 
-For ordinary work from the model, use the compact tools; the full workflow schema stays unloaded:
+Fresh sessions expose `delegate` and small discovery loaders, not the full run-control or peer schemas. Known-profile delegation enables `agent_runs` automatically. For profiles or history before delegation, load only run controls:
 
 ```typescript
+load_subagent({ advanced: false })
 agent_runs({ action: "profiles" })
 delegate({ agent: "worker", task: "Implement the approved fix", worktree: true })
 agent_runs({ action: "list" })
@@ -170,6 +171,8 @@ agent_runs({ action: "nudge", id: "<run-id>", message: "Keep the public API unch
 agent_runs({ action: "continue", id: "<run-id>", message: "Now check the edge case." })
 agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "Checked the result." })
 ```
+
+Run controls also appear when the same saved session owns actionable work: live runs, questions, failures, or unreviewed results. Reviewed inert history alone does not activate them; it remains accessible through `load_subagent({ advanced: false })`. Tool-only allowlists without a loader remain eager, and exclusions are never overridden. Activated schemas stay available for the selected branch; native tool declarations preserve selection across requests, reload and compaction rather than unloading every turn.
 
 `delegate` uses the same durable run owner and acceptance path as `subagent`; `worktree: true` runs one isolated writer through the existing worktree path. `agent_runs` keeps the saved parent's work discoverable across working directories, reloads, and restarts. A nudge never restarts completed work; `continue` explicitly revives its saved session. Use `load_subagent` for parallel groups, chains, detailed overrides, and profile administration. Existing `subagent` calls remain supported.
 
@@ -400,7 +403,7 @@ Packaged `oracle` defaults to forked context; the other Fitch role profiles defa
 
 Child boundaries are enforced at runtime. Spawned children do not receive the parent-only `pi-subagents` skill. Their model context omits parent-only orchestration, slash-result, notification, and control messages without deleting saved history. Leaf children also omit orchestration tool calls/results. Delegation-enabled children retain that tool history so their own helper calls remain usable on later turns and resumes.
 
-Children do not receive delegation tools by default. When a profile enables delegation and the depth limit allows it, the child starts with `delegate`, `agent_runs`, and `load_subagent`. Advanced workflows and controls remain available through `load_subagent`; nested execution still waits by default. The child may use helpful agents within its assigned scope without repeating approval requests for already-authorized work. It remains responsible for its assigned result; the original parent owns integration, review synthesis, and final delivery.
+Children do not receive delegation tools by default. When a profile enables delegation and the depth limit allows it, the child starts with `delegate` and `load_subagent`; `agent_runs` appears on delegation, actionable restoration, or explicit `load_subagent({ advanced: false })`. Advanced workflows and controls remain available through `load_subagent`; nested execution still waits by default. The child may use helpful agents within its assigned scope without repeating approval requests for already-authorized work. It remains responsible for its assigned result; the original parent owns integration, review synthesis, and final delivery.
 
 ## Example prompts
 
@@ -418,7 +421,7 @@ The files in `prompts/` document common workflows without registering additional
 
 ## Bundled intercom
 
-The same `pi-subagents` install registers the intercom extension and skill. Managed children get a private coordination channel back to the parent Pi session unless an explicit agent extension allowlist excludes it. See [the intercom guide](docs/intercom.md) for direct peer messaging, keyboard UI, tool actions, configuration, and broker details.
+The same `pi-subagents` install registers the intercom extension and skill. `load_intercom({})` exposes the full peer tool explicitly; actionable peer inbound and recovered reply needs also expose it before use. Presence, passive breadcrumbs, routine subagent notices, and human messages answered in chat do not. Broker presence and delivery continue even with the schema hidden. Managed children get a private coordination channel back to the parent Pi session unless an explicit agent extension allowlist excludes it. See [the intercom guide](docs/intercom.md) for direct peer messaging, keyboard UI, tool actions, configuration, and broker details.
 
 If you previously installed the standalone package, remove that old settings entry once to avoid loading two intercom extensions:
 
@@ -716,7 +719,7 @@ All bundled agents omit `tools` and `extensions` allowlists. If `tools` is omitt
 Examples:
 
 - `tools` omitted and `extensions` omitted: configured builtins and normal extensions, including their tools.
-- `allowSubagents: true` with `tools` omitted: normal tools plus child-safe `delegate`, `agent_runs`, and `load_subagent`. The full `subagent` tool loads on demand. A first-level child remains blocked until both the agent and installation set `maxSubagentDepth` to at least `2`.
+- `allowSubagents: true` with `tools` omitted: normal tools plus child-safe `delegate` and `load_subagent`, with `agent_runs` activated by delegation or discovery. The full `subagent` tool loads on demand. A first-level child remains blocked until both the agent and installation set `maxSubagentDepth` to at least `2`.
 - `tools: mcp:chrome-devtools`: normal builtins plus direct Chrome DevTools MCP tools.
 - `tools: read, bash, mcp:chrome-devtools`: only `read` and `bash` as builtins, plus direct Chrome DevTools MCP tools.
 - `tools: subagent, read`: the explicitly requested child-safe `subagent` tool stays active, alongside compact delegation tools. A first-level child remains blocked until both the agent and installation set `maxSubagentDepth` to at least `2`.
@@ -916,7 +919,7 @@ delegate({
 })
 ```
 
-`load_subagent` activates the advanced `subagent` schema on demand. It retains string or object acceptance criteria, environment maps, arbitrary caller-supplied output schemas, workflows, and detailed launch overrides. Those flexible inputs do not require strict conversion. Child `structured_output` submissions are still validated against the requested schema; constrained sampling depends on native model and schema support.
+`load_subagent({ advanced: false })` enables only `agent_runs` for profiles, history, and controls. Omit `advanced` (or set it true) to enable those controls plus the advanced `subagent` schema. It retains string or object acceptance criteria, environment maps, arbitrary caller-supplied output schemas, workflows, and detailed launch overrides. Those flexible inputs do not require strict conversion. Child `structured_output` submissions are still validated against the requested schema; constrained sampling depends on native model and schema support.
 
 ### Execution examples
 
@@ -1166,7 +1169,7 @@ The setting applies when a top-level tool or slash call does not explicitly set 
 
 ### `compactChildTools`
 
-Authorized children start with `delegate`, `agent_runs`, and `load_subagent`; the full `subagent` schema loads on demand. Advanced tools reset to the compact selection on session start, tree navigation, and compaction. A pending native `subagent` call keeps that tool active so its original result can recover; the next reset after completion hides it again. Explicit `tools: subagent` profiles keep the advanced tool active. Agent-definition mutations remain blocked in children, including after loading.
+Authorized children start with `delegate` and `load_subagent`; run controls and the full `subagent` schema load on demand. Native declarations restore the selected branch's tools on startup and tree navigation; compaction preserves current selection. A pending native call keeps its original tool active so its result can recover, subject to tool exclusions. Explicit `tools: subagent` profiles keep the advanced tool active. Agent-definition mutations remain blocked in children, including after loading.
 
 Set this flag to `false` to restore the previous full `subagent`-only child surface:
 

@@ -1,7 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createSubagentExecutor, normalizeSubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
-import type { SubagentExecutionResult } from "../shared/types.ts";
+import type { SubagentExecutionResult, SubagentState } from "../shared/types.ts";
+import { activateTools, restoreLazyTools } from "../shared/lazy-tools.ts";
+import { ownedRunView } from "../runs/shared/run-records.ts";
+import { listSupervisorQuestions } from "../runs/shared/supervisor-questions.ts";
 import type { AsyncContext } from "../runs/shared/native-async.ts";
 import { renderSubagentResult } from "../tui/render.ts";
 import { AgentRunsParams, DelegateParams } from "./schemas.ts";
@@ -23,21 +26,31 @@ export function subagentToolLifecycle(executor: Executor, adapt: AdaptResult) {
 
 export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 	executor: Executor;
+	state: SubagentState;
 	adapt: AdaptResult;
 	guidelines: readonly string[];
 	childSafe?: boolean;
 	keepAdvancedActive?: boolean;
 	listRuns?: (params: { offset?: number; limit?: number }, ctx: ExtensionContext) => SubagentExecutionResult;
 	asyncByDefault: boolean;
-}): void {
-	const { executor, adapt, guidelines, childSafe, asyncByDefault } = options;
+}): () => void {
+	const { executor, adapt, guidelines, childSafe, asyncByDefault, state } = options;
+	const reconcileRuns = () => {
+		if (pi.getActiveTools().includes("agent_runs")) return;
+		if ([...(state.ownedRuns?.values() ?? [])].some((run) => {
+			const view = ownedRunView(run, state, { readConfiguration: false, includeContinuations: false });
+			return view.state === "live" || view.attention.length > 0;
+		})) activateTools(pi, ["agent_runs"]);
+	};
+	const onRunsChanged = state.onRunsChanged;
+	state.onRunsChanged = () => { reconcileRuns(); onRunsChanged?.(); };
 	const lifecycle = subagentToolLifecycle(executor, adapt);
 	const asyncDescription = asyncByDefault ? "Background by default; false waits for the result." : "Foreground by default; true detaches work. Use false when the result must appear in your report.";
 	pi.registerTool({
 		...lifecycle,
 		name: "delegate",
 		label: "Delegate",
-		description: `Delegate one bounded task to a configured agent. Discover profiles with agent_runs({action:'profiles'}). ${asyncDescription} Use worktree for an isolated writer, acceptance for explicit requirements, and fresh context for independent review. Advanced workflows remain behind load_subagent.`,
+		description: `Delegate one bounded task to a configured agent. For profiles/history, load_subagent({advanced:false}) enables agent_runs. Delegation enables run controls automatically. ${asyncDescription} Use worktree for an isolated writer, acceptance for explicit requirements, and fresh context for independent review. Advanced workflows remain behind load_subagent.`,
 		...(childSafe ? { promptGuidelines: [...guidelines] } : {}),
 		parameters: Type.Object({ ...DelegateParams.properties, async: Type.Optional(Type.Boolean({ description: asyncDescription })) }, { additionalProperties: false }),
 		async execute(id, params, signal, onUpdate, ctx) {
@@ -66,35 +79,37 @@ export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 	pi.registerTool({
 		name: "load_subagent",
 		label: "Load Subagent",
-		description: `Enable advanced subagent orchestration: parallel groups, chains, saved workflows, detailed overrides, get, extend and doctor.${childSafe ? " Agent-definition mutations remain blocked." : " Includes agent-definition management."} Ordinary delegation and control use delegate and agent_runs. After loading, call subagent with { action: "list" } before execution.`,
-		promptSnippet: "Load advanced subagent orchestration; use delegate and agent_runs for ordinary work.",
-		parameters: Type.Object({}),
-		async execute() {
-			if (!pi.getAllTools().some((tool) => tool.name === "subagent")) {
+		description: `Enable agent_runs for profiles, history and run controls; advanced:false loads only those controls. By default also enable advanced subagent orchestration: parallel groups, chains, saved workflows, detailed overrides, get, extend and doctor.${childSafe ? " Agent-definition mutations remain blocked." : " Includes agent-definition management."} Ordinary delegation and control use delegate and agent_runs. After loading advanced workflows, call subagent with { action: "list" } before execution.`,
+		promptSnippet: "Discover profiles/history with advanced:false, or load full subagent orchestration by default.",
+		parameters: Type.Object({ advanced: Type.Optional(Type.Boolean({ description: "Also enable advanced orchestration (default true); false loads only agent_runs for profiles, history and controls." })) }),
+		async execute(_id, params) {
+			const advanced = params.advanced !== false;
+			if (advanced && !pi.getAllTools().some((tool) => tool.name === "subagent" && !("namespace" in tool && tool.namespace))) {
 				throw new Error("Subagent is unavailable because the full tool is excluded from this session.");
 			}
-			const active = pi.getActiveTools();
-			const added = !active.includes("subagent");
-			if (added) pi.setActiveTools([...active, "subagent"]);
+			if (!advanced && !pi.getAllTools().some((tool) => tool.name === "agent_runs" && !("namespace" in tool && tool.namespace))) throw new Error("Run controls are excluded from this session.");
+			const added = !pi.getActiveTools().includes(advanced ? "subagent" : "agent_runs");
+			activateTools(pi, advanced ? ["agent_runs", "subagent"] : ["agent_runs"]);
 			return {
-				content: [{ type: "text" as const, text: [`Subagent ${added ? "enabled" : "already enabled"}.`, ...guidelines.map((line) => `- ${line}`)].join("\n") }],
+				content: [{ type: "text" as const, text: advanced ? [`Subagent ${added ? "enabled" : "already enabled"}.`, ...guidelines.map((line) => `- ${line}`)].join("\n") : "Run controls enabled. Use agent_runs({action:'profiles'}) to discover agents or agent_runs({action:'list'}) for owned history." }],
 				details: {},
 			};
 		},
 	});
-	const resetActivation = (_event?: unknown, ctx?: ExtensionContext) => {
-		const available = pi.getAllTools();
-		// An explicit subagent-only policy must remain usable without an excluded loader.
-		if (!available.some((tool) => tool.name === "load_subagent")) return;
-		// Native recovery resolves original calls against active tools, including after restart.
-		const keepAdvanced = options.keepAdvancedActive || (ctx as AsyncContext | undefined)?.getPendingToolCalls?.().some((call) => call.toolName === "subagent");
-		const active = pi.getActiveTools();
-		const reset = keepAdvanced ? [...active] : active.filter((name) => name !== "subagent");
-		if (keepAdvanced && !reset.includes("subagent") && available.some((tool) => tool.name === "subagent")) reset.push("subagent");
-		if (!reset.includes("load_subagent")) reset.push("load_subagent");
-		if (reset.length !== active.length || reset.some((name, index) => name !== active[index])) pi.setActiveTools(reset);
+	const reconcile = (ctx: ExtensionContext) => {
+		const pending = (ctx as AsyncContext).getPendingToolCalls?.() ?? [];
+		activateTools(pi, pending.filter((call) => ["subagent", "delegate", "agent_runs"].includes(call.toolName)).map((call) => call.toolName));
+		if (options.keepAdvancedActive) activateTools(pi, ["subagent"]);
+		if (pending.some((call) => ["subagent", "delegate", "agent_runs"].includes(call.toolName))) activateTools(pi, ["agent_runs"]);
+		reconcileRuns();
+		if (!pi.getActiveTools().includes("agent_runs") && listSupervisorQuestions(ctx.sessionManager.getSessionId()).some((question) => question.state === "awaiting_input" || question.state === "answer_pending")) activateTools(pi, ["agent_runs"]);
 	};
-	pi.on("session_start", resetActivation);
-	pi.on("session_tree", resetActivation);
-	pi.on("session_compact", resetActivation);
+	const restore = (_event: unknown, ctx: ExtensionContext) => {
+		restoreLazyTools(pi, ctx, "load_subagent", ["subagent", "agent_runs"]);
+		reconcile(ctx);
+	};
+	pi.on("session_start", restore);
+	pi.on("session_tree", restore);
+	pi.on("session_compact", (_event, ctx) => reconcile(ctx));
+	return reconcileRuns;
 }

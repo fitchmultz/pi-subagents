@@ -54,7 +54,8 @@ if (inheritedEntries) {
 }
 const { session } = await sdk.createAgentSession({ cwd, agentDir, settingsManager, modelRuntime, model: faux.getModel(), resourceLoader: loader, sessionManager: manager });
 await session.bindExtensions({ mode: "json", onError: (error) => evidence.errors.push(error) });
-for (const name of ["delegate", "agent_runs", "load_subagent"]) assert.ok(session.agent.state.tools.some((tool) => tool.name === name), `${name} is active by default`);
+for (const name of ["delegate", "load_subagent"]) assert.ok(session.agent.state.tools.some((tool) => tool.name === name), `${name} is active by default`);
+assert.equal(session.agent.state.tools.some((tool) => tool.name === "agent_runs"), Boolean(seed), "run controls start lean and restore for saved actionable work/native calls");
 evidence.activeTools = session.agent.state.tools.map((tool) => tool.name);
 assert.equal(evidence.activeTools.includes("subagent"), advanced && phase === "resume", "advanced orchestration is active on startup only for its pending native call");
 session.subscribe((event) => {
@@ -190,6 +191,7 @@ try {
 			wireCall.arguments = JSON.stringify(args);
 		}
 		if (variant === "fork") {
+			await session.agent.state.tools.find((tool) => tool.name === "load_subagent").execute("profiles-loader", { advanced: false }, new AbortController().signal);
 			faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "inherited_inspection", name: "agent_runs", arguments: { action: "profiles" } }], { stopReason: "toolUse" }),
 				fauxAssistantMessage("Inherited completed fanout inspection")]);
 			await session.prompt("Inspect available child profiles");

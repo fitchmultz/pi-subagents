@@ -3,13 +3,15 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
-import { ASYNC_DIR } from "../../src/shared/types.ts";
+import { ASYNC_DIR, SLASH_SUBAGENT_REQUEST_EVENT, SLASH_SUBAGENT_RESPONSE_EVENT } from "../../src/shared/types.ts";
+import { PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT } from "../../src/slash/prompt-template-bridge.ts";
 import { createSupervisorQuestion, QUESTIONS_DIR, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
 	createAgentSession,
+	createEventBus,
 	DefaultResourceLoader,
 	SessionManager,
 	type AgentSession,
@@ -22,10 +24,12 @@ const extensionPath = path.join(projectRoot, "src/extension/index.ts");
 
 async function withSdkSession(
 	options: Pick<CreateAgentSessionOptions, "tools" | "excludeTools">,
-	check: (session: AgentSession) => Promise<void> | void,
+	check: (session: AgentSession, events: ReturnType<typeof createEventBus>) => Promise<void> | void,
 ): Promise<void> {
 	const agentDir = createTempDir("pi-subagent-sdk-tools-");
+	const events = createEventBus();
 	const resourceLoader = new DefaultResourceLoader({
+		eventBus: events,
 		cwd: projectRoot,
 		agentDir,
 		additionalExtensionPaths: [extensionPath],
@@ -41,7 +45,7 @@ async function withSdkSession(
 	});
 	try {
 		await session.bindExtensions({ mode: "print" });
-		await check(session);
+		await check(session, events);
 	} finally {
 		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		session.dispose();
@@ -54,10 +58,10 @@ function activeTool(session: AgentSession, name: string) {
 }
 
 describe("subagent lazy activation with SDK tool filters", () => {
-	it("keeps subagent active when an allowlist filters out its loader", async () => {
-		await withSdkSession({ tools: ["subagent"] }, (session) => {
-			assert.deepEqual(session.getAllTools().map((tool) => tool.name), ["subagent"]);
-			assert.deepEqual(session.getActiveToolNames(), ["subagent"]);
+	it("keeps controls active when an allowlist filters out their loader", async () => {
+		for (const name of ["subagent", "agent_runs"]) await withSdkSession({ tools: [name] }, (session) => {
+			assert.deepEqual(session.getAllTools().map((tool) => tool.name), [name]);
+			assert.deepEqual(session.getActiveToolNames(), [name]);
 		});
 	});
 
@@ -80,6 +84,8 @@ describe("subagent lazy activation with SDK tool filters", () => {
 			const delegate = activeTool(session, "delegate");
 			assert.ok(delegate);
 			assert.equal(delegate.constrainedSampling, undefined);
+			assert.equal(activeTool(session, "agent_runs"), undefined);
+			await activeTool(session, "load_subagent")!.execute("load-controls", { advanced: false }, new AbortController().signal);
 			const runs = activeTool(session, "agent_runs");
 			assert.ok(runs);
 			assert.equal(runs.constrainedSampling, undefined);
@@ -99,17 +105,30 @@ describe("subagent lazy activation with SDK tool filters", () => {
 			execFileSync("git", ["init", "-q", repo]);
 			execFileSync("git", ["-C", repo, "add", "."]);
 			execFileSync("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"]);
-			await withSdkSession({}, async (session) => {
+			await withSdkSession({}, async (session, events) => {
 				const delegate = activeTool(session, "delegate");
 				assert.ok(delegate);
-				for (const worktree of [false, true]) {
+				assert.equal(activeTool(session, "agent_runs"), undefined);
+				const invalid = await delegate.execute("invalid", { agent: "__missing__", task: "Do not launch", cwd: repo }, new AbortController().signal);
+				assert.equal(invalid.isError, true);
+				assert.equal(activeTool(session, "agent_runs"), undefined);
+				for (const route of ["delegate", "worktree", "subagent", "slash", "template"]) {
+					const worktree = route === "worktree";
 					mock.reset();
 					mock.onCall({ output: "COMPACT_DONE" });
-					const result = await delegate.execute(`delegate-${worktree}`, {
-						agent: "compact-probe", task: "Report completion", cwd: repo,
-						async: false, worktree, output: false,
-					}, new AbortController().signal);
+					if (route === "subagent") await activeTool(session, "load_subagent")!.execute("advanced", {}, new AbortController().signal);
+					session.setActiveToolsByName(session.getActiveToolNames().filter((name) => name !== "agent_runs"));
+					const params = { agent: "compact-probe", task: "Report completion", cwd: repo, async: false, ...(worktree ? { worktree: true } : {}), output: false };
+					const result = route === "slash" || route === "template"
+						? await new Promise((resolve, reject) => {
+							const timeout = setTimeout(() => { unsubscribe(); reject(new Error(`No ${route} response`)); }, 10_000);
+							const unsubscribe = events.on(route === "slash" ? SLASH_SUBAGENT_RESPONSE_EVENT : PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT, (response) => { clearTimeout(timeout); unsubscribe(); resolve(response); });
+							events.emit(route === "slash" ? SLASH_SUBAGENT_REQUEST_EVENT : PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT,
+								route === "slash" ? { requestId: route, params } : { requestId: route, ...params, context: "fresh", model: "openai/gpt-6-astra" });
+						})
+						: await activeTool(session, route === "subagent" ? "subagent" : "delegate")!.execute(route, params, new AbortController().signal);
 					assert.match(JSON.stringify(result), /COMPACT_DONE/);
+					assert.ok(activeTool(session, "agent_runs"), "real launches expose controls before the next request");
 					const callFile = fs.readdirSync(mock.dir).find((name) => name.startsWith("call-"));
 					assert.ok(callFile);
 					const call = JSON.parse(fs.readFileSync(path.join(mock.dir, callFile), "utf8"));
