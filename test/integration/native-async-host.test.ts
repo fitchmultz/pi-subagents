@@ -46,19 +46,23 @@ for (const variant of ["receipt", "advanced-receipt", "child-restart", "advanced
 		console.log(`Native receipt evidence: ${root}`);
 	}
 });
-for (const variant of ["receipt", "child-restart"]) test(`native background ${variant} completion survives owner restart exactly once`, { timeout: 60_000 }, async (t) => {
+for (const variant of ["receipt", "child-restart"]) for (const crashAt of [undefined, "before", "after"]) test(`native background ${variant} completion survives ${crashAt ? `crash ${crashAt} notification append` : "owner restart"} exactly once`, { timeout: 60_000 }, async (t) => {
 	if (typeof AgentSession.prototype.getPendingToolCalls !== "function") {
 		t.skip("host lacks public native async lifecycle"); return;
 	}
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-receipt-restart-"));
 	try {
-		for (const phase of ["receipt-seed", "receipt-resume", "receipt-reopen"]) {
+		for (const phase of ["receipt-seed", ...(crashAt ? [`receipt-crash-${crashAt}`] : []), "receipt-resume", "receipt-reopen"]) {
 			const result = spawnSync(process.execPath, [path.join(repo, "test/fixtures/native-async-parent.mjs"), root, repo, sdkRoot, phase, variant],
 				{ cwd: repo, encoding: "utf8", timeout: 25_000, maxBuffer: 2 * 1024 * 1024 });
-			assert.equal(result.status, 0, `${phase}: ${result.stderr || result.stdout || result.error?.message}`);
-			const evidence = JSON.parse(fs.readFileSync(path.join(root, `${phase}-evidence.json`), "utf8"));
+			assert.equal(result.status, phase.startsWith("receipt-crash-") ? 86 : 0, `${phase}: ${result.stderr || result.stdout || result.error?.message}`);
+			const evidence = JSON.parse(fs.readFileSync(path.join(root, phase.startsWith("receipt-crash-") ? "crash-evidence.json" : `${phase}-evidence.json`), "utf8"));
 			assert.equal(evidence.networkRequests, 0);
 			assert.deepEqual(evidence.errors, []);
+			if (phase.startsWith("receipt-crash-")) {
+				assert.equal(evidence.entries.filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify").length, crashAt === "after" ? 1 : 0);
+				assert.ok(!evidence.entries.some((entry) => entry.type === "custom" && entry.customType === "subagent-run" && entry.data.delivery), "no delivery claim may precede the persisted notification");
+			}
 			if (phase === "receipt-seed") {
 				fs.writeFileSync(path.join(root, "release-child"), "release");
 				const seed = JSON.parse(fs.readFileSync(path.join(root, "seed.json"), "utf8"));

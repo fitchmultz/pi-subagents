@@ -13,6 +13,7 @@ interface ChainStepResult {
 }
 
 export interface SubagentNotifyDetails {
+	completion?: { runId: string; key: string };
 	agent: string;
 	status: "completed" | "failed" | "blocked" | "paused";
 	taskInfo?: string;
@@ -24,6 +25,8 @@ export interface SubagentNotifyDetails {
 
 interface SubagentResult {
 	id: string | null;
+	runId?: string;
+	completionKey?: string;
 	agent: string | null;
 	success: boolean;
 	summary: string;
@@ -102,6 +105,11 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 				customType: "subagent-notify",
 				content,
 				display: true,
+				...(result.runId && result.completionKey ? { details: {
+					agent, status, taskInfo: taskInfo.trim(), resultPreview: displaySummary.trim(),
+					...(sessionLine ? { sessionLabel: sessionLine.slice(0, sessionLine.indexOf(":")).toLowerCase(), sessionValue: sessionLine.slice(sessionLine.indexOf(":") + 1).trim() } : {}),
+					completion: { runId: result.runId, key: result.completionKey },
+				} satisfies SubagentNotifyDetails } : {}),
 			},
 			{ triggerTurn: true },
 		);

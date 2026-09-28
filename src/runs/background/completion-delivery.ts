@@ -7,7 +7,7 @@ import { nativeInvocationTarget, nativeInvocations } from "../shared/native-asyn
 import { finalizedChildUsage, type registerParentUsage } from "../shared/parent-usage.ts";
 import { ownedRunView, rememberOwnedRun } from "../shared/run-records.ts";
 import { getRunMetadataDir, saveAsyncRunResult } from "../shared/supervisor-questions.ts";
-import registerSubagentNotify from "./notify.ts";
+import registerSubagentNotify, { type SubagentNotifyDetails } from "./notify.ts";
 import { createResultWatcher } from "./result-watcher.ts";
 
 /** The same saved-parent delivery contract applies to root and child-safe callers. */
@@ -34,20 +34,40 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 				&& (target.index === undefined || (state.ownedRuns?.get(runId)?.mode === "single" && target.index === 0));
 		});
 	};
-	const watcher = createResultWatcher(pi, state, RESULTS_DIR, 10 * 60 * 1000);
+	const reconcileDelivery = (runId: string, completionKey: string): boolean => {
+		const ctx = state.lastUiContext;
+		const run = state.ownedRuns?.get(runId);
+		if (!ctx || !run) return false;
+		const receipt = ctx.sessionManager.getEntries().find((entry) => {
+			if (entry.type !== "custom_message" || entry.customType !== "subagent-notify") return false;
+			const completion = (entry.details as SubagentNotifyDetails | undefined)?.completion;
+			return completion?.runId === runId && completion.key === completionKey;
+		});
+		if (!receipt) return false;
+		// The notification entry is the authority, including after a crash before accounting.
+		parentUsage.record(finalizedChildUsage(ownedRunView(run, state).children), ctx);
+		rememberOwnedRun(state, { ...run, delivery: { notifiedAt: Date.parse(receipt.timestamp), intercomDelivered: false } });
+		return true;
+	};
+	const watcher = createResultWatcher(pi, state, RESULTS_DIR, 10 * 60 * 1000, { reconcileDelivery });
 	let unsubscribe: (() => void) | undefined;
 	let unsubscribeNotify: (() => void) | undefined;
 	const start = () => {
 		if (!unsubscribe) {
 			unsubscribeNotify = registerSubagentNotify(pi);
 			unsubscribe = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (data) => {
-				const result = data as AsyncResultFile & { intercomResultDelivered?: boolean; suppressNotification?: boolean };
+				const result = data as AsyncResultFile & { completionKey?: string; intercomResultDelivered?: boolean; suppressNotification?: boolean };
 				const run = state.ownedRuns?.get(result.runId ?? result.id ?? "");
 				if (!run || result.sessionId !== state.currentSessionId) return;
 				if (state.lastUiContext) parentUsage.record(finalizedChildUsage(ownedRunView(run, state).children), state.lastUiContext);
 				if (result.suppressNotification === true) return;
 				if (result.runtimeVersion !== 2 && !fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))) saveAsyncRunResult(run.runId, result);
-				rememberOwnedRun(state, { ...run, delivery: { notifiedAt: Date.now(), intercomDelivered: result.intercomResultDelivered === true } });
+				if (result.intercomResultDelivered === true) {
+					rememberOwnedRun(state, { ...run, delivery: { notifiedAt: Date.now(), intercomDelivered: true } });
+				} else if (result.completionKey) {
+					// sendMessage may only have queued work. Never persist delivery before its journal entry.
+					reconcileDelivery(run.runId, result.completionKey);
+				}
 			});
 		}
 		fs.mkdirSync(RESULTS_DIR, { recursive: true });

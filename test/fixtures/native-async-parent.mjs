@@ -48,6 +48,16 @@ assert.deepEqual(loader.getExtensions().errors, []);
 const sourceBytes = phase === "fork" ? fs.readFileSync(seed.sessionFile, "utf8") : undefined;
 const manager = phase === "fork" ? sdk.SessionManager.forkFrom(seed.sessionFile, cwd, path.join(root, "forks"))
 	: seed ? sdk.SessionManager.open(seed.sessionFile) : sdk.SessionManager.create(cwd, path.join(root, "sessions"));
+if (phase.startsWith("receipt-crash-")) {
+	const append = manager.appendCustomMessageEntry.bind(manager);
+	manager.appendCustomMessageEntry = (customType, ...args) => {
+		if (customType !== "subagent-notify") return append(customType, ...args);
+		if (phase === "receipt-crash-after") append(customType, ...args);
+		manager.flush();
+		fs.writeFileSync(path.join(root, "crash-evidence.json"), JSON.stringify({ ...evidence, entries: manager.getEntries() }));
+		process.exit(86); // Terminate at the real journal boundary, without extension shutdown.
+	};
+}
 const inheritedEntries = phase === "fork" ? sdk.SessionManager.open(seed.sessionFile).getEntries() : undefined;
 if (inheritedEntries) {
 	assert.notEqual(manager.getSessionId(), seed.sessionId);
@@ -158,10 +168,14 @@ try {
 			assert.equal(delta.reduce((sum, usage) => sum + usage.cost, 0), 1, "the grandparent imports the direct child's native journal, including its nested work");
 			evidence.checks.push("actual child-safe tool records grandchild usage once through native journal; inspection stays pure and never relaunches");
 		}
+	} else if (phase.startsWith("receipt-crash-")) {
+		await until(() => false, "fixture must exit at the notification journal boundary");
 	} else if (phase === "receipt-resume" || phase === "receipt-reopen") {
 		assert.notEqual(process.pid, seed.pid);
 		const notices = () => manager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify");
 		await until(() => notices().length >= 1, "offline completion wakes the reopened parent");
+		await until(() => manager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "subagent-run" && entry.data.runId === seed.runId && entry.data.delivery)
+			&& session.getSessionStats().cost === 1, "delivery and usage recover from saved notification evidence");
 		await delay(350);
 		await session.waitForIdle();
 		assert.equal(notices().length, 1, "fresh process must not replay delivered completion");
@@ -171,7 +185,8 @@ try {
 		assert.equal(resultEntries()[0].message.details.asyncId, seed.runId);
 		assert.ok(manager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "subagent-run" && entry.data.runId === seed.runId && entry.data.delivery));
 		assert.equal(session.getSessionStats().cost, 1);
-		assert.ok(manager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "assistant" && JSON.stringify(entry.message.content).includes("Saved completion received")), "offline completion wakes the model");
+		const crash = fs.existsSync(path.join(root, "crash-evidence.json")) ? JSON.parse(fs.readFileSync(path.join(root, "crash-evidence.json"), "utf8")) : undefined;
+		if (crash?.phase !== "receipt-crash-after") assert.ok(manager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "assistant" && JSON.stringify(entry.message.content).includes("Saved completion received")), "offline completion wakes the model");
 		evidence.checks.push("offline receipt completion wakes its saved owner once and remains deduplicated in a fresh process");
 	} else if (phase === "receipt" || phase === "receipt-seed") {
 		if (advanced) await session.agent.state.tools.find((tool) => tool.name === "load_subagent").execute("load", {}, new AbortController().signal);

@@ -35,6 +35,7 @@ type ResultWatcherTimers = {
 };
 
 type ResultWatcherDeps = {
+	reconcileDelivery?: (runId: string, completionKey: string) => boolean;
 	fs?: ResultWatcherFs;
 	timers?: ResultWatcherTimers;
 };
@@ -108,7 +109,9 @@ export function createResultWatcher(
 			const data = isDurableRun(notification) && !durableFile ? readResult(path.join(getRunMetadataDir(runId), "result.json")) : notification;
 			if ((data.runId ?? data.id ?? runId) !== runId) throw new Error(`Result identity does not match notification '${runId}'.`);
 			if (data.sessionId ? data.sessionId !== state.currentSessionId : !state.ownedRuns?.has(runId)) return;
-			if (state.isRunResultConsumed?.(runId) || (isDurableRun(data) && state.ownedRuns?.get(runId)?.delivery)) { consumeNotification(); return; }
+			const completionKey = buildCompletionKey({ ...data, id: runId }, "result");
+			if (state.isRunResultConsumed?.(runId) || (isDurableRun(data) && state.ownedRuns?.get(runId)?.delivery)
+				|| deps.reconcileDelivery?.(runId, completionKey)) { consumeNotification(); return; }
 			if (state.waitingRuns?.has(runId) || state.hasNativeResultOwner?.(runId)) {
 				pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { ...data, runId, suppressNotification: true, intercomResultDelivered: false });
 				return;
@@ -124,7 +127,6 @@ export function createResultWatcher(
 				}
 			}
 			const now = Date.now();
-			const completionKey = buildCompletionKey(data, `result:${file}`);
 
 			const hasResultChildren = Array.isArray(data.results) && data.results.length > 0;
 			const resultChildren = hasResultChildren
@@ -197,6 +199,7 @@ export function createResultWatcher(
 			pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
 				...eventData,
 				runId,
+				completionKey,
 				intercomResultDelivered,
 				...(nestedChildren?.length ? { nestedChildren } : {}),
 				...(Array.isArray(data.results) ? {
