@@ -45,7 +45,7 @@ interface SubagentResult {
 	suppressNotification?: boolean;
 }
 
-export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
+export default function registerSubagentNotify(pi: ExtensionAPI, onQueued?: (completionKey: string) => void): () => void {
 	const unsubscribeStoreKey = "__pi_subagents_notify_unsubscribe__";
 	const globalStore = globalThis as Record<string, unknown>;
 	const previousUnsubscribe = globalStore[unsubscribeStoreKey];
@@ -65,7 +65,8 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 		if (result.intercomResultDelivered === true || result.suppressNotification === true) return;
 		const now = Date.now();
 		const key = buildCompletionKey(result, "notify");
-		if (markSeenWithTtl(seen, key, now, ttlMs)) return;
+		// Owned completion keys are governed by the shared queue/journal lifecycle, not a TTL.
+		if ((!onQueued || !result.completionKey) && markSeenWithTtl(seen, key, now, ttlMs)) return;
 
 		const agent = result.agent ?? "unknown";
 		const summary = typeof result.summary === "string" ? result.summary : "";
@@ -113,6 +114,7 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			},
 			{ triggerTurn: true },
 		);
+		if (result.completionKey) onQueued?.(result.completionKey);
 	};
 
 	const unsubscribe = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);

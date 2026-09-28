@@ -12,6 +12,11 @@ import { createResultWatcher } from "./result-watcher.ts";
 
 /** The same saved-parent delivery contract applies to root and child-safe callers. */
 export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState, parentUsage: ReturnType<typeof registerParentUsage>) {
+	// Host queues can survive extension reload, but not process restart. Values track the one idle retry.
+	const store = globalThis as Record<string, unknown>;
+	const queueKey = "__pi_subagents_queued_notifications__";
+	const queued = store[queueKey] instanceof Map ? store[queueKey] as Map<string, boolean> : new Map<string, boolean>();
+	store[queueKey] = queued;
 	state.isRunResultConsumed = (runId) => {
 		const run = state.ownedRuns?.get(runId);
 		return state.lastUiContext?.sessionManager.getEntries().some((entry) => {
@@ -44,17 +49,28 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 			return completion?.runId === runId && completion.key === completionKey;
 		});
 		if (!receipt) return false;
+		queued.delete(completionKey);
 		// The notification entry is the authority, including after a crash before accounting.
 		parentUsage.record(finalizedChildUsage(ownedRunView(run, state).children), ctx);
 		rememberOwnedRun(state, { ...run, delivery: { notifiedAt: Date.parse(receipt.timestamp), intercomDelivered: false } });
 		return true;
 	};
-	const watcher = createResultWatcher(pi, state, RESULTS_DIR, 10 * 60 * 1000, { reconcileDelivery });
+	const watcher = createResultWatcher(pi, state, RESULTS_DIR, 10 * 60 * 1000, {
+		reconcileDelivery: (runId, key) => {
+			if (reconcileDelivery(runId, key)) return true;
+			const retried = queued.get(key);
+			if (retried === undefined) return false;
+			if (retried || !state.lastUiContext?.isIdle()) return true;
+			// Idle without a journal entry means the host dropped the first queued message.
+			state.completionSeen.delete(key);
+			return false;
+		},
+	});
 	let unsubscribe: (() => void) | undefined;
 	let unsubscribeNotify: (() => void) | undefined;
 	const start = () => {
 		if (!unsubscribe) {
-			unsubscribeNotify = registerSubagentNotify(pi);
+			unsubscribeNotify = registerSubagentNotify(pi, (key) => queued.set(key, queued.has(key)));
 			unsubscribe = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (data) => {
 				const result = data as AsyncResultFile & { completionKey?: string; intercomResultDelivered?: boolean; suppressNotification?: boolean };
 				const run = state.ownedRuns?.get(result.runId ?? result.id ?? "");
