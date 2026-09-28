@@ -9,7 +9,7 @@ const [root, repo, sdkRoot, phase, variant] = process.argv.slice(2);
 const cwd = path.join(root, "project"), agentDir = path.join(root, "agent");
 const portableChild = phase.startsWith("portable-child");
 const continuation = variant === "continue-restart" || variant === "answer-restart";
-const advanced = variant === "advanced-child-restart" || variant === "advanced-parent-restart";
+const advanced = variant === "advanced-child-restart" || variant === "advanced-parent-restart" || variant === "advanced-receipt";
 const expectedChildren = continuation ? 2 : 1;
 const childSafe = portableChild || continuation || variant === "fork" || variant === "child-restart" || variant === "advanced-child-restart";
 const providerSteering = variant.startsWith("steering");
@@ -33,11 +33,12 @@ if (childSafe) Object.assign(process.env, { PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_
 const evidence = { phase, variant, sdkRoot, nativeSessionManagerMatches: nativeSession.SessionManager === sdk.SessionManager,
 	pid: process.pid, networkRequests: 0, errors: [], checks: [], providerInputs: [], steering: [] };
 globalThis.fetch = async () => { evidence.networkRequests++; throw new Error("Network is forbidden in native async fixtures"); };
-const seed = phase === "seed" || portableChild ? undefined : JSON.parse(fs.readFileSync(path.join(root, "seed.json"), "utf8"));
+const seed = phase === "seed" || phase === "receipt" || phase === "receipt-seed" || portableChild ? undefined : JSON.parse(fs.readFileSync(path.join(root, "seed.json"), "utf8"));
 if (seed && variant === "canonical-result") assert.equal(fs.existsSync(path.join(RESULTS_DIR, `${seed.runId}.json`)), false, "fresh startup has no temporary result notification");
 const modelRuntime = await sdk.ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
 const faux = fauxProvider({ provider: "native-parent-fixture" });
 modelRuntime.registerNativeProvider(faux.provider);
+faux.setResponses([fauxAssistantMessage("Saved completion received")]);
 const settingsManager = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
 settingsManager.setProjectTrusted(true);
 const loader = new sdk.DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noContextFiles: true, noThemes: true, noPromptTemplates: true,
@@ -157,6 +158,50 @@ try {
 			assert.equal(delta.reduce((sum, usage) => sum + usage.cost, 0), 1, "the grandparent imports the direct child's native journal, including its nested work");
 			evidence.checks.push("actual child-safe tool records grandchild usage once through native journal; inspection stays pure and never relaunches");
 		}
+	} else if (phase === "receipt-resume" || phase === "receipt-reopen") {
+		assert.notEqual(process.pid, seed.pid);
+		const notices = () => manager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify");
+		await until(() => notices().length >= 1, "offline completion wakes the reopened parent");
+		await delay(350);
+		await session.waitForIdle();
+		assert.equal(notices().length, 1, "fresh process must not replay delivered completion");
+		assert.match(notices()[0].content, /NATIVE_ORIGINAL_CALL_RESULT/);
+		assert.equal(session.getPendingToolCalls().length, 0);
+		assert.equal(resultEntries().length, 1);
+		assert.equal(resultEntries()[0].message.details.asyncId, seed.runId);
+		assert.ok(manager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "subagent-run" && entry.data.runId === seed.runId && entry.data.delivery));
+		assert.equal(session.getSessionStats().cost, 1);
+		assert.ok(manager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "assistant" && JSON.stringify(entry.message.content).includes("Saved completion received")), "offline completion wakes the model");
+		evidence.checks.push("offline receipt completion wakes its saved owner once and remains deduplicated in a fresh process");
+	} else if (phase === "receipt" || phase === "receipt-seed") {
+		if (advanced) await session.agent.state.tools.find((tool) => tool.name === "load_subagent").execute("load", {}, new AbortController().signal);
+		const call = { type: "toolCall", id: originalCallId, name: toolName, arguments: args, async: true, responsesItem: wireCall };
+		faux.setResponses([fauxAssistantMessage([call], { stopReason: "toolUse" }), fauxAssistantMessage("Receipt received")]);
+		await session.prompt("Start background work and continue independently");
+		await session.waitForIdle();
+		assert.equal(resultEntries().length, 1);
+		const receipt = resultEntries()[0].message;
+		assert.equal(receipt.isError, false, JSON.stringify(receipt));
+		assert.ok(receipt.details.asyncId);
+		assert.equal(receipt.details.wait, undefined);
+		assert.equal(session.getPendingToolCalls().length, 0, "background work cannot hold the native call open");
+		assert.ok(!manager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "subagent-invocation"));
+		await until(() => children().length === 1, "background child starts");
+		if (phase === "receipt-seed") {
+			fs.writeFileSync(path.join(root, "seed.json"), JSON.stringify({ sessionFile: manager.getSessionFile(), sessionId: manager.getSessionId(), runId: receipt.details.asyncId, pid: process.pid }));
+			evidence.checks.push("receipt saved and native call closed before parent shutdown; child remains running");
+		} else {
+			faux.setResponses([fauxAssistantMessage("Appended completion received")]);
+			fs.writeFileSync(path.join(root, "release-child"), "release");
+			const notices = () => manager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify");
+			await until(() => notices().length === 1, "completion appends a notification");
+			await session.waitForIdle();
+			assert.match(notices()[0].content, /NATIVE_ORIGINAL_CALL_RESULT/);
+			assert.ok(manager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "assistant" && JSON.stringify(entry.message.content).includes("Appended completion received")), "completion wakes the idle model");
+			assert.equal(resultEntries().length, 1, "completion must not replace or duplicate the receipt");
+			assert.equal(session.getSessionStats().cost, 1);
+			evidence.checks.push("native call settles with a receipt before child release; completion appends one wake-up message and one usage charge");
+		}
 	} else if (phase === "seed") {
 		if (advanced) {
 			faux.setResponses([fauxAssistantMessage([{ type: "toolCall", id: "load_advanced", name: "load_subagent", arguments: {} }], { stopReason: "toolUse" }),
@@ -198,6 +243,20 @@ try {
 			assert.equal(manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "toolResult"
 				&& entry.message.toolCallId === "inherited_inspection").message.isError, false);
 		}
+		// Recreate an older unresolved invocation; current background calls intentionally return receipts.
+		const legacyTool = session.agent.state.tools.find((tool) => tool.name === toolName);
+		const executeReceipt = legacyTool.execute.bind(legacyTool);
+		legacyTool.execute = async (id, params, signal, onUpdate) => {
+			const receipt = await executeReceipt(id, { ...params, async: true }, undefined, onUpdate);
+			assert.equal(receipt.isError, undefined, JSON.stringify(receipt));
+			manager.appendCustomEntry("subagent-invocation", {
+				toolCallId: id, ownerSessionId: manager.getSessionId(),
+				runId: params.action === "answer" ? params.id : receipt.details.asyncId,
+				kind: params.action === "answer" ? "answer" : "launch",
+				...(params.action === "answer" ? { index: 0, questionId: params.questionId, answer: params.message } : {}),
+			});
+			return legacyTool.resume(id, params, signal, onUpdate);
+		};
 		const call = { type: "toolCall", id: originalCallId, name: toolName, arguments: args, async: true, responsesItem: wireCall };
 		faux.setResponses([fauxAssistantMessage([call, { type: "text", text: "Independent parent answer while the child runs" }], { responseId: "initial-response", stopReason: "toolUse" }), fauxAssistantMessage("Ready for child result")]);
 		const run = session.prompt("Delegate controlled work");
@@ -261,7 +320,7 @@ try {
 			fs.rmSync(path.join(RESULTS_DIR, `${binding.runId}.json`));
 			evidence.checks.push("only the canonical result remains before the fresh parent resumes");
 		}
-		evidence.checks.push("original call journaled before launch; abort leaves durable work pending without a tool result");
+		evidence.checks.push("legacy call binding seeded; abort leaves durable work pending without a tool result");
 	} else if (phase === "fork") {
 		assert.notEqual(process.pid, seed.pid);
 		assert.equal(session.getPendingToolCalls()[0].toolCallId, originalCallId);

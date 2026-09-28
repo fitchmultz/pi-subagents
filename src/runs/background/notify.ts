@@ -42,7 +42,7 @@ interface SubagentResult {
 	suppressNotification?: boolean;
 }
 
-export default function registerSubagentNotify(pi: ExtensionAPI): void {
+export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 	const unsubscribeStoreKey = "__pi_subagents_notify_unsubscribe__";
 	const globalStore = globalThis as Record<string, unknown>;
 	const previousUnsubscribe = globalStore[unsubscribeStoreKey];
@@ -107,5 +107,7 @@ export default function registerSubagentNotify(pi: ExtensionAPI): void {
 		);
 	};
 
-	globalStore[unsubscribeStoreKey] = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);
+	const unsubscribe = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);
+	globalStore[unsubscribeStoreKey] = unsubscribe;
+	return unsubscribe;
 }

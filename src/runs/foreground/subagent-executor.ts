@@ -304,7 +304,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const orchestratorTarget = resolveOrchestratorIntercomTarget(deps.pi.events, fallbackTarget);
 		const intercomBridge = resolveIntercomBridge(orchestratorTarget);
 		const runId = randomUUID();
-		bindNativeInvocation(deps.pi, ctx, params.nativeToolCallId, { runId, kind: "launch", ...(params.includeProgress ? { includeProgress: true } : {}) });
 		const agentNameAtIndex = buildFlatAgentNameResolver(effectiveParams);
 		const resolveContextForAgent = (agentName: string | undefined) =>
 			resolveAgentContext(effectiveParams.context, agentName, discoveredAgents);
@@ -371,6 +370,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const asyncMode = resolveAsyncExecutionMode(effectiveParams, deps.asyncByDefault);
 		const backgroundRequestedWhileClarifying = (hasChain || hasTasks) && asyncMode.backgroundRequestedWhileClarifying;
 		const effectiveAsync = asyncMode.effectiveAsync;
+		if (!effectiveAsync) bindNativeInvocation(deps.pi, ctx, params.nativeToolCallId, { runId, kind: "launch", ...(params.includeProgress ? { includeProgress: true } : {}) });
 		const foregroundTimeout = resolveForegroundTimeoutMs(effectiveParams);
 		if (foregroundTimeout.error) return buildRequestedModeError(effectiveParams, foregroundTimeout.error);
 		if (effectiveAsync && foregroundTimeout.timeoutMs !== undefined) {
@@ -455,7 +455,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				asyncDir: result.details.asyncDir, pid: result.details.asyncPid ?? deps.state.asyncJobs.get(runId)?.pid,
 				startedAt: Date.now(), children: assignments.map(({ agent, task, label }, index) => ({ agent, index, task, label, ...(assignmentNodes?.[index] ? { workflowNodeId: assignmentNodes[index]!.id } : {}) })),
 			});
-			if ((!effectiveAsync || params.nativeToolCallId) && result.details.asyncId) {
+			if (!effectiveAsync && result.details.asyncId) {
 				return withForkContext(await waitForOwnedRun({ id: runId, deps, ctx, signal, onUpdate: onUpdateWithContext,
 					cancelNewRun: !effectiveAsync, executionResult: true, includeProgress: effectiveParams.includeProgress, nativeAsync: Boolean(params.nativeToolCallId) }), invocationContext);
 			}
@@ -470,9 +470,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 
 	return { execute: async (...args) => {
 		const [id, params, signal, onUpdate, ctx, executionCwd] = args;
-		const nativeAsync = isNativeAsyncCall(ctx, id) && (!params.action || params.action === "resume" || params.action === "answer");
+		// Launches bind only after resolving foreground mode; background controls never bind.
+		const nativeAsync = isNativeAsyncCall(ctx, id) && (!params.action || (params.async === false && (params.action === "resume" || params.action === "answer")));
 		const request = { ...params, nativeToolCallId: nativeAsync ? id : undefined };
-		const waiting = (params.async === false || nativeAsync) && (params.action === "resume" || params.action === "answer");
+		const waiting = params.async === false && (params.action === "resume" || params.action === "answer");
 		const before = waiting ? new Set(deps.state.ownedRuns?.keys()) : undefined;
 		let result = await execute(id, request, signal, onUpdate, ctx, executionCwd);
 		// Launch/answer receipts and claims are saved before waiting; execution failure must not undo a successful launch.

@@ -20,6 +20,9 @@ import { type Details, type SubagentExecutionResult, type SubagentState } from "
 import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { OWNED_RUN_ENTRY, ownedRunList, restoreOwnedRuns } from "../runs/shared/run-records.ts";
+import { createCompletionDelivery } from "../runs/background/completion-delivery.ts";
+import { onNativeCheckpoint } from "../shared/native-checkpoint.ts";
+import { subagentCheckpointBlocker } from "../runs/shared/checkpoint.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
@@ -211,12 +214,18 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	state.persistOwnedRun = (run) => pi.appendEntry(OWNED_RUN_ENTRY, run);
 	const ensureSessionState = (ctx: ExtensionContext) => {
 		const sessionId = resolveCurrentSessionId(ctx.sessionManager);
+		state.lastUiContext = ctx;
 		if (state.currentSessionId === sessionId) return;
+		completionDelivery.stop();
 		state.foregroundRuns?.clear();
 		restoreOwnedRuns(state, ctx);
 		state.currentSessionId = sessionId;
+		completionDelivery.start();
 	};
-	pi.on("session_start", (_event, ctx) => ensureSessionState(ctx));
+	pi.on("session_start", (_event, ctx) => {
+		ensureSessionState(ctx);
+		completionDelivery.start();
+	});
 	const executor = createSubagentExecutor({
 		pi,
 		state,
@@ -234,6 +243,14 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	const compact = config.compactChildTools !== false;
 	const toolNames = compact ? ["subagent", "delegate", "agent_runs"] : ["subagent"];
 	const parentUsage = registerParentUsage(pi, toolNames);
+	const completionDelivery = createCompletionDelivery(pi, state, parentUsage);
+	onNativeCheckpoint(pi, async (event, ctx) => {
+		await completionDelivery.holdCheckpoint(event);
+		event.signal.throwIfAborted();
+		restoreOwnedRuns(state, ctx, { strict: true });
+		const reason = subagentCheckpointBlocker(state, ctx.sessionManager.getSessionId());
+		return reason ? { sleepReady: false, reason } : { sleepReady: true };
+	});
 	const adaptToolResult = registerToolResultAdapter(pi, toolNames);
 	const toRegisteredToolResult = (result: SubagentExecutionResult, ctx: ExtensionContext) => adaptToolResult(
 		result.details.wait?.status === "completed" && result.details.run?.ownerSessionId === ctx.sessionManager.getSessionId()
@@ -281,6 +298,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	const controlInboxTimer = startNestedControlInboxListener(pi, state);
 	const clearControlInboxTimer = (): void => {
 		if (controlInboxTimer) clearInterval(controlInboxTimer);
+		completionDelivery.stop();
 	};
 	globalStore[controlInboxCleanupStoreKey] = clearControlInboxTimer;
 

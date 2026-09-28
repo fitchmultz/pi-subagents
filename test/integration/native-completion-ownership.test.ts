@@ -24,6 +24,7 @@ const { getRunMetadataDir, saveQuestionOwner, saveRunStatus, saveAsyncRunResult,
 const { RESULTS_DIR } = await import("../../src/shared/types.ts");
 
 for (const scenario of [
+	{ name: "background launch receipt", kind: "launch", index: undefined, finished: true, receipt: true, suppress: false },
 	{ name: "completed child answer", kind: "answer", index: 1, finished: true, suppress: false },
 	{ name: "completed child follow-up", kind: "delivery", index: 1, finished: true, suppress: false },
 	{ name: "pending child follow-up", kind: "delivery", index: 1, finished: false, suppress: false },
@@ -53,11 +54,11 @@ for (const scenario of [
 	if (scenario.finished) manager.appendMessage(ai.fauxAssistantMessage(
 		ai.fauxToolCall("agent_runs", { action: scenario.kind === "answer" ? "answer" : "resume", id: runId, index: scenario.index }, { id: callId }),
 		{ stopReason: "toolUse" }));
-	bindNativeInvocation({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, { sessionManager: manager }, callId,
+	if (!("receipt" in scenario)) bindNativeInvocation({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, { sessionManager: manager }, callId,
 		{ runId, index: scenario.index, kind: scenario.kind, accepted: true, ...(questionId ? { questionId, answer: "Yes" } : {}) });
 	if (scenario.finished) manager.appendMessage({ role: "toolResult", toolName: "agent_runs", toolCallId: callId,
 		content: [{ type: "text", text: "Call finished" }], timestamp: Date.now(), isError: "failed" in scenario,
-		details: "failed" in scenario ? {} : { mode: "management", results: [], wait: { runId, index: scenario.index, status: "completed" } } });
+		details: "receipt" in scenario ? { mode: "single", results: [], asyncId: runId } : "failed" in scenario ? {} : { mode: "management", results: [], wait: { runId, index: scenario.index, status: "completed" } } });
 	manager.appendMessage(ai.fauxAssistantMessage("Waiting for completion"));
 	const final = { runtimeVersion: 2, id: runId, mode, sessionId: manager.getSessionFile(), state: "complete", success: true, timestamp: Date.now(),
 		results: children.map(({ agent, index }) => ({ agent, success: true, exitCode: 0, output: `CHILD_${index}_RESULT` })) };
@@ -88,6 +89,7 @@ for (const scenario of [
 			await session.waitForIdle();
 			const visible = sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify");
 			assert.equal(visible.length, scenario.suppress ? 0 : 1, `reopen=${reopen}: whole-run completion is delivered exactly once`);
+			if (reopen && !scenario.suppress) assert.equal(completions.length, 0, "saved delivery prevents replay independently of notification TTL dedupe");
 			if (!reopen && !(scenario.finished && scenario.suppress)) assert.ok(completions.length > 0, "watcher scanned the result");
 			assert.ok(completions.every((event) => Boolean(event.suppressNotification) === scenario.suppress));
 			assert.equal(fs.existsSync(notice), !scenario.finished && scenario.suppress, "only pending native owners retain their notification receipt");
