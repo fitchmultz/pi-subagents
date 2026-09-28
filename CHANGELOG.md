@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Keep provider prompt caches intact during background delegation on native-async models. Background launches and background `continue`/`answer` controls return an immediate receipt instead of holding the native async tool call open, and completion arrives as one appended wake-up notification for both top-level sessions and nested children, including after the owner reopens. A late native result is admitted at its original call position, so the provider stopped reading the cache at that call. Foreground waits, other run controls, and recovery of native calls already in flight are unchanged.
+
 ## [0.43.0] - 2026-09-27
 
 ### Changed

@@ -8,6 +8,7 @@ import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { after, test } from "node:test";
+import { Type } from "typebox";
 
 const root = fs.mkdtempSync(path.join(tmpdir(), "native-completion-ownership-"));
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
@@ -22,8 +23,114 @@ const ai = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
 const { bindNativeInvocation } = await import("../../src/runs/shared/native-async.ts");
 const { getRunMetadataDir, saveQuestionOwner, saveRunStatus, saveAsyncRunResult, createSupervisorQuestion, saveQuestionAnswer, recordQuestionDelivery } = await import("../../src/runs/shared/supervisor-questions.ts");
 const { RESULTS_DIR } = await import("../../src/shared/types.ts");
+const { default: registerRoot } = await import("../../src/extension/index.ts");
+const { default: registerChild } = await import("../../src/extension/fanout-child.ts");
+
+for (const childSafe of [false, true]) for (const drop of [false, true]) test(`${childSafe ? "child-safe" : "root"} queued completion ${drop ? "retries once after being dropped" : "survives streaming beyond the TTL"}`, async (t) => {
+	const previousChild = process.env.PI_SUBAGENT_CHILD, previousFanout = process.env.PI_SUBAGENT_FANOUT_CHILD;
+	process.env.PI_SUBAGENT_CHILD = childSafe ? "1" : "0";
+	process.env.PI_SUBAGENT_FANOUT_CHILD = childSafe ? "1" : "0";
+	t.after(() => {
+		if (previousChild === undefined) delete process.env.PI_SUBAGENT_CHILD; else process.env.PI_SUBAGENT_CHILD = previousChild;
+		if (previousFanout === undefined) delete process.env.PI_SUBAGENT_FANOUT_CHILD; else process.env.PI_SUBAGENT_FANOUT_CHILD = previousFanout;
+	});
+	const cwd = fs.mkdtempSync(path.join(root, "queued-"));
+	const manager = sdk.SessionManager.create(cwd, path.join(cwd, "sessions"));
+	manager.appendMessage(ai.fauxAssistantMessage("Delegate bounded work"));
+	const runId = randomUUID(), asyncDir = getRunMetadataDir(runId);
+	manager.appendCustomEntry("subagent-run", { runId, rootRunId: runId, ownerSessionId: manager.getSessionId(), source: "async", mode: "single",
+		cwd, task: "Bounded work", startedAt: Date.now(), asyncDir, children: [{ agent: "worker", index: 0 }] });
+	saveQuestionOwner(runId, manager.getSessionId());
+	const sent = [], errors = [];
+	let release, ctx;
+	const settingsManager = sdk.SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: { enabled: false } });
+	const loader = new sdk.DefaultResourceLoader({ cwd, agentDir: process.env.PI_CODING_AGENT_DIR, settingsManager,
+		noExtensions: true, noSkills: true, noContextFiles: true, noThemes: true, noPromptTemplates: true,
+		extensionFactories: [(pi) => {
+			const send = pi.sendMessage.bind(pi);
+			pi.sendMessage = (message, options) => {
+				if (message.customType === "subagent-notify") sent.push(message);
+				send(message, options);
+			};
+			(childSafe ? registerChild : registerRoot)(pi);
+			pi.on("session_start", (_event, context) => { ctx = context; });
+			pi.registerTool({ name: "hold_turn", label: "Hold", description: "Hold this fixture turn", parameters: Type.Object({}),
+				async execute(_id, _params, signal) {
+					await new Promise<void>((resolve) => { release = resolve; signal?.addEventListener("abort", () => resolve(), { once: true }); });
+					return { content: [{ type: "text", text: "Released" }], details: {} };
+				},
+			});
+		}],
+	});
+	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
+	await loader.reload();
+	assert.deepEqual(loader.getExtensions().errors, []);
+	const faux = ai.fauxProvider({ provider: "queued-completion-fixture", tokensPerSecond: 1000000 });
+	faux.setResponses([ai.fauxAssistantMessage(ai.fauxToolCall("hold_turn", {}, { id: "hold" }), { stopReason: "toolUse" }),
+		ai.fauxAssistantMessage("Finished held turn"), ai.fauxAssistantMessage("Completion received")]);
+	const modelRuntime = await sdk.ModelRuntime.create({ credentials: new ai.InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+	modelRuntime.registerNativeProvider(faux.provider);
+	const { session } = await sdk.createAgentSession({ cwd, agentDir: process.env.PI_CODING_AGENT_DIR, settingsManager, resourceLoader: loader,
+		sessionManager: manager, modelRuntime, model: faux.getModel() });
+	const until = async (check, reason) => {
+		const deadline = performance.now() + 5000;
+		while (!check()) { assert.ok(performance.now() < deadline, reason); await delay(10); }
+	};
+	const notices = () => manager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify");
+	const delivered = () => manager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "subagent-run" && entry.data.runId === runId && entry.data.delivery);
+	let prompt;
+	try {
+		await session.bindExtensions({ mode: "json", onError: (error) => errors.push(error) });
+		prompt = session.prompt("Hold the parent turn while its child completes");
+		await until(() => release, "native parent tool starts");
+		assert.equal(ctx.isIdle(), false);
+		saveRunStatus(runId, { runtimeVersion: 2, runId, mode: "single", sessionId: manager.getSessionFile(), state: "complete",
+			startedAt: Date.now(), lastUpdate: Date.now(), cwd, steps: [{ agent: "worker", status: "complete" }] });
+		saveAsyncRunResult(runId, { runtimeVersion: 2, id: runId, mode: "single", sessionId: manager.getSessionFile(), state: "complete",
+			success: true, timestamp: Date.now(), summary: "QUEUED_RESULT", results: [{ agent: "worker", success: true, exitCode: 0, output: "QUEUED_RESULT" }] });
+		t.mock.timers.tick(3000);
+		await until(() => sent.length === 1, "completion reaches the real host queue");
+		assert.equal(notices().length, 0);
+		assert.equal(delivered(), false, "queued is not durably delivered");
+		assert.equal(session.agent.hasQueuedMessages(), true);
+		if (drop) {
+			session.clearQueue();
+			assert.equal(session.agent.hasQueuedMessages(), false, "the real host dropped the queued wake-up");
+		} else {
+			for (let scan = 0; scan < 2; scan++) {
+				t.mock.timers.tick(11 * 60_000);
+				await delay(50);
+				assert.equal(sent.length, 1, "streaming past TTL must not queue another wake-up");
+			}
+		}
+		release();
+		await prompt;
+		await session.waitForIdle();
+		assert.equal(ctx.isIdle(), true);
+		if (drop) {
+			assert.equal(notices().length, 0);
+			t.mock.timers.tick(3000);
+			await until(() => sent.length === 2 && notices().length === 1, "idle owner receives one retry without waiting for the TTL");
+			await session.waitForIdle();
+		}
+		t.mock.timers.tick(3000);
+		await until(delivered, "journal reconciliation records delivery");
+		t.mock.timers.tick(11 * 60_000);
+		await delay(50);
+		assert.equal(sent.length, drop ? 2 : 1);
+		assert.equal(notices().length, 1);
+		assert.deepEqual(errors, []);
+	} finally {
+		release?.();
+		await session.abort();
+		await prompt?.catch(() => {});
+		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+		session.dispose();
+	}
+});
 
 for (const scenario of [
+	{ name: "background launch receipt", kind: "launch", index: undefined, finished: true, receipt: true, suppress: false },
 	{ name: "completed child answer", kind: "answer", index: 1, finished: true, suppress: false },
 	{ name: "completed child follow-up", kind: "delivery", index: 1, finished: true, suppress: false },
 	{ name: "pending child follow-up", kind: "delivery", index: 1, finished: false, suppress: false },
@@ -53,11 +160,11 @@ for (const scenario of [
 	if (scenario.finished) manager.appendMessage(ai.fauxAssistantMessage(
 		ai.fauxToolCall("agent_runs", { action: scenario.kind === "answer" ? "answer" : "resume", id: runId, index: scenario.index }, { id: callId }),
 		{ stopReason: "toolUse" }));
-	bindNativeInvocation({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, { sessionManager: manager }, callId,
+	if (!("receipt" in scenario)) bindNativeInvocation({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, { sessionManager: manager }, callId,
 		{ runId, index: scenario.index, kind: scenario.kind, accepted: true, ...(questionId ? { questionId, answer: "Yes" } : {}) });
 	if (scenario.finished) manager.appendMessage({ role: "toolResult", toolName: "agent_runs", toolCallId: callId,
 		content: [{ type: "text", text: "Call finished" }], timestamp: Date.now(), isError: "failed" in scenario,
-		details: "failed" in scenario ? {} : { mode: "management", results: [], wait: { runId, index: scenario.index, status: "completed" } } });
+		details: "receipt" in scenario ? { mode: "single", results: [], asyncId: runId } : "failed" in scenario ? {} : { mode: "management", results: [], wait: { runId, index: scenario.index, status: "completed" } } });
 	manager.appendMessage(ai.fauxAssistantMessage("Waiting for completion"));
 	const final = { runtimeVersion: 2, id: runId, mode, sessionId: manager.getSessionFile(), state: "complete", success: true, timestamp: Date.now(),
 		results: children.map(({ agent, index }) => ({ agent, success: true, exitCode: 0, output: `CHILD_${index}_RESULT` })) };
@@ -88,6 +195,7 @@ for (const scenario of [
 			await session.waitForIdle();
 			const visible = sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify");
 			assert.equal(visible.length, scenario.suppress ? 0 : 1, `reopen=${reopen}: whole-run completion is delivered exactly once`);
+			if (reopen && !scenario.suppress) assert.equal(completions.length, 0, "saved delivery prevents replay independently of notification TTL dedupe");
 			if (!reopen && !(scenario.finished && scenario.suppress)) assert.ok(completions.length > 0, "watcher scanned the result");
 			assert.ok(completions.every((event) => Boolean(event.suppressNotification) === scenario.suppress));
 			assert.equal(fs.existsSync(notice), !scenario.finished && scenario.suppress, "only pending native owners retain their notification receipt");

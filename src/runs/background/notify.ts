@@ -13,6 +13,7 @@ interface ChainStepResult {
 }
 
 export interface SubagentNotifyDetails {
+	completion?: { runId: string; key: string };
 	agent: string;
 	status: "completed" | "failed" | "blocked" | "paused";
 	taskInfo?: string;
@@ -24,6 +25,8 @@ export interface SubagentNotifyDetails {
 
 interface SubagentResult {
 	id: string | null;
+	runId?: string;
+	completionKey?: string;
 	agent: string | null;
 	success: boolean;
 	summary: string;
@@ -42,7 +45,7 @@ interface SubagentResult {
 	suppressNotification?: boolean;
 }
 
-export default function registerSubagentNotify(pi: ExtensionAPI): void {
+export default function registerSubagentNotify(pi: ExtensionAPI, onQueued?: (completionKey: string) => void): () => void {
 	const unsubscribeStoreKey = "__pi_subagents_notify_unsubscribe__";
 	const globalStore = globalThis as Record<string, unknown>;
 	const previousUnsubscribe = globalStore[unsubscribeStoreKey];
@@ -62,7 +65,8 @@ export default function registerSubagentNotify(pi: ExtensionAPI): void {
 		if (result.intercomResultDelivered === true || result.suppressNotification === true) return;
 		const now = Date.now();
 		const key = buildCompletionKey(result, "notify");
-		if (markSeenWithTtl(seen, key, now, ttlMs)) return;
+		// Owned completion keys are governed by the shared queue/journal lifecycle, not a TTL.
+		if ((!onQueued || !result.completionKey) && markSeenWithTtl(seen, key, now, ttlMs)) return;
 
 		const agent = result.agent ?? "unknown";
 		const summary = typeof result.summary === "string" ? result.summary : "";
@@ -102,10 +106,18 @@ export default function registerSubagentNotify(pi: ExtensionAPI): void {
 				customType: "subagent-notify",
 				content,
 				display: true,
+				...(result.runId && result.completionKey ? { details: {
+					agent, status, taskInfo: taskInfo.trim(), resultPreview: displaySummary.trim(),
+					...(sessionLine ? { sessionLabel: sessionLine.slice(0, sessionLine.indexOf(":")).toLowerCase(), sessionValue: sessionLine.slice(sessionLine.indexOf(":") + 1).trim() } : {}),
+					completion: { runId: result.runId, key: result.completionKey },
+				} satisfies SubagentNotifyDetails } : {}),
 			},
 			{ triggerTurn: true },
 		);
+		if (result.completionKey) onQueued?.(result.completionKey);
 	};
 
-	globalStore[unsubscribeStoreKey] = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);
+	const unsubscribe = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);
+	globalStore[unsubscribeStoreKey] = unsubscribe;
+	return unsubscribe;
 }

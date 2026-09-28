@@ -29,11 +29,9 @@ import { withMouseExpansion } from "../tui/action-hints.ts";
 import { SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
-import { OWNED_RUN_ENTRY, ownedRunView, rememberOwnedRun, restoreOwnedRuns } from "../runs/shared/run-records.ts";
+import { OWNED_RUN_ENTRY, rememberOwnedRun, restoreOwnedRuns } from "../runs/shared/run-records.ts";
 import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
-import { getRunMetadataDir, saveAsyncRunResult } from "../runs/shared/supervisor-questions.ts";
-import { nativeInvocationTarget, nativeInvocations } from "../runs/shared/native-async.ts";
-import { createResultWatcher } from "../runs/background/result-watcher.ts";
+import { createCompletionDelivery } from "../runs/background/completion-delivery.ts";
 import { onNativeCheckpoint } from "../shared/native-checkpoint.ts";
 import { subagentCheckpointBlocker } from "../runs/shared/checkpoint.ts";
 import { isObsoleteIdleNotice } from "../runs/shared/subagent-control.ts";
@@ -42,7 +40,7 @@ import { registerSlashCommands } from "../slash/slash-commands.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
 import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
 import { clearSlashSnapshots, getSlashRenderableSnapshot, resolveSlashMessageDetails, restoreSlashFinalSnapshots, type SlashMessageDetails } from "../slash/slash-live-state.ts";
-import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
+import type { SubagentNotifyDetails } from "../runs/background/notify.ts";
 import { SUBAGENT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
@@ -276,41 +274,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		},
 	};
 
-	state.isRunResultConsumed = (runId) => {
-		const run = state.ownedRuns?.get(runId);
-		return state.lastUiContext?.sessionManager.getEntries().some((entry) => {
-			const details = entry.type === "message" && entry.message.role === "toolResult"
-				? entry.message.details as Details | undefined
-				: entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE
-					? (entry.details as SlashMessageDetails | undefined)?.result?.details : undefined;
-			return details?.wait?.runId === runId && details.wait.status === "completed"
-				&& (details.wait.index === undefined || (run?.mode === "single" && details.wait.index === 0));
-		}) ?? false;
-	};
-
-	state.hasNativeResultOwner = (runId) => {
-		const ctx = state.lastUiContext;
-		if (!ctx) return false;
-		// Detached calls retain their durable binding until a tool result is journaled.
-		const completedCalls = new Set(ctx.sessionManager.getEntries().flatMap((entry) =>
-			entry.type === "message" && entry.message.role === "toolResult" ? [entry.message.toolCallId] : []));
-		return nativeInvocations(ctx).some((call) => {
-			const target = nativeInvocationTarget(ctx, call);
-			return !completedCalls.has(call.toolCallId) && target?.runId === runId
-				&& (target.index === undefined || (state.ownedRuns?.get(runId)?.mode === "single" && target.index === 0));
-		});
-	};
-
-	const { startResultWatcher, primeExistingResults, stopResultWatcher, holdCheckpoint } = createResultWatcher(
-		pi,
-		state,
-		RESULTS_DIR,
-		10 * 60 * 1000,
-	);
-
 	const runtimeCleanup = () => {
 		agentView?.dispose();
-		stopResultWatcher();
+		completionDelivery.stop();
 		if (state.poller) {
 			clearInterval(state.poller);
 			state.poller = null;
@@ -452,6 +418,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 	const toolNames = [SUBAGENT_TOOL_NAME, "delegate", "agent_runs"];
 	const parentUsage = registerParentUsage(pi, toolNames);
+	const completionDelivery = createCompletionDelivery(pi, state, parentUsage);
 	const adaptToolResult = registerToolResultAdapter(pi, toolNames);
 	const toRegisteredToolResult = (result: SubagentExecutionResult, ctx: ExtensionContext) => adaptToolResult(
 		result.details.wait?.status === "completed" && result.details.run?.ownerSessionId === ctx.sessionManager.getSessionId()
@@ -524,7 +491,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			}
 		}
 	}
-	registerSubagentNotify(pi);
 
 	const existingVisibleControlNotices = globalStore[controlNoticeSeenStoreKey];
 	const visibleControlNotices = existingVisibleControlNotices instanceof Set ? existingVisibleControlNotices as Set<string> : new Set<string>();
@@ -565,16 +531,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			const run = started.id ? state.ownedRuns?.get(started.id) : undefined;
 			if (run) rememberOwnedRun(state, { ...run, source: "async", asyncDir: started.asyncDir, pid: started.pid });
 		}),
-		pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (data) => {
-			handleComplete(data);
-			const result = data as import("../shared/types.ts").AsyncResultFile & { intercomResultDelivered?: boolean; suppressNotification?: boolean };
-			const run = state.ownedRuns?.get(result.runId ?? result.id ?? "");
-			if (!run || result.sessionId !== state.currentSessionId) return;
-			if (state.lastUiContext) parentUsage.record(finalizedChildUsage(ownedRunView(run, state).children), state.lastUiContext);
-			if (result.suppressNotification === true) return;
-			if (result.runtimeVersion !== 2 && !fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))) saveAsyncRunResult(run.runId, result);
-			rememberOwnedRun(state, { ...run, delivery: { notifiedAt: Date.now(), intercomDelivered: result.intercomResultDelivered === true } });
-		}),
+		pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete),
 		pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler),
 	];
 	let eventUnsubscribes = subscribeEvents();
@@ -626,15 +583,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		cleanupAllArtifactDirs(ARTIFACT_CLEANUP_DAYS);
 		cleanupSessionArtifacts(ctx);
 		restoreSlashFinalSnapshots(ctx.sessionManager.getEntries());
-		startResultWatcher();
-		primeExistingResults();
+		completionDelivery.start();
 	}
 
 	pi.on("session_start", (_event, ctx) => {
 		if (!eventUnsubscribes.length) {
 			eventUnsubscribes = subscribeEvents();
 			globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
-			registerSubagentNotify(pi);
 		}
 		resetSessionState(ctx);
 	});
@@ -646,7 +601,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		if (state.poller) clearInterval(state.poller);
 		state.poller = null;
 		event.signal.addEventListener("abort", () => { if (hadPoller) ensurePoller(); }, { once: true });
-		await holdCheckpoint(event);
+		await completionDelivery.holdCheckpoint(event);
 		event.signal.throwIfAborted();
 		// Rediscover from the same durable records used on startup, rather than
 		// treating an empty UI job map (whose finished rows expire) as authority.
@@ -670,7 +625,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			delete globalStore[eventUnsubscribeStoreKey];
 		}
 		eventUnsubscribes = [];
-		stopResultWatcher();
+		completionDelivery.stop();
 		if (state.poller) clearInterval(state.poller);
 		state.poller = null;
 		for (const timer of state.cleanupTimers.values()) {

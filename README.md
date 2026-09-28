@@ -178,7 +178,7 @@ Run controls also appear when the same saved session owns actionable work: live 
 
 ### Owned runs, review, and continuation
 
-`continue` and `answer` accept `async: false` to wait for the actual new or redirected run's saved result. Cancelling a newly launched `async: false` continuation requests cancellation of that new run, not an older sibling. On the portable path, important steered Intercom messages release the wait so the parent can respond while the child keeps working. Continue useful work or end the turn; the saved completion is delivered separately. A native asynchronous call stays pending through Intercom attention and blocking child questions; its result belongs to the original call. Explicit queue/passive messages do not release waits.
+`continue` and `answer` accept `async: false` to wait for the actual new or redirected run's saved result. Cancelling a newly launched `async: false` continuation requests cancellation of that new run, not an older sibling. On the portable path, important steered Intercom messages release the wait so the parent can respond while the child keeps working. Continue useful work or end the turn; the saved completion is delivered separately. Background calls return a receipt even on native asynchronous models; completion arrives as a separate wake-up message. Explicit native foreground waits and older unresolved native calls stay pending through Intercom attention and blocking child questions. Explicit queue/passive messages do not release waits.
 
 Stop receipts mean **requested**, not process exit. Saved results separately record the actual agent-process exit code/signal when observed. A returned tool result is not proof that every command descendant exited, and an unrecorded command result means **exit unconfirmed**, not “still running” or exit zero.
 
@@ -238,7 +238,9 @@ When you finish implementing, run a reviewer subagent before summarizing.
 
 **Native asynchronous tools:** an enhanced host must expose `Tool.async`, `Tool.resume`, and `ctx.getPendingToolCalls()`, and the selected model must advertise `supportsAsyncTools`. The extension enables this path only when the actual invocation appears in the host's pending calls. `async: true` alone is not evidence of native support.
 
-For an admitted native call, the parent journals the original tool-call ID and immutable run identity before launching or delivering work. The host can continue other work while the call is pending. Completion returns to that original call, without a second ordinary completion notice. Resuming the same parent after restart, compaction, or branch navigation reconnects to the saved work when that call is selected; it does not launch it again. A forked parent cannot adopt the original parent's calls. A call that already returned an ordinary receipt never becomes a pending native call retroactively.
+Background launches and `continue`/`answer` without `async: false` return immediate durable receipts on every host. Completion is appended separately as a wake-up message (Intercom when available, otherwise `subagent-notify`), not returned later on the original call. Saved delivery records prevent repeat notifications after parent reload/restart.
+
+Explicit `async: false` native calls still wait for the actual result. Older unresolved native calls retain their journaled `subagent-invocation` binding: resuming the same parent after restart, compaction, or branch navigation reconnects to saved work without relaunching it or sending a duplicate completion notice. A forked parent cannot adopt the original parent's calls. Receipt calls never become pending native calls retroactively.
 
 Native immediate parent accounting separately requires the public idempotent `recordUsage` API. Without it, usage is carried by finalized tool-result receipts; see [usage accounting](#usage-accounting). Official Pi 0.87.1 does not provide these APIs.
 
@@ -450,7 +452,7 @@ Children return routine completion through their normal result. For portable bac
 
 ### Questions that survive a reload
 
-Blocking supervisor questions are saved before notification, with their owner session, child session, and launch-time acceptance/output requirements. They do not expire at the ordinary intercom ask timeout. A portable waiting call returns so the supervisor can answer while the same owner and child remain available. A native asynchronous call stays pending. Neither state is successful completion.
+Blocking supervisor questions are saved before notification, with their owner session, child session, and launch-time acceptance/output requirements. They do not expire at the ordinary intercom ask timeout. A portable waiting call returns so the supervisor can answer while the same owner and child remain available. An explicit native foreground wait or an older unresolved native call stays pending. Background calls have already returned their receipt. Neither state is successful completion.
 
 ```typescript
 agent_runs({ action: "questions" })
