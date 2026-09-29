@@ -3,7 +3,7 @@ import { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./
 import { parseFrontmatter } from "./frontmatter.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../runs/shared/chain-outputs.ts";
 import { validateAcceptanceInput } from "../runs/shared/acceptance.ts";
-import { Errors, Check } from "typebox/value";
+import { Errors, Check } from "../shared/native-typebox.ts";
 import { ChainItemSchema } from "../extension/schemas.ts";
 import type { ChainStep } from "../shared/settings.ts";
 

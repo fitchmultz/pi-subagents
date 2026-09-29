@@ -519,7 +519,7 @@ test("native rejected input leaves the active intercom run and idle wait intact"
   const inputRelease = gate(t);
   const responseRelease = gate(t);
   const losingInput = "User input held before admission";
-  const preflight: boolean[] = [];
+  const preflight: unknown[] = [];
   let inputHeld = false, beforeStarts = 0, seen = "";
   const receiver = await makeSession(t, "input-rejection", { configure(pi) {
     pi.on("input", async (event) => {
@@ -532,7 +532,7 @@ test("native rejected input leaves the active intercom run and idle wait intact"
     await responseRelease.promise;
     return fauxAssistantMessage("Owned intercom work finished");
   }]);
-  const rejected = assert.rejects(receiver.session.prompt(losingInput, { preflightResult: (accepted: boolean) => preflight.push(accepted) }), /already processing/);
+  const rejected = assert.rejects(receiver.session.prompt(losingInput, { preflightResult: (disposition: unknown) => preflight.push(disposition) }), /already processing/);
   try {
     await waitFor(() => inputHeld, "held input interception");
     await receiver.send("input-owner");
@@ -545,7 +545,8 @@ test("native rejected input leaves the active intercom run and idle wait intact"
     inputRelease.resolve();
     await rejected;
     receiver.events.push({ type: "fixture.input_rejection", preflight: [...preflight], beforeStarts, idle: receiver.session.isIdle, streaming: receiver.session.isStreaming, signalUnchanged: receiver.context().signal === signal, idleResolved, settled: receiver.settled() });
-    assert.deepEqual(preflight, [false]);
+    // Older hosts report false; current hosts omit the callback for rejected input.
+    assert.ok(preflight.length <= 1 && preflight.every((disposition) => disposition === false), "rejection must not report an accepted dispatch");
     assert.equal(receiver.context().signal, signal);
     assert.equal(signal.aborted, false);
     assert.equal(receiver.session.systemPrompt, systemPrompt);
@@ -568,7 +569,7 @@ test("native rejected input leaves the active intercom run and idle wait intact"
     assert.equal(receiver.visible("input-owner").length, 1);
     assert.equal(seen.split("message:input-owner").length - 1, 1);
     assert.doesNotMatch(seen, /User input held before admission/);
-    assert.deepEqual(preflight, [false]);
+    assert.ok(preflight.length <= 1 && preflight.every((disposition) => disposition === false), "rejection must not later report an accepted dispatch");
     assert.deepEqual(receiver.events.filter((event) => event.type === "extension.message_end" && event.role === "assistant").map((event) => event.stopReason), ["stop"]);
     assert.match(await receiver.status(), /Pending inbound messages: 0/);
     assert.deepEqual(receiver.errors, []);
@@ -630,7 +631,7 @@ test("native user preparation queues intercom without another startup or provide
   }
 });
 
-test("native context reset, compaction, and reload preserve receipts without replaying consumed messages", async (t) => {
+test("native recovery, compaction, and reload preserve receipts without replaying consumed messages", async (t) => {
   const originalResponse = gate(t);
   const recoveryResponse = gate(t);
   const receiver = await makeSession(t, "compact-reload");
@@ -649,17 +650,18 @@ test("native context reset, compaction, and reload preserve receipts without rep
   receiver.session.agent.abort();
   originalResponse.resolve();
   await waitFor(() => receiver.faux.state.callCount === 2, "recovery provider request");
-  receiver.session.newContext({ handoff: "The intercom messages were handled." });
+  const canResetContext = typeof receiver.session.newContext === "function";
+  if (canResetContext) receiver.session.newContext({ handoff: "The intercom messages were handled." });
   recoveryResponse.resolve();
   // Pi joins settlement-triggered runs; release recovery before awaiting the original prompt.
   await running;
-  await waitFor(() => receiver.settled() >= 2 && receiver.session.isIdle, "fresh context boundary");
-  assert.equal(receiver.session.messages.some((message: unknown) => inboundId(message) === "appended-follower"), false);
+  await waitFor(() => receiver.settled() >= 2 && receiver.session.isIdle, "recovery boundary");
+  if (canResetContext) assert.equal(receiver.session.messages.some((message: unknown) => inboundId(message) === "appended-follower"), false);
   assert.equal(receiver.visible("appended-follower").length, 1);
   assert.equal(receiver.events.filter((event) => event.type === "extension.message_end" && event.id === "appended-follower").length, 0);
   assert.match(await receiver.status(), /Pending inbound messages: 0/);
 
-  await receiver.session.prompt("Continue in the fresh window");
+  await receiver.session.prompt("Continue after recovery");
   await receiver.session.compact();
   assert.ok(receiver.session.sessionManager.getEntries().some((entry: { type: string }) => entry.type === "compaction"));
   await receiver.session.reload();
@@ -669,7 +671,7 @@ test("native context reset, compaction, and reload preserve receipts without rep
   assert.equal(receiver.faux.state.callCount, 4);
   assert.match(await receiver.status(), /Pending inbound messages: 0/);
   assert.deepEqual(receiver.errors, []);
-  t.diagnostic("unacknowledged appended follower is removed from active context before settlement, retained once in full history; actual compact/reload never replays it.");
+  t.diagnostic("recovery retains each receipt once in history; actual compact/reload never replays it; optional context reset also prunes the active window.");
 });
 
 test("native supervisor question survives reload and consumes the saved answer once", async (t) => {
@@ -1134,13 +1136,15 @@ test("native broker-staged progress recovers terminal child identity across relo
   const running = parent.session.prompt("Independent work while progress is deferred");
   await waitFor(() => started, "second native blocking tool");
   await waitFor(() => parent.session.sessionManager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "intercom_delivery" && entry.data?.messageId === "broker-delayed-progress" && entry.data.stage === "discarded"), "obsolete broker progress discarded before receiver reload");
-  await parent.session.reload();
+  const reloading = parent.session.reload();
   hold.resolve();
   await running;
+  await reloading;
+  await parent.session.prompt("Continue independent work after reload");
   await waitFor(() => parent.session.isIdle, "independent work after reload/disconnect");
   await sleep(600);
   assert.equal(parent.visible("broker-delayed-progress").length, 0);
-  assert.equal(parent.faux.state.callCount, 3, "completion plus two independent-work responses; no obsolete progress wake");
+  assert.equal(parent.faux.state.callCount, 3, "completion, interrupted work, and explicit post-reload prompt; no obsolete progress wake");
   assert.deepEqual(parent.errors, []);
   t.diagnostic("Terminal association restored from the existing saved delivery/receipt metadata, with broker delay and no replay.");
 });
@@ -1565,7 +1569,6 @@ test("native latest material milestone survives two minutes busy and reload with
   } });
   supervisor.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }),
-    fauxAssistantMessage("Current work complete"),
     fauxAssistantMessage("Milestone handled"),
   ]);
   const running = supervisor.session.prompt("Work before the milestone");
@@ -1579,13 +1582,14 @@ test("native latest material milestone survives two minutes busy and reload with
     Date.now = now;
   }
   await waitFor(async () => (await supervisor.status()).includes("Root cause confirmed"), "coalesced latest milestone");
-  await supervisor.session.reload();
+  const reloading = supervisor.session.reload();
   toolGate.resolve();
   await running;
+  await reloading;
   await waitFor(() => supervisor.visible("latest-milestone").length === 1 && supervisor.settled() === 2, "milestone settlement");
   assert.equal(supervisor.visible("old-milestone").length, 0);
   assert.equal(supervisor.visible("latest-milestone").length, 1);
-  assert.equal(supervisor.faux.state.callCount, 3);
+  assert.equal(supervisor.faux.state.callCount, 2, "reload aborts the held turn; only the retained milestone starts another response");
   assert.match(await supervisor.status(), /Pending inbound messages: 0/);
   assert.deepEqual(supervisor.errors, []);
   t.diagnostic("latest backdated material finding survives native reload while busy; superseded progress never wakes the model.");

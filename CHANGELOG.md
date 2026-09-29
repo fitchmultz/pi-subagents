@@ -7,6 +7,7 @@
 - Align packaged role profiles with the maintainer's personal defaults, using GPT-6.1 Sol at high effort for scout/writer/delegate and xhigh for context-builder/fixer/Ponytail review, Luna for watching, Astra for security review, and Opus for independent Claude review. Editable user/project overrides still take precedence. Consolidate runtime coordination mechanics in the extension and require exact relevant owner instructions, settled decisions or readable source references in fresh-child handoffs.
 
 ### Fixed
+- Declare TypeBox as a host-provided peer instead of installing a private runtime copy. Compiled extensions and detached subagent runners use the selected Pi installation's TypeBox, avoiding startup dependency warnings without breaking background launches.
 - Keep provider prompt caches intact during background delegation on native-async models. Background launches and background `continue`/`answer` controls return an immediate receipt instead of holding the native async tool call open, and completion arrives as one appended wake-up notification for both top-level sessions and nested children, including after the owner reopens. A late native result is admitted at its original call position, so the provider stopped reading the cache at that call. Foreground waits, other run controls, and recovery of native calls already in flight are unchanged.
 
 ## [0.43.0] - 2026-09-27

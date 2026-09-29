@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
+import { Type } from "../shared/native-typebox.ts";
 import { MouseRegion, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { IntercomClient, type SendResult } from "./broker/client.ts";
 import { isBrokerRunning, spawnBrokerIfNeeded } from "./broker/spawn.ts";

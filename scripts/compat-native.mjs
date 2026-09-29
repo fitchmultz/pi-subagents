@@ -29,7 +29,8 @@ const coreFiles = [
   "async-execution", "parallel-execution", "chain-execution", "intercom-result-delivery",
   "owned-result-retention", "process-lifecycle", "orphan-stop", "real-pi-smoke-cleanup", "compact-child-tools",
 ];
-if (core) Object.assign(env, { PI_NATIVE_ASYNC_TEST_SDK: hostRoot, PI_NATIVE_ASYNC_REQUIRE_HOST: "1", PI_PARENT_USAGE_TEST_SDK: hostRoot, PI_PARENT_USAGE_REQUIRE_NATIVE: "1" });
+// Current fork hosts retain checkpoint/usage APIs but have retired native pending-call execution.
+if (core) Object.assign(env, { PI_NATIVE_ASYNC_TEST_SDK: hostRoot, PI_PARENT_USAGE_TEST_SDK: hostRoot, PI_PARENT_USAGE_REQUIRE_NATIVE: "1" });
 try {
   const files = core ? coreFiles.map(name => `test/integration/${name}.test.ts`) : fork
     ? readdirSync("test/integration").filter(name => name.endsWith(".test.ts")).sort().map(name => `test/integration/${name}`)

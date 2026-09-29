@@ -41,6 +41,12 @@ export function resolvePiPackageRoot(): string | undefined {
 	}
 }
 
+export function requirePiPackageRoot(): string {
+	const root = process.env.PI_PACKAGE_DIR || resolvePiPackageRoot() || resolveInstalledPiPackageRoot();
+	if (!root) throw new Error("Could not locate Pi runtime APIs; Pi must be installed and available on PATH.");
+	return root;
+}
+
 export function getPiSpawnCommand(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }

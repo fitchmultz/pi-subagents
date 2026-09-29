@@ -130,17 +130,17 @@ describe("createForkContextResolver", () => {
 		}
 	});
 
-	it("fails clearly for an unflushed user-only parent", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-user-only-"));
+	it("fails clearly when the parent file has not been persisted", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-unpersisted-"));
 		try {
-			const sessionDir = path.join(tempDir, "sessions");
-			const parent = SessionManager.create(tempDir, sessionDir);
-			parent.appendMessage({ role: "user", content: "first turn prompt" });
-			const parentSessionFile = parent.getSessionFile();
-			const leafId = parent.getLeafId();
+			const parentSessionFile = path.join(tempDir, "parent.jsonl");
+			const leafId = "unpersisted-leaf";
+			const parent = {
+				getSessionFile: () => parentSessionFile,
+				getLeafId: () => leafId,
+				getSessionDir: () => tempDir,
+			};
 
-			assert.ok(parentSessionFile);
-			assert.ok(leafId);
 			assert.equal(fs.existsSync(parentSessionFile), false);
 
 			const resolver = createForkContextResolver(parent, "fork");

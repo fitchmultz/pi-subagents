@@ -1,4 +1,4 @@
-import { Compile } from "typebox/compile";
+import { Compile } from "../../shared/native-typebox.ts";
 import { AcceptanceOverride } from "../../extension/schemas.ts";
 import { formatAcceptanceReportExample } from "./acceptance-reports.ts";
 import type {
