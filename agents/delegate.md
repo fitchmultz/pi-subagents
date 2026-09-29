@@ -1,7 +1,7 @@
 ---
 name: delegate
-description: Lightweight subagent using GPT-6 Sol with no default reads
-model: openai-codex/gpt-6-sol
+description: Lightweight subagent using GPT-6.1 Sol with no default reads
+model: openai-codex/gpt-6.1-sol
 thinking: medium
 systemPromptMode: append
 inheritProjectContext: true

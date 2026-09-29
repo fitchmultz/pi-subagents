@@ -47,23 +47,23 @@ describe("builtin agent overrides", () => {
 		assert.deepEqual(Object.fromEntries(builtins.map((agent) => [
 			agent.name, [agent.model, agent.thinking, ...(agent.fallbackModels ?? [])],
 		])), {
-			"context-builder": ["openai-codex/gpt-6-sol", "high", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra"],
+			"context-builder": ["openai-codex/gpt-6.1-sol", "high", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra"],
 			debugger: ["openai-codex/gpt-6-astra", "medium", "anthropic/claude-opus-5"],
-			delegate: ["openai-codex/gpt-6-sol", "medium"],
-			fixer: ["openai-codex/gpt-6-sol", "high", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra"],
+			delegate: ["openai-codex/gpt-6.1-sol", "medium"],
+			fixer: ["openai-codex/gpt-6.1-sol", "high", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra"],
 			oracle: ["openai-codex/gpt-6-astra", "medium"],
 			planner: ["openai-codex/gpt-6-astra", "high", "anthropic/claude-opus-5"],
 			researcher: ["openai-codex/gpt-6-astra", "medium"],
 			reviewer: ["openai-codex/gpt-6-astra", "medium", "anthropic/claude-opus-5"],
 			"reviewer-claude": ["anthropic/claude-opus-5-5", "medium", "anthropic/claude-opus-5"],
 			"reviewer-gpt": ["openai-codex/gpt-6-astra", "medium"],
-			"reviewer-ponytail": ["openai-codex/gpt-6-sol", "high", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra"],
+			"reviewer-ponytail": ["openai-codex/gpt-6.1-sol", "high", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra"],
 			"reviewer-security": ["openai-codex/gpt-6-astra", "medium"],
-			scout: ["openai-codex/gpt-6-sol", "medium", "openai-codex/gpt-5.6-sol"],
+			scout: ["openai-codex/gpt-6.1-sol", "medium", "openai-codex/gpt-5.6-sol"],
 			"ui-designer": ["openai-codex/gpt-6-astra", "medium", "anthropic/claude-opus-5"],
 			watcher: ["openai-codex/gpt-6-luna", "high"],
 			worker: ["openai-codex/gpt-6-astra", "medium"],
-			writer: ["openai-codex/gpt-6-sol", "medium", "anthropic/claude-fable-5-1"],
+			writer: ["openai-codex/gpt-6.1-sol", "medium", "anthropic/claude-fable-5-1"],
 		});
 		const watcher = builtins.find((agent) => agent.name === "watcher");
 		assert.equal(watcher?.maxSubagentDepth, 0);
@@ -85,7 +85,7 @@ describe("builtin agent overrides", () => {
 			assert.doesNotMatch(effectivePrompt, /plan[- ]changing|changes? the plan/i, `${agent.name} progress guidance drift`);
 		}
 		const delegate = builtins.find((agent) => agent.name === "delegate");
-		assert.equal(delegate?.model, "openai-codex/gpt-6-sol");
+		assert.equal(delegate?.model, "openai-codex/gpt-6.1-sol");
 		assert.equal(delegate?.fallbackModels, undefined);
 	});
 
