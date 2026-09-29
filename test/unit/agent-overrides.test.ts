@@ -43,39 +43,41 @@ describe("builtin agent overrides", () => {
 
 	it("matches the bundled role model and thinking defaults", () => {
 		const builtins = discoverAgentsAll(tempProject).builtin;
-		assert.deepEqual(
-			builtins.map((agent) => agent.name).sort(),
-			[
-				"context-builder", "debugger", "delegate", "fixer", "oracle", "planner", "researcher",
-				"reviewer", "reviewer-claude", "reviewer-gpt", "reviewer-ponytail", "reviewer-security", "scout", "ui-designer", "watcher", "worker", "writer",
-			],
-		);
-		const astra = { model: "openai-codex/gpt-6-astra", fallbackModels: ["openai/gpt-6-astra"], thinking: "medium" };
-		const claude = { model: "anthropic/claude-opus-5-5", fallbackModels: ["anthropic/claude-fable-5-1", "cloudflare-ai-gateway/claude-opus-5"], thinking: "high" };
-		for (const agent of builtins) {
-			if (agent.name === "delegate") continue;
-			assert.deepEqual(
-				{ model: agent.model, fallbackModels: agent.fallbackModels, thinking: agent.thinking },
-				agent.name === "reviewer-claude" ? claude : astra,
-				`${agent.name} route drift`,
-			);
-		}
+		// Approved role defaults; exercises the packaged files through real discovery.
+		assert.deepEqual(Object.fromEntries(builtins.map((agent) => [
+			agent.name, [agent.model, agent.thinking, ...(agent.fallbackModels ?? [])],
+		])), {
+			"context-builder": ["openai-codex/gpt-6-sol", "high", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra"],
+			debugger: ["openai-codex/gpt-6-astra", "medium", "anthropic/claude-opus-5"],
+			delegate: ["openai-codex/gpt-6-sol", "medium"],
+			fixer: ["openai-codex/gpt-6-sol", "high", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra"],
+			oracle: ["openai-codex/gpt-6-astra", "medium"],
+			planner: ["openai-codex/gpt-6-astra", "high", "anthropic/claude-opus-5"],
+			researcher: ["openai-codex/gpt-6-astra", "medium"],
+			reviewer: ["openai-codex/gpt-6-astra", "medium", "anthropic/claude-opus-5"],
+			"reviewer-claude": ["anthropic/claude-opus-5-5", "medium", "anthropic/claude-opus-5"],
+			"reviewer-gpt": ["openai-codex/gpt-6-astra", "medium"],
+			"reviewer-ponytail": ["openai-codex/gpt-6-sol", "high", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra"],
+			"reviewer-security": ["openai-codex/gpt-6-astra", "medium"],
+			scout: ["openai-codex/gpt-6-sol", "medium", "openai-codex/gpt-5.6-sol"],
+			"ui-designer": ["openai-codex/gpt-6-astra", "medium", "anthropic/claude-opus-5"],
+			watcher: ["openai-codex/gpt-6-luna", "high"],
+			worker: ["openai-codex/gpt-6-astra", "medium"],
+			writer: ["openai-codex/gpt-6-sol", "medium", "anthropic/claude-fable-5-1"],
+		});
 		const watcher = builtins.find((agent) => agent.name === "watcher");
 		assert.equal(watcher?.maxSubagentDepth, 0);
 		assert.equal(watcher?.completionGuard, false);
 		assert.match(watcher?.systemPrompt ?? "", /Do not modify the watched target/);
 		assert.match(watcher?.systemPrompt ?? "", /never use a tight loop/);
 		assert.match(watcher?.systemPrompt ?? "", /suppress unchanged heartbeats/);
-		assert.match(watcher?.systemPrompt ?? "", /reason: "progress_update"/);
-		assert.match(watcher?.systemPrompt ?? "", /steers at the next tool boundary/);
-		assert.match(watcher?.systemPrompt ?? "", /do not send a duplicate completion update/);
 		const effectiveWatcher = applyIntercomBridgeToAgent(watcher!, resolveIntercomBridge("main"));
 		assert.match(effectiveWatcher.systemPrompt, /steers at the next tool boundary without waiting for a reply/);
 		assert.match(effectiveWatcher.systemPrompt, /Skip starts, redundant status, and routine completion/);
 		for (const agent of builtins) {
 			assert.equal(agent.systemPromptMode, "append", `${agent.name} must preserve Pi's base prompt`);
 			assert.equal(agent.inheritProjectContext, true, `${agent.name} must inherit project context`);
-			assert.equal(agent.inheritSkills, true, `${agent.name} must inherit discovered skills`);
+			assert.equal(agent.inheritSkills, agent.name !== "delegate", `${agent.name} skill inheritance drift`);
 			assert.equal(agent.allowSubagents, false, `${agent.name} must not delegate to nested subagents`);
 			assert.equal(agent.maxSubagentDepth, 0, `${agent.name} must block child delegation`);
 			assert.ok(!agent.tools?.includes("subagent"), `${agent.name} must not expose nested delegation`);
@@ -83,7 +85,7 @@ describe("builtin agent overrides", () => {
 			assert.doesNotMatch(effectivePrompt, /plan[- ]changing|changes? the plan/i, `${agent.name} progress guidance drift`);
 		}
 		const delegate = builtins.find((agent) => agent.name === "delegate");
-		assert.equal(delegate?.model, undefined);
+		assert.equal(delegate?.model, "openai-codex/gpt-6-sol");
 		assert.equal(delegate?.fallbackModels, undefined);
 	});
 

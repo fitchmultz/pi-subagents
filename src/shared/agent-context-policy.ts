@@ -75,7 +75,7 @@ export function validateForkContextModelPolicy(
 	for (const target of collectInvocationAgentTargets(params)) {
 		const agent = agents.find((entry) => entry.name === target.agent);
 		if (!agent || resolveAgentContext(params.context, target.agent, agents) !== "fork") continue;
-		const anthropicModel = [target.model ?? agent.model, ...(agent.fallbackModels ?? [])]
+		const anthropicModel = (target.model ? [target.model] : [agent.model, ...(agent.fallbackModels ?? [])])
 			.filter((model): model is string => Boolean(model?.trim()))
 			.map((model) => resolveModel?.(model) ?? model)
 			.find((model) => model.trim().toLowerCase().startsWith("anthropic/"));

@@ -1728,6 +1728,35 @@ describe("async execution utilities", () => {
 		assert.equal(mockPi.callCount(), 2);
 	});
 
+	for (const [failure, recovers] of [["quota exceeded", false], ["fetch failed", true]] as const) {
+		it(`explicit model override ${recovers ? "retries transport on the pinned route" : "fails without using profile fallbacks"}`, async () => {
+			mockPi.onCall({
+				jsonl: [{ type: "message_end", message: {
+					role: "assistant", content: [], model: "mock/chosen", stopReason: "error", errorMessage: failure,
+				} }],
+				exitCode: 1,
+			});
+			mockPi.onCall({ output: "Recovered on the chosen route" });
+			const id = `itest-ae-${process.pid}-pinned-${Date.now().toString(36)}`;
+			executeAsyncSingle(id, {
+				agent: "worker", task: "Do work",
+				agentConfig: makeAgent("worker", { model: "mock/default", thinking: "medium", fallbackModels: ["mock/backup:low"] }),
+				modelOverride: "mock/chosen:high",
+				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+				shareEnabled: false, maxSubagentDepth: 2,
+			});
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+			assert.equal(payload.success, recovers);
+			assert.deepEqual(payload.results[0]?.attemptedModels, recovers ? ["mock/chosen:high", "mock/chosen:high"] : ["mock/chosen:high"]);
+			assert.equal(payload.results[0]?.model, "mock/chosen:high");
+			assert.equal(mockPi.callCount(), recovers ? 2 : 1);
+			const status = readStatus(getRunMetadataDir(id));
+			assert.equal(status?.steps[0]?.thinking, "high");
+			if (recovers) assert.match(payload.results[0]?.output ?? "", /Recovered on the chosen route/);
+			else assert.match(payload.results[0]?.error ?? "", /quota exceeded/);
+		});
+	}
+
 	it("background runs fail zero-exit provider errors when no fallback succeeds", async () => {
 		mockPi.onCall({
 			jsonl: [{

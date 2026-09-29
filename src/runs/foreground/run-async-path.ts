@@ -1,7 +1,6 @@
 import * as path from "node:path";
 import { resolveRootSessionId } from "../../shared/session-identity.ts";
 import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
-import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { resolveStepBehavior, type ChainStep } from "../../shared/settings.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { executeAsyncChain, executeAsyncSingle } from "../background/async-execution.ts";
@@ -83,16 +82,12 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 	};
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth);
-	const currentProvider = ctx.model?.provider;
 	const controlIntercomTarget = intercomBridge.orchestratorTarget;
 	const childIntercomTarget = (agent: string, index: number) => resolveSubagentIntercomTarget(id, agent, index);
 	const projectTrust = resolveConfiguredChildProjectTrustPolicy(deps.config.projectTrust);
 
 	if (hasTasks && params.tasks) {
 		const agentConfigs = params.tasks.map((task) => agents.find((agent) => agent.name === task.agent));
-		const modelOverrides = params.tasks.map((task, index) =>
-			resolveModelCandidate(task.model ?? agentConfigs[index]?.model, availableModels, currentProvider),
-		);
 		const skillOverrides = params.tasks.map((task) => normalizeSkillInput(task.skill));
 		const parallelTasks = params.tasks.map((task, index) => {
 			const outputFromAgentDefault = usesAgentDefaultOutput(task.output);
@@ -108,7 +103,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 				agent: task.agent,
 				task: wrapTaskForAgentContext(task.task, params.context, task.agent, agents),
 				cwd: task.cwd,
-				...(modelOverrides[index] ? { model: modelOverrides[index] } : {}),
+				...(task.model ? { model: task.model } : {}),
 				...(skillOverrides[index] !== undefined ? { skill: skillOverrides[index] } : {}),
 				...(output !== undefined ? { output } : {}),
 				...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
@@ -212,7 +207,6 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 		const effectiveOutputMode = params.outputMode ?? "inline";
 		const normalizedSkills = normalizeSkillInput(params.skill);
 		const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, a.maxSubagentDepth);
-		const modelOverride = resolveModelCandidate((params.model as string | undefined) ?? a.model, availableModels, currentProvider);
 		return executeAsyncSingle(id, {
 			agent: params.agent!,
 			task: wrapTaskForAgentContext(params.task ?? "", params.context, params.agent, agents),
@@ -231,7 +225,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Su
 			outputFromAgentDefault: usesAgentDefaultOutput(params.output) && typeof a.output === "string" && !path.isAbsolute(a.output),
 			outputMode: effectiveOutputMode,
 			outputSchema: params.outputSchema,
-			modelOverride,
+			modelOverride: params.model,
 			maxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
 			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,

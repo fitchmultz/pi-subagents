@@ -30,21 +30,25 @@ function contractBytes(runId: string, index = 0): Buffer {
 
 const writer = { agent: "writer", task: "Write the report", outputMode: "file-only" as const };
 const producer = { agent: "producer", task: "Prepare inputs" };
-const routes: Array<{ name: string; params: SubagentParamsLike; indices: number[]; structured?: boolean }> = [
-	{ name: "single", params: writer, indices: [0] },
-	{ name: "parallel", params: { tasks: [writer, writer] }, indices: [0, 1] },
-	{ name: "sequential chain", params: { chain: [producer, writer] }, indices: [1] },
-	{ name: "parallel chain", params: { chain: [{ parallel: [writer, writer] }] }, indices: [0, 1] },
-	{
-		name: "dynamic fanout",
-		params: { chain: [
-			{ ...producer, as: "inputs", outputSchema: { type: "object" } },
-			{ expand: { from: { output: "inputs", path: "/items" }, maxItems: 2 }, parallel: writer, collect: { as: "reports" } },
-		] },
-		indices: [1, 2],
-		structured: true,
-	},
-];
+function launchRoutes(model?: string): Array<{ name: string; params: SubagentParamsLike; indices: number[]; structured?: boolean }> {
+	const task = { ...writer, ...(model ? { model } : {}) };
+	return [
+		{ name: "single", params: task, indices: [0] },
+		{ name: "parallel", params: { tasks: [task, task] }, indices: [0, 1] },
+		{ name: "sequential chain", params: { chain: [producer, task] }, indices: [1] },
+		{ name: "parallel chain", params: { chain: [{ parallel: [task, task] }] }, indices: [0, 1] },
+		{
+			name: "dynamic fanout",
+			params: { chain: [
+				{ ...producer, as: "inputs", outputSchema: { type: "object" } },
+				{ expand: { from: { output: "inputs", path: "/items" }, maxItems: 2 }, parallel: task, collect: { as: "reports" } },
+			] },
+			indices: [1, 2],
+			structured: true,
+		},
+	];
+}
+const routes = launchRoutes();
 
 describe("saved output choices", () => {
 	let mockPi: MockPi;
@@ -169,7 +173,9 @@ describe("saved output choices", () => {
 			continuations.push(first);
 			runIds.add(first.details.asyncId!);
 			await waitFor(() => mockPi.callCount() === 2, "the continuation must start");
-			const second = await executor.execute("resume-dir-again", { action: "resume", dir: original.details.asyncDir, message: "Second follow-up", async: true }, undefined, undefined, ctx);
+			const liveContract = contractBytes(first.details.asyncId!);
+			const second = await executor.execute("resume-dir-again", { action: "resume", dir: original.details.asyncDir, message: "Second follow-up", model: "mock/not-a-live-mutation:high", async: true }, undefined, undefined, ctx);
+			assert.deepEqual(contractBytes(first.details.asyncId!), liveContract, "live guidance must not mutate launch policy");
 			if (second.details.asyncId) {
 				continuations.push(second);
 				runIds.add(second.details.asyncId);
@@ -196,6 +202,40 @@ describe("saved output choices", () => {
 					await continueWithOwnOutput(id, index);
 				}
 			});
+		}
+	}
+
+	for (const async of [true, false]) {
+		for (const override of [undefined, "mock/chosen:high"]) {
+			for (const route of launchRoutes(override)) {
+				it(`${async ? "async" : "foreground"} ${route.name} preserves ${override ? "pinned" : "inherited"} model policy through revival`, async () => {
+					profile.model = undefined;
+					profile.thinking = "medium";
+					profile.fallbackModels = ["mock/backup:low"];
+					const parentModel = { provider: "mock", id: "inherited" };
+					ctx.model = parentModel;
+					if (route.structured) mockPi.onCall({ output: "Inputs", structuredOutput: { items: ["a", "b"] } });
+					mockPi.onCall({ output: "Report" });
+					const original = await run({ ...route.params, async });
+					const id = original.details.runId!;
+					const expectedModel = override ?? "mock/inherited:medium";
+					const expectedCandidates = override ? [override] : [expectedModel, "mock/backup:low"];
+					profile.model = "mock/updated";
+					profile.thinking = "low";
+					profile.fallbackModels = ["mock/updated-backup"];
+					for (const index of route.indices) {
+						const launch = savedLaunch(id, index);
+						assert.equal(launch.model, expectedModel);
+						assert.equal(launch.thinking, override ? "high" : "medium");
+						assert.deepEqual(launch.modelCandidates, expectedCandidates);
+						const continued = await run({ action: "resume", id, index, message: "Continue" });
+						const successor = savedLaunch(continued.details.asyncId!);
+						assert.equal(successor.model, expectedModel);
+						assert.equal(successor.thinking, launch.thinking);
+						assert.deepEqual(successor.modelCandidates, expectedCandidates);
+					}
+				});
+			}
 		}
 	}
 
@@ -397,7 +437,7 @@ describe("saved output choices", () => {
 		for (const outputMode of ["inline", "file-only"] as const) {
 			it(`explicit profile ${action} retains the original generated filename (${outputMode})`, async () => {
 				mockPi.onCall({ output: "Predecessor report" });
-				const original = await run({ ...writer, async: true, outputMode });
+				const original = await run({ ...writer, async: true, outputMode, model: "mock/old:medium" });
 				const id = original.details.asyncId!;
 				const previous = savedLaunch(id);
 				assert.ok(typeof previous.output === "string");
@@ -409,6 +449,9 @@ describe("saved output choices", () => {
 					sessionFile: contract.sessionFile!, cwd: tempDir, pid: contract.pid!, reason: "need_decision", message: "May I continue?",
 				}) : undefined;
 				profile.output = "changed-current-profile.md";
+				profile.model = "mock/current";
+				profile.thinking = "high";
+				profile.fallbackModels = ["mock/backup:low"];
 				profile.systemPrompt = "Use the explicitly selected current profile.";
 				mockPi.onCall({ output: "Current-profile successor report" });
 				const continued = await run({ action, id, agent: "writer", questionId: question?.questionId, message: "Continue with the current profile" });
@@ -419,6 +462,9 @@ describe("saved output choices", () => {
 				assert.ok(successor.output.endsWith("_frozen.md"), "profile selection does not replace the saved output choice");
 				assert.equal(successor.agent.output, profile.output, "the saved profile must remain the current selected profile");
 				assert.match(successor.systemPrompt, /explicitly selected current profile/);
+				assert.equal(successor.model, "mock/current:high");
+				assert.equal(successor.thinking, "high");
+				assert.deepEqual(successor.modelCandidates, ["mock/current:high", "mock/backup:low"]);
 				assert.equal(successor.outputMode, outputMode);
 				if (bytes) assert.deepEqual(fs.readFileSync(previous.output), bytes);
 				else assert.equal(fs.existsSync(previous.output), false);
@@ -433,10 +479,55 @@ describe("saved output choices", () => {
 				assert.notEqual(latest.output, successor.output);
 				assert.ok(latest.output.endsWith("_frozen.md"), "the preserved filename survives another saved continuation");
 				assert.equal(latest.agent.output, profile.output);
+				assert.equal(latest.model, successor.model);
+				assert.deepEqual(latest.modelCandidates, successor.modelCandidates);
 				if (outputMode === "file-only") assert.equal(fs.readFileSync(latest.output, "utf8"), "Repeated successor report");
 				else assert.equal(fs.existsSync(latest.output), false);
 			});
 		}
+	}
+
+	it("saved continuation preserves its pinned launch instead of mutable native display metadata", async () => {
+		mockPi.onCall({ output: "Original" });
+		const original = await run({ ...writer, async: true, model: "mock/chosen:high" });
+		const id = original.details.asyncId!;
+		const contract = readQuestionContract(id, 0)!;
+		const timestamp = new Date().toISOString();
+		fs.writeFileSync(contract.sessionFile!, [
+			{ type: "session", version: 3, id: "native-session", cwd: tempDir, timestamp },
+			{ type: "model_change", id: "model", parentId: null, provider: "native", modelId: "later", timestamp },
+			{ type: "thinking_level_change", id: "thinking", parentId: "model", thinkingLevel: "low", timestamp },
+		].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+		assert.equal(readQuestionContract(id, 0)?.launch?.model, "native/later", "inspection still projects native metadata");
+		const continued = await run({ action: "resume", id, message: "Continue" });
+		const successor = readQuestionContract(continued.details.asyncId!, 0, undefined, { readConfiguration: false })!.launch!;
+		assert.equal(successor.model, "mock/chosen:high");
+		assert.equal(successor.thinking, "high");
+		assert.deepEqual(successor.modelCandidates, ["mock/chosen:high"]);
+		const calls = fs.readdirSync(mockPi.dir).filter((name) => /^call-.*\.json$/.test(name)).sort();
+		const args = JSON.parse(fs.readFileSync(path.join(mockPi.dir, calls.at(-1)!), "utf8")).args as string[];
+		assert.equal(args[args.indexOf("--model") + 1], "mock/chosen:high");
+	});
+
+	for (const selectProfile of [false, true]) {
+		it(`explicit continuation model wins over ${selectProfile ? "current profile" : "saved launch"} policy`, async () => {
+			profile.model = "mock/original";
+			profile.thinking = "medium";
+			profile.fallbackModels = ["mock/original-backup:low"];
+			mockPi.onCall({ output: "Original" });
+			const original = await run({ ...writer, async: true });
+			profile.model = "mock/current";
+			profile.thinking = "low";
+			profile.fallbackModels = ["mock/current-backup"];
+			const continued = await run({ action: "resume", id: original.details.asyncId, message: "Continue",
+				...(selectProfile ? { agent: "writer" } : {}), model: "mock/chosen:high" });
+			const successor = savedLaunch(continued.details.asyncId!);
+			assert.equal(successor.model, "mock/chosen:high");
+			assert.equal(successor.thinking, "high");
+			assert.deepEqual(successor.modelCandidates, ["mock/chosen:high"]);
+			const repeated = await run({ action: "resume", id: continued.details.asyncId, message: "Keep going" });
+			assert.deepEqual(savedLaunch(repeated.details.asyncId!).modelCandidates, ["mock/chosen:high"]);
+		});
 	}
 
 	for (const choice of ["explicit", "absolute-default", "disabled", "legacy", "no-launch", "new-default"] as const) {

@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { formatRunIdAmbiguity } from "../shared/run-id-ambiguity.ts";
 import { resolveRootSessionId } from "../../shared/session-identity.ts";
 import { writeAsyncControlRequest, writeAsyncInterruptRequest } from "../background/async-control.ts";
-import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readNativeSessionConfiguration, readQuestionContract, readRunJson, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
+import { getRunMetadataDir, listSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, recordQuestionDelivery, saveQuestionOwner, type SupervisorQuestionView, type SupervisorRunContract } from "../shared/supervisor-questions.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AgentScope } from "../../agents/agents.ts";
-import { splitKnownThinkingSuffix, toModelInfo } from "../../shared/model-info.ts";
+import { providerQualifiedModelId, toModelInfo } from "../../shared/model-info.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { executeAsyncSingle, formatAsyncStartedMessage } from "../background/async-execution.ts";
@@ -720,19 +720,20 @@ export function reviveSavedSubagent(input: {
 	}
 
 	input.deps.state.currentSessionId = resolveCurrentSessionId(input.ctx.sessionManager);
-	const contract = readQuestionContract(target.runId, target.index) ?? target;
+	const contract = readQuestionContract(target.runId, target.index, undefined, { readConfiguration: false }) ?? target;
 	const savedLaunch = input.params.agent === undefined ? contract.launch : undefined;
 	const generatedOutputFilename = input.params.output === undefined ? contract.launch?.generatedOutputFilename : undefined;
 	const effectiveCwd = input.params.cwd ?? savedLaunch?.cwd ?? target.cwd ?? input.requestCwd;
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
 	if (!savedLaunch && !input.params.agent) {
-		return { content: [{ type: "text", text: `Run '${target.runId}' predates saved launch configuration. Its session and known result remain available, but the original profile cannot be reconstructed safely. Continue with agent: '${target.agent}' to explicitly use that profile's current configuration; known model, output and acceptance are retained unless overridden.` }], isError: true, details: { mode: "management", results: [] } };
+		return { content: [{ type: "text", text: `Run '${target.runId}' predates saved launch configuration. Its session and known result remain available, but the original profile cannot be reconstructed safely. Continue with agent: '${target.agent}' to explicitly use that profile's current configuration, including model and thinking; known output and acceptance are retained unless overridden.` }], isError: true, details: { mode: "management", results: [] } };
 	}
 	const discoveredAgents = savedLaunch ? [savedLaunch.agent] : input.deps.discoverAgents(effectiveCwd, scope, { projectTrusted: input.ctx.isProjectTrusted() }).agents;
 	const fallbackTarget = resolveIntercomSessionTarget(input.deps.pi.getSessionName(), input.ctx.sessionManager.getSessionId());
 	const orchestratorTarget = resolveOrchestratorIntercomTarget(input.deps.pi.events, fallbackTarget);
 	const intercomBridge = resolveIntercomBridge(orchestratorTarget);
-	const agents = discoveredAgents;
+	const inheritedModel = providerQualifiedModelId(input.ctx.model?.provider, input.ctx.model?.id);
+	const agents = savedLaunch ? discoveredAgents : discoveredAgents.map((agent) => agent.model || !inheritedModel ? agent : { ...agent, model: inheritedModel });
 	const selectedAgent = input.params.agent ?? target.agent;
 	const profile = agents.find((agent) => agent.name === selectedAgent);
 	const agentConfig = profile && savedLaunch ? { ...profile, thinking: savedLaunch.thinking ?? profile.thinking, maxExecutionTimeMs: savedLaunch.maxExecutionTimeMs, maxTokens: savedLaunch.maxTokens } : profile;
@@ -753,10 +754,7 @@ export function reviveSavedSubagent(input: {
 		source: "async", mode: "single", cwd: effectiveCwd, task: followUp, startedAt: Date.now(),
 		children: [{ agent: selectedAgent, index: 0, task: followUp, label: prior?.children.find((child) => child.index === target.index)?.label, sessionFile: target.sessionFile }],
 	});
-	const native = !savedLaunch ? readNativeSessionConfiguration(target.sessionFile) : {};
-	const model = input.params.model ?? savedLaunch?.model ?? target.model ?? native.model;
-	const thinking = savedLaunch?.thinking ?? native.thinking;
-	const modelOverride = model && thinking && !splitKnownThinkingSuffix(model).thinkingSuffix ? `${model}:${thinking}` : model;
+	const modelOverride = input.params.model;
 	const skill = normalizeSkillInput(input.params.skill);
 	const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const launchInput: Parameters<typeof executeAsyncSingle>[1] = {

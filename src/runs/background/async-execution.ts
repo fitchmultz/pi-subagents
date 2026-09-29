@@ -166,6 +166,27 @@ function withSavedLaunch(step: RunnerSubagentStep, agent: AgentConfig, params: A
 	} };
 }
 
+function resolveLaunchModel(
+	agent: AgentConfig,
+	modelOverride: string | undefined,
+	availableModels: AvailableModelInfo[] | undefined,
+	preferredProvider: string | undefined,
+	savedLaunch?: SavedLaunchConfig,
+) {
+	const primary = modelOverride ?? savedLaunch?.model ?? agent.model;
+	const thinking = savedLaunch?.thinking ?? agent.thinking;
+	const model = applyThinkingSuffix(resolveModelCandidate(primary, availableModels, preferredProvider), thinking);
+	// Only caller selections pin the route; persisted candidates already encode the saved policy.
+	const fallbacks = modelOverride ? [] : savedLaunch?.modelCandidates ?? agent.fallbackModels;
+	return {
+		model,
+		thinking: resolveEffectiveThinking(model, thinking),
+		modelCandidates: buildModelCandidates(primary, fallbacks, availableModels, preferredProvider)
+			.map((candidate) => applyThinkingSuffix(candidate, thinking))
+			.filter((candidate): candidate is string => typeof candidate === "string"),
+	};
+}
+
 interface AsyncExecutionResult {
 	content: Array<{ type: "text"; text: string }>;
 	details: Details;
@@ -324,7 +345,6 @@ export function executeAsyncChain(
 			...(s.reads !== undefined ? { reads: s.reads } : {}),
 			...(s.progress !== undefined ? { progress: s.progress } : {}),
 			...(stepSkillInput !== undefined ? { skills: stepSkillInput } : {}),
-			...(s.model ? { model: s.model } : {}),
 		};
 	};
 	const buildSeqStep = (s: SequentialStep, sessionFile?: string, behaviorCwd?: string, progressPrecreated = false, resolvedBehavior?: ResolvedStepBehavior) => {
@@ -358,8 +378,6 @@ export function executeAsyncChain(
 		const taskTemplate = s.task ?? "{previous}";
 		const task = injectSingleOutputInstruction(`${readInstructions.prefix}${taskTemplate}${progressInstructions.suffix}`, outputPath);
 
-		const primaryModel = resolveModelCandidate(behavior.model ?? a.model, availableModels, ctx.currentModelProvider);
-		const model = applyThinkingSuffix(primaryModel, a.thinking);
 		return withSavedLaunch({
 			agent: s.agent,
 			task,
@@ -368,11 +386,7 @@ export function executeAsyncChain(
 			outputName: s.as,
 			structured: Boolean(s.outputSchema),
 			cwd: stepCwd,
-			model,
-			thinking: resolveEffectiveThinking(model, a.thinking),
-			modelCandidates: buildModelCandidates(behavior.model ?? a.model, a.fallbackModels, availableModels, ctx.currentModelProvider)
-				.map((candidate) => applyThinkingSuffix(candidate, a.thinking))
-				.filter((candidate): candidate is string => typeof candidate === "string"),
+			...resolveLaunchModel(a, s.model, availableModels, ctx.currentModelProvider),
 			tools: a.tools,
 			allowSubagents: a.allowSubagents,
 			extensions: a.extensions,
@@ -710,10 +724,6 @@ export function executeAsyncSingle(
 		taskWithOutputInstruction += buildChainInstructions({ output: false, outputMode: "inline", reads: false, progress: true, skills: false }, runnerCwd, true).suffix;
 	}
 	taskWithOutputInstruction = injectSingleOutputInstruction(taskWithOutputInstruction, outputPath);
-	const model = applyThinkingSuffix(
-		resolveModelCandidate(params.modelOverride ?? params.savedLaunch?.model ?? agentConfig.model, availableModels, ctx.currentModelProvider),
-		agentConfig.thinking,
-	);
 	let spawnResult: { pid?: number; error?: string } = {};
 	try {
 		spawnResult = spawnRunner(
@@ -724,11 +734,7 @@ export function executeAsyncSingle(
 						agent,
 						task: taskWithOutputInstruction,
 						cwd: runnerCwd,
-						model,
-						thinking: resolveEffectiveThinking(model, agentConfig.thinking),
-						modelCandidates: buildModelCandidates(params.modelOverride ?? params.savedLaunch?.model ?? agentConfig.model, params.savedLaunch?.modelCandidates ?? agentConfig.fallbackModels, availableModels, ctx.currentModelProvider)
-							.map((candidate) => applyThinkingSuffix(candidate, agentConfig.thinking))
-							.filter((candidate): candidate is string => typeof candidate === "string"),
+						...resolveLaunchModel(agentConfig, params.modelOverride, availableModels, ctx.currentModelProvider, params.savedLaunch),
 						tools: agentConfig.tools,
 						allowSubagents: agentConfig.allowSubagents,
 						extensions: agentConfig.extensions,

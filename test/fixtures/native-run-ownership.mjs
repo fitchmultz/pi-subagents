@@ -405,8 +405,8 @@ async function runJourney() {
 	assert.equal(calls().length, beforeLegacy);
 	const explicitlyRecovered = await invoke("agent_runs", { action: "continue", id: originalId, agent: "probe", message: "RECALL_TOKEN with explicitly selected profile." });
 	await completed(explicitlyRecovered.details.asyncId);
-	assert.ok(calls().at(-1).modelArg.startsWith("openai-codex/gpt-6-astra"));
-	evidence.checks.push("pre-update native receipt recovers handle/result/session; missing profile needs explicit override rather than silent substitution");
+	assert.equal(calls().at(-1).modelArg, "openai/gpt-6-astra:low");
+	evidence.checks.push("pre-update native receipt recovers handle/result/session; explicit profile recovery adopts current model and thinking");
 	await close(); await open(parentFile);
 	// The legacy case deleted the first run's metadata; these earlier handles are untouched.
 	const coldRuns = [];

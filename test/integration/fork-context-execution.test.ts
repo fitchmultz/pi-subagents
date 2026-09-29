@@ -458,19 +458,19 @@ describe("fork context execution wiring", () => {
 		assert.equal(args.at(-1) ?? "", "Task: parallel task");
 	});
 
-	it("uses non-Anthropic agent model and defaultContext configs as usual", async () => {
+	for (const model of [undefined, "openai/gpt-5-main:high"]) it(`fork launches use ${model ? "explicit pins without unused Anthropic fallbacks" : "non-Anthropic profile defaults"}`, async () => {
 		const parentSessionFile = path.join(tempDir, "parent.jsonl");
 		const { manager, openedPaths, branchedLeafIds } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "worker", description: "Worker", model: "openai/gpt-5-main", defaultContext: "fork" },
+				{ name: "worker", description: "Worker", model: model ? "anthropic/claude-opus-4-6" : "openai/gpt-5-main", fallbackModels: model ? ["anthropic/claude-sonnet-4-6"] : [], defaultContext: "fork" },
 			],
 			projectAgentsDir: null,
 		}));
 
 		const result = await executor.execute(
 			"id",
-			{ agent: "worker", task: "test" },
+			{ agent: "worker", task: "test", ...(model ? { model } : {}) },
 			new AbortController().signal,
 			undefined,
 			makeCtx(manager),
@@ -482,7 +482,7 @@ describe("fork context execution wiring", () => {
 		assert.deepEqual(branchedLeafIds, ["leaf-current"]);
 		assert.deepEqual(readSessionArgsFromCalls(), [path.join(tempDir, "fork-1.jsonl")]);
 		const args = readCallArgs();
-		assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), ["--model", "openai/gpt-5-main"]);
+		assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), ["--model", model ?? "openai/gpt-5-main"]);
 	});
 
 	it("rejects Anthropic models before forking, including an explicit context override", async () => {
