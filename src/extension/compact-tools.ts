@@ -50,7 +50,7 @@ export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 		...lifecycle,
 		name: "delegate",
 		label: "Delegate",
-		description: `Delegate one bounded task to a configured agent. For profiles/history, load_subagent({advanced:false}) enables agent_runs. Delegation enables run controls automatically. ${asyncDescription} Use worktree for an isolated writer, acceptance for explicit requirements, and fresh context for independent review. Advanced workflows remain behind load_subagent.`,
+		description: `Delegate one bounded task to a configured agent. For profiles/history, load_subagent({advanced:false}) enables agent_runs. Delegation enables run controls automatically. ${asyncDescription} Use worktree for an isolated writer, acceptance for explicit requirements, and fresh context for independent review. Fresh handoffs must include relevant exact user instructions and settled decisions or readable source references, not just summaries, alongside the bounded task. Advanced workflows remain behind load_subagent.`,
 		...(childSafe ? { promptGuidelines: [...guidelines] } : {}),
 		parameters: Type.Object({ ...DelegateParams.properties, async: Type.Optional(Type.Boolean({ description: asyncDescription })) }, { additionalProperties: false }),
 		async execute(id, params, signal, onUpdate, ctx) {
@@ -66,7 +66,7 @@ export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 		...lifecycle,
 		name: "agent_runs",
 		label: "Agent Runs",
-		description: `List ${childSafe ? "only this child's directly owned" : "your delegated"} runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; async:false waits for its actual result. Overrides apply only to a new continuation, never to live acceptance. profiles lists agents. History survives reload.`,
+		description: `List ${childSafe ? "only this child's directly owned" : "your delegated"} runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; async:false waits for its actual result. Saved continuations keep settings unless agent selects a current profile; model overrides win. Live guidance never mutates model or acceptance. profiles lists roles, sources, context and model/thinking/fallback defaults. History survives reload.`,
 		parameters: AgentRunsParams,
 		async execute(id, params, signal, onUpdate, ctx) {
 			const normalized = normalizeEverydayParams(params, true);

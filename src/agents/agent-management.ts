@@ -21,6 +21,7 @@ import { serializeChain, serializeJsonChain } from "./chain-serializer.ts";
 import { discoverAvailableSkills } from "./skills.ts";
 import { isClaudeCodeModel } from "../runs/shared/claude-code.ts";
 import type { SubagentExecutionResult } from "../shared/types.ts";
+import { resolveEffectiveThinking } from "../shared/model-info.ts";
 
 type ManagementAction = "list" | "get" | "create" | "update" | "delete";
 type ManagementScope = "user" | "project";
@@ -426,6 +427,18 @@ function renamePath(
 	return { filePath };
 }
 
+function formatModelDefaults(agent: AgentConfig): string[] {
+	const thinking = resolveEffectiveThinking(agent.model, agent.thinking) ?? agent.thinking;
+	const inherited = "inherited runtime default (unset)";
+	const fallbacks = agent.fallbackModels?.map((model) =>
+		`${model} (thinking: ${resolveEffectiveThinking(model, agent.thinking ?? thinking) ?? inherited})`);
+	return [
+		`Model: ${agent.model ?? "inherited from parent (resolved at launch)"}`,
+		`Thinking: ${thinking ?? inherited}`,
+		`Fallback models: ${fallbacks?.length ? fallbacks.join(", ") : "none configured"}`,
+	];
+}
+
 function formatAgentDetail(agent: AgentConfig): string {
 	const tools = [...(agent.tools ?? []), ...(agent.mcpDirectTools ?? []).map((t) => `mcp:${t}`)];
 	const lines: string[] = [`Agent: ${agent.name} (${agent.source})`, `Path: ${agent.filePath}`, `Description: ${agent.description}`];
@@ -433,8 +446,7 @@ function formatAgentDetail(agent: AgentConfig): string {
 		lines.push(`Local name: ${frontmatterNameForConfig(agent)}`);
 		lines.push(`Package: ${agent.packageName}`);
 	}
-	if (agent.model) lines.push(`Model: ${agent.model}`);
-	if (agent.fallbackModels?.length) lines.push(`Fallback models: ${agent.fallbackModels.join(", ")}`);
+	lines.push(...formatModelDefaults(agent));
 	if (tools.length) lines.push(`Tools: ${tools.join(", ")}`);
 	if (agent.skills?.length) lines.push(`Skills: ${agent.skills.join(", ")}`);
 	lines.push(`System prompt mode: ${agent.systemPromptMode}`);
@@ -443,7 +455,6 @@ function formatAgentDetail(agent: AgentConfig): string {
 	if (agent.defaultContext) lines.push(`Default context: ${agent.defaultContext}`);
 	if (agent.source === "builtin") lines.push(`Disabled: ${agent.disabled ? "true" : "false"}`);
 	if (agent.extensions !== undefined) lines.push(`Extensions: ${agent.extensions.length ? agent.extensions.join(", ") : "(none)"}`);
-	if (agent.thinking) lines.push(`Thinking: ${agent.thinking}`);
 	if (agent.output) lines.push(`Output: ${agent.output}`);
 	if (agent.defaultReads?.length) lines.push(`Reads: ${agent.defaultReads.join(", ")}`);
 	if (agent.defaultProgress) lines.push("Progress: true");
@@ -528,7 +539,7 @@ function agentListRole(agent: AgentConfig): AgentListRole {
 }
 
 function formatAgentListLine(a: AgentConfig): string {
-	return `- ${a.name} (${a.source}${a.defaultContext ? `, context: ${a.defaultContext}` : ""}): ${a.description}`;
+	return `- ${a.name} (${a.source}${a.defaultContext ? `, context: ${a.defaultContext}` : ""}): ${a.description}\n  ${formatModelDefaults(a).join("; ")}`;
 }
 
 export function handleList(params: ManagementParams, ctx: ManagementContext): SubagentExecutionResult {

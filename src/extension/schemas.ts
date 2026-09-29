@@ -112,6 +112,10 @@ export const DelegateAcceptance = Type.Object({
 	maxFinalizationTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
 }, { additionalProperties: false, description: "Acceptance criteria, evidence, verification commands and stop rules. Criteria use objects; verification environment uses unique name/value pairs. Self-review budget: 1–10 turns." });
 
+const ModelOverride = Type.Optional(Type.String({
+	description: 'Profiles are defaults; warranted overrides are allowed subject to user instructions and provider authorization. Use model: "provider/model:high" to pin route/effort (no profile fallbacks; same-choice transport retries remain). Omit for profile fallbacks. No standalone thinking argument.',
+}));
+
 const TaskItem = Type.Object({
 	agent: Type.String({ minLength: 1 }),
 	task: Type.String({ minLength: 1 }),
@@ -123,7 +127,7 @@ const TaskItem = Type.Object({
 	outputMode: Type.Optional(OutputModeOverride),
 	reads: Type.Optional(ReadsOverride),
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking for this task" })),
-	model: Type.Optional(Type.String({ description: "Override model for this task" })),
+	model: ModelOverride,
 	skill: Type.Optional(SkillOverride),
 	acceptance: Type.Optional(AcceptanceOverride),
 }, { additionalProperties: false });
@@ -143,7 +147,7 @@ const ParallelTaskSchema = Type.Object({
 	reads: Type.Optional(ReadsOverride),
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
-	model: Type.Optional(Type.String({ description: "Override model for this task" })),
+	model: ModelOverride,
 	acceptance: Type.Optional(AcceptanceOverride),
 }, { additionalProperties: false });
 
@@ -170,7 +174,7 @@ const DynamicParallelTemplateSchema = Type.Object({
 	reads: Type.Optional(ReadsOverride),
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
-	model: Type.Optional(Type.String({ description: "Override model for this task" })),
+	model: ModelOverride,
 	acceptance: Type.Optional(AcceptanceOverride),
 }, { additionalProperties: false });
 
@@ -196,7 +200,7 @@ export const ChainItemSchema = Type.Object({
 	reads: Type.Optional(ReadsOverride),
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
-	model: Type.Optional(Type.String({ description: "Override model for this step" })),
+	model: ModelOverride,
 	acceptance: Type.Optional(AcceptanceOverride),
 	parallel: Type.Optional(Type.Unsafe({
 		anyOf: [
@@ -274,7 +278,7 @@ export const AgentRunsValidationParams = Type.Object({
 	offset: Type.Optional(Type.Integer({ minimum: 0, description: "List offset; history is retained regardless of page size." })),
 	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "Runs per list page (default 20)." })),
 	full: Type.Optional(Type.Boolean({ description: "Inspect only: include the full task and saved launch configuration. Default is a concise report; stored data is unchanged." })),
-	agent: Type.Optional(Type.String({ minLength: 1, description: "Continue/answer: explicitly replace the saved profile with this current profile. Required only for old runs without a saved profile." })),
+	agent: Type.Optional(Type.String({ minLength: 1, description: "Continue/answer: adopt this current profile, including model, thinking and fallbacks; a separate model override wins. Otherwise keep saved settings. Required for old runs without a saved profile." })),
 	model: TaskItem.properties.model,
 	cwd: TaskItem.properties.cwd,
 	output: TaskItem.properties.output,
@@ -299,7 +303,7 @@ export const AgentRunsParams = Type.Object({
 }, { additionalProperties: false });
 
 export const SubagentParams = Type.Object({
-	agent: Type.Optional(Type.String({ minLength: 1, description: "Agent name for single mode/definition management; on resume/answer, explicitly select a current profile instead of the saved profile." })),
+	agent: Type.Optional(Type.String({ minLength: 1, description: "Agent name; on resume/answer, adopt the current profile including model, thinking and fallbacks; a separate model override wins. Otherwise keep saved settings." })),
 	task: Type.Optional(Type.String({ minLength: 1, description: "Task (SINGLE mode, optional for self-contained agents)" })),
 	label: TaskItem.properties.label,
 	// Management action (when present, tool operates in management mode)
@@ -373,7 +377,7 @@ export const SubagentParams = Type.Object({
 	})),
 	outputMode: Type.Optional(OutputModeOverride),
 	skill: Type.Optional(SkillOverride),
-	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
+	model: ModelOverride,
 	outputSchema: Type.Optional(JsonSchemaObject),
 	acceptance: Type.Optional(AcceptanceOverride),
 }, {

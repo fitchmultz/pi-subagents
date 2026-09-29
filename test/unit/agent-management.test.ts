@@ -26,6 +26,34 @@ describe("agent management config parsing", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
+	it("lists effective model, effort and ordered fallbacks without inventing unset defaults", () => {
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
+		for (const config of [
+			{ name: "explicit-defaults", model: "example/primary", thinking: "medium", fallbackModels: ["example/backup:high", "other/last"] },
+			{ name: "suffix-defaults", model: "example/primary:high", thinking: "medium", fallbackModels: ["example/backup"] },
+			{ name: "suffix-inherited-fallback", model: "example/primary:high", fallbackModels: ["example/backup"] },
+			{ name: "inherited-defaults" },
+			{ name: "inherited-model", thinking: "high" },
+		]) {
+			const created = handleCreate({ config: { ...config, scope: "project", description: "Discovery fixture", defaultContext: "fresh" } }, ctx);
+			assert.equal(created.isError, false, readText(created));
+		}
+		const listed = handleManagementAction("list", { agentScope: "project" }, ctx);
+		assert.equal(listed.isError, false);
+		const text = readText(listed);
+		const profile = (name: string) => {
+			const entry = text.split("\n- ").find((line) => line.startsWith(`${name} (`));
+			assert.ok(entry, `Missing profile ${name}`);
+			assert.match(entry, /\(project, context: fresh\): Discovery fixture/);
+			return entry;
+		};
+		assert.match(profile("explicit-defaults"), /Model: example\/primary; Thinking: medium; Fallback models: example\/backup:high \(thinking: high\), other\/last \(thinking: medium\)/);
+		assert.match(profile("suffix-defaults"), /Model: example\/primary:high; Thinking: high; Fallback models: example\/backup \(thinking: medium\)/);
+		assert.match(profile("suffix-inherited-fallback"), /Model: example\/primary:high; Thinking: high; Fallback models: example\/backup \(thinking: high\)/);
+		assert.match(profile("inherited-defaults"), /Model: inherited from parent .*; Thinking: inherited runtime default .*; Fallback models: none configured/);
+		assert.match(profile("inherited-model"), /Model: inherited from parent .*; Thinking: high;/);
+	});
+
 	it("rejects unknown config keys instead of silently ignoring typos", () => {
 		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true };
 		const result = handleManagementAction("create", { config: { name: "typo-agent", description: "test", extra: true } }, ctx);

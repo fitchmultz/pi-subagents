@@ -1668,65 +1668,104 @@ describe("async execution utilities", () => {
 		}
 	});
 
-	it("background runs record fallback attempts and final model", async () => {
-		mockPi.onCall({
-			jsonl: [{
-				type: "message_end",
-				message: {
-					role: "assistant",
-					content: [{ type: "text", text: "primary failed" }],
-					model: "openai/gpt-5-mini",
-					errorMessage: "rate limit exceeded",
-					usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
-				},
-			}],
-			exitCode: 1,
-		});
-		mockPi.onCall({ output: "Recovered asynchronously" });
-		const id = `itest-ae-${process.pid}-fallback-${Date.now().toString(36)}`;
-		const sessionRoot = path.join(tempDir, "sessions");
-		const asyncDir = getRunMetadataDir(id);
-		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
-		const run = executeAsyncSingle(id, {
-			agent: "worker",
-			task: "Do work",
-			agentConfig: makeAgent("worker", {
-				model: "openai/gpt-5-mini:high",
-				fallbackModels: ["anthropic/claude-sonnet-4:low"],
-			}),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			availableModels: [
-				{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" },
-				{ provider: "anthropic", id: "claude-sonnet-4", fullId: "anthropic/claude-sonnet-4" },
-			],
-			shareEnabled: false,
-			sessionRoot,
-			maxSubagentDepth: 2,
-		});
+	for (const { fallback, thinking, effectiveThinking } of [
+		{ fallback: "anthropic/claude-sonnet-4:low", thinking: undefined, effectiveThinking: "low" },
+		{ fallback: "anthropic/claude-sonnet-4", thinking: undefined, effectiveThinking: "high" },
+		{ fallback: "anthropic/claude-sonnet-4", thinking: "medium", effectiveThinking: "medium" },
+	]) {
+		it(`background fallback uses ${effectiveThinking} effort with ${thinking ?? "inherited"} profile thinking`, async () => {
+			mockPi.onCall({
+				jsonl: [{
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "primary failed" }],
+						model: "openai/gpt-5-mini",
+						errorMessage: "rate limit exceeded",
+						usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+					},
+				}],
+				exitCode: 1,
+			});
+			mockPi.onCall({ output: "Recovered asynchronously" });
+			const id = `itest-ae-${process.pid}-fallback-${Date.now().toString(36)}`;
+			const sessionRoot = path.join(tempDir, "sessions");
+			const asyncDir = getRunMetadataDir(id);
+			const resultPath = path.join(RESULTS_DIR, `${id}.json`);
+			const run = executeAsyncSingle(id, {
+				agent: "worker",
+				task: "Do work",
+				agentConfig: makeAgent("worker", {
+					model: "openai/gpt-5-mini:high",
+					thinking,
+					fallbackModels: [fallback],
+				}),
+				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+				availableModels: [
+					{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" },
+					{ provider: "anthropic", id: "claude-sonnet-4", fullId: "anthropic/claude-sonnet-4" },
+				],
+				shareEnabled: false,
+				sessionRoot,
+				maxSubagentDepth: 2,
+			});
 
-		assert.equal(run.details.asyncId, id);
+			assert.equal(run.details.asyncId, id);
 
-		const started = Date.now();
-		while (!fs.existsSync(resultPath)) {
-			if (Date.now() - started > 15000) {
-				assert.fail(`Timed out waiting for async result file: ${resultPath}`);
+			const started = Date.now();
+			while (!fs.existsSync(resultPath)) {
+				if (Date.now() - started > 15000) {
+					assert.fail(`Timed out waiting for async result file: ${resultPath}`);
+				}
+				await new Promise((resolve) => setTimeout(resolve, 100));
 			}
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
 
-		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
-		assert.equal(payload.success, true);
-		assert.equal(payload.results[0].model, "anthropic/claude-sonnet-4:low");
-		assert.deepEqual(payload.results[0].attemptedModels, ["openai/gpt-5-mini:high", "anthropic/claude-sonnet-4:low"]);
-		assert.equal(payload.results[0].modelAttempts.length, 2);
-		const statusPayload = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8")) as AsyncStatusPayload;
-		assert.equal(statusPayload.steps[0]?.model, "anthropic/claude-sonnet-4:low");
-		assert.equal(statusPayload.steps[0]?.thinking, "low");
-		assert.ok(statusPayload.totalTokens!.total > 0);
-		assert.ok(statusPayload.steps[0]?.tokens!.total > 0);
-		assert.match(fs.readFileSync(path.join(asyncDir, "output-0.log"), "utf-8"), /Recovered asynchronously/);
-		assert.equal(mockPi.callCount(), 2);
-	});
+			const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+			const fallbackCandidate = thinking ? `${fallback}:${thinking}` : fallback;
+			assert.equal(payload.success, true);
+			assert.equal(payload.results[0].model, fallbackCandidate);
+			assert.deepEqual(payload.results[0].attemptedModels, ["openai/gpt-5-mini:high", fallbackCandidate]);
+			assert.equal(payload.results[0].modelAttempts.length, 2);
+			const statusPayload = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8")) as AsyncStatusPayload;
+			assert.equal(statusPayload.steps[0]?.model, fallbackCandidate);
+			assert.equal(statusPayload.steps[0]?.thinking, effectiveThinking);
+			const fallbackArgs = readMockPiArgs(mockPi, 1);
+			assert.equal(fallbackArgs[fallbackArgs.indexOf("--model") + 1], `anthropic/claude-sonnet-4:${effectiveThinking}`);
+			assert.ok(statusPayload.totalTokens!.total > 0);
+			assert.ok(statusPayload.steps[0]?.tokens!.total > 0);
+			assert.match(fs.readFileSync(path.join(asyncDir, "output-0.log"), "utf-8"), /Recovered asynchronously/);
+			assert.equal(mockPi.callCount(), 2);
+		});
+	}
+
+	for (const [failure, recovers] of [["quota exceeded", false], ["fetch failed", true]] as const) {
+		it(`explicit model override ${recovers ? "retries transport on the pinned route" : "fails without using profile fallbacks"}`, async () => {
+			mockPi.onCall({
+				jsonl: [{ type: "message_end", message: {
+					role: "assistant", content: [], model: "mock/chosen", stopReason: "error", errorMessage: failure,
+				} }],
+				exitCode: 1,
+			});
+			mockPi.onCall({ output: "Recovered on the chosen route" });
+			const id = `itest-ae-${process.pid}-pinned-${Date.now().toString(36)}`;
+			executeAsyncSingle(id, {
+				agent: "worker", task: "Do work",
+				agentConfig: makeAgent("worker", { model: "mock/default", thinking: "medium", fallbackModels: ["mock/backup:low"] }),
+				modelOverride: "mock/chosen:high",
+				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+				shareEnabled: false, maxSubagentDepth: 2,
+			});
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+			assert.equal(payload.success, recovers);
+			assert.deepEqual(payload.results[0]?.attemptedModels, recovers ? ["mock/chosen:high", "mock/chosen:high"] : ["mock/chosen:high"]);
+			assert.equal(payload.results[0]?.model, "mock/chosen:high");
+			assert.equal(mockPi.callCount(), recovers ? 2 : 1);
+			const status = readStatus(getRunMetadataDir(id));
+			assert.equal(status?.steps[0]?.thinking, "high");
+			if (recovers) assert.match(payload.results[0]?.output ?? "", /Recovered on the chosen route/);
+			else assert.match(payload.results[0]?.error ?? "", /quota exceeded/);
+		});
+	}
 
 	it("background runs fail zero-exit provider errors when no fallback succeeds", async () => {
 		mockPi.onCall({

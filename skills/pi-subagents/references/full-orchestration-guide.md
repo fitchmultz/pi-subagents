@@ -56,7 +56,7 @@ The repository keeps example prompts for repeatable workflows. Treat them as reu
 
 ## Applying Example Prompt Techniques
 
-The examples in `prompts/` encode workflows the parent agent can run on demand. If the user provides a URL, issue, PR, plan, local file, screenshot, or freeform target, treat that target as the primary scope: read or fetch it before launching children, then include it explicitly in every child task. Do not depend on the parent conversation history when the recipe calls for fresh context.
+The examples in `prompts/` encode workflows the parent agent can run on demand. If the user provides a URL, issue, PR, plan, local file, screenshot, or freeform target, treat that target as the primary scope: read or fetch it before launching children, then include it explicitly in every child task. For every fresh child, include relevant exact original user instructions and settled decisions, or readable source references, alongside the bounded assignment. Summaries do not replace those requirements. The harness does not automatically forward the owner's transcript; do not switch to fork as a workaround.
 
 ### Parallel review technique
 
@@ -156,7 +156,7 @@ subagent({
 Builtin agents load at the lowest priority. Project agents override user agents,
 and user/project agents override builtins with the same name.
 
-Use `agent_runs({ action: "profiles" })` for the effective roles, primary/fallback models, and context defaults. The [README](../../../README.md#builtin-agents-in-plain-english) describes the bundled roles. Do not infer installed model routes from an old workflow example. `delegate` inherits the current parent model, including fresh-context runs.
+Use `agent_runs({ action: "profiles" })` for the effective roles, model/thinking/fallback defaults (including truthful inheritance), and context defaults. The [README](../../../README.md#builtin-agents-in-plain-english) describes the bundled roles. Do not infer installed model routes from an old workflow example. Profiles without a model inherit the parent model at launch, including fresh-context runs; inspect the effective profile rather than assuming a role has no model configured.
 
 For one run, use inline config:
 
@@ -168,7 +168,7 @@ For persistent tweaks, edit `subagents.agentOverrides` in user or project settin
 
 ## Prompting role subagents
 
-When launching role agents, keep their configured model routes and write the task prompt as a compact contract, not a long procedural script. Define the destination and let the role choose the efficient path.
+Use profile defaults for routine launches; warranted overrides follow the [skill's model policy](../SKILL.md#agent-selection), using `model: "provider/model:high"`, never a standalone execution `thinking` field. Explicit overrides pin route/effort with same-choice transport retries but no profile fallback; unavailable choices fail for the parent to replace. Write the task prompt as a compact contract, not a long procedural script. Define the destination and let the role choose the efficient path.
 
 A strong subagent prompt usually includes:
 - **Goal**: the concrete outcome the child should produce.
@@ -250,9 +250,9 @@ subagent({
 parent session. It does **not** create a fresh minimal review context or filter
 history down to only the relevant parts. Use it when you want a separate review
 or execution thread that can still reference the parent session history. Fork
-is rejected when an affected agent's effective primary or fallback model uses
-the `anthropic/` provider; explicit context/model overrides cannot bypass this
-restriction.
+is rejected when an affected agent's actual primary or fallback candidate uses
+the `anthropic/` provider. A pinned non-Anthropic override excludes profile
+fallbacks; an Anthropic override remains ineligible.
 
 ### Parallel execution
 
@@ -358,7 +358,7 @@ Resume behavior:
 - If an async child has completed, `resume` revives it by starting a new async child from the persisted child session file.
 - Multi-child async runs require `index` unless only one running child is selectable.
 - Completed foreground single, parallel, and chain runs can also be revived by `index`; ownership and results are restored from persistent session records, not only extension memory.
-- Continuation preserves the resolved provider/model, thinking, profile, selected skill injection, tool/extension/context policies, output, limits, and acceptance. Use explicit overrides to change them; `agent` chooses a current profile. Old receipts without a profile snapshot require that explicit choice rather than silently rediscovering defaults.
+- Continuation without `agent` keeps saved launch settings, including resolved model/thinking and override pinning. Explicit `agent` adopts the current profile's model, thinking and fallback policy; a separate `model` override wins and pins its choice. Other saved output, limits and acceptance settings remain unless overridden. Live guidance is not a new launch and cannot mutate model or acceptance. Old receipts without a profile snapshot require an explicit `agent` rather than silently rediscovering defaults.
 - `agent_runs` supports `model`, `cwd`, `output`, and `acceptance` overrides on `continue`/`answer`. Use legacy `resume` for detailed output/skill/control overrides. A deleted worktree needs an explicit replacement `cwd`; a missing native child session cannot be revived.
 - If another continuation of the same saved child is already live, `continue` forwards to it rather than duplicating its process. A new continuation has its own review outcome.
 - Timed-out or transient-error foreground children can be revived the same way when their `.jsonl` session file was persisted.
@@ -684,7 +684,7 @@ subagent({
 
 When you are the orchestrating agent for a new feature or non-trivial change, use the same orchestration patterns through tools and subagents.
 
-Keep effective agent defaults for routine runs. User/project agent descriptions and frontmatter may encode when to override model, thinking level, skills, output behavior, or context mode; follow that policy when risk warrants it, but do not add overrides just because you are orchestrating. Packaged `oracle` defaults to forked context; the other Fitch role profiles default to fresh context. Fork is never available to effective `anthropic/` primary or fallback models; other providers continue to use the configured context policy normally.
+Keep effective agent defaults for routine runs; ordinary launches retain configured fallbacks. Warranted overrides remain subject to user instructions and provider authorization; see [Agent selection](../SKILL.md#agent-selection) for the per-run syntax and pinning policy. Packaged `oracle` defaults to forked context; the other Fitch role profiles default to fresh context. Fork is never available to effective `anthropic/` primary or fallback models; other providers continue to use the configured context policy normally.
 
 When the user approves launching a subagent to carry out a plan or workflow, treat that as approval to generate a proper role-specific meta prompt for that subagent. Include the approved plan path or summary, clarified requirements, non-goals, relevant context, role boundaries, files or areas to inspect, acceptance criteria, expected output, and validation expectations. Do not pass vague instructions like “implement the plan fully” or “review this” by themselves.
 
