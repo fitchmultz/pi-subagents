@@ -1135,13 +1135,15 @@ test("native broker-staged progress recovers terminal child identity across relo
   const running = parent.session.prompt("Independent work while progress is deferred");
   await waitFor(() => started, "second native blocking tool");
   await waitFor(() => parent.session.sessionManager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "intercom_delivery" && entry.data?.messageId === "broker-delayed-progress" && entry.data.stage === "discarded"), "obsolete broker progress discarded before receiver reload");
-  await parent.session.reload();
+  const reloading = parent.session.reload();
   hold.resolve();
   await running;
+  await reloading;
+  await parent.session.prompt("Continue independent work after reload");
   await waitFor(() => parent.session.isIdle, "independent work after reload/disconnect");
   await sleep(600);
   assert.equal(parent.visible("broker-delayed-progress").length, 0);
-  assert.equal(parent.faux.state.callCount, 3, "completion plus two independent-work responses; no obsolete progress wake");
+  assert.equal(parent.faux.state.callCount, 3, "completion, interrupted work, and explicit post-reload prompt; no obsolete progress wake");
   assert.deepEqual(parent.errors, []);
   t.diagnostic("Terminal association restored from the existing saved delivery/receipt metadata, with broker delay and no replay.");
 });
@@ -1566,7 +1568,6 @@ test("native latest material milestone survives two minutes busy and reload with
   } });
   supervisor.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }),
-    fauxAssistantMessage("Current work complete"),
     fauxAssistantMessage("Milestone handled"),
   ]);
   const running = supervisor.session.prompt("Work before the milestone");
@@ -1580,13 +1581,14 @@ test("native latest material milestone survives two minutes busy and reload with
     Date.now = now;
   }
   await waitFor(async () => (await supervisor.status()).includes("Root cause confirmed"), "coalesced latest milestone");
-  await supervisor.session.reload();
+  const reloading = supervisor.session.reload();
   toolGate.resolve();
   await running;
+  await reloading;
   await waitFor(() => supervisor.visible("latest-milestone").length === 1 && supervisor.settled() === 2, "milestone settlement");
   assert.equal(supervisor.visible("old-milestone").length, 0);
   assert.equal(supervisor.visible("latest-milestone").length, 1);
-  assert.equal(supervisor.faux.state.callCount, 3);
+  assert.equal(supervisor.faux.state.callCount, 2, "reload aborts the held turn; only the retained milestone starts another response");
   assert.match(await supervisor.status(), /Pending inbound messages: 0/);
   assert.deepEqual(supervisor.errors, []);
   t.diagnostic("latest backdated material finding survives native reload while busy; superseded progress never wakes the model.");
