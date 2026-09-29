@@ -2,7 +2,7 @@
  * TypeBox schemas for subagent tool parameters
  */
 
-import { Type } from "typebox";
+import { Type } from "../shared/native-typebox.ts";
 import { SUBAGENT_ACTIONS } from "../shared/types.ts";
 
 const requiredObject = (...required: string[]) => ({ type: "object" as const, required });

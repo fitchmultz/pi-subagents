@@ -27,10 +27,11 @@ try {
     assert.ok(i < 100 && broker.exitCode === null, brokerLog || "Private broker did not start");
     await delay(50);
   }
-  const settingsManager = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
-  const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir, settingsManager, noExtensions: true, noSkills: true, noContextFiles: true, noPromptTemplates: true, noThemes: true, additionalExtensionPaths: [packageRoot] });
+  const settingsManager = sdk.SettingsManager.inMemory({ packages: [packageRoot], compaction: { enabled: false }, retry: { enabled: false } });
+  const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir, settingsManager, noSkills: true, noContextFiles: true, noPromptTemplates: true, noThemes: true });
   await loader.reload();
   assert.deepEqual(loader.getExtensions().errors, []);
+  assert.deepEqual(loader.getExtensions().warnings ?? [], []);
   assert.equal(loader.getExtensions().extensions.length, 2);
   const modelRuntime = await sdk.ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null, modelsStorePath: join(agentDir, "models-store.json"), allowModelNetwork: false });
   ({ session } = await sdk.createAgentSession({ cwd: root, agentDir, settingsManager, resourceLoader: loader, modelRuntime, sessionManager: sdk.SessionManager.create(root, join(root, "sessions")), noTools: "builtin" }));

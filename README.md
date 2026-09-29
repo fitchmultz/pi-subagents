@@ -35,7 +35,7 @@ Use the normal development workflow below for editing and validation, then rerun
 
 Supported platforms: **macOS and Linux**. Termux on Android is unverified; Windows is not supported.
 
-Pi core packages remain optional wildcard peers. Development dependencies are pinned to the coherent official Pi 0.87.1 cohort for typechecking and package checks.
+Pi core packages and TypeBox remain optional wildcard peers. Detached runners resolve TypeBox from the same Pi installation as the session APIs, so runtime-only installs need no private TypeBox copy. Development dependencies are pinned to the coherent official Pi 0.87.1 cohort for typechecking and package checks.
 
 ## Local validation
 

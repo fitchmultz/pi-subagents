@@ -10,6 +10,7 @@ import { hostCli, hostRoot } from "./compat-host.mjs";
 
 const require = createRequire(import.meta.url);
 const packageJson = require("../package.json");
+process.env.PI_PACKAGE_DIR = hostRoot;
 let productionRoot;
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
@@ -116,12 +117,18 @@ try {
 	writeFileSync(join(installDir, "package.json"), JSON.stringify({ private: true, type: "module" }));
 	const filename = pack.filename;
 	if (typeof filename !== "string") throw new Error("npm pack did not report a tarball filename");
-	run("npm", ["install", "--ignore-scripts", "--omit=dev", join(packDir, filename)], installDir);
+	run("npm", ["install", "--ignore-scripts", "--omit=dev", "--legacy-peer-deps", join(packDir, filename)], installDir);
 	const installedRoot = join(installDir, "node_modules", packageJson.name);
 	if (!existsSync(installedRoot)) throw new Error(`production install is missing ${packageJson.name}`);
 	const gitPackageRoot = join(productionRoot, "git-package");
 	cpSync(installedRoot, gitPackageRoot, { recursive: true });
-	run("npm", ["install", "--ignore-scripts", "--omit=dev"], gitPackageRoot);
+	run("npm", ["install", "--ignore-scripts", "--omit=dev", "--legacy-peer-deps"], gitPackageRoot);
+	for (const name of ["typebox", "@earendil-works/pi-agent-core", "@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
+		if (existsSync(join(gitPackageRoot, "node_modules", name))) throw new Error(`runtime-only package shadows host-provided ${name}`);
+	}
+	const hostTypebox = await import(pathToFileURL(createRequire(join(hostRoot, "dist/index.js")).resolve("typebox")).href);
+	const nativeTypebox = await import(pathToFileURL(join(gitPackageRoot, "dist/shared/native-typebox.js")).href);
+	if (nativeTypebox.Type !== hostTypebox.Type) throw new Error("packed runtime did not use the selected host's TypeBox");
 	await import(pathToFileURL(join(gitPackageRoot, "dist", "runs", "shared", "acceptance-contract.js")).href);
 	await import(pathToFileURL(join(gitPackageRoot, "dist", "runs", "shared", "supervisor-questions.js")).href);
 	const brokerSpawn = await import(pathToFileURL(join(gitPackageRoot, "dist", "pi-intercom", "broker", "spawn.js")).href);

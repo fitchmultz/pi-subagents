@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type } from "../shared/native-typebox.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import type { SubagentExecutionResult, SubagentState } from "../shared/types.ts";
 import { activateTools, restoreLazyTools } from "../shared/lazy-tools.ts";

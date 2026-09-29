@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type } from "../../shared/native-typebox.ts";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "./pi-args.ts";
 import { setPromptSection } from "../../shared/prompt-sections.ts";
 import { loadConfig } from "../../extension/config.ts";

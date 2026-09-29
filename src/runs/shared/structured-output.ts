@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Compile } from "typebox/compile";
+import { Compile } from "../../shared/native-typebox.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 
 export const STRUCTURED_OUTPUT_SCHEMA_ENV = "PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA";

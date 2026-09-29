@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type } from "../../shared/native-typebox.ts";
 import type { AcceptanceLedger, ResolvedAcceptanceConfig } from "../../shared/types.ts";
 import { setPromptSection } from "../../shared/prompt-sections.ts";
 import { detectSubagentError, getFinalOutput } from "../../shared/utils.ts";

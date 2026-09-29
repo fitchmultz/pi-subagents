@@ -1,4 +1,4 @@
-import { Compile } from "typebox/compile";
+import { Compile } from "../shared/native-typebox.ts";
 import { AgentRunsValidationParams } from "./schemas.ts";
 
 const runArguments = Compile(AgentRunsValidationParams);
