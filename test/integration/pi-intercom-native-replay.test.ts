@@ -545,7 +545,8 @@ test("native rejected input leaves the active intercom run and idle wait intact"
     inputRelease.resolve();
     await rejected;
     receiver.events.push({ type: "fixture.input_rejection", preflight: [...preflight], beforeStarts, idle: receiver.session.isIdle, streaming: receiver.session.isStreaming, signalUnchanged: receiver.context().signal === signal, idleResolved, settled: receiver.settled() });
-    assert.deepEqual(preflight, [], "dispatch dispositions are emitted only for accepted prompts");
+    // Older hosts report false; current hosts omit the callback for rejected input.
+    assert.ok(preflight.length <= 1 && preflight.every((disposition) => disposition === false), "rejection must not report an accepted dispatch");
     assert.equal(receiver.context().signal, signal);
     assert.equal(signal.aborted, false);
     assert.equal(receiver.session.systemPrompt, systemPrompt);
@@ -568,7 +569,7 @@ test("native rejected input leaves the active intercom run and idle wait intact"
     assert.equal(receiver.visible("input-owner").length, 1);
     assert.equal(seen.split("message:input-owner").length - 1, 1);
     assert.doesNotMatch(seen, /User input held before admission/);
-    assert.deepEqual(preflight, []);
+    assert.ok(preflight.length <= 1 && preflight.every((disposition) => disposition === false), "rejection must not later report an accepted dispatch");
     assert.deepEqual(receiver.events.filter((event) => event.type === "extension.message_end" && event.role === "assistant").map((event) => event.stopReason), ["stop"]);
     assert.match(await receiver.status(), /Pending inbound messages: 0/);
     assert.deepEqual(receiver.errors, []);
