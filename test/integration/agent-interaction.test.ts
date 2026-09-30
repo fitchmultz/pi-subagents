@@ -184,6 +184,49 @@ for (const count of [20, 227]) test(`Agents startup shares ${count} transcript i
 	t.diagnostic(`${count} children: ${reads.length} transcript reads, ${rootListings.length} global question listings, ${formatted.length} formatted conversations`);
 });
 
+test("Agents predecessor and live continuation reuse both journal indexes across unchanged mixed-mode refreshes", (t) => {
+	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2030-01-01T00:00:00Z") });
+	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
+	f.controller.dispose();
+	const terminal = manager.getLeafId(), launch = { model: "fixture/fixture", cwd: f.cwd };
+	saveQuestionContract(f.run.runId, 0, { launch });
+	saveAsyncRunResult(f.run.runId, { runtimeVersion: 2, id: f.run.runId, state: "complete", timestamp: Date.now(),
+		results: [{ agent: "worker", task: f.run.children[0].task, sessionFile: file, success: true, exitCode: 0,
+			finalOutput: "I found the relevant code.", terminalEntryId: terminal, terminalLeafId: terminal }] });
+	t.mock.timers.tick(10);
+	const runId = randomUUID(), successor = { ...f.run, runId, asyncDir: getRunMetadataDir(runId), startedAt: Date.now(),
+		predecessorRunId: f.run.runId, predecessorIndex: 0 };
+	saveQuestionOwner(runId, f.run.ownerSessionId);
+	saveQuestionContract(runId, 0, { task: "Continue the same conversation", sessionFile: file, launch });
+	saveRunStatus(runId, { ...f.status, runId, startedAt: successor.startedAt, lastUpdate: successor.startedAt });
+	f.state.ownedRuns.set(runId, successor);
+	const published = assistant(manager, "Published continuation");
+	fs.appendFileSync(file, JSON.stringify({ type: "message", id: "unpublished", parentId: published, timestamp: new Date().toISOString(),
+		message: { role: "assistant", provider: "fixture", model: "unpublished", stopReason: "stop", usage,
+			content: [{ type: "text", text: "Unpublished continuation" }] } }));
+	const original = fs.readFileSync(file, "utf8"), open = fs.openSync;
+	let reads = 0;
+	t.mock.method(fs, "openSync", function(target, flags, ...args) { if (flags === "r" && String(target) === file) reads++; return open.call(this, target, flags, ...args); });
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	f.controller.start(f.ctx);
+	assert.equal(reads, 2, "the first mixed pass captures one sealed and one LF-only index");
+	assert.equal(f.controller.tasks.length, 1);
+	assert.equal(f.controller.task(f.key)!.run.runId, runId);
+	assert.equal(f.controller.task(f.key)!.child.state, "live");
+	assert.ok(f.controller.task(f.key)!.historyIds.includes(`${published}:0`));
+	assert.ok(!f.controller.task(f.key)!.historyIds.includes("unpublished:0"), "sealed metadata must not leak into the live continuation");
+	f.controller.visit(f.key).draft = "Keep my continuation draft";
+	for (let pass = 0; pass < 3; pass++) {
+		t.mock.timers.tick(500);
+		f.controller.refresh(true);
+		assert.equal(reads, 2, "unchanged scheduled and forced predecessor/live refreshes must not rescan the journal");
+	}
+	assert.equal(f.controller.visit(f.key).draft, "Keep my continuation draft");
+	assert.equal(fs.readFileSync(file, "utf8"), original);
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
+});
+
 test("native snapshots invalidate append, same-size rewrite/replacement, truncation and disappearance while keeping terminal cutoffs distinct", (t) => {
 	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
 	const reader = new NativeAgentHistory(), open = fs.openSync;

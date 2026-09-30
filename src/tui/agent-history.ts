@@ -153,25 +153,26 @@ export function withFinalResult(history: AgentHistory, output: string, runId: st
 
 interface NativeSnapshot {
 	stamp: string;
-	live: boolean;
 	journal: NativeJournal;
 	history?: AgentHistory;
 	configurations: Map<string, NonNullable<AgentHistory["configuration"]>>;
 }
 
 export class NativeAgentHistory {
-	private cache = new Map<string, NativeSnapshot>();
+	private cache = new Map<string, Map<boolean, NativeSnapshot>>();
 	private seen = new Set<string>();
 
 	private snapshot(sessionFile: string, live = false): NativeSnapshot {
 		const stat = fs.statSync(sessionFile, { bigint: true });
 		const stamp = journalStamp(stat);
-		const cached = this.cache.get(sessionFile);
-		if (cached?.stamp === stamp && cached.live === live) return cached;
-		this.cache.delete(sessionFile);
+		const modes = this.cache.get(sessionFile) ?? new Map<boolean, NativeSnapshot>();
+		if (modes.values().next().value?.stamp !== stamp) modes.clear();
+		const cached = modes.get(live);
+		if (cached) return cached;
 		const journal = new NativeJournal(sessionFile, "inspect", live);
-		const snapshot = { stamp, live, journal, configurations: new Map<string, NonNullable<AgentHistory["configuration"]>>() };
-		this.cache.set(sessionFile, snapshot);
+		const snapshot = { stamp, journal, configurations: new Map<string, NonNullable<AgentHistory["configuration"]>>() };
+		modes.set(live, snapshot);
+		this.cache.set(sessionFile, modes);
 		this.seen.add(sessionFile);
 		return snapshot;
 	}
