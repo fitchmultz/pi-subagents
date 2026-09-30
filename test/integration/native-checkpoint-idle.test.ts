@@ -164,7 +164,7 @@ test("unchanged watcher stop leaves a real file-processing tail alive", async ()
   const { createEventBus } = await import("../support/helpers.ts");
   const events = createEventBus(); const dir = path.join(root, "watcher-tail"); mkdirSync(dir);
   const state = { currentSessionId: "owner", completionSeen: new Map(), resultFileCoalescer: { schedule() {}, clear() {} } } as any;
-  const watcher = createResultWatcher({ events }, state, dir, 60000);
+  const watcher = createResultWatcher({ events }, state, dir);
   let relay: any; let completed = 0;
   events.on("subagent:result-intercom", payload => { relay = payload; });
   events.on("subagent:async-complete", () => completed++);
@@ -183,7 +183,7 @@ test("watcher checkpoint invalidates before joining the real delivery tail, then
   const { createEventBus } = await import("../support/helpers.ts");
   const events = createEventBus(); const dir = path.join(root, "watcher-join"); mkdirSync(dir);
   const state = { currentSessionId: "join-owner", completionSeen: new Map(), resultFileCoalescer: { schedule() {}, clear() {} } } as any;
-  const watcher = createResultWatcher({ events }, state, dir, 60000);
+  const watcher = createResultWatcher({ events }, state, dir);
   let relay: any; let completed = 0;
   const controller = new AbortController();
   events.on("subagent:result-intercom", payload => { relay = payload; });
@@ -210,7 +210,7 @@ test("a delayed watch event for a consumed notification does not invalidate a la
   const state = { currentSessionId: "deletion-owner", completionSeen: new Map(),
     ownedRuns: new Map([["before", { runId: "before", source: "async" }]]) } as SubagentState;
   const deleted: Array<() => void> = [];
-  const watcher = createResultWatcher({ events }, state, dir, 60000, { fs: { ...fs,
+  const watcher = createResultWatcher({ events }, state, dir, { fs: { ...fs,
     watch: (directory: fs.PathLike, listener: fs.WatchListener<string>) => fs.watch(directory, (event, file) => {
       // Delay only the real OS deletion event, after ordinary delivery/unlink.
       if (event === "rename" && file && !existsSync(path.join(dir, file))) deleted.push(() => listener(event, file));
@@ -224,7 +224,7 @@ test("a delayed watch event for a consumed notification does not invalidate a la
     state.ownedRuns!.get("before")!.delivery = { notifiedAt: Date.now(), intercomDelivered: false };
     completed++;
   });
-  const publish = (summary: string) => writeFileSync(path.join(dir, "before.json"), JSON.stringify({ id: "before", sessionId: "deletion-owner", summary, success: true, nestedChildren: [] }));
+  const publish = (id: string) => writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ id, sessionId: "deletion-owner", summary: id, success: true, nestedChildren: [] }));
   watcher.startResultWatcher();
   try {
     publish("before"); await waitFor(() => completed === 1 && deleted.length > 0, "ordinary delivery and delayed deletion event");
@@ -352,7 +352,7 @@ for (const code of ["EMFILE", "ENOSPC"]) {
         assert.equal(checkpointSignal.aborted, true, "invalidate before notification or unlink");
         completed.push(data.id);
         pi.appendEntry("polling-completion", data);
-      } } }, state, dir, 60000, {
+      } } }, state, dir, {
         fs: { ...fs, watch: code === "EMFILE" ? () => { throw Object.assign(new Error(code), { code }); } : fs.watch, unlinkSync: (file) => {
           if (file === owned && failUnlink) { failUnlink = false; throw Object.assign(new Error("fixture unlink failure"), { code: "EBUSY" }); }
           fs.unlinkSync(file);

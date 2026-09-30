@@ -87,7 +87,7 @@ for (const background of [undefined, true, false]) test(`native background launc
 	const notices = [];
 	const { default: registerNotify } = await import("../../src/runs/background/notify.ts");
 	registerNotify({ ...f.pi, sendMessage: (message, options) => notices.push({ message, options }) });
-	const watcher = createResultWatcher(f.pi, f.state, RESULTS_DIR, 60_000);
+	const watcher = createResultWatcher(f.pi, f.state, RESULTS_DIR);
 	t.after(() => watcher.stopResultWatcher());
 	await until(() => fs.existsSync(path.join(getRunMetadataDir(runId), "result.json")), "child completes independently");
 	watcher.primeExistingResults();
@@ -291,7 +291,7 @@ test("a detached native result owner suppresses ordinary completion notification
 	f.state.hasNativeResultOwner = (id) => nativeInvocations(f.ctx).some((call) => nativeInvocationTarget(f.ctx, call)?.runId === id);
 	const completions = [];
 	f.bus.on("subagent:async-complete", (event) => completions.push(event));
-	const watcher = createResultWatcher(f.pi, f.state, RESULTS_DIR, 60_000);
+	const watcher = createResultWatcher(f.pi, f.state, RESULTS_DIR);
 	try {
 		watcher.primeExistingResults();
 		await until(() => completions.length > 0, "canonical result discovered after detach");

@@ -208,12 +208,12 @@ async function makeSession(t: TestContext, name: string, options: {
 }
 
 test("native Doctor reports broker registration and loaded compiled identity, not changed files on disk", async (t) => {
-  const packageCopy = path.join(root, "doctor-package");
-  mkdirSync(packageCopy);
+  const packageCopy = realpathSync(mkdtempSync(path.join(repo, "node_modules", ".pi-doctor-")));
   cpSync(path.join(repo, "dist"), path.join(packageCopy, "dist"), { recursive: true });
   const manifest = JSON.parse(readFileSync(path.join(repo, "package.json"), "utf8"));
   writeFileSync(path.join(packageCopy, "package.json"), JSON.stringify(manifest));
   const receiver = await makeSession(t, "doctor-loaded", { subagents: path.join(packageCopy, "dist/extension/index.js") });
+  t.after(() => rmSync(packageCopy, { recursive: true, force: true }));
   const loader = receiver.session.agent.state.tools.find((tool: { name: string }) => tool.name === "load_subagent");
   await loader.execute("load", {}, new AbortController().signal);
   const subagent = receiver.session.agent.state.tools.find((tool: { name: string }) => tool.name === "subagent");

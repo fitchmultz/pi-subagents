@@ -83,7 +83,7 @@ describe("unified owner result retention through actual router", () => {
 		assert.equal(result.content[0].text.split("Inline findings").length, 2);
 	});
 
-	it("bounds the model projection while durable results and artifacts retain full output", async () => {
+	it("bounds model and owner previews while the saved output reference retains the full output", async () => {
 		const full = Array.from({ length: 400 }, (_, index) => `Line ${index}: ${"proof ".repeat(30)}`).join("\n");
 		mock.onCall({ output: full });
 		const result = await executor().execute("bounded", { agent: "worker", task: "Report", maxOutput: { bytes: 600, lines: 6 } }, undefined, undefined, makeMinimalCtx(cwd));
@@ -93,10 +93,12 @@ describe("unified owner result retention through actual router", () => {
 		assert.ok(result.details.results[0].finalOutput.length < 1200);
 		assert.ok(result.details.run.children[0].result.finalOutput.length < 1200);
 		assert.equal(result.details.truncation.truncated, true);
-		assert.equal(saved(result).results[0].finalOutput, full.trimEnd());
-		assert.equal(saved(result).summary, full.trimEnd());
-		assert.equal(saved(result).truncated, false, "durable evidence is complete even when the model projection is bounded");
-		assert.equal(fs.readFileSync(result.details.results[0].artifactPaths.outputPath, "utf8"), full.trimEnd());
+		const durable = saved(result);
+		assert.ok(durable.results[0].finalOutput.length <= 8192);
+		assert.ok(durable.summary.length <= 8192);
+		assert.equal(durable.recordVersion, 3);
+		assert.equal(durable.results[0].artifactPaths.outputPath, result.details.results[0].artifactPaths.outputPath);
+		assert.equal(fs.readFileSync(durable.results[0].artifactPaths.outputPath, "utf8"), full.trimEnd());
 	});
 
 	for (const mode of ["parallel", "chain"] as const) it(`${mode} timeout keeps configured deadline, partial output and completed siblings`, async () => {

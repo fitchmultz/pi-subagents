@@ -214,6 +214,7 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 		if (msg.role !== "toolResult") continue;
 		const toolName = "toolName" in msg && typeof msg.toolName === "string" ? msg.toolName : undefined;
 		const isError = "isError" in msg && msg.isError === true;
+		const observedExit = (msg as Message & { observedExitCode?: number }).observedExitCode;
 
 		if (isError) {
 			const text = msg.content.find((c) => c.type === "text");
@@ -221,7 +222,7 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 			const exitMatch = details?.match(/exit(?:ed)?\s*(?:with\s*)?(?:code|status)?\s*[:\s]?\s*(\d+)/i);
 			return {
 				hasError: true,
-				exitCode: exitMatch ? parseInt(exitMatch[1], 10) : 1,
+				exitCode: observedExit ?? (exitMatch ? parseInt(exitMatch[1], 10) : 1),
 				errorType: toolName || "tool",
 				details: details?.slice(0, 200),
 			};
@@ -234,8 +235,8 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 		const output = text.text;
 
 		const exitMatch = output.match(/exit(?:ed)?\s*(?:with\s*)?(?:code|status)?\s*[:\s]?\s*(\d+)/i);
-		if (exitMatch) {
-			const code = parseInt(exitMatch[1], 10);
+		if (exitMatch || observedExit !== undefined) {
+			const code = observedExit ?? parseInt(exitMatch![1], 10);
 			if (code !== 0) {
 				return { hasError: true, exitCode: code, errorType: "bash", details: output.slice(0, 200) };
 			}

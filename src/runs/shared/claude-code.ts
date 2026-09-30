@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
+import { scanJournal } from "../../shared/journal-reader.ts";
+import { writeAtomicJson } from "../../shared/atomic-json.ts";
 
 const PREFIX = "claude-code/";
 const DEFAULT_CONTEXT = "300k";
@@ -96,63 +98,42 @@ export function parseClaudeCodeModel(model: string): ClaudeCodeModelSpec {
 }
 
 export function readClaudeCodeSessionMetadata(sessionFile: string | undefined): ClaudeCodeSessionMetadata | undefined {
-	if (!sessionFile || !fs.existsSync(sessionFile)) return undefined;
-	for (const line of fs.readFileSync(sessionFile, "utf-8").split(/\r?\n/)) {
-		if (!line.trim()) continue;
-		try {
-			const parsed = JSON.parse(line) as { type?: string; claudeCode?: Partial<ClaudeCodeSessionMetadata> };
-			if (parsed.type !== SESSION_EVENT_TYPE || !parsed.claudeCode) continue;
-			const sessionId = parsed.claudeCode.sessionId;
-			const model = parsed.claudeCode.model;
-			const cliModel = parsed.claudeCode.cliModel;
-			const family = parsed.claudeCode.family;
-			const context = parsed.claudeCode.context;
-			if (typeof sessionId !== "string" || !sessionId) continue;
-			if (typeof model !== "string" || typeof cliModel !== "string") continue;
-			if (family !== "fable" && family !== "opus" && family !== "sonnet" && family !== "haiku") continue;
-			if (context !== "300k" && context !== "1m" && context !== "native") continue;
-			return { sessionId, model, cliModel, family, context, updatedAt: Number(parsed.claudeCode.updatedAt) || 0 };
-		} catch {
-			// Ignore non-metadata jsonl lines.
-		}
-	}
-	return undefined;
+	if (!sessionFile) return;
+	const validate = (value: Partial<ClaudeCodeSessionMetadata> | undefined): ClaudeCodeSessionMetadata | undefined => {
+		if (!value || typeof value.sessionId !== "string" || !value.sessionId || typeof value.model !== "string" || typeof value.cliModel !== "string"
+			|| !["fable", "opus", "sonnet", "haiku"].includes(value.family ?? "") || !["300k", "1m", "native"].includes(value.context ?? "")) return;
+		return { ...value, updatedAt: Number(value.updatedAt) || 0 } as ClaudeCodeSessionMetadata;
+	};
+	try { return validate(JSON.parse(fs.readFileSync(`${sessionFile}.metadata.json`, "utf8"))); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+	if (!fs.existsSync(sessionFile)) return;
+	let metadata: ClaudeCodeSessionMetadata | undefined;
+	// Legacy metadata is recovered read-only; new updates never rewrite its audit messages.
+	scanJournal(sessionFile, (path) => !path.length || ["type", "claudeCode"].includes(String(path[0])) ? 4096 : false, ({ value }) => {
+		if (value?.type === SESSION_EVENT_TYPE) metadata ??= validate(value.claudeCode);
+	}, { policy: "inspect" });
+	return metadata;
 }
 
 export function writeClaudeCodeSessionMetadata(sessionFile: string, metadata: ClaudeCodeSessionMetadata): void {
 	fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
-	const existing = fs.existsSync(sessionFile)
-		? fs.readFileSync(sessionFile, "utf-8").split(/\r?\n/).filter((line) => {
-			if (!line.trim()) return false;
-			try {
-				return (JSON.parse(line) as { type?: string }).type !== SESSION_EVENT_TYPE;
-			} catch {
-				return true;
-			}
-		})
-		: [];
-	const metadataLine = JSON.stringify({ type: SESSION_EVENT_TYPE, claudeCode: metadata });
-	fs.writeFileSync(sessionFile, `${metadataLine}\n${existing.join("\n")}${existing.length ? "\n" : ""}`, "utf-8");
+	writeAtomicJson(`${sessionFile}.metadata.json`, metadata);
+	fs.closeSync(fs.openSync(sessionFile, "a", 0o600));
 }
 
-export function appendClaudeCodeMessage(sessionFile: string | undefined, message: Message): void {
+export function appendClaudeCodeMessage(sessionFile: string | undefined, message: Message, observation?: Omit<ClaudeCodeResultEvent, "result" | "structured_output">): void {
 	if (!sessionFile) return;
 	fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
-	fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "message_end", message })}\n`, "utf-8");
+	fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "message_end", message, ...(observation ? { claudeCodeResult: observation } : {}) })}\n`, { mode: 0o600 });
 }
 
 function hasNonMetadataContent(sessionFile: string): boolean {
 	if (!fs.existsSync(sessionFile)) return false;
-	for (const line of fs.readFileSync(sessionFile, "utf-8").split(/\r?\n/)) {
-		if (!line.trim()) continue;
-		try {
-			if ((JSON.parse(line) as { type?: string }).type === SESSION_EVENT_TYPE) continue;
-		} catch {
-			// Non-json content means this is not our metadata-only file.
-		}
-		return true;
-	}
-	return false;
+	let content = false;
+	scanJournal(sessionFile, (path) => !path.length || path.length === 1 && path[0] === "type", ({ value }) => {
+		if (value?.type !== SESSION_EVENT_TYPE) content = true;
+	}, { policy: "inspect", malformed: () => { content = true; } });
+	return content;
 }
 
 export function buildClaudeCodeInvocation(input: {
@@ -241,19 +222,18 @@ function mapClaudeCodeTools(tools: string[] | undefined, mcpDirectTools: string[
 export function claudeCodeMessageFromResult(event: ClaudeCodeResultEvent, fallbackModel: string): Message {
 	const resultText = event.result ?? "";
 	const isError = event.is_error === true || event.subtype === "error" || Boolean(event.api_error_status);
+	const counters = { input: event.usage?.input_tokens, output: event.usage?.output_tokens,
+		cacheRead: event.usage?.cache_read_input_tokens, cacheWrite: event.usage?.cache_creation_input_tokens };
+	const observed = Object.fromEntries(Object.entries(counters).filter(([, value]) => value !== undefined));
+	if (Object.values(counters).every((value) => typeof value === "number")) observed.totalTokens = Object.values(counters).reduce<number>((sum, value) => sum + value!, 0);
 	return {
 		role: "assistant",
 		content: [{ type: "text", text: resultText }],
 		model: resolveClaudeCodeResultModel(event) ?? fallbackModel,
 		stopReason: isError ? "error" : "stop",
 		...(isError ? { errorMessage: resultText || `Claude Code failed${event.api_error_status ? ` (${event.api_error_status})` : ""}.` } : {}),
-		usage: {
-			input: event.usage?.input_tokens ?? 0,
-			output: event.usage?.output_tokens ?? 0,
-			cacheRead: event.usage?.cache_read_input_tokens ?? 0,
-			cacheWrite: event.usage?.cache_creation_input_tokens ?? 0,
-			cost: { total: event.total_cost_usd ?? 0 },
-		},
+		usage: Object.keys(observed).length || event.total_cost_usd !== undefined
+			? { ...observed, ...(event.total_cost_usd !== undefined ? { cost: { total: event.total_cost_usd } } : {}) } : undefined,
 	} as Message;
 }
 

@@ -84,6 +84,37 @@ function createUiContext() {
 }
 
 describe("async job tracker", () => {
+	it("reads an original-shaped >512 MiB event backlog without losing control cursors or replaying a torn tail", { timeout: 180_000 }, (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 10_000 });
+		const asyncRoot = createTempDir("pi-subagents-large-owner-feed-"), runDir = path.join(asyncRoot, "large");
+		fs.mkdirSync(runDir);
+		const file = path.join(runDir, "events.jsonl"), fd = fs.openSync(file, "wx");
+		const notice = (message: string) => JSON.stringify({ type: "subagent.control", channels: ["event"], event: {
+			type: "needs_attention", to: "needs_attention", runId: "large", agent: "worker", ts: 10_000, message } }) + "\n";
+		fs.writeSync(fd, notice("before aggregate"));
+		fs.writeSync(fd, '{"type":"agent_end","messages":[{"content":"');
+		const block = Buffer.alloc(65_536, 120);
+		for (let index = 0; index < 8193; index++) fs.writeSync(fd, block);
+		fs.writeSync(fd, '"}]}\n');
+		const boundary = fs.fstatSync(fd).size, tail = notice("after tail");
+		fs.writeSync(fd, tail.slice(0, -2)); fs.closeSync(fd);
+		fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({ runId: "large", mode: "single", state: "running", pid: process.pid,
+			startedAt: 10_000, steps: [{ agent: "worker", status: "running" }] }));
+		const state = createState(), recorder = createEventRecorder();
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 700 });
+		try {
+			tracker.resetJobs(createUiContext().ctx as never);
+			tracker.handleStarted({ id: "large", asyncDir: runDir, agent: "worker" });
+			t.mock.timers.tick(700);
+			assert.equal(state.asyncJobs.get("large").controlEventCursor, boundary);
+			assert.deepEqual(recorder.events.map(({ data }) => (data as { event: { message: string } }).event.message), ["before aggregate"]);
+			fs.appendFileSync(file, tail.slice(-2)); t.mock.timers.tick(700);
+			assert.equal(state.asyncJobs.get("large").controlEventCursor, fs.statSync(file).size);
+			t.mock.timers.tick(700);
+			assert.deepEqual(recorder.events.map(({ data }) => (data as { event: { message: string } }).event.message), ["before aggregate", "after tail"]);
+		} finally { tracker.resetJobs(); removeTempDir(asyncRoot); }
+	});
+
 	it("shares one selected-status decode and avoids established foreign payloads and repairs", (t) => {
 		const owner = randomUUID(), other = randomUUID();
 		const manager = SessionManager.inMemory("/repo", { id: owner });

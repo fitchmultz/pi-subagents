@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { scanJournal } from "../../shared/journal-reader.ts";
 import { renderWidget, widgetRenderKey } from "../../tui/render.ts";
 import { formatControlNoticeMessage, isObsoleteIdleNotice } from "../shared/subagent-control.ts";
 import {
@@ -70,66 +71,29 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	const emitNewControlEvents = (job: AsyncJobState) => {
 		const eventsPath = path.join(job.asyncDir, "events.jsonl");
 		try {
-			const size = (options.statSync ?? fs.statSync)(eventsPath).size;
-			if (size === (job.controlEventCursor ?? 0)) return;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-			console.error(`Failed to inspect async control events for '${job.asyncDir}':`, error);
-			return;
-		}
-		let fd: number;
-		try {
-			fd = fs.openSync(eventsPath, "r");
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-			console.error(`Failed to open async control events for '${job.asyncDir}':`, error);
-			return;
-		}
-		try {
-			const stat = fs.fstatSync(fd);
-			const cursor = stat.size < (job.controlEventCursor ?? 0) ? 0 : (job.controlEventCursor ?? 0);
-			if (stat.size <= cursor) return;
-			const buffer = Buffer.alloc(stat.size - cursor);
-			fs.readSync(fd, buffer, 0, buffer.length, cursor);
-			const lastNewline = buffer.lastIndexOf(0x0a);
-			if (lastNewline === -1) return;
-			job.controlEventCursor = cursor + lastNewline + 1;
-			for (const line of buffer.subarray(0, lastNewline).toString("utf-8").split("\n")) {
-				if (!line.trim()) continue;
-				let parsed: unknown;
-				try {
-					parsed = JSON.parse(line);
-				} catch (error) {
-					console.error(`Ignoring malformed async control event in '${eventsPath}':`, error);
-					continue;
+			const stat = (options.statSync ?? fs.statSync)(eventsPath);
+			const identity = `${stat.dev}:${stat.ino}`;
+			if (job.controlEventIdentity !== identity || stat.size < (job.controlEventCursor ?? 0)) job.controlEventCursor = 0;
+			job.controlEventIdentity = identity;
+			if (stat.size === (job.controlEventCursor ?? 0)) return;
+			const cursor = scanJournal(eventsPath, (path) => !path.length || ["type", "event", "channels", "childIntercomTarget", "noticeText", "intercom"].includes(String(path[0])), ({ value, end }) => {
+				if (value?.type === "subagent.control") {
+					const record = value as { event?: ControlEvent; channels?: string[]; childIntercomTarget?: string; noticeText?: string; intercom?: { to?: string; message?: string } };
+					if (record.event?.type === "needs_attention" && Array.isArray(record.channels)
+						&& (job.controlEventSince === undefined || typeof record.event.ts === "number" && record.event.ts >= job.controlEventSince)) {
+						const payload = { event: record.event, source: "async" as const, asyncDir: job.asyncDir, childIntercomTarget: record.childIntercomTarget,
+							noticeText: record.noticeText ?? formatControlNoticeMessage(record.event, record.childIntercomTarget) };
+						if (!isObsoleteIdleNotice(payload)) {
+							if (record.channels.includes("event")) pi.events.emit(SUBAGENT_CONTROL_EVENT, payload);
+							if (record.channels.includes("intercom") && record.intercom?.to && record.intercom.message) pi.events.emit(SUBAGENT_CONTROL_INTERCOM_EVENT, { ...payload, to: record.intercom.to, message: record.intercom.message });
+						}
+					}
 				}
-				if (!parsed || typeof parsed !== "object" || (parsed as { type?: unknown }).type !== "subagent.control") continue;
-				const record = parsed as { event?: ControlEvent; channels?: string[]; childIntercomTarget?: string; noticeText?: string; intercom?: { to?: string; message?: string } };
-				if (!record.event || record.event.type !== "needs_attention" || !Array.isArray(record.channels)) continue;
-				if (job.controlEventSince !== undefined && (typeof record.event.ts !== "number" || record.event.ts < job.controlEventSince)) continue;
-				const payload = {
-					event: record.event,
-					source: "async" as const,
-					asyncDir: job.asyncDir,
-					childIntercomTarget: record.childIntercomTarget,
-					noticeText: record.noticeText ?? formatControlNoticeMessage(record.event, record.childIntercomTarget),
-				};
-				if (isObsoleteIdleNotice(payload)) continue;
-				if (record.channels.includes("event")) {
-					pi.events.emit(SUBAGENT_CONTROL_EVENT, payload);
-				}
-				if (record.channels.includes("intercom") && record.intercom?.to && record.intercom.message) {
-					pi.events.emit(SUBAGENT_CONTROL_INTERCOM_EVENT, {
-						...payload,
-						to: record.intercom.to,
-						message: record.intercom.message,
-					});
-				}
-			}
+				job.controlEventCursor = end;
+			}, { policy: "live", start: job.controlEventCursor ?? 0 });
+			job.controlEventCursor = cursor;
 		} catch (error) {
-			console.error(`Failed to read async control events for '${job.asyncDir}':`, error);
-		} finally {
-			fs.closeSync(fd);
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error(`Failed to read async control events for '${job.asyncDir}':`, error);
 		}
 	};
 
@@ -397,7 +361,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	const restoreJobs = (sessionId: string, ctx: ExtensionContext, restoration?: OwnedRunRestoration) => {
 		restoreBoundary = restoration?.startedAt ?? Date.now();
 		restoreDiscovery = restoration?.discover ?? createAsyncRunDiscovery(asyncDirRoot, {
-			sessionId, ownerSessionId: ctx.sessionManager?.getSessionId(), resultsDir, kill: options.kill, now: options.now, skipInvalid: true,
+			sessionId: ctx.sessionManager?.getSessionFile() ?? sessionId, ownerSessionId: ctx.sessionManager?.getSessionId(), resultsDir, kill: options.kill, now: options.now, skipInvalid: true,
 		});
 		restoreDiscoveryDeadline = restoreBoundary + 2_000;
 		try {

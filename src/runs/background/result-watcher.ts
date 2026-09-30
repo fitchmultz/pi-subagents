@@ -35,7 +35,7 @@ type ResultWatcherTimers = {
 };
 
 type ResultWatcherDeps = {
-	reconcileDelivery?: (runId: string, completionKey: string) => boolean;
+	reconcileDelivery?: (runId: string, completionKey: string, accounting?: boolean) => boolean;
 	fs?: ResultWatcherFs;
 	timers?: ResultWatcherTimers;
 };
@@ -74,7 +74,6 @@ export function createResultWatcher(
 	pi: { events: IntercomEventBus },
 	state: SubagentState,
 	resultsDir: string,
-	completionTtlMs: number,
 	deps: ResultWatcherDeps = {},
 ): {
 	startResultWatcher: () => void;
@@ -92,8 +91,10 @@ export function createResultWatcher(
 	const readResult = (file: string) => fsApi === fs ? readAsyncResultFile(file) : parseAsyncResultFileContent(fsApi.readFileSync(file, "utf-8"), file);
 	const pendingResultFiles = () => [
 		...(fsApi.existsSync(resultsDir) ? fsApi.readdirSync(resultsDir).filter((name) => name.endsWith(".json")) : []),
-		...[...(state.ownedRuns?.values() ?? [])].filter((run) => run.source === "async" && !run.delivery && !state.isRunResultConsumed?.(run.runId))
-			.map((run) => path.join(getRunMetadataDir(run.runId), "result.json")).filter((file) => fsApi.existsSync(file)),
+		...[...(state.ownedRuns?.values() ?? [])].filter((run) => run.source === "async"
+			&& fsApi.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))
+			&& (run.accounting?.state === "incomplete" || !run.delivery?.entryId && !state.isRunResultConsumed?.(run.runId)))
+			.map((run) => path.join(getRunMetadataDir(run.runId), "result.json")),
 	];
 
 	const handleResult = async (file: string) => {
@@ -108,10 +109,11 @@ export function createResultWatcher(
 			const runId = notification.runId ?? notification.id ?? path.basename(file, ".json");
 			const data = isDurableRun(notification) && !durableFile ? readResult(path.join(getRunMetadataDir(runId), "result.json")) : notification;
 			if ((data.runId ?? data.id ?? runId) !== runId) throw new Error(`Result identity does not match notification '${runId}'.`);
-			if (data.sessionId ? data.sessionId !== state.currentSessionId : !state.ownedRuns?.has(runId)) return;
+			const run = state.ownedRuns?.get(runId);
+			if (data.sessionId ? data.sessionId !== state.currentSessionId && run?.ownerSessionId !== state.currentSessionId : !run) return;
+			data.completionId ??= `legacy:${runId}:${data.timestamp ?? "unknown"}`;
 			const completionKey = buildCompletionKey({ ...data, id: runId }, "result");
-			if (state.isRunResultConsumed?.(runId) || (isDurableRun(data) && state.ownedRuns?.get(runId)?.delivery)
-				|| deps.reconcileDelivery?.(runId, completionKey)) { consumeNotification(); return; }
+			if (deps.reconcileDelivery?.(runId, completionKey) || state.isRunResultConsumed?.(runId)) { consumeNotification(); return; }
 			if (state.waitingRuns?.has(runId) || state.hasNativeResultOwner?.(runId)) {
 				pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { ...data, runId, suppressNotification: true, intercomResultDelivered: false });
 				return;
@@ -126,8 +128,6 @@ export function createResultWatcher(
 					return;
 				}
 			}
-			const now = Date.now();
-
 			const hasResultChildren = Array.isArray(data.results) && data.results.length > 0;
 			const resultChildren = hasResultChildren
 				? data.results!
@@ -165,7 +165,8 @@ export function createResultWatcher(
 			}), nestedChildren);
 
 			if (processingCompletionKeys.has(completionKey)) return;
-			if (markSeenWithTtl(state.completionSeen, completionKey, now, completionTtlMs)) {
+			// Owned queue/receipt reconciliation above remains authoritative after TTL expiry.
+			if (markSeenWithTtl(state.completionSeen, completionKey, Date.now(), 10 * 60 * 1000)) {
 				consumeNotification();
 				return;
 			}
@@ -183,6 +184,7 @@ export function createResultWatcher(
 				const payload = buildSubagentResultIntercomPayload({
 					to: intercomTarget,
 					runId,
+					completionId: data.completionId,
 					mode,
 					source: "async",
 					...(fsApi.existsSync(savedResultPath) ? { resultPath: savedResultPath } : {}),
@@ -239,7 +241,12 @@ export function createResultWatcher(
 		for (const file of pendingResultFiles()) {
 			const data = readResult(path.isAbsolute(file) ? file : path.join(resultsDir, file));
 			const runId = data.runId ?? data.id ?? file.replace(/\.json$/i, "");
-			if (!state.isRunResultConsumed?.(runId) && (data.sessionId ? data.sessionId === state.currentSessionId : state.ownedRuns?.has(runId))) {
+			data.completionId ??= `legacy:${runId}:${data.timestamp ?? "unknown"}`;
+			// A parent receipt can be committed before the next watcher tick saves its
+			// owner projection. Reconcile that receipt without billing work in the cut.
+			deps.reconcileDelivery?.(runId, buildCompletionKey({ ...data, id: runId }, "result"), false);
+			const run = state.ownedRuns?.get(runId);
+			if (!run?.delivery?.entryId && !state.isRunResultConsumed?.(runId) && (data.sessionId ? data.sessionId === state.currentSessionId || run?.ownerSessionId === state.currentSessionId : run)) {
 				event.invalidate();
 				break;
 			}

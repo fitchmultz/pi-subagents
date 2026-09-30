@@ -138,7 +138,7 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, ex
 	};
 }
 
-for (const count of [20, 227]) test(`Agents startup shares ${count} transcript parses and formats only the selected conversation beside 8000 unrelated runs`, async (t) => {
+for (const count of [20, 227]) test(`Agents startup shares ${count} transcript indexes and hydrates only requested details beside 8000 unrelated runs`, async (t) => {
 	const f = fixture(t, "regular", count);
 	f.controller.dispose();
 	f.state.ownedRuns.clear();
@@ -157,14 +157,14 @@ for (const count of [20, 227]) test(`Agents startup shares ${count} transcript p
 	for (let index = 0; index < 8000; index++) fs.mkdirSync(path.join(metadataRoot, `foreign-${index}`), { recursive: true });
 	const files = new Set(f.childSessions.map((manager) => manager.getSessionFile()));
 	const reads: string[] = [], formatted: number[] = [], rootListings: string[] = [];
-	const readFile = fs.readFileSync, readdir = fs.readdirSync, stringify = JSON.stringify;
-	t.mock.method(fs, "readFileSync", function(file, ...args) { if (files.has(String(file))) reads.push(String(file)); return readFile.call(this, file, ...args); });
+	const open = fs.openSync, readdir = fs.readdirSync, stringify = JSON.stringify;
+	t.mock.method(fs, "openSync", function(file, flags, ...args) { if (flags === "r" && files.has(String(file))) reads.push(String(file)); return open.call(this, file, flags, ...args); });
 	t.mock.method(fs, "readdirSync", function(file, ...args) { if (String(file) === metadataRoot || String(file).endsWith("/supervisor-questions")) rootListings.push(String(file)); return readdir.call(this, file, ...args); });
 	t.mock.method(JSON, "stringify", function(value, ...args) { if (value?.result?.details?.historyProbe !== undefined) formatted.push(value.result.details.historyProbe); return stringify.call(this, value, ...args); });
 	syncBuiltinESMExports();
 	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 	f.controller.start(f.ctx);
-	assert.equal(reads.length, count, "configuration and history must share one read/parse per file");
+	assert.equal(reads.length, count, "configuration and history share one captured-descriptor index per file");
 	assert.equal(new Set(reads).size, count);
 	assert.deepEqual(rootListings, [], "known run questions never enumerate global roots");
 	assert.deepEqual(formatted, [], "closed-panel startup does not format raw tool details");
@@ -174,18 +174,64 @@ for (const count of [20, 227]) test(`Agents startup shares ${count} transcript p
 	const opening = f.controller.open(f.controller.tasks[0].key);
 	plain(f.overlay);
 	assert.equal(reads.length, count, "opening one conversation does not reread all child bodies");
-	assert.equal(formatted.length, 1, "only the selected conversation materializes full tool details");
+	assert.equal(formatted.length, 0, "ordinary pages do not materialize raw tool details");
+	const tool = f.controller.tasks[0].history.find((item) => item.kind === "tool")!;
+	assert.match(tool.load!().details!, /historyProbe/);
+	assert.equal(formatted.length, 1, "explicitly selected details hydrate only their native records");
 	assert.equal(f.controller.tasks.every((task) => task.child.task?.startsWith("Full assignment")), true);
 	f.overlay.handleInput("\x1b"); await opening;
 	assert.equal(f.calls.length, 0);
 	t.diagnostic(`${count} children: ${reads.length} transcript reads, ${rootListings.length} global question listings, ${formatted.length} formatted conversations`);
 });
 
+test("Agents predecessor and live continuation reuse both journal indexes across unchanged mixed-mode refreshes", (t) => {
+	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2030-01-01T00:00:00Z") });
+	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
+	f.controller.dispose();
+	const terminal = manager.getLeafId(), launch = { model: "fixture/fixture", cwd: f.cwd };
+	saveQuestionContract(f.run.runId, 0, { launch });
+	saveAsyncRunResult(f.run.runId, { runtimeVersion: 2, id: f.run.runId, state: "complete", timestamp: Date.now(),
+		results: [{ agent: "worker", task: f.run.children[0].task, sessionFile: file, success: true, exitCode: 0,
+			finalOutput: "I found the relevant code.", terminalEntryId: terminal, terminalLeafId: terminal }] });
+	t.mock.timers.tick(10);
+	const runId = randomUUID(), successor = { ...f.run, runId, asyncDir: getRunMetadataDir(runId), startedAt: Date.now(),
+		predecessorRunId: f.run.runId, predecessorIndex: 0 };
+	saveQuestionOwner(runId, f.run.ownerSessionId);
+	saveQuestionContract(runId, 0, { task: "Continue the same conversation", sessionFile: file, launch });
+	saveRunStatus(runId, { ...f.status, runId, startedAt: successor.startedAt, lastUpdate: successor.startedAt });
+	f.state.ownedRuns.set(runId, successor);
+	const published = assistant(manager, "Published continuation");
+	fs.appendFileSync(file, JSON.stringify({ type: "message", id: "unpublished", parentId: published, timestamp: new Date().toISOString(),
+		message: { role: "assistant", provider: "fixture", model: "unpublished", stopReason: "stop", usage,
+			content: [{ type: "text", text: "Unpublished continuation" }] } }));
+	const original = fs.readFileSync(file, "utf8"), open = fs.openSync;
+	let reads = 0;
+	t.mock.method(fs, "openSync", function(target, flags, ...args) { if (flags === "r" && String(target) === file) reads++; return open.call(this, target, flags, ...args); });
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	f.controller.start(f.ctx);
+	assert.equal(reads, 2, "the first mixed pass captures one sealed and one LF-only index");
+	assert.equal(f.controller.tasks.length, 1);
+	assert.equal(f.controller.task(f.key)!.run.runId, runId);
+	assert.equal(f.controller.task(f.key)!.child.state, "live");
+	assert.ok(f.controller.task(f.key)!.historyIds.includes(`${published}:0`));
+	assert.ok(!f.controller.task(f.key)!.historyIds.includes("unpublished:0"), "sealed metadata must not leak into the live continuation");
+	f.controller.visit(f.key).draft = "Keep my continuation draft";
+	for (let pass = 0; pass < 3; pass++) {
+		t.mock.timers.tick(500);
+		f.controller.refresh(true);
+		assert.equal(reads, 2, "unchanged scheduled and forced predecessor/live refreshes must not rescan the journal");
+	}
+	assert.equal(f.controller.visit(f.key).draft, "Keep my continuation draft");
+	assert.equal(fs.readFileSync(file, "utf8"), original);
+	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
+});
+
 test("native snapshots invalidate append, same-size rewrite/replacement, truncation and disappearance while keeping terminal cutoffs distinct", (t) => {
 	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
-	const reader = new NativeAgentHistory(), readFile = fs.readFileSync;
+	const reader = new NativeAgentHistory(), open = fs.openSync;
 	let reads = 0;
-	t.mock.method(fs, "readFileSync", function(target, ...args) { if (String(target) === file) reads++; return readFile.call(this, target, ...args); });
+	t.mock.method(fs, "openSync", function(target, flags, ...args) { if (flags === "r" && String(target) === file) reads++; return open.call(this, target, flags, ...args); });
 	syncBuiltinESMExports();
 	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 	const initial = reader.read(file);
@@ -241,6 +287,25 @@ test("native snapshots invalidate append, same-size rewrite/replacement, truncat
 	reader.read(file);
 	assert.equal(reads, 8, "session disposal drops all snapshots");
 	assert.equal(initial.entryIds.length, initialIds.length, "old presentation snapshots remain immutable");
+});
+
+test("native detail snapshots retain valid bodies when append falls between cache stat and descriptor indexing", (t) => {
+	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile(), reader = new NativeAgentHistory();
+	const stat = fs.statSync;
+	let appended = false;
+	t.mock.method(fs, "statSync", function(target, ...args) {
+		const observed = stat.call(this, target, ...args);
+		if (String(target) === file && !appended) {
+			appended = true;
+			assistant(manager, "Appended before descriptor indexing");
+		}
+		return observed;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const history = reader.read(file, true);
+	assert.equal(history.items.find((item) => item.kind === "assistant")!.load!().text, "I found the relevant code.");
+	assert.equal(history.items.at(-1)!.load!().text, "Appended before descriptor indexing");
 });
 
 test("history reading IDs and delivery facts never need raw tool serialization", () => {
@@ -1089,6 +1154,59 @@ test("full native history, tool details and contextual reply survive streaming a
 	assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
 	assert.ok(narrow.length <= 18, `view must fit the native overlay: ${narrow.length}`);
 	view.handleInput("\x1b"); await opening;
+});
+
+test("native Agents earlier/later pages and Latest retain access to exact selected full bodies", async (t) => {
+	const f = fixture(t), manager = f.childSessions[0];
+	const full = `History card 97\n${"full-detail ".repeat(600)}PAGE-97-FULL-END`;
+	for (let index = 0; index < 250; index++) assistant(manager, index === 97 ? full : `History card ${index}`);
+	f.controller.refresh(true);
+	const opening = f.controller.open(f.key); f.tui.start(); f.tui.renderNow();
+	const page = async (label: string) => {
+		f.overlay.handleInput("\x1bOQ");
+		f.overlay.handleInput("\x1b[A"); if (label === "Earlier history") f.overlay.handleInput("\x1b[A");
+		assert.ok(plain(f.overlay).includes(`→ ${label}`));
+		f.overlay.handleInput("\r");
+		f.tui.renderNow();
+	};
+	await page("Earlier history");
+	assert.match(plain(f.overlay), /History card 149/);
+	await page("Earlier history");
+	assert.match(f.overlay.scroll.render(88).map(stripTerminalSequences).join("\n"), /History card 97/);
+	f.terminal.input("\t"); f.tui.renderNow();
+	assistant(manager, "Continuation appended after selection, before detail input");
+	f.terminal.input("\r"); f.tui.renderNow();
+	assert.match(readDetails(f.overlay), /PAGE-97-FULL-END/);
+	f.terminal.input("\x1b"); f.tui.renderNow();
+	await page("Later history");
+	assert.match(plain(f.overlay), /History card 197/);
+	f.terminal.input("\x1bl"); f.tui.renderNow();
+	assert.match(plain(f.overlay), /History card 249/, "Latest returns to the current final page, not merely its old page's last row");
+	assert.doesNotMatch(plain(f.overlay), /History card 197/);
+	f.terminal.input("\x1b"); await opening;
+	assert.equal(f.calls.length, 0);
+});
+
+for (const loss of ["missing", "replacement", "truncation"]) test(`native detail requests show ${loss} failures without escaping TUI input or losing drafts`, async (t) => {
+	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
+	assistant(manager, `Full selected body\n${"detail ".repeat(600)}SELECTED-END`);
+	f.controller.refresh(true);
+	const opening = f.controller.open(f.key);
+	f.tui.start(); f.tui.renderNow();
+	f.terminal.input("Keep my unsent message");
+	f.terminal.input("\t"); f.tui.renderNow();
+	if (loss === "missing") fs.unlinkSync(file);
+	else if (loss === "replacement") {
+		fs.writeFileSync(`${file}.replacement`, fs.readFileSync(file));
+		fs.renameSync(`${file}.replacement`, file);
+	} else fs.truncateSync(file, fs.readFileSync(file, "utf8").indexOf("\n") + 1);
+	assert.doesNotThrow(() => f.terminal.input("\r"), "detail failures cannot escape the native input listener");
+	f.tui.renderNow();
+	assert.match(plain(f.overlay), /Details unavailable/);
+	f.terminal.input("\x1b"); f.tui.renderNow();
+	assert.equal(f.overlay.editor.getExpandedText(), "Keep my unsent message");
+	assert.equal(f.calls.length, 0);
+	f.terminal.input("\x1b"); await opening;
 });
 
 for (const nativeAnswer of [false, true]) test(`completed structured-output history opens at the readable report without duplicates (native answer: ${nativeAnswer})`, async (t) => {

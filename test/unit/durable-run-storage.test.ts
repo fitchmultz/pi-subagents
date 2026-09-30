@@ -151,8 +151,8 @@ it("the watcher consumes only notifications and reconnects to an undelivered dur
 	local.ownedRuns!.set(run.runId, run);
 	const events = createEventBus();
 	const delivered: unknown[] = [];
-	events.on("subagent:async-complete", (data) => { delivered.push(data); run.delivery = { notifiedAt: Date.now(), intercomDelivered: false }; });
-	let watcher = createResultWatcher({ events }, local, RESULTS_DIR, 60_000);
+	events.on("subagent:async-complete", (data) => { delivered.push(data); });
+	let watcher = createResultWatcher({ events }, local, RESULTS_DIR);
 	try {
 		watcher.primeExistingResults();
 		await new Promise((resolve) => setTimeout(resolve, 100));
@@ -162,14 +162,10 @@ it("the watcher consumes only notifications and reconnects to an undelivered dur
 		assert.equal(fs.readFileSync(file, "utf8"), before);
 		watcher.stopResultWatcher();
 		local.completionSeen.clear();
-		watcher = createResultWatcher({ events }, local, RESULTS_DIR, 60_000);
+		watcher = createResultWatcher({ events }, local, RESULTS_DIR);
 		watcher.primeExistingResults();
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		assert.equal(delivered.length, 1, "a persisted parent receipt survives watcher restart");
-		delete run.delivery;
-		watcher.primeExistingResults();
-		await new Promise((resolve) => setTimeout(resolve, 100));
-		assert.equal(delivered.length, 2, "missing transient notification does not lose a committed result");
+		assert.equal(delivered.length, 2, "a watcher restart can rediscover an undelivered canonical result; event emission itself is no parent receipt");
 		assert.equal(fs.readFileSync(file, "utf8"), before);
 	} finally { watcher.stopResultWatcher(); }
 });
@@ -185,7 +181,7 @@ it("waiting tools retain delivery ownership until they settle or detach", async 
 	const events = createEventBus();
 	const delivered: Array<{ suppressNotification?: boolean }> = [];
 	events.on("subagent:async-complete", (data) => delivered.push(data as { suppressNotification?: boolean }));
-	const watcher = createResultWatcher({ events }, local, RESULTS_DIR, 60_000);
+	const watcher = createResultWatcher({ events }, local, RESULTS_DIR);
 	try {
 		watcher.primeExistingResults();
 		await new Promise((resolve) => setTimeout(resolve, 100));

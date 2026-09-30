@@ -54,9 +54,16 @@ test("migrated questions keep an old waiter working and survive deletion of temp
 			const question = q.createSupervisorQuestion({ ...input, runId: "migration-owned" }, legacy);
 			q.saveQuestionOwner("migration-foreign", "another-parent", legacy);
 			q.createSupervisorQuestion({ ...input, runId: "migration-foreign" }, legacy);
+			fs.mkdirSync(path.join(legacy, "broken-foreign"), { recursive: true });
+			fs.writeFileSync(path.join(legacy, "broken-foreign", "question-owner.json"), "{");
 			assert.equal(q.listOwnedRunQuestions("owner", "migration-owned").length, 1, "exact UI access migrates the known legacy run");
 			assert.equal(q.listOwnedRunQuestions("owner", "migration-foreign").length, 0);
 			assert.equal(q.listSupervisorQuestions("owner").length, 1);
+			assert.throws(() => q.migrateSupervisorQuestions("owner", "broken-foreign"), SyntaxError, "targeted corrupt metadata remains a failure");
+			fs.mkdirSync(path.join(q.QUESTIONS_DIR, "broken-question", "questions", "question"), { recursive: true });
+			fs.writeFileSync(path.join(q.QUESTIONS_DIR, "broken-question", "questions", "question", "question.json"), "{");
+			assert.equal(q.listSupervisorQuestions("owner").length, 1, "unrelated malformed questions do not hide the healthy owner's question");
+			assert.throws(() => q.listSupervisorQuestions("owner", "broken-question"), SyntaxError);
 			q.saveQuestionAnswer(question, "Stable API");
 			assert.equal(q.readQuestionState(question, legacy).answer.message, "Stable API");
 			q.recordQuestionDelivery(question, { kind: "live", runId: question.runId, deliveredAt: Date.now() }, legacy);
@@ -86,19 +93,36 @@ test("native selection is projected without rewriting frozen launch or racing ow
 	try {
 		const launch: SavedLaunchConfig = { agent: { name: "worker", description: "Worker", systemPromptMode: "append", inheritProjectContext: false, inheritSkills: false, systemPrompt: "saved", source: "user", filePath: "worker.md" },
 			model: "provider/original", thinking: "low", modelCandidates: ["provider/original"], artifacts: false, share: false, systemPrompt: "saved", skills: [], cwd: root, context: "fresh", output: false, outputMode: "inline" };
-		saveQuestionContract(question.runId, 0, { launch, sessionFile: question.sessionFile, pid: 123 }, root);
+		launch.outputSchema = { type: "object", properties: { messages: { type: "string" }, summary: { const: "x".repeat(9000) }, output: { type: "string" }, ["long".repeat(1250)]: { type: "boolean" } }, required: ["messages"] };
+		saveQuestionContract(question.runId, 0, { launch, outputSchema: launch.outputSchema, sessionFile: question.sessionFile, pid: 123 }, root);
 		fs.writeFileSync(question.sessionFile, [
 			{ type: "session", version: 3, id: "child", cwd: root, timestamp: "2026-01-01T00:00:00Z" },
 			{ type: "model_change", id: "model", parentId: null, provider: "provider", modelId: "current", timestamp: "2026-01-01T00:01:00Z" },
 			{ type: "thinking_level_change", id: "thinking", parentId: "model", thinkingLevel: "high", timestamp: "2026-01-01T00:02:00Z" },
 		].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
 		const file = path.join(root, question.runId, "contracts", "0.json");
+		const legacy = JSON.parse(fs.readFileSync(file, "utf8"));
+		legacy.recordVersion = 2;
+		fs.writeFileSync(file, JSON.stringify(legacy));
+		fs.truncateSync(question.sessionFile, fs.statSync(question.sessionFile).size - 1);
+		const recovered = readQuestionContract(question.runId, 0, root)!;
+		assert.equal(recovered.launch?.model, "provider/current");
+		assert.equal(recovered.launch?.thinking, "low", "legacy recovery cannot publish a native thinking change without LF");
+		assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).effectiveConfiguration, { model: "provider/current", modelRecordedAt: Date.parse("2026-01-01T00:01:00Z") });
+		fs.appendFileSync(question.sessionFile, "\n");
+		saveQuestionContract(question.runId, 0, { effectiveConfiguration: { model: "provider/current", thinking: "high" }, terminalLeafId: "thinking" }, root);
 		const before = fs.readFileSync(file, "utf8");
+		// Ordinary controls use the captured native selection, even after a
+		// successor changes the journal or its locator becomes unreadable.
+		fs.unlinkSync(question.sessionFile);
+		fs.mkdirSync(question.sessionFile);
 		const projected = readQuestionContract(question.runId, 0, root)!;
 		assert.equal(projected.launch?.model, "provider/current");
 		assert.equal(projected.launch?.thinking, "high");
 		assert.equal(projected.launch?.output, false);
 		assert.equal(projected.launch?.agent.inheritSkills, false);
+		assert.deepEqual(projected.outputSchema, launch.outputSchema);
+		assert.deepEqual(projected.launch?.outputSchema, launch.outputSchema, "continuation's frozen schema is complete even when its properties use transcript/output field names");
 		assert.equal(fs.readFileSync(file, "utf8"), before);
 		saveQuestionContract(question.runId, 0, { pid: 456, updatedAt: 10 }, root);
 		const afterOwnerUpdate = fs.readFileSync(file, "utf8");
@@ -107,6 +131,7 @@ test("native selection is projected without rewriting frozen launch or racing ow
 		assert.equal(created.pid, process.pid);
 		assert.equal(fs.readFileSync(file, "utf8"), afterOwnerUpdate);
 		assert.deepEqual(JSON.parse(afterOwnerUpdate).launch, launch);
+		assert.deepEqual(JSON.parse(afterOwnerUpdate).effectiveConfiguration, { model: "provider/current", thinking: "high" });
 		assert.equal(readQuestionContract(question.runId, 0, root)?.pid, 456);
 	} finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -13,6 +13,6 @@ export function updateStreamingText(current: string | undefined, event: TextEven
 	if (event.type !== "message_update") return current;
 	const update = event.assistantMessageEvent;
 	if (update?.type === "text_start") return current ? `${current}\n\n` : "";
-	if (update?.type === "text_delta") return (current ?? "") + update.delta;
+	if (update?.type === "text_delta") return ((current ?? "") + update.delta).slice(-8192);
 	return current;
 }

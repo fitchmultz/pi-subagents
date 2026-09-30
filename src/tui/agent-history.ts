@@ -1,10 +1,9 @@
 import * as fs from "node:fs";
 import type { AssistantMessage, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
-import type { FileEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { stripAcceptanceReport } from "../runs/shared/acceptance-reports.ts";
-import { readNativeSessionConfiguration } from "../runs/shared/supervisor-questions.ts";
-import { migrateSessionEntries, parseSessionEntries } from "../shared/native-session.ts";
+import { NativeJournal, journalStamp } from "../shared/journal-reader.ts";
 import { extractToolArgsPreview } from "../shared/utils.ts";
 
 export interface AgentHistoryItem {
@@ -22,6 +21,8 @@ export interface AgentHistoryItem {
 	result?: ToolResultMessage;
 	messageId?: string;
 	timestamp: number;
+	/** Explicit detail request; normal history uses bounded previews. */
+	load?: () => AgentHistoryItem;
 }
 
 export interface AgentHistory {
@@ -30,7 +31,7 @@ export interface AgentHistory {
 	entryIds: string[];
 	finalId?: string;
 	findFinalResult?: (text: string) => string | undefined;
-	configuration?: ReturnType<typeof readNativeSessionConfiguration>;
+	configuration?: ReturnType<NativeJournal["configuration"]>;
 	unavailable?: string;
 }
 
@@ -95,7 +96,7 @@ export function historyItems(entries: SessionEntry[]): AgentHistory {
 					const id = `${entry.id}:${index}`;
 					if (part.type === "toolCall") {
 						const item = historyItem({ ...base, id, entryIds: [id], kind: "tool", call: part, model }, () => ({
-							title: `${part.name} ${extractToolArgsPreview(part.arguments)}`.trim() + (item.result ? ` · ${item.result.isError ? "failed" : "result recorded"}` : " · result not recorded"),
+							title: `${part.name} ${extractToolArgsPreview(part.arguments ?? {})}`.trim() + (item.result ? ` · ${item.result.isError ? "failed" : "result recorded"}` : " · result not recorded"),
 							...(item.result ? resultDisplay(item.result, part) : {
 								text: readableText(part.arguments),
 								details: `${readableText(part)}\n\nCommand result not recorded; exit is unconfirmed. An agent pause or exit does not prove that a command or its descendants exited.`,
@@ -152,40 +153,39 @@ export function withFinalResult(history: AgentHistory, output: string, runId: st
 
 interface NativeSnapshot {
 	stamp: string;
-	entries: FileEntry[];
+	journal: NativeJournal;
 	history?: AgentHistory;
-	configurations: Map<number | undefined, NonNullable<AgentHistory["configuration"]>>;
+	configurations: Map<string, NonNullable<AgentHistory["configuration"]>>;
 }
 
 export class NativeAgentHistory {
-	private cache = new Map<string, NativeSnapshot>();
+	private cache = new Map<string, Map<boolean, NativeSnapshot>>();
 	private seen = new Set<string>();
 
-	private snapshot(sessionFile: string): NativeSnapshot {
+	private snapshot(sessionFile: string, live = false): NativeSnapshot {
 		const stat = fs.statSync(sessionFile, { bigint: true });
-		const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
-		const cached = this.cache.get(sessionFile);
-		if (cached?.stamp === stamp) return cached;
-		this.cache.delete(sessionFile);
-		const entries = parseSessionEntries(fs.readFileSync(sessionFile, "utf8"));
-		if (entries[0]?.type !== "session") throw new Error("Not a readable native Pi session.");
-		// Native migration mutates entries. Normalize the whole journal before any cutoff
-		// can upgrade its shared header while leaving later legacy entries unmigrated.
-		migrateSessionEntries(entries);
-		const snapshot = { stamp, entries, configurations: new Map<number | undefined, NonNullable<AgentHistory["configuration"]>>() };
-		this.cache.set(sessionFile, snapshot);
+		const stamp = journalStamp(stat);
+		const modes = this.cache.get(sessionFile) ?? new Map<boolean, NativeSnapshot>();
+		if (modes.values().next().value?.stamp !== stamp) modes.clear();
+		const cached = modes.get(live);
+		if (cached) return cached;
+		const journal = new NativeJournal(sessionFile, "inspect", live);
+		const snapshot = { stamp, journal, configurations: new Map<string, NonNullable<AgentHistory["configuration"]>>() };
+		modes.set(live, snapshot);
+		this.cache.set(sessionFile, modes);
 		this.seen.add(sessionFile);
 		return snapshot;
 	}
 
-	configuration(sessionFile: string | undefined, endedAt?: number): NonNullable<AgentHistory["configuration"]> {
+	configuration(sessionFile: string | undefined, endedAt?: number, leaf?: string | null, live = false): NonNullable<AgentHistory["configuration"]> {
 		if (!sessionFile) return {};
 		try {
-			const snapshot = this.snapshot(sessionFile);
-			let configuration = snapshot.configurations.get(endedAt);
+			const snapshot = this.snapshot(sessionFile, live);
+			const key = `${endedAt ?? "all"}:${leaf === undefined ? "latest" : leaf ?? "empty"}`;
+			let configuration = snapshot.configurations.get(key);
 			if (!configuration) {
-				configuration = readNativeSessionConfiguration(undefined, snapshot.entries, endedAt);
-				snapshot.configurations.set(endedAt, configuration);
+				configuration = snapshot.journal.configuration(endedAt, leaf);
+				snapshot.configurations.set(key, configuration);
 			}
 			return configuration;
 		} catch {
@@ -194,11 +194,35 @@ export class NativeAgentHistory {
 		}
 	}
 
-	read(sessionFile: string | undefined, live = false): AgentHistory {
+	read(sessionFile: string | undefined, live = false, boundary: { leaf?: string | null; terminalEntryId?: string; endedAt?: number } = {}): AgentHistory {
 		if (!sessionFile) return { items: [], entryIds: [], ...(!live ? { unavailable: "The child has not saved a conversation yet. Its assignment and live status remain available." } : {}) };
 		try {
-			const snapshot = this.snapshot(sessionFile);
-			return snapshot.history ??= { ...historyItems(snapshot.entries.filter((entry): entry is SessionEntry => entry.type !== "session")), configuration: this.configuration(sessionFile) };
+			const snapshot = this.snapshot(sessionFile, live);
+			const build = () => {
+				let records = snapshot.journal.records.filter((record) => record.value.type !== "session");
+				if (boundary.terminalEntryId) {
+					const index = records.findIndex((record) => record.value.id === boundary.terminalEntryId);
+					if (index < 0) throw new Error("Saved terminal entry is unavailable");
+					records = records.slice(0, index + 1);
+				} else if (boundary.endedAt !== undefined) records = records.filter((record) => Date.parse(record.value.timestamp) <= boundary.endedAt!);
+				const history = historyItems(records.map((record) => record.value as SessionEntry));
+				for (const item of history.items) item.load = () => {
+					const ids = new Set((item.entryIds ?? [item.id]).map((id) => id.split(":")[0]));
+					const journal = this.snapshot(sessionFile, live).journal;
+					if (journal.identity !== snapshot.journal.identity || journal.records[0]?.value.id !== snapshot.journal.records[0]?.value.id
+						|| journal.stamp !== snapshot.journal.stamp && journal.end <= snapshot.journal.end) throw new Error("Saved conversation was replaced or truncated; refresh history before reading details.");
+					const entries = records.filter((record) => ids.has(record.value.id)).map((original) => {
+						const record = journal.byId.get(original.value.id);
+						if (!record || record.start !== original.start) throw new Error("Selected native entry changed or is unavailable; refresh history.");
+						return journal.body(record) as SessionEntry;
+					});
+					const full = historyItems(entries).items.find((full) => full.id === item.id);
+					if (!full) throw new Error("Selected native entry is unavailable; refresh history.");
+					return full;
+				};
+				return { ...history, configuration: this.configuration(sessionFile, boundary.endedAt, boundary.leaf, live) };
+			};
+			return !Object.keys(boundary).length ? snapshot.history ??= build() : build();
 		} catch (error) {
 			this.cache.delete(sessionFile);
 			// Native Pi writes a new session only after the first assistant message ends.

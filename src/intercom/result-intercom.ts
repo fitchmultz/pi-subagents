@@ -180,6 +180,7 @@ function formatNestedResultLines(children: PublicNestedRunSummary[] | undefined)
 }
 
 interface GroupedResultIntercomMessageInput {
+	completionId?: string;
 	to: string;
 	runId: string;
 	mode: SubagentRunMode;
@@ -277,6 +278,7 @@ export function buildSubagentResultIntercomPayload(input: GroupedResultIntercomM
 	const summary = formatStatusCounts(countStatuses(children));
 	const firstChild = children[0];
 	const payload: SubagentResultIntercomPayload = {
+		...(input.completionId ? { completionId: input.completionId } : {}),
 		to: input.to,
 		runId: input.runId,
 		mode: input.mode,

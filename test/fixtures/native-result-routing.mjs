@@ -94,7 +94,7 @@ async function verifyResult(run, grouped) {
 	const inspection = await invoke("agent_runs", { action: "inspect", id: run.id });
 	(evidence.results ??= []).push({ name: run.name, terminal, inspection, visible: visible(run), errors: errorsFor(run) });
 	verify(`${run.name}: original successful child and ownership survive restart`, () => {
-		assert.equal(terminal.sessionId, seed.sessionFile);
+		assert.equal(terminal.sessionId, seed.sessionId);
 		assert.equal(terminal.intercomTarget, seed.intercomTarget);
 		assert.equal(terminal.results[0].success, true);
 		assert.equal(terminal.results[0].exitCode, 0);
@@ -154,7 +154,7 @@ try {
 			assert.notEqual(evidence.sessionFile, seed.sessionFile);
 			assert.ok(session.sessionManager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "subagent-run" && entry.data.ownerSessionId === seed.sessionId));
 			assert.equal(fs.existsSync(resultPath(run)), true);
-			assert.equal(JSON.parse(fs.readFileSync(resultPath(run), "utf8")).sessionId, seed.sessionFile);
+			assert.equal(JSON.parse(fs.readFileSync(resultPath(run), "utf8")).sessionId, seed.sessionId);
 			assert.equal(events("subagent:intercom-identity-request").length, identityQueries);
 			assert.deepEqual(events("subagent:result-intercom"), []);
 			assert.deepEqual(events("subagent:async-complete"), []);

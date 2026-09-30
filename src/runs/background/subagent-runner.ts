@@ -58,7 +58,7 @@ import { completeWorkflowStep, runParallelTasks, workflowChildSucceeded, type Pa
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { runModelAttempts, sumAttemptUsage } from "../shared/model-fallback.ts";
 import { buildChildInvocation, runChildAttempt, type ChildAttemptResult, type ChildEvent, type NativeAttemptSegment } from "../shared/child-attempt.ts";
-import { createNativeFinalization } from "../shared/native-finalization.ts";
+import { createNativeFinalization, FINALIZATION_EVENT } from "../shared/native-finalization.ts";
 import { updateStreamingText } from "../shared/streaming-text.ts";
 import { pendingSupervisorQuestion, saveAsyncRunResult, saveRunStatus, saveQuestionContract } from "../shared/supervisor-questions.ts";
 import { compactForegroundResult, detectSubagentError, extractTextFromContent, extractToolArgsPreview, findLatestSessionFile } from "../../shared/utils.ts";
@@ -226,29 +226,55 @@ async function runPiStreaming(
 	outputFile: string,
 	context: ChildEventContext,
 ): Promise<ChildAttemptResult> {
-	const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
+	const outputFd = fs.openSync(outputFile, "w", 0o600);
+	const auditPath = `${outputFile}.audit.log`;
 	const appendEvent = (event: object) => appendJsonl(context.eventsPath, JSON.stringify({
-		...event, subagentSource: "child", subagentRunId: context.runId,
+		...event, recordVersion: 3, subagentSource: "child", subagentRunId: context.runId,
 		subagentStepIndex: context.stepIndex, subagentAgent: context.agent, observedAt: Date.now(),
 	}));
+	const output = (text: string) => { fs.writeFileSync(outputFd, text); };
 	try {
-		return await runChildAttempt({
-			...options,
+		const result = await runChildAttempt({
+			...options, auditPath,
 			onStart: (control, result) => {
-				if (control.pid) saveQuestionContract(context.runId, context.stepIndex, { pid: control.pid, processIdentity: readChildProcessIdentity(control.pid), sessionFile: options.sessionFile, updatedAt: Date.now() });
+				if (control.pid) saveQuestionContract(context.runId, context.stepIndex, { pid: control.pid, processIdentity: readChildProcessIdentity(control.pid), sessionFile: options.sessionFile, attemptBaseline: result.attemptBaseline, updatedAt: Date.now() });
 				options.onStart?.(control, result);
 			},
-			onOutput: (text) => outputStream.write(text),
-			onStderr: (text) => outputStream.write(text),
-			onRawLine: (stream, line) => appendEvent({ type: `subagent.child.${stream}`, line }),
+			onOutput: output,
+			onStderr: (text) => {
+				appendEvent({ type: "subagent.child.stderr", auditPath, length: Buffer.byteLength(text) });
+			},
 			onEvent: (event, result, mutation) => {
-				if (!TRANSIENT_CHILD_EVENT_TYPES.has(event.type ?? "")) appendEvent(event);
+				// Preserve live callback ordering; only the disk representation is reduced.
 				options.onEvent?.(event, result, mutation);
+				if (TRANSIENT_CHILD_EVENT_TYPES.has(event.type ?? "")) return;
+				if (event.type === "subagent.native_baseline") {
+					appendEvent(event);
+					saveQuestionContract(context.runId, context.stepIndex, { attemptBaseline: result.attemptBaseline, baselineSource: "native-migration" });
+				} else if (event.type === "subagent.native") {
+					appendEvent(event);
+					saveQuestionContract(context.runId, context.stepIndex, { nativeSessionId: result.nativeSessionId, terminalLeafId: result.terminalLeafId, effectiveConfiguration: result.effectiveConfiguration, updatedAt: Date.now() });
+				} else if (event.type === FINALIZATION_EVENT) {
+					const marker = event as NativeAttemptSegment["event"];
+					const file = `${outputFile}.boundaries.jsonl`;
+					fs.appendFileSync(file, `${JSON.stringify(marker)}\n`, { mode: 0o600 });
+					appendEvent({ type: marker.type, nonce: marker.nonce, turn: marker.turn, lastEntryId: marker.lastEntryId, messageCount: marker.messageCount, at: marker.at, boundaryFile: file });
+				} else {
+					appendEvent({ type: event.type, messageNumber: result.messageCount,
+						...(event.message ? { role: event.message.role, timestamp: event.message.timestamp } : {}),
+						toolCallId: event.toolCallId, toolName: event.toolName, isError: event.isError,
+						...(event.type === "tool_execution_start" ? { argsPreview: extractToolArgsPreview(event.args ?? {}) } : {}),
+						...(event.type === "tool_execution_end" ? { auditPath } : {}) });
+				}
 			},
 		});
-	} finally {
-		await new Promise<void>((resolve) => outputStream.end(resolve));
-	}
+		appendEvent({ type: "subagent.child.finalized", agentProcessExit: result.agentProcessExit, exitCode: result.exitCode,
+			accounting: result.accounting, nativeSessionId: result.nativeSessionId, terminalLeafId: result.terminalLeafId,
+			terminalEntryId: result.terminalEntryId, nativeReferences: result.nativeReferences, auditPath: result.auditPath, auditRecords: result.auditRecords, auditSaveError: result.auditSaveError, outputFile });
+		saveQuestionContract(context.runId, context.stepIndex, { nativeSessionId: result.nativeSessionId, terminalLeafId: result.terminalLeafId, terminalEntryId: result.terminalEntryId,
+			effectiveConfiguration: result.effectiveConfiguration, accounting: result.accounting, auditPath: result.auditPath, updatedAt: Date.now() });
+		return result;
+	} finally { fs.closeSync(outputFd); }
 }
 
 function resolvePiPackageRootFallback(): string {
@@ -546,7 +572,7 @@ async function runSingleStep(
 	for (const segment of nativeSegments) {
 		const attempt = nativeAttempt(segment);
 		modelAttempts.push({ model: attempt.model ?? "default", success: attempt.exitCode === 0 && !attempt.error && !attempt.interrupted,
-			exitCode: attempt.exitCode, error: attempt.error, usage: { ...attempt.usage } });
+			exitCode: attempt.exitCode, error: attempt.error, accounting: attempt.accounting, usage: { ...attempt.usage } });
 	}
 	let execution = initial;
 	let structuredOutput = initial.structuredOutput;
@@ -570,7 +596,7 @@ async function runSingleStep(
 			}
 			execution = reviewed;
 			if (!cached) modelAttempts.push({ model: reviewed.model ?? "default", success: reviewed.exitCode === 0 && !reviewed.error && !reviewed.interrupted,
-				exitCode: reviewed.exitCode, error: reviewed.error, usage: { ...reviewed.usage } });
+				exitCode: reviewed.exitCode, error: reviewed.error, accounting: reviewed.accounting, usage: { ...reviewed.usage } });
 			if (reviewed.exitCode !== 0 || reviewed.error || reviewed.interrupted) return { ...reviewed.reportSubmission, output: reviewed.finalOutput,
 				error: reviewed.error ?? reviewed.resourceLimitExceeded?.message ?? "Acceptance finalization turn did not complete successfully." };
 			if (reviewed.reportSubmission?.reportSubmissionError) return reviewed.reportSubmission;
@@ -633,6 +659,9 @@ async function runSingleStep(
 		}, null, 2), "utf-8");
 	}
 	const result: RunSingleStepResult = {
+		accounting: modelAttempts.find((attempt) => attempt.accounting?.state === "incomplete")?.accounting ?? execution.accounting,
+		nativeSessionId: execution.nativeSessionId, terminalLeafId: execution.terminalLeafId, terminalEntryId: execution.terminalEntryId,
+		auditPath: execution.auditPath, auditSaveError: execution.auditSaveError,
 		agent: step.agent, output: outputForSummary, exitCode: effectiveFinalExitCode, error: outcome.error, agentProcessExit: execution.agentProcessExit,
 		usage, timedOut: outcome.timedOut, task: step.task, skills: step.skills,
 		finalOutput: step.outputMode === "file-only" ? outputForSummary : output,
@@ -1977,7 +2006,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			...(taskIndex !== undefined && { taskIndex }),
 			...(totalTasks !== undefined && { totalTasks }),
 		};
-		saveAsyncRunResult(id, { ...resultData, summary: finalRunState === "blocked" || finalRunState === "paused" ? resultData.summary : fullSummary, results, truncated: false });
+		const saved = saveAsyncRunResult(id, resultData);
+		resultData.completionId = saved.completionId; resultData.recordVersion = 3;
 		if (config.runtimeVersion !== 2 || path.resolve(resultPath) !== path.resolve(asyncDir, "result.json")) writeAtomicJson(resultPath, resultData);
 	} catch (err) {
 		console.error(`Failed to write result file ${resultPath}:`, err);

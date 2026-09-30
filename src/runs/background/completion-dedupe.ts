@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 interface CompletionDataLike {
+	completionId?: unknown;
 	id?: unknown;
 	agent?: unknown;
 	timestamp?: unknown;
@@ -33,6 +34,8 @@ function payloadDigest(value: unknown): string {
 }
 
 export function buildCompletionKey(data: CompletionDataLike, fallback: string): string {
+	const completionId = asNonEmptyString(data.completionId);
+	if (completionId) return `completion:${completionId}`;
 	const id = asNonEmptyString(data.id);
 	if (id) return `id:${id}:${payloadDigest(data)}`;
 	const sessionId = asNonEmptyString(data.sessionId) ?? "no-session";

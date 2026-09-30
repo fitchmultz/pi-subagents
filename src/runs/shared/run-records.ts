@@ -1,7 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { buildSessionContext, parseSessionEntries } from "../../shared/native-session.ts";
+import type { Message } from "@earendil-works/pi-ai";
+import { NativeJournal, entryMetadata, journalStamp, readOutputPage } from "../../shared/journal-reader.ts";
+import { snapshotNativeUsage, readNativeUsage } from "./native-usage.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { compactForegroundResult, getFinalOutput, getSingleResultOutput, readStatus } from "../../shared/utils.ts";
@@ -20,10 +22,38 @@ import { sumAttemptUsage } from "./model-fallback.ts";
 import { workflowAgentNodes } from "./workflow-graph.ts";
 import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
-import { getRunMetadataDir, listRunQuestions, listOwnedRunQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionOwner, type SupervisorRunContract } from "./supervisor-questions.ts";
+import { compactOwnerResult, getRunMetadataDir, listRunQuestions, listOwnedRunQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionOwner, saveQuestionContract, type SupervisorRunContract } from "./supervisor-questions.ts";
 import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, truncateOutput, type AgentProgress, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
 
 export const OWNED_RUN_ENTRY = "subagent-run";
+const failedAccountingSources = new Map<string, string>();
+
+/** Repair only recorded native billing evidence; never execute or verify work again. */
+export function repairOwnedRunAccounting(run: OwnedRun): void {
+	const file = path.join(getRunMetadataDir(run.runId), "result.json");
+	if (!fs.existsSync(file)) return;
+	const saved = readAsyncResultFile(file);
+	let changed = false;
+	saved.results?.forEach((child, index) => {
+		if (child.accounting?.state !== "incomplete") return;
+		const contract = readQuestionContract(run.runId, index, undefined, { readConfiguration: false });
+		const terminalEntryId = child.terminalEntryId ?? contract?.terminalEntryId;
+		if (!contract?.attemptBaseline || !terminalEntryId) return;
+		const source = child.sessionFile ?? contract.sessionFile;
+		if (!source) return;
+		const stat = fs.statSync(source, { bigint: true, throwIfNoEntry: false });
+		const key = `${run.runId}:${index}`, stamp = `${stat ? journalStamp(stat) : "missing"}:${terminalEntryId}:${JSON.stringify(contract.attemptBaseline)}`;
+		if (failedAccountingSources.get(key) === stamp) return;
+		let usage;
+		try { usage = readNativeUsage(source, new Set(contract.attemptBaseline), [], { terminalEntryId })?.[0]; }
+		catch (error) { failedAccountingSources.set(key, stamp); throw error; }
+		if (!usage) return;
+		failedAccountingSources.delete(key);
+		child.usage = usage; child.accounting = { state: "complete" }; changed = true;
+		if (contract.result) saveQuestionContract(run.runId, index, { accounting: child.accounting, result: { ...contract.result, usage, accounting: child.accounting } });
+	});
+	if (changed) saveAsyncRunResult(run.runId, saved);
+}
 
 export function rememberOwnedRun(state: SubagentState, run: OwnedRun): void {
 	const previous = state.ownedRuns?.get(run.runId);
@@ -54,11 +84,11 @@ export function saveForegroundRun(input: { runId: string; mode: ForegroundResume
 		children: input.results.map((result, index) => ({
 			agent: result.agent, index,
 			status: resolveSubagentResultStatus(result),
-			...(!result.detached ? { summary: getSingleResultOutput(result) || result.error } : {}),
+			...(!result.detached ? { summary: (getSingleResultOutput(result) || result.error)?.slice(-8192) } : {}),
 			artifactPath: result.artifactPaths?.outputPath,
 			sessionFile: result.sessionFile,
 			effectiveAcceptance: result.acceptance?.effectiveAcceptance,
-			result: compactForegroundResult(result),
+			result: compactOwnerResult(input.runId, index, compactForegroundResult(result)),
 		})),
 	};
 	writeAtomicJson(path.join(getRunMetadataDir(input.runId), "foreground.json"), run);
@@ -82,11 +112,14 @@ function sessionFiles(root: string): string[] {
 }
 
 function recoverOutput(sessionFile: string | undefined, outputFile: string | undefined, endedAt: number): string | undefined {
-	if (outputFile && fs.existsSync(outputFile)) return fs.readFileSync(outputFile, "utf8");
+	if (outputFile && fs.existsSync(outputFile)) return readOutputPage(outputFile).text;
 	if (!sessionFile || !fs.existsSync(sessionFile)) return undefined;
-	const entries = parseSessionEntries(fs.readFileSync(sessionFile, "utf8"));
-	if (entries[0]?.type !== "session") return undefined;
-	return getFinalOutput(buildSessionContext(entries.filter((entry): entry is SessionEntry => entry.type !== "session" && Date.parse(entry.timestamp) <= endedAt)).messages.filter((message) => message.role === "assistant"));
+	const journal = new NativeJournal(sessionFile);
+	for (const record of journal.branch(undefined, endedAt).reverse()) {
+		if (record.value.type !== "message" || record.value.message?.role !== "assistant") continue;
+		const output = getFinalOutput([journal.body(record).message]);
+		if (output) return output;
+	}
 }
 
 function recoverLegacyTerminalOutput(sessionFile: string | undefined, startedAt: number, endedAt: number | undefined, acceptance: SingleResult["acceptance"]): string | undefined {
@@ -95,9 +128,10 @@ function recoverLegacyTerminalOutput(sessionFile: string | undefined, startedAt:
 	if (reviewedOutput?.trim()) return resolveFinalizationOutput(reviewedOutput, "") || undefined;
 	// Live and finalization logs are separate, mutable streams, not a final-answer receipt.
 	if (endedAt === undefined || !Number.isFinite(endedAt) || !sessionFile || !fs.existsSync(sessionFile)) return;
-	const entries = parseSessionEntries(fs.readFileSync(sessionFile, "utf8"));
-	if (entries[0]?.type !== "session") return;
-	const messages = buildSessionContext(entries.filter((entry): entry is SessionEntry => entry.type !== "session" && Date.parse(entry.timestamp) >= startedAt && Date.parse(entry.timestamp) <= endedAt)).messages;
+	const journal = new NativeJournal(sessionFile);
+	const records = journal.branch(undefined, endedAt).filter(({ value }) => value.type === "message" && Date.parse(value.timestamp) >= startedAt);
+	const lastAssistant = records.findLastIndex(({ value }) => value.message?.role === "assistant");
+	const messages: Message[] = records.map((record, index) => index === lastAssistant ? journal.body(record).message : record.value.message);
 	const index = messages.findLastIndex((message) => message.role === "assistant");
 	const last = messages[index];
 	if (last?.role !== "assistant" || last.errorMessage || !["stop", "toolUse"].includes(last.stopReason) || !Array.isArray(last.content)) return;
@@ -139,25 +173,31 @@ export interface OwnedRunRestoration {
 export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, options: { strict?: boolean } = {}): OwnedRunRestoration {
 	const startedAt = Date.now();
 	const ownerSessionId = ctx.sessionManager.getSessionId();
-	const entries = ctx.sessionManager.getEntries();
+	const entries = [...entryMetadata(ctx.sessionManager)];
 	state.ownedRuns = new Map();
 	migrateSupervisorQuestions(ownerSessionId);
 	for (const entry of entries) {
 		if (entry.type !== "custom" || entry.customType !== OWNED_RUN_ENTRY) continue;
-		const run = entry.data as OwnedRun | undefined;
+		const run = (ctx.sessionManager.getEntry(entry.id) as typeof entry | undefined)?.data as OwnedRun | undefined;
 		if (run?.ownerSessionId === ownerSessionId && run.runId && Array.isArray(run.children)) state.ownedRuns.set(run.runId, run);
 	}
 	// Forks copy old entries. Their old receipts are evidence, not ownership for the new parent.
 	const inheritedIds = new Set<string>();
 	const parentFile = ctx.sessionManager.getHeader()?.parentSession;
 	if (parentFile && fs.existsSync(parentFile)) {
-		for (const entry of parseSessionEntries(fs.readFileSync(parentFile, "utf8"))) if (entry.type !== "session") inheritedIds.add(entry.id);
+		for (const id of snapshotNativeUsage(parentFile)) inheritedIds.add(id);
 	}
+	const recoveredReceipts = entries.filter((entry) => entry.type === "message" && entry.message.role === "toolResult" && ["subagent", "delegate", "agent_runs"].includes(entry.message.toolName)
+		|| entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE).map((entry) => ctx.sessionManager.getEntry(entry.id)!).filter(Boolean);
 	const calls = new Map<string, SubagentParamsLike>();
-	for (const entry of entries) if (entry.type === "message" && entry.message.role === "assistant" && Array.isArray(entry.message.content)) {
+	const needsLegacyCalls = recoveredReceipts.some((entry) => { const details = receiptDetails(entry); return details && !state.ownedRuns!.has(details.runId ?? details.asyncId ?? ""); });
+	for (const metadata of needsLegacyCalls ? entries : []) {
+		if (metadata.type !== "message" || metadata.message.role !== "assistant") continue;
+		const entry = ctx.sessionManager.getEntry(metadata.id);
+		if (entry?.type !== "message" || entry.message.role !== "assistant" || !Array.isArray(entry.message.content)) continue;
 		for (const part of entry.message.content) if (part.type === "toolCall" && ["subagent", "delegate"].includes(part.name)) calls.set(part.id, part.arguments as SubagentParamsLike);
 	}
-	for (const entry of entries) {
+	for (const entry of recoveredReceipts) {
 		if (inheritedIds.has(entry.id) || (parentFile && !fs.existsSync(parentFile))) continue;
 		const details = receiptDetails(entry);
 		const runId = details?.runId ?? details?.asyncId;
@@ -172,19 +212,27 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 			startedAt: Date.parse(entry.timestamp), asyncDir: details.asyncDir, legacy: true,
 			children: details.results.length ? details.results.map((result, index) => ({ agent: result.agent, index, task: result.task, sessionFile: result.sessionFile })) : collectInvocationAgentNames(request ?? {}).map((agent, index) => ({ agent, index })),
 		};
-		if (cwd && fs.existsSync(cwd)) {
-			const header = parseSessionEntries(fs.readFileSync(cwd, "utf8"))[0];
-			if (header?.type === "session" && header.cwd) run.cwd = header.cwd;
+		try {
+			if (cwd && fs.existsSync(cwd)) {
+				const header = new NativeJournal(cwd).records[0]?.value;
+				if (header?.type === "session" && header.cwd) run.cwd = header.cwd;
+			}
+			if (run.source === "foreground") saveForegroundRun({ ...run, results: details.results.map((result) => ({ ...result, finalOutput: result.finalOutput ?? recoverOutput(result.sessionFile, result.artifactPaths?.outputPath, Date.parse(entry.timestamp)) })) });
+			let owner: { sessionId?: unknown } | undefined;
+			try { owner = readRunJson(path.join(getRunMetadataDir(runId), "question-owner.json")); } catch { /* Unusable metadata can be repaired from the genuine receipt. */ }
+			if (typeof owner?.sessionId !== "string" || !owner.sessionId.trim()) saveQuestionOwner(runId, ownerSessionId);
+			rememberOwnedRun(state, run);
+		} catch (error) {
+			if (options.strict) throw error;
+			// The genuine receipt still establishes ownership. Keep completion
+			// unconfirmed when its supplemental output/context cannot be recovered.
+			rememberOwnedRun(state, { ...run, recoveryError: `Saved child recovery remains incomplete: ${String(error)}` });
+			console.error(`Could not recover legacy receipt ${runId}: ${String(error)}`);
 		}
-		if (run.source === "foreground") saveForegroundRun({ ...run, results: details.results.map((result) => ({ ...result, finalOutput: result.finalOutput ?? recoverOutput(result.sessionFile, result.artifactPaths?.outputPath, Date.parse(entry.timestamp)) })) });
-		let owner: { sessionId?: unknown } | undefined;
-		try { owner = readRunJson(path.join(getRunMetadataDir(runId), "question-owner.json")); } catch { /* Unusable metadata can be repaired from the genuine receipt. */ }
-		if (typeof owner?.sessionId !== "string" || !owner.sessionId.trim()) saveQuestionOwner(runId, ownerSessionId);
-		rememberOwnedRun(state, run);
 	}
 	// Pre-update background runs may have no parent tool receipt (for example slash launches).
 	const scan = createAsyncRunDiscovery(ASYNC_DIR, {
-		sessionId: resolveCurrentSessionId(ctx.sessionManager), ownerSessionId,
+		sessionId: ctx.sessionManager.getSessionFile() ?? resolveCurrentSessionId(ctx.sessionManager), ownerSessionId,
 		receiptRunIds: () => state.ownedRuns!.keys(), skipInvalid: !options.strict,
 	});
 	const discover = () => {
@@ -231,14 +279,19 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 	};
 	const records = discover();
 	for (const run of state.ownedRuns.values()) {
-		const stored = readRunJson<ForegroundResumeRun>(path.join(getRunMetadataDir(run.runId), "foreground.json"));
-		if (stored) (state.foregroundRuns ??= new Map()).set(run.runId, stored);
-		if (run.children.some((child) => child.sessionFile) || !run.legacy) continue;
-		const file = ctx.sessionManager.getSessionFile();
-		if (!file) continue;
-		const root = path.join(path.dirname(file), path.basename(file, ".jsonl"), run.runId);
-		const files = sessionFiles(root).sort();
-		if (files.length) rememberOwnedRun(state, { ...run, children: files.map((sessionFile, index) => ({ agent: run.children[index]?.agent ?? "unknown", index, sessionFile })) });
+		try {
+			const stored = readRunJson<ForegroundResumeRun>(path.join(getRunMetadataDir(run.runId), "foreground.json"));
+			if (stored) (state.foregroundRuns ??= new Map()).set(run.runId, stored);
+			if (run.children.some((child) => child.sessionFile) || !run.legacy) continue;
+			const file = ctx.sessionManager.getSessionFile();
+			if (!file) continue;
+			const root = path.join(path.dirname(file), path.basename(file, ".jsonl"), run.runId);
+			const files = sessionFiles(root).sort();
+			if (files.length) rememberOwnedRun(state, { ...run, children: files.map((sessionFile, index) => ({ agent: run.children[index]?.agent ?? "unknown", index, sessionFile })) });
+		} catch (error) {
+			if (options.strict) throw error;
+			console.error(`Could not recover foreground owner ${run.runId}: ${String(error)}`);
+		}
 	}
 	return { startedAt, records, discover };
 }
@@ -350,7 +403,7 @@ export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pen
 		updatedAt: result?.timestamp ?? status?.lastUpdate ?? foreground?.updatedAt ?? run.startedAt,
 		continuations: options.includeContinuations === false ? [] : [...(state.ownedRuns?.values() ?? [])].filter((candidate) => candidate.rootRunId === run.rootRunId && candidate.predecessorRunId).sort((a, b) => a.startedAt - b.startedAt).map((candidate) => ({ runId: candidate.runId, predecessorRunId: candidate.predecessorRunId!, predecessorIndex: candidate.predecessorIndex })),
 		...(result ? { resultPath } : foreground ? { resultPath: path.join(root, "foreground.json") } : {}),
-		...(error ? { diagnosis: error } : executionState === "paused" && foreground?.pausedReason ? { diagnosis: foreground.pausedReason } : executionState === "unknown" ? { diagnosis: reconciliation?.message ?? "Completion is unconfirmed. Saved sessions are context, not proof of successful execution." } : {}),
+		...(error ? { diagnosis: error } : executionState === "paused" && foreground?.pausedReason ? { diagnosis: foreground.pausedReason } : executionState === "unknown" ? { diagnosis: run.recoveryError ?? reconciliation?.message ?? "Completion is unconfirmed. Saved sessions are context, not proof of successful execution." } : {}),
 	};
 }
 
@@ -363,6 +416,8 @@ function workflowDetails(graph: WorkflowGraphSnapshot | undefined): Pick<Details
 }
 
 export function ownedRunExecutionResult(run: OwnedRun, state: SubagentState, index?: number, includeProgress = false): SubagentExecutionResult {
+	try { repairOwnedRunAccounting(run); }
+	catch (error) { console.error(`Native accounting for ${run.runId} remains incomplete:`, error); }
 	const view = ownedRunView(run, state);
 	const location = exactAsyncRunLocation(run.runId, ASYNC_DIR, RESULTS_DIR);
 	const saved = location.resultPath ? readAsyncResultFile(location.resultPath) : undefined;
@@ -472,6 +527,9 @@ export function ownedRunStatusResult(run: OwnedRun, state: SubagentState, runtim
 		if (humanAction) lines.push(`  Needs your action — acceptance incomplete:\n${humanAction}`);
 		if (child.state !== "live") lines.push(`  ${formatAgentProcessExit(child.result?.agentProcessExit)}`);
 		if (child.sessionFile) lines.push(`  Session: ${child.sessionFile}${child.missingSession ? " (missing; continuation unavailable)" : ""}`);
+		if (child.result?.auditPath) lines.push(`  Child observations / uncommitted output: ${child.result.auditPath}`);
+		if (child.result?.fullOutputPath) lines.push(`  Full output: ${child.result.fullOutputPath}`);
+		if (child.result?.accounting?.state === "incomplete") lines.push(`  Accounting incomplete: ${child.result.accounting.error ?? "Native billing evidence is unavailable; no work was repeated."}`);
 		const artifact = child.result?.artifactPaths?.outputPath;
 		if (artifact) lines.push(`  Artifact: ${artifact}${fs.existsSync(artifact) ? "" : " (missing)"}`);
 		const metadata = child.result?.artifactPaths?.metadataPath;
@@ -514,11 +572,17 @@ function runListSummary(run: OwnedRun, state: SubagentState, pendingInput: boole
 	const foreground = state.foregroundRuns?.get(run.runId);
 	let cached = listSummaryCache.get(run);
 	if (!cached || cached.stamp !== stamp || cached.foreground !== foreground || cached.summary.state === "live" || cached.summary.state === "unknown") {
-		const view = ownedRunView(run, state, { pendingInput, includeContinuations: false });
+		const view = ownedRunView(run, state, { pendingInput, includeContinuations: false, readConfiguration: false });
 		cached = { stamp, foreground, summary: { state: view.state, updatedAt: view.updatedAt } };
 		listSummaryCache.set(run, cached);
 	}
 	return { run, pendingInput, ...cached.summary, attention: runAttention(run, cached.summary.state, pendingInput) };
+}
+
+function unavailableRunView(run: OwnedRun, error: unknown): OwnedRunView {
+	return { ...run, state: "unknown", updatedAt: run.startedAt, attention: ["unknown"], canInterrupt: false, continuations: [],
+		children: run.children.map((child) => ({ ...child, state: "unknown", configuration: "legacy-partial" })),
+		diagnosis: `Saved owner records unavailable: ${String(error)}. Completion is unconfirmed.` };
 }
 
 export function ownedRunList(state: SubagentState, params: { offset?: number; limit?: number }): SubagentExecutionResult {
@@ -527,9 +591,15 @@ export function ownedRunList(state: SubagentState, params: { offset?: number; li
 	const owned = [...(state.ownedRuns?.values() ?? [])];
 	for (const owner of new Set(owned.map((run) => run.ownerSessionId))) migrateSupervisorQuestions(owner);
 	const rank = (run: ReturnType<typeof runListSummary>) => run.attention.includes("awaiting_input") ? 0 : run.attention.some((reason) => reason !== "unreviewed") ? 1 : run.state === "live" ? 2 : run.attention.length ? 3 : 4;
-	const views = owned.map((run) => runListSummary(run, state, listRunQuestions(getRunMetadataDir(run.runId)).some((question) => question.ownerSessionId === run.ownerSessionId && (question.state === "awaiting_input" || question.state === "answer_pending"))))
+	const views = owned.map((run) => {
+		try { return runListSummary(run, state, listRunQuestions(getRunMetadataDir(run.runId)).some((question) => question.ownerSessionId === run.ownerSessionId && (question.state === "awaiting_input" || question.state === "answer_pending"))); }
+		catch (error) { return { run, pendingInput: false, ...unavailableRunView(run, error) }; }
+	})
 		.sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt || a.run.runId.localeCompare(b.run.runId));
-	const page = views.slice(offset, offset + limit).map(({ run, pendingInput }) => ownedRunView(run, state, { pendingInput, includeContinuations: false }));
+	const page = views.slice(offset, offset + limit).map(({ run, pendingInput }) => {
+		try { return ownedRunView(run, state, { pendingInput, includeContinuations: false }); }
+		catch (error) { return unavailableRunView(run, error); }
+	});
 	const runs = page.map(({ runId, source, mode, cwd, task, state: runState, updatedAt, attention, review, rootRunId, predecessorRunId, predecessorIndex, children }) => ({ runId, source, mode, cwd, task, state: runState, updatedAt, attention, review, rootRunId, predecessorRunId, predecessorIndex, continuations: owned.filter((candidate) => candidate.predecessorRunId === runId).map((candidate) => candidate.runId), summary: compact(children.map((child) => child.result ? getSingleResultOutput(child.result) || child.result.error || "" : "").filter(Boolean).join(" | ")) }));
 	const controls = page.map(ownedRunControl);
 	const nextOffset = offset + page.length < views.length ? offset + page.length : undefined;

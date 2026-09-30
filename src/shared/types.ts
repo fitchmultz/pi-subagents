@@ -176,6 +176,7 @@ export interface SubagentResultIntercomChild {
 }
 
 export interface SubagentResultIntercomPayload {
+	completionId?: string;
 	to: string;
 	message: string;
 	requestId?: string;
@@ -245,6 +246,7 @@ interface ProgressSummary extends Partial<Pick<AgentProgress,
 // ============================================================================
 
 export interface ModelAttempt {
+	accounting?: { state: "complete" | "incomplete"; error?: string };
 	model: string;
 	success: boolean;
 	exitCode?: number | null;
@@ -416,6 +418,14 @@ export interface AgentProcessExit {
 }
 
 export interface SingleResult {
+	accounting?: { state: "complete" | "incomplete"; error?: string };
+	nativeSessionId?: string;
+	terminalLeafId?: string | null;
+	terminalEntryId?: string;
+	auditPath?: string;
+	fullOutputPath?: string;
+	initialOutputPath?: string;
+	auditSaveError?: string;
 	agent: string;
 	agentProcessExit?: AgentProcessExit;
 	task: string;
@@ -492,6 +502,7 @@ export interface ParentRunReview {
 }
 
 export interface OwnedRun {
+	recoveryError?: string;
 	runId: string;
 	ownerSessionId: string;
 	source: "foreground" | "async";
@@ -506,7 +517,9 @@ export interface OwnedRun {
 	pid?: number;
 	children: Array<{ agent: string; index: number; workflowNodeId?: string; task?: string; label?: string; sessionFile?: string }>;
 	review?: ParentRunReview;
-	delivery?: { notifiedAt: number; intercomDelivered: boolean };
+	completion?: { id: string; state: "pending" | "queued" | "dropped" | "journaled"; channel?: "notification" | "intercom"; queuedAt?: number; entryId?: string };
+	accounting?: { state: "pending" | "complete" | "incomplete"; error?: string };
+	delivery?: { notifiedAt: number; intercomDelivered: boolean; completionId?: string; entryId?: string };
 	legacy?: boolean;
 	error?: string;
 }
@@ -547,6 +560,7 @@ export interface ManagementControl {
 }
 
 export interface Details {
+	accounting?: { state: "incomplete"; error: string };
 	mode: SubagentRunMode | "management";
 	/** A receipt only when persisted on a native tool result with matching top-level usage. */
 	parentUsage?: { contributions: UsageContribution[] };
@@ -566,7 +580,7 @@ export interface Details {
 	managementControl?: ManagementControl;
 	managementControls?: ManagementControl[];
 	questions?: import("../runs/shared/supervisor-questions.ts").SupervisorQuestionView[];
-	wait?: { runId: string; index?: number; status: "completed" | "cancelled" | "yielded" | "awaiting_input" | "unavailable" };
+	wait?: { runId: string; completionId?: string; index?: number; status: "completed" | "cancelled" | "yielded" | "awaiting_input" | "unavailable" };
 	run?: OwnedRunView;
 	runs?: Array<Pick<OwnedRunView, "runId" | "source" | "mode" | "cwd" | "task" | "state" | "updatedAt" | "attention" | "review" | "rootRunId" | "predecessorRunId" | "predecessorIndex"> & { summary?: string; continuations?: string[] }>;
 	runList?: { total: number; offset: number; limit: number; nextOffset?: number };
@@ -625,7 +639,7 @@ export type AsyncResultTerminalState = "complete" | "failed" | "blocked" | "paus
 
 export interface AsyncResultChild extends Partial<Pick<SingleResult,
 	"task" | "finalOutput" | "initialOutput" | "outputMode" | "savedOutputPath" | "outputReference" | "outputSaveError" | "outputCleanup"
-	| "toolCalls" | "progressSummary" | "truncation" | "skills" | "skillsWarning"
+	| "toolCalls" | "progressSummary" | "truncation" | "skills" | "skillsWarning" | "accounting" | "nativeSessionId" | "terminalLeafId" | "terminalEntryId" | "auditPath" | "auditSaveError" | "fullOutputPath" | "initialOutputPath"
 >> {
 	usage?: Usage;
 	timedOut?: boolean;
@@ -653,6 +667,9 @@ export interface AsyncResultChild extends Partial<Pick<SingleResult,
 }
 
 export interface AsyncResultFile {
+	legacySource?: string;
+	recordVersion?: 3;
+	completionId?: string;
 	maxOutput?: MaxOutputConfig;
 	error?: string;
 	runtimeVersion?: 2;
@@ -876,6 +893,7 @@ export interface AsyncJobState {
 	totalTokens?: TokenUsage;
 	sessionFile?: string;
 	controlEventCursor?: number;
+	controlEventIdentity?: string;
 	controlEventSince?: number;
 	nestedRoute?: NestedRouteInfo;
 	nestedChildren?: NestedRunSummary[];

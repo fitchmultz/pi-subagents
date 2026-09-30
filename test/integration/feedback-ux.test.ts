@@ -123,7 +123,7 @@ test("feedback completion and compact receipts expose existing result/acceptance
 	fs.writeFileSync(path.join(resultsDir, `${runId}.json`), JSON.stringify(data));
 	const completed = Promise.withResolvers<void>();
 	bus.on("subagent:async-complete", () => completed.resolve());
-	const watcher = createResultWatcher({ events: bus }, fixture.state, resultsDir, 60000);
+	const watcher = createResultWatcher({ events: bus }, fixture.state, resultsDir);
 	try {
 		watcher.primeExistingResults();
 		await completed.promise;
@@ -139,7 +139,7 @@ test("feedback completion and compact receipts expose existing result/acceptance
 	fs.writeFileSync(path.join(resultsDir, `${disabledId}.json`), JSON.stringify(disabled));
 	const disabledDone = Promise.withResolvers<void>();
 	bus.on("subagent:async-complete", (event) => { if (event.runId === disabledId) disabledDone.resolve(); });
-	const disabledWatcher = createResultWatcher({ events: bus }, fixture.state, resultsDir, 60000);
+	const disabledWatcher = createResultWatcher({ events: bus }, fixture.state, resultsDir);
 	try {
 		disabledWatcher.primeExistingResults();
 		await disabledDone.promise;

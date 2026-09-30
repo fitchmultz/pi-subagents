@@ -159,6 +159,7 @@ export function formatModelRecoveryAttemptNote(attempt: ModelAttemptSummary, ret
 }
 
 export interface AttemptOutcome {
+	accounting?: ModelAttempt["accounting"];
 	exitCode: number | null;
 	error?: string;
 	model?: string;
@@ -199,6 +200,7 @@ export async function runModelAttempts<T extends AttemptOutcome>(input: {
 				success: result.exitCode === 0 && !result.error && !result.interrupted,
 				exitCode: result.exitCode,
 				error: result.error,
+				accounting: result.accounting,
 				usage: { ...result.usage },
 			};
 			modelAttempts.push(attempt);

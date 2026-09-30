@@ -589,7 +589,9 @@ export async function resumeAsyncRun(input: {
 		if (!sessionFile) return;
 		for (const candidate of input.deps.state.ownedRuns?.values() ?? []) {
 			if (candidate.runId === runId) continue;
-			const active = ownedRunView(candidate, input.deps.state).children.find((entry) => entry.sessionFile === sessionFile && entry.state === "live");
+			if (!candidate.children.some((child) => child.sessionFile === sessionFile)
+				&& input.deps.state.asyncJobs.get(candidate.runId)?.sessionFile !== sessionFile) continue;
+			const active = ownedRunView(candidate, input.deps.state, { readConfiguration: false }).children.find((entry) => entry.sessionFile === sessionFile && entry.state === "live");
 			if (!active) continue;
 			return nudgeSubagentRun({ params: { ...input.params, dir: undefined, id: candidate.runId, index: active.index, message: followUp }, deps: input.deps, ctx: input.ctx }).then((result) => {
 				const notice = liveLaunchOverrideNotice(input.params);
@@ -720,8 +722,8 @@ export function reviveSavedSubagent(input: {
 	}
 
 	input.deps.state.currentSessionId = resolveCurrentSessionId(input.ctx.sessionManager);
-	const contract = readQuestionContract(target.runId, target.index, undefined, { readConfiguration: false }) ?? target;
-	const savedLaunch = input.params.agent === undefined ? contract.launch : undefined;
+	const contract = readQuestionContract(target.runId, target.index) ?? target;
+	const savedLaunch = input.params.agent === undefined && contract.launch ? { ...contract.launch, ...contract.effectiveConfiguration } : undefined;
 	const generatedOutputFilename = input.params.output === undefined ? contract.launch?.generatedOutputFilename : undefined;
 	const effectiveCwd = input.params.cwd ?? savedLaunch?.cwd ?? target.cwd ?? input.requestCwd;
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);

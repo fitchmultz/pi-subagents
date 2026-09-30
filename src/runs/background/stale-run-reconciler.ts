@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { readOutputPage } from "../../shared/journal-reader.ts";
 import * as path from "node:path";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { RESULTS_DIR, RUNNER_ERROR_LOG_FILE, type AsyncParallelGroupStatus, type AsyncResultChild, type AsyncResultTerminalState, type AsyncStatus, type NestedRunSummary, type SubagentRunMode } from "../../shared/types.ts";
@@ -150,7 +151,7 @@ function buildStartedStatus(asyncDir: string, startedRun: StartedRunMetadata, no
 
 function readCompletedStepOutput(asyncDir: string, index: number): string {
 	try {
-		return fs.readFileSync(path.join(asyncDir, `output-${index}.log`), "utf-8").trim();
+		return readOutputPage(path.join(asyncDir, `output-${index}.log`)).text.trim();
 	} catch (error) {
 		if (isNotFoundError(error)) return "";
 		throw error;

@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { addAbortListener } from "node:events";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, mkdtempSync, openSync, readSync, writeSync, closeSync, rmSync, fstatSync, ftruncateSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { StringDecoder } from "node:string_decoder";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { attachChildProcessLifecycle } from "../../shared/post-exit-stdio-guard.ts";
@@ -10,6 +12,7 @@ import { providerQualifiedModelId } from "../../shared/model-info.ts";
 import { getSubagentDepthEnv, type AgentProcessExit, type ResourceLimitExceeded, type Usage } from "../../shared/types.ts";
 import { extractTextFromContent, extractToolArgsPreview, formatResourceLimitExceeded, getFinalOutput, findLatestSessionFile } from "../../shared/utils.ts";
 import { readFinalizationReport, resolveExecutionOutcome } from "./acceptance.ts";
+import { readStructuredOutput } from "./structured-output.ts";
 import {
 	appendClaudeCodeMessage, buildClaudeCodeInvocation, claudeCodeMessageFromResult, isClaudeCodeModel, writeClaudeCodeSessionMetadata,
 	type ClaudeCodeInvocation, type ClaudeCodeResultEvent,
@@ -17,12 +20,37 @@ import {
 import { createMutationCompletionTracker, resolveCurrentPath, type MutationToolResult } from "./mutating-tool-guard.ts";
 import { applyThinkingSuffix, buildPiArgs } from "./pi-args.ts";
 import { FINALIZATION_EVENT, nativeFinalizationLaunch, type NativeFinalizationConfig, type NativeFinalizationEvent } from "./native-finalization.ts";
-import { addUsage, readNativeUsage, snapshotNativeUsage } from "./native-usage.ts";
+import { addUsage, nativeUsageCollector, readNativeUsage, snapshotNativeBaseline, validateNativeUsage, type NativeUsageMetadata } from "./native-usage.ts";
 import { sumAttemptUsage } from "./model-fallback.ts";
 import { getPiSpawnCommand } from "./pi-spawn.ts";
 import type { StructuredOutputRuntime } from "./structured-output.ts";
 import type { updateStreamingText } from "./streaming-text.ts";
 import { createRepeatedSubagentCallGuardState, recordToolEndForSubagentLoopGuard, recordToolStartForSubagentLoopGuard } from "./subagent-tool-loop-guard.ts";
+import { JournalFrames, NativeJournal, nativeProjection, scanJournal, type Projection } from "../../shared/journal-reader.ts";
+import { compactObservedMessage, ExitCodeObservation } from "./child-observations.ts";
+
+const liveProjection: Projection = (path, root) => {
+	if (!path.length) return true;
+	if (["messages", "toolResults"].includes(String(path[0]))) return false;
+	if (path[0] === "entry") return path.length === 1 || ["id", "type", "parentId", "timestamp", "customType", "usage", "provider", "model"].includes(String(path[1])) ? 4096 : false;
+	if (path[0] === "assistantMessageEvent") return path.length === 1 || ["type", "delta", "contentIndex"].includes(String(path[1])) ? 8192 : false;
+	if (path[0] === "result" && root?.type !== "result") return false;
+	if (path[0] === "message") {
+		if (path.length > 1 && !["role", "timestamp", "provider", "model", "responseModel", "usage", "stopReason", "errorMessage", "toolCallId", "toolName", "isError", "content", "details"].includes(String(path[1]))) return false;
+		if (path[1] === "content" && root?.type !== "message_end") return false;
+		if (path[1] === "content" && path.length === 2) return 4096;
+		if (path[1] === "details") return path.length === 2 || ["preview", "modifiedFiles"].includes(String(path[2])) ? 4096 : false;
+		if (path[1] === "content" && path.length > 3) {
+			if (path[3] === "thinking" || path[3] === "data") return false;
+			if (path[3] === "text") return root?.message?.role === "assistant" ? true : 4096;
+			if (path[3] === "arguments") return root?.message?.content?.[Number(path[2])]?.name === "structured_output" ? true : nativeProjection(path, root);
+		}
+	}
+	// ponytail: explicitly consumed tool arguments and structured reports must
+	// fit their guard/schema consumer's heap; lifecycle aggregates are skipped.
+	return true;
+};
+const liveKeyLimit = (path: readonly (string | number)[]) => path[0] === "args" || path[0] === "structured_output" || path.includes("arguments") ? Infinity : 4096;
 
 export function buildChildInvocation(input: Omit<Parameters<typeof buildPiArgs>[0], "baseArgs"> & { nativeFinalization?: NativeFinalizationConfig }): {
 	args: string[];
@@ -71,6 +99,17 @@ export interface NativeAttemptSegment {
 }
 
 export interface ChildAttemptResult {
+	accounting?: { state: "complete" | "incomplete"; error?: string };
+	nativeSessionId?: string;
+	terminalLeafId?: string | null;
+	terminalEntryId?: string;
+	effectiveConfiguration?: { model?: string; thinking?: string; modelRecordedAt?: number };
+	attemptBaseline?: string[];
+	auditPath?: string;
+	auditSaveError?: string;
+	auditRecords?: Array<{ kind: string; messageNumber?: number; offset: number; length: number }>;
+	nativeReferences?: Array<{ messageNumber?: number; entryId: string }>;
+	messageCount?: number;
 	finalization?: NativeAttemptSegment[];
 	stderr: string;
 	agentProcessExit?: AgentProcessExit;
@@ -105,6 +144,7 @@ interface ChildAttemptOptions {
 	maxTokens?: number;
 	claudeCodeInvocation?: ClaudeCodeInvocation;
 	sessionFile?: string;
+	auditPath?: string;
 	structuredOutput?: StructuredOutputRuntime;
 	reportRuntime?: StructuredOutputRuntime;
 	nativeFinalization?: NativeFinalizationConfig;
@@ -134,26 +174,60 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 	const sessionDirectory = sessionDirectoryArg >= 0 ? options.args[sessionDirectoryArg + 1] : undefined;
 	const nativeSessionFile = () => options.claudeCodeInvocation ? undefined : options.sessionFile ?? (sessionDirectory ? findLatestSessionFile(sessionDirectory) ?? undefined : undefined);
 	let baseline: Set<string>;
-	try { baseline = snapshotNativeUsage(nativeSessionFile()); } catch (error) {
+	let baselineSnapshot: ReturnType<typeof snapshotNativeBaseline>;
+	try { baselineSnapshot = snapshotNativeBaseline(nativeSessionFile()); baseline = baselineSnapshot.ids; } catch (error) {
 		return Promise.resolve({ ...result, exitCode: 1, terminalFailure: true, error: `Cannot capture native usage baseline: ${error instanceof Error ? error.message : String(error)}` });
 	}
 	const streamId = randomUUID();
+	let wireDirectory = "", wireFd = -1, textFd = -1, stderrFd = -1;
+	try {
+		const parent = options.auditPath ? path.dirname(options.auditPath) : tmpdir();
+		mkdirSync(parent, { recursive: true });
+		wireDirectory = mkdtempSync(path.join(parent, ".pi-subagents-wire-"));
+		wireFd = openSync(path.join(wireDirectory, "stdout"), "wx+");
+		textFd = openSync(path.join(wireDirectory, "text"), "wx+");
+		stderrFd = openSync(path.join(wireDirectory, "stderr"), "wx+");
+	} catch (error) {
+		if (wireFd >= 0) closeSync(wireFd);
+		if (textFd >= 0) closeSync(textFd);
+		if (stderrFd >= 0) closeSync(stderrFd);
+		if (wireDirectory) rmSync(wireDirectory, { recursive: true, force: true });
+		return Promise.resolve({ ...result, exitCode: 1, terminalFailure: true, error: `Cannot prepare child observations: ${String(error)}` });
+	}
 	return new Promise((resolve) => {
 		const startedAt = Date.now();
 		const invocation = options.claudeCodeInvocation;
 		const command = invocation ?? getPiSpawnCommand(options.args);
 		const child = spawn(command.command, command.args, {
 			cwd: options.cwd,
-			env: { ...process.env, ...options.env, ...getSubagentDepthEnv(options.maxSubagentDepth) },
+			env: { ...process.env, ...options.env, ...getSubagentDepthEnv(options.maxSubagentDepth), PI_SUBAGENT_NATIVE_BASELINE_COUNT: baselineSnapshot.legacy ? String(baselineSnapshot.entryCount) : "" },
 			stdio: ["ignore", "pipe", "pipe"],
 			detached: true,
 		});
 		const lifecycle = attachChildProcessLifecycle(child);
 		const mutations = createMutationCompletionTracker();
 		const toolLoop = createRepeatedSubagentCallGuardState();
-		let stdoutBuffer = "";
-		let stderrBuffer = "";
-		const rawOutput: string[] = [];
+		const wirePath = path.join(wireDirectory, "stdout");
+		let textOffset = 0;
+		const observations: Array<{ start: number; end: number; kind: string; number?: number; message?: Message; nativeEntryId?: string }> = [];
+		const referenceMessage = (entry: NativeUsageMetadata) => {
+			const message = entry.message;
+			if (!message) return;
+			const observation = observations.find((item) => (!item.nativeEntryId || item.nativeEntryId === entry.id)
+				&& item.message?.role === message.role && item.message.timestamp === message.timestamp
+				&& (!message.toolCallId || item.message.role === "toolResult" && item.message.toolCallId === message.toolCallId));
+			if (observation) observation.nativeEntryId = entry.id;
+			return observation;
+		};
+		let rawOutput = "", lastOutput = "", boundariesCursor = 0;
+		let receiverFailed = false;
+		const acceptedEntries = new Map<string, NativeUsageMetadata>();
+		let nativeMessageCount = 0;
+		const pendingBoundary = Symbol("pending boundary");
+		let textWritten = false, exitObservation = new ExitCodeObservation(), firstTextPath: string | undefined;
+		let outputTextPath: string | undefined, pendingSurrogate = "";
+		let reproject = false, replayOutput = false;
+		result.attemptBaseline = [...baseline];
 		let assistantError: string | undefined;
 		let cleanAssistantStop = false;
 		let settled = false;
@@ -193,13 +267,12 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 		};
 		const syncFinalization = () => {
 			if (!options.nativeFinalization) return;
-			let text: string;
-			try { text = readFileSync(path.join(path.dirname(options.nativeFinalization.reportRuntime.schemaPath), "boundaries.jsonl"), "utf8"); }
-			catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+			const file = path.join(path.dirname(options.nativeFinalization.reportRuntime.schemaPath), "boundaries.jsonl");
 			const messages = result.messages.filter((message) => ["assistant", "user", "toolResult"].includes(message.role));
-			for (const line of text.split("\n").slice(0, -1).slice(result.finalization?.length ?? 0)) {
-				const marker = JSON.parse(line) as NativeFinalizationEvent;
-				if (marker.nonce !== options.nativeFinalization.nonce || marker.messageCount > messages.length) break;
+			try { scanJournal(file, () => true, ({ value, end }) => {
+				const marker = value as NativeFinalizationEvent;
+				if (marker.nonce !== options.nativeFinalization!.nonce) throw new Error("Unexpected finalization nonce");
+				if (marker.messageCount > messages.length) throw pendingBoundary;
 				const segmentMessages = messages.slice(messageOffset, marker.messageCount);
 				const usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 				let segmentAssistantTokens = 0;
@@ -221,22 +294,42 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 					resetResourceTimer();
 				}
 				options.onEvent?.(marker, result);
-			}
+				boundariesCursor = end;
+			}, { policy: "live", start: boundariesCursor }); } catch (error) { if (error !== pendingBoundary && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 		};
-		const processLine = (line: string) => {
-			if (!line.trim()) return;
-			let event: ChildEvent;
-			try { event = JSON.parse(line) as ChildEvent; } catch {
-				rawOutput.push(line);
-				options.onOutput?.(`${line}\n`);
-				options.onRawLine?.("stdout", line);
-				return;
-			}
+		const processEvent = (input: ChildEvent) => {
+			let event = input;
 			if (!event || typeof event !== "object") return;
 			if (event.type !== "message_update") syncFinalization();
+			if (event.type === "subagent.native_baseline") {
+				const value = event as ChildEvent & { sessionId: string; entryIds: string[] };
+				if (!baselineSnapshot.legacy || value.sessionId !== baselineSnapshot.sessionId || !Array.isArray(value.entryIds)
+					|| new Set(value.entryIds).size !== baselineSnapshot.entryCount || value.entryIds.some((id) => typeof id !== "string" || !id)) throw new Error("Cannot reconcile native legacy baseline");
+				baseline.clear(); baseline.add(value.sessionId); for (const id of value.entryIds) baseline.add(id);
+				result.attemptBaseline = [...baseline];
+			}
+			if (event.type === "subagent.native") {
+				const native = event as ChildEvent & { sessionId: string; leafId: string | null; persisted?: boolean; configuration: ChildAttemptResult["effectiveConfiguration"]; entries: Array<NativeUsageMetadata & { message?: { role: string; timestamp: number; toolCallId?: string } }> };
+				result.nativeSessionId = native.sessionId;
+				result.terminalLeafId = native.leafId;
+				result.terminalEntryId = native.entries.at(-1)?.id ?? result.terminalEntryId;
+				result.effectiveConfiguration = native.configuration;
+				if (!native.persisted) for (const entry of native.entries) acceptedEntries.set(entry.id, entry);
+				const nativeReferences = [];
+				if (native.persisted) for (const entry of native.entries) if (entry.message) {
+					const observation = referenceMessage(entry);
+					if (observation) {
+						nativeReferences.push({ messageNumber: observation.number, entryId: entry.id });
+					}
+				}
+				Object.assign(event, { nativeReferences, referenceState: "observed" });
+			}
 			lifecycle.observeEvent(invocation && event.type === "result" ? "agent_settled" : event.type);
 			if (invocation && event.type === "result") {
 				const nativeResult = event as ClaudeCodeResultEvent;
+				// Claude reports totals, not a native per-category cost receipt. Keep
+				// that observation rather than inventing zero-valued category costs.
+				result.accounting = { state: "incomplete", error: "Claude Code did not provide the complete native usage/cost receipt. Reported totals and its audit were retained." };
 				if (options.structuredOutput && nativeResult.structured_output !== undefined) {
 					mkdirSync(path.dirname(options.structuredOutput.outputPath), { recursive: true });
 					writeFileSync(options.structuredOutput.outputPath, `${JSON.stringify(nativeResult.structured_output)}\n`, "utf8");
@@ -248,7 +341,8 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 						model: invocation.model.inputModel, cliModel: invocation.model.cliModel,
 						family: invocation.model.family, context: invocation.model.context, updatedAt: Date.now(),
 					});
-					appendClaudeCodeMessage(options.sessionFile, message);
+					const { result: _result, structured_output: _structured, ...observation } = nativeResult;
+					appendClaudeCodeMessage(options.sessionFile, message, observation);
 				}
 				event = { type: "message_end", message };
 			}
@@ -264,13 +358,21 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 				loopFailure = recordToolEndForSubagentLoopGuard({ state: toolLoop, ...event, toolName: event.toolName, isError: event.isError });
 			} else if (event.type === "message_end" && event.message) {
 				const message = event.message;
-				result.messages.push(message);
+				if (message.role === "assistant" && !message.usage) result.accounting = { state: "incomplete", error: "Required assistant usage is unavailable; execution was not repeated." };
+				const final = getFinalOutput([message]);
+				if (final) lastOutput = final;
+				result.messages.push(compactObservedMessage(message));
+				if (["assistant", "user", "toolResult"].includes(message.role)) nativeMessageCount++;
+				result.messageCount = nativeMessageCount;
 				const text = extractTextFromContent(message.content);
-				if (text) options.onOutput?.(`${text}\n`);
+				if (textWritten) options.onOutput?.("\n");
+				else if (invocation && text) options.onOutput?.(`${text}\n`);
 				if ((message.role === "assistant" || message.role === "toolResult") && message.usage) {
-					addUsage(result.usage, message.usage, { id: `stream:${streamId}:${result.messages.length}`,
+					try { addUsage(result.usage, message.usage, { id: `stream:${streamId}:${result.messages.length}`,
 						provider: message.role === "assistant" ? message.provider : undefined,
 						model: message.role === "assistant" ? message.responseModel ?? message.model : undefined });
+						validateNativeUsage(message.usage);
+					} catch (error) { result.accounting = { state: "incomplete", error: String(error) }; }
 				}
 				if (message.role === "toolResult") {
 					mutation = mutations.recordToolResult(message);
@@ -296,22 +398,104 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 			if (options.maxTokens !== undefined && tokens >= options.maxTokens) resourceLimit("maxTokens", options.maxTokens, tokens);
 		};
 
-		// Decode UTF-8 across pipe chunks before splitting JSON lines.
-		child.stdout.setEncoding("utf8");
+		const copyBytes = (fd: number, start: number, end: number, consume: (bytes: Buffer) => void) => {
+			const buffer = Buffer.allocUnsafe(64 * 1024);
+			for (let position = start; position < end;) {
+				const count = readSync(fd, buffer, 0, Math.min(buffer.length, end - position), position);
+				if (!count) throw new Error("Missing child audit bytes");
+				consume(buffer.subarray(0, count)); position += count;
+			}
+		};
+		const appendText = (text: string) => {
+			const bytes = Buffer.from(text);
+			for (let offset = 0; offset < bytes.length;) {
+				const count = writeSync(textFd, bytes, offset, bytes.length - offset, textOffset + offset);
+				if (!count) throw new Error("Cannot write child output spool");
+				offset += count;
+			}
+			textOffset += bytes.length;
+		};
+		const resetRecord = () => {
+			textWritten = false; exitObservation = new ExitCodeObservation(); firstTextPath = undefined;
+			pendingSurrogate = ""; outputTextPath = undefined; reproject = false; replayOutput = false;
+			textOffset = 0; ftruncateSync(textFd, 0);
+		};
+		const consumeMessageText = (path: readonly (string | number)[], text: string, root?: Record<string, any>) => {
+			if (root?.type !== "message_end" || path[0] !== "message" || path[1] !== "content" || path.at(-1) !== "text" && path.length !== 2) return;
+			const key = path.join(".");
+			if (outputTextPath !== key) {
+				if (pendingSurrogate) { textWritten = true; appendText(pendingSurrogate); }
+				pendingSurrogate = "";
+				if (textWritten && text) appendText("\n");
+				outputTextPath = key;
+			}
+			// Unpacked JSON escape tokens can split a surrogate pair. Join that one
+			// code unit before handing text to an output writer.
+			const joined = pendingSurrogate + text;
+			pendingSurrogate = /[\uD800-\uDBFF]/.test(joined.at(-1) ?? "") ? joined.at(-1)! : "";
+			const output = pendingSurrogate ? joined.slice(0, -1) : joined;
+			if (output) { textWritten = true; appendText(output); }
+			if (path.length !== 4) return;
+			firstTextPath ??= key;
+			if (firstTextPath === key) exitObservation.write(text);
+		};
+		const stdout = new JournalFrames((path, root) => {
+			if (invocation) return !path.length || ["type", "subtype", "is_error", "api_error_status", "result", "stop_reason", "session_id", "total_cost_usd", "usage", "modelUsage", "structured_output"].includes(String(path[0]));
+			if (path[0] === "message" && path[1] === "content" && !root?.type) replayOutput = true;
+			if (path[0] === "message" && path[1] === "content" && (!root?.type || path.at(-1) === "text" && !root.message?.role
+				|| path.includes("arguments") && !root.message?.content?.[Number(path[2])]?.name)) reproject = true;
+			return liveProjection(path, root);
+		}, ({ value: projected, start, end }) => {
+			if (!projected || typeof projected !== "object" || Array.isArray(projected)) { resetRecord(); return; }
+			let value = projected;
+			if (reproject && value.type === "message_end") {
+				// JSON member order is not semantic. Revisit only this selected value
+				// when attribution/call names appeared after their payloads.
+				for (let pass = 0; pass < 2; pass++) {
+					const known = value;
+					scanJournal(wirePath, (path, root) => liveProjection(path, { ...root, type: known.type,
+						message: { ...root?.message, role: known.message?.role, content: known.message?.content ?? root?.message?.content } }),
+					(record) => { value = record.value; }, { start, end, policy: "strict", keys: liveKeyLimit,
+						...(pass === 0 && replayOutput ? { stringChunk: (path, text, root) => consumeMessageText(path, text, { ...root, type: known.type }) } : {}) });
+				}
+			}
+			reproject = false; replayOutput = false;
+			if (pendingSurrogate) { textWritten = true; appendText(pendingSurrogate); }
+			pendingSurrogate = ""; outputTextPath = undefined;
+			const decoder = new StringDecoder("utf8");
+			copyBytes(textFd, 0, textOffset, (bytes) => options.onOutput?.(decoder.write(bytes)));
+			const tail = decoder.end(); if (tail) options.onOutput?.(tail);
+			if (exitObservation.value !== undefined && value.type === "message_end" && value.message?.role === "toolResult") value.message.observedExitCode = exitObservation.value;
+			processEvent(value as ChildEvent);
+			if (["message_end", "tool_execution_end"].includes(value.type) || invocation && (value.type !== "result" || !options.sessionFile)) observations.push({ start, end, kind: value.type,
+				...(value.type === "message_end" ? { number: nativeMessageCount, message: compactObservedMessage(value.message) } : {}) });
+			resetRecord();
+		}, "inspect", 0, (start, end) => {
+			observations.push({ start, end, kind: "diagnostic" });
+			const decoder = new StringDecoder("utf8");
+			copyBytes(wireFd, start, end, (bytes) => {
+				const text = decoder.write(bytes);
+				rawOutput = (rawOutput + text).slice(-16384);
+				options.onOutput?.(text); options.onRawLine?.("stdout", text);
+			});
+			const tail = decoder.end(); if (tail) options.onOutput?.(tail);
+			resetRecord();
+		}, consumeMessageText, liveKeyLimit);
 		child.stderr.setEncoding("utf8");
-		child.stdout.on("data", (text: string) => {
-			stdoutBuffer += text;
-			const lines = stdoutBuffer.split("\n");
-			stdoutBuffer = lines.pop() ?? "";
-			for (const line of lines) processLine(line);
+		child.stdout.on("data", (bytes: Buffer) => {
+			try { writeFileSync(wireFd, bytes); if (!receiverFailed) stdout.write(bytes); } catch (error) {
+				receiverFailed = true;
+				result.terminalFailure = true; stop({ error: `Cannot receive child events: ${String(error)}` });
+			}
 		});
 		child.stderr.on("data", (text: string) => {
-			result.stderr += text;
-			options.onStderr?.(text);
-			stderrBuffer += text;
-			const lines = stderrBuffer.split("\n");
-			stderrBuffer = lines.pop() ?? "";
-			for (const line of lines) if (line.trim()) options.onRawLine?.("stderr", line);
+			try {
+				writeFileSync(stderrFd, text);
+				result.stderr = (result.stderr + text).slice(-16384);
+				options.onStderr?.(text);
+			} catch (error) {
+				result.terminalFailure = true; stop({ error: `Cannot save child diagnostics: ${String(error)}` });
+			}
 		});
 		const abortListener = options.signal && addAbortListener(options.signal, () => {
 			const reason = options.signal?.reason;
@@ -324,10 +508,9 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 		});
 		const finish = (code: number | null, signal?: NodeJS.Signals | null, spawnError?: Error) => {
 			if (settled) return;
-			// A final non-newline JSON record has the same authority as a complete line.
-			if (stdoutBuffer.trim()) processLine(stdoutBuffer);
-			if (stderrBuffer.trim()) options.onRawLine?.("stderr", stderrBuffer);
-			syncFinalization();
+			// Sealed stdout may retain an EOF observation; native publication is verified separately.
+			try { if (!receiverFailed) stdout.finish(); } catch (error) { receiverFailed = true; result.error ??= String(error); result.terminalFailure = true; }
+			try { syncFinalization(); } catch (error) { result.error ??= `Cannot read finalization boundary: ${String(error)}`; result.terminalFailure = true; }
 			settled = true;
 			clearTimeout(resourceTimer);
 			abortListener?.[Symbol.dispose]();
@@ -336,6 +519,8 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 			result.durationMs = Date.now() - startedAt;
 			const reportRuntime = options.nativeFinalization?.reportRuntime ?? options.reportRuntime;
 			const report = reportRuntime && readFinalizationReport(result.messages, reportRuntime).output;
+			const structured = options.structuredOutput && readStructuredOutput(options.structuredOutput);
+			const completedOutput = cleanAssistantStop || report || structured && !structured.error;
 			if (report) assistantError = undefined;
 			result.error ??= assistantError ?? spawnError?.message;
 			const drainedSuccess = lifecycle.settledCleanup && (cleanAssistantStop || report) && !result.error;
@@ -343,7 +528,11 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 			result.exitCode = result.timedOut ? 124 : result.resourceLimitExceeded || result.terminalFailure ? 1
 				: result.interrupted || drainedSuccess ? 0 : lifecycle.stopping || signal ? code ?? 1 : code ?? 0;
 			if (result.interrupted) result.error = undefined;
-			result.finalOutput = result.resourceLimitExceeded?.message ?? (getFinalOutput(result.messages) || rawOutput.join("\n").trim());
+			if (result.exitCode === 0 && !result.interrupted && !result.error && !completedOutput) {
+				result.error = options.nativeFinalization ? "Native self-review boundary did not return a result." : "Child exit was observed, but no completed assistant result was returned.";
+				result.exitCode = 1; result.terminalFailure = true;
+			}
+			result.finalOutput = result.resourceLimitExceeded?.message ?? (lastOutput || rawOutput.trim());
 			if (options.nativeFinalization) {
 				const previous = result.finalization?.at(-1);
 				if (previous?.event.nextPrompt) {
@@ -364,18 +553,67 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 					result.terminalFailure = true;
 				}
 			}
+			const publishedIds = new Set<string>();
 			try {
-				const native = readNativeUsage(nativeSessionFile(), baseline, result.finalization?.map((segment) => segment.event.lastEntryId));
-				if (native) {
-					result.usage = sumAttemptUsage(native.map((usage) => ({ model: result.model ?? "default", success: true, usage })));
-					result.finalization?.forEach((segment, index) => { segment.usage = native[index]!; });
+				const native = readNativeUsage(nativeSessionFile(), baseline, result.finalization?.map((segment) => segment.event.lastEntryId), {
+					onEntry: (entry) => { if (entry.type === "message") { publishedIds.add(entry.id); referenceMessage(entry); } },
+					onBoundary: ({ sessionId, lastEntryId }) => { result.nativeSessionId = sessionId; result.terminalEntryId = lastEntryId; },
+				});
+				const accepted = !native && result.nativeSessionId && acceptedEntries.size
+					? nativeUsageCollector(result.nativeSessionId, baseline, result.finalization?.map((segment) => segment.event.lastEntryId)) : undefined;
+				if (accepted) for (const entry of acceptedEntries.values()) accepted.append(entry);
+				const totals = native ?? accepted?.totals;
+				if (totals) {
+					if (native && observations.some((item) => item.message && (item.message.role === "assistant" || item.message.role === "toolResult" && item.message.usage)
+						&& (!item.nativeEntryId || !publishedIds.has(item.nativeEntryId)))) throw new Error("Finalized message usage has no verified native commit; its reported usage and audit remain available.");
+					result.accounting = { state: "complete" };
+					result.usage = sumAttemptUsage(totals.map((usage) => ({ model: result.model ?? "default", success: true, usage })));
+					result.finalization?.forEach((segment, index) => { segment.usage = totals[index]!; });
 				}
 			} catch (error) {
-				result.error = `Cannot read finalized native usage: ${error instanceof Error ? error.message : String(error)}`;
-				result.exitCode = 1;
-				result.terminalFailure = true;
-				const last = result.finalization?.at(-1);
-				if (last) last.execution = { ...last.execution, exitCode: 1, error: result.error, terminalFailure: true };
+				result.accounting = { state: "incomplete", error: `Cannot read finalized native usage: ${error instanceof Error ? error.message : String(error)}` };
+			}
+			for (const item of observations) if (item.nativeEntryId) {
+				if (publishedIds.has(item.nativeEntryId)) (result.nativeReferences ??= []).push({ messageNumber: item.number, entryId: item.nativeEntryId });
+				else item.nativeEntryId = undefined;
+			}
+			result.accounting ??= { state: "complete" };
+			const file = nativeSessionFile();
+			if (!result.effectiveConfiguration && file) try {
+				const journal = new NativeJournal(file, "inspect", true);
+				const terminal = journal.records.findLast((record) => record.value.type !== "session");
+				result.terminalEntryId ??= terminal?.value.id;
+				result.terminalLeafId ??= result.terminalEntryId;
+				result.effectiveConfiguration = journal.configuration(undefined, result.terminalLeafId);
+			} catch (error) { result.accounting = { state: "incomplete", error: result.accounting.error ?? `Cannot capture terminal native selection: ${String(error)}` }; }
+			const retained = receiverFailed ? [{ start: 0, end: fstatSync(wireFd).size, kind: "receiver_failure", number: undefined }] : observations.filter((item) => !item.nativeEntryId);
+			const auditPath = options.auditPath ?? path.join(wireDirectory, "observations.log");
+			const stderrLength = fstatSync(stderrFd).size;
+			let retainedWire = false;
+			try { if (retained.length || stderrLength) {
+				const audit = openSync(auditPath, "a", 0o600);
+				try {
+					let offset = fstatSync(audit).size;
+					for (const item of retained) {
+						copyBytes(wireFd, item.start, item.end, (bytes) => writeFileSync(audit, bytes));
+						(result.auditRecords ??= []).push({ kind: item.kind, messageNumber: item.number, offset, length: item.end - item.start });
+						offset += item.end - item.start;
+					}
+					if (stderrLength) {
+						copyBytes(stderrFd, 0, stderrLength, (bytes) => writeFileSync(audit, bytes));
+						(result.auditRecords ??= []).push({ kind: "stderr", offset, length: stderrLength });
+					}
+					result.auditPath = auditPath;
+				} finally { closeSync(audit); }
+			}
+			} catch (error) { retainedWire = true; result.auditSaveError = String(error); result.auditPath = wireDirectory; }
+			finally {
+				closeSync(wireFd); closeSync(textFd); closeSync(stderrFd);
+				if (!retainedWire) {
+					if (result.auditPath?.startsWith(`${wireDirectory}${path.sep}`)) {
+						rmSync(wirePath); rmSync(path.join(wireDirectory, "text")); rmSync(path.join(wireDirectory, "stderr"));
+					} else rmSync(wireDirectory, { recursive: true, force: true });
+				}
 			}
 			resolve(result);
 		};

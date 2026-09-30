@@ -49,3 +49,17 @@ test("missing/non-native journals allow stream fallback; malformed journals surf
 	fs.writeFileSync(file, "not JSON");
 	assert.throws(() => readNativeUsage(file, new Set()), SyntaxError);
 });
+
+test("new assistant/native usage entries require complete billing evidence; tool/summary usage remains optional and inherited work is excluded", (t) => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "native-usage-required-"));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const file = path.join(dir, "session.jsonl");
+	const write = (entries: object[]) => fs.writeFileSync(file, [JSON.stringify({ type: "session", id: "child" }), ...entries.map((entry) => JSON.stringify(entry))].join("\n") + "\n");
+	for (const entry of [{ type: "message", id: "required", message: { role: "assistant" } }, { type: "usage", id: "required" }]) {
+		write([entry]);
+		assert.throws(() => readNativeUsage(file, new Set()), /Required native usage is unavailable/);
+		assert.deepEqual(readNativeUsage(file, new Set(["required"]))![0]!.contributions, []);
+	}
+	write([{ type: "message", id: "tool", message: { role: "toolResult" } }, { type: "compaction", id: "summary" }]);
+	assert.deepEqual(readNativeUsage(file, new Set())![0]!.contributions, []);
+});
