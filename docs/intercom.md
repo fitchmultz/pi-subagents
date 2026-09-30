@@ -26,7 +26,7 @@ Each Pi session with the bundled intercom extension loaded connects to a tiny lo
 
 ## Install
 
-Intercom works with official Pi **0.87.1**. No Pi fork is required.
+Intercom works with official Pi **0.99.1**. No Pi fork is required.
 
 ```bash
 pi install git:github.com/fitchmultz/pi-subagents
@@ -38,7 +38,7 @@ To restart the shared broker too, close every Pi session using the same agent di
 
 ## Development
 
-Follow the [local validation instructions](../README.md#local-validation). Keep the custom-queue visibility and busy-user-preparation regressions intact and report the known failures on published Pi 0.87.1.
+Follow the [local validation instructions](../README.md#local-validation). Keep custom-queue visibility and busy-user-preparation regressions intact and report results for the exact selected host; earlier published Pi 0.87.1 failures are historical evidence, not current 0.99.1 certification.
 
 `ci` runs typechecking, package and install smokes, and the full subagent/intercom test suite. The native intercom regression uses real SDK sessions, a controlled provider, and private runtime directories without credentials or model-service calls. To run just that regression:
 
@@ -554,7 +554,7 @@ pi-subagents/
 
 ## Native idle checkpoints
 
-Hosts exposing native `session_checkpoint` can capture an idle session without running shutdown or disconnecting Intercom. Official Pi 0.87.1 does not expose this API. On both hosts, an assistant-error reply waits for the broker acknowledgement during `message_end`, bounded by `sendTimeoutMs`.
+Hosts exposing native `session_checkpoint` can capture an idle session without running shutdown or disconnecting Intercom. Official Pi 0.99.1 does not expose this working-session checkpoint API. On both hosts, an assistant-error reply waits for the broker acknowledgement during `message_end`, bounded by `sendTimeoutMs`.
 
 The bundled broker advertises an additive admission hold. A positive ordered marker means earlier deliveries have already reached the recipient's socket callbacks, and the broker refuses new sends to/from that held session with `accepted:false` and an explicit retry-after-release reason. The extension also invalidates before accepting an arrival and joins unfinished inbound/reconnect work. Event-bus relays return their promises to native Pi. Native entries and queues remain the persistence authority; the marker alone is **not** a recipient persistence receipt.
 
@@ -573,7 +573,7 @@ PI_CHECKPOINT_TEST_SDK=/path/to/native/pi/packages/coding-agent \
 
 ## Limitations
 
-On official Pi 0.87.1, retained queues can resume work after cancellation, incoming messages can start a turn during user-prompt preparation, custom queues are absent from pending-message state, and idle wakeups bypass `before_agent_start` guidance. The extended native replay suite also requires the fork's `newContext` API. Updating this extension does not change those host behaviors. Use an explicit `async: false` subagent wait when dependent work needs a result without relying on an idle notification wakeup. Optional native asynchronous tool results and immediate usage accounting require [additional public host capabilities](../README.md#host-capabilities-and-result-delivery); official Pi 0.87.1 does not provide them. `check:compat` qualifies ordinary official package startup and core child contracts separately; `npm run test:integration` retains the full assertions and their official-host failures.
+Historical full-suite checks on official Pi 0.87.1 found that retained queues can resume work after cancellation, incoming messages can start a turn during user-prompt preparation, custom queues are absent from pending-message state, and idle wakeups bypass `before_agent_start` guidance. Legacy native replay tests also required the since-retired `newContext` API; current fork working-session capture uses public checkpoints instead. Updating this extension does not change those host behaviors. Use an explicit `async: false` subagent wait when dependent work needs a result without relying on an idle notification wakeup. Optional native asynchronous tool results and immediate usage accounting require [additional public host capabilities](../README.md#host-capabilities-and-result-delivery); official Pi 0.99.1 has no immediate `recordUsage` API and neither current host has native pending-call execution. `check:compat` qualifies ordinary official package startup and core child contracts separately; `npm run test:integration` retains the full assertions. Portable official 0.99.1 qualification does not claim the complete enhanced replay suite passes.
 
 - **Same machine only** — Uses local Unix sockets, no network support
 - **No dedicated intercom log** — Messages are kept in Pi session history, but there is no separate intercom transcript or inbox

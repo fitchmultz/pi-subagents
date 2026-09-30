@@ -34,7 +34,8 @@ for (const route of ["parent", "child"]) it(`native registered ${route} tools re
 		assert.equal(evidence.nativeProviderRequests, 0);
 		assert.equal(evidence.networkRequests, 0);
 		assert.deepEqual(evidence.extensionErrors, []);
-		assert.equal(child.stderr, "");
+		// Node 24.0 emits this warning when the native fixture imports TypeScript.
+		assert.match(child.stderr, /^(?:\(node:\d+\) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n)?$/);
 		assert.equal(evidence.cases.filter((entry) => entry.mixed).length, 6);
 		assert.equal(evidence.cases.filter((entry) => entry.name.endsWith("-pure")).length, 8);
 		assert.equal(evidence.cases.find((entry) => entry.name === "static-chain-interrupt-pure")?.liveUpdate?.type, "tool_execution_update");

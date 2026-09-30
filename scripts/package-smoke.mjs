@@ -66,7 +66,8 @@ try {
 } catch (error) {
 	fail(`npm pack --json returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
 }
-const pack = Array.isArray(packs) ? packs[0] : undefined;
+// npm 11 returns an array; npm 12 keys the same records by package name.
+const pack = Object.values(packs)[0];
 if (!pack || !Array.isArray(pack.files)) fail("npm pack --json did not report a file list");
 
 for (const path of [

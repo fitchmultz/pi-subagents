@@ -4,7 +4,7 @@
 
 ## Installation
 
-`pi-subagents` works with official Pi **0.87.1** on Node 24 or later, including saved-child continuation in a different directory. No Pi fork is required. Optional native asynchronous results and immediate usage accounting require additional public host capabilities; see [host capabilities and result delivery](#host-capabilities-and-result-delivery). Known Intercom host limitations are listed in the [Intercom guide](docs/intercom.md#limitations).
+`pi-subagents` works with official Pi **0.99.1** on Node 24 or later, including saved-child continuation in a different directory. No Pi fork is required. Optional native asynchronous results and immediate usage accounting require additional public host capabilities; see [host capabilities and result delivery](#host-capabilities-and-result-delivery). Known Intercom host limitations are listed in the [Intercom guide](docs/intercom.md#limitations).
 
 New sessions inherit the child process's working directory. Saved sessions retain their file, identity, header, and history; a requested directory change uses Pi's native SDK cwd override before startup. Same-directory resumes, including symlink and trailing-slash spellings, need no override. Structured-output startup preserves active tools and enables its capture tool. Use an explicit tool policy for restricted child runs; Pi can restore default built-ins when resuming without one.
 
@@ -35,7 +35,7 @@ Use the normal development workflow below for editing and validation, then rerun
 
 Supported platforms: **macOS and Linux**. Termux on Android is unverified; Windows is not supported.
 
-Pi core packages and TypeBox remain optional wildcard peers. Detached runners resolve TypeBox from the same Pi installation as the session APIs, so runtime-only installs need no private TypeBox copy. Development dependencies are pinned to the coherent official Pi 0.87.1 cohort for typechecking and package checks.
+Pi core packages and TypeBox remain optional wildcard peers. Detached runners resolve TypeBox from the same Pi installation as the session APIs, so runtime-only installs need no private TypeBox copy. Development dependencies are pinned to the coherent official Pi 0.99.1 cohort for typechecking and package checks.
 
 ## Local validation
 
@@ -43,9 +43,9 @@ Pi core packages and TypeBox remain optional wildcard peers. Detached runners re
 
 Repository CI runs three pull-request qualification checks: Linux Node 24 with the maintained fork's current `main` runs units, package/install smokes, and focused integration for delegation, Intercom delivery, checkpoint/replay, native usage, and process cleanup; Linux Node 24 typechecks and checks the locked official Pi graph with its portable native contracts and a clean production source install; macOS Node 24 checks a pruned fork installation, broker/checkpoint startup, and macOS process identity. One resolver job selects the fork commit for every platform lane, so a run never mixes moving `main` revisions. Main pushes run only official and fork installation/startup checks. The complete integration suite remains available locally through `npm run test:integration` against the fork; it is not repeated across pull-request jobs.
 
-The fork CI job supplies `PI_COMPAT_HOST=fork`, `PI_COMPAT_EXPECTED_VERSION`, `PI_COMPAT_EXPECTED_PACKAGE_DIR`, `PI_HOST_INDEX`, and `PI_HOST_CLI` to verify the selected SDK and CLI. The official job uses the locked Pi cohort installed by `npm ci` with `PI_COMPAT_HOST=official`. Fork CI requires native checkpoint and immediate usage APIs instead of silently skipping them. Portable child/background delivery contracts always run; legacy native pending-call tests run only when the host exposes that optional API, which the current fork retired. The ordinary official lane does **not** certify the extended replay/working-session contract: full official 0.87.1 integration still exposes five unchanged queue visibility, prompt-preparation ownership/startup, and `newContext` failures. The fork CI target follows [`fitchmultz/pi` main](https://github.com/fitchmultz/pi/tree/main); each run records and qualifies its resolved commit. See [host capabilities](#host-capabilities-and-result-delivery) and [limitations](docs/intercom.md#limitations).
+The fork CI job supplies `PI_COMPAT_HOST=fork`, `PI_COMPAT_EXPECTED_VERSION`, `PI_COMPAT_EXPECTED_PACKAGE_DIR`, `PI_HOST_INDEX`, and `PI_HOST_CLI` to verify the selected SDK and CLI. The official job uses the locked Pi cohort installed by `npm ci` with `PI_COMPAT_HOST=official`. Fork CI requires native checkpoint and immediate usage APIs instead of silently skipping them. Portable child/background delivery contracts always run; legacy native pending-call tests run only when the host exposes that optional API, which the current fork retired. The ordinary official lane does **not** certify the extended replay/working-session contract: the earlier full official 0.87.1 integration exposed queue visibility, prompt-preparation ownership/startup, and retired `newContext` failures. That historical result is not a full-suite qualification of official 0.99.1. The fork CI target follows [`fitchmultz/pi` main](https://github.com/fitchmultz/pi/tree/main); each run records and qualifies its resolved commit. See [host capabilities](#host-capabilities-and-result-delivery) and [limitations](docs/intercom.md#limitations).
 
-Use an empty HOME outside your real home ancestry and a short temporary directory. Child tests use local fixtures and their own broker/profile. CI runs the latest Node 24 release on Linux and macOS without claiming a full platform-by-host matrix.
+Use an empty HOME outside your real home ancestry and a short temporary directory whose ancestors have no project/package or agent markers. Set HOME, TMPDIR, TMP, TEMP, cache and fixture cwd consistently; never create mutable fixtures beneath the real home or retained evidence directory. Child tests use local fixtures and their own broker/profile. CI runs the latest Node 24 release on Linux and macOS without claiming a full platform-by-host matrix.
 
 The completion guard recognizes verified `modifiedFiles` receipts from pi-apply-edits v1's `apply_patch`, `replace_text`, and `write_files`, including partial publication errors. Previews and unchanged results do not count as mutations. To exercise the real editor through native SDK events, use an installed v1 editor checkout:
 
@@ -69,7 +69,7 @@ npm ci
 npm run ci
 ```
 
-Some native queue and prompt-preparation regressions still expose the [known host limitations](docs/intercom.md#limitations) on official Pi 0.87.1. Retain those checks and report their failures; a focused passing check does not establish a full-suite pass.
+The [host limitations](docs/intercom.md#limitations) include historical official 0.87.1 results. Retain distinct queue and prompt-preparation checks and report their actual results for the selected host; portable qualification does not establish a full-suite pass.
 
 That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
@@ -234,7 +234,7 @@ When you finish implementing, run a reviewer subagent before summarizing.
 
 ## Host capabilities and result delivery
 
-**Portable Pi:** ordinary background calls return a launch receipt. The detached owner keeps working, saves its result, and notifies the same saved parent. Use `async: false` or `--fg` when the calling tool must wait for the result, including one-shot callers that need it on stdout. These waits are abort-aware. Official Pi 0.87.1 supports this path, but its [idle-message and prompt-preparation limitations](docs/intercom.md#limitations) still apply to automatic wakeups.
+**Portable Pi:** ordinary background calls return a launch receipt. The detached owner keeps working, saves its result, and notifies the same saved parent. Use `async: false` or `--fg` when the calling tool must wait for the result, including one-shot callers that need it on stdout. These waits are abort-aware. Official Pi 0.99.1 supports this receipt path. Portable qualification is separate from the enhanced checkpoint/replay contract; see [host limitations](docs/intercom.md#limitations).
 
 **Native asynchronous tools:** an enhanced host must expose `Tool.async`, `Tool.resume`, and `ctx.getPendingToolCalls()`, and the selected model must advertise `supportsAsyncTools`. The extension enables this path only when the actual invocation appears in the host's pending calls. `async: true` alone is not evidence of native support.
 
@@ -242,11 +242,11 @@ Background launches and `continue`/`answer` without `async: false` return immedi
 
 Explicit `async: false` native calls still wait for the actual result. Older unresolved native calls retain their journaled `subagent-invocation` binding: resuming the same parent after restart, compaction, or branch navigation reconnects to saved work without relaunching it or sending a duplicate completion notice. A forked parent cannot adopt the original parent's calls. Receipt calls never become pending native calls retroactively.
 
-Native immediate parent accounting separately requires the public idempotent `recordUsage` API. Without it, usage is carried by finalized tool-result receipts; see [usage accounting](#usage-accounting). Official Pi 0.87.1 does not provide these APIs.
+Native immediate parent accounting separately requires the public idempotent `recordUsage` API. Without it, usage is carried by finalized tool-result receipts; see [usage accounting](#usage-accounting). Official Pi 0.99.1 does not provide the immediate `recordUsage` API. Current hosts also retired native pending-call execution; capability checks preserve legacy handling only where those APIs actually exist.
 
-**Qualified enhanced host:** [`fitchmultz/pi` at `06a195979349ae6da54752b562b5c8b4cfc32f35`](https://github.com/fitchmultz/pi/commit/06a195979349ae6da54752b562b5c8b4cfc32f35) (Pi 0.87.1), with the full suite on macOS arm64 with Node 24.21.0 and the core fork contracts in Linux CI on Node 24. Native tests cover original-call recovery across restart, compaction and branch navigation, fork ownership, accepted steering and disconnect recovery, and once-only accounting, including usage saved before the first parent assistant turn.
+**Current enhanced-host target:** [`fitchmultz/pi` at `18acca18fbc5d38e6fcf52da01bea8be2b4f3818`](https://github.com/fitchmultz/pi/commit/18acca18fbc5d38e6fcf52da01bea8be2b4f3818) (Pi 0.99.1). Public checkpoints and immediate native usage remain available; native pending-call execution is retired. Current background work uses durable detached owners, separate completion receipts and saved-parent ownership. Legacy native-call tests are conditional on their real capability, not proof of current execution support.
 
-To require these APIs during enhanced-host qualification, set `PI_NATIVE_ASYNC_REQUIRE_HOST=1` and `PI_PARENT_USAGE_REQUIRE_NATIVE=1` alongside `PI_COMPAT_HOST=fork` when running `npm run check:compat` against that installed host graph. Missing capabilities then fail instead of skipping their tests.
+To require current enhanced-host APIs, set `PI_CHECKPOINT_TEST_REQUIRED=1` with `PI_CHECKPOINT_TEST_SDK`, and `PI_PARENT_USAGE_REQUIRE_NATIVE=1` with `PI_PARENT_USAGE_TEST_SDK`. Missing checkpoints/usage then fail rather than skip. Do not require the retired `PI_NATIVE_ASYNC_REQUIRE_HOST` contract on these current hosts. The declared Node 24 floor is unchanged; cold loading frozen fork 18a on Node 24.0 has a host CommonJS resolution defect (`context.conditions.includes` on a Set), not an extension workaround or a claimed pass.
 
 ## Good first prompts
 

@@ -3,10 +3,13 @@
 ## Unreleased
 
 ### Changed
+- Pin the development Pi cohort to 0.99.1 and selected-host TypeBox 1.3.27; preserve optional runtime peers, Node 24 and durable formats. Document current public checkpoints/usage separately from legacy retired pending-call execution.
+- Keep native journal/model/streaming checks independent of mutable catalog entries and account for early host metadata persistence and fork discovery tools.
 - Make profile model/thinking defaults visible in ordinary discovery and document warranted per-run overrides as `model: "provider/model:high"`. Explicit overrides pin the route and effort without profile fallbacks; ordinary launches retain configured backups. Saved continuations preserve that policy, while explicitly selecting a current profile adopts its current model, thinking and fallbacks.
 - Align packaged role profiles with the maintainer's personal defaults, using GPT-6.1 Sol at high effort for scout/writer/delegate and xhigh for context-builder/fixer/Ponytail review, Luna for watching, Astra for security review, and Opus for independent Claude review. Editable user/project overrides still take precedence. Consolidate runtime coordination mechanics in the extension and require exact relevant owner instructions, settled decisions or readable source references in fresh-child handoffs.
 
 ### Fixed
+- Accept npm 12's keyed `npm pack --json` records as well as npm 11 arrays in the package smoke, without weakening packed-resource or native runtime checks.
 - Declare TypeBox as a host-provided peer instead of installing a private runtime copy. Compiled extensions and detached subagent runners use the selected Pi installation's TypeBox, avoiding startup dependency warnings without breaking background launches.
 - Keep provider prompt caches intact during background delegation on native-async models. Background launches and background `continue`/`answer` controls return an immediate receipt instead of holding the native async tool call open, and completion arrives as one appended wake-up notification for both top-level sessions and nested children, including after the owner reopens. A late native result is admitted at its original call position, so the provider stopped reading the cache at that call. Foreground waits, other run controls, and recovery of native calls already in flight are unchanged.
 
