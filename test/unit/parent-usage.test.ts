@@ -15,7 +15,7 @@ function harness(recordUsage?: (value: unknown) => void) {
 	let messageEnd!: (event: MessageEndEvent, ctx: ExtensionContext) => MessageEndEventResult | undefined;
 	const entries: SessionEntry[] = [];
 	const pi = { on(event: string, handler: typeof messageEnd) { assert.equal(event, "message_end"); messageEnd = handler; }, recordUsage } as unknown as ExtensionAPI;
-	const ctx = { sessionManager: { getEntries: () => entries } } as unknown as ExtensionContext;
+	const ctx = { sessionManager: { getEntries: () => entries, getSessionFile: () => undefined, getEntry: (id: string) => entries.find((entry) => entry.id === id) } } as unknown as ExtensionContext;
 	const adapter = registerParentUsage(pi, ["delegate", "agent_runs"]);
 	const finalize = (value: SubagentExecutionResult) => {
 		const message = { ...value, role: "toolResult", toolName: "agent_runs", toolCallId: "wait", isError: false, timestamp: 0 } as const;

@@ -301,7 +301,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	agentView = new AgentViewController(pi, state, (params, ctx) => executor.execute(randomUUID(), params, undefined, undefined, ctx));
-	state.onRunsChanged = () => agentView?.refresh(true);
+	state.onRunsChanged = () => agentView?.refresh();
 
 	pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, withMouseExpansion((message, options, theme) => {
 		const details = resolveSlashMessageDetails(message.details);

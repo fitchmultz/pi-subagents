@@ -23,9 +23,9 @@ if (fork) {
   delete env.PI_CODING_AGENT_DIR; // Fork fixtures deliberately substitute HOME, as run-tests.mjs does.
 }
 else { delete env.PI_CHECKPOINT_TEST_SDK; delete env.PI_CHECKPOINT_TEST_REQUIRED; }
-const contracts = ["native-context-contract", "native-same-cwd-resume", "native-acceptance-cli", "native-structured-output", "native-run-ownership", "native-completion-ownership", "native-result-routing", "native-tool-results", "tool-activation", "lazy-coordination", "compact-child-tools"];
+const contracts = ["native-context-contract", "native-same-cwd-resume", "native-acceptance-cli", "native-structured-output", "native-run-ownership", "native-completion-ownership", "session-resume-cost", "native-result-routing", "native-tool-results", "tool-activation", "lazy-coordination", "compact-child-tools"];
 const coreFiles = [
-  "native-checkpoint-idle", "pi-intercom-native-replay", "native-async-host", "native-completion-ownership", "parent-usage",
+  "native-checkpoint-idle", "pi-intercom-native-replay", "native-async-host", "native-completion-ownership", "session-resume-cost", "parent-usage",
   "async-execution", "parallel-execution", "chain-execution", "intercom-result-delivery",
   "owned-result-retention", "process-lifecycle", "orphan-stop", "real-pi-smoke-cleanup", "compact-child-tools",
 ];

@@ -37,6 +37,36 @@ function createState(): SubagentState {
 }
 
 describe("result watcher", () => {
+	it("stopping recovery cancels queued starts while preserving files for the next start", async () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-stop-"));
+		const state = createState(), reconciled: string[] = [];
+		state.currentSessionId = "parent";
+		for (const id of ["first", "second"]) fs.writeFileSync(path.join(resultsDir, `${id}.json`),
+			JSON.stringify({ id, sessionId: "parent", success: true, summary: "Done" }));
+		const watcher = createResultWatcher({ events: createEventBus() }, state, resultsDir, {
+			reconcileDelivery(runId) {
+				reconciled.push(runId);
+				if (reconciled.length === 1) watcher.stopResultWatcher();
+				return true;
+			},
+		});
+		try {
+			watcher.primeExistingResults();
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.deepEqual(reconciled, ["first"], "queued work cannot mutate after stop");
+			assert.equal(fs.existsSync(path.join(resultsDir, "first.json")), false, "already-started work finishes normally");
+			assert.equal(fs.existsSync(path.join(resultsDir, "second.json")), true);
+			watcher.startResultWatcher();
+			watcher.primeExistingResults();
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.deepEqual(reconciled, ["first", "second"], "the next start rediscovers retained work");
+			assert.equal(fs.existsSync(path.join(resultsDir, "second.json")), false);
+		} finally {
+			watcher.stopResultWatcher();
+			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
 	it("live durable polls avoid parent receipt scans until an actual result exists", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-live-")), runId = randomUUID();
 		const state = createState(), events = createEventBus(), completed: unknown[] = [];
