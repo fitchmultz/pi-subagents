@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { setImmediate as yieldToInput } from "node:timers/promises";
 import { getRunMetadataDir } from "../shared/supervisor-questions.ts";
 import { buildCompletionKey, markSeenWithTtl } from "./completion-dedupe.ts";
 import { createFileCoalescer } from "../../shared/file-coalescer.ts";
@@ -87,13 +88,14 @@ export function createResultWatcher(
 	const processingCompletionKeys = new Set<string>();
 	const inFlight = new Set<Promise<void>>();
 	let checkpoint: NativeCheckpointEvent | undefined;
+	let startTail = Promise.resolve(), generation = 0;
 
 	const readResult = (file: string) => fsApi === fs ? readAsyncResultFile(file) : parseAsyncResultFileContent(fsApi.readFileSync(file, "utf-8"), file);
 	const pendingResultFiles = () => [
 		...(fsApi.existsSync(resultsDir) ? fsApi.readdirSync(resultsDir).filter((name) => name.endsWith(".json")) : []),
 		...[...(state.ownedRuns?.values() ?? [])].filter((run) => run.source === "async"
 			&& fsApi.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))
-			&& (run.accounting?.state === "incomplete" || !run.delivery?.entryId && !state.isRunResultConsumed?.(run.runId)))
+			&& (run.accounting?.state === "incomplete" || !run.delivery?.entryId))
 			.map((run) => path.join(getRunMetadataDir(run.runId), "result.json")),
 	];
 
@@ -231,10 +233,15 @@ export function createResultWatcher(
 	};
 
 	state.resultFileCoalescer = createFileCoalescer((file) => {
-		if (checkpoint) return; // The durable file remains discoverable on release.
-		const tail = handleResult(file);
-		inFlight.add(tail);
-		void tail.finally(() => inFlight.delete(tail));
+		const scheduledGeneration = generation;
+		// Yield between synchronous recovery scans, without serializing async delivery.
+		startTail = startTail.then(async () => {
+			await yieldToInput();
+			if (checkpoint || scheduledGeneration !== generation) return;
+			const tail = handleResult(file);
+			inFlight.add(tail);
+			void tail.finally(() => inFlight.delete(tail));
+		});
 	}, 50);
 
 	const invalidatePendingResults = (event: NativeCheckpointEvent) => {
@@ -334,8 +341,8 @@ export function createResultWatcher(
 				// Our unlink can arrive after delivery and a new hold. An existing
 				// replacement still invalidates, even when the previous result was consumed.
 				const runId = path.basename(fileName, ".json");
-				if ((state.isRunResultConsumed?.(runId) || state.ownedRuns?.get(runId)?.delivery)
-					&& !fsApi.existsSync(path.join(resultsDir, fileName))) return;
+				if (!fsApi.existsSync(path.join(resultsDir, fileName))
+					&& (state.ownedRuns?.get(runId)?.delivery || state.isRunResultConsumed?.(runId))) return;
 				checkpoint?.invalidate(); // Before accepting result work or deleting a file.
 				state.resultFileCoalescer.schedule(fileName);
 			});
@@ -364,6 +371,7 @@ export function createResultWatcher(
 	};
 
 	const stopResultWatcher = () => {
+		generation++;
 		state.watcher?.close();
 		state.watcher = null;
 		clearPeriodicScan();

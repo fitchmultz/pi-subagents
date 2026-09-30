@@ -1,7 +1,7 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import { findPackageJSON } from "node:module";
+import fs from "node:fs";
+import { findPackageJSON, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -44,7 +44,7 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
 		runs.set(runId, run);
 	}
 	const fileBytes = fs.statSync(manager.getSessionFile()!).size;
-	let parsedChars = 0, historicalLookups = 0, ownerWrites = 0, sent = 0;
+	let parsedChars = 0, historicalLookups = 0, ownerWrites = 0, sent = 0, ownerWritesAtInput: number | undefined;
 	const write = JsonProjection.prototype.write;
 	t.mock.method(JsonProjection.prototype, "write", function (chunk: string | symbol) {
 		if (typeof chunk === "string") parsedChars += chunk.length;
@@ -56,7 +56,11 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
 		recordUsage(contribution: { id: string }) { recorded.push(contribution.id); } } as unknown as Parameters<typeof createCompletionDelivery>[0];
 	const state = { currentSessionId: manager.getSessionId(), ownedRuns: runs, foregroundRuns: new Map(), completionSeen: new Map(),
 		lastUiContext: { cwd: root, sessionManager: manager, isIdle: () => true, hasPendingMessages: () => false },
-		persistOwnedRun(run: unknown) { ownerWrites++; manager.appendCustomEntry("subagent-run", run); } } as Parameters<typeof createCompletionDelivery>[1];
+		persistOwnedRun(run: unknown) {
+			ownerWrites++;
+			if (ownerWrites === 1) setImmediate(() => { ownerWritesAtInput = ownerWrites; });
+			manager.appendCustomEntry("subagent-run", run);
+		} } as Parameters<typeof createCompletionDelivery>[1];
 	const delivery = createCompletionDelivery(pi, state, registerParentUsage(pi, ["subagent", "delegate", "agent_runs"]));
 	try {
 		delivery.start();
@@ -67,6 +71,7 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
 		}
 		delivery.stop();
 		assert.equal(ownerWrites, 16, "each legacy run saves delivery identity and accounting once");
+		assert.ok(ownerWritesAtInput !== undefined && ownerWritesAtInput < 16, "native input is serviced before the recovery batch finishes");
 		assert.equal(sent, 0, "published completions never queue another model turn");
 		assert.deepEqual(recorded.sort(), Array.from({ length: 8 }, (_, index) => `subagent:native-${index}`));
 		assert.ok(parsedChars < fileBytes * 3, `${parsedChars} parsed characters: two compact indexes, not one full parse per run`);
@@ -80,7 +85,7 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
 	} finally { delivery.stop(); }
 });
 
-for (const change of ["partial tail", "changed prefix and growth", "same-size edit", "replacement", "shrink", "malformed append"]) {
+for (const change of ["partial tail", "changed prefix and growth", "same-size edit", "same-stamp edit", "replacement", "shrink", "malformed append"]) {
 	test(`published receipt cache validates ${change}`, (t) => {
 		const root = fs.mkdtempSync(path.join(tmpdir(), "subagent-receipt-cache-"));
 		t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -91,6 +96,15 @@ for (const change of ["partial tail", "changed prefix and growth", "same-size ed
 		fs.writeFileSync(file, before);
 		const reader = createParentReceiptReader("live");
 		assert.equal(reader.read(file).size, 1);
+		if (change === "same-stamp edit") {
+			const fixed = fs.statSync(file, { bigint: true }), fstat = fs.fstatSync;
+			const mock = t.mock.method(fs, "fstatSync", (fd: number, options?: fs.StatOptions) => {
+				const stat = fstat(fd, options);
+				return options?.bigint ? { ...stat, mtimeNs: fixed.mtimeNs, ctimeNs: fixed.ctimeNs } : stat;
+			});
+			syncBuiltinESMExports();
+			t.after(() => { mock.mock.restore(); syncBuiltinESMExports(); });
+		}
 		const key = () => (reader.read(file).get("receipt") as { details: { completion: { key: string } } } | undefined)?.details.completion.key;
 		if (change === "partial tail") {
 			fs.appendFileSync(file, receipt("completion:B").replace('"receipt"', '"new"'));

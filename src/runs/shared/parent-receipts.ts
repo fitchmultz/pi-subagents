@@ -24,7 +24,7 @@ const receiptProjection: Projection = (path) => {
 
 /** Cache only LF-published receipt fields, never transcripts or accepted-but-unsaved messages. */
 export function createParentReceiptReader(policy: JournalPolicy) {
-	let cache: { file: string; stamp: string; identity: string; end: number; digest: string; records: Map<string, SessionEntry> } | undefined;
+	let cache: { file: string; identity: string; end: number; digest: string; records: Map<string, SessionEntry> } | undefined;
 	return {
 		clear() { cache = undefined; },
 		read(file: string | undefined): ReadonlyMap<string, SessionEntry> {
@@ -32,11 +32,10 @@ export function createParentReceiptReader(policy: JournalPolicy) {
 			const fd = fs.openSync(file, "r");
 			try {
 				const stat = fs.fstatSync(fd, { bigint: true }), stamp = journalStamp(stat), identity = `${stat.dev}:${stat.ino}`;
-				if (cache?.file === file && cache.stamp === stamp) return cache.records;
 				let hash = createHash("sha256");
-				let append = cache?.file === file && cache.identity === identity && Number(stat.size) > cache.end;
+				let append = cache?.file === file && cache.identity === identity && Number(stat.size) >= cache.end;
 				if (append) {
-					// An inode can be edited before growing; size/mtime alone cannot certify old receipts.
+					// Coarse timestamps can hide same-size edits; even a stat hit needs verified bytes.
 					hashRange(fd, 0, cache!.end, hash);
 					append = hash.copy().digest("hex") === cache!.digest;
 				}
@@ -48,7 +47,7 @@ export function createParentReceiptReader(policy: JournalPolicy) {
 				}, { policy, requireNewline: true, start, end: Number(stat.size) });
 				hashRange(fd, start, end, hash);
 				if (journalStamp(fs.fstatSync(fd, { bigint: true })) !== stamp) throw new Error("Parent journal changed during inspection");
-				cache = { file, stamp, identity, end, digest: hash.digest("hex"), records };
+				cache = { file, identity, end, digest: hash.digest("hex"), records };
 				return records;
 			} finally { fs.closeSync(fd); }
 		},
