@@ -101,7 +101,8 @@ for (const receiptOwner of [undefined, "current", "foreign"]) test(`cold checkpo
 	const legacy = JSON.stringify({ runtimeVersion: 2, id: runId, sessionId: ownerSessionId, mode: "single", state: "complete", success: true, timestamp: 1, results: [] });
 	fs.writeFileSync(resultFile, legacy);
 	t.after(() => fs.rmSync(getRunMetadataDir(runId), { recursive: true, force: true }));
-	const state = { currentSessionId: ownerSessionId, ownedRuns: new Map([[runId, run]]), completionSeen: new Map(),
+	const completionKey = `completion:legacy:${runId}:1`;
+	const state = { currentSessionId: ownerSessionId, ownedRuns: new Map([[runId, run]]), completionSeen: new Map([[completionKey, Date.now()]]),
 		lastUiContext: { sessionManager: reopened, isIdle: () => true, hasPendingMessages: () => false } } as Parameters<typeof createCompletionDelivery>[1];
 	const sent: unknown[] = [], completed: unknown[] = [];
 	const pi = { events: createEventBus(), on: () => {}, sendMessage: (message: unknown) => sent.push(message) } as unknown as Parameters<typeof createCompletionDelivery>[0];
@@ -113,12 +114,14 @@ for (const receiptOwner of [undefined, "current", "foreign"]) test(`cold checkpo
 		if (receiptOwner === "foreign") {
 			assert.equal(controller.signal.aborted, true, "a different parent's legacy receipt cannot qualify this checkpoint");
 			assert.equal(state.ownedRuns!.get(runId)!.delivery?.entryId, undefined);
+			assert.equal(state.completionSeen.size, 1, "a foreign receipt cannot retire this owner's pending completion");
 			return;
 		}
 		assert.equal(controller.signal.aborted, false, "a published matching receipt is complete even before normal watcher processing");
 		assert.equal(state.ownedRuns!.get(runId)!.delivery?.entryId, receiptId);
 		assert.equal(state.ownedRuns!.get(runId)!.completion?.state, "journaled");
-		assert.equal(state.ownedRuns!.get(runId)!.completion?.id, `completion:legacy:${runId}:1`);
+		assert.equal(state.ownedRuns!.get(runId)!.completion?.id, completionKey);
+		assert.equal(state.completionSeen.size, 0, "a published parent receipt retires the transient key without waiting for TTL expiry");
 		assert.equal(state.ownedRuns!.get(runId)!.accounting, undefined, "billing is independent of checkpoint delivery reconciliation");
 		assert.equal(fs.readFileSync(resultFile, "utf8"), legacy, "checkpoint reconciliation does not rewrite legacy accounting evidence");
 		controller.abort();

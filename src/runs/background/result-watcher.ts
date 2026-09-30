@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getRunMetadataDir } from "../shared/supervisor-questions.ts";
-import { buildCompletionKey } from "./completion-dedupe.ts";
+import { buildCompletionKey, markSeenWithTtl } from "./completion-dedupe.ts";
 import { createFileCoalescer } from "../../shared/file-coalescer.ts";
 import { resolveOrchestratorIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
@@ -165,11 +165,11 @@ export function createResultWatcher(
 			}), nestedChildren);
 
 			if (processingCompletionKeys.has(completionKey)) return;
-			if (state.completionSeen.has(completionKey)) {
+			// Owned queue/receipt reconciliation above remains authoritative after TTL expiry.
+			if (markSeenWithTtl(state.completionSeen, completionKey, Date.now(), 10 * 60 * 1000)) {
 				consumeNotification();
 				return;
 			}
-			state.completionSeen.set(completionKey, Date.now());
 			processingCompletionKeys.add(completionKey);
 			claimedCompletionKey = completionKey;
 

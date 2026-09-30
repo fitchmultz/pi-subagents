@@ -5,14 +5,30 @@ import { entryMetadata, journalStamp, scanJournal } from "../../shared/journal-r
 import { nativeInvocationTarget, nativeInvocations } from "../shared/native-async.ts";
 import { finalizedChildUsage, type registerParentUsage } from "../shared/parent-usage.ts";
 import { ownedRunView, rememberOwnedRun, repairOwnedRunAccounting } from "../shared/run-records.ts";
-import registerSubagentNotify from "./notify.ts";
+import registerSubagentNotify, { type SubagentNotifyDetails } from "./notify.ts";
 import { createResultWatcher } from "./result-watcher.ts";
 
 /** Completion authority is the published parent receipt, never queue/send acceptance. */
 export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState, parentUsage: ReturnType<typeof registerParentUsage>) {
+	type Admission = { sessionId: string | null; pending: boolean; channel: "notification" | "intercom" };
 	const store = globalThis as Record<string, unknown>, queueKey = "__pi_subagents_queued_notifications__";
-	const queued = store[queueKey] instanceof Set ? store[queueKey] as Set<string> : new Set<string>();
+	// Native custom queues survive extension reload, so their admission authority must too.
+	const queued = store[queueKey] instanceof Map ? store[queueKey] as Map<string, Admission> : new Map<string, Admission>();
 	store[queueKey] = queued;
+	pi.on("turn_end", (event, ctx) => {
+		const pending = new Set(event.context.pendingMessages.flatMap((message) => {
+			const completion = message.role === "custom" && message.customType === "subagent-notify"
+				? (message.details as SubagentNotifyDetails)?.completion : undefined;
+			return completion ? [completion.key] : [];
+		}));
+		for (const [key, admission] of queued) {
+			if (admission.channel !== "notification" || admission.sessionId !== ctx.sessionManager.getSessionId()) continue;
+			admission.pending = pending.has(key);
+			if (!admission.pending) {
+				queued.delete(key); state.completionSeen.delete(key);
+			}
+		}
+	});
 	let cache: { file: string; stamp: string; receipts: Array<Record<string, any>> } | undefined;
 	const receipts = () => {
 		const file = state.lastUiContext?.sessionManager.getSessionFile();
@@ -71,13 +87,13 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 	};
 	const reconcileDelivery = (runId: string, key: string, accounting = true): boolean => {
 		const run = state.ownedRuns?.get(runId);
-		if (!run) return false;
 		const receipt = receipts().find((entry) => matches(entry, runId, key));
 		if (receipt) {
 			queued.delete(key);
+			state.completionSeen.delete(key);
 			// Save delivery before optional accounting. Even a failed owner append cannot
 			// make this published identity eligible for another notification.
-			try { rememberOwnedRun(state, { ...run, completion: { id: key, state: "journaled", entryId: receipt.id },
+			try { if (run) rememberOwnedRun(state, { ...run, completion: { id: key, state: "journaled", entryId: receipt.id },
 				delivery: { notifiedAt: Date.parse(receipt.timestamp), intercomDelivered: receipt.customType === "intercom_message", completionId: key, entryId: receipt.id } }); }
 			catch (error) { console.error(`Could not save delivery projection for ${runId}:`, error); }
 			if (accounting) recordAccounting(runId);
@@ -92,22 +108,27 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 			if (!(entry.type === "custom_message" && ["subagent-notify", "intercom_message", "subagent-slash-result"].includes(entry.customType)
 				|| entry.type === "message" && entry.message.role === "toolResult" && ["subagent", "delegate", "agent_runs"].includes(entry.message.toolName))) return false;
 			return matches(ctx.sessionManager.getEntry(entry.id) ?? entry, runId, key);
-		})) return true;
-		if (queued.has(key) || run.completion?.id === key && run.completion.state === "queued") {
+		})) {
+			queued.delete(key); state.completionSeen.delete(key);
+			return true;
+		}
+		if (queued.has(key) || run?.completion?.id === key && run.completion.state === "queued") {
 			// The durable Intercom inbox owns its own queue/restart reconciliation.
 			// A remote acknowledgement exposes no parent commit/queue boundary.
-			if (run.completion?.channel === "intercom") return true;
-			if (!ctx.isIdle() || ctx.hasPendingMessages()) return true;
+			if (run?.completion?.channel === "intercom") return true;
+			// Settlement after abort need not drain the custom queue. Its actual
+			// turn boundary remains authoritative when coarse occupancy says idle.
+			if (queued.get(key)?.pending || !ctx.isIdle() || ctx.hasPendingMessages()) return true;
 			queued.delete(key); state.completionSeen.delete(key);
-			rememberOwnedRun(state, { ...run, completion: { id: key, state: "dropped" } });
+			if (run) rememberOwnedRun(state, { ...run, completion: { id: key, state: "dropped" } });
 		}
 		return false;
 	};
 	const watcher = createResultWatcher(pi, state, RESULTS_DIR, { reconcileDelivery });
 	let unsubscribe: (() => void) | undefined, unsubscribeNotify: (() => void) | undefined;
 	const markQueued = (runId: string, key: string, channel: "notification" | "intercom" = "notification") => {
-		queued.add(key);
 		const run = state.ownedRuns?.get(runId);
+		queued.set(key, { sessionId: state.currentSessionId, pending: false, channel });
 		if (run) rememberOwnedRun(state, { ...run, completion: { id: key, state: "queued", channel, queuedAt: Date.now() } });
 	};
 	const start = () => {

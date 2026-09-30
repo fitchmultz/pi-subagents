@@ -213,7 +213,8 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("does not repeat a completion when its saved result fields change", async () => {
+	it("does not repeat changed results within the TTL and prunes expired transient completions", async (t) => {
+		t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-corrected-"));
 		try {
 			const emitted: Array<{ event: string; data: { success?: boolean; summary?: string } }> = [];
@@ -235,13 +236,19 @@ describe("result watcher", () => {
 				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", sessionId: "parent", cwd: "/repo", success: true, summary: "corrected" }), "utf-8");
 				watcher.primeExistingResults();
 				await new Promise((resolve) => setTimeout(resolve, 100));
+				assert.equal(state.completionSeen.size, 1);
+				t.mock.timers.tick(11 * 60_000);
+				fs.writeFileSync(path.join(resultsDir, "run-next.json"), JSON.stringify({ id: "run-next", sessionId: "parent", success: true, summary: "next" }), "utf-8");
+				watcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				assert.deepEqual([...state.completionSeen.keys()], ["completion:legacy:run-next:unknown"], "a new transient completion retires expired keys instead of retaining every finished run");
 			} finally {
 				watcher.stopResultWatcher();
 			}
 
 			const completes = emitted.filter((entry) => entry.event === "subagent:async-complete");
-			assert.deepEqual(completes.map((entry) => entry.data.summary), ["old"]);
-			assert.deepEqual(completes.map((entry) => entry.data.success), [false]);
+			assert.deepEqual(completes.map((entry) => entry.data.summary), ["old", "next"]);
+			assert.deepEqual(completes.map((entry) => entry.data.success), [false, true]);
 		} finally {
 			fs.rmSync(resultsDir, { recursive: true, force: true });
 		}
