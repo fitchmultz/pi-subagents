@@ -179,7 +179,7 @@ describe("intercom result delivery cutover", () => {
 		assert.equal(result.isError, failed || undefined, result.content[0]?.text);
 		assert.match(result.content[0].text, /LAST_EVIDENCE/);
 		assert.equal(result.details.results.at(-1).finalOutput, "LAST_EVIDENCE");
-		const watcher = createResultWatcher({ events: bus }, state, RESULTS_DIR, 60_000);
+		const watcher = createResultWatcher({ events: bus }, state, RESULTS_DIR);
 		try {
 			watcher.primeExistingResults();
 			watcher.primeExistingResults();
@@ -205,7 +205,7 @@ describe("intercom result delivery cutover", () => {
 		mockPi.onCall({ output: "UNACKNOWLEDGED_EVIDENCE" });
 		const { executor, events: bus, state } = makeExecutor({ acknowledgeResults: false });
 		const result = await executor.execute("unacknowledged", { agent: "worker", task: "Report" }, undefined, undefined, makeMinimalCtx(tempDir));
-		const watcher = createResultWatcher({ events: bus }, state, RESULTS_DIR, 60_000);
+		const watcher = createResultWatcher({ events: bus }, state, RESULTS_DIR);
 		try {
 			watcher.primeExistingResults();
 			await waitFor(() => bus.emitted.some((entry) => entry.channel === "subagent:async-complete" && entry.payload.runId === result.details.runId));
@@ -234,7 +234,7 @@ describe("intercom result delivery cutover", () => {
 		const durable = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(runId), "result.json"), "utf8"));
 		assert.deepEqual(durable.results.map((child) => child.finalOutput), ["FIRST_EVIDENCE", "WAIT_FINISHED", "DEPENDENT_EVIDENCE"]);
 		assert.equal(durable.state, "complete");
-		const watcher = createResultWatcher({ events: bus }, state, RESULTS_DIR, 60_000);
+		const watcher = createResultWatcher({ events: bus }, state, RESULTS_DIR);
 		try {
 			watcher.primeExistingResults();
 			await waitFor(() => bus.emitted.some((entry) => entry.channel === "subagent:async-complete" && entry.payload.runId === runId));

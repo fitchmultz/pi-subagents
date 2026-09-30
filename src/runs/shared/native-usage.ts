@@ -15,7 +15,7 @@ export function snapshotNativeBaseline(file: string | undefined): { ids: Set<str
 			}
 		} else if (native) entryCount++;
 		if (native && typeof value?.id === "string") ids.add(value.id);
-	}); }
+	}, { requireNewline: true }); }
 	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 	return { ids, entryCount, legacy, sessionId };
 }
@@ -106,7 +106,7 @@ export function readNativeUsage(file: string | undefined, baseline: ReadonlySet<
 		collector.append(entry as NativeUsageMetadata);
 		if (entry.type !== "session") lastEntryId = entry.id;
 		if (entry.id === options.terminalEntryId) { reached = true; throw boundaryReached; }
-	}); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; if (error !== boundaryReached) throw error; }
+	}, { requireNewline: true }); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; if (error !== boundaryReached) throw error; }
 	if (options.terminalEntryId && !reached) throw new Error("Native accounting terminal entry is missing");
 	if (sessionId) options.onBoundary?.({ sessionId, lastEntryId });
 	return collector?.totals;

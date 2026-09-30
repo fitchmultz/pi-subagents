@@ -279,7 +279,7 @@ export class AgentViewController {
 		const predecessor = run.predecessorRunId && this.state.ownedRuns?.get(run.predecessorRunId);
 		if (!predecessor) return `${run.runId}:${child.workflowNodeId ?? (run.mode === "chain" && child.sessionFile && !child.identityUnavailable ? `session:${child.sessionFile}` : child.index)}`;
 		const index = run.predecessorIndex ?? 0;
-		const previous = (this.views.get(predecessor.runId)?.view ?? ownedRunView(predecessor, this.state, { pendingInput: false, includeContinuations: false, readConfiguration: (file, endedAt, leaf) => this.history.configuration(file, endedAt, leaf) })).children.find((candidate) => candidate.index === index);
+		const previous = (this.views.get(predecessor.runId)?.view ?? ownedRunView(predecessor, this.state, { pendingInput: false, includeContinuations: false, readConfiguration: (file, endedAt, leaf) => this.history.configuration(file, endedAt, leaf, endedAt === undefined) })).children.find((candidate) => candidate.index === index);
 		return this.taskKey(predecessor, previous ?? { index });
 	}
 
@@ -295,7 +295,7 @@ export class AgentViewController {
 				questions = listOwnedRunQuestions(run.ownerSessionId, run.runId);
 				view = !force && cached?.run === run && !["live", "unknown"].includes(cached.view.state) ? cached.view : ownedRunView(run, this.state, {
 					pendingInput: questions.some((question) => question.state === "awaiting_input" || question.state === "answer_pending"),
-					includeContinuations: false, readConfiguration: (file, endedAt, leaf) => this.history.configuration(file, endedAt, leaf),
+					includeContinuations: false, readConfiguration: (file, endedAt, leaf) => this.history.configuration(file, endedAt, leaf, endedAt === undefined),
 				});
 				this.views.set(run.runId, { run, view });
 			} catch (error) {
@@ -927,7 +927,10 @@ export class AgentConversation extends Container {
 	private selected(): AgentHistoryItem | undefined { return this.detail ?? this.contentItems.find((item) => item.id === this.selectedId) ?? this.contentItems.findLast((item) => item.kind === "assistant"); }
 	private inspect(item: AgentHistoryItem): void {
 		this.conversationAnchor = this.scroll.isFollowingEnd ? undefined : this.anchor();
-		this.detail = item.load?.() ?? item; this.menu = undefined; this.editorFocus = false;
+		try { this.detail = item.load?.() ?? item; }
+		catch (error) { this.detail = { id: item.id, kind: "notice", title: "Details unavailable",
+			text: readableText(error instanceof Error ? error.message : String(error)), timestamp: item.timestamp }; }
+		this.menu = undefined; this.editorFocus = false;
 		this.scroll.scrollToStart(); this.restoreAnchor = { id: item.id, line: 0 };
 	}
 	private reply(): void {

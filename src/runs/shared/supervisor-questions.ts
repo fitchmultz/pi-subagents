@@ -181,7 +181,7 @@ export function readQuestionContract(runId: string, index: number, root = QUESTI
 	if (contract.recordVersion !== 3 && !contract.effectiveConfiguration && sessionFile && fs.existsSync(sessionFile) && !contract.launch.model?.startsWith("claude-code/")) {
 		// One-time read-only native recovery. Subsequent controls use the compact
 		// selection, and the frozen requested profile is never rewritten.
-		const journal = new NativeJournal(sessionFile);
+		const journal = new NativeJournal(sessionFile, "inspect", true);
 		contract.effectiveConfiguration = journal.configuration(projection.endedAt, contract.terminalLeafId);
 		saveQuestionContract(runId, index, { effectiveConfiguration: contract.effectiveConfiguration }, root);
 	}

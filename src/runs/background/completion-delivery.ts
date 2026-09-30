@@ -51,7 +51,7 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 		if (entry.type !== "custom_message") return false;
 		const completion = entry.details?.completion ?? entry.details?.subagentCompletion;
 		return completion?.runId === runId && (completion.key === key || completion.completionId && `completion:${completion.completionId}` === key
-			|| key.startsWith("completion:legacy:") && !completion.completionId && completion.ownerSessionId === state.currentSessionId);
+			|| key.startsWith("completion:legacy:") && !completion.completionId && (completion.ownerSessionId === undefined || completion.ownerSessionId === state.currentSessionId));
 	};
 	const recordAccounting = (runId: string) => {
 		const run = state.ownedRuns?.get(runId), ctx = state.lastUiContext;
@@ -103,7 +103,7 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 		}
 		return false;
 	};
-	const watcher = createResultWatcher(pi, state, RESULTS_DIR, 0, { reconcileDelivery });
+	const watcher = createResultWatcher(pi, state, RESULTS_DIR, { reconcileDelivery });
 	let unsubscribe: (() => void) | undefined, unsubscribeNotify: (() => void) | undefined;
 	const markQueued = (runId: string, key: string, channel: "notification" | "intercom" = "notification") => {
 		queued.add(key);

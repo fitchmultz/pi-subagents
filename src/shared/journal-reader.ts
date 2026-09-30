@@ -96,7 +96,7 @@ export class JsonProjection {
 	finish(): JsonObject | undefined { this.write(endInput); return this.value; }
 }
 
-/** Byte-framed JSONL, including Unicode split across chunks. A cursor commits only at LF. */
+/** Byte-framed JSONL. Publication framing is independent of malformed-record tolerance. */
 export class JournalFrames {
 	private projection: JsonProjection;
 	private decoder = new TextDecoder("utf8", { fatal: true });
@@ -110,12 +110,14 @@ export class JournalFrames {
 	private malformed?: (start: number, end: number, error: unknown) => void;
 	private stringChunk?: ConstructorParameters<typeof JsonProjection>[1];
 	private keys?: KeyLimit;
+	private requireNewline: boolean;
 	constructor(select: Projection, record: (record: JournalRecord) => void,
 		policy: JournalPolicy = "strict", offset = 0,
 		malformed?: (start: number, end: number, error: unknown) => void,
-		stringChunk?: ConstructorParameters<typeof JsonProjection>[1], keys?: KeyLimit) {
+		stringChunk?: ConstructorParameters<typeof JsonProjection>[1], keys?: KeyLimit, requireNewline = policy === "live") {
 		this.select = select; this.record = record; this.policy = policy; this.malformed = malformed;
 		this.stringChunk = stringChunk; this.keys = keys;
+		this.requireNewline = requireNewline;
 		this.start = this.offset = offset;
 		this.projection = new JsonProjection(select, stringChunk, keys);
 	}
@@ -158,17 +160,19 @@ export class JournalFrames {
 		this.part(bytes.subarray(from));
 	}
 	finish(): number {
-		if (this.policy !== "live" && this.offset > this.start) this.commit(this.offset);
+		if (this.requireNewline) {
+			if (this.policy === "strict" && this.nonblank) throw new SyntaxError(`Unpublished JSONL record at byte ${this.start}: newline required`);
+		} else if (this.offset > this.start) this.commit(this.offset);
 		return this.start;
 	}
 }
 
 export function scanJournal(file: string | number, select: Projection, record: (record: JournalRecord) => void,
-	options: { policy?: JournalPolicy; start?: number; end?: number; malformed?: (start: number, end: number, error: unknown) => void; stringChunk?: ConstructorParameters<typeof JsonProjection>[1]; keys?: KeyLimit } = {}): number {
+	options: { policy?: JournalPolicy; requireNewline?: boolean; start?: number; end?: number; malformed?: (start: number, end: number, error: unknown) => void; stringChunk?: ConstructorParameters<typeof JsonProjection>[1]; keys?: KeyLimit } = {}): number {
 	const fd = typeof file === "number" ? file : fs.openSync(file, "r");
 	try {
 		const end = Math.min(options.end ?? Infinity, fs.fstatSync(fd).size);
-		const frames = new JournalFrames(select, record, options.policy, options.start ?? 0, options.malformed, options.stringChunk, options.keys);
+		const frames = new JournalFrames(select, record, options.policy, options.start ?? 0, options.malformed, options.stringChunk, options.keys, options.requireNewline);
 		const buffer = Buffer.allocUnsafe(64 * 1024);
 		for (let offset = options.start ?? 0; offset < end;) {
 			const count = fs.readSync(fd, buffer, 0, Math.min(buffer.length, end - offset), offset);
@@ -239,14 +243,15 @@ export class NativeJournal {
 	readonly records: NativeRecord[] = [];
 	readonly byId = new Map<string, NativeRecord>();
 	readonly stamp: string;
+	readonly identity: string;
 	readonly end: number;
 	readonly file: string;
-	constructor(file: string, policy: JournalPolicy = "inspect") {
+	constructor(file: string, policy: JournalPolicy = "inspect", requireNewline = policy === "live") {
 		this.file = file;
 		const fd = fs.openSync(file, "r");
 		try {
 			const stat = fs.fstatSync(fd, { bigint: true });
-			this.stamp = journalStamp(stat); this.end = Number(stat.size);
+			this.stamp = journalStamp(stat); this.identity = `${stat.dev}:${stat.ino}`; this.end = Number(stat.size);
 			let parent: string | null = null;
 			scanJournal(fd, nativeProjection, (record) => {
 				const entry = record.value;
@@ -257,7 +262,7 @@ export class NativeJournal {
 					parent = entry.id;
 				}
 				this.records.push(record as NativeRecord); this.byId.set(entry.id, record as NativeRecord);
-			}, { policy, end: this.end });
+			}, { policy, requireNewline, end: this.end });
 			if (journalStamp(fs.fstatSync(fd, { bigint: true })) !== this.stamp) throw new Error("Journal changed while indexing; refresh history.");
 		} finally { fs.closeSync(fd); }
 		if (this.records[0]?.value.type !== "session") throw new Error("Not a readable native Pi session.");

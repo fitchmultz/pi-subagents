@@ -101,6 +101,15 @@ test("native selection is projected without rewriting frozen launch or racing ow
 			{ type: "thinking_level_change", id: "thinking", parentId: "model", thinkingLevel: "high", timestamp: "2026-01-01T00:02:00Z" },
 		].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
 		const file = path.join(root, question.runId, "contracts", "0.json");
+		const legacy = JSON.parse(fs.readFileSync(file, "utf8"));
+		legacy.recordVersion = 2;
+		fs.writeFileSync(file, JSON.stringify(legacy));
+		fs.truncateSync(question.sessionFile, fs.statSync(question.sessionFile).size - 1);
+		const recovered = readQuestionContract(question.runId, 0, root)!;
+		assert.equal(recovered.launch?.model, "provider/current");
+		assert.equal(recovered.launch?.thinking, "low", "legacy recovery cannot publish a native thinking change without LF");
+		assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).effectiveConfiguration, { model: "provider/current", modelRecordedAt: Date.parse("2026-01-01T00:01:00Z") });
+		fs.appendFileSync(question.sessionFile, "\n");
 		saveQuestionContract(question.runId, 0, { effectiveConfiguration: { model: "provider/current", thinking: "high" }, terminalLeafId: "thinking" }, root);
 		const before = fs.readFileSync(file, "utf8");
 		// Ordinary controls use the captured native selection, even after a

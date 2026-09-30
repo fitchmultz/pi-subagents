@@ -246,6 +246,25 @@ test("native snapshots invalidate append, same-size rewrite/replacement, truncat
 	assert.equal(initial.entryIds.length, initialIds.length, "old presentation snapshots remain immutable");
 });
 
+test("native detail snapshots retain valid bodies when append falls between cache stat and descriptor indexing", (t) => {
+	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile(), reader = new NativeAgentHistory();
+	const stat = fs.statSync;
+	let appended = false;
+	t.mock.method(fs, "statSync", function(target, ...args) {
+		const observed = stat.call(this, target, ...args);
+		if (String(target) === file && !appended) {
+			appended = true;
+			assistant(manager, "Appended before descriptor indexing");
+		}
+		return observed;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const history = reader.read(file, true);
+	assert.equal(history.items.find((item) => item.kind === "assistant")!.load!().text, "I found the relevant code.");
+	assert.equal(history.items.at(-1)!.load!().text, "Appended before descriptor indexing");
+});
+
 test("history reading IDs and delivery facts never need raw tool serialization", () => {
 	let formatted = 0;
 	const entries = [
@@ -1112,6 +1131,7 @@ test("native Agents earlier/later pages and Latest retain access to exact select
 	await page("Earlier history");
 	assert.match(f.overlay.scroll.render(88).map(stripTerminalSequences).join("\n"), /History card 97/);
 	f.terminal.input("\t"); f.tui.renderNow();
+	assistant(manager, "Continuation appended after selection, before detail input");
 	f.terminal.input("\r"); f.tui.renderNow();
 	assert.match(readDetails(f.overlay), /PAGE-97-FULL-END/);
 	f.terminal.input("\x1b"); f.tui.renderNow();
@@ -1122,6 +1142,28 @@ test("native Agents earlier/later pages and Latest retain access to exact select
 	assert.doesNotMatch(plain(f.overlay), /History card 197/);
 	f.terminal.input("\x1b"); await opening;
 	assert.equal(f.calls.length, 0);
+});
+
+for (const loss of ["missing", "replacement", "truncation"]) test(`native detail requests show ${loss} failures without escaping TUI input or losing drafts`, async (t) => {
+	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
+	assistant(manager, `Full selected body\n${"detail ".repeat(600)}SELECTED-END`);
+	f.controller.refresh(true);
+	const opening = f.controller.open(f.key);
+	f.tui.start(); f.tui.renderNow();
+	f.terminal.input("Keep my unsent message");
+	f.terminal.input("\t"); f.tui.renderNow();
+	if (loss === "missing") fs.unlinkSync(file);
+	else if (loss === "replacement") {
+		fs.writeFileSync(`${file}.replacement`, fs.readFileSync(file));
+		fs.renameSync(`${file}.replacement`, file);
+	} else fs.truncateSync(file, fs.readFileSync(file, "utf8").indexOf("\n") + 1);
+	assert.doesNotThrow(() => f.terminal.input("\r"), "detail failures cannot escape the native input listener");
+	f.tui.renderNow();
+	assert.match(plain(f.overlay), /Details unavailable/);
+	f.terminal.input("\x1b"); f.tui.renderNow();
+	assert.equal(f.overlay.editor.getExpandedText(), "Keep my unsent message");
+	assert.equal(f.calls.length, 0);
+	f.terminal.input("\x1b"); await opening;
 });
 
 for (const nativeAnswer of [false, true]) test(`completed structured-output history opens at the readable report without duplicates (native answer: ${nativeAnswer})`, async (t) => {

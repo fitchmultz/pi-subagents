@@ -9,6 +9,8 @@ import { reconcileAsyncRun } from "../../src/runs/background/stale-run-reconcile
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import type { SubagentState } from "../../src/shared/types.ts";
 import { createEventBus } from "../support/helpers.ts";
+import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
+import { randomUUID } from "node:crypto";
 
 function errno(code: string): NodeJS.ErrnoException {
 	const error = new Error(code) as NodeJS.ErrnoException;
@@ -35,6 +37,35 @@ function createState(): SubagentState {
 }
 
 describe("result watcher", () => {
+	it("live durable polls avoid parent receipt scans until an actual result exists", async () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-live-")), runId = randomUUID();
+		const state = createState(), events = createEventBus(), completed: unknown[] = [];
+		state.currentSessionId = "parent";
+		state.ownedRuns = new Map([[runId, { runId, rootRunId: runId, ownerSessionId: "parent", source: "async", mode: "single", cwd: "/repo", task: "Running", startedAt: 1, children: [] }]]);
+		let scans = 0;
+		state.isRunResultConsumed = () => { scans++; return false; };
+		events.on("subagent:async-complete", (event) => completed.push(event));
+		const watcher = createResultWatcher({ events }, state, resultsDir), controller = new AbortController();
+		try {
+			watcher.primeExistingResults();
+			watcher.primeExistingResults();
+			await watcher.holdCheckpoint({ type: "session_checkpoint", boundary: "settled", signal: controller.signal, invalidate: () => controller.abort() });
+			assert.equal(scans, 0, "no result means no parent receipt I/O during polls or checkpoint discovery");
+			assert.equal(controller.signal.aborted, false);
+			fs.mkdirSync(getRunMetadataDir(runId), { recursive: true });
+			fs.writeFileSync(path.join(getRunMetadataDir(runId), "result.json"), JSON.stringify({ runtimeVersion: 2, id: runId, sessionId: "parent", success: true, summary: "Done", results: [] }));
+			watcher.primeExistingResults();
+			assert.equal(controller.signal.aborted, true, "a real completed result still invalidates the hold");
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.ok(scans > 0, "completed work still checks parent receipts");
+			assert.equal(completed.length, 1);
+		} finally {
+			watcher.stopResultWatcher(); controller.abort();
+			fs.rmSync(getRunMetadataDir(runId), { recursive: true, force: true });
+			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
 	it("processes deferred session-scoped results after session identity is restored", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-session-"));
 		try {
@@ -56,7 +87,7 @@ describe("result watcher", () => {
 				summary: "done",
 			}), "utf-8");
 
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			try {
 				watcher.primeExistingResults();
 				await new Promise((resolve) => setTimeout(resolve, 100));
@@ -96,7 +127,7 @@ describe("result watcher", () => {
 		const state = createState();
 		state.currentSessionId = "different-parent";
 		state.ownedRuns = new Map([["restarted-owner", { runId: "restarted-owner", ownerSessionId: "saved-parent", source: "async", mode: "single", cwd: "/repo", task: "Saved work", startedAt: 100, rootRunId: "restarted-owner", children: [] }]]);
-		const watcher = createResultWatcher({ events }, state, resultsDir, 60_000);
+		const watcher = createResultWatcher({ events }, state, resultsDir);
 		const resultPath = path.join(resultsDir, "restarted-owner.json");
 		try {
 			fs.writeFileSync(resultPath, JSON.stringify({ id: "restarted-owner", sessionId: "saved-parent", cwd: "/repo", success: true, summary: "Saved child evidence", intercomTarget: "previous-owner-runtime" }));
@@ -152,7 +183,7 @@ describe("result watcher", () => {
 			};
 			const foreignState = createState();
 			foreignState.baseCwd = "/repo-foreign";
-			const foreignWatcher = createResultWatcher(pi, foreignState, resultsDir, 60_000);
+			const foreignWatcher = createResultWatcher(pi, foreignState, resultsDir);
 			try {
 				foreignWatcher.primeExistingResults();
 				await new Promise((resolve) => setTimeout(resolve, 100));
@@ -164,7 +195,7 @@ describe("result watcher", () => {
 
 			const currentState = createState();
 			currentState.baseCwd = "/repo-current";
-			const currentWatcher = createResultWatcher(pi, currentState, resultsDir, 60_000);
+			const currentWatcher = createResultWatcher(pi, currentState, resultsDir);
 			try {
 				currentWatcher.primeExistingResults();
 				await new Promise((resolve) => setTimeout(resolve, 100));
@@ -196,7 +227,7 @@ describe("result watcher", () => {
 			};
 			const state = createState();
 			state.currentSessionId = "parent";
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			try {
 				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", sessionId: "parent", cwd: "/repo", success: false, summary: "old" }), "utf-8");
 				watcher.primeExistingResults();
@@ -230,7 +261,7 @@ describe("result watcher", () => {
 				},
 			};
 			const state = createState();
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			const originalError = console.error;
 			const logged: unknown[][] = [];
 			console.error = (...args: unknown[]) => {
@@ -274,7 +305,7 @@ describe("result watcher", () => {
 				close() {},
 				unref() {},
 			} as fs.FSWatcher;
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000, {
+			const watcher = createResultWatcher(pi, state, resultsDir, {
 				fs: {
 					...fs,
 					watch: () => fakeWatcher,
@@ -346,7 +377,7 @@ describe("result watcher", () => {
 			let poll: (() => void) | undefined;
 			const emfile = new Error("too many open files") as NodeJS.ErrnoException;
 			emfile.code = "EMFILE";
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000, {
+			const watcher = createResultWatcher(pi, state, resultsDir, {
 				fs: {
 					...fs,
 					watch: () => {
@@ -441,7 +472,7 @@ describe("result watcher", () => {
 				close() {},
 				unref() {},
 			} as fs.FSWatcher;
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000, {
+			const watcher = createResultWatcher(pi, state, resultsDir, {
 				fs: {
 					...fs,
 					watch: () => fakeWatcher,
@@ -511,7 +542,7 @@ describe("result watcher", () => {
 			};
 			const state = createState();
 			state.currentSessionId = "session-1";
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			const firstSession = path.join(resultsDir, "a-session.jsonl");
 			const missingSession = path.join(resultsDir, "b-session.jsonl");
 			try {
@@ -599,7 +630,7 @@ describe("result watcher", () => {
 			};
 			const state = createState();
 			state.currentSessionId = "session-1";
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			const resultPath = path.join(resultsDir, "async-nested-root.json");
 			try {
 				fs.writeFileSync(resultPath, JSON.stringify({
@@ -662,7 +693,7 @@ describe("result watcher", () => {
 			};
 			const state = createState();
 			state.currentSessionId = "session-1";
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			const resultPath = path.join(resultsDir, "async-explicit-nested.json");
 			const originalError = console.error;
 			const logged: unknown[][] = [];
@@ -753,7 +784,7 @@ describe("result watcher", () => {
 			};
 			const state = createState();
 			state.currentSessionId = "session-1";
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			const resultPath = path.join(resultsDir, "async-nested-retry.json");
 			const originalError = console.error;
 			const logged: unknown[][] = [];
@@ -822,7 +853,7 @@ describe("result watcher", () => {
 			};
 			const state = createState();
 			state.currentSessionId = "session-1";
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			try {
 				fs.writeFileSync(path.join(resultsDir, "async-top-session.json"), JSON.stringify({
 					id: "async-top-session",
@@ -879,7 +910,7 @@ describe("result watcher", () => {
 			};
 			const state = createState();
 			state.currentSessionId = "session-1";
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			try {
 				fs.writeFileSync(path.join(resultsDir, "async-paused.json"), JSON.stringify({
 					id: "async-paused",
@@ -946,7 +977,7 @@ describe("result watcher", () => {
 			fs.writeFileSync(resultPath, JSON.stringify({ id: "async-race", sessionId: "parent", cwd: "/repo", success: true, summary: "done", intercomTarget: "parent" }), "utf-8");
 			const state = createState();
 			state.currentSessionId = "parent";
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			const originalError = console.error;
 			console.error = () => {};
 			try {
@@ -982,7 +1013,7 @@ describe("result watcher", () => {
 			};
 			const state = createState();
 			state.currentSessionId = "session-1";
-			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			const originalError = console.error;
 			const logged: unknown[][] = [];
 			console.error = (...args: unknown[]) => {

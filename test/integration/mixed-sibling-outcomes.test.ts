@@ -65,7 +65,7 @@ describe("mixed sibling host outcomes", { timeout: 90_000 }, () => {
 							discoverAgents: () => ({ agents: [makeAgent("worker", { completionGuard: false })] }),
 						});
 						const invoke = (params, onUpdate?) => executor.execute(randomUUID(), params, new AbortController().signal, onUpdate, ctx);
-						const watcher = createResultWatcher(pi, state, RESULTS_DIR, 60_000);
+						const watcher = createResultWatcher(pi, state, RESULTS_DIR);
 						// One active child makes completion order deterministic; failures cannot stop the wait child.
 						const tokens = ["MIXED_OK", ...(failed ? ["MIXED_BAD"] : []), "MIXED_WAIT", ...(stop === "detach" ? [] : ["MIXED_QUEUED"])];
 						const prefixCount = shape === "parallel" ? 0 : 1;

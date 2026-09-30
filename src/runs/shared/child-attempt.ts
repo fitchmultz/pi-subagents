@@ -508,7 +508,7 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 		});
 		const finish = (code: number | null, signal?: NodeJS.Signals | null, spawnError?: Error) => {
 			if (settled) return;
-			// A final non-newline JSON record has the same authority as a complete line.
+			// Sealed stdout may retain an EOF observation; native publication is verified separately.
 			try { if (!receiverFailed) stdout.finish(); } catch (error) { receiverFailed = true; result.error ??= String(error); result.terminalFailure = true; }
 			try { syncFinalization(); } catch (error) { result.error ??= `Cannot read finalization boundary: ${String(error)}`; result.terminalFailure = true; }
 			settled = true;
@@ -580,7 +580,7 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 			result.accounting ??= { state: "complete" };
 			const file = nativeSessionFile();
 			if (!result.effectiveConfiguration && file) try {
-				const journal = new NativeJournal(file);
+				const journal = new NativeJournal(file, "inspect", true);
 				const terminal = journal.records.findLast((record) => record.value.type !== "session");
 				result.terminalEntryId ??= terminal?.value.id;
 				result.terminalLeafId ??= result.terminalEntryId;

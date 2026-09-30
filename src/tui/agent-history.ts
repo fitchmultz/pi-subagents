@@ -153,6 +153,7 @@ export function withFinalResult(history: AgentHistory, output: string, runId: st
 
 interface NativeSnapshot {
 	stamp: string;
+	live: boolean;
 	journal: NativeJournal;
 	history?: AgentHistory;
 	configurations: Map<string, NonNullable<AgentHistory["configuration"]>>;
@@ -162,23 +163,23 @@ export class NativeAgentHistory {
 	private cache = new Map<string, NativeSnapshot>();
 	private seen = new Set<string>();
 
-	private snapshot(sessionFile: string): NativeSnapshot {
+	private snapshot(sessionFile: string, live = false): NativeSnapshot {
 		const stat = fs.statSync(sessionFile, { bigint: true });
 		const stamp = journalStamp(stat);
 		const cached = this.cache.get(sessionFile);
-		if (cached?.stamp === stamp) return cached;
+		if (cached?.stamp === stamp && cached.live === live) return cached;
 		this.cache.delete(sessionFile);
-		const journal = new NativeJournal(sessionFile);
-		const snapshot = { stamp, journal, configurations: new Map<string, NonNullable<AgentHistory["configuration"]>>() };
+		const journal = new NativeJournal(sessionFile, "inspect", live);
+		const snapshot = { stamp, live, journal, configurations: new Map<string, NonNullable<AgentHistory["configuration"]>>() };
 		this.cache.set(sessionFile, snapshot);
 		this.seen.add(sessionFile);
 		return snapshot;
 	}
 
-	configuration(sessionFile: string | undefined, endedAt?: number, leaf?: string | null): NonNullable<AgentHistory["configuration"]> {
+	configuration(sessionFile: string | undefined, endedAt?: number, leaf?: string | null, live = false): NonNullable<AgentHistory["configuration"]> {
 		if (!sessionFile) return {};
 		try {
-			const snapshot = this.snapshot(sessionFile);
+			const snapshot = this.snapshot(sessionFile, live);
 			const key = `${endedAt ?? "all"}:${leaf === undefined ? "latest" : leaf ?? "empty"}`;
 			let configuration = snapshot.configurations.get(key);
 			if (!configuration) {
@@ -195,7 +196,7 @@ export class NativeAgentHistory {
 	read(sessionFile: string | undefined, live = false, boundary: { leaf?: string | null; terminalEntryId?: string; endedAt?: number } = {}): AgentHistory {
 		if (!sessionFile) return { items: [], entryIds: [], ...(!live ? { unavailable: "The child has not saved a conversation yet. Its assignment and live status remain available." } : {}) };
 		try {
-			const snapshot = this.snapshot(sessionFile);
+			const snapshot = this.snapshot(sessionFile, live);
 			const build = () => {
 				let records = snapshot.journal.records.filter((record) => record.value.type !== "session");
 				if (boundary.terminalEntryId) {
@@ -206,10 +207,19 @@ export class NativeAgentHistory {
 				const history = historyItems(records.map((record) => record.value as SessionEntry));
 				for (const item of history.items) item.load = () => {
 					const ids = new Set((item.entryIds ?? [item.id]).map((id) => id.split(":")[0]));
-					const entries = records.filter((record) => ids.has(record.value.id)).map((record) => snapshot.journal.body(record) as SessionEntry);
-					return historyItems(entries).items.find((full) => full.id === item.id) ?? item;
+					const journal = this.snapshot(sessionFile, live).journal;
+					if (journal.identity !== snapshot.journal.identity || journal.records[0]?.value.id !== snapshot.journal.records[0]?.value.id
+						|| journal.stamp !== snapshot.journal.stamp && journal.end <= snapshot.journal.end) throw new Error("Saved conversation was replaced or truncated; refresh history before reading details.");
+					const entries = records.filter((record) => ids.has(record.value.id)).map((original) => {
+						const record = journal.byId.get(original.value.id);
+						if (!record || record.start !== original.start) throw new Error("Selected native entry changed or is unavailable; refresh history.");
+						return journal.body(record) as SessionEntry;
+					});
+					const full = historyItems(entries).items.find((full) => full.id === item.id);
+					if (!full) throw new Error("Selected native entry is unavailable; refresh history.");
+					return full;
 				};
-				return { ...history, configuration: this.configuration(sessionFile, boundary.endedAt, boundary.leaf) };
+				return { ...history, configuration: this.configuration(sessionFile, boundary.endedAt, boundary.leaf, live) };
 			};
 			return !Object.keys(boundary).length ? snapshot.history ??= build() : build();
 		} catch (error) {
@@ -218,17 +228,6 @@ export class NativeAgentHistory {
 			if (live && !this.seen.has(sessionFile) && (error as NodeJS.ErrnoException).code === "ENOENT") return { items: [], entryIds: [] };
 			return { items: [], entryIds: [], unavailable: `Saved conversation unavailable: ${sessionFile}\n${error instanceof Error ? error.message : String(error)}` };
 		}
-	}
-
-	/** Exact native entry lookup and bounded pages retain access to all historical bodies. */
-	entry(sessionFile: string, id: string): SessionEntry | undefined {
-		const journal = this.snapshot(sessionFile).journal, record = journal.byId.get(id);
-		return record ? journal.body(record) : undefined;
-	}
-	page(sessionFile: string, offset: number, limit = 100): AgentHistory {
-		if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid history page");
-		const history = this.read(sessionFile);
-		return { ...history, items: history.items.slice(offset, offset + limit) };
 	}
 
 	clear(): void { this.cache.clear(); this.seen.clear(); }

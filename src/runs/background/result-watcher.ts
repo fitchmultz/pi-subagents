@@ -74,7 +74,6 @@ export function createResultWatcher(
 	pi: { events: IntercomEventBus },
 	state: SubagentState,
 	resultsDir: string,
-	_completionTtlMs: number,
 	deps: ResultWatcherDeps = {},
 ): {
 	startResultWatcher: () => void;
@@ -92,8 +91,10 @@ export function createResultWatcher(
 	const readResult = (file: string) => fsApi === fs ? readAsyncResultFile(file) : parseAsyncResultFileContent(fsApi.readFileSync(file, "utf-8"), file);
 	const pendingResultFiles = () => [
 		...(fsApi.existsSync(resultsDir) ? fsApi.readdirSync(resultsDir).filter((name) => name.endsWith(".json")) : []),
-		...[...(state.ownedRuns?.values() ?? [])].filter((run) => run.source === "async" && (run.accounting?.state === "incomplete" || !run.delivery?.entryId && !state.isRunResultConsumed?.(run.runId)))
-			.map((run) => path.join(getRunMetadataDir(run.runId), "result.json")).filter((file) => fsApi.existsSync(file)),
+		...[...(state.ownedRuns?.values() ?? [])].filter((run) => run.source === "async"
+			&& fsApi.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))
+			&& (run.accounting?.state === "incomplete" || !run.delivery?.entryId && !state.isRunResultConsumed?.(run.runId)))
+			.map((run) => path.join(getRunMetadataDir(run.runId), "result.json")),
 	];
 
 	const handleResult = async (file: string) => {

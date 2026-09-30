@@ -86,14 +86,15 @@ test("compact owner controls skip a 100 MiB discarded nested message under a 32 
 	t.diagnostic(child.stdout.trim());
 });
 
-test("cold checkpoint reconciliation recognizes a legacy owned result's actual parent receipt before the watcher runs", async (t) => {
+for (const receiptOwner of [undefined, "current", "foreign"]) test(`cold checkpoint reconciliation recognizes actual legacy receipts and refuses foreign owners (${receiptOwner ?? "absent"})`, async (t) => {
 	const { root } = fixture(t, ""), runId = randomUUID(), manager = SessionManager.create(root, path.join(root, "parent"));
 	manager.appendMessage(message);
 	const ownerSessionId = manager.getSessionId();
-	const run = { runId, rootRunId: runId, ownerSessionId, source: "async", mode: "single", cwd: root, task: "Legacy work", startedAt: 1, children: [] };
+	const run = { runId, rootRunId: runId, ownerSessionId, source: "async", mode: "single", cwd: root, task: "Legacy work", startedAt: 1, children: [],
+		delivery: { notifiedAt: 2, intercomDelivered: false } };
 	manager.appendCustomEntry("subagent-run", run);
 	const receiptId = manager.appendCustomMessageEntry("subagent-notify", "Legacy work completed", false,
-		{ completion: { runId, key: "historical-payload-key", ownerSessionId } });
+		{ completion: { runId, key: `id:${runId}:historical-digest`, ...(receiptOwner ? { ownerSessionId: receiptOwner === "current" ? ownerSessionId : "another-parent" } : {}) } });
 	const reopened = SessionManager.open(manager.getSessionFile()!);
 	const resultFile = path.join(getRunMetadataDir(runId), "result.json");
 	fs.mkdirSync(getRunMetadataDir(runId), { recursive: true });
@@ -102,17 +103,29 @@ test("cold checkpoint reconciliation recognizes a legacy owned result's actual p
 	t.after(() => fs.rmSync(getRunMetadataDir(runId), { recursive: true, force: true }));
 	const state = { currentSessionId: ownerSessionId, ownedRuns: new Map([[runId, run]]), completionSeen: new Map(),
 		lastUiContext: { sessionManager: reopened, isIdle: () => true, hasPendingMessages: () => false } } as Parameters<typeof createCompletionDelivery>[1];
-	const pi = { events: createEventBus(), on: () => {} } as Parameters<typeof createCompletionDelivery>[0];
+	const sent: unknown[] = [], completed: unknown[] = [];
+	const pi = { events: createEventBus(), on: () => {}, sendMessage: (message: unknown) => sent.push(message) } as unknown as Parameters<typeof createCompletionDelivery>[0];
+	pi.events.on("subagent:async-complete", (event) => completed.push(event));
 	const completion = createCompletionDelivery(pi, state, registerParentUsage(pi));
 	const controller = new AbortController();
 	try {
 		await completion.holdCheckpoint({ type: "session_checkpoint", boundary: "settled", signal: controller.signal, invalidate: () => controller.abort() });
+		if (receiptOwner === "foreign") {
+			assert.equal(controller.signal.aborted, true, "a different parent's legacy receipt cannot qualify this checkpoint");
+			assert.equal(state.ownedRuns!.get(runId)!.delivery?.entryId, undefined);
+			return;
+		}
 		assert.equal(controller.signal.aborted, false, "a published matching receipt is complete even before normal watcher processing");
 		assert.equal(state.ownedRuns!.get(runId)!.delivery?.entryId, receiptId);
 		assert.equal(state.ownedRuns!.get(runId)!.completion?.state, "journaled");
 		assert.equal(state.ownedRuns!.get(runId)!.completion?.id, `completion:legacy:${runId}:1`);
 		assert.equal(state.ownedRuns!.get(runId)!.accounting, undefined, "billing is independent of checkpoint delivery reconciliation");
 		assert.equal(fs.readFileSync(resultFile, "utf8"), legacy, "checkpoint reconciliation does not rewrite legacy accounting evidence");
+		controller.abort();
+		completion.start();
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.deepEqual(completed, [], "an already journaled legacy completion never emits another completion");
+		assert.deepEqual(sent, [], "the actual old receipt prevents another parent notification turn");
 	} finally { completion.stop(); controller.abort(); }
 });
 
@@ -243,5 +256,39 @@ test("missing stream usage or an unverified native-reference claim preserves exe
 		assert.equal(result.nativeReferences, undefined, "a child claim or file locator is not a native commit receipt");
 		assert.equal(JSON.parse(fs.readFileSync(result.auditPath!, "utf8")).type, "message_end");
 		if (claimed) assert.equal(result.usage.input, 3, "reported usage is not replaced with a fabricated native zero");
+	}
+});
+
+for (const claimed of [false, true]) test(`native LF publication owns final accounting and audit release (${claimed ? "claimed persisted" : "journal fallback"})`, async (t) => {
+	for (const published of [false, true]) {
+		const { root, env } = fixture(t, `import fs from 'node:fs';
+			const message=${JSON.stringify(message)};
+			fs.appendFileSync(process.env.JOURNAL,JSON.stringify({type:'message',id:'terminal',parentId:null,message})+${JSON.stringify(published ? "\n" : "")});
+			process.stdout.write(JSON.stringify({type:'message_end',message})+'\\n');
+			${claimed ? `process.stdout.write(JSON.stringify({type:'subagent.native',sessionId:'child',leafId:'terminal',persisted:true,configuration:{model:'fixture/faux'},entries:[{type:'message',id:'terminal',message:{role:'assistant',timestamp:7}}]})+'\\n');` : ""}`);
+		const file = path.join(root, "native.jsonl"), audit = path.join(root, "audit");
+		fs.writeFileSync(file, '{"type":"session","id":"child","version":3}\n');
+		const result = await runChildAttempt({ args: [], cwd: root, env: { ...env, JOURNAL: file }, agent: "fixture", sessionFile: file, auditPath: audit });
+		assert.equal(result.agentProcessExit?.code, 0);
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.error, undefined);
+		assert.equal(result.terminalFailure, undefined);
+		assert.equal(result.finalOutput, "Completed work 🦄");
+		assert.deepEqual([result.usage.input, result.usage.output, result.usage.cost, result.usage.turns], [3, 5, 13, 1]);
+		assert.equal(result.accounting?.state, published ? "complete" : "incomplete", "syntax completion and the persisted flag cannot publish a native entry");
+		assert.deepEqual(result.nativeReferences, published ? [{ messageNumber: 1, entryId: "terminal" }] : undefined);
+		if (published) {
+			assert.equal(result.auditPath, undefined);
+			assert.equal(fs.existsSync(audit), false);
+			assert.deepEqual(result.usage.contributions?.map((value) => value.id), ["child:terminal"]);
+		} else {
+			assert.equal(result.auditPath, audit);
+			assert.deepEqual(JSON.parse(fs.readFileSync(audit, "utf8")), { type: "message_end", message });
+			assert.deepEqual(result.auditRecords?.map(({ kind, messageNumber }) => ({ kind, messageNumber })), [{ kind: "message_end", messageNumber: 1 }]);
+			if (!claimed) {
+				assert.equal(result.terminalEntryId, undefined, "configuration fallback cannot promote a sealed EOF observation to a terminal reference");
+				assert.equal(result.effectiveConfiguration?.model, undefined);
+			}
+		}
 	}
 });

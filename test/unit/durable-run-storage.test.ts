@@ -152,7 +152,7 @@ it("the watcher consumes only notifications and reconnects to an undelivered dur
 	const events = createEventBus();
 	const delivered: unknown[] = [];
 	events.on("subagent:async-complete", (data) => { delivered.push(data); });
-	let watcher = createResultWatcher({ events }, local, RESULTS_DIR, 60_000);
+	let watcher = createResultWatcher({ events }, local, RESULTS_DIR);
 	try {
 		watcher.primeExistingResults();
 		await new Promise((resolve) => setTimeout(resolve, 100));
@@ -162,7 +162,7 @@ it("the watcher consumes only notifications and reconnects to an undelivered dur
 		assert.equal(fs.readFileSync(file, "utf8"), before);
 		watcher.stopResultWatcher();
 		local.completionSeen.clear();
-		watcher = createResultWatcher({ events }, local, RESULTS_DIR, 60_000);
+		watcher = createResultWatcher({ events }, local, RESULTS_DIR);
 		watcher.primeExistingResults();
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		assert.equal(delivered.length, 2, "a watcher restart can rediscover an undelivered canonical result; event emission itself is no parent receipt");
@@ -181,7 +181,7 @@ it("waiting tools retain delivery ownership until they settle or detach", async 
 	const events = createEventBus();
 	const delivered: Array<{ suppressNotification?: boolean }> = [];
 	events.on("subagent:async-complete", (data) => delivered.push(data as { suppressNotification?: boolean }));
-	const watcher = createResultWatcher({ events }, local, RESULTS_DIR, 60_000);
+	const watcher = createResultWatcher({ events }, local, RESULTS_DIR);
 	try {
 		watcher.primeExistingResults();
 		await new Promise((resolve) => setTimeout(resolve, 100));
