@@ -138,7 +138,7 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, ex
 	};
 }
 
-for (const count of [20, 227]) test(`Agents startup shares ${count} transcript parses and formats only the selected conversation beside 8000 unrelated runs`, async (t) => {
+for (const count of [20, 227]) test(`Agents startup shares ${count} transcript indexes and hydrates only requested details beside 8000 unrelated runs`, async (t) => {
 	const f = fixture(t, "regular", count);
 	f.controller.dispose();
 	f.state.ownedRuns.clear();
@@ -157,14 +157,14 @@ for (const count of [20, 227]) test(`Agents startup shares ${count} transcript p
 	for (let index = 0; index < 8000; index++) fs.mkdirSync(path.join(metadataRoot, `foreign-${index}`), { recursive: true });
 	const files = new Set(f.childSessions.map((manager) => manager.getSessionFile()));
 	const reads: string[] = [], formatted: number[] = [], rootListings: string[] = [];
-	const readFile = fs.readFileSync, readdir = fs.readdirSync, stringify = JSON.stringify;
-	t.mock.method(fs, "readFileSync", function(file, ...args) { if (files.has(String(file))) reads.push(String(file)); return readFile.call(this, file, ...args); });
+	const open = fs.openSync, readdir = fs.readdirSync, stringify = JSON.stringify;
+	t.mock.method(fs, "openSync", function(file, flags, ...args) { if (flags === "r" && files.has(String(file))) reads.push(String(file)); return open.call(this, file, flags, ...args); });
 	t.mock.method(fs, "readdirSync", function(file, ...args) { if (String(file) === metadataRoot || String(file).endsWith("/supervisor-questions")) rootListings.push(String(file)); return readdir.call(this, file, ...args); });
 	t.mock.method(JSON, "stringify", function(value, ...args) { if (value?.result?.details?.historyProbe !== undefined) formatted.push(value.result.details.historyProbe); return stringify.call(this, value, ...args); });
 	syncBuiltinESMExports();
 	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 	f.controller.start(f.ctx);
-	assert.equal(reads.length, count, "configuration and history must share one read/parse per file");
+	assert.equal(reads.length, count, "configuration and history share one captured-descriptor index per file");
 	assert.equal(new Set(reads).size, count);
 	assert.deepEqual(rootListings, [], "known run questions never enumerate global roots");
 	assert.deepEqual(formatted, [], "closed-panel startup does not format raw tool details");
@@ -174,7 +174,10 @@ for (const count of [20, 227]) test(`Agents startup shares ${count} transcript p
 	const opening = f.controller.open(f.controller.tasks[0].key);
 	plain(f.overlay);
 	assert.equal(reads.length, count, "opening one conversation does not reread all child bodies");
-	assert.equal(formatted.length, 1, "only the selected conversation materializes full tool details");
+	assert.equal(formatted.length, 0, "ordinary pages do not materialize raw tool details");
+	const tool = f.controller.tasks[0].history.find((item) => item.kind === "tool")!;
+	assert.match(tool.load!().details!, /historyProbe/);
+	assert.equal(formatted.length, 1, "explicitly selected details hydrate only their native records");
 	assert.equal(f.controller.tasks.every((task) => task.child.task?.startsWith("Full assignment")), true);
 	f.overlay.handleInput("\x1b"); await opening;
 	assert.equal(f.calls.length, 0);
@@ -183,9 +186,9 @@ for (const count of [20, 227]) test(`Agents startup shares ${count} transcript p
 
 test("native snapshots invalidate append, same-size rewrite/replacement, truncation and disappearance while keeping terminal cutoffs distinct", (t) => {
 	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
-	const reader = new NativeAgentHistory(), readFile = fs.readFileSync;
+	const reader = new NativeAgentHistory(), open = fs.openSync;
 	let reads = 0;
-	t.mock.method(fs, "readFileSync", function(target, ...args) { if (String(target) === file) reads++; return readFile.call(this, target, ...args); });
+	t.mock.method(fs, "openSync", function(target, flags, ...args) { if (flags === "r" && String(target) === file) reads++; return open.call(this, target, flags, ...args); });
 	syncBuiltinESMExports();
 	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 	const initial = reader.read(file);
@@ -1089,6 +1092,36 @@ test("full native history, tool details and contextual reply survive streaming a
 	assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
 	assert.ok(narrow.length <= 18, `view must fit the native overlay: ${narrow.length}`);
 	view.handleInput("\x1b"); await opening;
+});
+
+test("native Agents earlier/later pages and Latest retain access to exact selected full bodies", async (t) => {
+	const f = fixture(t), manager = f.childSessions[0];
+	const full = `History card 97\n${"full-detail ".repeat(600)}PAGE-97-FULL-END`;
+	for (let index = 0; index < 250; index++) assistant(manager, index === 97 ? full : `History card ${index}`);
+	f.controller.refresh(true);
+	const opening = f.controller.open(f.key); f.tui.start(); f.tui.renderNow();
+	const page = async (label: string) => {
+		f.overlay.handleInput("\x1bOQ");
+		f.overlay.handleInput("\x1b[A"); if (label === "Earlier history") f.overlay.handleInput("\x1b[A");
+		assert.ok(plain(f.overlay).includes(`→ ${label}`));
+		f.overlay.handleInput("\r");
+		f.tui.renderNow();
+	};
+	await page("Earlier history");
+	assert.match(plain(f.overlay), /History card 149/);
+	await page("Earlier history");
+	assert.match(f.overlay.scroll.render(88).map(stripTerminalSequences).join("\n"), /History card 97/);
+	f.terminal.input("\t"); f.tui.renderNow();
+	f.terminal.input("\r"); f.tui.renderNow();
+	assert.match(readDetails(f.overlay), /PAGE-97-FULL-END/);
+	f.terminal.input("\x1b"); f.tui.renderNow();
+	await page("Later history");
+	assert.match(plain(f.overlay), /History card 197/);
+	f.terminal.input("\x1bl"); f.tui.renderNow();
+	assert.match(plain(f.overlay), /History card 249/, "Latest returns to the current final page, not merely its old page's last row");
+	assert.doesNotMatch(plain(f.overlay), /History card 197/);
+	f.terminal.input("\x1b"); await opening;
+	assert.equal(f.calls.length, 0);
 });
 
 for (const nativeAnswer of [false, true]) test(`completed structured-output history opens at the readable report without duplicates (native answer: ${nativeAnswer})`, async (t) => {

@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { listSupervisorQuestions } from "./supervisor-questions.ts";
+import { entryMetadata } from "../../shared/journal-reader.ts";
 
 /** Optional public fork ABI; official Pi retains ordinary receipts and abort-aware waits. */
 export type AsyncContext = ExtensionContext & {
@@ -28,7 +29,8 @@ export function isNativeAsyncCall(ctx: ExtensionContext, toolCallId: string): bo
 
 export function nativeInvocations(ctx: ExtensionContext): NativeInvocation[] {
 	const calls = new Map<string, NativeInvocation>();
-	for (const entry of ctx.sessionManager.getEntries()) {
+	for (const metadata of entryMetadata(ctx.sessionManager)) {
+		const entry = metadata.type === "custom" && metadata.customType === INVOCATION_ENTRY ? ctx.sessionManager.getEntry?.(metadata.id) ?? metadata : metadata;
 		if (entry.type !== "custom" || entry.customType !== INVOCATION_ENTRY) continue;
 		const call = entry.data as NativeInvocation | undefined;
 		if (call?.ownerSessionId === ctx.sessionManager.getSessionId() && typeof call.toolCallId === "string" && typeof call.runId === "string") calls.set(call.toolCallId, call);

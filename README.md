@@ -37,6 +37,16 @@ Supported platforms: **macOS and Linux**. Termux on Android is unverified; Windo
 
 Pi core packages and TypeBox remain optional wildcard peers. Detached runners resolve TypeBox from the same Pi installation as the session APIs, so runtime-only installs need no private TypeBox copy. Development dependencies are pinned to the coherent official Pi 0.99.1 cohort for typechecking and package checks.
 
+### Saved conversations and run records
+
+Native Pi journals retain the complete conversation. Detached run records keep compact launch, execution, acceptance, accounting and delivery facts; ordinary controls do not load child transcripts. Read-only recovery validates journals in bounded chunks and projects only selected metadata. The Agents view shows history in 100-card pages; F2 Actions opens earlier/later pages or the full selected record. Large output previews link to the separate full output.
+
+Child lifecycle aggregates are not copied into the owner event feed. Committed native message IDs reference their journal; uncommitted messages, session-disabled output, Claude Code results and diagnostics remain in a once-stored audit with byte-range receipts. Accounting failures preserve the completed execution and acceptance outcome. Repair reconciles saved billing evidence without launching another child or repeating tools or checks. Claude Code's reported totals remain available, with accounting explicitly incomplete when the adapter lacks native per-category counters or costs.
+
+A completion is delivered only when its identity appears in a persisted parent message or completed wait receipt. Queued, journaled and dropped states remain separate across reload/restart. Hosts without an individual pending-queue boundary retain ambiguous work as pending rather than send another copy.
+
+Official Pi 0.99.1 remains supported. Its own startup still eagerly loads native journals; extension installation alone does not remove that host limitation. Optional public metadata APIs on the maintained fork avoid that native loading. An explicitly requested full individual message, structured report or tool argument still needs to fit its consumer's memory.
+
 ## Local validation
 
 `npm run check:compat` uses the selected host installed in this checkout, never a hidden Pi from PATH. It checks host SDK/manifest-bin identity, typechecks, builds, and qualifies both compiled entries with a private Intercom broker through the native SDK and bundled RPC CLI. Official hosts exercise same/different-cwd resume, acceptance, structured output, native result routing/ownership and tool activation. No provider credentials or inference services are used.

@@ -224,7 +224,7 @@ test("a delayed watch event for a consumed notification does not invalidate a la
     state.ownedRuns!.get("before")!.delivery = { notifiedAt: Date.now(), intercomDelivered: false };
     completed++;
   });
-  const publish = (summary: string) => writeFileSync(path.join(dir, "before.json"), JSON.stringify({ id: "before", sessionId: "deletion-owner", summary, success: true, nestedChildren: [] }));
+  const publish = (id: string) => writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ id, sessionId: "deletion-owner", summary: id, success: true, nestedChildren: [] }));
   watcher.startResultWatcher();
   try {
     publish("before"); await waitFor(() => completed === 1 && deleted.length > 0, "ordinary delivery and delayed deletion event");

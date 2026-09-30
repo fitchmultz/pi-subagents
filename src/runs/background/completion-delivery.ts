@@ -1,101 +1,132 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { RESULTS_DIR, SLASH_RESULT_TYPE, SUBAGENT_ASYNC_COMPLETE_EVENT, type AsyncResultFile, type Details, type SubagentState } from "../../shared/types.ts";
-import type { SlashMessageDetails } from "../../slash/slash-live-state.ts";
+import { RESULTS_DIR, SUBAGENT_ASYNC_COMPLETE_EVENT, type AsyncResultFile, type SubagentState } from "../../shared/types.ts";
+import { entryMetadata, journalStamp, scanJournal } from "../../shared/journal-reader.ts";
 import { nativeInvocationTarget, nativeInvocations } from "../shared/native-async.ts";
 import { finalizedChildUsage, type registerParentUsage } from "../shared/parent-usage.ts";
-import { ownedRunView, rememberOwnedRun } from "../shared/run-records.ts";
-import { getRunMetadataDir, saveAsyncRunResult } from "../shared/supervisor-questions.ts";
-import registerSubagentNotify, { type SubagentNotifyDetails } from "./notify.ts";
+import { ownedRunView, rememberOwnedRun, repairOwnedRunAccounting } from "../shared/run-records.ts";
+import registerSubagentNotify from "./notify.ts";
 import { createResultWatcher } from "./result-watcher.ts";
 
-/** The same saved-parent delivery contract applies to root and child-safe callers. */
+/** Completion authority is the published parent receipt, never queue/send acceptance. */
 export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState, parentUsage: ReturnType<typeof registerParentUsage>) {
-	// Host queues can survive extension reload, but not process restart. Values track the one idle retry.
-	const store = globalThis as Record<string, unknown>;
-	const queueKey = "__pi_subagents_queued_notifications__";
-	const queued = store[queueKey] instanceof Map ? store[queueKey] as Map<string, boolean> : new Map<string, boolean>();
+	const store = globalThis as Record<string, unknown>, queueKey = "__pi_subagents_queued_notifications__";
+	const queued = store[queueKey] instanceof Set ? store[queueKey] as Set<string> : new Set<string>();
 	store[queueKey] = queued;
-	state.isRunResultConsumed = (runId) => {
-		const run = state.ownedRuns?.get(runId);
-		return state.lastUiContext?.sessionManager.getEntries().some((entry) => {
-			const details = entry.type === "message" && entry.message.role === "toolResult"
-				? entry.message.details as Details | undefined
-				: entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE
-					? (entry.details as SlashMessageDetails | undefined)?.result?.details : undefined;
-			return details?.wait?.runId === runId && details.wait.status === "completed"
-				&& (details.wait.index === undefined || (run?.mode === "single" && details.wait.index === 0));
-		}) ?? false;
+	let cache: { file: string; stamp: string; receipts: Array<Record<string, any>> } | undefined;
+	const receipts = () => {
+		const file = state.lastUiContext?.sessionManager.getSessionFile();
+		if (!file || !fs.existsSync(file)) return [];
+		const stamp = journalStamp(fs.statSync(file, { bigint: true }));
+		if (cache?.file === file && cache.stamp === stamp) return cache.receipts;
+		const records: Array<Record<string, any>> = [];
+		scanJournal(file, (path) => {
+			if (!path.length || ["type", "id", "timestamp", "customType"].includes(String(path[0]))) return 4096;
+			if (path[0] === "details") return path.length === 1 || ["completion", "subagentCompletion", "result"].includes(String(path[1])) && (path[1] !== "result" || path.length <= 3 || path[3] === "wait") ? 4096 : false;
+			if (path[0] === "message") return path.length === 1 || ["role", "toolName"].includes(String(path[1])) || path[1] === "details" && (path.length === 2 || path[2] === "wait") ? 4096 : false;
+			return false;
+		}, ({ value }) => {
+			if (value.type === "custom_message" || value.type === "message" && value.message?.role === "toolResult") records.push(value);
+		}, { policy: "live" });
+		cache = { file, stamp, receipts: records };
+		return records;
 	};
+	const consumed = (entry: Record<string, any>, runId: string) => {
+		const wait = entry.type === "message" ? entry.message?.details?.wait : entry.details?.result?.details?.wait;
+		const run = state.ownedRuns?.get(runId);
+		return wait?.runId === runId && wait.status === "completed" && (wait.index === undefined || run?.mode === "single" && wait.index === 0);
+	};
+	state.isRunResultConsumed = (runId) => receipts().some((entry) => consumed(entry, runId));
 	state.hasNativeResultOwner = (runId) => {
 		const ctx = state.lastUiContext;
 		if (!ctx) return false;
-		const completedCalls = new Set(ctx.sessionManager.getEntries().flatMap((entry) =>
-			entry.type === "message" && entry.message.role === "toolResult" ? [entry.message.toolCallId] : []));
+		const completedCalls = new Set([...entryMetadata(ctx.sessionManager)].flatMap((entry) => entry.type === "message" && entry.message.role === "toolResult" ? [entry.message.toolCallId] : []));
 		return nativeInvocations(ctx).some((call) => {
 			const target = nativeInvocationTarget(ctx, call);
-			return !completedCalls.has(call.toolCallId) && target?.runId === runId
-				&& (target.index === undefined || (state.ownedRuns?.get(runId)?.mode === "single" && target.index === 0));
+			return !completedCalls.has(call.toolCallId) && target?.runId === runId && (target.index === undefined || state.ownedRuns?.get(runId)?.mode === "single" && target.index === 0);
 		});
 	};
-	const reconcileDelivery = (runId: string, completionKey: string): boolean => {
-		const ctx = state.lastUiContext;
+	const matches = (entry: Record<string, any>, runId: string, key: string) => {
+		if (consumed(entry, runId)) return true;
+		if (entry.type !== "custom_message") return false;
+		const completion = entry.details?.completion ?? entry.details?.subagentCompletion;
+		return completion?.runId === runId && (completion.key === key || completion.completionId && `completion:${completion.completionId}` === key
+			|| key.startsWith("completion:legacy:") && !completion.completionId && completion.ownerSessionId === state.currentSessionId);
+	};
+	const recordAccounting = (runId: string) => {
+		const run = state.ownedRuns?.get(runId), ctx = state.lastUiContext;
+		if (!run || !ctx) return;
+		try {
+			repairOwnedRunAccounting(run);
+			const children = ownedRunView(run, state, { readConfiguration: false }).children;
+			const incomplete = children.find((child) => child.result?.accounting?.state === "incomplete");
+			const accounting = incomplete ? { state: "incomplete" as const, error: incomplete.result?.accounting?.error }
+				: { state: parentUsage.record(finalizedChildUsage(children), ctx) ? "complete" as const : "pending" as const };
+			rememberOwnedRun(state, { ...state.ownedRuns!.get(runId)!, accounting });
+		} catch (error) {
+			try { rememberOwnedRun(state, { ...state.ownedRuns!.get(runId)!, accounting: { state: "incomplete", error: String(error) } }); }
+			catch (saveError) { console.error(`Could not save accounting projection for ${runId}:`, saveError); }
+			console.error(`Subagent ${runId} accounting remains incomplete:`, error);
+		}
+	};
+	const reconcileDelivery = (runId: string, key: string, accounting = true): boolean => {
 		const run = state.ownedRuns?.get(runId);
-		if (!ctx || !run) return false;
-		const receipt = ctx.sessionManager.getEntries().find((entry) => {
-			if (entry.type !== "custom_message" || entry.customType !== "subagent-notify") return false;
-			const completion = (entry.details as SubagentNotifyDetails | undefined)?.completion;
-			return completion?.runId === runId && completion.key === completionKey;
-		});
-		if (!receipt) return false;
-		queued.delete(completionKey);
-		// The notification entry is the authority, including after a crash before accounting.
-		parentUsage.record(finalizedChildUsage(ownedRunView(run, state).children), ctx);
-		rememberOwnedRun(state, { ...run, delivery: { notifiedAt: Date.parse(receipt.timestamp), intercomDelivered: false } });
-		return true;
+		if (!run) return false;
+		const receipt = receipts().find((entry) => matches(entry, runId, key));
+		if (receipt) {
+			queued.delete(key);
+			// Save delivery before optional accounting. Even a failed owner append cannot
+			// make this published identity eligible for another notification.
+			try { rememberOwnedRun(state, { ...run, completion: { id: key, state: "journaled", entryId: receipt.id },
+				delivery: { notifiedAt: Date.parse(receipt.timestamp), intercomDelivered: receipt.customType === "intercom_message", completionId: key, entryId: receipt.id } }); }
+			catch (error) { console.error(`Could not save delivery projection for ${runId}:`, error); }
+			if (accounting) recordAccounting(runId);
+			return true;
+		}
+		const ctx = state.lastUiContext;
+		if (!ctx) return true;
+		// An accepted but unflushed receipt or a native pending queue is ambiguous:
+		// keep pending rather than enqueueing a second copy. Official hosts expose
+		// queue occupancy, not individual queue contents.
+		if ([...entryMetadata(ctx.sessionManager)].some((entry) => {
+			if (!(entry.type === "custom_message" && ["subagent-notify", "intercom_message", "subagent-slash-result"].includes(entry.customType)
+				|| entry.type === "message" && entry.message.role === "toolResult" && ["subagent", "delegate", "agent_runs"].includes(entry.message.toolName))) return false;
+			return matches(ctx.sessionManager.getEntry(entry.id) ?? entry, runId, key);
+		})) return true;
+		if (queued.has(key) || run.completion?.id === key && run.completion.state === "queued") {
+			// The durable Intercom inbox owns its own queue/restart reconciliation.
+			// A remote acknowledgement exposes no parent commit/queue boundary.
+			if (run.completion?.channel === "intercom") return true;
+			if (!ctx.isIdle() || ctx.hasPendingMessages()) return true;
+			queued.delete(key); state.completionSeen.delete(key);
+			rememberOwnedRun(state, { ...run, completion: { id: key, state: "dropped" } });
+		}
+		return false;
 	};
-	const watcher = createResultWatcher(pi, state, RESULTS_DIR, 10 * 60 * 1000, {
-		reconcileDelivery: (runId, key) => {
-			if (reconcileDelivery(runId, key)) return true;
-			const retried = queued.get(key);
-			if (retried === undefined) return false;
-			if (retried || !state.lastUiContext?.isIdle()) return true;
-			// Idle without a journal entry means the host dropped the first queued message.
-			state.completionSeen.delete(key);
-			return false;
-		},
-	});
-	let unsubscribe: (() => void) | undefined;
-	let unsubscribeNotify: (() => void) | undefined;
+	const watcher = createResultWatcher(pi, state, RESULTS_DIR, 0, { reconcileDelivery });
+	let unsubscribe: (() => void) | undefined, unsubscribeNotify: (() => void) | undefined;
+	const markQueued = (runId: string, key: string, channel: "notification" | "intercom" = "notification") => {
+		queued.add(key);
+		const run = state.ownedRuns?.get(runId);
+		if (run) rememberOwnedRun(state, { ...run, completion: { id: key, state: "queued", channel, queuedAt: Date.now() } });
+	};
 	const start = () => {
 		if (!unsubscribe) {
-			unsubscribeNotify = registerSubagentNotify(pi, (key) => queued.set(key, queued.has(key)));
+			unsubscribeNotify = registerSubagentNotify(pi, (key, runId) => { if (runId) markQueued(runId, key); });
 			unsubscribe = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (data) => {
 				const result = data as AsyncResultFile & { completionKey?: string; intercomResultDelivered?: boolean; suppressNotification?: boolean };
 				const run = state.ownedRuns?.get(result.runId ?? result.id ?? "");
-				if (!run || result.sessionId !== state.currentSessionId) return;
-				if (state.lastUiContext) parentUsage.record(finalizedChildUsage(ownedRunView(run, state).children), state.lastUiContext);
-				if (result.suppressNotification === true) return;
-				if (result.runtimeVersion !== 2 && !fs.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))) saveAsyncRunResult(run.runId, result);
-				if (result.intercomResultDelivered === true) {
-					rememberOwnedRun(state, { ...run, delivery: { notifiedAt: Date.now(), intercomDelivered: true } });
-				} else if (result.completionKey) {
-					// sendMessage may only have queued work. Never persist delivery before its journal entry.
+				if (!run || result.sessionId !== state.currentSessionId && run.ownerSessionId !== state.currentSessionId) return;
+				if (result.completionKey) {
+					if (result.intercomResultDelivered) markQueued(run.runId, result.completionKey, "intercom");
 					reconcileDelivery(run.runId, result.completionKey);
 				}
+				if (result.suppressNotification) recordAccounting(run.runId);
 			});
 		}
 		fs.mkdirSync(RESULTS_DIR, { recursive: true });
-		watcher.startResultWatcher();
-		watcher.primeExistingResults();
+		watcher.startResultWatcher(); watcher.primeExistingResults();
 	};
-	const stop = () => {
-		watcher.stopResultWatcher();
-		unsubscribe?.();
-		unsubscribe = undefined;
-		unsubscribeNotify?.();
-		unsubscribeNotify = undefined;
-	};
+	const stop = () => { watcher.stopResultWatcher(); unsubscribe?.(); unsubscribe = undefined; unsubscribeNotify?.(); unsubscribeNotify = undefined; cache = undefined; };
 	return { start, stop, holdCheckpoint: watcher.holdCheckpoint };
 }

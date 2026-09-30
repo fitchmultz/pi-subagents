@@ -81,7 +81,7 @@ interface BuildPiArgsResult {
 }
 
 export function applyThinkingSuffix(model: string | undefined, thinking: string | undefined): string | undefined {
-	if (!model || !thinking || thinking === "off") return model;
+	if (!model || !thinking) return model;
 	if (splitKnownThinkingSuffix(model).thinkingSuffix) return model;
 	return `${model}:${thinking}`;
 }

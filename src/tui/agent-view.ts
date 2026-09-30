@@ -279,7 +279,7 @@ export class AgentViewController {
 		const predecessor = run.predecessorRunId && this.state.ownedRuns?.get(run.predecessorRunId);
 		if (!predecessor) return `${run.runId}:${child.workflowNodeId ?? (run.mode === "chain" && child.sessionFile && !child.identityUnavailable ? `session:${child.sessionFile}` : child.index)}`;
 		const index = run.predecessorIndex ?? 0;
-		const previous = (this.views.get(predecessor.runId)?.view ?? ownedRunView(predecessor, this.state, { pendingInput: false, includeContinuations: false, readConfiguration: (file, endedAt) => this.history.configuration(file, endedAt) })).children.find((candidate) => candidate.index === index);
+		const previous = (this.views.get(predecessor.runId)?.view ?? ownedRunView(predecessor, this.state, { pendingInput: false, includeContinuations: false, readConfiguration: (file, endedAt, leaf) => this.history.configuration(file, endedAt, leaf) })).children.find((candidate) => candidate.index === index);
 		return this.taskKey(predecessor, previous ?? { index });
 	}
 
@@ -295,7 +295,7 @@ export class AgentViewController {
 				questions = listOwnedRunQuestions(run.ownerSessionId, run.runId);
 				view = !force && cached?.run === run && !["live", "unknown"].includes(cached.view.state) ? cached.view : ownedRunView(run, this.state, {
 					pendingInput: questions.some((question) => question.state === "awaiting_input" || question.state === "answer_pending"),
-					includeContinuations: false, readConfiguration: (file, endedAt) => this.history.configuration(file, endedAt),
+					includeContinuations: false, readConfiguration: (file, endedAt, leaf) => this.history.configuration(file, endedAt, leaf),
 				});
 				this.views.set(run.runId, { run, view });
 			} catch (error) {
@@ -308,7 +308,7 @@ export class AgentViewController {
 				const prior = tasks.get(key);
 				if (prior && prior.run.startedAt > run.startedAt) continue;
 				const visit = this.visits.get(key);
-				const nativeHistory: AgentHistory = child.identityUnavailable ? { items: [], entryIds: [], unavailable: UNAVAILABLE_ASSIGNMENT } : this.history.read(child.sessionFile, child.state === "live");
+				const nativeHistory: AgentHistory = child.identityUnavailable ? { items: [], entryIds: [], unavailable: UNAVAILABLE_ASSIGNMENT } : this.history.read(child.sessionFile, child.state === "live", child.state === "live" ? {} : { leaf: child.result?.terminalLeafId, terminalEntryId: child.result?.terminalEntryId, endedAt: child.result?.terminalEntryId ? undefined : view.updatedAt });
 				const history = !child.identityUnavailable && child.state !== "live" && child.result
 					? withFinalResult(nativeHistory, getSingleResultOutput(child.result), run.runId, view.updatedAt) : nativeHistory;
 				const readIndex = visit?.readThrough ? history.entryIds.indexOf(visit.readThrough) : -1;
@@ -675,6 +675,7 @@ export class AgentConversation extends Container {
 	private pendingDetail = false;
 	private toolsExpanded = false;
 	private toolExpansion = new Map<string, boolean>();
+	private pageEnd?: number;
 	private toolDefinitions: Map<string, ConstructorParameters<typeof ToolExecutionComponent>[4]>;
 	private keys?: KeybindingsManager;
 
@@ -772,7 +773,8 @@ export class AgentConversation extends Container {
 		const task = this.task;
 		if (!task) return [{ id: "unavailable", kind: "notice", title: "Agent unavailable", text: "The owning session or run is no longer available.", timestamp: 0 }];
 		if (this.detail) return [this.detail];
-		const items = [this.assignment(), ...(!task.child.identityUnavailable && task.child.state !== "live" ? [{ id: "process-exit", kind: "notice" as const, title: `Agent: ${task.child.state}`, text: formatAgentProcessExit(task.child.result?.agentProcessExit), timestamp: task.run.updatedAt }] : []), ...task.history];
+		const end = Math.min(this.pageEnd ?? task.history.length, task.history.length), start = Math.max(0, end - 100);
+		const items = [this.assignment(), ...(task.history.length > 100 ? [{ id: "history-page", kind: "notice" as const, title: `History ${start + 1}–${end} of ${task.history.length}`, text: "F2 Actions → Earlier history / Later history. Open details for the full selected record.", timestamp: 0 }] : []), ...(!task.child.identityUnavailable && task.child.state !== "live" ? [{ id: "process-exit", kind: "notice" as const, title: `Agent: ${task.child.state}`, text: formatAgentProcessExit(task.child.result?.agentProcessExit), timestamp: task.run.updatedAt }] : []), ...task.history.slice(start, end)];
 		const humanAction = acceptanceHumanAction(task.child.result?.acceptance);
 		if (humanAction && !task.child.identityUnavailable) items.push({ id: "human-action", kind: "notice", title: "Needs your action — acceptance incomplete", text: humanAction, timestamp: task.run.updatedAt });
 		if (task.unavailable && !task.child.identityUnavailable) items.push({ id: "unavailable", kind: "notice", title: "Conversation unavailable", text: task.unavailable, timestamp: 0 });
@@ -925,7 +927,7 @@ export class AgentConversation extends Container {
 	private selected(): AgentHistoryItem | undefined { return this.detail ?? this.contentItems.find((item) => item.id === this.selectedId) ?? this.contentItems.findLast((item) => item.kind === "assistant"); }
 	private inspect(item: AgentHistoryItem): void {
 		this.conversationAnchor = this.scroll.isFollowingEnd ? undefined : this.anchor();
-		this.detail = item; this.menu = undefined; this.editorFocus = false;
+		this.detail = item.load?.() ?? item; this.menu = undefined; this.editorFocus = false;
 		this.scroll.scrollToStart(); this.restoreAnchor = { id: item.id, line: 0 };
 	}
 	private reply(): void {
@@ -948,6 +950,8 @@ export class AgentConversation extends Container {
 			...(this.visit.quote ? [{ value: "unquote", label: "Remove quoted context" }] : []),
 			...(task?.child.identityUnavailable || task?.child.activity?.status === "pending" ? [] : task?.child.state === "live" || task?.question ? [{ value: "stop", label: "Stop this agent only" }] : [{ value: "continue", label: "Continue with this message" }]),
 			{ value: "picker", label: "Your other agents" }, { value: "peers", label: "Other connected sessions" },
+			{ value: "earlier", label: "Earlier history" },
+			{ value: "later", label: "Later history" },
 		];
 		this.menu = new SelectList(choices, Math.max(1, this.controller.availableHeight(this.tui) - 7), getSelectListTheme());
 		this.menu.onSelect = (item) => { this.menu = undefined; this.act(item.value); };
@@ -965,6 +969,11 @@ export class AgentConversation extends Container {
 		else if (action === "send") void this.controller.send(this.key, this.editor.getExpandedText().trim());
 		else if (action === "reply") this.reply();
 		else if (action === "details") { const item = this.selected(); if (item) this.inspect(item); }
+		else if (action === "earlier" || action === "later") {
+			const length = this.task?.history.length ?? 0;
+			this.pageEnd = Math.min(length, Math.max(Math.min(100, length), (this.pageEnd ?? length) + (action === "earlier" ? -100 : 100)));
+			this.components.clear(); this.selectedId = undefined; this.scroll.scrollToEnd(); this.tui.requestRender();
+		}
 		else if (action === "assignment" && this.task) this.inspect(this.assignment());
 		else if (action === "expand") {
 			if (!this.scroll.isFollowingEnd) this.restoreAnchor = this.anchor();
@@ -974,7 +983,11 @@ export class AgentConversation extends Container {
 			this.pendingDetail = true;
 			void this.controller.changes(this.key).then((item) => { if (!this.closed && item) { this.inspect(item); this.tui.requestRender(); } })
 				.catch((error) => { if (!this.closed) this.visit.notice = `Changes unavailable: ${String(error)}`; }).finally(() => { this.pendingDetail = false; });
-		} else if (action === "latest") { this.restoreAnchor = undefined; this.scroll.scrollToEnd(); if (!this.editorFocus) this.selectedId = this.contentItems.at(-1)?.id; }
+		} else if (action === "latest") {
+			this.pageEnd = undefined; this.detail = undefined; this.components.clear();
+			this.restoreAnchor = undefined; this.conversationAnchor = undefined; this.scroll.scrollToEnd();
+			this.selectedId = this.editorFocus ? undefined : this.items().at(-1)?.id;
+		}
 		else if (action === "pin") this.controller.pin(this.controller.pinned === this.key ? undefined : this.key);
 		else if (action === "unquote") { this.visit.quote = undefined; this.controller.changed(); }
 		else if (action === "stop") void this.controller.stop(this.key);

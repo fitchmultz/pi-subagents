@@ -1,5 +1,5 @@
-import * as fs from "node:fs";
 import type { AsyncResultChild, AsyncResultFile, AsyncResultTerminalState } from "../../shared/types.ts";
+import { ownerProjection, readJsonProjection } from "../../shared/journal-reader.ts";
 
 export function isDurableRun(value: object | null | undefined): boolean {
 	return Boolean(value && "runtimeVersion" in value && value.runtimeVersion === 2);
@@ -64,15 +64,17 @@ export function parseAsyncResultFileContent(content: string, resultPath = "<inli
 }
 
 export function readAsyncResultFile(resultPath: string): ParsedAsyncResultFile {
-	let content: string;
+	let data: AsyncResultFile;
 	try {
-		content = fs.readFileSync(resultPath, "utf-8");
+		data = readJsonProjection(resultPath, ownerProjection);
 	} catch (error) {
 		throw new Error(`Failed to read async result file '${resultPath}': ${getErrorMessage(error)}`, {
 			cause: error instanceof Error ? error : undefined,
 		});
 	}
-	return parseAsyncResultFileContent(content, resultPath);
+	if (!isRecord(data)) throw new Error(`Failed to parse async result file '${resultPath}': expected a JSON object.`);
+	if (data.results !== undefined && !Array.isArray(data.results)) throw new Error(`Invalid async result file '${resultPath}': results must be an array.`);
+	return { ...data, results: data.results?.map((child, index) => normalizeResultChild(child, index, resultPath)), terminalState: deriveAsyncResultTerminalState(data) };
 }
 
 export function readAsyncResultFileIfExists(resultPath: string): ParsedAsyncResultFile | undefined {

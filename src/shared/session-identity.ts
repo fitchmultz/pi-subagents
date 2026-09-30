@@ -12,7 +12,7 @@ export function resolveRootSessionId(sessionManager: SessionIdentityManager, env
 }
 
 export function resolveCurrentSessionId(sessionManager: SessionIdentityManager): string {
-	const sessionId = sessionManager.getSessionFile() ?? sessionManager.getSessionId();
+	const sessionId = sessionManager.getSessionId();
 	if (!sessionId) throw new Error("Current session identity is unavailable.");
 	return sessionId;
 }

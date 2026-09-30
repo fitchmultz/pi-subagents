@@ -15,6 +15,7 @@ import {
 } from "./acceptance.ts";
 import { captureSingleOutputSnapshot, resolveSingleOutput, type SingleOutputSnapshot } from "./single-output.ts";
 import { readStructuredOutput, validateStructuredOutputValue, type StructuredOutputRuntime } from "./structured-output.ts";
+import { compactObservedMessage } from "./child-observations.ts";
 
 const CONFIG_ENV = "PI_SUBAGENT_FINALIZATION_CONFIG";
 export const FINALIZATION_EVENT = "subagent.finalization";
@@ -63,6 +64,7 @@ export default function registerNativeFinalization(pi: ExtensionAPI): void {
 	let messageOffset = 0;
 	let turn = 0;
 	let initialOutput = "";
+	let latestOutput = "";
 	let initialLedger: AcceptanceLedger | undefined;
 	let resolvedOutput: ReturnType<typeof resolveSingleOutput> = { fullOutput: "" };
 	const registerOutput = (runtime: StructuredOutputRuntime) => pi.registerTool({
@@ -82,12 +84,15 @@ export default function registerNativeFinalization(pi: ExtensionAPI): void {
 			"Your final action must call structured_output with JSON matching the current schema. Prose alone does not complete this output contract."));
 	}
 	pi.on("message_end", (event) => {
-		if (["assistant", "user", "toolResult"].includes(event.message.role)) messages.push(event.message as Message);
+		if (["assistant", "user", "toolResult"].includes(event.message.role)) {
+			latestOutput = getFinalOutput([event.message as Message]) || latestOutput;
+			messages.push(compactObservedMessage(event.message as Message));
+		}
 	});
 	pi.on("agent_before_settle", async (event, ctx) => {
 		if (event.outcome !== "completed") return;
 		const submission: NativeFinalizationEvent["submission"] = turn === 0
-			? { output: getFinalOutput(messages) }
+			? { output: latestOutput }
 			: readFinalizationReport(messages, reportRuntime, { messageOffset });
 		if (turn === 0) {
 			initialOutput = submission.output;

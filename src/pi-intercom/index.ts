@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "../shared/native-typebox.ts";
+import { entryMetadata } from "../shared/journal-reader.ts";
 import { MouseRegion, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { IntercomClient, type SendResult } from "./broker/client.ts";
 import { isBrokerRunning, spawnBrokerIfNeeded } from "./broker/spawn.ts";
@@ -58,6 +59,7 @@ interface ChildOrchestratorMetadata {
 }
 
 interface SubagentCompletion {
+	completionId?: string;
   runId: string;
   status: string;
   children: Array<{ agent: string; index: number; status: string; intercomTarget: string }>;
@@ -458,7 +460,7 @@ function parseSubagentIntercomPayload(payload: unknown): { to: string; message: 
       ? [{ agent: child.agent, index: child.index, status: child.status, intercomTarget: child.intercomTarget }] : [];
   }) : [];
   const completion = source && typeof record.runId === "string" && typeof record.status === "string" && children.length
-    ? { runId: record.runId, status: record.status, children } : undefined;
+    ? { runId: record.runId, status: record.status, children, ...(typeof record.completionId === "string" ? { completionId: record.completionId } : {}) } : undefined;
   return { to: record.to, message: record.message, ...(requestId ? { requestId } : {}), ...(source ? { source } : {}), ...(completion ? { completion } : {}) };
 }
 function resolveIntercomPresenceName(sessionName: string | undefined, sessionId: string): string {
@@ -1033,7 +1035,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   function restoreInbound(ctx: ExtensionContext): void {
     consumedInboundIds.clear();
     completedChildren.clear();
-    for (const item of ctx.sessionManager.getEntries()) {
+    for (const metadata of entryMetadata(ctx.sessionManager)) {
+      if (!(metadata.type === "custom_message" && ["intercom_message", "subagent-human-message"].includes(metadata.customType)
+        || metadata.type === "custom" && [INBOUND_CHECKPOINT_TYPE, "intercom_sent"].includes(metadata.customType))) continue;
+      const item = ctx.sessionManager.getEntry(metadata.id) ?? metadata;
       if (item.type === "custom_message") {
         const receipt = item.details as InboundMessageEntry | undefined;
         if (receipt?.subagentCompletion) rememberCompletedChildren(receipt);
@@ -1192,8 +1197,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         recent.push(entry);
         id = entry.parentId;
       }
-      for (const entry of fullScan ? ctx.sessionManager.getEntries() : recent) {
-        if (entry.type !== "custom_message") continue;
+      for (const metadata of fullScan ? entryMetadata(ctx.sessionManager) : recent) {
+        if (metadata.type !== "custom_message" || !["intercom_message", "subagent-human-message"].includes(metadata.customType)) continue;
+        const entry = ctx.sessionManager.getEntry(metadata.id) ?? metadata;
         const inboundId = inboundIdFromCustomMessage(entry);
         if (inboundId) consumedInboundIds.add(inboundId);
       }
@@ -1509,13 +1515,14 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         status,
       },
       message: {
-        id: randomUUID(),
+        id: completion?.completionId ? `subagent-completion:${completion.completionId}` : randomUUID(),
         timestamp: now,
         content: { text: messageText },
       },
       bodyText: messageText,
       ...(sender === "subagent-result" && completion && currentSessionId ? { subagentCompletion: { ...completion, ownerSessionId: currentSessionId } } : {}),
     };
+    if (consumedInboundIds.has(entry.message.id) || pendingInbound.has(entry.message.id)) return;
     rememberCompletedChildren(entry);
     sendIncomingMessage(entry, "trigger");
   }

@@ -178,6 +178,8 @@ export function resolveSingleOutput(
 	try {
 		const stat = fs.statSync(outputPath);
 		if (!matchesSnapshot(stat, beforeRun)) {
+			// ponytail: acceptance and downstream prompts explicitly request this full
+			// individual output; it must fit their heap. Inspection uses readOutputPage.
 			return { fullOutput: fs.readFileSync(outputPath, "utf-8"), savedPath: outputPath };
 		}
 	} catch (error) {
@@ -204,8 +206,23 @@ export function cleanupSingleOutputFile(
 	const absolutePath = path.resolve(outputPath);
 	try {
 		const stat = fs.statSync(outputPath);
-		const current = fs.readFileSync(outputPath, "utf-8");
-		if (current !== fullOutput) {
+		const fd = fs.openSync(outputPath, "r");
+		let equal = stat.size === Buffer.byteLength(fullOutput);
+		try {
+			let position = 0;
+			for (let start = 0; equal && start < fullOutput.length;) {
+				let end = Math.min(start + 16384, fullOutput.length);
+				if (end < fullOutput.length && /[\uD800-\uDBFF]/.test(fullOutput[end - 1]!)) end--;
+				const expected = Buffer.from(fullOutput.slice(start, end));
+				const actual = Buffer.allocUnsafe(expected.length);
+				equal = fs.readSync(fd, actual, 0, actual.length, position) === actual.length && actual.equals(expected);
+				position += expected.length; start = end;
+			}
+			const current = fs.fstatSync(fd), located = fs.statSync(outputPath);
+			equal &&= current.ino === stat.ino && current.size === stat.size && current.ctimeMs === stat.ctimeMs
+				&& located.ino === current.ino && located.dev === current.dev && located.ctimeMs === current.ctimeMs;
+		} finally { fs.closeSync(fd); }
+		if (!equal) {
 			return { path: absolutePath, action: "skipped", reason: "file changed after capture" };
 		}
 		if (matchesSnapshot(stat, beforeRun)) {

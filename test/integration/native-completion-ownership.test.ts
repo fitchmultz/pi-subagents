@@ -138,6 +138,7 @@ for (const scenario of [
 	{ name: "detached single-child follow-up", kind: "delivery", index: 0, mode: "single", finished: false, suppress: true },
 	{ name: "failed whole-run call", kind: "launch", index: undefined, finished: true, failed: true, suppress: false },
 	{ name: "consumed whole-run call", kind: "launch", index: undefined, finished: true, suppress: true },
+	{ name: "persisted notice before owner/accounting save", kind: "launch", index: undefined, finished: true, receipt: true, published: true, suppress: false },
 ] as const) test(`registered extension routes completion after ${scenario.name}, including session reopen`, async () => {
 	const cwd = fs.mkdtempSync(path.join(root, "case-"));
 	const manager = sdk.SessionManager.create(cwd, path.join(cwd, "sessions"));
@@ -169,7 +170,16 @@ for (const scenario of [
 	const final = { runtimeVersion: 2, id: runId, mode, sessionId: manager.getSessionFile(), state: "complete", success: true, timestamp: Date.now(),
 		results: children.map(({ agent, index }) => ({ agent, success: true, exitCode: 0, output: `CHILD_${index}_RESULT` })) };
 	saveRunStatus(runId, { runId, runtimeVersion: 2, mode, sessionId: manager.getSessionFile(), state: "complete", startedAt: Date.now(), lastUpdate: Date.now(), cwd, steps: children.map(({ agent }) => ({ agent, status: "complete" })) });
-	saveAsyncRunResult(runId, final);
+	const saved = saveAsyncRunResult(runId, final);
+	if ("published" in scenario) {
+		const broken = path.join(cwd, "broken-child.jsonl");
+		fs.writeFileSync(broken, '{"type":"session","id":"child","version":3}\nmalformed billing record\n');
+		saved.results![0] = { ...saved.results![0], sessionFile: broken, terminalEntryId: "missing", accounting: { state: "incomplete", error: "fixture billing unavailable" } };
+		const { saveQuestionContract } = await import("../../src/runs/shared/supervisor-questions.ts");
+		saveQuestionContract(runId, 0, { sessionFile: broken, attemptBaseline: ["child"], terminalEntryId: "missing" });
+		saveAsyncRunResult(runId, saved);
+		manager.appendCustomMessageEntry("subagent-notify", "Published before crash", true, { completion: { runId, completionId: saved.completionId, key: `completion:${saved.completionId}` } });
+	}
 	fs.mkdirSync(RESULTS_DIR, { recursive: true });
 	const notice = path.join(RESULTS_DIR, `${runId}.json`);
 	fs.writeFileSync(notice, JSON.stringify(final));
@@ -196,7 +206,13 @@ for (const scenario of [
 			const visible = sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify");
 			assert.equal(visible.length, scenario.suppress ? 0 : 1, `reopen=${reopen}: whole-run completion is delivered exactly once`);
 			if (reopen && !scenario.suppress) assert.equal(completions.length, 0, "saved delivery prevents replay independently of notification TTL dedupe");
-			if (!reopen && !(scenario.finished && scenario.suppress)) assert.ok(completions.length > 0, "watcher scanned the result");
+			if (!reopen && !(scenario.finished && scenario.suppress) && !("published" in scenario)) assert.ok(completions.length > 0, "watcher scanned the result");
+			if ("published" in scenario) {
+				assert.equal(completions.length, 0, "a persisted identity prevents retry even when owner delivery was never saved and billing fails");
+				const projection = sessionManager.getEntries().findLast((entry) => entry.type === "custom" && entry.customType === "subagent-run" && entry.data.runId === runId).data;
+				assert.equal(projection.completion.state, "journaled");
+				assert.equal(projection.accounting.state, "incomplete");
+			}
 			assert.ok(completions.every((event) => Boolean(event.suppressNotification) === scenario.suppress));
 			assert.equal(fs.existsSync(notice), !scenario.finished && scenario.suppress, "only pending native owners retain their notification receipt");
 			assert.deepEqual(errors, []);

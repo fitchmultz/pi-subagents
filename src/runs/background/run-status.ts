@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { readOutputPage } from "../../shared/journal-reader.ts";
 import * as path from "node:path";
 import { formatActivityFacts, formatAsyncRunList, formatAsyncRunOutputPath, formatAsyncRunProgressLabel, listAsyncRuns } from "./async-status.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
@@ -82,9 +83,9 @@ function formatAcceptanceFinalizationSummary(finalization: NonNullable<NonNullab
 function formatOutputExcerpt(outputPath: string | undefined, maxBytes = 4096, maxLines = 12): string[] {
 	if (!outputPath || !fs.existsSync(outputPath)) return [];
 	try {
-		const buffer = fs.readFileSync(outputPath);
-		const truncatedBytes = buffer.length > maxBytes;
-		const text = buffer.subarray(Math.max(0, buffer.length - maxBytes)).toString("utf-8").trim();
+		const page = readOutputPage(outputPath, { length: maxBytes });
+		const truncatedBytes = page.offset > 0;
+		const text = page.text.trim();
 		if (!text) return [];
 		const allLines = text.split(/\r?\n/);
 		const lines = allLines.slice(-maxLines);

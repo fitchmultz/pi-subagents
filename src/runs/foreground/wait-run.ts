@@ -62,9 +62,10 @@ export async function waitForOwnedRun(input: {
 			unsubscribe?.(); input.signal?.removeEventListener("abort", abort);
 			const execution = input.executionResult && status === "completed" ? ownedRunExecutionResult(target, deps.state, index, input.includeProgress) : undefined;
 			const pending = input.nativeAsync && input.signal?.aborted;
+			const saved = status === "completed" ? readRunJson<{ completionId?: string }>(path.join(getRunMetadataDir(target.runId), "result.json")) : undefined;
 			resolve({ ...result, ...execution, content: status === "completed" && execution ? execution.content : [{ type: "text", text }],
 				...(pending ? { pending: true } : status === "unavailable" || status === "cancelled" ? { isError: true } : {}),
-				details: { mode: "management", results: [], ...result?.details, ...execution?.details, wait: { runId: target.runId, index, status } } });
+				details: { mode: "management", results: [], ...result?.details, ...execution?.details, wait: { runId: target.runId, completionId: saved?.completionId, index, status } } });
 		};
 		const abort = () => {
 			if (input.cancelNewRun && target.asyncDir) {

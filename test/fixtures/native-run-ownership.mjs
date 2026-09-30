@@ -600,7 +600,7 @@ async function runWorkflowOutcomes() {
 				assert.equal(summary.steps.length, status.steps.length);
 				assert.deepEqual(summary.parallelGroups, status.parallelGroups);
 				assert.equal(summary.state, terminal.state);
-				assert.deepEqual(listAsyncRuns(path.dirname(asyncDir), { sessionId: session.sessionFile }).find((entry) => entry.id === id), summary);
+				assert.deepEqual(listAsyncRuns(path.dirname(asyncDir), { sessionId: session.sessionManager.getSessionId() }).find((entry) => entry.id === id), summary);
 			});
 			if (result.details.asyncId && !scenario.error) verify(`${name}: empty fanout retains logical progress ${checkpoint}`, () => {
 				const text = inspection.content.map((part) => part.text).join("\n");

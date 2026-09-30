@@ -1,10 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { FileEntry } from "@earendil-works/pi-coding-agent";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { formatRunAction } from "../../shared/status-format.ts";
-import { buildSessionContext, parseSessionEntries, SessionManager } from "../../shared/native-session.ts";
+import { NativeJournal, ownerProjection, readJsonProjection } from "../../shared/journal-reader.ts";
 import { getAgentDir } from "../../shared/utils.ts";
 import { ASYNC_DIR, TEMP_ROOT_DIR, type AsyncStatus, type AsyncResultFile, type ResolvedAcceptanceConfig, type JsonSchemaObject, type OutputMode, type SavedLaunchConfig, type SingleResult, type AgentProgress } from "../../shared/types.ts";
 
@@ -12,6 +11,16 @@ export const LEGACY_QUESTIONS_DIR = path.join(TEMP_ROOT_DIR, "supervisor-questio
 export const QUESTIONS_DIR = path.join(getAgentDir(), "sessions", "subagent-runs");
 
 export interface SupervisorRunContract {
+	legacySource?: string;
+	recordVersion?: 3;
+	nativeSessionId?: string;
+	terminalLeafId?: string | null;
+	terminalEntryId?: string;
+	attemptBaseline?: string[];
+	baselineSource?: "native-migration";
+	effectiveConfiguration?: { model?: string; thinking?: string; modelRecordedAt?: number };
+	accounting?: { state: "complete" | "incomplete"; error?: string };
+	auditPath?: string;
 	task?: string;
 	label?: string;
 	result?: SingleResult;
@@ -74,8 +83,46 @@ export function getRunMetadataDir(runId: string, root = QUESTIONS_DIR): string {
 	return path.join(root, safeId(runId));
 }
 
-export function saveAsyncRunResult(runId: string, result: AsyncResultFile): void {
-	writeAtomicJson(path.join(getRunMetadataDir(runId), "result.json"), result);
+export function saveAsyncRunResult(runId: string, result: AsyncResultFile): AsyncResultFile {
+	const file = path.join(getRunMetadataDir(runId), "result.json");
+	const previous = readRunJson<AsyncResultFile>(file);
+	if (previous?.completionId && result.completionId && previous.completionId !== result.completionId) throw new Error("Conflicting completion identity");
+	const saved = { ...result, recordVersion: 3 as const, completionId: previous?.completionId ?? result.completionId ?? randomUUID(),
+		...(preserveLegacyOwner(file, previous) ? { legacySource: `${file}.legacy` } : {}),
+		results: result.results?.map((child, index) => compactOwnerResult(runId, index, child)) };
+	writeAtomicJson(file, saved);
+	return saved;
+}
+
+function preserveLegacyOwner(file: string, previous: { recordVersion?: number } | undefined): boolean {
+	if (!previous || previous.recordVersion === 3) return false;
+	try { fs.copyFileSync(file, `${file}.legacy`, fs.constants.COPYFILE_EXCL); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+	return true;
+}
+
+export function compactOwnerResult<T extends { finalOutput?: string; output?: string; initialOutput?: string; initialOutputPath?: string; messages?: unknown; artifactPaths?: { outputPath?: string }; fullOutputPath?: string }>(runId: string, index: number, result: T, root = QUESTIONS_DIR): T {
+	const output = result.finalOutput ?? result.output;
+	let fullOutputPath = result.fullOutputPath;
+	if (output && output.length > 8192) {
+		fullOutputPath ??= result.artifactPaths?.outputPath;
+		if (!fullOutputPath) {
+			fullOutputPath = path.join(getRunMetadataDir(runId, root), "outputs", `${index}.txt`);
+			fs.mkdirSync(path.dirname(fullOutputPath), { recursive: true });
+			fs.writeFileSync(fullOutputPath, output, { mode: 0o600 });
+		}
+	}
+	let initialOutputPath = result.initialOutputPath;
+	if (result.initialOutput && result.initialOutput.length > 8192 && !initialOutputPath) {
+		initialOutputPath = path.join(getRunMetadataDir(runId, root), "outputs", `${index}.initial.txt`);
+		fs.mkdirSync(path.dirname(initialOutputPath), { recursive: true });
+		fs.writeFileSync(initialOutputPath, result.initialOutput, { mode: 0o600 });
+	}
+	return { ...result, messages: undefined, ...(fullOutputPath ? { fullOutputPath } : {}),
+		...(initialOutputPath ? { initialOutputPath } : {}),
+		...(result.finalOutput !== undefined ? { finalOutput: result.finalOutput.slice(-8192) } : {}),
+		...(result.output !== undefined ? { output: result.output.slice(-8192) } : {}),
+		...(result.initialOutput !== undefined ? { initialOutput: result.initialOutput.slice(-8192) } : {}) };
 }
 
 export function saveRunStatus(runId: string, status: AsyncStatus): void {
@@ -84,7 +131,7 @@ export function saveRunStatus(runId: string, status: AsyncStatus): void {
 
 export function readRunJson<T>(file: string): T | undefined {
 	try {
-		return JSON.parse(fs.readFileSync(file, "utf8")) as T;
+		return readJsonProjection(file, ownerProjection) as T;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw error;
@@ -118,39 +165,44 @@ export function saveQuestionContract(runId: string, index: number, contract: Sup
 	if (!Number.isSafeInteger(index) || index < 0) throw new Error("Child index must be a non-negative integer.");
 	const file = path.join(root, safeId(runId), "contracts", `${index}.json`);
 	const previous = readRunJson<SupervisorRunContract>(file);
-	writeAtomicJson(file, { ...previous, ...contract, ...(previous?.launch ? { launch: previous.launch } : {}) });
+	writeAtomicJson(file, { ...previous, ...contract, recordVersion: 3,
+		...(preserveLegacyOwner(file, previous) ? { legacySource: `${file}.legacy` } : {}),
+		...(previous?.attemptBaseline && contract.baselineSource !== "native-migration" ? { attemptBaseline: previous.attemptBaseline } : {}),
+		...(contract.result ? { result: compactOwnerResult(runId, index, contract.result, root) } : {}),
+		...(previous?.launch ? { launch: previous.launch } : {}) });
 }
 
-export type NativeConfigurationReader = (sessionFile: string | undefined, endedAt?: number) => ReturnType<typeof readNativeSessionConfiguration>;
+export type NativeConfigurationReader = (sessionFile: string | undefined, endedAt?: number, leaf?: string | null) => ReturnType<NativeJournal["configuration"]>;
 
 export function readQuestionContract(runId: string, index: number, root = QUESTIONS_DIR, projection: { sessionFile?: string; endedAt?: number; readConfiguration?: NativeConfigurationReader | false } = {}): SupervisorRunContract | undefined {
 	const contract = readRunJson<SupervisorRunContract>(path.join(root, safeId(runId), "contracts", `${index}.json`));
 	if (!contract?.launch || projection.readConfiguration === false) return contract;
 	const sessionFile = projection.sessionFile ?? contract.sessionFile;
-	const native = projection.readConfiguration ? projection.readConfiguration(sessionFile, projection.endedAt)
-		: readNativeSessionConfiguration(sessionFile, undefined, projection.endedAt);
+	if (contract.recordVersion !== 3 && !contract.effectiveConfiguration && sessionFile && fs.existsSync(sessionFile) && !contract.launch.model?.startsWith("claude-code/")) {
+		// One-time read-only native recovery. Subsequent controls use the compact
+		// selection, and the frozen requested profile is never rewritten.
+		const journal = new NativeJournal(sessionFile);
+		contract.effectiveConfiguration = journal.configuration(projection.endedAt, contract.terminalLeafId);
+		saveQuestionContract(runId, index, { effectiveConfiguration: contract.effectiveConfiguration }, root);
+	}
+	const native = projection.readConfiguration ? projection.readConfiguration(sessionFile, projection.endedAt, contract.terminalLeafId)
+		: contract.effectiveConfiguration ?? {};
 	return { ...contract, launch: { ...contract.launch, ...native } };
-}
-
-export function readNativeSessionConfiguration(sessionFile: string | undefined, cachedEntries?: FileEntry[], endedAt?: number): { model?: string; thinking?: string; modelRecordedAt?: number } {
-	const raw = cachedEntries ?? (sessionFile && fs.existsSync(sessionFile) ? parseSessionEntries(fs.readFileSync(sessionFile, "utf8")) : []);
-	const entries = endedAt === undefined ? raw : raw.filter((entry) => entry.type === "session" || Date.parse(entry.timestamp) <= endedAt);
-	if (entries[0]?.type !== "session") return {};
-	const branch = SessionManager.inMemory(undefined, undefined, entries).getBranch();
-	const context = buildSessionContext(branch);
-	const modelEntry = branch.findLast((entry) => entry.type === "model_change" || entry.type === "message" && entry.message.role === "assistant");
-	return { ...(context.model ? { model: `${context.model.provider}/${context.model.modelId}` } : {}), ...(branch.some((entry) => entry.type === "thinking_level_change") ? { thinking: context.thinkingLevel } : {}),
-		...(modelEntry ? { modelRecordedAt: Date.parse(modelEntry.timestamp) } : {}) };
 }
 
 export function migrateSupervisorQuestions(ownerSessionId: string, runId?: string): void {
 	if (!fs.existsSync(LEGACY_QUESTIONS_DIR)) return;
 	const runs = runId === undefined ? fs.readdirSync(LEGACY_QUESTIONS_DIR, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name) : [safeId(runId)];
 	for (const id of runs) {
-		const source = getRunMetadataDir(id, LEGACY_QUESTIONS_DIR);
-		const owner = readRunJson<{ sessionId?: string }>(path.join(source, "question-owner.json"));
-		if (owner?.sessionId !== ownerSessionId) continue;
-		fs.cpSync(source, getRunMetadataDir(id), { recursive: true, force: false });
+		try {
+			const source = getRunMetadataDir(id, LEGACY_QUESTIONS_DIR);
+			const owner = readRunJson<{ sessionId?: string }>(path.join(source, "question-owner.json"));
+			if (owner?.sessionId !== ownerSessionId) continue;
+			fs.cpSync(source, getRunMetadataDir(id), { recursive: true, force: false });
+		} catch (error) {
+			if (runId !== undefined) throw error;
+			console.error(`Could not recover legacy questions for ${id}: ${String(error)}`);
+		}
 	}
 }
 
@@ -236,7 +288,14 @@ export function listSupervisorQuestions(ownerSessionId: string, runId?: string, 
 	if (root === QUESTIONS_DIR) migrateSupervisorQuestions(ownerSessionId);
 	if (!fs.existsSync(root)) return [];
 	const runs = fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory() && (!runId || entry.name.startsWith(runId)));
-	const questions = runs.flatMap((entry) => listRunQuestions(path.join(root, entry.name))).filter((question) => question.ownerSessionId === ownerSessionId);
+	const questions = runs.flatMap((entry) => {
+		try { return listRunQuestions(path.join(root, entry.name)); }
+		catch (error) {
+			if (runId !== undefined) throw error;
+			console.error(`Could not list questions for ${entry.name}: ${String(error)}`);
+			return [];
+		}
+	}).filter((question) => question.ownerSessionId === ownerSessionId);
 	if (runId && new Set(questions.map((question) => question.runId)).size > 1) throw new Error(`Ambiguous run ID prefix '${runId}'.`);
 	return questions.sort((a, b) => a.createdAt - b.createdAt);
 }

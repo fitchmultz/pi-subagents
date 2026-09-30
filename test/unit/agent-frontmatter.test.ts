@@ -507,7 +507,7 @@ Do work
 });
 
 describe("packaged agent and chain discovery", () => {
-	it("recursively discovers nested project agents while keeping chain files separate", () => {
+	it("discovers visible nested profiles and diagnoses visible malformed definitions while skipping hidden descendants", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-recursive-agent-discovery-"));
 		tempDirs.push(dir);
 		const nestedDir = path.join(dir, ".pi", "agents", "code-analysis", "deep");
@@ -531,10 +531,27 @@ description: Review flow
 Review
 `, "utf-8");
 
+		const hiddenAgents = path.join(dir, ".pi", "agents", ".pi", "notes");
+		const hiddenChains = path.join(dir, ".pi", "chains", ".drafts");
+		fs.mkdirSync(hiddenAgents, { recursive: true });
+		fs.mkdirSync(hiddenChains, { recursive: true });
+		fs.writeFileSync(path.join(hiddenAgents, "agent-profile-comparison.md"), "A private research note, not an agent.\n");
+		fs.writeFileSync(path.join(hiddenAgents, "hidden.md"), "---\nname: hidden-agent\ndescription: Hidden definition\n---\nDo work\n");
+		fs.writeFileSync(path.join(hiddenChains, "hidden.chain.md"), "---\nname: hidden-chain\ndescription: Hidden flow\n---\n## scout\nReview\n");
+		const malformedAgent = path.join(nestedDir, "invalid.md");
+		const malformedChain = path.join(nestedChainDir, "invalid.chain.md");
+		fs.writeFileSync(malformedAgent, "---\nname: invalid\n---\nMissing description\n");
+		fs.writeFileSync(malformedChain, "---\nname: invalid\n---\nNo steps\n");
+
 		const result = discoverAgentsAll(dir);
 		assert.ok(result.project.find((agent) => agent.name === "scout" && agent.filePath === path.join(nestedDir, "scout.md")));
 		assert.ok(result.chains.find((chain) => chain.name === "review-flow" && chain.filePath === path.join(nestedChainDir, "review.chain.md")));
 		assert.equal(result.project.some((agent) => agent.filePath.endsWith("review.chain.md")), false);
+		assert.equal(result.project.some((agent) => agent.name === "hidden-agent"), false);
+		assert.equal(result.chains.some((chain) => chain.name === "hidden-chain"), false);
+		assert.deepEqual(result.agentDiagnostics.map((diagnostic) => diagnostic.filePath), [malformedAgent]);
+		assert.deepEqual(result.chainDiagnostics.map((diagnostic) => diagnostic.filePath), [malformedChain]);
+		assert.equal(fs.readFileSync(path.join(hiddenAgents, "agent-profile-comparison.md"), "utf8"), "A private research note, not an agent.\n");
 	});
 
 	it("ignores skill template assets during agent discovery", () => {

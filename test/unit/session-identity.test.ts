@@ -2,7 +2,7 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SessionManager } from "../../src/shared/native-session.ts";
-import { resolveRootSessionId } from "../../src/shared/session-identity.ts";
+import { resolveCurrentSessionId, resolveRootSessionId } from "../../src/shared/session-identity.ts";
 import { buildPiArgs } from "../../src/runs/shared/pi-args.ts";
 
 test("root identity is a Pi ID, not cwd, transcript path, or ordinary fork ancestry", () => {
@@ -15,6 +15,11 @@ test("root identity is a Pi ID, not cwd, transcript path, or ordinary fork ances
 	assert.equal(resolveRootSessionId(SessionManager.inMemory("/other", { id: "grandchild" }), env), "root-one");
 	one.newSession({ id: "root-new" });
 	assert.equal(resolveRootSessionId(one, {}), "root-new");
+	let locator = "/original/parent.jsonl";
+	const parent = { getSessionFile: () => locator, getSessionId: () => "native-owner" };
+	assert.equal(resolveCurrentSessionId(parent), "native-owner");
+	locator = "/converted/parent.jsonl";
+	assert.equal(resolveCurrentSessionId(parent), "native-owner", "moving a session does not change notification ownership");
 });
 
 test("independent launches carry root identity without changing parent environment", () => {

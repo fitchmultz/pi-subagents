@@ -8,6 +8,7 @@ import { loadConfig } from "../../extension/config.ts";
 import { registerChildExecutionCwd } from "./child-execution-cwd.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, validateStructuredOutputValue } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
+import { entryMetadata } from "../../shared/journal-reader.ts";
 
 const SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV = "PI_SUBAGENT_INHERIT_PROJECT_CONTEXT";
 const SUBAGENT_INHERIT_SKILLS_ENV = "PI_SUBAGENT_INHERIT_SKILLS";
@@ -99,6 +100,41 @@ export function stripParentOnlySubagentMessages<T>(messages: T[], fanoutChild = 
 
 export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 	registerChildExecutionCwd(pi);
+	// Print-mode observation uses the existing child runtime. turn_end follows native
+	// message append; message_end itself is deliberately never called a commit receipt.
+	let observedMessages = 0;
+	let previousIds = new Set<string>();
+	pi.on("session_start", (_event, ctx) => {
+		const entries = [...entryMetadata(ctx.sessionManager)];
+		const baseline = process.env.PI_SUBAGENT_NATIVE_BASELINE_COUNT;
+		if (baseline && /^\d+$/.test(baseline)) process.stdout.write(`${JSON.stringify({ type: "subagent.native_baseline", sessionId: ctx.sessionManager.getSessionId(), entryIds: entries.slice(0, Number(baseline)).map((entry) => entry.id) })}\n`);
+		const file = ctx.sessionManager.getSessionFile();
+		previousIds = file && fs.existsSync(file) ? new Set(entries.map((entry) => entry.id)) : new Set();
+	});
+	pi.on("message_end", (event) => { if (["assistant", "user", "toolResult"].includes(event.message.role)) observedMessages++; });
+	const observe = (ctx: import("@earendil-works/pi-coding-agent").ExtensionContext, boundary: string) => {
+		if (process.env.PI_SUBAGENT_CHILD !== "1") return;
+		const entries = [];
+		for (const entry of entryMetadata(ctx.sessionManager)) if (!previousIds.has(entry.id)) {
+			previousIds.add(entry.id);
+			const message = entry.type === "message" ? entry.message : undefined;
+			entries.push({ id: entry.id, type: entry.type, parentId: entry.parentId,
+				...("checkpoint" in entry ? { checkpoint: entry.checkpoint } : {}),
+				...(entry.type === "usage" || entry.type === "compaction" || entry.type === "branch_summary" ? { usage: entry.usage } : {}),
+				...(entry.type === "usage" ? { provider: entry.provider, model: entry.model } : {}),
+				...(message ? { message: { role: message.role, timestamp: message.timestamp,
+					...("usage" in message ? { usage: message.usage } : {}),
+					...(message.role === "assistant" ? { provider: message.provider, model: message.model, responseModel: message.responseModel } : {}),
+					...("toolCallId" in message ? { toolCallId: message.toolCallId } : {}) } } : {}) });
+		}
+		const sessionFile = ctx.sessionManager.getSessionFile();
+		process.stdout.write(`${JSON.stringify({ type: "subagent.native", boundary, entries,
+			sessionId: ctx.sessionManager.getSessionId(), sessionFile, leafId: ctx.sessionManager.getLeafId(),
+			persisted: Boolean(sessionFile && fs.existsSync(sessionFile)), messageCount: observedMessages,
+			configuration: { ...(ctx.model ? { model: `${ctx.model.provider}/${ctx.model.id}` } : {}), thinking: pi.getThinkingLevel() } })}\n`);
+	};
+	pi.on("turn_end", (_event, ctx) => observe(ctx, "turn"));
+	pi.on("agent_settled", (_event, ctx) => observe(ctx, "settled"));
 	const structuredOutputPath = process.env[STRUCTURED_OUTPUT_CAPTURE_ENV];
 	const structuredSchemaPath = process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
 	if (structuredOutputPath && structuredSchemaPath) {

@@ -445,7 +445,7 @@ function listFilesRecursive(dir: string, predicate: (fileName: string) => boolea
 	for (const entry of entries) {
 		const filePath = path.join(dir, entry.name);
 		if (entry.isDirectory()) {
-			files.push(...listFilesRecursive(filePath, predicate));
+			if (!entry.name.startsWith(".")) files.push(...listFilesRecursive(filePath, predicate));
 			continue;
 		}
 		if (!entry.isFile() && !entry.isSymbolicLink()) continue;

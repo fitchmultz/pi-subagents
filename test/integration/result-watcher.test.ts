@@ -182,7 +182,7 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("delivers corrected same-id result payloads instead of deduping by id only", async () => {
+	it("does not repeat a completion when its saved result fields change", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-corrected-"));
 		try {
 			const emitted: Array<{ event: string; data: { success?: boolean; summary?: string } }> = [];
@@ -209,8 +209,8 @@ describe("result watcher", () => {
 			}
 
 			const completes = emitted.filter((entry) => entry.event === "subagent:async-complete");
-			assert.deepEqual(completes.map((entry) => entry.data.summary), ["old", "corrected"]);
-			assert.deepEqual(completes.map((entry) => entry.data.success), [false, true]);
+			assert.deepEqual(completes.map((entry) => entry.data.summary), ["old"]);
+			assert.deepEqual(completes.map((entry) => entry.data.success), [false]);
 		} finally {
 			fs.rmSync(resultsDir, { recursive: true, force: true });
 		}
