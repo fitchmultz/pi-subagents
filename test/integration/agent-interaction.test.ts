@@ -454,9 +454,7 @@ test("regular Agents pulse leaves offscreen history alone and resumes when the r
 
 test("Agents model details preserve a provider-matching model namespace in assistant and tool cards", async (t) => {
 	const f = fixture(t), manager = f.childSessions[0];
-	const catalog = JSON.parse(fs.readFileSync(new URL("./providers/data/openrouter.json", import.meta.resolve("@earendil-works/pi-ai")), "utf8"));
-	const model = catalog["openai-completions"]["openrouter/free"];
-	assert.equal(model.provider, "openrouter"); assert.equal(model.id, "openrouter/free");
+	const model = { provider: "openrouter", id: "openrouter/fixture", api: "openai-completions" };
 	manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Namespaced reply" }, { type: "toolCall", id: "namespace-read", name: "read", arguments: { path: "namespace.txt" } }], provider: model.provider, model: model.id, api: model.api, stopReason: "toolUse", usage, timestamp: Date.now() });
 	const saved = fs.readFileSync(manager.getSessionFile(), "utf8");
 	f.controller.refresh(true);
@@ -464,12 +462,12 @@ test("Agents model details preserve a provider-matching model namespace in assis
 	view.render(160); view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160); view.handleInput("\r");
 	const toolDetail = readDetails(view, 160);
 	assert.match(toolDetail, /namespace\.txt/);
-	assert.match(toolDetail, /Messagemodel:openrouter\/openrouter\/free/, "tool details keep the entire native model ID, not just the provider prefix");
+	assert.match(toolDetail, /Messagemodel:openrouter\/openrouter\/fixture/, "tool details keep the entire native model ID, not just the provider prefix");
 	view.handleInput("\x1b"); view.render(160); view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160);
 	view.handleInput("\x1b[A"); view.render(160); view.handleInput("\r");
 	const detail = readDetails(view, 160);
 	assert.match(detail, /Namespacedreply/);
-	assert.match(detail, /Messagemodel:openrouter\/openrouter\/free/, "assistant details use the same full catalog identity");
+	assert.match(detail, /Messagemodel:openrouter\/openrouter\/fixture/, "assistant details use the same full journal identity");
 	view.handleInput("\x1b"); view.handleInput("\x1b"); await opening;
 	assert.equal(fs.readFileSync(manager.getSessionFile(), "utf8"), saved);
 	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
@@ -477,16 +475,15 @@ test("Agents model details preserve a provider-matching model namespace in assis
 
 test("Agents model details retain an empty-content error model after fallback", async (t) => {
 	const f = fixture(t), manager = f.childSessions[0];
-	const catalog = JSON.parse(fs.readFileSync(new URL("./providers/data/openrouter.json", import.meta.resolve("@earendil-works/pi-ai")), "utf8"));
-	// The fork regenerates this catalog from live provider data, so a hardcoded model can disappear.
-	const [failed] = Object.values<{ provider: string; id: string; api: string }>(catalog["anthropic-messages"]), fallback = catalog["openai-completions"]["openrouter/free"];
+	const failed = { provider: "openrouter", id: "vendor/failed-fixture", api: "anthropic-messages" };
+	const fallback = { provider: "openrouter", id: "openrouter/fixture", api: "openai-completions" };
 	assert.equal(failed.provider, "openrouter"); assert.notEqual(failed.id, fallback.id);
 	manager.appendMessage({ role: "assistant", content: [], provider: failed.provider, model: failed.id, api: failed.api, stopReason: "error", errorMessage: "quota exceeded", usage, timestamp: Date.now() });
 	manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fallback completed" }], provider: fallback.provider, model: fallback.id, api: fallback.api, stopReason: "stop", usage, timestamp: Date.now() });
 	const saved = fs.readFileSync(manager.getSessionFile(), "utf8");
 	f.controller.refresh(true);
 	const opening = f.controller.open(), view = f.overlay;
-	assert.match(plain(view, 160), /saved: openrouter\/openrouter\/free/, "the conversation status has moved to the fallback");
+	assert.match(plain(view, 160), /saved: openrouter\/openrouter\/fixture/, "the conversation status has moved to the fallback");
 	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160); view.handleInput("\x1b[A"); view.render(160); view.handleInput("\r");
 	const detail = readDetails(view, 160);
 	assert.match(detail, /Agenterror[\s\S]*quotaexceeded/);
@@ -1552,7 +1549,7 @@ test("new async chain preserves its launch identity, draft and pin through first
 	f.overlay.handleInput("\x1b"); await opening;
 });
 
-test("the first native streaming response is readable before its session file exists", async (t) => {
+test("the first native streaming response is readable before its final assistant message is saved", async (t) => {
 	const f = fixture(t), native = nativeChild(f.cwd, "streaming"), { release } = native;
 	f.state.ownedRuns!.clear(); f.controller.refresh(true);
 	const requested = "requested/vendor/streaming:high";
@@ -1561,8 +1558,15 @@ test("the first native streaming response is readable before its session file ex
 	const deadline = Date.now() + 10_000;
 	while (!f.controller.tasks.some((task) => task.child.activity?.streamingText?.includes("First live text"))) { assert.ok(Date.now() < deadline, "initial native text must arrive"); await delay(10); }
 	const task = f.controller.tasks[0]!;
-	assert.equal(fs.existsSync(task.child.sessionFile!), false, "native Pi defers saving the first response until message_end");
-	assert.match(plain(f.strip, 160), /selected: requested\/vendor\/streaming · thinking high/);
+	if (fs.existsSync(task.child.sessionFile!)) {
+		const entries = SessionManager.open(task.child.sessionFile!).getEntries();
+		assert.equal(entries.some((entry) => entry.type === "message" && entry.message.role === "assistant"), false,
+			"early native metadata persistence is not a completed assistant response");
+	}
+	assert.match(plain(f.strip, 160), fs.existsSync(task.child.sessionFile!)
+		? /feedback-fixture\/faux-1 · thinking off/
+		: /selected: requested\/vendor\/streaming · thinking high/,
+		"early native model metadata supersedes requested display without inventing an assistant completion");
 	const receipt = JSON.parse(fs.readFileSync(`${release}.json`, "utf8"));
 	assert.equal(receipt.events.some((event) => event.type === "message_end" && event.role === "assistant"), false);
 	const opening = f.controller.open(task.key);

@@ -97,7 +97,8 @@ export default function(pi) {
 		});
 		assert.equal(child.status, 0, child.stderr || child.error?.message);
 		assert.deepEqual(JSON.parse(fs.readFileSync(shutdown, "utf8")), { providerCalls: 0 });
-		assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")).sort(), ["bash", "fixture_custom_tool", "read"]);
+		assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")).sort(),
+			process.env.PI_COMPAT_HOST === "fork" ? ["bash", "discover_tools", "fixture_custom_tool", "read"] : ["bash", "fixture_custom_tool", "read"]);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}
@@ -181,7 +182,8 @@ export default async function(pi) {
 				}
 				assert.equal(child.status, 0, child.stderr || child.error?.message);
 				assert.equal(child.signal, null);
-				assert.equal(child.stderr, "");
+				// Node 24.0 emits this warning when the native cwd preload imports TypeScript.
+				assert.match(child.stderr, /^(?:\(node:\d+\) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n)?$/);
 				assert.deepEqual(observation.executed, { stdout: `${expectedCwd}\n`, stderr: "", code: 0, killed: false });
 				assert.equal(observation.cwd, expectedCwd);
 				assert.equal(observation.sessionCwd, expectedCwd);
