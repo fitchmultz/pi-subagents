@@ -3,6 +3,7 @@ import type { Usage as NativeUsage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, MessageEndEventResult } from "@earendil-works/pi-coding-agent";
 import type { Details, OwnedRunView, SubagentExecutionResult, UsageContribution } from "../../shared/types.ts";
 import { entryMetadata } from "../../shared/journal-reader.ts";
+import { createParentReceiptReader } from "./parent-receipts.ts";
 import { validateNativeUsage } from "./native-usage.ts";
 
 const PREFIX = "subagent:";
@@ -52,12 +53,14 @@ function uniqueContributions(contributions: readonly UsageContribution[]): Usage
 	return [...unique.values()];
 }
 
-function receipts(manager: ExtensionContext["sessionManager"], toolNames: readonly string[], includeNative: boolean): Map<string, UsageContribution> {
+function receipts(manager: ExtensionContext["sessionManager"], toolNames: readonly string[], includeNative: boolean,
+	published: ReturnType<typeof createParentReceiptReader>): Map<string, UsageContribution> {
 	const received = new Map<string, UsageContribution>();
+	const saved = published.read(manager.getSessionFile());
 	for (const metadata of entryMetadata(manager)) {
 		if (metadata.type !== "usage" && !(metadata.type === "message" && metadata.message.role === "toolResult" && toolNames.includes(metadata.message.toolName))) continue;
-		const entry = metadata.type === "message" && metadata.message.role === "toolResult" && metadata.message.details === undefined
-			? manager.getEntry(metadata.id) ?? metadata : metadata;
+		const entry = metadata.type === "message" && metadata.message.role === "toolResult"
+			? saved.get(metadata.id) ?? (metadata.message.details !== undefined ? metadata : manager.getEntry(metadata.id) ?? metadata) : metadata;
 		if (includeNative && entry.type === "usage") {
 			const id = (entry as typeof entry & { contributionId?: string }).contributionId;
 			if (id?.startsWith(PREFIX)) received.set(id.slice(PREFIX.length), { id: id.slice(PREFIX.length), provider: entry.provider, model: entry.model, usage: entry.usage });
@@ -89,10 +92,11 @@ function unrecorded(contributions: readonly UsageContribution[], received: Map<s
  */
 export function registerParentUsage(pi: ExtensionAPI, toolNames: readonly string[]) {
 	const api = pi as UsageAPI;
+	const toolReceipts = createParentReceiptReader("inspect");
 	const record = (contributions: readonly UsageContribution[], ctx: ExtensionContext): boolean => {
 		if (!api.recordUsage) return false;
 		// Let native idempotence handle its own receipts, including retrying a failed flush.
-		const pending = unrecorded(contributions, receipts(ctx.sessionManager, toolNames, false));
+		const pending = unrecorded(contributions, receipts(ctx.sessionManager, toolNames, false, toolReceipts));
 		for (const contribution of pending) api.recordUsage({ id: `${PREFIX}${contribution.id}`, kind: "subagent",
 			provider: contribution.provider ?? UNATTRIBUTED, model: contribution.model ?? UNATTRIBUTED, usage: contribution.usage });
 		return true;
@@ -103,7 +107,7 @@ export function registerParentUsage(pi: ExtensionAPI, toolNames: readonly string
 		if (message.role !== "toolResult" || !toolNames.includes(message.toolName)) return;
 		const details = message.details as Details | undefined;
 		if (!details?.parentUsage) return;
-		const pending = unrecorded(details.parentUsage.contributions, receipts(ctx.sessionManager, toolNames, true));
+		const pending = unrecorded(details.parentUsage.contributions, receipts(ctx.sessionManager, toolNames, true, toolReceipts));
 		const { usage: _usage, ...rest } = message;
 		const { parentUsage: _parentUsage, ...restDetails } = details;
 		// Public replacement hook: native emits/persists final tool messages serially,
@@ -118,7 +122,7 @@ export function registerParentUsage(pi: ExtensionAPI, toolNames: readonly string
 			const { usage: _usage, ...rest } = result;
 			const { parentUsage: _parentUsage, ...details } = result.details;
 			// Required identity/conflict rejection precedes any optional host I/O.
-			const portable = unrecorded(contributions, receipts(ctx.sessionManager, toolNames, true));
+			const portable = unrecorded(contributions, receipts(ctx.sessionManager, toolNames, true, toolReceipts));
 			let recorded: boolean;
 			try { recorded = record(contributions, ctx); }
 			catch (error) { return { ...rest, details: { ...details, accounting: { state: "incomplete", error: String(error) } } }; }

@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RESULTS_DIR, SUBAGENT_ASYNC_COMPLETE_EVENT, type AsyncResultFile, type SubagentState } from "../../shared/types.ts";
-import { entryMetadata, journalStamp, scanJournal } from "../../shared/journal-reader.ts";
+import { entryMetadata } from "../../shared/journal-reader.ts";
+import { createParentReceiptReader } from "../shared/parent-receipts.ts";
 import { nativeInvocationTarget, nativeInvocations } from "../shared/native-async.ts";
 import { finalizedChildUsage, type registerParentUsage } from "../shared/parent-usage.ts";
 import { ownedRunView, rememberOwnedRun, repairOwnedRunAccounting } from "../shared/run-records.ts";
@@ -29,24 +30,8 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 			}
 		}
 	});
-	let cache: { file: string; stamp: string; receipts: Array<Record<string, any>> } | undefined;
-	const receipts = () => {
-		const file = state.lastUiContext?.sessionManager.getSessionFile();
-		if (!file || !fs.existsSync(file)) return [];
-		const stamp = journalStamp(fs.statSync(file, { bigint: true }));
-		if (cache?.file === file && cache.stamp === stamp) return cache.receipts;
-		const records: Array<Record<string, any>> = [];
-		scanJournal(file, (path) => {
-			if (!path.length || ["type", "id", "timestamp", "customType"].includes(String(path[0]))) return 4096;
-			if (path[0] === "details") return path.length === 1 || ["completion", "subagentCompletion", "result"].includes(String(path[1])) && (path[1] !== "result" || path.length <= 3 || path[3] === "wait") ? 4096 : false;
-			if (path[0] === "message") return path.length === 1 || ["role", "toolName"].includes(String(path[1])) || path[1] === "details" && (path.length === 2 || path[2] === "wait") ? 4096 : false;
-			return false;
-		}, ({ value }) => {
-			if (value.type === "custom_message" || value.type === "message" && value.message?.role === "toolResult") records.push(value);
-		}, { policy: "live" });
-		cache = { file, stamp, receipts: records };
-		return records;
-	};
+	const publishedReceipts = createParentReceiptReader("live");
+	const receipts = () => [...publishedReceipts.read(state.lastUiContext?.sessionManager.getSessionFile()).values()];
 	const consumed = (entry: Record<string, any>, runId: string) => {
 		const wait = entry.type === "message" ? entry.message?.details?.wait : entry.details?.result?.details?.wait;
 		const run = state.ownedRuns?.get(runId);
@@ -94,7 +79,7 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 			// Save delivery before optional accounting. Even a failed owner append cannot
 			// make this published identity eligible for another notification.
 			try { if (run) rememberOwnedRun(state, { ...run, completion: { id: key, state: "journaled", entryId: receipt.id },
-				delivery: { notifiedAt: Date.parse(receipt.timestamp), intercomDelivered: receipt.customType === "intercom_message", completionId: key, entryId: receipt.id } }); }
+				delivery: { notifiedAt: Date.parse(receipt.timestamp), intercomDelivered: receipt.type === "custom_message" && receipt.customType === "intercom_message", completionId: key, entryId: receipt.id } }); }
 			catch (error) { console.error(`Could not save delivery projection for ${runId}:`, error); }
 			if (accounting) recordAccounting(runId);
 			return true;
@@ -148,6 +133,6 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 		fs.mkdirSync(RESULTS_DIR, { recursive: true });
 		watcher.startResultWatcher(); watcher.primeExistingResults();
 	};
-	const stop = () => { watcher.stopResultWatcher(); unsubscribe?.(); unsubscribe = undefined; unsubscribeNotify?.(); unsubscribeNotify = undefined; cache = undefined; };
+	const stop = () => { watcher.stopResultWatcher(); unsubscribe?.(); unsubscribe = undefined; unsubscribeNotify?.(); unsubscribeNotify = undefined; publishedReceipts.clear(); };
 	return { start, stop, holdCheckpoint: watcher.holdCheckpoint };
 }
