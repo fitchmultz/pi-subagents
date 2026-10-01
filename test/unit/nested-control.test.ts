@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it, mock } from "node:test";
 import registerFanoutChildSubagentExtension from "../../src/extension/fanout-child.ts";
-import { getRunMetadataDir, saveRunStatus } from "../../src/runs/shared/supervisor-questions.ts";
+import { getRunMetadataDir, saveQuestionOwner, saveRunStatus } from "../../src/runs/shared/supervisor-questions.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { createNestedRoute, projectNestedEvents, readNestedControlRequests, readNestedControlResults, writeNestedControlRequest, writeNestedControlResult, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import {
@@ -563,6 +563,54 @@ describe("nested control routing", () => {
 		} finally {
 			console.error = originalError;
 		}
+	});
+
+	it("retains child control requests during restoration and executes them once ownership is ready", async (t) => {
+		const route = createNestedRoute("root-restoring-child");
+		routeRoots.push(path.dirname(route.eventSink));
+		setNestedRouteEnv(route);
+		process.env[SUBAGENT_CHILD_ENV] = "1";
+		process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
+		const runId = "restoring-child-owned", owner = "restoring-child-session", asyncDir = getRunMetadataDir(runId);
+		routeRoots.push(asyncDir);
+		saveQuestionOwner(runId, owner);
+		saveRunStatus(runId, { runtimeVersion: 2, runId, sessionId: owner, mode: "single", state: "running",
+			pid: process.pid, startedAt: 1, steps: [{ agent: "worker", status: "running" }] });
+		const run = { runId, rootRunId: runId, ownerSessionId: owner, source: "async", mode: "single", cwd: asyncDir,
+			task: "Retain live nested work", startedAt: 1, asyncDir, children: [{ agent: "worker", index: 0 }] };
+		const entries = Array.from({ length: 64 }, (_, index) => ({ type: "custom", id: `entry-${index}`,
+			customType: index === 63 ? "subagent-run" : "fixture", data: index === 63 ? run : {}, timestamp: new Date().toISOString() }));
+		const context = { ...ctx(asyncDir), isIdle: () => true, hasPendingMessages: () => false,
+			sessionManager: { getSessionId: () => owner, getSessionFile: () => undefined, getHeader: () => undefined,
+				getEntries: () => entries, getEntry: (id: string) => entries.find((entry) => entry.id === id) } };
+		const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
+		const pi = { events: { on() { return () => {}; }, emit() {} }, registerTool() {}, appendEntry() {},
+			on(name: string, handler: (...args: any[]) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+			getSessionName: () => "child", getActiveTools: () => ["agent_runs"], getAllTools: () => [], setActiveTools() {} } as any;
+		const emit = async (name: string) => { for (const handler of handlers.get(name) ?? []) await handler({}, context); };
+		const interval = setInterval;
+		let poll: (() => void) | undefined;
+		t.mock.method(globalThis, "setInterval", (callback, ms, ...args) => {
+			if (ms === 200) { poll = callback; return interval(() => {}, ms); }
+			return interval(callback, ms, ...args);
+		});
+		registerFanoutChildSubagentExtension(pi);
+		const request = writeNestedControlRequest(route, { ts: Date.now() - 1000, requestId: "during-restoration",
+			targetRunId: runId, action: "interrupt" });
+		const restoring = emit("session_start");
+		try {
+			await new Promise<void>((resolve) => setImmediate(() => { poll!(); resolve(); }));
+			assert.deepEqual(readNestedControlResults(route), [], "partial ownership cannot reject or acknowledge the request");
+			assert.equal(fs.existsSync(request), true);
+			assert.equal(fs.existsSync(`${request}.claimed`), false, "recovery must finish before claiming controls");
+			await restoring;
+			poll!();
+			const results = readNestedControlResults(route);
+			assert.equal(results.length, 1);
+			assert.equal(results[0].ok, true, results[0].message);
+			assert.equal(JSON.parse(fs.readFileSync(path.join(asyncDir, "control-request.json"), "utf-8")).action, "interrupt");
+			assert.equal(fs.existsSync(request), false);
+		} finally { await restoring; await emit("session_shutdown"); }
 	});
 
 	it("keeps fanout child control requests when result writing fails and retries after recovery", async () => {

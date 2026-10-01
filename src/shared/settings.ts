@@ -149,13 +149,12 @@ export function removeChainDir(chainDir: string): void {
 	}
 }
 
-export function cleanupOldChainDirs(): void {
+export async function cleanupOldChainDirs(): Promise<void> {
 	ensureSafeTempPath(CHAIN_RUNS_DIR);
-	if (!fs.existsSync(CHAIN_RUNS_DIR)) return;
 	const now = Date.now();
 	let dirs: string[];
 	try {
-		dirs = fs.readdirSync(CHAIN_RUNS_DIR);
+		dirs = await fs.promises.readdir(CHAIN_RUNS_DIR);
 	} catch {
 		// Startup cleanup is best-effort. If the scoped temp root is unreadable,
 		// skip cleanup instead of failing extension startup.
@@ -165,9 +164,9 @@ export function cleanupOldChainDirs(): void {
 	for (const dir of dirs) {
 		try {
 			const dirPath = path.join(CHAIN_RUNS_DIR, dir);
-			const stat = fs.lstatSync(dirPath);
+			const stat = await fs.promises.lstat(dirPath);
 			if (stat.isDirectory() && now - stat.mtimeMs > CHAIN_DIR_MAX_AGE_MS) {
-				fs.rmSync(dirPath, { recursive: true });
+				await fs.promises.rm(dirPath, { recursive: true });
 			}
 		} catch {
 			// Skip directories that can't be processed; continue with others

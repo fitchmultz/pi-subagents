@@ -36,9 +36,9 @@ export function ensureSafeTempPath(candidate: string): void {
 
 // Missing, malformed, or non-object JSON means the entry is incomplete garbage and safe
 // to remove. Operational read failures throw so callers fail closed instead of deleting.
-function readJsonObject(file: string): Record<string, unknown> | undefined {
+async function readJsonObject(file: string): Promise<Record<string, unknown> | undefined> {
 	try {
-		const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf-8"));
+		const parsed: unknown = JSON.parse(await fs.promises.readFile(file, "utf-8"));
 		return parsed !== null && typeof parsed === "object" ? parsed as Record<string, unknown> : undefined;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return undefined;
@@ -46,25 +46,25 @@ function readJsonObject(file: string): Record<string, unknown> | undefined {
 	}
 }
 
-function activeStatus(statusFile: string): boolean {
-	const status = readJsonObject(statusFile);
+async function activeStatus(statusFile: string): Promise<boolean> {
+	const status = await readJsonObject(statusFile);
 	return status?.state === "running" || status?.state === "queued";
 }
 
-function removeOldEntries(root: string, now: number, keepActive?: (entryPath: string) => boolean): void {
+async function removeOldEntries(root: string, now: number, keepActive?: (entryPath: string) => boolean | Promise<boolean>): Promise<void> {
 	let entries: fs.Dirent[];
 	try {
-		entries = fs.readdirSync(root, { withFileTypes: true });
+		entries = await fs.promises.readdir(root, { withFileTypes: true });
 	} catch {
 		return;
 	}
 	for (const entry of entries) {
 		const entryPath = path.join(root, entry.name);
 		try {
-			const stat = fs.lstatSync(entryPath);
+			const stat = await fs.promises.lstat(entryPath);
 			if (now - stat.mtimeMs <= MAX_RUN_AGE_MS) continue;
-			if (keepActive && entry.isDirectory() && keepActive(entryPath)) continue;
-			fs.rmSync(entryPath, { recursive: entry.isDirectory(), force: true });
+			if (keepActive && entry.isDirectory() && await keepActive(entryPath)) continue;
+			await fs.promises.rm(entryPath, { recursive: entry.isDirectory(), force: true });
 		} catch {
 			// Startup retention cleanup is best effort; entries that fail closed are skipped.
 		}
@@ -76,15 +76,15 @@ function removeOldEntries(root: string, now: number, keepActive?: (entryPath: st
 // reports an active state. Child writes land in the events/ and controls/ subdirs without
 // bumping the route-root mtime; registry projection renames into routeRoot, which the
 // caller's mtime gate already covers.
-function nestedRouteActive(routeRoot: string, now: number): boolean {
+async function nestedRouteActive(routeRoot: string, now: number): Promise<boolean> {
 	for (const name of ["events", "controls"]) {
 		try {
-			if (now - fs.statSync(path.join(routeRoot, name)).mtimeMs <= MAX_RUN_AGE_MS) return true;
+			if (now - (await fs.promises.stat(path.join(routeRoot, name))).mtimeMs <= MAX_RUN_AGE_MS) return true;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 	}
-	const metadata = readJsonObject(path.join(routeRoot, "route.json"));
+	const metadata = await readJsonObject(path.join(routeRoot, "route.json"));
 	if (!metadata || !isSafeNestedPathId(metadata.rootRunId)) return false;
 	return activeStatus(path.join(ASYNC_DIR, metadata.rootRunId, "status.json"));
 }
@@ -93,15 +93,15 @@ function pendingQuestion(runDir: string): boolean {
 	return listRunQuestions(runDir).some((question) => question.state === "awaiting_input" || question.state === "answer_pending");
 }
 
-export function cleanupOldRunStorage(now = Date.now()): void {
+export async function cleanupOldRunStorage(now = Date.now()): Promise<void> {
 	for (const [dir, keepActive] of [
-		[ASYNC_DIR, (entryPath: string) => activeStatus(path.join(entryPath, "status.json")) || pendingQuestion(path.join(QUESTIONS_DIR, path.basename(entryPath)))],
+		[ASYNC_DIR, async (entryPath: string) => await activeStatus(path.join(entryPath, "status.json")) || pendingQuestion(path.join(QUESTIONS_DIR, path.basename(entryPath)))],
 		[LEGACY_QUESTIONS_DIR, pendingQuestion],
 		[RESULTS_DIR, undefined],
 		[path.join(TEMP_ROOT_DIR, "nested-subagent-runs"), undefined],
 		[path.join(TEMP_ROOT_DIR, "nested-subagent-events"), (entryPath: string) => nestedRouteActive(entryPath, now)],
 	] as const) {
 		ensureSafeTempPath(dir);
-		removeOldEntries(dir, now, keepActive);
+		await removeOldEntries(dir, now, keepActive);
 	}
 }

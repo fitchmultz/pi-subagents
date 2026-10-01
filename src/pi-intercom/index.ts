@@ -1435,6 +1435,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           throw new Error("Intercom runtime no longer active");
         }
         client = nextClient;
+        // Startup can change the name before registration accepts presence updates.
+        syncPresenceIdentity(contextAtStart.sessionManager.getSessionId());
         reconnectAttempt = 0;
         if (nextClient.supportsTopics) {
           const failure = await restoreTopics(nextClient);
@@ -1761,6 +1763,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     runtimeContext = null;
     currentSessionId = null;
+  });
+  pi.on("session_info_changed", (_event, ctx) => {
+    if (getLiveContext(ctx) && currentSessionId) syncPresenceIdentity(currentSessionId);
   });
   pi.on("session_tree", (_event, ctx) => {
     restoreLazyTools(pi, ctx, "load_intercom", ["intercom"]);

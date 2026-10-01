@@ -7,6 +7,7 @@ import { snapshotNativeUsage, readNativeUsage } from "./native-usage.ts";
 import { runHistoryIndex, updateRunHistory } from "./history-index.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import { runCooperatively, runSynchronously } from "../../shared/cooperative.ts";
 import { compactForegroundResult, getFinalOutput, getSingleResultOutput, readStatus } from "../../shared/utils.ts";
 import { resolveSubagentResultStatus } from "../../intercom/result-intercom.ts";
 import { buildManagementControl, formatAgentProcessExit, formatRunAction } from "../../shared/status-format.ts";
@@ -23,7 +24,7 @@ import { sumAttemptUsage } from "./model-fallback.ts";
 import { workflowAgentNodes } from "./workflow-graph.ts";
 import { collectInvocationAgentNames } from "../../shared/settings.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
-import { compactOwnerResult, getRunMetadataDir, listOwnedRunQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionOwner, saveQuestionContract, type SupervisorRunContract } from "./supervisor-questions.ts";
+import { compactOwnerResult, getRunMetadataDir, listOwnedRunQuestions, migrateSupervisorQuestionSteps, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionOwner, saveQuestionContract, type SupervisorRunContract } from "./supervisor-questions.ts";
 import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, truncateOutput, type AgentProgress, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
 
 export const OWNED_RUN_ENTRY = "subagent-run";
@@ -173,12 +174,26 @@ export interface OwnedRunRestoration {
 }
 
 export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, options: { strict?: boolean } = {}): OwnedRunRestoration {
+	return runSynchronously(restoreOwnedRunSteps(state, ctx, options));
+}
+
+export async function restoreOwnedRunsAsync(state: SubagentState, ctx: ExtensionContext): Promise<OwnedRunRestoration> {
+	const onRunsChanged = state.onRunsChanged;
+	// Publish readiness once restoration is complete, before starting browse/UI work.
+	state.onRunsChanged = undefined;
+	try { return await runCooperatively(restoreOwnedRunSteps(state, ctx)); }
+	finally { state.onRunsChanged = onRunsChanged; }
+}
+
+function* restoreOwnedRunSteps(state: SubagentState, ctx: ExtensionContext, options: { strict?: boolean } = {}): Generator<void, OwnedRunRestoration> {
 	const startedAt = Date.now();
 	const ownerSessionId = ctx.sessionManager.getSessionId();
-	const entries = [...entryMetadata(ctx.sessionManager)];
+	const entries: SessionEntry[] = [];
+	for (const entry of entryMetadata(ctx.sessionManager)) { entries.push(entry); yield; }
 	state.ownedRuns = new Map();
-	migrateSupervisorQuestions(ownerSessionId);
+	yield* migrateSupervisorQuestionSteps(ownerSessionId);
 	for (const entry of entries) {
+		yield;
 		if (entry.type !== "custom" || entry.customType !== OWNED_RUN_ENTRY) continue;
 		const run = (ctx.sessionManager.getEntry(entry.id) as typeof entry | undefined)?.data as OwnedRun | undefined;
 		if (run?.ownerSessionId === ownerSessionId && run.runId && Array.isArray(run.children)) state.ownedRuns.set(run.runId, run);
@@ -189,17 +204,25 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 	if (parentFile && fs.existsSync(parentFile)) {
 		for (const id of snapshotNativeUsage(parentFile)) inheritedIds.add(id);
 	}
-	const recoveredReceipts = entries.filter((entry) => entry.type === "message" && entry.message.role === "toolResult" && ["subagent", "delegate", "agent_runs"].includes(entry.message.toolName)
-		|| entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE).map((entry) => ctx.sessionManager.getEntry(entry.id)!).filter(Boolean);
+	const recoveredReceipts: SessionEntry[] = [];
+	for (const entry of entries) {
+		yield;
+		if (!(entry.type === "message" && entry.message.role === "toolResult" && ["subagent", "delegate", "agent_runs"].includes(entry.message.toolName)
+			|| entry.type === "custom_message" && entry.customType === SLASH_RESULT_TYPE)) continue;
+		const receipt = ctx.sessionManager.getEntry(entry.id);
+		if (receipt) recoveredReceipts.push(receipt);
+	}
 	const calls = new Map<string, SubagentParamsLike>();
 	const needsLegacyCalls = recoveredReceipts.some((entry) => { const details = receiptDetails(entry); return details && !state.ownedRuns!.has(details.runId ?? details.asyncId ?? ""); });
 	for (const metadata of needsLegacyCalls ? entries : []) {
+		yield;
 		if (metadata.type !== "message" || metadata.message.role !== "assistant") continue;
 		const entry = ctx.sessionManager.getEntry(metadata.id);
 		if (entry?.type !== "message" || entry.message.role !== "assistant" || !Array.isArray(entry.message.content)) continue;
 		for (const part of entry.message.content) if (part.type === "toolCall" && ["subagent", "delegate"].includes(part.name)) calls.set(part.id, part.arguments as SubagentParamsLike);
 	}
 	for (const entry of recoveredReceipts) {
+		yield;
 		if (inheritedIds.has(entry.id) || (parentFile && !fs.existsSync(parentFile))) continue;
 		const details = receiptDetails(entry);
 		const runId = details?.runId ?? details?.asyncId;
@@ -237,9 +260,10 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 		sessionId: ctx.sessionManager.getSessionFile() ?? resolveCurrentSessionId(ctx.sessionManager), ownerSessionId,
 		receiptRunIds: () => state.ownedRuns!.keys(), skipInvalid: !options.strict,
 	});
-	const discover = () => {
-		const records = scan();
+	function* discoverSteps(): Generator<void, AsyncRunRecord[]> {
+		const records = yield* scan.steps();
 		for (const { location, status, durable } of records) {
+			yield;
 			try {
 				const asyncDir = location.asyncDir;
 				if (!asyncDir || !status) continue;
@@ -278,9 +302,11 @@ export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, op
 			}
 		}
 		return records;
-	};
-	const records = discover();
+	}
+	const discover = () => runSynchronously(discoverSteps());
+	const records = yield* discoverSteps();
 	for (const run of state.ownedRuns.values()) {
+		yield;
 		try {
 			const stored = readRunJson<ForegroundResumeRun>(path.join(getRunMetadataDir(run.runId), "foreground.json"));
 			if (stored) (state.foregroundRuns ??= new Map()).set(run.runId, stored);

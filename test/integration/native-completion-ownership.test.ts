@@ -203,6 +203,118 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 });
 
 for (const scenario of [
+	{ name: "repeat native startup joins in-flight delivery before replacing the completion listeners", shutdown: false, childSafe: false, unowned: false, delivered: false },
+	{ name: "native shutdown retains failed in-flight completion for session reopen", shutdown: true, childSafe: false, unowned: false, delivered: false },
+	{ name: "child-safe native shutdown retains failed in-flight completion for session reopen", shutdown: true, childSafe: true, unowned: false, delivered: false },
+	{ name: "native shutdown retains an unowned legacy completion for session reopen", shutdown: true, childSafe: false, unowned: true, delivered: false },
+	{ name: "native shutdown preserves an acknowledged Intercom completion without fabricating a published receipt", shutdown: true, childSafe: false, unowned: false, delivered: true },
+]) test(scenario.name, async (t) => {
+	const previousChild = process.env.PI_SUBAGENT_CHILD, previousFanout = process.env.PI_SUBAGENT_FANOUT_CHILD;
+	process.env.PI_SUBAGENT_CHILD = scenario.childSafe ? "1" : "0";
+	process.env.PI_SUBAGENT_FANOUT_CHILD = scenario.childSafe ? "1" : "0";
+	t.after(() => {
+		if (previousChild === undefined) delete process.env.PI_SUBAGENT_CHILD; else process.env.PI_SUBAGENT_CHILD = previousChild;
+		if (previousFanout === undefined) delete process.env.PI_SUBAGENT_FANOUT_CHILD; else process.env.PI_SUBAGENT_FANOUT_CHILD = previousFanout;
+	});
+	const cwd = fs.mkdtempSync(path.join(root, "rebinding-"));
+	const manager = sdk.SessionManager.create(cwd, path.join(cwd, "sessions"));
+	manager.appendMessage(ai.fauxAssistantMessage("Retain saved child work"));
+	for (let index = 0; index < 64; index++) manager.appendCustomEntry("fixture", {});
+	const runId = randomUUID(), asyncDir = getRunMetadataDir(runId);
+	if (!scenario.unowned) {
+		manager.appendCustomEntry("subagent-run", { runId, rootRunId: runId, ownerSessionId: manager.getSessionId(), source: "async",
+			mode: "single", cwd, task: "Bounded work", startedAt: 1, asyncDir, children: [{ agent: "worker", index: 0 }] });
+		saveQuestionOwner(runId, manager.getSessionId());
+		saveRunStatus(runId, { runtimeVersion: 2, runId, sessionId: manager.getSessionId(), mode: "single",
+			state: "complete", startedAt: 1, endedAt: 2, steps: [{ agent: "worker", status: "complete" }] });
+	}
+	const result = { runtimeVersion: scenario.unowned ? undefined : 2, id: runId, sessionId: manager.getSessionId(), mode: "single",
+		state: "complete", success: true, timestamp: 2, summary: "Retained completion", intercomTarget: "fixture-parent",
+		results: [{ agent: "worker", success: true, exitCode: 0, output: "Retained completion" }] };
+	const hint = path.join(RESULTS_DIR, `${runId}.json`);
+	if (scenario.unowned) {
+		fs.mkdirSync(RESULTS_DIR, { recursive: true });
+		fs.writeFileSync(hint, JSON.stringify(result));
+	} else saveAsyncRunResult(runId, result);
+	const bus = sdk.createEventBus(), errors: unknown[] = [];
+	let request: { requestId: string } | undefined;
+	bus.on("subagent:result-intercom", (data) => { request = data; });
+	const settingsManager = sdk.SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: { enabled: false } });
+	const faux = ai.fauxProvider({ provider: "rebinding-completion-fixture", tokensPerSecond: 1000000 });
+	faux.setResponses([ai.fauxAssistantMessage("Completion received")]);
+	const modelRuntime = await sdk.ModelRuntime.create({ credentials: new ai.InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+	modelRuntime.registerNativeProvider(faux.provider);
+	const createRuntime = async ({ sessionManager }) => {
+		const services = await sdk.createAgentSessionServices({ cwd, agentDir: process.env.PI_CODING_AGENT_DIR, settingsManager, modelRuntime,
+			resourceLoaderOptions: { eventBus: bus, noExtensions: true, noSkills: true, noContextFiles: true, noThemes: true, noPromptTemplates: true,
+				additionalExtensionPaths: [path.resolve(scenario.childSafe ? "src/extension/fanout-child.ts" : "src/extension/index.ts")] } });
+		assert.deepEqual(services.resourceLoader.getExtensions().errors, []);
+		return { ...await sdk.createAgentSessionFromServices({ services, sessionManager, model: faux.getModel(), tools: ["subagent", "agent_runs"] }),
+			services, diagnostics: services.diagnostics };
+	};
+	let runtime = await sdk.createAgentSessionRuntime(createRuntime, { cwd, agentDir: process.env.PI_CODING_AGENT_DIR, sessionManager: manager });
+	let disposed = false;
+	const until = async (check: () => boolean, reason: string) => {
+		const deadline = performance.now() + 5000;
+		while (!check()) { assert.ok(performance.now() < deadline, reason); await delay(10); }
+	};
+	const notices = () => runtime.session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify");
+	const projection = () => runtime.session.sessionManager.getEntries().findLast((entry) => entry.type === "custom" && entry.customType === "subagent-run" && entry.data.runId === runId)?.data;
+	try {
+		const bindings = { mode: "json", onError: (error) => errors.push(error) };
+		await runtime.session.bindExtensions(bindings);
+		await until(() => Boolean(request), "the first watcher starts Intercom delivery");
+		if (process.env.PI_CHECKPOINT_TEST_REQUIRED === "1") assert.equal(typeof runtime.disposeWithCheckpoint, "function");
+		disposed = scenario.shutdown;
+		const transition = scenario.shutdown
+			? typeof runtime.disposeWithCheckpoint === "function"
+				? runtime.disposeWithCheckpoint({ signal: AbortSignal.timeout(5000), waitForHost: async () => {} })
+				: runtime.dispose()
+			: runtime.session.bindExtensions(bindings);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		bus.emit("subagent:result-intercom-delivery", { requestId: request!.requestId, delivered: scenario.delivered });
+		const checkpoint = await transition;
+		checkpoint?.release();
+		if (scenario.shutdown) {
+			assert.deepEqual(errors, [], "shutdown must not request a new native turn after ingress closes");
+			assert.equal(faux.state.callCount, 0);
+			assert.equal(notices().length, 0);
+			assert.equal(fs.existsSync(hint), scenario.unowned && !scenario.delivered, "unacknowledged legacy-only input remains available");
+			assert.equal(fs.existsSync(path.join(asyncDir, "result.json")), !scenario.unowned);
+			assert.equal(projection()?.delivery, undefined, "acknowledgement alone is not a published parent receipt");
+			if (scenario.delivered) {
+				assert.equal(projection().completion.state, "queued");
+				assert.equal(projection().completion.channel, "intercom", "listeners retain the remote acknowledgement before stopping");
+				return;
+			}
+			assert.notEqual(projection()?.completion?.state, "queued", "an undelivered result must remain eligible");
+			request = undefined;
+			runtime = await sdk.createAgentSessionRuntime(createRuntime, { cwd, agentDir: process.env.PI_CODING_AGENT_DIR,
+				sessionManager: sdk.SessionManager.open(manager.getSessionFile()) });
+			disposed = false;
+			await runtime.session.bindExtensions(bindings);
+			await until(() => Boolean(request), "reopened session retries the retained completion");
+			bus.emit("subagent:result-intercom-delivery", { requestId: request!.requestId, delivered: false });
+		}
+		await until(() => notices().length > 0, "failed in-flight Intercom delivery publishes its fallback during startup or reopen");
+		await runtime.session.waitForIdle();
+		assert.equal(notices().length, 1, "the retained result is delivered exactly once");
+		if (!scenario.unowned) {
+			await until(() => Boolean(projection().delivery?.entryId), "the owner reconciles its published receipt");
+			assert.equal(projection().delivery.entryId, notices()[0].id);
+		}
+		assert.equal(fs.existsSync(hint), false);
+		assert.equal(fs.existsSync(path.join(asyncDir, "result.json")), !scenario.unowned);
+		assert.deepEqual(errors, []);
+	} finally {
+		if (!disposed) {
+			await runtime.session.abort();
+			await runtime.dispose();
+		}
+	}
+});
+
+for (const scenario of [
 	{ name: "unowned legacy completion", kind: "launch", index: undefined, finished: true, receipt: true, unowned: true, suppress: false },
 	{ name: "background launch receipt", kind: "launch", index: undefined, finished: true, receipt: true, suppress: false },
 	{ name: "completed child answer", kind: "answer", index: 1, finished: true, suppress: false },

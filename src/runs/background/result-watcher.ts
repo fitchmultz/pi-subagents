@@ -80,7 +80,8 @@ export function createResultWatcher(
 ): {
 	startResultWatcher: () => void;
 	primeExistingResults: () => void;
-	stopResultWatcher: () => void;
+	stopResultWatcher: (preservePending?: boolean) => void;
+	joinInFlight: () => Promise<void>;
 	holdCheckpoint: (event: NativeCheckpointEvent) => Promise<void>;
 } {
 	const fsApi = deps.fs ?? fs;
@@ -89,7 +90,7 @@ export function createResultWatcher(
 	const processingCompletionKeys = new Set<string>();
 	const inFlight = new Set<Promise<void>>();
 	let checkpoint: NativeCheckpointEvent | undefined;
-	let startTail = Promise.resolve(), generation = 0;
+	let startTail = Promise.resolve(), generation = 0, preserveBeforeGeneration = 0;
 	const foreignResults = new Map<string, { stamp: string; sessionId: string | null; runId: string; ownerSessionId?: string; canonicalPath?: string; canonicalStamp?: string }>();
 
 	const readResult = (file: string) => fsApi === fs ? readAsyncResultFile(file) : parseAsyncResultFileContent(fsApi.readFileSync(file, "utf-8"), file);
@@ -122,6 +123,7 @@ export function createResultWatcher(
 	};
 
 	const handleResult = async (file: string) => {
+		const resultGeneration = generation;
 		let claimedCompletionKey: string | undefined;
 		let completionEmitted = false;
 		const durableFile = path.isAbsolute(file);
@@ -233,6 +235,10 @@ export function createResultWatcher(
 				intercomResultDelivered = await deliverSubagentResultIntercomEvent(pi.events, payload);
 			}
 
+			// Shutdown closes native turn ingress. Retain failed deliveries for the
+			// next startup, while still recording acknowledgements already accepted.
+			if (!intercomResultDelivered && resultGeneration < preserveBeforeGeneration) return;
+
 			const { terminalState: _terminalState, ...eventData } = data;
 			pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
 				...eventData,
@@ -258,11 +264,13 @@ export function createResultWatcher(
 			completionEmitted = true;
 			consumeNotification();
 		} catch (error) {
-			if (claimedCompletionKey && !completionEmitted) state.completionSeen.delete(claimedCompletionKey);
 			if (isNotFoundError(error)) return;
 			console.error(`Failed to process subagent result file '${resultPath}':`, error);
 		} finally {
-			if (claimedCompletionKey) processingCompletionKeys.delete(claimedCompletionKey);
+			if (claimedCompletionKey) {
+				processingCompletionKeys.delete(claimedCompletionKey);
+				if (!completionEmitted) state.completionSeen.delete(claimedCompletionKey);
+			}
 		}
 	};
 
@@ -408,8 +416,9 @@ export function createResultWatcher(
 		}
 	};
 
-	const stopResultWatcher = () => {
+	const stopResultWatcher = (preservePending = false) => {
 		generation++;
+		if (preservePending) preserveBeforeGeneration = generation;
 		state.watcher?.close();
 		state.watcher = null;
 		clearPeriodicScan();
@@ -421,6 +430,8 @@ export function createResultWatcher(
 		state.resultFileCoalescer.clear();
 		foreignResults.clear();
 	};
+
+	const joinInFlight = async () => { await Promise.all([...inFlight]); };
 
 	const holdCheckpoint = async (event: NativeCheckpointEvent) => {
 		checkpoint = event;
@@ -434,7 +445,7 @@ export function createResultWatcher(
 			// Its native notification cannot run while held. Invalidate first, join
 			// the existing tail without cancelling it, then retry from real idle.
 			event.invalidate();
-			await Promise.all([...inFlight]);
+			await joinInFlight();
 		} else {
 			// Do not capture the gap between notification and a failed unlink:
 			// completionSeen is only a runtime deduper. Finish ordinary delivery
@@ -443,5 +454,5 @@ export function createResultWatcher(
 		}
 	};
 
-	return { startResultWatcher, primeExistingResults, stopResultWatcher, holdCheckpoint };
+	return { startResultWatcher, primeExistingResults, stopResultWatcher, joinInFlight, holdCheckpoint };
 }

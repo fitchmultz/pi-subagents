@@ -243,6 +243,21 @@ test("native Doctor reports broker registration and loaded compiled identity, no
   if (evidenceDir) writeFileSync(path.join(root, "doctor-loaded-identity.json"), JSON.stringify({ before, after }, null, 2));
 });
 
+test("native session renaming after startup updates its broker target without a model turn", async (t) => {
+  const receiver = await makeSession(t, "rename-before");
+  const registered = (await receiver.sender.listSessions()).find((peer) => peer.name === "rename-before")!;
+  receiver.session.setSessionName("rename-after");
+  await waitFor(async () => (await receiver.sender.listSessions()).some((peer) => peer.name === "rename-after"), "renamed broker target");
+  const peers = await receiver.sender.listSessions();
+  assert.equal(peers.find((peer) => peer.name === "rename-after")?.id, registered.id, "renaming retains the same registered owner");
+  assert.ok(!peers.some((peer) => peer.name === "rename-before"));
+  const receipt = await receiver.sender.send("rename-after", { text: "Renamed target", messageId: "renamed-passive", delivery: "passive" });
+  assert.equal(receipt.accepted, true);
+  await waitFor(() => receiver.visible("renamed-passive").length === 1, "passive delivery under the updated name");
+  assert.equal(receiver.faux.state.callCount, 0);
+  assert.deepEqual(receiver.errors, []);
+});
+
 test("native steady passive receipts do not rescan old history and still survive tree navigation", async (t) => {
   const receiver = await makeSession(t, "incremental-receipts");
   const manager = receiver.session.sessionManager;

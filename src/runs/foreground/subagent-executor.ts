@@ -93,9 +93,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		ctx: ExtensionContext,
 		executionCwd?: string,
 	): Promise<SubagentExecutionResult> => {
-		deps.ensureSessionState?.(ctx);
 		const needsExecutionCwd = !params.action || params.cwd !== undefined || ["list", "get", "create", "update", "delete", "doctor"].includes(params.action);
 		const invocationCwd = needsExecutionCwd ? executionCwd ?? resolveExecutionCwd(deps.pi, ctx) : ctx.cwd;
+		await deps.ensureSessionState?.(ctx);
 		if (needsExecutionCwd) deps.state.baseCwd = invocationCwd;
 		deps.state.foregroundRuns ??= new Map();
 		const requestCwd = resolveRequestedCwd(invocationCwd, params.cwd);
@@ -504,7 +504,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		}
 		return projectSupervisorQuestions(result, args[1], args[4].sessionManager.getSessionId(), Boolean(nestedResolutionScopeForExecutor(deps)));
 	}, resume: async (id, _params, signal, onUpdate, ctx) => {
-		deps.ensureSessionState?.(ctx);
+		await deps.ensureSessionState?.(ctx);
 		const invocation = nativeInvocations(ctx).find((call) => call.toolCallId === id);
 		const target = invocation && nativeInvocationTarget(ctx, invocation);
 		if (!target) return undefined;

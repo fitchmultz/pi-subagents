@@ -150,9 +150,16 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 		fs.mkdirSync(RESULTS_DIR, { recursive: true });
 		watcher.startResultWatcher(); watcher.primeExistingResults();
 	};
-	const stop = () => {
-		watcher.stopResultWatcher(); unsubscribe?.(); unsubscribe = undefined; unsubscribeNotify?.(); unsubscribeNotify = undefined;
+	const stopListening = () => {
+		unsubscribe?.(); unsubscribe = undefined; unsubscribeNotify?.(); unsubscribeNotify = undefined;
 		publishedReceipts.clear(); completedCursor.reset(); completedCalls.clear(); receiptEntryIds.clear();
 	};
-	return { start, stop, holdCheckpoint: watcher.holdCheckpoint };
+	const stop = () => { watcher.stopResultWatcher(); stopListening(); };
+	const stopAndJoin = async (options: { preservePending?: boolean } = {}) => {
+		// Finish accepted delivery while the old owner and its listeners are valid.
+		watcher.stopResultWatcher(options.preservePending);
+		await watcher.joinInFlight();
+		stopListening();
+	};
+	return { start, stop, stopAndJoin, holdCheckpoint: watcher.holdCheckpoint };
 }

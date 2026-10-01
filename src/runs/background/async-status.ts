@@ -10,6 +10,7 @@ import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-
 import { asyncRunRoots, readAsyncRunRecord, type AsyncRunRecord } from "./async-resume.ts";
 import { RESULTS_DIR } from "../../shared/types.ts";
 import { getRunMetadataDir, readRunJson } from "../shared/supervisor-questions.ts";
+import { runSynchronously } from "../../shared/cooperative.ts";
 
 interface AsyncRunStepSummary {
 	index: number;
@@ -302,17 +303,18 @@ function sortRuns(runs: AsyncRunSummary[]): AsyncRunSummary[] {
 }
 
 /** Retry new/unpublished runs without retaining payloads or negative ownership facts. */
-export function createAsyncRunDiscovery(asyncDirRoot: string, options: AsyncRunDiscoveryOptions = {}): () => AsyncRunRecord[] {
+export function createAsyncRunDiscovery(asyncDirRoot: string, options: AsyncRunDiscoveryOptions = {}): (() => AsyncRunRecord[]) & { steps: () => Generator<void, AsyncRunRecord[]> } {
 	const owners = new Map<string, string>();
 	const discovered = new Set<string>();
 	const sessionIds = new Set([options.sessionId, options.ownerSessionId].filter((id): id is string => Boolean(id)));
 	// A legacy file-path-only query cannot classify native UUID owners as foreign.
 	const ownerSessionId = options.ownerSessionId ?? (options.sessionId && !path.isAbsolute(options.sessionId) ? options.sessionId : undefined);
-	return () => {
+	function* steps(): Generator<void, AsyncRunRecord[]> {
 		const receipts = new Set(options.receiptRunIds?.());
 		const entries = new Set(receipts);
 		for (const root of asyncRunRoots(asyncDirRoot)) try {
 			for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+				yield;
 				try {
 					if (entry.isDirectory() || (entry.isSymbolicLink() && isAsyncRunDir(root, entry.name))) entries.add(entry.name);
 				} catch (error) {
@@ -329,6 +331,7 @@ export function createAsyncRunDiscovery(asyncDirRoot: string, options: AsyncRunD
 
 		const records: AsyncRunRecord[] = [];
 		for (const entry of entries) {
+			yield;
 			try {
 				if (discovered.has(entry)) continue;
 				let owner = owners.get(entry);
@@ -364,7 +367,8 @@ export function createAsyncRunDiscovery(asyncDirRoot: string, options: AsyncRunD
 			}
 		}
 		return records;
-	};
+	}
+	return Object.assign(() => runSynchronously(steps()), { steps });
 }
 
 export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions = {}): AsyncRunSummary[] {
