@@ -31,6 +31,7 @@ const CONTINUE_NOTICES = {
 type ExecuteControl = (params: SubagentParamsLike, ctx: ExtensionContext) => Promise<SubagentExecutionResult>;
 type Quote = { title: string; text: string };
 type Anchor = { id: string; line: number };
+type ConfigurationSource = { file?: string; endedAt?: number; leaf?: string | null; native?: NonNullable<AgentHistory["configuration"]> };
 interface OutgoingMessage {
 	id: string;
 	runId: string;
@@ -143,7 +144,8 @@ export class AgentViewController {
 	private saveTimer?: ReturnType<typeof setTimeout>;
 	private unsubscribe?: () => void;
 	private history = new NativeAgentHistory();
-	private views = new Map<string, { run: OwnedRun; view: OwnedRunView }>();
+	private views = new Map<string, { run: OwnedRun; view: OwnedRunView; questions: SupervisorQuestionView[]; configurations: Map<number, ConfigurationSource> }>();
+	private taskKeys = new Map<string, string>();
 	private visits = new Map<string, AgentVisit>();
 	private busy = new Set<string>();
 	private lastSaved = "";
@@ -240,8 +242,7 @@ export class AgentViewController {
 						lines.push(theme.fg("dim", line));
 					}
 					if (pinned) {
-						const last = pinned.history.findLast((item) => item.kind === "assistant")?.text;
-						const preview = pinned.child.identityUnavailable ? UNAVAILABLE_ASSIGNMENT : pinned.child.state === "live" ? activity(pinned) : (pinned.child.result && getSingleResultOutput(pinned.child.result)) || last || activity(pinned);
+						const preview = pinned.child.identityUnavailable ? UNAVAILABLE_ASSIGNMENT : pinned.child.state === "live" ? activity(pinned) : (pinned.child.result && getSingleResultOutput(pinned.child.result)) || pinned.history.findLast((item) => item.kind === "assistant")?.text || activity(pinned);
 						const unpin = "[Unpin] ", row = lines.length;
 						lines.push(theme.fg("dim", truncateToWidth(`${unpin}Pinned · ${pinned.child.state === "completed" ? "finished · " : ""}${short(pinned.label, 30)}: ${short(preview, width)}`, width)));
 						hits.push({ start: 0, end: unpin.length, row, unpin: true }, { start: unpin.length, end: width, row, key: pinned.key });
@@ -276,28 +277,49 @@ export class AgentViewController {
 	}
 
 	private taskKey(run: OwnedRun, child: Pick<OwnedRunView["children"][number], "index" | "workflowNodeId" | "sessionFile" | "identityUnavailable">): string {
-		const predecessor = run.predecessorRunId && this.state.ownedRuns?.get(run.predecessorRunId);
-		if (!predecessor) return `${run.runId}:${child.workflowNodeId ?? (run.mode === "chain" && child.sessionFile && !child.identityUnavailable ? `session:${child.sessionFile}` : child.index)}`;
-		const index = run.predecessorIndex ?? 0;
-		const previous = (this.views.get(predecessor.runId)?.view ?? ownedRunView(predecessor, this.state, { pendingInput: false, includeContinuations: false, readConfiguration: (file, endedAt, leaf) => this.history.configuration(file, endedAt, leaf, endedAt === undefined) })).children.find((candidate) => candidate.index === index);
-		return this.taskKey(predecessor, previous ?? { index });
+		const path = new Set<string>();
+		let key: string;
+		for (;;) {
+			const cacheKey = `${run.runId}:${child.index}`, cached = this.taskKeys.get(cacheKey);
+			if (cached) { key = cached; break; }
+			if (path.has(cacheKey)) throw new Error("Cyclic saved continuation ancestry");
+			path.add(cacheKey);
+			const predecessor = run.predecessorRunId && this.state.ownedRuns?.get(run.predecessorRunId);
+			if (!predecessor) {
+				key = `${run.runId}:${child.workflowNodeId ?? (run.mode === "chain" && child.sessionFile && !child.identityUnavailable ? `session:${child.sessionFile}` : child.index)}`;
+				break;
+			}
+			const index = run.predecessorIndex ?? 0;
+			child = (this.views.get(predecessor.runId)?.view ?? ownedRunView(predecessor, this.state, { pendingInput: false, includeContinuations: false, readConfiguration: false })).children.find((candidate) => candidate.index === index) ?? { index };
+			run = predecessor;
+		}
+		for (const cacheKey of path) this.taskKeys.set(cacheKey, key);
+		return key;
 	}
 
 	refresh(force = false): void {
 		if (!this.live()) return;
-		const tasks = new Map<string, AgentTask>();
+		this.taskKeys.clear();
+		const candidates = new Map<string, { run: OwnedRun; view: OwnedRunView; child: AgentTask["child"]; questions: SupervisorQuestionView[]; label: string }>();
 		for (const run of this.state.ownedRuns?.values() ?? []) {
 			if (run.ownerSessionId !== this.ctx!.sessionManager.getSessionId()) continue;
 			const cached = this.views.get(run.runId);
 			let view: OwnedRunView;
 			let questions: SupervisorQuestionView[] = [];
+			const configurations = new Map<number, ConfigurationSource>();
 			try {
-				questions = listOwnedRunQuestions(run.ownerSessionId, run.runId);
-				view = !force && cached?.run === run && !["live", "unknown"].includes(cached.view.state) ? cached.view : ownedRunView(run, this.state, {
+				const terminal = cached?.run === run && !["live", "unknown"].includes(cached.view.state);
+				questions = !force && terminal && !cached.questions.some((question) => question.state === "awaiting_input" || question.state === "answer_pending")
+					? cached.questions : listOwnedRunQuestions(run.ownerSessionId, run.runId);
+				const reuse = !force && terminal;
+				view = reuse ? cached.view : ownedRunView(run, this.state, {
 					pendingInput: questions.some((question) => question.state === "awaiting_input" || question.state === "answer_pending"),
-					includeContinuations: false, readConfiguration: (file, endedAt, leaf) => this.history.configuration(file, endedAt, leaf, endedAt === undefined),
+					includeContinuations: false, readConfiguration: (file, endedAt, leaf, index) => {
+						if (index !== undefined) configurations.set(index, { file, endedAt, leaf });
+						return {};
+					},
 				});
-				this.views.set(run.runId, { run, view });
+				this.views.set(run.runId, { run, view, questions, configurations: reuse ? cached.configurations : configurations });
 			} catch (error) {
 				view = { ...run, state: "unknown", updatedAt: run.startedAt, attention: ["unknown"], canInterrupt: false, continuations: [],
 					children: run.children.map((child) => ({ ...child, state: "unknown", configuration: "legacy-partial", ...(run.mode === "chain" ? { identityUnavailable: true } : {}) })),
@@ -305,27 +327,38 @@ export class AgentViewController {
 			}
 			for (const child of view.children) {
 				const key = this.taskKey(run, child);
-				const prior = tasks.get(key);
+				const prior = candidates.get(key);
 				if (prior && prior.run.startedAt > run.startedAt) continue;
-				const visit = this.visits.get(key);
-				const nativeHistory: AgentHistory = child.identityUnavailable ? { items: [], entryIds: [], unavailable: UNAVAILABLE_ASSIGNMENT } : this.history.read(child.sessionFile, child.state === "live", child.state === "live" ? {} : { leaf: child.result?.terminalLeafId, terminalEntryId: child.result?.terminalEntryId, endedAt: child.result?.terminalEntryId ? undefined : view.updatedAt });
-				const history = !child.identityUnavailable && child.state !== "live" && child.result
-					? withFinalResult(nativeHistory, getSingleResultOutput(child.result), run.runId, view.updatedAt) : nativeHistory;
-				const readIndex = visit?.readThrough ? history.entryIds.indexOf(visit.readThrough) : -1;
-				const lastSent = visit?.lastSentId ? history.items.findIndex((item) => item.messageId === visit.lastSentId) : -1;
-				if (visit) {
-					if (lastSent >= 0 && visit.notice === PENDING_MESSAGE_NOTICE) visit.notice = undefined;
-					for (const sent of visit.outbox) {
-						if (!history.items.some((item) => item.messageId === sent.id)) continue;
-						if (visit.draft === sent.draft) { visit.draft = ""; visit.quote = undefined; this.overlay?.syncDraft(); }
-					}
-					visit.outbox = visit.outbox.filter((sent) => !history.items.some((item) => item.messageId === sent.id));
-				}
-				tasks.set(key, { key, label: child.identityUnavailable ? "Saved assignment unavailable" : prior?.label ?? agentTaskLabel(child), run: view, child, model: agentModel(child, nativeHistory.configuration), history: history.items, historyIds: history.entryIds, finalId: history.finalId, unavailable: history.unavailable ?? view.diagnosis,
-					question: child.identityUnavailable ? undefined : questions.findLast((question) => question.index === child.index && (question.state === "awaiting_input" || question.state === "answer_pending")),
-					unread: !child.identityUnavailable && Boolean(visit && ((visit.readThrough !== undefined && readIndex < history.entryIds.length - 1) || (child.activity?.lastActivityAt ?? 0) > (visit.seenActivityAt ?? 0))),
-					replied: lastSent >= 0 && history.items.slice(lastSent + 1).some((item) => item.kind === "assistant") });
+				candidates.set(key, { run, view, child, questions, label: child.identityUnavailable ? "Saved assignment unavailable" : prior?.label ?? agentTaskLabel(child) });
 			}
+		}
+		const tasks = new Map<string, AgentTask>();
+		for (const [key, candidate] of candidates) {
+			const { run, view, questions, label } = candidate;
+			let { child } = candidate;
+			const source = this.views.get(run.runId)?.configurations.get(child.index);
+			if (child.launch && source) {
+				const native = source.native ??= this.history.configuration(source.file, source.endedAt, source.leaf, source.endedAt === undefined);
+				child = { ...child, launch: { ...child.launch, ...native } };
+			}
+			const visit = this.visits.get(key);
+			const nativeHistory: AgentHistory = child.identityUnavailable ? { items: [], entryIds: [], unavailable: UNAVAILABLE_ASSIGNMENT } : this.history.read(child.sessionFile, child.state === "live", child.state === "live" ? {} : { leaf: child.result?.terminalLeafId, terminalEntryId: child.result?.terminalEntryId, endedAt: child.result?.terminalEntryId ? undefined : view.updatedAt });
+			const history = !child.identityUnavailable && child.state !== "live" && child.result
+				? withFinalResult(nativeHistory, getSingleResultOutput(child.result), run.runId, view.updatedAt) : nativeHistory;
+			const readIndex = visit?.readThrough ? history.entryIds.indexOf(visit.readThrough) : -1;
+			const delivered = history.deliveredMessages;
+			if (visit) {
+				if (visit.lastSentId && delivered?.has(visit.lastSentId) && visit.notice === PENDING_MESSAGE_NOTICE) visit.notice = undefined;
+				for (const sent of visit.outbox) {
+					if (!delivered?.has(sent.id)) continue;
+					if (visit.draft === sent.draft) { visit.draft = ""; visit.quote = undefined; this.overlay?.syncDraft(); }
+				}
+				visit.outbox = visit.outbox.filter((sent) => !delivered?.has(sent.id));
+			}
+			tasks.set(key, { key, label, run: view, child, model: agentModel(child, nativeHistory.configuration), get history() { return history.items; }, historyIds: history.entryIds, finalId: history.finalId, get unavailable() { return history.unavailable ?? view.diagnosis; },
+				question: child.identityUnavailable ? undefined : questions.findLast((question) => question.index === child.index && (question.state === "awaiting_input" || question.state === "answer_pending")),
+				unread: !child.identityUnavailable && Boolean(visit && ((visit.readThrough !== undefined && readIndex < history.entryIds.length - 1) || (child.activity?.lastActivityAt ?? 0) > (visit.seenActivityAt ?? 0))),
+				replied: Boolean(visit?.lastSentId && delivered?.get(visit.lastSentId)) });
 		}
 		for (const [key, visit] of this.visits) {
 			if (tasks.has(key) || (!visit.draft && !visit.quote && !visit.outbox.length && this.pinned !== key)) continue;
@@ -540,7 +573,7 @@ export class AgentViewController {
 		this.ctx = undefined;
 		this.ownerSessionId = undefined;
 		this.tasks = [];
-		this.views.clear(); this.visits.clear(); this.busy.clear(); this.history.clear();
+		this.views.clear(); this.taskKeys.clear(); this.visits.clear(); this.busy.clear(); this.history.clear();
 		this.pinned = undefined; this.lastSaved = "";
 	}
 }
@@ -667,7 +700,7 @@ export class AgentConversation extends Container {
 	private detail?: AgentHistoryItem;
 	private menu?: SelectList;
 	private lines: Array<{ id: string; entryIds: string[]; start: number; contentStart: number; end: number }> = [];
-	private components = new Map<string, { signature: string; component: Component }>();
+	private components = new Map<string, { signature: string; item: AgentHistoryItem; component: Component }>();
 	private initialPosition = true;
 	private restoreAnchor?: Anchor;
 	private conversationAnchor?: Anchor;
@@ -787,14 +820,22 @@ export class AgentConversation extends Container {
 
 	private renderHistory(width: number): string[] {
 		this.contentItems = this.items();
+		const visibleIds = new Set(this.contentItems.map((item) => item.id));
+		for (const id of this.components.keys()) if (!visibleIds.has(id)) this.components.delete(id);
 		this.lines = [];
 		const lines: string[] = [];
 		for (const item of this.contentItems) {
 			const selected = item.id === this.selectedId && !this.editorFocus;
 			const expanded = Boolean(this.detail) || (this.toolExpansion.get(item.id) ?? this.toolsExpanded);
-			const signature = JSON.stringify([item, expanded, Boolean(this.detail)]);
+			// Native cards and selected details are immutable snapshots. Comparing
+			// identity avoids evaluating/serializing their potentially large bodies.
+			const signature = `${expanded}:${Boolean(this.detail)}`;
 			let cached = this.components.get(item.id);
-			if (cached?.signature !== signature) {
+			const sameDisplay = cached && !item.load && !cached.item.load && !item.assistant && !cached.item.assistant && !item.call && !cached.item.call && !item.result && !cached.item.result
+				&& item.kind === cached.item.kind && item.title === cached.item.title && item.text === cached.item.text
+				&& item.details === cached.item.details && item.diff === cached.item.diff && item.model === cached.item.model
+				&& item.timestamp === cached.item.timestamp && item.messageId === cached.item.messageId;
+			if (cached?.signature !== signature || cached.item !== item && !sameDisplay) {
 				const component = new Container();
 				if (this.detail && item.model) component.addChild(new Text(this.theme.fg("muted", `Message model: ${readableText(formatModelThinking(item.model))}`), 0, 0));
 				if (item.call || item.result) {
@@ -824,7 +865,7 @@ export class AgentConversation extends Container {
 				}
 				if (this.detail && item.details) component.addChild(new Text(item.details, 0, 1));
 				component.addChild(new Spacer(1));
-				cached = { signature, component }; this.components.set(item.id, cached);
+				cached = { signature, item, component }; this.components.set(item.id, cached);
 			}
 			const start = lines.length;
 			if (selected) lines.push(this.theme.fg("accent", short(`› ${item.title}`, width)));

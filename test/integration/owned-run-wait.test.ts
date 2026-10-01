@@ -259,12 +259,12 @@ test("waiting polls one fresh view without reading transcripts or enumerating un
 	let tick: () => void = () => { throw new Error("Wait timer was not registered"); };
 	t.mock.method(globalThis, "setInterval", (callback, interval) => { assert.equal(interval, POLL_INTERVAL_MS); tick = callback; return {} as NodeJS.Timeout; });
 	t.mock.method(globalThis, "clearInterval", () => {});
-	const readFile = fs.readFileSync, readdir = fs.readdirSync;
+	const open = fs.openSync, readdir = fs.readdirSync;
 	let transcriptReads = 0, contractReads = 0, globalListings = 0;
-	t.mock.method(fs, "readFileSync", function(file, ...args) {
-		if (String(file) === sessionFile) transcriptReads++;
-		if (String(file) === path.join(run.asyncDir, "contracts/0.json")) contractReads++;
-		return readFile.call(this, file, ...args);
+	t.mock.method(fs, "openSync", function(file, flags, ...args) {
+		if (flags === "r" && String(file) === sessionFile) transcriptReads++;
+		if (flags === "r" && String(file) === path.join(run.asyncDir, "contracts/0.json")) contractReads++;
+		return open.call(this, file, flags, ...args);
 	});
 	t.mock.method(fs, "readdirSync", function(file, ...args) {
 		if (String(file) === path.dirname(run.asyncDir) || String(file).endsWith("/supervisor-questions")) globalListings++;
@@ -288,6 +288,7 @@ test("waiting polls one fresh view without reading transcripts or enumerating un
 	const result = await pending;
 	assert.equal(result.details.wait?.status, "awaiting_input");
 	assert.equal(result.details.questions[0].message, "Choose now");
-	assert.equal(result.details.run?.children[0]?.launch?.model, "fixture/recorded", "returned inspection still projects current native configuration");
+	assert.equal(result.details.run?.children[0]?.launch?.model, "fixture/original", "returned launch preserves the captured selection");
+	assert.deepEqual(result.details.run?.children[0]?.launch?.modelCandidates, ["fixture/original"]);
 	assert.equal(f.mock.callCount(), 0, "polling never launches work");
 });

@@ -4,6 +4,7 @@ import { setImmediate as yieldToInput } from "node:timers/promises";
 import { getRunMetadataDir } from "../shared/supervisor-questions.ts";
 import { buildCompletionKey, markSeenWithTtl } from "./completion-dedupe.ts";
 import { createFileCoalescer } from "../../shared/file-coalescer.ts";
+import { journalStamp } from "../../shared/journal-reader.ts";
 import { resolveOrchestratorIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
@@ -26,7 +27,7 @@ import { isDurableRun, parseAsyncResultFileContent, readAsyncResultFile } from "
 const WATCHER_RESTART_DELAY_MS = 3000;
 const POLL_INTERVAL_MS = 3000;
 
-type ResultWatcherFs = Pick<typeof fs, "existsSync" | "readFileSync" | "unlinkSync" | "readdirSync" | "mkdirSync" | "watch">;
+type ResultWatcherFs = Pick<typeof fs, "existsSync" | "readFileSync" | "unlinkSync" | "readdirSync" | "mkdirSync" | "watch"> & Partial<Pick<typeof fs, "statSync">>;
 
 type ResultWatcherTimers = {
 	setTimeout: typeof setTimeout;
@@ -89,33 +90,66 @@ export function createResultWatcher(
 	const inFlight = new Set<Promise<void>>();
 	let checkpoint: NativeCheckpointEvent | undefined;
 	let startTail = Promise.resolve(), generation = 0;
+	const foreignResults = new Map<string, { stamp: string; sessionId: string | null; runId: string; ownerSessionId?: string; canonicalPath?: string; canonicalStamp?: string }>();
 
 	const readResult = (file: string) => fsApi === fs ? readAsyncResultFile(file) : parseAsyncResultFileContent(fsApi.readFileSync(file, "utf-8"), file);
-	const pendingResultFiles = () => [
-		...(fsApi.existsSync(resultsDir) ? fsApi.readdirSync(resultsDir).filter((name) => name.endsWith(".json")) : []),
-		...[...(state.ownedRuns?.values() ?? [])].filter((run) => run.source === "async"
-			&& fsApi.existsSync(path.join(getRunMetadataDir(run.runId), "result.json"))
-			&& (run.accounting?.state === "incomplete" || !run.delivery?.entryId))
-			.map((run) => path.join(getRunMetadataDir(run.runId), "result.json")),
-	];
+	const pendingResultFiles = () => {
+		const files = fsApi.existsSync(resultsDir) ? fsApi.readdirSync(resultsDir).filter((name) => name.endsWith(".json")) : [];
+		const notified = new Map(files.map((file, index) => [file, index]));
+		for (const run of state.ownedRuns?.values() ?? []) {
+			if (run.source !== "async" || run.accounting?.state !== "incomplete" && run.delivery?.entryId) continue;
+			const file = path.join(getRunMetadataDir(run.runId), "result.json");
+			if (!fsApi.existsSync(file)) continue;
+			// Disposable hints cannot veto canonical recovery, including corrupt hints.
+			const notification = notified.get(`${run.runId}.json`);
+			if (notification === undefined) files.push(file);
+			else files[notification] = file;
+		}
+		const present = new Set(files.map((file) => path.isAbsolute(file) ? file : path.join(resultsDir, file)));
+		for (const file of foreignResults.keys()) if (!present.has(file)) foreignResults.delete(file);
+		return files.filter((file) => {
+			const resultPath = path.isAbsolute(file) ? file : path.join(resultsDir, file);
+			try { return !isForeignUnchanged(resultPath); }
+			catch (error) { if (isNotFoundError(error)) { foreignResults.delete(resultPath); return false; } return true; }
+		});
+	};
+
+	const isForeignUnchanged = (resultPath: string): boolean => {
+		const cached = foreignResults.get(resultPath);
+		if (!cached || cached.sessionId !== state.currentSessionId || cached.ownerSessionId !== state.ownedRuns?.get(cached.runId)?.ownerSessionId) return false;
+		return fsApi.statSync !== undefined && cached.stamp === journalStamp(fsApi.statSync(resultPath, { bigint: true }))
+			&& (!cached.canonicalPath || cached.canonicalStamp === journalStamp(fsApi.statSync(cached.canonicalPath, { bigint: true })));
+	};
 
 	const handleResult = async (file: string) => {
 		let claimedCompletionKey: string | undefined;
 		let completionEmitted = false;
 		const durableFile = path.isAbsolute(file);
 		const resultPath = durableFile ? file : path.join(resultsDir, file);
-		const consumeNotification = () => { if (!durableFile) fsApi.unlinkSync(resultPath); };
 		if (!fsApi.existsSync(resultPath)) return;
 		try {
+			if (isForeignUnchanged(resultPath)) return;
+			const stamp = fsApi.statSync ? journalStamp(fsApi.statSync(resultPath, { bigint: true })) : undefined;
 			const notification = readResult(resultPath);
 			const runId = notification.runId ?? notification.id ?? path.basename(file, ".json");
-			const data = isDurableRun(notification) && !durableFile ? readResult(path.join(getRunMetadataDir(runId), "result.json")) : notification;
-			if ((data.runId ?? data.id ?? runId) !== runId) throw new Error(`Result identity does not match notification '${runId}'.`);
 			const run = state.ownedRuns?.get(runId);
-			if (data.sessionId ? data.sessionId !== state.currentSessionId && run?.ownerSessionId !== state.currentSessionId : !run) return;
+			const canonicalPath = isDurableRun(notification) && !durableFile ? path.join(getRunMetadataDir(runId), "result.json") : undefined;
+			const canonicalStamp = canonicalPath && fsApi.statSync ? journalStamp(fsApi.statSync(canonicalPath, { bigint: true })) : undefined;
+			const data = canonicalPath ? readResult(canonicalPath) : notification;
+			if ((data.runId ?? data.id ?? runId) !== runId) throw new Error(`Result identity does not match notification '${runId}'.`);
+			if (durableFile && resultPath !== path.join(getRunMetadataDir(runId), "result.json")) throw new Error(`Canonical result identity does not match path '${resultPath}'.`);
+			if (data.sessionId ? data.sessionId !== state.currentSessionId && run?.ownerSessionId !== state.currentSessionId : !run) {
+				if (stamp) foreignResults.set(resultPath, { stamp, sessionId: state.currentSessionId, runId, ownerSessionId: run?.ownerSessionId, canonicalPath, canonicalStamp });
+				return;
+			}
+			foreignResults.delete(resultPath);
+			const consumeNotification = () => {
+				const hint = durableFile ? path.join(resultsDir, `${runId}.json`) : resultPath;
+				if (fsApi.existsSync(hint)) fsApi.unlinkSync(hint);
+			};
 			data.completionId ??= `legacy:${runId}:${data.timestamp ?? "unknown"}`;
 			const completionKey = buildCompletionKey({ ...data, id: runId }, "result");
-			if (deps.reconcileDelivery?.(runId, completionKey) || state.isRunResultConsumed?.(runId)) { consumeNotification(); return; }
+			if (deps.reconcileDelivery ? deps.reconcileDelivery(runId, completionKey) : state.isRunResultConsumed?.(runId)) { consumeNotification(); return; }
 			if (state.waitingRuns?.has(runId) || state.hasNativeResultOwner?.(runId)) {
 				pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { ...data, runId, suppressNotification: true, intercomResultDelivered: false });
 				return;
@@ -246,14 +280,18 @@ export function createResultWatcher(
 
 	const invalidatePendingResults = (event: NativeCheckpointEvent) => {
 		for (const file of pendingResultFiles()) {
-			const data = readResult(path.isAbsolute(file) ? file : path.join(resultsDir, file));
+			const resultPath = path.isAbsolute(file) ? file : path.join(resultsDir, file);
+			if (isForeignUnchanged(resultPath)) continue;
+			const data = readResult(resultPath);
 			const runId = data.runId ?? data.id ?? file.replace(/\.json$/i, "");
 			data.completionId ??= `legacy:${runId}:${data.timestamp ?? "unknown"}`;
 			// A parent receipt can be committed before the next watcher tick saves its
 			// owner projection. Reconcile that receipt without billing work in the cut.
-			deps.reconcileDelivery?.(runId, buildCompletionKey({ ...data, id: runId }, "result"), false);
+			const consumed = deps.reconcileDelivery
+				? deps.reconcileDelivery(runId, buildCompletionKey({ ...data, id: runId }, "result"), false)
+				: state.isRunResultConsumed?.(runId);
 			const run = state.ownedRuns?.get(runId);
-			if (!run?.delivery?.entryId && !state.isRunResultConsumed?.(runId) && (data.sessionId ? data.sessionId === state.currentSessionId || run?.ownerSessionId === state.currentSessionId : run)) {
+			if (!run?.delivery?.entryId && !consumed && (data.sessionId ? data.sessionId === state.currentSessionId || run?.ownerSessionId === state.currentSessionId : run)) {
 				event.invalidate();
 				break;
 			}
@@ -381,6 +419,7 @@ export function createResultWatcher(
 		}
 		state.watcherRestartTimer = null;
 		state.resultFileCoalescer.clear();
+		foreignResults.clear();
 	};
 
 	const holdCheckpoint = async (event: NativeCheckpointEvent) => {

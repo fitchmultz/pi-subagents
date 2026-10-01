@@ -202,19 +202,20 @@ describe("background native acceptance report boundary", () => {
 
 	for (const scenario of ["plain", "follow-up", "failed-work", "user-failed-work", "different-work", "malformed-work", "malformed-submission", "invalid-submission", "invalid-tool-submission", "mixed", "unsubmitted", "missing-result", "missing-capture", "wrong-result-id", "invalid-capture", "capture-mismatch"]) {
 		it(`rejects ${scenario} at the existing cap and retains unconfirmed audit evidence`, async () => {
+			const processFailure = ["different-work", "mixed", "missing-result", "missing-capture", "wrong-result-id", "invalid-capture", "capture-mismatch"].includes(scenario);
 			const { result, artifact } = await run(scenario, { laterReport: scenario === "capture-mismatch" ? report(`${handoff}\nUnmatched capture`) : undefined });
 			assert.equal(result.exitCode, 1);
 			assert.equal(result.acceptance.status, "rejected");
 			assert.equal(result.acceptance.childReport, undefined);
 			assert.equal(result.acceptance.finalization.status, "failed");
 			assert.equal(result.acceptance.finalization.turns.length, 1);
-			assert.equal(result.acceptance.runtimeChecks[0].id, "finalization-report");
+			assert.equal(result.acceptance.runtimeChecks.find((check) => check.id === (processFailure ? "finalization-process" : "finalization-report"))?.status, "failed");
 			assert.match(result.acceptance.unconfirmedOutput, /Identifier: task-42/);
 			if (["plain", "follow-up", "failed-work", "user-failed-work", "different-work", "malformed-work", "malformed-submission", "invalid-submission", "invalid-tool-submission", "mixed", "missing-result"].includes(scenario)) assert.equal(result.acceptance.unconfirmedOutput, fullReport);
 			assert.match(artifact, /^UNCONFIRMED task report/);
 			assert.match(artifact, /Identifier: task-42/);
 			assert.doesNotMatch(artifact, /Coordination acknowledged/);
-			assert.equal(result.modelAttempts[1].error, undefined, "missing delivery is not a process error");
+			assert.equal(result.modelAttempts[1].error, processFailure ? "Native self-review boundary did not return a result." : undefined);
 			assert.equal(mock.callCount(), 1, "no hidden report-refresh pass at the cap");
 		});
 	}

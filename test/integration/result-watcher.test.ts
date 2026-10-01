@@ -37,6 +37,45 @@ function createState(): SubagentState {
 }
 
 describe("result watcher", () => {
+	it("does not reread unchanged foreign results or probe delivered run files, but retries changed identity and ownership", async () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-cost-"));
+		const state = createState(), events = createEventBus(), emitted: unknown[] = [];
+		state.currentSessionId = "parent";
+		state.ownedRuns = new Map(Array.from({ length: 500 }, (_, index) => {
+			const runId = `delivered-${index}`;
+			return [runId, { runId, rootRunId: runId, ownerSessionId: "parent", source: "async" as const, mode: "single" as const,
+				cwd: "/repo", task: "Done", startedAt: 1, children: [], accounting: { state: "complete" as const },
+				delivery: { notifiedAt: 1, intercomDelivered: false, entryId: `receipt-${index}` } }];
+		}));
+		let reads = 0, completedProbes = 0;
+		events.on("subagent:async-complete", (data) => emitted.push(data));
+		const watcher = createResultWatcher({ events }, state, resultsDir, { fs: { ...fs,
+			readFileSync: ((...args: Parameters<typeof fs.readFileSync>) => { reads++; return Reflect.apply(fs.readFileSync, fs, args); }) as typeof fs.readFileSync,
+			existsSync(file) { if (String(file).includes("delivered-")) completedProbes++; return fs.existsSync(file); },
+		} });
+		const file = path.join(resultsDir, "foreign.json");
+		const write = (sessionId: string) => fs.writeFileSync(file, JSON.stringify({ id: "foreign", sessionId, success: true, summary: "Saved output" }));
+		const scan = async () => { watcher.primeExistingResults(); await new Promise((resolve) => setTimeout(resolve, 80)); };
+		try {
+			write("other");
+			for (let index = 0; index < 3; index++) await scan();
+			assert.equal(reads, 1, "foreign content is decoded once, not on every safety poll");
+			assert.equal(completedProbes, 0, "delivered and billed runs do not need filesystem probes");
+			assert.equal(emitted.length, 0);
+			write("parent");
+			await scan();
+			assert.equal(emitted.length, 1, "a changed result is validated and delivered");
+			write("other");
+			await scan();
+			state.ownedRuns.set("foreign", { runId: "foreign", rootRunId: "foreign", ownerSessionId: "parent", source: "async", mode: "single",
+				cwd: "/repo", task: "Recovered work", startedAt: 1, children: [] });
+			state.completionSeen.clear();
+			await scan();
+			assert.equal(emitted.length, 2, "new genuine ownership invalidates the foreign classification");
+			assert.equal(fs.existsSync(file), false);
+		} finally { watcher.stopResultWatcher(); fs.rmSync(resultsDir, { recursive: true, force: true }); }
+	});
+
 	it("stopping recovery cancels queued starts while preserving files for the next start", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-stop-"));
 		const state = createState(), reconciled: string[] = [];
@@ -64,6 +103,42 @@ describe("result watcher", () => {
 		} finally {
 			watcher.stopResultWatcher();
 			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
+	it("recovers an owned canonical result once even when its disposable hint is corrupt, unreadable, or has another identity", async () => {
+		for (const hintKind of ["corrupt", "unreadable", "wrong-identity", "valid"]) {
+			const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-canonical-")), runId = randomUUID();
+			const canonical = path.join(getRunMetadataDir(runId), "result.json"), hint = path.join(resultsDir, `${runId}.json`);
+			const state = createState(), events = createEventBus(), completed: unknown[] = [];
+			state.currentSessionId = "parent";
+			state.ownedRuns = new Map([[runId, { runId, rootRunId: runId, ownerSessionId: "parent", source: "async", mode: "single", cwd: "/repo", task: "Done", startedAt: 1, children: [] }]]);
+			const result = { runtimeVersion: 2, id: runId, sessionId: "parent", success: true, summary: "Canonical output", results: [] };
+			fs.mkdirSync(getRunMetadataDir(runId), { recursive: true });
+			fs.writeFileSync(canonical, JSON.stringify(result));
+			fs.writeFileSync(hint, hintKind === "corrupt" ? "{" : JSON.stringify({ ...result, id: hintKind === "wrong-identity" ? "other" : runId }));
+			let canonicalReads = 0;
+			const watcher = createResultWatcher({ events }, state, resultsDir, { fs: { ...fs,
+				readFileSync: ((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+					if (file === canonical) canonicalReads++;
+					if (file === hint && hintKind === "unreadable") throw errno("EACCES");
+					return Reflect.apply(fs.readFileSync, fs, [file, ...args]);
+				}) as typeof fs.readFileSync,
+			} });
+			events.on("subagent:async-complete", (event) => completed.push(event));
+			try {
+				watcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 80));
+				assert.equal(completed.length, 1, hintKind);
+				assert.equal((completed[0] as { summary: string }).summary, "Canonical output");
+				assert.equal(canonicalReads, 1, "canonical and hint candidates must not duplicate decoding");
+				assert.equal(fs.existsSync(canonical), true, "canonical result remains durable");
+				assert.equal(fs.existsSync(hint), false, "successful recovery consumes the disposable hint");
+			} finally {
+				watcher.stopResultWatcher();
+				fs.rmSync(getRunMetadataDir(runId), { recursive: true, force: true });
+				fs.rmSync(resultsDir, { recursive: true, force: true });
+			}
 		}
 	});
 

@@ -39,6 +39,8 @@ Pi core packages and TypeBox remain optional wildcard peers. Detached runners re
 
 ### Saved conversations and run records
 
+See [performance and verification](docs/performance.md) for the long-session processing fixes, measured regression cases, and remaining host/integrity costs.
+
 Native Pi journals retain the complete conversation. Detached run records keep compact launch, execution, acceptance, accounting and delivery facts; ordinary controls do not load child transcripts. Read-only recovery validates journals in bounded chunks and projects only selected metadata. The Agents view shows history in 100-card pages; F2 Actions opens earlier/later pages or the full selected record. Large output previews link to the separate full output.
 
 Child lifecycle aggregates are not copied into the owner event feed. Committed native message IDs reference their journal; uncommitted messages, session-disabled output, Claude Code results and diagnostics remain in a once-stored audit with byte-range receipts. Accounting failures preserve the completed execution and acceptance outcome. Repair reconciles saved billing evidence without launching another child or repeating tools or checks. Claude Code's reported totals remain available, with accounting explicitly incomplete when the adapter lacks native per-category counters or costs.

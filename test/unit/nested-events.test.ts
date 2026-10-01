@@ -1,6 +1,7 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import type { AsyncJobState } from "../../src/shared/types.ts";
@@ -10,10 +11,12 @@ import {
 	nestedSummaryFromAsyncStatus,
 	parseNestedEventRecords,
 	projectNestedEvents,
+	readNestedControlResults,
 	resolveNestedParentAddressFromEnv,
 	resolveNestedRouteFromEnv,
 	updateAsyncJobNestedProjection,
 	writeNestedEvent,
+	writeNestedControlResult,
 } from "../../src/runs/shared/nested-events.ts";
 import {
 	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
@@ -115,6 +118,26 @@ describe("nested event route validation", () => {
 });
 
 describe("nested event parsing and projection", () => {
+	it("never replays immutable events beyond 1000 and keeps durable recovery and control results", (t) => {
+		const route = trackRoute();
+		for (let ts = 1; ts <= 1001; ts++) writeNestedEvent(route, {
+			type: "subagent.nested.updated", ts, parentRunId: route.rootRunId, child: child("nested-a", "running", ts),
+		});
+		writeNestedControlResult(route, { ts: 1002, requestId: "interrupt", targetRunId: "nested-a", ok: true, message: "Interrupted." });
+		const registry = projectNestedEvents(route);
+		const reads = t.mock.method(fs, "readFileSync");
+		syncBuiltinESMExports();
+		try {
+			const replay = projectNestedEvents(route);
+			const eventReads = reads.mock.calls.filter((call) => String(call.arguments[0]).startsWith(route.eventSink + path.sep));
+			assert.equal(eventReads.length, 0, "already projected events must not be reread after the old dedup ceiling");
+			assert.deepEqual(replay, registry);
+		} finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+		fs.unlinkSync(path.join(path.dirname(route.eventSink), "registry.json"));
+		assert.deepEqual(projectNestedEvents(route), registry, "immutable event files can rebuild a lost sidecar");
+		assert.deepEqual(readNestedControlResults(route).map(({ requestId, ok }) => ({ requestId, ok })), [{ requestId: "interrupt", ok: true }]);
+	});
+
 	it("retains owner and child failure reasons in the shared status projection", () => {
 		const summary = nestedSummaryFromAsyncStatus({
 			runId: "nested-failed", mode: "single", state: "failed", startedAt: 10,

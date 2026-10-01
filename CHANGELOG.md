@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.43.1] - 2026-09-30
 
 ### Changed
 - Pin the development Pi cohort to 0.99.1 and selected-host TypeBox 1.3.27; preserve optional runtime peers, Node 24 and durable formats. Document current public checkpoints/usage separately from legacy retired pending-call execution.
@@ -9,6 +9,10 @@
 - Align packaged role profiles with the maintainer's personal defaults, using GPT-6.1 Sol at high effort for scout/writer/delegate and xhigh for context-builder/fixer/Ponytail review, Luna for watching, Astra for security review, and Opus for independent Claude review. Editable user/project overrides still take precedence. Consolidate runtime coordination mechanics in the extension and require exact relevant owner instructions, settled decisions or readable source references in fresh-child handoffs.
 
 ### Fixed
+- Stop rebuilding completed Agents histories and formatting collapsed tool details on every background refresh. Skip superseded continuations, cache terminal boundaries and unchanged corrupt sources, and bound conversation components to the displayed page while preserving full history, replies, drafts, pinning, transient-I/O recovery, and explicit details.
+- Consume new native observations and index message identities instead of repeatedly scanning growing child transcripts. Preserve inherited billing boundaries and exclude baseline messages from the current attempt's observation matching.
+- Check acceptance-boundary readiness before filtering accumulated messages. Keep durable nested-event deduplication for every retained event, and project nested state only once per job poll.
+- Skip repeated decoding of unchanged foreign results and filesystem probes for already delivered and billed runs. Share verified completion/accounting receipts and incrementally index parent call and billing metadata without treating queue acceptance as persistence.
 - Keep session resume responsive when reconciling many completed subagents: reuse compact published completion and billing receipts, inspect only appended records after validating the existing journal, let the terminal handle input between recovery scans, and refresh only changed Agents views.
 - Keep subagent controls and historical previews independent of large transcript bodies. Token-frame native journals and child stdout, reference committed native messages, retain once-stored uncommitted audit data, and page history/output previews. Preserve execution and acceptance when accounting fails; reconcile billing and persisted completion identities without repeating work or treating queue acceptance as delivery.
 - Accept npm 12's keyed `npm pack --json` records as well as npm 11 arrays in the package smoke, without weakening packed-resource or native runtime checks.
