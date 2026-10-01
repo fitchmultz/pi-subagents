@@ -565,7 +565,7 @@ function unavailableRunView(run: OwnedRun, error: unknown): OwnedRunView {
 export async function ownedRunList(state: SubagentState, params: Pick<SubagentParamsLike, "offset" | "limit" | "cursor" | "sort" | "agent" | "state" | "text"> & { signal?: AbortSignal }): Promise<SubagentExecutionResult> {
 	const limit = params.limit ?? 20, sort = params.sort;
 	if (sort === "relevance") throw new Error("Run list sort must be attention, newest, or oldest.");
-	const indexed = await (await runHistoryIndex(state)).listRuns({ ...params, sort });
+	const indexed = await (await runHistoryIndex(state, true)).listRuns({ ...params, sort });
 	// The index orders observations; only the bounded selected page gets authoritative controls.
 	const page = indexed.rows.map((row) => {
 		const run = state.ownedRuns?.get(row.runId);

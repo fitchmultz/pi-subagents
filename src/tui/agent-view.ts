@@ -443,7 +443,7 @@ export class AgentViewController {
 
 	async retry(key?: string): Promise<void> {
 		const generation = this.generation;
-		try { const index = await runHistoryIndex(this.state); await index.refresh(key ? this.task(key)?.run.runId : undefined); }
+		try { const index = await runHistoryIndex(this.state, true); await index.refresh(key ? this.task(key)?.run.runId : undefined); }
 		catch (error) { if (this.live(generation)) this.listError = `History refresh unavailable: ${String(error)}`; }
 		if (this.live(generation)) await this.refresh();
 	}

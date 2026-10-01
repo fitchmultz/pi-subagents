@@ -1,6 +1,8 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import childProcess from "node:child_process";
+import { once } from "node:events";
 import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { after, test } from "node:test";
@@ -15,12 +17,16 @@ const { closeRunHistory, runHistoryIndex } = await import("../../src/runs/shared
 const { createSupervisorQuestion, getRunMetadataDir, LEGACY_QUESTIONS_DIR, QUESTIONS_DIR, migrateSupervisorQuestions, recordQuestionDelivery, saveAsyncRunResult, saveQuestionAnswer, saveQuestionContract, saveQuestionOwner, saveRunStatus } = await import("../../src/runs/shared/supervisor-questions.ts");
 after(() => removeTempDir(root));
 
-test("indexed owned pages skip off-page filesystem work while keeping fresh selected controls, questions, review and lineage", async (t) => {
-	const state: SubagentState = {
-		baseCwd: root, currentSessionId: "parent", ownedRuns: new Map(), asyncJobs: new Map(),
+function ownerState(currentSessionId = "parent"): SubagentState {
+	return {
+		baseCwd: root, currentSessionId, ownedRuns: new Map(), asyncJobs: new Map(),
 		cleanupTimers: new Map(), lastUiContext: null, poller: null, completionSeen: new Map(), watcher: null,
 		watcherRestartTimer: null, resultFileCoalescer: { schedule: () => false, clear() {} },
 	};
+}
+
+test("indexed owned pages skip off-page filesystem work while keeping fresh selected controls, questions, review and lineage", async (t) => {
+	const state = ownerState();
 	const sessionFile = path.join(root, "child.jsonl");
 	const nativeHeader = JSON.stringify({ type: "session", version: 3, id: "child", timestamp: new Date().toISOString(), cwd: root }) + "\n";
 	fs.writeFileSync(sessionFile, nativeHeader);
@@ -109,3 +115,45 @@ test("indexed owned pages skip off-page filesystem work while keeping fresh sele
 	assert.equal(ownedRunStatusResult(state.ownedRuns!.get("page-64")!, state).details.run?.children[0]?.result?.finalOutput?.startsWith("Result 64:"), true);
 	assert.deepEqual(ownedRunStatusResult(state.ownedRuns!.get("page-00")!, state).details.run?.continuations.map((run) => run.runId), ["page-60", "page-61", "page-62", "page-63", "page-64"]);
 });
+
+test("a stopped browse worker stays unavailable through background requests until explicit retry", async (t) => {
+	const state = ownerState("stopped-worker"), fork = childProcess.fork;
+	let child: childProcess.ChildProcess;
+	const starts = t.mock.method(childProcess, "fork", (...args) => child = Reflect.apply(fork, childProcess, args));
+	syncBuiltinESMExports();
+	t.after(async () => { await closeRunHistory(state); t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const index = await runHistoryIndex(state);
+	assert.equal((await index.listRuns()).total, 0);
+	const exited = once(child!, "exit"); child!.kill("SIGKILL"); await exited;
+	for (let update = 0; update < 3; update++) await assert.rejects(
+		async () => (await runHistoryIndex(state)).listRuns(),
+		(error: any) => error.code === "UNAVAILABLE",
+	);
+	await assert.rejects(index.listRuns(), (error: any) => error.code === "UNAVAILABLE", "cached queries must not bypass the failure");
+	const remembered: OwnedRun = { runId: "remembered-during-outage", rootRunId: "remembered-during-outage", ownerSessionId: "stopped-worker",
+		source: "foreground", mode: "single", cwd: root, task: "New work recorded while history is unavailable", startedAt: 1, children: [{ agent: "worker", index: 0 }] };
+	rememberOwnedRun(state, remembered);
+	await assert.rejects(state.historyReady, (error: any) => error.code === "UNAVAILABLE");
+	assert.equal(starts.mock.callCount(), 1);
+	const recovered = await (await runHistoryIndex(state, true)).listRuns();
+	assert.deepEqual(recovered.rows.map((run) => [run.runId, run.task]), [[remembered.runId, remembered.task]], "explicit retry admits work recorded during the outage");
+	assert.equal(starts.mock.callCount(), 2);
+});
+
+for (const failed of [false, true]) for (const boundary of ["owner change", "shutdown"]) test(
+	`${failed ? "failed" : "healthy"} history retry cannot cross ${boundary}`, async (t) => {
+		const state = ownerState("previous-owner");
+		t.after(() => closeRunHistory(state));
+		const index = await runHistoryIndex(state);
+		await index.listRuns();
+		if (failed) index.cancel();
+		const pending = runHistoryIndex(state, true);
+		if (boundary === "owner change") state.currentSessionId = "replacement-owner";
+		const closing = closeRunHistory(state);
+		const replacement = boundary === "owner change" ? runHistoryIndex(state) : undefined;
+		await assert.rejects(pending, /Owning session changed|History index is closed/);
+		await closing;
+		if (replacement) assert.equal((await (await replacement).listRuns()).total, 0);
+		else assert.equal(state.historyIndex, undefined, "cleanup must not admit another worker");
+	},
+);
