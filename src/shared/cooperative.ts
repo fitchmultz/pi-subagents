@@ -6,7 +6,7 @@ export function runSynchronously<T>(steps: Generator<void, T>): T {
 	return step.value;
 }
 
-/** Startup replays the same recovery as checkpoints, without monopolizing input. */
+/** Batched recovery and delivery leave room for input between records. */
 export async function runCooperatively<T>(steps: Generator<void, T>): Promise<T> {
 	let step = steps.next();
 	for (let count = 0; !step.done; step = steps.next()) {

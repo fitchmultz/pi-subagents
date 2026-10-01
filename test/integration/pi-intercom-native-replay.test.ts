@@ -261,9 +261,25 @@ test("native session renaming after startup updates its broker target without a 
 test("native steady passive receipts do not rescan old history and still survive tree navigation", async (t) => {
   const receiver = await makeSession(t, "incremental-receipts");
   const manager = receiver.session.sessionManager;
-  for (let index = 0; index < 1_024; index++) manager.appendCustomMessageEntry("intercom_message", `old receipt ${index}`, false, { message: { id: `old-${index}` } });
+  const historicalIds = new Set<string>();
+  for (let index = 0; index < 1_024; index++) historicalIds.add(manager.appendCustomMessageEntry("intercom_message", `old receipt ${index}`, false, { message: { id: `old-${index}` } }));
   const branchPoint = manager.getLeafId();
-  await receiver.session.reload();
+  const readEntry = manager.getEntry.bind(manager), restored = new Set<string>();
+  const recoveryRead = t.mock.method(manager, "getEntry", (id: string) => {
+    if (historicalIds.has(id)) restored.add(id);
+    return readEntry(id);
+  });
+  const readsAtInput: number[] = [];
+  let servicingInput = true, input: NodeJS.Immediate;
+  const serviceInput = () => {
+    readsAtInput.push(restored.size);
+    if (servicingInput) input = setImmediate(serviceInput);
+  };
+  input = setImmediate(serviceInput);
+  try { await receiver.session.reload(); }
+  finally { servicingInput = false; clearImmediate(input!); recoveryRead.mock.restore(); }
+  assert.equal(restored.size, historicalIds.size, "every historical receipt is restored");
+  assert.ok(readsAtInput.some((count) => count > 0 && count < historicalIds.size), "input must run during receipt restoration");
   await waitFor(async () => (await receiver.sender.listSessions()).some((peer) => peer.name === "incremental-receipts"), "registration after receipt restore");
   const entriesBefore = manager.getEntries();
   const oldIds = new Set(entriesBefore.map((entry: { id: string }) => entry.id));
@@ -354,9 +370,9 @@ test("native steer reaches the next tool boundary, queue waits, and busy passive
   t.diagnostic("steer before next response; follow-up after current work; 3 visible once; no replay/passive turn.");
 });
 
-for (const count of [2, 101]) test(`native clearQueue plus abort recovers ${count} messages once without replaying appended followers`, async (t) => {
+for (const { count, reload } of [{ count: 2 }, { count: 101 }, { count: 101, reload: true }]) test(`native clearQueue plus abort recovers ${count} messages once${reload ? " across an in-flight reload" : " without replaying appended followers"}`, async (t) => {
   const responseGate = gate(t);
-  const receiver = await makeSession(t, `cleared-abort-${count}`);
+  const receiver = await makeSession(t, `cleared-abort-${count}${reload ? "-reload" : ""}`);
   receiver.faux.setResponses([
     async () => { await responseGate.promise; return fauxAssistantMessage("Cancelled response"); },
     fauxAssistantMessage("Recovered all messages"),
@@ -369,16 +385,164 @@ for (const count of [2, 101]) test(`native clearQueue plus abort recovers ${coun
   await receiver.session.sendCustomMessage({ customType: "fixture-aside", content: "Next user prompt only", display: false }, { deliverAs: "nextTurn" });
   receiver.session.clearQueue();
   assert.equal(receiver.context().hasPendingMessages(), false, "a nextTurn aside must not block cleared-message recovery");
+  let reloading: Promise<void> | undefined, reloadScheduled = false;
+  if (reload) t.after(receiver.session.subscribe((event: { type: string; message?: unknown }) => {
+    if (!reloadScheduled && event.type === "message_end" && inboundId(event.message) === "cleared-1") {
+      reloadScheduled = true;
+      setImmediate(() => { reloading = receiver.session.reload(); });
+    }
+  }));
   receiver.session.agent.abort();
   responseGate.resolve();
-  await running;
+  const receiptsAtInput: number[] = [];
+  let servicingInput = true, input: NodeJS.Immediate;
+  const serviceInput = () => {
+    receiptsAtInput.push(receiver.events.filter((event) => event.type === "sdk.message_end" && String(event.id).startsWith("cleared-")).length);
+    if (servicingInput) input = setImmediate(serviceInput);
+  };
+  input = setImmediate(serviceInput);
+  try { await running; }
+  finally { servicingInput = false; clearImmediate(input!); }
+  if (reload) {
+    await waitFor(() => !!reloading, "reload during recovery");
+    await reloading;
+  }
   await waitFor(() => receiver.settled() >= 2 && receiver.session.isIdle, "recovery settlement");
   for (const id of receiver.sends) assert.equal(receiver.visible(id).length, 1, id);
+  if (count === 101) assert.ok(receiptsAtInput.some((received) => received > 0 && received < count - 1), "input must run before the recovery followers finish appending");
   assert.equal(receiver.faux.state.callCount, 2);
   assert.equal(receiver.settled(), 2);
   assert.match(await receiver.status(), /Pending inbound messages: 0/);
   assert.deepEqual(receiver.errors, []);
   t.diagnostic(`${count} sends, ${count} visible once; 1 aborted request + 1 recovery request; appended batch followers are not replayed.`);
+});
+
+test("native abort during restored busy handoff recovers cleared steers once", async (t) => {
+  const responseGate = gate(t);
+  const receiver = await makeSession(t, "busy-handoff-abort", { hasUI: true });
+  receiver.faux.setResponses([
+    async () => { await responseGate.promise; return fauxAssistantMessage("Cancelled response"); },
+    fauxAssistantMessage("Recovered steers"),
+  ]);
+  const manager = receiver.session.sessionManager;
+  const from = (await receiver.sender.listSessions()).find((peer) => peer.name === "sender-busy-handoff-abort")!;
+  for (let index = 0; index < 101; index++) {
+    const id = `busy-cleared-${index}`;
+    receiver.sends.push(id);
+    manager.appendCustomEntry("intercom_delivery", { sessionId: manager.getSessionId(), entry: {
+      from, message: { id, timestamp: Date.now(), delivery: "steer", content: { text: id } },
+      bodyText: id, stage: "queued", flushDelivery: "steer", receivedAt: Date.now(),
+    } });
+  }
+  let running: Promise<void> | undefined, aborting: Promise<void> | undefined;
+  let scheduled = false, nativeQueuedAtClear = false;
+  t.after(receiver.session.subscribe((event: { type: string; entry?: { customType?: string; data?: { messageId?: string; stage?: string } } }) => {
+    if (scheduled || event.type !== "entry_appended" || event.entry?.customType !== "intercom_delivery"
+      || event.entry.data?.stage !== "native" || !event.entry.data.messageId?.startsWith("busy-cleared-")) return;
+    scheduled = true;
+    setImmediate(() => {
+      nativeQueuedAtClear = receiver.session.agent.hasQueuedMessages();
+      receiver.session.clearQueue();
+      aborting = receiver.session.abort();
+      responseGate.resolve();
+    });
+  }));
+  // Both hosts can load extension state into a running SDK prompt.
+  await receiver.session.reload({ beforeSessionStart: async () => {
+    running = receiver.session.prompt("Work while saved steers restore");
+    await waitFor(() => receiver.faux.state.callCount === 1, "held provider before restoration");
+  } });
+  await waitFor(() => !!aborting, "clearQueue during the busy handoff");
+  await running;
+  await aborting;
+  assert.equal(nativeQueuedAtClear, true, "the clear must remove real native queued work");
+  await waitFor(() => receiver.settled() >= 2 && receiver.session.isIdle, "cleared steer recovery");
+  for (const id of receiver.sends) assert.equal(receiver.visible(id).length, 1, id);
+  assert.equal(receiver.faux.state.callCount, 2);
+  assert.match(await receiver.status(), /Pending inbound messages: 0/);
+  assert.deepEqual(receiver.errors, []);
+});
+
+for (const hasUI of [true, false]) test(`native arrivals during recovery reach the next tool boundary in ${hasUI ? "UI" : "print"} mode`, async (t) => {
+  const responseGate = gate(t), toolGate = gate(t);
+  const name = `recovery-arrival-${hasUI ? "ui" : "print"}`;
+  const resultId = "subagent-completion:recovery-arrival";
+  let api: ExtensionAPI, toolStarted = false, seen = "";
+  let acknowledged: Promise<boolean> | undefined, sends: Promise<unknown[]> | undefined;
+  let stageAtAck: unknown, visibleAtAck: number | undefined, stageAtDetach: unknown;
+  const receiver = await makeSession(t, name, { hasUI, configure(pi) {
+    api = pi;
+    pi.events.on("subagent:result-intercom-delivery", () => {
+      stageAtAck = receiver.session.sessionManager.getEntries().find((entry) => entry.type === "custom"
+        && entry.customType === "intercom_delivery" && entry.data?.entry?.message?.id === resultId)?.data.entry.stage;
+      visibleAtAck = receiver.visible(resultId).length;
+    });
+    if (hasUI) pi.events.on("pi-intercom:detach-request", (payload) => {
+      const stages = receiver.session.sessionManager.getEntries().filter((entry) => entry.type === "custom"
+        && entry.customType === "intercom_delivery" && (entry.data?.entry?.message?.id === "new-steer" || entry.data?.messageId === "new-steer"));
+      if (!stages.length) return;
+      const last = stages.at(-1)!.data;
+      stageAtDetach = last.stage ?? last.entry.stage;
+      pi.events.emit("pi-intercom:detach-response", { ...(payload as { requestId: string }), accepted: true });
+    });
+    pi.registerTool({ name: "hold", label: "Hold", description: "Held recovery tool", parameters: Type.Object({}), async execute() {
+      toolStarted = true;
+      await toolGate.promise;
+      return { content: [{ type: "text", text: "Released" }], details: {} };
+    } });
+  } });
+  receiver.session.setSteeringMode("all");
+  receiver.faux.setResponses([
+    async () => { await responseGate.promise; return fauxAssistantMessage("Cancelled response"); },
+    fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }),
+    (context: unknown) => { seen = JSON.stringify(context); return fauxAssistantMessage("Recovered work finished"); },
+    fauxAssistantMessage("Queued work finished"),
+  ]);
+  const running = receiver.session.prompt("Start abortable work");
+  await waitFor(() => receiver.faux.state.callCount === 1, "active provider");
+  for (let index = 0; index < 101; index++) await receiver.send(`recovered-${index}`);
+  await waitFor(async () => (await receiver.status()).includes("Pending inbound messages: 101"), "native handoffs");
+  receiver.session.clearQueue();
+  let injected = false;
+  t.after(receiver.session.subscribe((event: { type: string; message?: unknown }) => {
+    if (injected || event.type !== "message_end" || inboundId(event.message) !== "recovered-1") return;
+    injected = true;
+    // Native publication reenters synchronously while recovery owns the batch.
+    acknowledged = deliverSubagentResultIntercomEvent(api.events, buildSubagentResultIntercomPayload({
+      to: name, completionId: "recovery-arrival", runId: "arrival-run", mode: "single", source: "async",
+      children: [{ agent: "worker", index: 0, status: "completed", intercomTarget: `sender-${name}`, summary: "Self result during recovery" }],
+    }));
+    sends = Promise.all([
+      receiver.send("new-steer", { text: `${hasUI ? "Subagent needs a supervisor decision.\n\n" : ""}Steer during recovery`, delivery: "steer", ...(hasUI ? { expectsReply: true } : {}) }),
+      receiver.send("new-queue", { text: "Ordinary queued message", delivery: "queue" }),
+      receiver.send("new-passive", { text: "Passive message", delivery: "passive" }),
+    ]);
+  }));
+  receiver.session.agent.abort();
+  responseGate.resolve();
+  await waitFor(() => toolStarted, "held recovery tool");
+  assert.equal(await acknowledged, true);
+  assert.equal(stageAtAck, "queued", "ownership must precede native subscriber reentry; acknowledge durable staging");
+  assert.equal(visibleAtAck, 0, "the result must not start a turn between recovery followers");
+  await sends;
+  await waitFor(async () => (await receiver.status()).includes("Passive message"), "broker arrivals");
+  toolGate.resolve();
+  await running;
+  await waitFor(() => receiver.sends.every((id) => receiver.visible(id).length === 1)
+    && receiver.visible(resultId).length === 1 && receiver.session.isIdle, "all arrivals delivered once");
+  if (hasUI) {
+    assert.equal(stageAtDetach, "native", "hand off the staged blocking steer before requesting foreground detachment");
+    const staged = receiver.session.sessionManager.getEntries().find((entry) => entry.type === "custom"
+      && entry.customType === "intercom_delivery" && entry.data?.entry?.message?.id === "new-steer")?.data.entry;
+    assert.equal(staged?.flushDelivery, "steer", "exercise arrival staging during the batch, rather than direct busy admission");
+  }
+  assert.match(seen, /Self result during recovery/);
+  assert.match(seen, /Steer during recovery/);
+  assert.doesNotMatch(seen, /Ordinary queued message|Passive message/);
+  assert.equal(receiver.visible(resultId).length, 1);
+  for (const id of receiver.sends) assert.equal(receiver.visible(id).length, 1, id);
+  assert.match(await receiver.status(), /Pending inbound messages: 0/);
+  assert.deepEqual(receiver.errors, []);
 });
 
 test("native ordinary steer bursts do not retain unanswered attention handshakes", async (t) => {
