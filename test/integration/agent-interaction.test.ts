@@ -1030,10 +1030,12 @@ test("clickable Agents hints: ordinary activity stays literal and cannot jump to
 	saveRunStatus(f.run.runId, f.status);
 	await refreshFixture(f);
 	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
+	await historyReady(f); f.tui.renderNow();
 	assert.equal(f.overlay.scroll.isFollowingEnd, true);
 	assert.match(plain(f.overlay, f.overlayBounds.width), /worker · Alt\+L latest is the old label/, "activity is not an owned keyboard label");
 	f.terminal.input("Keep my draft"); f.terminal.input("\x1b[5~"); f.tui.renderNow();
 	await refreshFixture(f); f.tui.renderNow();
+	await f.controller.refresh(); f.tui.renderNow();
 	assert.equal(f.controller.task(f.key).unread, false);
 	const anchor = structuredClone(f.controller.visit(f.key).anchor);
 	await clickHint(f, "latest");
