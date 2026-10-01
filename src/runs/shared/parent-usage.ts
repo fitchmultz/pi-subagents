@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import type { Usage as NativeUsage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, MessageEndEventResult } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, MessageEndEventResult, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { Details, OwnedRunView, SubagentExecutionResult, UsageContribution } from "../../shared/types.ts";
-import { entryMetadata } from "../../shared/journal-reader.ts";
+import { SessionEntryCursor } from "../../shared/session-entries.ts";
 import { createParentReceiptReader } from "./parent-receipts.ts";
 import { validateNativeUsage } from "./native-usage.ts";
 
@@ -53,26 +53,29 @@ function uniqueContributions(contributions: readonly UsageContribution[]): Usage
 	return [...unique.values()];
 }
 
-function receipts(manager: ExtensionContext["sessionManager"], toolNames: readonly string[], includeNative: boolean,
-	published: ReturnType<typeof createParentReceiptReader>): Map<string, UsageContribution> {
-	const received = new Map<string, UsageContribution>();
-	const saved = published.read(manager.getSessionFile());
-	for (const metadata of entryMetadata(manager)) {
-		if (metadata.type !== "usage" && !(metadata.type === "message" && metadata.message.role === "toolResult" && toolNames.includes(metadata.message.toolName))) continue;
-		const entry = metadata.type === "message" && metadata.message.role === "toolResult"
-			? saved.get(metadata.id) ?? (metadata.message.details !== undefined ? metadata : manager.getEntry(metadata.id) ?? metadata) : metadata;
-		if (includeNative && entry.type === "usage") {
-			const id = (entry as typeof entry & { contributionId?: string }).contributionId;
-			if (id?.startsWith(PREFIX)) received.set(id.slice(PREFIX.length), { id: id.slice(PREFIX.length), provider: entry.provider, model: entry.model, usage: entry.usage });
-		} else if (entry.type === "message" && entry.message.role === "toolResult" && toolNames.includes(entry.message.toolName)) {
+function createReceiptIndex(toolNames: readonly string[]) {
+	const cursor = new SessionEntryCursor();
+	const received = new Map<string, UsageContribution>(), portable = new Map<string, UsageContribution>();
+	return (manager: ExtensionContext["sessionManager"], includeNative: boolean, saved: ReadonlyMap<string, SessionEntry>) => {
+		const changes = cursor.read(manager);
+		if (changes.reset) { received.clear(); portable.clear(); }
+		for (const metadata of changes.entries) {
+			if (metadata.type === "usage") {
+				const id = (metadata as typeof metadata & { contributionId?: string }).contributionId;
+				if (id?.startsWith(PREFIX)) received.set(id.slice(PREFIX.length), { id: id.slice(PREFIX.length), provider: metadata.provider, model: metadata.model, usage: metadata.usage });
+				continue;
+			}
+			if (metadata.type !== "message" || metadata.message.role !== "toolResult" || !toolNames.includes(metadata.message.toolName)) continue;
+			const entry = saved.get(metadata.id) ?? (metadata.message.details !== undefined ? metadata : manager.getEntry(metadata.id) ?? metadata);
+			if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
 			const contributions = (entry.message.details as Details | undefined)?.parentUsage?.contributions;
 			// Details/custom notifications alone are never evidence that native accounting ran.
 			if (Array.isArray(contributions) && entry.message.usage && sameUsage(entry.message.usage, sumUsage(contributions))) {
-				for (const contribution of contributions) received.set(contribution.id, contribution);
+				for (const contribution of contributions) { received.set(contribution.id, contribution); portable.set(contribution.id, contribution); }
 			}
 		}
-	}
-	return received;
+		return includeNative ? received : portable;
+	};
 }
 
 function unrecorded(contributions: readonly UsageContribution[], received: Map<string, UsageContribution>): UsageContribution[] {
@@ -93,10 +96,12 @@ function unrecorded(contributions: readonly UsageContribution[], received: Map<s
 export function registerParentUsage(pi: ExtensionAPI, toolNames: readonly string[]) {
 	const api = pi as UsageAPI;
 	const toolReceipts = createParentReceiptReader("inspect");
-	const record = (contributions: readonly UsageContribution[], ctx: ExtensionContext): boolean => {
+	const receipts = createReceiptIndex(toolNames);
+	const record = (contributions: readonly UsageContribution[], ctx: ExtensionContext, saved?: ReadonlyMap<string, SessionEntry>): boolean => {
 		if (!api.recordUsage) return false;
+		if (!contributions.length) return true;
 		// Let native idempotence handle its own receipts, including retrying a failed flush.
-		const pending = unrecorded(contributions, receipts(ctx.sessionManager, toolNames, false, toolReceipts));
+		const pending = unrecorded(contributions, receipts(ctx.sessionManager, false, saved ?? toolReceipts.read(ctx.sessionManager.getSessionFile())));
 		for (const contribution of pending) api.recordUsage({ id: `${PREFIX}${contribution.id}`, kind: "subagent",
 			provider: contribution.provider ?? UNATTRIBUTED, model: contribution.model ?? UNATTRIBUTED, usage: contribution.usage });
 		return true;
@@ -107,7 +112,7 @@ export function registerParentUsage(pi: ExtensionAPI, toolNames: readonly string
 		if (message.role !== "toolResult" || !toolNames.includes(message.toolName)) return;
 		const details = message.details as Details | undefined;
 		if (!details?.parentUsage) return;
-		const pending = unrecorded(details.parentUsage.contributions, receipts(ctx.sessionManager, toolNames, true, toolReceipts));
+		const pending = unrecorded(details.parentUsage.contributions, receipts(ctx.sessionManager, true, toolReceipts.read(ctx.sessionManager.getSessionFile())));
 		const { usage: _usage, ...rest } = message;
 		const { parentUsage: _parentUsage, ...restDetails } = details;
 		// Public replacement hook: native emits/persists final tool messages serially,
@@ -121,10 +126,12 @@ export function registerParentUsage(pi: ExtensionAPI, toolNames: readonly string
 		attach(result: SubagentExecutionResult, contributions: readonly UsageContribution[], ctx: ExtensionContext): SubagentExecutionResult {
 			const { usage: _usage, ...rest } = result;
 			const { parentUsage: _parentUsage, ...details } = result.details;
+			if (!contributions.length) return { ...rest, details };
 			// Required identity/conflict rejection precedes any optional host I/O.
-			const portable = unrecorded(contributions, receipts(ctx.sessionManager, toolNames, true, toolReceipts));
+			const saved = toolReceipts.read(ctx.sessionManager.getSessionFile());
+			const portable = unrecorded(contributions, receipts(ctx.sessionManager, true, saved));
 			let recorded: boolean;
-			try { recorded = record(contributions, ctx); }
+			try { recorded = record(contributions, ctx, saved); }
 			catch (error) { return { ...rest, details: { ...details, accounting: { state: "incomplete", error: String(error) } } }; }
 			const pending = recorded ? [] : portable;
 			// Intent only. Top-level usage is added at final message_end, immediately before native persistence.

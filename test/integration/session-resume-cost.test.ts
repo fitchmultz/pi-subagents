@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { OwnedRun } from "../../src/shared/types.ts";
 import { createEventBus } from "../support/helpers.ts";
 
@@ -24,9 +25,10 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
 	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 	const manager = SessionManager.create(root, path.join(root, "sessions"));
 	manager.appendMessage({ role: "user", content: "Synthetic isolated session", timestamp: Date.now() });
-	for (let index = 0; index < 6; index++) manager.appendMessage({ role: "toolResult", toolName: "subagent",
+	const historicalIds = new Set<string>();
+	for (let index = 0; index < 6; index++) historicalIds.add(manager.appendMessage({ role: "toolResult", toolName: "subagent",
 		toolCallId: `old-${index}`, timestamp: Date.now(), content: [{ type: "text", text: "historical result" }],
-		details: { blob: "x".repeat(256 * 1024) } });
+		details: { blob: "x".repeat(256 * 1024) } }));
 	const runs = new Map<string, OwnedRun>(), recorded: string[] = [], usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 	for (let index = 0; index < 8; index++) {
@@ -44,14 +46,29 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
 		runs.set(runId, run);
 	}
 	const fileBytes = fs.statSync(manager.getSessionFile()!).size;
-	let parsedChars = 0, historicalLookups = 0, ownerWrites = 0, sent = 0, ownerWritesAtInput: number | undefined;
+	let parsedChars = 0, historicalLookups = 0, historicalBodyReads = 0, guardedHistoricalEntries = 0, ownerWrites = 0, sent = 0, ownerWritesAtInput: number | undefined;
 	const write = JsonProjection.prototype.write;
 	t.mock.method(JsonProjection.prototype, "write", function (chunk: string | symbol) {
 		if (typeof chunk === "string") parsedChars += chunk.length;
 		return write.call(this, chunk);
 	});
 	const getEntry = manager.getEntry.bind(manager);
-	t.mock.method(manager, "getEntry", (id: string) => { historicalLookups++; return getEntry(id); });
+	const getEntries = manager.getEntries.bind(manager), guarded = new WeakMap<SessionEntry, SessionEntry>();
+	const guard = (entry: SessionEntry | undefined) => {
+		if (!entry || !historicalIds.has(entry.id) || !Object.getOwnPropertyDescriptor(entry, "message")?.get) return entry;
+		let proxy = guarded.get(entry);
+		if (!proxy) {
+			proxy = new Proxy(entry, { get(target, key, receiver) {
+				if (key === "message") historicalBodyReads++;
+				return Reflect.get(target, key, receiver);
+			} });
+			guarded.set(entry, proxy);
+			guardedHistoricalEntries++;
+		}
+		return proxy;
+	};
+	t.mock.method(manager, "getEntries", () => getEntries().map(guard));
+	t.mock.method(manager, "getEntry", (id: string) => { if (historicalIds.has(id)) historicalLookups++; return guard(getEntry(id)); });
 	const pi = { on() {}, events: createEventBus(), sendMessage() { sent++; },
 		recordUsage(contribution: { id: string }) { recorded.push(contribution.id); } } as unknown as Parameters<typeof createCompletionDelivery>[0];
 	const state = { currentSessionId: manager.getSessionId(), ownedRuns: runs, foregroundRuns: new Map(), completionSeen: new Map(),
@@ -75,8 +92,13 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
 		assert.equal(sent, 0, "published completions never queue another model turn");
 		assert.deepEqual(recorded.sort(), Array.from({ length: 8 }, (_, index) => `subagent:native-${index}`));
 		assert.ok(parsedChars < fileBytes * 3, `${parsedChars} parsed characters: two compact indexes, not one full parse per run`);
-		assert.equal(historicalLookups, 0, "published billing fields do not load historical result bodies");
-		t.diagnostic(`${fileBytes} journal bytes; ${parsedChars} parsed characters; ${historicalLookups} historical body lookups.`);
+		assert.equal(historicalLookups, 0, "published billing fields do not look up unrelated historical results");
+		if (guardedHistoricalEntries) {
+			assert.equal(guardedHistoricalEntries, historicalIds.size, "the lazy-host guard covers every unrelated historical result");
+			assert.equal(historicalBodyReads, 0, "bulk native references and anchor checks do not hydrate lazy historical bodies");
+		}
+		else t.diagnostic("Host entries are eager; the lazy-body hydration check was not exercised.");
+		t.diagnostic(`${fileBytes} journal bytes; ${parsedChars} parsed characters; ${historicalLookups} historical result lookups; ${guardedHistoricalEntries} guarded lazy entries; ${historicalBodyReads} lazy body reads.`);
 		delivery.start();
 		await delay(30);
 		delivery.stop();

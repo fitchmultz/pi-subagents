@@ -163,7 +163,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 					});
 					const status = reconciliation.status ?? readStatus(job.asyncDir);
 					if (status) {
-						const summary = asyncStatusToSummary(job.asyncDir, status);
+						const summary = asyncStatusToSummary(job.asyncDir, status, [], job.nestedRoute ? job.nestedChildren ?? [] : undefined);
 						const previousStatus = job.status;
 						job.status = summary.state;
 						if (job.status !== "complete" && job.status !== "failed" && job.status !== "blocked" && job.status !== "paused") cancelCleanup(job.asyncId);
@@ -192,7 +192,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 							job.activeParallelGroup = Boolean(activeGroup);
 							job.agents = visibleSteps.map((step) => step.agent);
 							job.steps = visibleSteps;
-							refreshNestedProjection();
+							attachRootChildrenToSteps(job.asyncId, job.steps, job.nestedChildren);
 							job.stepsTotal = visibleSteps.length;
 							job.runningSteps = visibleSteps.filter((step) => step.status === "running").length;
 							job.completedSteps = visibleSteps.filter((step) => step.status === "complete" || step.status === "completed").length;

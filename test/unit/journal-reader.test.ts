@@ -1,12 +1,13 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
 import { test } from "node:test";
-import { JournalFrames, NativeJournal, readOutputPage } from "../../src/shared/journal-reader.ts";
+import { JournalFrames, JsonProjection, NativeJournal, readOutputPage } from "../../src/shared/journal-reader.ts";
 import { readNativeUsage, snapshotNativeBaseline } from "../../src/runs/shared/native-usage.ts";
 import { NativeAgentHistory } from "../../src/tui/agent-history.ts";
 
@@ -37,7 +38,13 @@ test("sealed inspection accepts a valid unterminated record without repair; stri
 	const root = temporary(t), file = path.join(root, "native.jsonl");
 	const original = '{"type":"session","id":"child","version":3}\n{"type":"model_change","id":"m","parentId":null,"provider":"p","modelId":"m"}';
 	fs.writeFileSync(file, original);
+	const read = fs.readSync;
+	let bytesRead = 0;
+	t.mock.method(fs, "readSync", function(...args) { const count = read.apply(this, args); bytesRead += count; return count; });
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 	assert.equal(new NativeJournal(file).configuration().model, "p/m");
+	assert.equal(bytesRead, Buffer.byteLength(original), "plain inspection does not pay for opt-in history prefix hashing");
 	assert.equal(fs.readFileSync(file, "utf8"), original);
 	assert.equal(new NativeJournal(file, "live").records.length, 1);
 	fs.appendFileSync(file, '\n{"type":"custom","id":"broken","data":[1,]}\n');
@@ -71,6 +78,70 @@ test("live history requires LF even after sealed inspection, tolerates broken hi
 	fs.appendFileSync(file, "\n");
 	assert.deepEqual([...snapshotNativeBaseline(file).ids], ["child", "terminal"]);
 	assert.equal(readNativeUsage(file, new Set(), [], { terminalEntryId: "terminal" })![0]!.input, 3);
+});
+
+test("live history tokenizes only appended records and revalidates torn tails, edited prefixes, replacements and truncation", (t) => {
+	const file = path.join(temporary(t), "native.jsonl");
+	const header = JSON.stringify({ type: "session", id: "child", version: 3 }) + "\n";
+	const record = (id: string, text: string) => JSON.stringify({ type: "message", id, parentId: null, timestamp: "2026-01-01",
+		message: { role: "user", content: text } }) + "\n";
+	fs.writeFileSync(file, header + Array.from({ length: 2000 }, (_, index) => record(`entry-${index}`, "x".repeat(2048))).join(""));
+	const reader = new NativeAgentHistory(), initial = reader.read(file, true), selected = initial.items[0]!;
+	const write = JsonProjection.prototype.write;
+	let parsedBytes = 0;
+	t.mock.method(JsonProjection.prototype, "write", function(chunk) { if (typeof chunk === "string") parsedBytes += Buffer.byteLength(chunk); return write.call(this, chunk); });
+	const appended = record("appended", "New published message");
+	fs.appendFileSync(file, appended);
+	assert.equal(reader.read(file, true).entryIds.at(-1), "appended");
+	assert.equal(parsedBytes, Buffer.byteLength(appended) - 1, "an append cannot retokenize the old multi-megabyte transcript");
+	const pending = record("pending", "Published after the next LF");
+	fs.appendFileSync(file, pending.slice(0, -1));
+	assert.equal(reader.read(file, true).entryIds.at(-1), "appended", "a valid EOF object is not published live");
+	fs.appendFileSync(file, "\n");
+	assert.equal(reader.read(file, true).entryIds.at(-1), "pending");
+	assert.equal(parsedBytes, Buffer.byteLength(appended) - 1 + 2 * (Buffer.byteLength(pending) - 1), "only the torn tail is retokenized");
+	const live = reader.read(file, true), missing = reader.read(file, true, { terminalEntryId: "missing" });
+	assert.match(missing.unavailable!, /terminal entry is unavailable/);
+	assert.equal(reader.read(file, true, { terminalEntryId: "missing" }), missing, "unchanged unavailable boundaries are cached");
+	assert.equal(reader.read(file, true), live, "a missing terminal boundary cannot discard a valid live index");
+	assert.equal(parsedBytes, Buffer.byteLength(appended) - 1 + 2 * (Buffer.byteLength(pending) - 1), "unavailable boundaries cannot repeatedly tokenize the source");
+	assert.equal(selected.load!().text, "x".repeat(2048), "append preserves the old exact native selection");
+	fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("x".repeat(2048), "y".repeat(2048)) + record("after-edit", "Grew while the prefix changed"));
+	assert.equal(reader.read(file, true).items[0]!.load!().text, "y".repeat(2048), "growth cannot hide a rewrite of prior entries");
+	assert.throws(() => selected.load!(), /replaced or truncated/);
+	fs.writeFileSync(`${file}.replacement`, header + record("replacement", "Different source"));
+	fs.renameSync(`${file}.replacement`, file);
+	assert.deepEqual(reader.read(file, true).entryIds, ["replacement"]);
+	assert.throws(() => selected.load!(), /replaced or truncated/);
+	fs.writeFileSync(file, header);
+	assert.deepEqual(reader.read(file, true).entryIds, []);
+});
+
+test("history caches stable unreadable sources but retries changed files and transient I/O failures", (t) => {
+	const file = path.join(temporary(t), "native.jsonl"), reader = new NativeAgentHistory();
+	fs.writeFileSync(file, '{"type":"custom","id":"not-a-session"}\n');
+	const write = JsonProjection.prototype.write;
+	let parsedBytes = 0;
+	t.mock.method(JsonProjection.prototype, "write", function(chunk) { if (typeof chunk === "string") parsedBytes += Buffer.byteLength(chunk); return write.call(this, chunk); });
+	assert.match(reader.read(file, true).unavailable!, /Not a readable native Pi session/);
+	const firstPass = parsedBytes;
+	assert.ok(firstPass > 0);
+	reader.configuration(file, undefined, undefined, true);
+	assert.match(reader.read(file, true).unavailable!, /Not a readable native Pi session/);
+	assert.equal(parsedBytes, firstPass, "unchanged invalid journals are not retokenized on every refresh");
+	fs.writeFileSync(file, '{"type":"session","id":"child","version":3}\n');
+	assert.equal(reader.read(file, true).unavailable, undefined, "changed source bytes retry the index");
+	reader.clear();
+	const open = fs.openSync;
+	let failed = false;
+	t.mock.method(fs, "openSync", function(target, ...args) {
+		if (target === file && !failed) { failed = true; throw Object.assign(new Error("EMFILE fixture"), { code: "EMFILE", syscall: "open" }); }
+		return open.call(this, target, ...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	assert.match(reader.read(file, true).unavailable!, /EMFILE/);
+	assert.equal(reader.read(file, true).unavailable, undefined, "transient I/O can recover without a journal rewrite");
 });
 
 test("strict/live JSONL reject non-object roots and invalid UTF-8 inside skipped payloads without committing their cursors", () => {

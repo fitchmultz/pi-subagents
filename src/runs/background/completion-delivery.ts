@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { RESULTS_DIR, SUBAGENT_ASYNC_COMPLETE_EVENT, type AsyncResultFile, type SubagentState } from "../../shared/types.ts";
-import { entryMetadata } from "../../shared/journal-reader.ts";
+import { SessionEntryCursor } from "../../shared/session-entries.ts";
 import { createParentReceiptReader } from "../shared/parent-receipts.ts";
 import { nativeInvocationTarget, nativeInvocations } from "../shared/native-async.ts";
 import { finalizedChildUsage, type registerParentUsage } from "../shared/parent-usage.ts";
@@ -31,6 +31,21 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 		}
 	});
 	const publishedReceipts = createParentReceiptReader("live");
+	const completedCursor = new SessionEntryCursor();
+	const completedCalls = new Set<string>();
+	const receiptEntryIds = new Set<string>();
+	const readParentChanges = () => {
+		const ctx = state.lastUiContext;
+		if (!ctx) return;
+		const changes = completedCursor.read(ctx.sessionManager);
+		if (changes.reset) { completedCalls.clear(); receiptEntryIds.clear(); }
+		for (const entry of changes.entries) {
+			if (entry.type === "message" && entry.message.role === "toolResult") {
+				completedCalls.add(entry.message.toolCallId);
+				if (["subagent", "delegate", "agent_runs"].includes(entry.message.toolName)) receiptEntryIds.add(entry.id);
+			} else if (entry.type === "custom_message" && ["subagent-notify", "intercom_message", "subagent-slash-result"].includes(entry.customType)) receiptEntryIds.add(entry.id);
+		}
+	};
 	const receipts = () => [...publishedReceipts.read(state.lastUiContext?.sessionManager.getSessionFile()).values()];
 	const consumed = (entry: Record<string, any>, runId: string) => {
 		const wait = entry.type === "message" ? entry.message?.details?.wait : entry.details?.result?.details?.wait;
@@ -41,7 +56,7 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 	state.hasNativeResultOwner = (runId) => {
 		const ctx = state.lastUiContext;
 		if (!ctx) return false;
-		const completedCalls = new Set([...entryMetadata(ctx.sessionManager)].flatMap((entry) => entry.type === "message" && entry.message.role === "toolResult" ? [entry.message.toolCallId] : []));
+		readParentChanges();
 		return nativeInvocations(ctx).some((call) => {
 			const target = nativeInvocationTarget(ctx, call);
 			return !completedCalls.has(call.toolCallId) && target?.runId === runId && (target.index === undefined || state.ownedRuns?.get(runId)?.mode === "single" && target.index === 0);
@@ -54,7 +69,7 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 		return completion?.runId === runId && (completion.key === key || completion.completionId && `completion:${completion.completionId}` === key
 			|| key.startsWith("completion:legacy:") && !completion.completionId && (completion.ownerSessionId === undefined || completion.ownerSessionId === state.currentSessionId));
 	};
-	const recordAccounting = (runId: string) => {
+	const recordAccounting = (runId: string, saved?: ReadonlyMap<string, SessionEntry>) => {
 		const run = state.ownedRuns?.get(runId), ctx = state.lastUiContext;
 		if (!run || !ctx) return;
 		try {
@@ -62,7 +77,7 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 			const children = ownedRunView(run, state, { readConfiguration: false }).children;
 			const incomplete = children.find((child) => child.result?.accounting?.state === "incomplete");
 			const accounting = incomplete ? { state: "incomplete" as const, error: incomplete.result?.accounting?.error }
-				: { state: parentUsage.record(finalizedChildUsage(children), ctx) ? "complete" as const : "pending" as const };
+				: { state: parentUsage.record(finalizedChildUsage(children), ctx, saved) ? "complete" as const : "pending" as const };
 			rememberOwnedRun(state, { ...state.ownedRuns!.get(runId)!, accounting });
 		} catch (error) {
 			try { rememberOwnedRun(state, { ...state.ownedRuns!.get(runId)!, accounting: { state: "incomplete", error: String(error) } }); }
@@ -72,7 +87,8 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 	};
 	const reconcileDelivery = (runId: string, key: string, accounting = true): boolean => {
 		const run = state.ownedRuns?.get(runId);
-		const receipt = receipts().find((entry) => matches(entry, runId, key));
+		const saved = publishedReceipts.read(state.lastUiContext?.sessionManager.getSessionFile());
+		const receipt = [...saved.values()].find((entry) => matches(entry, runId, key));
 		if (receipt) {
 			queued.delete(key);
 			state.completionSeen.delete(key);
@@ -81,7 +97,7 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 			try { if (run) rememberOwnedRun(state, { ...run, completion: { id: key, state: "journaled", entryId: receipt.id },
 				delivery: { notifiedAt: Date.parse(receipt.timestamp), intercomDelivered: receipt.type === "custom_message" && receipt.customType === "intercom_message", completionId: key, entryId: receipt.id } }); }
 			catch (error) { console.error(`Could not save delivery projection for ${runId}:`, error); }
-			if (accounting) recordAccounting(runId);
+			if (accounting) recordAccounting(runId, saved);
 			return true;
 		}
 		const ctx = state.lastUiContext;
@@ -89,10 +105,11 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 		// An accepted but unflushed receipt or a native pending queue is ambiguous:
 		// keep pending rather than enqueueing a second copy. Official hosts expose
 		// queue occupancy, not individual queue contents.
-		if ([...entryMetadata(ctx.sessionManager)].some((entry) => {
-			if (!(entry.type === "custom_message" && ["subagent-notify", "intercom_message", "subagent-slash-result"].includes(entry.customType)
-				|| entry.type === "message" && entry.message.role === "toolResult" && ["subagent", "delegate", "agent_runs"].includes(entry.message.toolName))) return false;
-			return matches(ctx.sessionManager.getEntry(entry.id) ?? entry, runId, key);
+		readParentChanges();
+		if ([...receiptEntryIds].some((id) => {
+			if (saved.has(id)) return false; // Published candidates were checked above.
+			const entry = ctx.sessionManager.getEntry(id);
+			return entry !== undefined && matches(entry, runId, key);
 		})) {
 			queued.delete(key); state.completionSeen.delete(key);
 			return true;
@@ -133,6 +150,9 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 		fs.mkdirSync(RESULTS_DIR, { recursive: true });
 		watcher.startResultWatcher(); watcher.primeExistingResults();
 	};
-	const stop = () => { watcher.stopResultWatcher(); unsubscribe?.(); unsubscribe = undefined; unsubscribeNotify?.(); unsubscribeNotify = undefined; publishedReceipts.clear(); };
+	const stop = () => {
+		watcher.stopResultWatcher(); unsubscribe?.(); unsubscribe = undefined; unsubscribeNotify?.(); unsubscribeNotify = undefined;
+		publishedReceipts.clear(); completedCursor.reset(); completedCalls.clear(); receiptEntryIds.clear();
+	};
 	return { start, stop, holdCheckpoint: watcher.holdCheckpoint };
 }

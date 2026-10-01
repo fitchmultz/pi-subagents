@@ -12,6 +12,7 @@ import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts
 import { writeAsyncControlRequest } from "../../src/runs/background/async-control.ts";
 import { createMockPi, createTempDir, events, removeTempDir } from "../support/helpers.ts";
 import { runChildAttempt } from "../../src/runs/shared/child-attempt.ts";
+import { createNativeFinalization } from "../../src/runs/shared/native-finalization.ts";
 
 const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
 const repo = path.resolve(".");
@@ -253,6 +254,104 @@ test("nested tool usage is accounted without tightening the assistant-only token
 	assert.equal(result.usage.input, 1100);
 	assert.equal(result.usage.output, 50);
 	assert.equal(result.usage.contributions?.length, 2);
+});
+
+test("a missing child message fails closed and retains its wire audit instead of reusing the prior observation", async (t) => {
+	const root = createTempDir("child-invalid-message-"), mock = createMockPi();
+	t.after(() => removeTempDir(root));
+	mock.install();
+	t.after(() => mock.uninstall());
+	mock.onCall({ jsonl: [events.assistantMessage("Observed answer"), { type: "message_end" }] });
+	const result = await runChildAttempt({ args: ["--mode", "json", "-p", "Task: invalid event"], cwd: repo, agent: "fixture",
+		auditPath: path.join(root, "observations.log") });
+	assert.equal(result.terminalFailure, true);
+	assert.equal(result.exitCode, 1);
+	assert.match(result.error, /missing its message/);
+	assert.equal(result.auditRecords?.[0].kind, "receiver_failure");
+	assert.match(fs.readFileSync(result.auditPath!, "utf8"), /"type":"message_end"}/);
+});
+
+test("native message references and finalization scans scale with new messages rather than baseline and prior observations", async (t) => {
+	const root = createTempDir("child-reference-index-"), bin = path.join(root, "bin");
+	t.after(() => removeTempDir(root));
+	fs.mkdirSync(bin);
+	const script = path.join(root, "child.mjs");
+	const finalization = createNativeFinalization(resolveEffectiveAcceptance({ explicit: { criteria: [{ id: "deliver", must: "Deliver fixture" }] } }));
+	t.after(() => removeTempDir(path.dirname(finalization.reportRuntime.schemaPath)));
+	fs.writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec '${process.execPath}' '${script}'\n`, { mode: 0o755 });
+	const message = (timestamp: number) => ({ ...(events.assistantMessage("Finished") as { message: object }).message, timestamp });
+	fs.writeFileSync(script, `import fs from 'node:fs';
+		process.stdout.write(JSON.stringify({type:'message_end',message:{role:'custom',customType:'fixture',content:'Context only',timestamp:0}})+'\\n');
+		for(let index=0;index<1000;index++) {
+			const message={...${JSON.stringify(message(0))},timestamp:10000+index};
+			const entry={id:'new-'+index,type:'message',parentId:index?'new-'+(index-1):null,message};
+			fs.appendFileSync(process.env.JOURNAL,JSON.stringify(entry)+'\\n');
+			process.stdout.write(JSON.stringify({type:'message_end',message})+'\\n');
+			process.stdout.write(JSON.stringify({type:'subagent.native',sessionId:'fixture',leafId:entry.id,persisted:true,configuration:{model:'mock/test-model'},entries:[entry]})+'\\n');
+		}
+		fs.appendFileSync(process.env.BOUNDARIES,JSON.stringify({type:'subagent.finalization',nonce:${JSON.stringify(finalization.nonce)},turn:0,lastEntryId:'new-999',
+			messageCount:1000,at:Date.now(),submission:{output:'Finished'},resolvedOutput:{fullOutput:'Finished'}})+'\\n');`);
+	for (const baselineCount of [0, 4000]) {
+		const file = path.join(root, "session.jsonl");
+		fs.writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "fixture" }) + "\n"
+			+ Array.from({ length: baselineCount }, (_, index) => JSON.stringify({ type: "message", id: `old-${index}`, parentId: null, message: message(index) }) + "\n").join(""));
+		const boundaries = path.join(path.dirname(finalization.reportRuntime.schemaPath), "boundaries.jsonl");
+		fs.rmSync(boundaries, { force: true });
+		let comparisons = 0, filtered = 0;
+		const find = Array.prototype.find;
+		Object.defineProperty(Array.prototype, "find", { value: function (this: unknown[], predicate: (value: unknown, index: number, array: unknown[]) => boolean, thisArg?: unknown) {
+			const observation = this[0] as { start?: unknown; kind?: unknown } | undefined;
+			const matching = observation && typeof observation.start === "number" && observation.kind === "message_end";
+			return find.call(this, (item, index, array) => { if (matching) comparisons++; return predicate.call(thisArg, item, index, array); });
+		} });
+		const filter = Array.prototype.filter;
+		Object.defineProperty(Array.prototype, "filter", { value: function (this: unknown[], predicate: (value: unknown, index: number, array: unknown[]) => boolean, thisArg?: unknown) {
+			const messages = this[0] as { role?: unknown } | undefined;
+			return filter.call(this, (item, index, array) => { if (typeof messages?.role === "string") filtered++; return predicate.call(thisArg, item, index, array); });
+		} });
+		let result: Awaited<ReturnType<typeof runChildAttempt>>;
+		try {
+			result = await runChildAttempt({ args: [], cwd: root, env: { PATH: `${bin}${path.delimiter}${process.env.PATH}`, JOURNAL: file, BOUNDARIES: boundaries },
+				agent: "fixture", sessionFile: file, nativeFinalization: finalization, auditPath: path.join(root, "audit") });
+		} finally {
+			Object.defineProperty(Array.prototype, "find", { value: find });
+			Object.defineProperty(Array.prototype, "filter", { value: filter });
+		}
+		assert.equal(result.exitCode, 0, result.error);
+		assert.equal(result.accounting?.state, "complete", result.accounting?.error);
+		assert.equal(result.usage.input, 100_000);
+		assert.equal(result.usage.turns, 1000);
+		assert.deepEqual(result.auditRecords?.map(({ kind }) => kind), ["message_end"], "the custom context observation remains audited");
+		assert.equal(result.finalization?.length, 1);
+		assert.ok(result.finalization?.[0]);
+		assert.equal(result.finalization[0].messages.length, 1000, "custom messages are excluded from native boundary message counts");
+		assert.equal(result.messageCount, 1000);
+		assert.deepEqual(result.nativeReferences, Array.from({ length: 1000 }, (_, index) => ({ messageNumber: index + 1, entryId: `new-${index}` })));
+		t.diagnostic(`${baselineCount} inherited + 1000 new messages: ${comparisons} matching comparisons, ${filtered} message-filter visits`);
+		assert.ok(comparisons < 4000, `matching must not revisit baseline/prior observations: ${comparisons} comparisons with ${baselineCount} inherited entries`);
+		assert.ok(filtered < 6000, `pending finalization scans must not filter history on every event: ${filtered} predicate visits`);
+	}
+});
+
+test("native fallback never assigns baseline IDs to new messages with identical identities", async (t) => {
+	const root = createTempDir("child-reference-baseline-"), bin = path.join(root, "bin");
+	t.after(() => removeTempDir(root));
+	fs.mkdirSync(bin);
+	const script = path.join(root, "child.mjs"), file = path.join(root, "session.jsonl");
+	fs.writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec '${process.execPath}' '${script}'\n`, { mode: 0o755 });
+	const message = { ...(events.assistantMessage("Finished") as { message: object }).message, timestamp: 7 };
+	fs.writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "fixture" }) + "\n"
+		+ JSON.stringify({ type: "message", id: "baseline", parentId: null, message }) + "\n");
+	fs.writeFileSync(script, `import fs from 'node:fs';const message=${JSON.stringify(message)};
+		for(const id of ['first','second']) { fs.appendFileSync(process.env.JOURNAL,JSON.stringify({type:'message',id,parentId:null,message})+'\\n');
+			process.stdout.write(JSON.stringify({type:'message_end',message})+'\\n'); }`);
+	const result = await runChildAttempt({ args: [], cwd: root, env: { PATH: `${bin}${path.delimiter}${process.env.PATH}`, JOURNAL: file },
+		agent: "fixture", sessionFile: file, auditPath: path.join(root, "audit") });
+	assert.equal(result.accounting?.state, "complete", result.accounting?.error);
+	assert.equal(result.usage.turns, 2);
+	assert.equal(result.usage.input, 200);
+	assert.deepEqual(result.nativeReferences, [{ messageNumber: 1, entryId: "first" }, { messageNumber: 2, entryId: "second" }]);
+	assert.equal(result.auditPath, undefined);
 });
 
 test("owner allocates a native session when acceptance has no preassigned file", async () => {

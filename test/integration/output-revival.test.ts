@@ -8,6 +8,7 @@ import { createSubagentExecutor, type SubagentParamsLike } from "../../src/runs/
 import { createSupervisorQuestion, getRunMetadataDir, questionProcessAlive, readQuestionContract } from "../../src/runs/shared/supervisor-questions.ts";
 import { ASYNC_DIR, RESULTS_DIR, getAsyncConfigPath, type AsyncResultFile, type ForegroundResumeRun, type SubagentExecutionResult } from "../../src/shared/types.ts";
 import { readStatus } from "../../src/shared/utils.ts";
+import { NativeJournal } from "../../src/shared/journal-reader.ts";
 import { createEventBus, createMockPi, createTempDir, makeAgent, makeMinimalCtx, removeTempDir, type MockPi } from "../support/helpers.ts";
 
 async function waitFor(check: () => boolean, message: string): Promise<void> {
@@ -498,7 +499,12 @@ describe("saved output choices", () => {
 			{ type: "model_change", id: "model", parentId: null, provider: "native", modelId: "later", timestamp },
 			{ type: "thinking_level_change", id: "thinking", parentId: "model", thinkingLevel: "low", timestamp },
 		].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-		assert.equal(readQuestionContract(id, 0)?.launch?.model, "native/later", "inspection still projects native metadata");
+		assert.equal(readQuestionContract(id, 0)?.launch?.model, "mock/chosen:high", "default reads retain the captured selection");
+		const display = readQuestionContract(id, 0, undefined, {
+			readConfiguration: (file, endedAt, leaf) => new NativeJournal(file!, "inspect", true).configuration(endedAt, leaf),
+		})!.launch!;
+		assert.equal(display.model, "native/later", "explicit inspection projects current native metadata");
+		assert.equal(display.thinking, "low");
 		const continued = await run({ action: "resume", id, message: "Continue" });
 		const successor = readQuestionContract(continued.details.asyncId!, 0, undefined, { readConfiguration: false })!.launch!;
 		assert.equal(successor.model, "mock/chosen:high");

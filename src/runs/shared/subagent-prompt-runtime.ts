@@ -8,7 +8,7 @@ import { loadConfig } from "../../extension/config.ts";
 import { registerChildExecutionCwd } from "./child-execution-cwd.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, validateStructuredOutputValue } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
-import { entryMetadata } from "../../shared/journal-reader.ts";
+import { SessionEntryCursor } from "../../shared/session-entries.ts";
 
 const SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV = "PI_SUBAGENT_INHERIT_PROJECT_CONTEXT";
 const SUBAGENT_INHERIT_SKILLS_ENV = "PI_SUBAGENT_INHERIT_SKILLS";
@@ -103,19 +103,23 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 	// Print-mode observation uses the existing child runtime. turn_end follows native
 	// message append; message_end itself is deliberately never called a commit receipt.
 	let observedMessages = 0;
+	const cursor = new SessionEntryCursor();
 	let previousIds = new Set<string>();
 	pi.on("session_start", (_event, ctx) => {
-		const entries = [...entryMetadata(ctx.sessionManager)];
+		cursor.reset();
+		observedMessages = 0;
+		const { entries } = cursor.read(ctx.sessionManager);
 		const baseline = process.env.PI_SUBAGENT_NATIVE_BASELINE_COUNT;
 		if (baseline && /^\d+$/.test(baseline)) process.stdout.write(`${JSON.stringify({ type: "subagent.native_baseline", sessionId: ctx.sessionManager.getSessionId(), entryIds: entries.slice(0, Number(baseline)).map((entry) => entry.id) })}\n`);
 		const file = ctx.sessionManager.getSessionFile();
 		previousIds = file && fs.existsSync(file) ? new Set(entries.map((entry) => entry.id)) : new Set();
+		if (!file || !fs.existsSync(file)) cursor.reset();
 	});
 	pi.on("message_end", (event) => { if (["assistant", "user", "toolResult"].includes(event.message.role)) observedMessages++; });
 	const observe = (ctx: import("@earendil-works/pi-coding-agent").ExtensionContext, boundary: string) => {
 		if (process.env.PI_SUBAGENT_CHILD !== "1") return;
 		const entries = [];
-		for (const entry of entryMetadata(ctx.sessionManager)) if (!previousIds.has(entry.id)) {
+		for (const entry of cursor.read(ctx.sessionManager).entries) if (!previousIds.has(entry.id)) {
 			previousIds.add(entry.id);
 			const message = entry.type === "message" ? entry.message : undefined;
 			entries.push({ id: entry.id, type: entry.type, parentId: entry.parentId,

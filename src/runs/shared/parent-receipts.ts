@@ -39,6 +39,10 @@ export function createParentReceiptReader(policy: JournalPolicy) {
 					hashRange(fd, 0, cache!.end, hash);
 					append = hash.copy().digest("hex") === cache!.digest;
 				}
+				if (append && Number(stat.size) === cache!.end) {
+					if (journalStamp(fs.fstatSync(fd, { bigint: true })) !== stamp) throw new Error("Parent journal changed during inspection");
+					return cache!.records;
+				}
 				if (!append) hash = createHash("sha256");
 				const start = append ? cache!.end : 0, records = append ? new Map(cache!.records) : new Map<string, SessionEntry>();
 				const end = scanJournal(fd, receiptProjection, ({ value }) => {

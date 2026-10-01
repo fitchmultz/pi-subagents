@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { listSupervisorQuestions } from "./supervisor-questions.ts";
-import { entryMetadata } from "../../shared/journal-reader.ts";
+import { SessionEntryCursor } from "../../shared/session-entries.ts";
 
 /** Optional public fork ABI; official Pi retains ordinary receipts and abort-aware waits. */
 export type AsyncContext = ExtensionContext & {
@@ -8,6 +8,7 @@ export type AsyncContext = ExtensionContext & {
 };
 
 const INVOCATION_ENTRY = "subagent-invocation";
+const invocationIndexes = new WeakMap<ExtensionContext["sessionManager"], { cursor: SessionEntryCursor; calls: Map<string, NativeInvocation> }>();
 
 export interface NativeInvocation {
 	toolCallId: string;
@@ -28,14 +29,20 @@ export function isNativeAsyncCall(ctx: ExtensionContext, toolCallId: string): bo
 }
 
 export function nativeInvocations(ctx: ExtensionContext): NativeInvocation[] {
-	const calls = new Map<string, NativeInvocation>();
-	for (const metadata of entryMetadata(ctx.sessionManager)) {
+	let index = invocationIndexes.get(ctx.sessionManager);
+	if (!index) {
+		index = { cursor: new SessionEntryCursor(), calls: new Map() };
+		invocationIndexes.set(ctx.sessionManager, index);
+	}
+	const { entries, reset } = index.cursor.read(ctx.sessionManager);
+	if (reset) index.calls.clear();
+	for (const metadata of entries) {
 		const entry = metadata.type === "custom" && metadata.customType === INVOCATION_ENTRY ? ctx.sessionManager.getEntry?.(metadata.id) ?? metadata : metadata;
 		if (entry.type !== "custom" || entry.customType !== INVOCATION_ENTRY) continue;
 		const call = entry.data as NativeInvocation | undefined;
-		if (call?.ownerSessionId === ctx.sessionManager.getSessionId() && typeof call.toolCallId === "string" && typeof call.runId === "string") calls.set(call.toolCallId, call);
+		if (call?.ownerSessionId === ctx.sessionManager.getSessionId() && typeof call.toolCallId === "string" && typeof call.runId === "string") index.calls.set(call.toolCallId, call);
 	}
-	return [...calls.values()];
+	return [...index.calls.values()];
 }
 
 /** Journal the original call binding before launch, answer publication, or live message delivery. */

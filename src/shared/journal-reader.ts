@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { createHash, type Hash } from "node:crypto";
 import * as parserModule from "stream-json/core/parser.js";
 import type { Token } from "stream-json/core/parser.js";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -245,15 +246,26 @@ export class NativeJournal {
 	readonly stamp: string;
 	readonly identity: string;
 	readonly end: number;
+	private readonly publishedEnd: number;
+	private readonly prefixHash?: Hash;
+	private readonly policy: JournalPolicy;
+	private readonly requireNewline: boolean;
 	readonly file: string;
-	constructor(file: string, policy: JournalPolicy = "inspect", requireNewline = policy === "live") {
-		this.file = file;
+	constructor(file: string, policy: JournalPolicy = "inspect", requireNewline = policy === "live", previous?: NativeJournal, verifyPrefix = false) {
+		this.file = file; this.policy = policy; this.requireNewline = requireNewline;
 		const fd = fs.openSync(file, "r");
 		try {
 			const stat = fs.fstatSync(fd, { bigint: true });
 			this.stamp = journalStamp(stat); this.identity = `${stat.dev}:${stat.ino}`; this.end = Number(stat.size);
-			let parent: string | null = null;
-			scanJournal(fd, nativeProjection, (record) => {
+			const candidate = verifyPrefix && requireNewline && previous?.prefixHash && previous.requireNewline && previous.policy === policy && previous.file === file && previous.identity === this.identity && previous.end < this.end;
+			const prefix = candidate ? this.hashRange(fd, previous.publishedEnd) : undefined;
+			const append = candidate && prefix!.copy().digest("hex") === previous.prefixHash.copy().digest("hex");
+			if (append) {
+				this.records = previous.records.slice();
+				this.byId = new Map(previous.byId);
+			}
+			let parent: string | null = this.records.findLast((record) => record.value.type !== "session")?.value.id ?? null;
+			this.publishedEnd = scanJournal(fd, nativeProjection, (record) => {
 				const entry = record.value;
 				if (entry.type !== "session") {
 					// Read-only legacy v1 presentation uses stable offset IDs, without rewriting the source.
@@ -262,10 +274,30 @@ export class NativeJournal {
 					parent = entry.id;
 				}
 				this.records.push(record as NativeRecord); this.byId.set(entry.id, record as NativeRecord);
-			}, { policy, requireNewline, end: this.end });
+			}, { policy, requireNewline, start: append ? previous.publishedEnd : 0, end: this.end });
+			if (verifyPrefix) this.prefixHash = this.hashRange(fd, this.publishedEnd, append ? previous.publishedEnd : 0, append ? prefix : undefined);
 			if (journalStamp(fs.fstatSync(fd, { bigint: true })) !== this.stamp) throw new Error("Journal changed while indexing; refresh history.");
 		} finally { fs.closeSync(fd); }
 		if (this.records[0]?.value.type !== "session") throw new Error("Not a readable native Pi session.");
+	}
+	// ponytail: mutable journals require linear byte verification. Only appended
+	// records are tokenized; a native immutable-prefix contract could remove hashing.
+	private hashRange(fd: number, end: number, start = 0, hash = createHash("sha256")): Hash {
+		const bytes = Buffer.allocUnsafe(64 * 1024);
+		for (let offset = start; offset < end;) {
+			const count = fs.readSync(fd, bytes, 0, Math.min(bytes.length, end - offset), offset);
+			if (!count) throw new Error("Journal truncated while verifying history.");
+			hash.update(bytes.subarray(0, count)); offset += count;
+		}
+		return hash;
+	}
+	hasPrefix(previous: NativeJournal): boolean {
+		if (!previous.prefixHash || this.identity !== previous.identity || this.end < previous.end) return false;
+		const fd = fs.openSync(this.file, "r");
+		try {
+			return journalStamp(fs.fstatSync(fd, { bigint: true })) === this.stamp
+				&& this.hashRange(fd, previous.publishedEnd).digest("hex") === previous.prefixHash.copy().digest("hex");
+		} finally { fs.closeSync(fd); }
 	}
 	branch(leaf?: string | null, endedAt?: number): NativeRecord[] {
 		if (leaf === null) return [];
@@ -294,12 +326,14 @@ export class NativeJournal {
 	}
 	configuration(endedAt?: number, leaf?: string | null): { model?: string; thinking?: string; modelRecordedAt?: number } {
 		const result: ReturnType<NativeJournal["configuration"]> = {};
+		let model: NativeRecord["value"] | undefined;
 		for (const { value } of this.branch(leaf, endedAt)) {
 			if (value.type === "thinking_level_change") result.thinking = value.thinkingLevel;
-			if (value.type === "model_change" || value.type === "message" && value.message?.role === "assistant") {
-				result.model = value.type === "model_change" ? `${value.provider}/${value.modelId}` : `${value.message.provider}/${value.message.model}`;
-				result.modelRecordedAt = Date.parse(value.timestamp);
-			}
+			if (value.type === "model_change" || value.type === "message" && value.message?.role === "assistant") model = value;
+		}
+		if (model) {
+			result.model = model.type === "model_change" ? `${model.provider}/${model.modelId}` : `${model.message.provider}/${model.message.model}`;
+			result.modelRecordedAt = Date.parse(model.timestamp);
 		}
 		return result;
 	}

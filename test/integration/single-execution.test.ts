@@ -193,10 +193,15 @@ describe("single owner execution", () => {
 	});
 
 	it("does not retry ordinary task failures", async () => {
-		mockPi.onCall({ jsonl: [events.toolResult("bash", "process exited with code 127")], exitCode: 0 });
+		mockPi.onCall({ jsonl: [
+			events.toolResult("bash", "process exited with code 127"),
+			events.assistantMessage(""),
+		], exitCode: 0 });
 		const result = await makeExecutor([makeAgent("echo", { model: "mock/primary", fallbackModels: ["mock/fallback"] })])
 			.execute("ordinary", { agent: "echo", task: "Work" }, undefined, undefined, makeMinimalCtx(tempDir));
 		assert.equal(result.details.results[0].exitCode, 127);
+		assert.match(result.details.results[0].error, /bash failed \(exit 127\)/);
+		assert.deepEqual(result.details.results[0].attemptedModels, ["mock/primary"]);
 		assert.equal(mockPi.callCount(), 1);
 	});
 

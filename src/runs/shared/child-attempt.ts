@@ -27,7 +27,7 @@ import type { StructuredOutputRuntime } from "./structured-output.ts";
 import type { updateStreamingText } from "./streaming-text.ts";
 import { createRepeatedSubagentCallGuardState, recordToolEndForSubagentLoopGuard, recordToolStartForSubagentLoopGuard } from "./subagent-tool-loop-guard.ts";
 import { JournalFrames, NativeJournal, nativeProjection, scanJournal, type Projection } from "../../shared/journal-reader.ts";
-import { compactObservedMessage, ExitCodeObservation } from "./child-observations.ts";
+import { compactObservedMessage, createMessageReferenceIndex, ExitCodeObservation } from "./child-observations.ts";
 
 const liveProjection: Projection = (path, root) => {
 	if (!path.length) return true;
@@ -210,15 +210,8 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 		const wirePath = path.join(wireDirectory, "stdout");
 		let textOffset = 0;
 		const observations: Array<{ start: number; end: number; kind: string; number?: number; message?: Message; nativeEntryId?: string }> = [];
-		const referenceMessage = (entry: NativeUsageMetadata) => {
-			const message = entry.message;
-			if (!message) return;
-			const observation = observations.find((item) => (!item.nativeEntryId || item.nativeEntryId === entry.id)
-				&& item.message?.role === message.role && item.message.timestamp === message.timestamp
-				&& (!message.toolCallId || item.message.role === "toolResult" && item.message.toolCallId === message.toolCallId));
-			if (observation) observation.nativeEntryId = entry.id;
-			return observation;
-		};
+		const references = createMessageReferenceIndex<(typeof observations)[number]>();
+		const referenceMessage = (entry: NativeUsageMetadata) => baseline.has(entry.id) ? undefined : references.reference(entry);
 		let rawOutput = "", lastOutput = "", boundariesCursor = 0;
 		let receiverFailed = false;
 		const acceptedEntries = new Map<string, NativeUsageMetadata>();
@@ -268,11 +261,11 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 		const syncFinalization = () => {
 			if (!options.nativeFinalization) return;
 			const file = path.join(path.dirname(options.nativeFinalization.reportRuntime.schemaPath), "boundaries.jsonl");
-			const messages = result.messages.filter((message) => ["assistant", "user", "toolResult"].includes(message.role));
 			try { scanJournal(file, () => true, ({ value, end }) => {
 				const marker = value as NativeFinalizationEvent;
 				if (marker.nonce !== options.nativeFinalization!.nonce) throw new Error("Unexpected finalization nonce");
-				if (marker.messageCount > messages.length) throw pendingBoundary;
+				if (marker.messageCount > nativeMessageCount) throw pendingBoundary;
+				const messages = result.messages.filter((message) => ["assistant", "user", "toolResult"].includes(message.role));
 				const segmentMessages = messages.slice(messageOffset, marker.messageCount);
 				const usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 				let segmentAssistantTokens = 0;
@@ -300,6 +293,7 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 		const processEvent = (input: ChildEvent) => {
 			let event = input;
 			if (!event || typeof event !== "object") return;
+			if (event.type === "message_end" && !event.message) throw new Error("Child message_end event is missing its message");
 			if (event.type !== "message_update") syncFinalization();
 			if (event.type === "subagent.native_baseline") {
 				const value = event as ChildEvent & { sessionId: string; entryIds: string[] };
@@ -467,8 +461,12 @@ export function runChildAttempt(options: ChildAttemptOptions): Promise<ChildAtte
 			const tail = decoder.end(); if (tail) options.onOutput?.(tail);
 			if (exitObservation.value !== undefined && value.type === "message_end" && value.message?.role === "toolResult") value.message.observedExitCode = exitObservation.value;
 			processEvent(value as ChildEvent);
-			if (["message_end", "tool_execution_end"].includes(value.type) || invocation && (value.type !== "result" || !options.sessionFile)) observations.push({ start, end, kind: value.type,
-				...(value.type === "message_end" ? { number: nativeMessageCount, message: compactObservedMessage(value.message) } : {}) });
+			if (["message_end", "tool_execution_end"].includes(value.type) || invocation && (value.type !== "result" || !options.sessionFile)) {
+				const observation = { start, end, kind: value.type,
+					...(value.type === "message_end" ? { number: nativeMessageCount, message: result.messages.at(-1) } : {}) };
+				observations.push(observation);
+				references.add(observation);
+			}
 			resetRecord();
 		}, "inspect", 0, (start, end) => {
 			observations.push({ start, end, kind: "diagnostic" });
