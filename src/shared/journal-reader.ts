@@ -1,13 +1,8 @@
 import * as fs from "node:fs";
 import * as parserModule from "stream-json/core/parser.js";
 import type { Token } from "stream-json/core/parser.js";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 type JsonObject = Record<string, any>;
-export function entryMetadata(manager: { getEntries(): SessionEntry[] }): Iterable<SessionEntry> {
-	const optional = manager as { iterateEntryMetadata?: () => Iterable<SessionEntry> };
-	return optional.iterateEntryMetadata ? optional.iterateEntryMetadata() : manager.getEntries();
-}
 export type Projection = (path: readonly (string | number)[], root?: JsonObject) => boolean | number;
 type KeyLimit = (parentPath: readonly (string | number)[], root?: JsonObject) => number;
 export interface ProjectionLimits { depth: number; nodes: number; arrayLength: number; keyLength: number }

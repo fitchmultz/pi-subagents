@@ -49,12 +49,6 @@ try {
   assert.notEqual(runs.isError, true, JSON.stringify(runs.content));
   assert.equal(runs.details.runList.total, 0);
   assert.deepEqual(errors, []);
-  if (process.env.PI_COMPAT_HOST === "fork") {
-    assert.equal(typeof session.acquireCheckpoint, "function", "fork checkpoint hook is required");
-    const hold = await session.acquireCheckpoint({ quiesce: () => () => {}, signal: AbortSignal.timeout(10_000) });
-    try { assert.equal(hold.sleepReady, true, JSON.stringify(hold.sleepBlockers)); }
-    finally { hold.release(); }
-  }
   const marker = join(root, "cli.json");
   const observer = join(root, "observer.ts");
   writeFileSync(observer, `import { writeFileSync } from "node:fs";

@@ -21,33 +21,39 @@ try {
   run("npm", ["ci", "--ignore-scripts"], { cwd: development, env });
   const host = await prepareHost(join(root, "host"), "fork", resolve(packageArg), env);
   assert.equal(host.provenance.ref, expectedRef);
-  const selected = selectDevelopmentHost(development, host, env);
-  const testEnv = {
-    ...env,
-    PI_COMPAT_HOST: "fork",
-    PI_COMPAT_EXPECTED_VERSION: host.version,
-    PI_COMPAT_EXPECTED_PACKAGE_DIR: selected.packageDir,
-    PI_HOST_INDEX: selected.index,
-    PI_HOST_CLI: selected.cli,
-    PI_PACKAGE_DIR: selected.packageDir,
-  };
-  run("npm", ["run", "build"], { cwd: development, env: testEnv });
-
-  if (suite === "core") {
-    const result = spawnSync(process.execPath, ["scripts/compat-native.mjs", "--core"], {
-      cwd: development, env: testEnv, stdio: "inherit", timeout: 480_000,
-    });
-    if (result.error) throw result.error;
-    assert.equal(result.status, 0, `Core contracts exited ${result.status ?? result.signal}`);
+  assert.match(host.version, /^\d+\.\d+\.\d+(?:[-+].*)?$/);
+  if (Number(host.version.split(".")[0]) < 1) {
+    console.log(JSON.stringify({ qualification: "UNATTEMPTED", suite, version: host.version, ref: expectedRef,
+      reason: "pi-subagents requires Pi 1.0.0; the resolved fork is below the supported floor" }));
   } else {
-    const consumer = join(root, "consumer");
-    stageSource(source, consumer);
-    run("npm", ["install", "--omit=dev"], { cwd: consumer, env });
-    assert.ok(existsSync(join(consumer, "dist/extension/index.js")));
-    assert.equal(existsSync(join(consumer, "node_modules/typescript")), false, "Production install retained TypeScript");
-    run(process.execPath, ["scripts/native-package-smoke.mjs", consumer], { cwd: development, env: testEnv });
-    if (process.platform === "darwin") {
-      run(process.execPath, ["--test", "test/unit/pi-intercom-spawn.test.ts"], { cwd: development, env: testEnv });
+    const selected = selectDevelopmentHost(development, host, env);
+    const testEnv = {
+      ...env,
+      PI_COMPAT_HOST: "fork",
+      PI_COMPAT_EXPECTED_VERSION: host.version,
+      PI_COMPAT_EXPECTED_PACKAGE_DIR: selected.packageDir,
+      PI_HOST_INDEX: selected.index,
+      PI_HOST_CLI: selected.cli,
+      PI_PACKAGE_DIR: selected.packageDir,
+    };
+    run("npm", ["run", "build"], { cwd: development, env: testEnv });
+
+    if (suite === "core") {
+      const result = spawnSync(process.execPath, ["scripts/compat-native.mjs", "--core"], {
+        cwd: development, env: testEnv, stdio: "inherit", timeout: 480_000,
+      });
+      if (result.error) throw result.error;
+      assert.equal(result.status, 0, `Core contracts exited ${result.status ?? result.signal}`);
+    } else {
+      const consumer = join(root, "consumer");
+      stageSource(source, consumer);
+      run("npm", ["install", "--omit=dev"], { cwd: consumer, env });
+      assert.ok(existsSync(join(consumer, "dist/extension/index.js")));
+      assert.equal(existsSync(join(consumer, "node_modules/typescript")), false, "Production install retained TypeScript");
+      run(process.execPath, ["scripts/native-package-smoke.mjs", consumer], { cwd: development, env: testEnv });
+      if (process.platform === "darwin") {
+        run(process.execPath, ["--test", "test/unit/pi-intercom-spawn.test.ts"], { cwd: development, env: testEnv });
+      }
     }
   }
 } finally {

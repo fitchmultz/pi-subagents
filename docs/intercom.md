@@ -22,11 +22,11 @@ The broker, presence, receipts and keyboard UI stay active while the model schem
 
 ## In One Minute
 
-Each Pi session with the bundled intercom extension loaded connects to a tiny local broker over a local IPC transport. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small peer overlay (`/intercom`); Option+Shift+M (Alt+Shift+M) toggles owned agent conversations when `pi-subagents` is loaded. Messages that do not request a reply default to steer: they wake idle recipients and reach active recipients after the current tool call. Important steers release portable subagent waits without stopping the owner or child. Background calls return immediate receipts even on native asynchronous models, with completion delivered later as a separate wake-up message. Explicit native foreground waits and older unresolved native calls remain pending and return their result on the original call without a duplicate completion notice. Explicit queue waits behind active work, and passive delivery is a discouraged opt-in for human-visible breadcrumbs only. Quiet topic state uses native custom entries outside model context, not passive messages.
+Each Pi session with the bundled intercom extension loaded connects to a tiny local broker over a local IPC transport. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small peer overlay (`/intercom`); Option+Shift+M (Alt+Shift+M) toggles owned agent conversations when `pi-subagents` is loaded. Messages that do not request a reply default to steer: they wake idle recipients and reach active recipients after the current tool call. Important steers release portable subagent waits without stopping the owner or child. Background calls return immediate receipts, with completion delivered later as a separate wake-up message. Foreground waits return saved results or durable questions and release for important Intercom attention without stopping existing work. Explicit queue waits behind active work, and passive delivery is a discouraged opt-in for human-visible breadcrumbs only. Quiet topic state uses native custom entries outside model context, not passive messages.
 
 ## Install
 
-Intercom works with official Pi **0.99.1**. No Pi fork is required.
+Intercom requires Pi **1.0.0** and Node **24.21.0** or later. No Pi fork is required.
 
 ```bash
 pi install git:github.com/fitchmultz/pi-subagents
@@ -38,7 +38,7 @@ To restart the shared broker too, close every Pi session using the same agent di
 
 ## Development
 
-Follow the [local validation instructions](../README.md#local-validation). Keep custom-queue visibility and busy-user-preparation regressions intact and report results for the exact selected host; earlier published Pi 0.87.1 failures are historical evidence, not current 0.99.1 certification.
+Follow the [local validation instructions](../README.md#local-validation). Keep retained/cleared custom-queue, rejected-input and pre-admission preparation regressions intact and report results for the exact selected host; earlier published Pi 0.87.1 failures are historical evidence, not current 1.0 certification.
 
 `ci` runs typechecking, package and install smokes, and the full subagent/intercom test suite. The native intercom regression uses real SDK sessions, a controlled provider, and private runtime directories without credentials or model-service calls. To run just that regression:
 
@@ -155,7 +155,9 @@ See auth.ts:142-156.
 
 The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients do not need raw sender or `replyTo` IDs. `send` and `reply` default to steer: they wake an idle recipient or reach a busy recipient at the next tool boundary.
 
-If Esc clears a steered or follow-up message before native handoff, it is re-delivered after the actual agent run settles. Messages already in Pi's session history are not reinserted, even after compaction or reload; messages still in Pi's native queues remain there for its next continuation or prompt. A rejected overlapping prompt does not start receiver retries while the original run is active.
+If Esc clears a steered or follow-up message before native handoff, it is re-delivered after the actual agent run settles. Messages already in Pi's session history are not reinserted, even after compaction or reload; messages still in Pi's native queues remain there for its next continuation or prompt. Pi 1.0's turn-boundary pending messages expose the next queued batch, not the whole custom queue; its coarse `hasPendingMessages()` reports only UI text queues. An empty boundary proves all queues cleared, while a nonempty boundary retains admitted messages until their actual history receipts arrive. Selectively removing individual custom items while other queue items remain is not observable through these public APIs: such items remain pending rather than risk a duplicate. Full queue clearing, retained-queue abort, reload and fresh-process recovery are supported. A rejected overlapping prompt does not start receiver retries while the original run is active.
+
+Official Pi 1.0 runs user preparation hooks before marking a prompt busy. During that pre-admission window, an incoming custom message can legitimately start a separate model request; custom-triggered runs do not run `before_agent_start`. Both inputs and their receipts are preserved, but one combined request is not guaranteed. Intercom does not reserve rejected input or emulate a core admission hook. Reload also does not cancel active work: abort explicitly when cancellation is intended.
 
 An omitted `ask` still honors recipient availability; use explicit steer only when the sender must remain alive for a busy recipient's reply. The recipient should incorporate relevant context and continue its active task unless the message explicitly replaces it. Use `delivery:"queue"` only when delay is intentional; `queueMode:"replace"` keeps only the latest undelivered thread update.
 
@@ -279,7 +281,7 @@ When both bundled extension entries are enabled, parent sessions can use `agent_
 
 Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally through `pi-subagents`.
 
-Intercom provides live coordination and portable background completion notices. Every new subagent run has one detached owner, regardless of whether the parent waits or receives a background receipt. Waiting tools and native pending calls receive their saved result directly; the watcher suppresses an extra Intercom completion notice. See [host capabilities and result delivery](../README.md#host-capabilities-and-result-delivery).
+Intercom provides live coordination and portable background completion notices. Every new subagent run has one detached owner, regardless of whether the parent waits or receives a background receipt. Waiting tools receive their saved result directly; the watcher suppresses an extra Intercom completion notice. See [host capabilities and result delivery](../README.md#host-capabilities-and-result-delivery).
 
 Durable output lives in `pi-subagents` result details and artifact/output paths (`savedOutputPath`, `artifactPaths`, or explicit workspace `output` files). Completion notices include existing saved result and metadata paths, including acceptance details when configured. Use those files as the source of truth for long reports. Broker acceptance, notification delivery, parent review, and runtime acceptance are separate facts.
 
@@ -552,28 +554,15 @@ pi-subagents/
     └── SKILL.md              # Bundled skill for common patterns
 ```
 
-## Native idle checkpoints
+## Lifecycle and saved work
 
-Hosts exposing native `session_checkpoint` can capture an idle session without running shutdown or disconnecting Intercom. Official Pi 0.99.1 does not expose this working-session checkpoint API. On both hosts, an assistant-error reply waits for the broker acknowledgement during `message_end`, bounded by `sendTimeoutMs`.
+Pi 1.0 uses ordinary shutdown/reload boundaries, not the old fork's idle-checkpoint or broker-admission-hold API. A settled parent does not prove its detached children are finished. Preserve their saved sessions, run records and questions, and keep a legacy runtime available until its active owners finish. Do not disconnect a recipient or stop a broker to manufacture completion: accepted replace-mode messages can still exist only in broker memory.
 
-The bundled broker advertises an additive admission hold. A positive ordered marker means earlier deliveries have already reached the recipient's socket callbacks, and the broker refuses new sends to/from that held session with `accepted:false` and an explicit retry-after-release reason. The extension also invalidates before accepting an arrival and joins unfinished inbound/reconnect work. Event-bus relays return their promises to native Pi. Native entries and queues remain the persistence authority; the marker alone is **not** a recipient persistence receipt.
-
-Already accepted replace-mode messages are never discarded to acquire a hold. While any such delivery involving this session remains in the broker's memory-only coalescer, sleep stays blocked. Normal delivery/persistence finishes after release, then capture can be retried. Release resumes admission and the existing observers; it does not replay accepted messages. A send refused during capture was not accepted and must be retried by its caller. Older brokers cannot qualify connected idle: let their sessions close normally rather than stopping a live broker to upgrade it.
-
-Subagents pause the existing result coalescer/poller, join an already-started result tail after invalidation, and check the existing ownership, process, result, nested-run and question records. Active run owners or children, uncertain completion, reply waiters and unresolved questions keep sleep blocked. The existing debounced agent-view entry is flushed at idle. No child is stopped, question answered, queue cleared, or new state store created to qualify sleep.
-
-A native receipt qualifies **this session**, not every client of the shared broker or arbitrary subprocess memory. The archive owner must still coordinate other sessions/services, freeze filesystem writers and preserve the matching files before stopping compute. A checkpoint does not resurrect running children. Failed capture must release the native hold and retain compute.
-
-Model-free native contract checks (real isolated broker, files and controlled children):
-
-```bash
-PI_CHECKPOINT_TEST_SDK=/path/to/native/pi/packages/coding-agent \
-  node --test test/integration/native-checkpoint-idle.test.ts
-```
+Assistant-error replies wait for broker acknowledgement during `message_end`, bounded by `sendTimeoutMs`. Async inbound/reconnect/relay callbacks remain tied to their owning session generation; late callbacks cannot append into a replacement session. Durable inbox stages and actual parent message publication drive recovery.
 
 ## Limitations
 
-Historical full-suite checks on official Pi 0.87.1 found that retained queues can resume work after cancellation, incoming messages can start a turn during user-prompt preparation, custom queues are absent from pending-message state, and idle wakeups bypass `before_agent_start` guidance. Legacy native replay tests also required the since-retired `newContext` API; current fork working-session capture uses public checkpoints instead. Updating this extension does not change those host behaviors. Use an explicit `async: false` subagent wait when dependent work needs a result without relying on an idle notification wakeup. Optional native asynchronous tool results and immediate usage accounting require [additional public host capabilities](../README.md#host-capabilities-and-result-delivery); official Pi 0.99.1 has no immediate `recordUsage` API and neither current host has native pending-call execution. `check:compat` qualifies ordinary official package startup and core child contracts separately; `npm run test:integration` retains the full assertions. Portable official 0.99.1 qualification does not claim the complete enhanced replay suite passes.
+Historical official Pi 0.87.1 checks exposed queue visibility and prompt-preparation races. Current tests preserve exact-once receipts and input rejection/recovery on the selected host, including the genuine Pi 1.0 pre-admission window described above; they do not promise one combined provider turn. Historical results are not a current 1.0 pass. Use an explicit `async: false` wait when dependent work needs a finalized result. Native pending-call, idle-checkpoint and immediate-usage APIs are no longer supported. See [result delivery](../README.md#host-capabilities-and-result-delivery) and [local qualification](../README.md#local-validation).
 
 - **Same machine only** — Uses local Unix sockets, no network support
 - **No dedicated intercom log** — Messages are kept in Pi session history, but there is no separate intercom transcript or inbox

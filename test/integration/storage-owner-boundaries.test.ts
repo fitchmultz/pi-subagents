@@ -86,7 +86,7 @@ test("compact owner controls skip a 100 MiB discarded nested message under a 32 
 	t.diagnostic(child.stdout.trim());
 });
 
-for (const receiptOwner of [undefined, "current", "foreign"]) test(`cold checkpoint reconciliation recognizes actual legacy receipts and refuses foreign owners (${receiptOwner ?? "absent"})`, async (t) => {
+for (const receiptOwner of [undefined, "current", "foreign"]) test(`cold completion recovery recognizes published legacy receipts and refuses foreign owners (${receiptOwner ?? "absent"})`, async (t) => {
 	const { root } = fixture(t, ""), runId = randomUUID(), manager = SessionManager.create(root, path.join(root, "parent"));
 	manager.appendMessage(message);
 	const ownerSessionId = manager.getSessionId();
@@ -102,34 +102,29 @@ for (const receiptOwner of [undefined, "current", "foreign"]) test(`cold checkpo
 	fs.writeFileSync(resultFile, legacy);
 	t.after(() => fs.rmSync(getRunMetadataDir(runId), { recursive: true, force: true }));
 	const completionKey = `completion:legacy:${runId}:1`;
-	const state = { currentSessionId: ownerSessionId, ownedRuns: new Map([[runId, run]]), completionSeen: new Map([[completionKey, Date.now()]]),
+	const state = { currentSessionId: ownerSessionId, ownedRuns: new Map([[runId, run]]), completionSeen: new Map(),
 		lastUiContext: { sessionManager: reopened, isIdle: () => true, hasPendingMessages: () => false } } as Parameters<typeof createCompletionDelivery>[1];
 	const sent: unknown[] = [], completed: unknown[] = [];
 	const pi = { events: createEventBus(), on: () => {}, sendMessage: (message: unknown) => sent.push(message) } as unknown as Parameters<typeof createCompletionDelivery>[0];
 	pi.events.on("subagent:async-complete", (event) => completed.push(event));
 	const completion = createCompletionDelivery(pi, state, registerParentUsage(pi));
-	const controller = new AbortController();
 	try {
-		await completion.holdCheckpoint({ type: "session_checkpoint", boundary: "settled", signal: controller.signal, invalidate: () => controller.abort() });
+		completion.start();
+		await new Promise((resolve) => setTimeout(resolve, 100));
 		if (receiptOwner === "foreign") {
-			assert.equal(controller.signal.aborted, true, "a different parent's legacy receipt cannot qualify this checkpoint");
 			assert.equal(state.ownedRuns!.get(runId)!.delivery?.entryId, undefined);
-			assert.equal(state.completionSeen.size, 1, "a foreign receipt cannot retire this owner's pending completion");
+			assert.equal(completed.length, 1, "a foreign receipt cannot suppress the owner's completion");
+			assert.equal(sent.length, 1, "the genuine owner still receives a notification");
 			return;
 		}
-		assert.equal(controller.signal.aborted, false, "a published matching receipt is complete even before normal watcher processing");
 		assert.equal(state.ownedRuns!.get(runId)!.delivery?.entryId, receiptId);
 		assert.equal(state.ownedRuns!.get(runId)!.completion?.state, "journaled");
 		assert.equal(state.ownedRuns!.get(runId)!.completion?.id, completionKey);
 		assert.equal(state.completionSeen.size, 0, "a published parent receipt retires the transient key without waiting for TTL expiry");
-		assert.equal(state.ownedRuns!.get(runId)!.accounting, undefined, "billing is independent of checkpoint delivery reconciliation");
-		assert.equal(fs.readFileSync(resultFile, "utf8"), legacy, "checkpoint reconciliation does not rewrite legacy accounting evidence");
-		controller.abort();
-		completion.start();
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(fs.readFileSync(resultFile, "utf8"), legacy, "completion reconciliation does not rewrite legacy accounting evidence");
 		assert.deepEqual(completed, [], "an already journaled legacy completion never emits another completion");
 		assert.deepEqual(sent, [], "the actual old receipt prevents another parent notification turn");
-	} finally { completion.stop(); controller.abort(); }
+	} finally { completion.stop(); }
 });
 
 test("live consumed tool arguments and structured reports retain complete long property names", async (t) => {
@@ -209,7 +204,7 @@ test("compact observations preserve late bash errors, partial edit receipts and 
 	assert.match(unconfirmed.error!, /no completed assistant result/);
 });
 
-test("startup isolates an unreadable unrelated foreground owner while strict checkpoint restoration still rejects it", (t) => {
+test("startup isolates an unreadable unrelated foreground owner", (t) => {
 	const healthy = randomUUID(), broken = randomUUID(), manager = SessionManager.inMemory("/fixture");
 	for (const runId of [healthy, broken]) manager.appendCustomEntry("subagent-run", { runId, rootRunId: runId,
 		ownerSessionId: manager.getSessionId(), source: "foreground", mode: "single", cwd: "/fixture", task: "Saved work", startedAt: 1, children: [] });
@@ -221,10 +216,9 @@ test("startup isolates an unreadable unrelated foreground owner while strict che
 	restoreOwnedRuns(state, ctx);
 	assert.equal(state.foregroundRuns!.get(healthy)!.updatedAt, 2);
 	assert.equal(state.ownedRuns!.has(healthy), true);
-	assert.throws(() => restoreOwnedRuns(state, ctx, { strict: true }), SyntaxError);
 });
 
-test("legacy receipt recovery retains a malformed-child run as incomplete without hiding a healthy owner or weakening strict restoration", (t) => {
+test("legacy receipt recovery retains a malformed-child run as incomplete without hiding a healthy owner", (t) => {
 	const { root } = fixture(t, "");
 	const file = path.join(root, "malformed-child.jsonl"); fs.writeFileSync(file, "not a native journal\n");
 	const manager = SessionManager.inMemory(root), healthy = randomUUID(), broken = randomUUID();
@@ -240,7 +234,6 @@ test("legacy receipt recovery retains a malformed-child run as incomplete withou
 	assert.equal(ownedRunView(retained, state).state, "unknown");
 	assert.match(ownedRunView(retained, state).diagnosis!, /recovery remains incomplete/);
 	assert.equal(fs.existsSync(path.join(getRunMetadataDir(broken), "foreground.json")), false, "no invented output or success snapshot is published");
-	assert.throws(() => restoreOwnedRuns(state, ctx, { strict: true }), /Not a readable native Pi session/);
 });
 
 test("missing stream usage or an unverified native-reference claim preserves execution and audit with incomplete accounting", async (t) => {

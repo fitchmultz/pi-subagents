@@ -6,24 +6,12 @@ import { activateTools, restoreLazyTools } from "../shared/lazy-tools.ts";
 import { runHistoryIndex } from "../runs/shared/history-index.ts";
 import type { HistoryRunOptions } from "../history/types.ts";
 import { listSupervisorQuestionsAsync } from "../runs/shared/supervisor-questions.ts";
-import type { AsyncContext } from "../runs/shared/native-async.ts";
 import { renderSubagentResult } from "../tui/render.ts";
 import { AgentRunsParams, DelegateParams } from "./schemas.ts";
 import { normalizeEverydayParams } from "./tool-input.ts";
 
 type Executor = ReturnType<typeof createSubagentExecutor>;
 type AdaptResult = (result: SubagentExecutionResult, ctx: ExtensionContext) => SubagentExecutionResult;
-
-export function subagentToolLifecycle(executor: Executor, adapt: AdaptResult) {
-	return {
-		async: true,
-		resume: async (id: string, _params: unknown, signal: AbortSignal | undefined,
-			onUpdate: ((result: SubagentExecutionResult) => void) | undefined, ctx: ExtensionContext) => {
-			const result = await executor.resume(id, {}, signal, onUpdate, ctx);
-			return result && adapt(result, ctx);
-		},
-	};
-}
 
 export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 	executor: Executor;
@@ -57,10 +45,8 @@ export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 	const reconcileRuns = () => checkRuns();
 	const onRunsChanged = state.onRunsChanged;
 	state.onRunsChanged = () => { reconcileRuns(); onRunsChanged?.(); };
-	const lifecycle = subagentToolLifecycle(executor, adapt);
 	const asyncDescription = asyncByDefault ? "Background by default; false waits for the result." : "Foreground by default; true detaches work. Use false when the result must appear in your report.";
 	pi.registerTool({
-		...lifecycle,
 		name: "delegate",
 		label: "Delegate",
 		description: `Delegate one bounded task to a configured agent. For profiles/history, load_subagent({advanced:false}) enables agent_runs. Delegation enables run controls automatically. ${asyncDescription} Use worktree for an isolated writer, acceptance for explicit requirements, and fresh context for independent review. Fresh handoffs must include relevant exact user instructions and settled decisions or readable source references, not just summaries, alongside the bounded task. Advanced workflows remain behind load_subagent.`,
@@ -78,8 +64,8 @@ export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 		renderResult: renderSubagentResult,
 	});
 	pi.registerTool({
-		...lifecycle,
 		name: "agent_runs",
+		defaultActive: false,
 		label: "Agent Runs",
 		description: `List ${childSafe ? "only this child's directly owned" : "your delegated"} runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Filter globally by agent/state/text, sort, and page with the returned cursor. history reads 100 bounded native-entry previews; search finds saved visible text using words or quoted phrases, not operators or prefixes. Browse freshness is not completion or delivery proof. Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; async:false waits for its actual result. Saved continuations keep settings unless agent selects a current profile; model overrides win. Live guidance never mutates model or acceptance. profiles lists roles, sources, context and model/thinking/fallback defaults. History survives reload.`,
 		parameters: AgentRunsParams,
@@ -112,19 +98,16 @@ export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 		},
 	});
 	const reconcile = async (ctx: ExtensionContext) => {
-		const pending = (ctx as AsyncContext).getPendingToolCalls?.() ?? [];
-		activateTools(pi, pending.filter((call) => ["subagent", "delegate", "agent_runs"].includes(call.toolName)).map((call) => call.toolName));
 		if (options.keepAdvancedActive) activateTools(pi, ["subagent"]);
-		if (pending.some((call) => ["subagent", "delegate", "agent_runs"].includes(call.toolName))) activateTools(pi, ["agent_runs"]);
 		await checkRuns();
 		if (!pi.getActiveTools().includes("agent_runs") && (await listSupervisorQuestionsAsync(ctx.sessionManager.getSessionId())).some((question) => question.state === "awaiting_input" || question.state === "answer_pending")) activateTools(pi, ["agent_runs"]);
 	};
-	const restore = async (_event: unknown, ctx: ExtensionContext) => {
-		restoreLazyTools(pi, ctx, "load_subagent", ["subagent", "agent_runs"]);
+	const restore = async (event: { reason?: string }, ctx: ExtensionContext) => {
+		if (event.reason !== "reload") restoreLazyTools(pi, ctx, "load_subagent", ["subagent", "agent_runs"]);
 		await reconcile(ctx);
 	};
 	pi.on("session_start", restore);
-	pi.on("session_tree", restore);
+	pi.on("session_tree", (_event, ctx) => reconcile(ctx));
 	pi.on("session_compact", (_event, ctx) => reconcile(ctx));
 	pi.on("before_agent_start", (_event, ctx) => reconcile(ctx));
 	return reconcileRuns;

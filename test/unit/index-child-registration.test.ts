@@ -36,7 +36,7 @@ describe("subagent extension child mode", () => {
 			const registeredTools = new Map();
 			const handlers = new Map();
 			const activeSets = [];
-			let activeTools = ["read", "load_subagent", "subagent"];
+			let activeTools = ["read", "load_subagent"];
 			const fakePi = new Proxy({
 				events,
 				registerTool(tool) { registeredTools.set(tool.name, tool); },
@@ -75,15 +75,6 @@ describe("subagent extension child mode", () => {
 			if (!description.includes("output?,reads?,progress?")) throw new Error("description is missing parallel overrides");
 			if (!description.includes("maxOutput") || !description.includes("bytes?: number, lines?: number")) throw new Error("description is missing maxOutput guidance");
 
-			const sessionStartHandlers = handlers.get("session_start") ?? [];
-			const sessionTreeHandlers = handlers.get("session_tree") ?? [];
-			const { SessionManager } = await import("@earendil-works/pi-coding-agent");
-			const selectionContext = { sessionManager: SessionManager.inMemory(process.cwd()) };
-			const resetHandler = sessionTreeHandlers.find((handler) => sessionStartHandlers.includes(handler));
-			await resetHandler({}, selectionContext);
-			if (JSON.stringify(activeTools) !== JSON.stringify(["read", "load_subagent"])) {
-				throw new Error("session start did not preserve active tools while hiding subagent: " + JSON.stringify(activeTools));
-			}
 
 			const loadResult = await loader.execute("load", {}, new AbortController().signal);
 			if (JSON.stringify(activeTools) !== JSON.stringify(["read", "load_subagent", "agent_runs", "subagent"])) {
@@ -103,15 +94,6 @@ describe("subagent extension child mode", () => {
 			const repeatedText = repeatedLoad.content.map((part) => part.type === "text" ? part.text : "").join("\n");
 			if (!repeatedText.startsWith("Subagent already enabled.")) throw new Error("repeated load did not report its no-op");
 
-			await resetHandler({}, selectionContext);
-			if (JSON.stringify(activeTools) !== JSON.stringify(["read", "load_subagent"])) {
-				throw new Error("tree navigation did not hide subagent: " + JSON.stringify(activeTools));
-			}
-			await loader.execute("load-after-tree", {}, new AbortController().signal);
-			await resetHandler({}, selectionContext);
-			if (JSON.stringify(activeTools) !== JSON.stringify(["read", "load_subagent"])) {
-				throw new Error("undeclared tree selection did not hide subagent: " + JSON.stringify(activeTools));
-			}
 
 			const calls = [];
 			let expanded = false;

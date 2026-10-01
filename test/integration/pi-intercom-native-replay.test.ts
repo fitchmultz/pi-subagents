@@ -32,6 +32,7 @@ process.env.JITI_FS_CACHE = path.join(root, "jiti");
 
 // Use an isolated rebuilt Pi package to check a native fix before it is released.
 const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
+process.env.PI_PACKAGE_DIR = sdkRoot;
 const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
 const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry)!);
 const { createAgentSession, createEventBus, DefaultResourceLoader, ModelRuntime, parseSessionEntries, SessionManager, SettingsManager } = await import(sdkEntry.href);
@@ -586,15 +587,15 @@ test("native abort retaining custom queues does not enqueue a second copy", asyn
   await receiver.send("retained-queue", { text: "retained follow-up", delivery: "queue" });
   await waitFor(async () => (await receiver.status()).includes("Pending inbound messages: 2"), "native custom queues");
   assert.equal(receiver.session.agent.hasQueuedMessages(), true);
-  assert.equal(receiver.context().hasPendingMessages(), true, "Pi must expose pending custom steer/follow-up work, not only UI text queues");
-  receiver.session.agent.abort();
+  const aborting = receiver.session.abort();
   responseGate.resolve();
   await running;
+  await aborting;
   await sleep(30);
   assert.equal(receiver.faux.state.callCount, 1);
   assert.equal(receiver.session.agent.hasQueuedMessages(), true);
   await receiver.session.reload();
-  assert.equal(receiver.context().hasPendingMessages(), true);
+  assert.equal(receiver.session.agent.hasQueuedMessages(), true);
   await receiver.session.prompt("Resume retained work");
   for (const id of receiver.sends) assert.equal(receiver.visible(id).length, 1, id);
   assert.equal(receiver.faux.state.callCount, 3);
@@ -724,8 +725,7 @@ test("native rejected input leaves the active intercom run and idle wait intact"
     inputRelease.resolve();
     await rejected;
     receiver.events.push({ type: "fixture.input_rejection", preflight: [...preflight], beforeStarts, idle: receiver.session.isIdle, streaming: receiver.session.isStreaming, signalUnchanged: receiver.context().signal === signal, idleResolved, settled: receiver.settled() });
-    // Older hosts report false; current hosts omit the callback for rejected input.
-    assert.ok(preflight.length <= 1 && preflight.every((disposition) => disposition === false), "rejection must not report an accepted dispatch");
+    assert.deepEqual(preflight, [], "rejection must not report handled, queued or started admission");
     assert.equal(receiver.context().signal, signal);
     assert.equal(signal.aborted, false);
     assert.equal(receiver.session.systemPrompt, systemPrompt);
@@ -733,7 +733,7 @@ test("native rejected input leaves the active intercom run and idle wait intact"
     assert.equal(receiver.context().isIdle(), false);
     assert.equal(idleResolved, false, "a rejected input cannot release the owning run's idle waiter");
     assert.equal(receiver.settled(), 0);
-    assert.equal(beforeStarts, 1, "rejected admission must not prepare receiver replay");
+    assert.equal(beforeStarts, 0, "custom delivery bypasses user preparation; rejected input must not prepare replay");
     assert.equal(receiver.faux.state.callCount, 1);
     assert.equal(receiver.visible("input-owner").length, 1);
     responseRelease.resolve();
@@ -743,12 +743,12 @@ test("native rejected input leaves the active intercom run and idle wait intact"
     assert.equal(receiver.context().isIdle(), true);
     assert.equal(receiver.context().signal, undefined);
     assert.equal(receiver.context().hasPendingMessages(), false);
-    assert.equal(beforeStarts, 1);
+    assert.equal(beforeStarts, 0);
     assert.equal(receiver.faux.state.callCount, 1);
     assert.equal(receiver.visible("input-owner").length, 1);
     assert.equal(seen.split("message:input-owner").length - 1, 1);
     assert.doesNotMatch(seen, /User input held before admission/);
-    assert.ok(preflight.length <= 1 && preflight.every((disposition) => disposition === false), "rejection must not later report an accepted dispatch");
+    assert.deepEqual(preflight, [], "rejection must not later report accepted admission");
     assert.deepEqual(receiver.events.filter((event) => event.type === "extension.message_end" && event.role === "assistant").map((event) => event.stopReason), ["stop"]);
     assert.match(await receiver.status(), /Pending inbound messages: 0/);
     assert.deepEqual(receiver.errors, []);
@@ -761,49 +761,51 @@ test("native rejected input leaves the active intercom run and idle wait intact"
   }
 });
 
-test("native user preparation queues intercom without another startup or provider turn", async (t) => {
+test("native pre-admission user preparation allows a separate custom run without losing or duplicating either input", async (t) => {
   const startupRelease = gate(t);
   const userPrompt = "User startup held before the agent runs";
-  let beforeStarts = 0, seen = "";
+  let beforeStarts = 0;
+  const seen: string[] = [];
   const receiver = await makeSession(t, "startup-queued", { configure(pi) {
     pi.on("before_agent_start", async (event) => {
       beforeStarts++;
       if (event.prompt === userPrompt) await startupRelease.promise;
     });
   } });
-  receiver.faux.setResponses([(context: unknown) => { seen = JSON.stringify(context); return fauxAssistantMessage("Both inputs handled"); }]);
+  receiver.faux.setResponses([
+    (context: unknown) => { seen.push(JSON.stringify(context)); return fauxAssistantMessage("Custom input handled"); },
+    (context: unknown) => { seen.push(JSON.stringify(context)); return fauxAssistantMessage("User input handled"); },
+  ]);
   const running = receiver.session.prompt(userPrompt);
   try {
     await waitFor(() => beforeStarts === 1, "held user preparation");
     receiver.events.push({ type: "fixture.user_preparation", idle: receiver.context().isIdle(), streaming: receiver.session.isStreaming, beforeStarts, providerCalls: receiver.faux.state.callCount });
-    assert.equal(receiver.context().isIdle(), false, "admitted user preparation must already be busy");
-    assert.equal(receiver.session.isStreaming, true);
     assert.equal(receiver.faux.state.callCount, 0);
     await receiver.send("startup-queued");
-    await waitFor(() => receiver.context().hasPendingMessages(), "native queued custom message");
-    assert.equal(beforeStarts, 1, "the queued custom message must not start another preflight");
-    assert.equal(receiver.faux.state.callCount, 0);
-    assert.equal(receiver.visible("startup-queued").length, 0);
-    assert.equal(receiver.settled(), 0);
-    receiver.events.push({ type: "fixture.startup_queue", nativeQueued: receiver.context().hasPendingMessages(), beforeStarts, settled: receiver.settled() });
+    await waitFor(() => receiver.settled() === 1 && receiver.session.isIdle, "separate custom run settlement before user admission");
+    assert.equal(beforeStarts, 1, "custom delivery does not run user preparation hooks");
+    assert.equal(receiver.faux.state.callCount, 1);
+    assert.equal(receiver.visible("startup-queued").length, 1);
+    assert.doesNotMatch(seen[0]!, /User startup held before the agent runs/);
+    assert.equal(seen[0]!.split("message:startup-queued").length - 1, 1);
     startupRelease.resolve();
     await running;
     await receiver.session.waitForIdle();
     assert.equal(beforeStarts, 1);
-    assert.equal(receiver.faux.state.callCount, 1);
-    assert.equal(receiver.settled(), 1);
+    assert.equal(receiver.faux.state.callCount, 2);
+    assert.equal(receiver.settled(), 2);
     assert.equal(receiver.visible("startup-queued").length, 1);
     const users = receiver.session.sessionManager.getEntries().filter((entry: { type: string; message?: { role: string; content: unknown } }) => entry.type === "message" && entry.message?.role === "user" && JSON.stringify(entry.message.content).includes(userPrompt));
     assert.equal(users.length, 1);
-    for (const body of [userPrompt, "message:startup-queued"]) assert.equal(seen.split(body).length - 1, 1, body);
+    for (const body of [userPrompt, "message:startup-queued"]) assert.equal(seen[1]!.split(body).length - 1, 1, body);
     assert.equal(receiver.context().isIdle(), true);
     assert.equal(receiver.context().signal, undefined);
     assert.equal(receiver.context().hasPendingMessages(), false);
-    assert.deepEqual(receiver.events.filter((event) => event.type === "extension.message_end" && event.role === "assistant").map((event) => event.stopReason), ["stop"]);
+    assert.deepEqual(receiver.events.filter((event) => event.type === "extension.message_end" && event.role === "assistant").map((event) => event.stopReason), ["stop", "stop"]);
     assert.match(await receiver.status(), /Pending inbound messages: 0/);
     assert.deepEqual(receiver.errors, []);
-    receiver.events.push({ type: "fixture.startup_complete", providerContext: seen, settled: receiver.settled() });
-    t.diagnostic("Busy user preparation queues the real intercom send; both accepted inputs reach one provider request and history once, with one startup and one true settlement.");
+    receiver.events.push({ type: "fixture.startup_complete", providerContexts: seen, settled: receiver.settled() });
+    t.diagnostic("Official 1.0 preparation precedes admission: custom input legitimately runs separately, then user admission retains both inputs exactly once without replay.");
   } finally {
     startupRelease.resolve();
     await running;
@@ -1013,7 +1015,6 @@ test("fresh native processes resume pending messages once without fork/new-sessi
   seed.child.send({ action: "snapshot" });
   const [snapshot] = await snapshotPromise;
   assert.equal(snapshot.nativeQueued, true);
-  assert.equal(snapshot.publicPending, true);
   assert.match(snapshot.status, /Pending inbound messages: 4/);
   assert.deepEqual(snapshot.visibleIds, []);
   const saved = parseSessionEntries(readFileSync(ready.sessionFile, "utf8"));
@@ -1315,10 +1316,11 @@ test("native broker-staged progress recovers terminal child identity across relo
   const running = parent.session.prompt("Independent work while progress is deferred");
   await waitFor(() => started, "second native blocking tool");
   await waitFor(() => parent.session.sessionManager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "intercom_delivery" && entry.data?.messageId === "broker-delayed-progress" && entry.data.stage === "discarded"), "obsolete broker progress discarded before receiver reload");
-  const reloading = parent.session.reload();
+  const aborting = parent.session.abort();
   hold.resolve();
   await running;
-  await reloading;
+  await aborting;
+  await parent.session.reload();
   await parent.session.prompt("Continue independent work after reload");
   await waitFor(() => parent.session.isIdle, "independent work after reload/disconnect");
   await sleep(600);
@@ -1761,14 +1763,15 @@ test("native latest material milestone survives two minutes busy and reload with
     Date.now = now;
   }
   await waitFor(async () => (await supervisor.status()).includes("Root cause confirmed"), "coalesced latest milestone");
-  const reloading = supervisor.session.reload();
+  const aborting = supervisor.session.abort();
   toolGate.resolve();
   await running;
-  await reloading;
+  await aborting;
+  await supervisor.session.reload();
   await waitFor(() => supervisor.visible("latest-milestone").length === 1 && supervisor.settled() === 2, "milestone settlement");
   assert.equal(supervisor.visible("old-milestone").length, 0);
   assert.equal(supervisor.visible("latest-milestone").length, 1);
-  assert.equal(supervisor.faux.state.callCount, 2, "reload aborts the held turn; only the retained milestone starts another response");
+  assert.equal(supervisor.faux.state.callCount, 2, "explicit abort ends the held turn; only the retained milestone starts another response");
   assert.match(await supervisor.status(), /Pending inbound messages: 0/);
   assert.deepEqual(supervisor.errors, []);
   t.diagnostic("latest backdated material finding survives native reload while busy; superseded progress never wakes the model.");

@@ -2,21 +2,28 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
 const [root, repo, sdkRoot, phase = "journey"] = process.argv.slice(2);
 const coldParent = phase === "cold-parent";
 const cwd = path.join(root, "project"), agentDir = path.join(root, "agent"), runtimeDir = path.join(root, "pi-subagents-runtime"), callsDir = path.join(root, "calls");
 for (const dir of [cwd, agentDir, callsDir, path.join(cwd, ".pi/agents"), path.join(root, "bin"), path.join(cwd, ".pi/skills/saved-skill")]) fs.mkdirSync(dir, { recursive: true });
-Object.assign(process.env, { HOME: root, TMPDIR: root, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENT_TEMP_ROOT: runtimeDir, PI_OFFLINE: "1", OWNERSHIP_SDK_ROOT: sdkRoot, OWNERSHIP_PROBE_DIR: callsDir, OWNERSHIP_REPO: repo });
+Object.assign(process.env, { HOME: root, TMPDIR: root, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENT_TEMP_ROOT: runtimeDir, PI_OFFLINE: "1", OWNERSHIP_SDK_ROOT: sdkRoot, PI_PACKAGE_DIR: sdkRoot, OWNERSHIP_PROBE_DIR: callsDir, OWNERSHIP_REPO: repo });
 // Match Pi's CLI/SDK sibling layout so the real cwd preload reaches the selected
 // native SessionManager before the controlled child opens its saved session.
 fs.writeFileSync(path.join(root, "bin/index.js"), `export { SessionManager } from ${JSON.stringify(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href)};\n`);
 fs.writeFileSync(path.join(root, "bin/cli.mjs"), `await import(${JSON.stringify(pathToFileURL(path.join(repo, "test/fixtures/native-ownership-cli.mjs")).href)});\n`);
 fs.writeFileSync(path.join(root, "bin/pi"), `#!/bin/sh\nexec "${process.execPath}" "${path.join(root, "bin/cli.mjs")}" "$@"\n`, { mode: 0o755 });
 process.env.PATH = `${path.join(root, "bin")}${path.delimiter}${process.env.PATH}`;
-const sdk = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
+const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
+const sdk = await import(sdkEntry.href);
+const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry));
+const { fauxProvider, fauxAssistantMessage, InMemoryCredentialStore } = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
+const nativeSession = await import(pathToFileURL(path.join(repo, "dist/shared/native-session.js")).href);
+assert.equal(nativeSession.SessionManager, sdk.SessionManager, "standalone readers must use the selected official SDK");
 const { QUESTIONS_DIR, getRunMetadataDir, readQuestionContract, saveQuestionContract, questionProcessAlive } = await import(pathToFileURL(path.join(repo, "dist/runs/shared/supervisor-questions.js")).href);
-const evidence = { nativeProviderRequests: 0, failures: [], checks: [], root, parentPid: process.pid, nodeVersion: process.version, sdkRoot };
+const evidence = { nativeProviderRequests: 0, networkRequests: 0, parentInputs: [], failures: [], checks: [], root, parentPid: process.pid, nodeVersion: process.version, sdkRoot };
+globalThis.fetch = async () => { evidence.networkRequests++; throw new Error("Network is forbidden in ownership fixtures"); };
 const check = (name, run) => { run(); evidence.checks.push(name); };
 const profilePath = path.join(cwd, ".pi/agents/probe.md");
 const skillPath = path.join(cwd, ".pi/skills/saved-skill/SKILL.md");
@@ -50,14 +57,22 @@ let session;
 async function open(file) {
 	const settingsManager = sdk.SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } });
 	settingsManager.setProjectTrusted(true);
-	const loader = new sdk.DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noContextFiles: true, eventBus: bus, additionalExtensionPaths: [path.join(repo, "dist/extension/index.js")], extensionFactories: [(pi) => { pi.on("before_provider_request", () => { evidence.nativeProviderRequests++; throw new Error("This test must not invoke a provider."); }); }] });
+	const loader = new sdk.DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noContextFiles: true, eventBus: bus, additionalExtensionPaths: [path.join(repo, "dist/extension/index.js")] });
 	await loader.reload();
-	const modelRuntime = await sdk.ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: path.join(agentDir, "models.json") });
-	({ session } = await sdk.createAgentSession({ cwd, agentDir, settingsManager, resourceLoader: loader, sessionManager: sdk.SessionManager.open(file), modelRuntime }));
+	const modelRuntime = await sdk.ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false });
+	const faux = fauxProvider({ provider: "ownership-parent-fixture" });
+	modelRuntime.registerNativeProvider(faux.provider);
+	faux.setResponses([(context) => {
+		evidence.nativeProviderRequests++;
+		evidence.parentInputs.push(structuredClone(context.messages));
+		return fauxAssistantMessage("Recovered completion received");
+	}]);
+	({ session } = await sdk.createAgentSession({ cwd, agentDir, settingsManager, resourceLoader: loader, sessionManager: sdk.SessionManager.open(file), modelRuntime, model: faux.getModel() }));
 	await session.bindExtensions({ mode: "json" });
 }
 async function close() {
 	if (!session) return;
+	await session.abort();
 	await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 	session.dispose(); session = undefined;
 }
@@ -469,11 +484,21 @@ async function runLegacyAsync() {
 	assert.equal(fs.existsSync(getRunMetadataDir(runId)), false, "non-owners must not migrate another parent's metadata");
 	await open(ownerFile);
 	legacy.beforeCleanup = await inspect(runId);
+	await wait(() => session.sessionManager.getEntries().some((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify" && entry.details?.completion?.runId === runId), "published recovered completion");
+	await session.waitForIdle();
+	assert.equal(evidence.nativeProviderRequests, 1, "one legitimate recovered completion wakes its saved owner");
+	const notifications = () => session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify" && entry.details?.completion?.runId === runId);
+	assert.equal(notifications().length, 1);
+	assert.match(JSON.stringify(evidence.parentInputs[0]), new RegExp(output));
 	legacy.durableBeforeCleanup = { status: fs.existsSync(path.join(getRunMetadataDir(runId), "status.json")), result: fs.existsSync(resultFile(runId)) };
 	await close();
 	fs.rmSync(runtimeDir, { recursive: true, force: true });
 	legacy.tempRemoved = !fs.existsSync(runtimeDir);
 	await open(ownerFile);
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	await session.waitForIdle();
+	assert.equal(evidence.nativeProviderRequests, 1, "reopening cannot redeliver the recovered completion");
+	assert.equal(notifications().length, 1);
 	try { legacy.afterCleanup = await inspect(runId); } catch (error) { legacy.afterCleanup = { error: error.message }; }
 	check("owning native parent retains the original async handle, terminal result, and child session after temp removal", () => {
 		const recovered = legacy.afterCleanup.details?.run;
@@ -680,7 +705,8 @@ try {
 	else if (phase === "workflow-outcomes") await runWorkflowOutcomes();
 	else if (phase.startsWith("legacy-async-")) await runLegacyAsync();
 	else await runJourney();
-	assert.equal(evidence.nativeProviderRequests, 0);
+	assert.equal(evidence.nativeProviderRequests, phase.startsWith("legacy-async-") ? 1 : 0);
+	assert.equal(evidence.networkRequests, 0);
 } catch (error) {
 	evidence.failures.push(error.stack ?? String(error));
 	process.exitCode = 1;

@@ -31,7 +31,7 @@ function fixture(config: object = {}, allowed?: string[], entries: any[] = []) {
 	let active = ["read"];
 	const pi = {
 		events: { on() { return () => {}; }, emit() {} },
-		registerTool(tool: any) { tools.set(tool.name, tool); if (!allowed || allowed.includes(tool.name)) active.push(tool.name); },
+		registerTool(tool: any) { tools.set(tool.name, tool); if (tool.defaultActive !== false && (!allowed || allowed.includes(tool.name))) active.push(tool.name); },
 		on(event: string, handler: any) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); if (event === "session_shutdown") shutdowns.push(handler); },
 		appendEntry(customType: string, data: unknown) { manager.appendCustomEntry(customType, data); },
 		getActiveTools() { return [...active]; },
@@ -79,6 +79,7 @@ it("starts compact, lazily activates the complete advanced schema, and resets ad
 	await f.emit("session_compact");
 	assert.ok(f.pi.getActiveTools().includes("subagent"), "compaction preserves explicit current selection");
 	for (const lifecycle of ["session_tree", "session_start"]) {
+		f.pi.setActiveTools(["read", "delegate", "load_subagent"]); // Native tree/start supplies the selected loadout.
 		await f.emit(lifecycle);
 		assert.deepEqual(f.pi.getActiveTools(), ["read", "delegate", "load_subagent"]);
 		await f.call("load_subagent");
@@ -102,24 +103,6 @@ it("restores the old full surface with the flag and honors eager/filtered advanc
 	const denied = fixture({}, ["delegate", "agent_runs", "load_subagent"]);
 	await denied.emit("session_start");
 	await assert.rejects(() => denied.call("load_subagent"), /full tool is excluded/);
-});
-
-it("retains permitted original tools for pending native recovery without overriding exclusions", async () => {
-	const f = fixture();
-	let pending = [{ toolCallId: "advanced-call", toolName: "subagent", state: "detached" }];
-	Object.assign(f.ctx, { getPendingToolCalls: () => pending });
-	await f.emit("session_start");
-	assert.ok(f.pi.getActiveTools().includes("subagent"));
-	f.pi.setActiveTools(["read", "delegate", "agent_runs", "load_subagent"]);
-	await f.emit("session_tree");
-	assert.ok(f.pi.getActiveTools().includes("subagent"), "a selected native call remains recoverable even if prior selection hid it");
-	pending = [];
-	await f.emit("session_compact");
-	assert.equal(f.pi.getActiveTools().includes("subagent"), true, "settlement does not churn the active schema");
-	const denied = fixture({}, ["load_subagent"]);
-	Object.assign(denied.ctx, { getPendingToolCalls: () => [{ toolName: "subagent" }] });
-	await denied.emit("session_start");
-	assert.equal(denied.pi.getActiveTools().includes("subagent"), false, "native recovery does not override an explicit tool exclusion");
 });
 
 it("lists only restored direct-owned runs and preserves scoped exact-ID controls", async () => {
@@ -147,12 +130,9 @@ it("lists only restored direct-owned runs and preserves scoped exact-ID controls
 	assert.equal(advancedList.isError, true, "legacy global enumeration remains forbidden");
 });
 
-it("routes compact validation, worktrees, depth checks, async recovery, and error hooks through the child executor", async () => {
+it("routes compact validation, worktrees, depth checks, and native error hooks through the child executor", async () => {
 	const f = fixture();
 	for (const name of ["delegate", "agent_runs", "subagent"]) {
-		assert.equal(f.tools.get(name).async, true);
-		assert.equal(typeof f.tools.get(name).resume, "function");
-		assert.equal(await f.tools.get(name).resume("unknown-call", {}, undefined, undefined, f.ctx), undefined);
 		const patched = f.handlers.get("tool_result")!.map((handler) => handler({ toolName: name, details: { mode: "single", results: [], isError: true } }, f.ctx)).find((result) => result?.isError);
 		assert.equal(patched.isError, true);
 		assert.equal(patched.details.isError, undefined);

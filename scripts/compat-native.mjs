@@ -18,19 +18,14 @@ env.PI_SUBAGENT_TEMP_ROOT = join(root, "pi-subagents-runs");
 // These are the two fork lanes in the shared compatibility matrix.
 const shard = ci && fork && !core ? { "linux:24": "1/2", "darwin:24": "2/2" }[`${process.platform}:${process.versions.node.split(".")[0]}`] : undefined;
 if (ci && fork && !core && !shard) throw new Error("No integration shard assigned to this fork CI lane");
-if (fork) {
-  Object.assign(env, { PI_CHECKPOINT_TEST_SDK: hostRoot, PI_CHECKPOINT_TEST_REQUIRED: "1" });
-  delete env.PI_CODING_AGENT_DIR; // Fork fixtures deliberately substitute HOME, as run-tests.mjs does.
-}
-else { delete env.PI_CHECKPOINT_TEST_SDK; delete env.PI_CHECKPOINT_TEST_REQUIRED; }
+if (fork) delete env.PI_CODING_AGENT_DIR; // Fork fixtures deliberately substitute HOME, as run-tests.mjs does.
+Object.assign(env, { PI_NATIVE_ASYNC_TEST_SDK: hostRoot, PI_PARENT_USAGE_TEST_SDK: hostRoot });
 const contracts = ["native-context-contract", "native-same-cwd-resume", "native-acceptance-cli", "native-structured-output", "native-run-ownership", "native-completion-ownership", "session-resume-cost", "native-result-routing", "native-tool-results", "tool-activation", "lazy-coordination", "compact-child-tools"];
 const coreFiles = [
-  "native-checkpoint-idle", "pi-intercom-native-replay", "native-async-host", "native-completion-ownership", "session-resume-cost", "parent-usage",
+  "native-lifecycle-guards", "pi-intercom-native-replay", "native-async-host", "native-completion-ownership", "session-resume-cost", "parent-usage",
   "async-execution", "parallel-execution", "chain-execution", "intercom-result-delivery",
   "owned-result-retention", "process-lifecycle", "orphan-stop", "real-pi-smoke-cleanup", "compact-child-tools",
 ];
-// Current fork hosts retain checkpoint/usage APIs but have retired native pending-call execution.
-if (core) Object.assign(env, { PI_NATIVE_ASYNC_TEST_SDK: hostRoot, PI_PARENT_USAGE_TEST_SDK: hostRoot, PI_PARENT_USAGE_REQUIRE_NATIVE: "1" });
 try {
   const files = core ? coreFiles.map(name => `test/integration/${name}.test.ts`) : fork
     ? readdirSync("test/integration").filter(name => name.endsWith(".test.ts")).sort().map(name => `test/integration/${name}`)

@@ -16,11 +16,11 @@ process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
 process.env.PI_OFFLINE = "1";
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
+process.env.PI_PACKAGE_DIR = sdkRoot;
 const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
 const sdk = await import(sdkEntry.href);
 const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry)!);
 const ai = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
-const { bindNativeInvocation } = await import("../../src/runs/shared/native-async.ts");
 const { getRunMetadataDir, saveQuestionOwner, saveRunStatus, saveAsyncRunResult, createSupervisorQuestion, saveQuestionAnswer, recordQuestionDelivery } = await import("../../src/runs/shared/supervisor-questions.ts");
 const { RESULTS_DIR } = await import("../../src/shared/types.ts");
 const { default: registerRoot } = await import("../../src/extension/index.ts");
@@ -264,17 +264,11 @@ for (const scenario of [
 		const bindings = { mode: "json", onError: (error) => errors.push(error) };
 		await runtime.session.bindExtensions(bindings);
 		await until(() => Boolean(request), "the first watcher starts Intercom delivery");
-		if (process.env.PI_CHECKPOINT_TEST_REQUIRED === "1") assert.equal(typeof runtime.disposeWithCheckpoint, "function");
 		disposed = scenario.shutdown;
-		const transition = scenario.shutdown
-			? typeof runtime.disposeWithCheckpoint === "function"
-				? runtime.disposeWithCheckpoint({ signal: AbortSignal.timeout(5000), waitForHost: async () => {} })
-				: runtime.dispose()
-			: runtime.session.bindExtensions(bindings);
+		const transition = scenario.shutdown ? runtime.dispose() : runtime.session.bindExtensions(bindings);
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		bus.emit("subagent:result-intercom-delivery", { requestId: request!.requestId, delivered: scenario.delivered });
-		const checkpoint = await transition;
-		checkpoint?.release();
+		await transition;
 		if (scenario.shutdown) {
 			assert.deepEqual(errors, [], "shutdown must not request a new native turn after ingress closes");
 			assert.equal(faux.state.callCount, 0);
@@ -320,8 +314,8 @@ for (const scenario of [
 	{ name: "completed child answer", kind: "answer", index: 1, finished: true, suppress: false },
 	{ name: "completed child follow-up", kind: "delivery", index: 1, finished: true, suppress: false },
 	{ name: "pending child follow-up", kind: "delivery", index: 1, finished: false, suppress: false },
-	{ name: "detached whole-run launch", kind: "launch", index: undefined, finished: false, suppress: true },
-	{ name: "detached single-child follow-up", kind: "delivery", index: 0, mode: "single", finished: false, suppress: true },
+	{ name: "obsolete detached whole-run launch", kind: "launch", index: undefined, finished: false, suppress: false },
+	{ name: "obsolete detached single-child follow-up", kind: "delivery", index: 0, mode: "single", finished: false, suppress: false },
 	{ name: "failed whole-run call", kind: "launch", index: undefined, finished: true, failed: true, suppress: false },
 	{ name: "consumed whole-run call", kind: "launch", index: undefined, finished: true, suppress: true },
 	{ name: "persisted notice before owner/accounting save", kind: "launch", index: undefined, finished: true, receipt: true, published: true, suppress: false },
@@ -351,8 +345,8 @@ for (const scenario of [
 	if (scenario.finished && !unowned) manager.appendMessage(ai.fauxAssistantMessage(
 		ai.fauxToolCall("agent_runs", { action: scenario.kind === "answer" ? "answer" : "resume", id: runId, index: scenario.index }, { id: callId }),
 		{ stopReason: "toolUse" }));
-	if (!("receipt" in scenario)) bindNativeInvocation({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, { sessionManager: manager }, callId,
-		{ runId, index: scenario.index, kind: scenario.kind, accepted: true, ...(questionId ? { questionId, answer: "Yes" } : {}) });
+	if (!("receipt" in scenario)) manager.appendCustomEntry("subagent-invocation",
+		{ toolCallId: callId, ownerSessionId: sessionId, runId, index: scenario.index, kind: scenario.kind, accepted: true, ...(questionId ? { questionId, answer: "Yes" } : {}) });
 	if (scenario.finished && !unowned) manager.appendMessage({ role: "toolResult", toolName: "agent_runs", toolCallId: callId,
 		content: [{ type: "text", text: "Call finished" }], timestamp: Date.now(), isError: "failed" in scenario,
 		details: "receipt" in scenario ? { mode: "single", results: [], asyncId: runId } : "failed" in scenario ? {} : { mode: "management", results: [], wait: { runId, index: scenario.index, status: "completed" } } });
@@ -417,7 +411,7 @@ for (const scenario of [
 				assert.equal(projection.accounting.state, "incomplete");
 			}
 			assert.ok(completions.every((event) => Boolean(event.suppressNotification) === scenario.suppress));
-			assert.equal(fs.existsSync(notice), !scenario.finished && scenario.suppress, "only pending native owners retain their notification receipt");
+			assert.equal(fs.existsSync(notice), false, "finalized receipts or published notification consume recovery hints, not obsolete call bindings");
 			assert.deepEqual(errors, []);
 		} finally {
 			await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });

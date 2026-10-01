@@ -333,6 +333,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
     sessionEntries,
     sentMessages,
     async emitLifecycle(event: string, payload: unknown = {}, eventContext: unknown = ctx) {
+      if (event === "turn_end") payload = { context: { pendingMessages: [] }, ...payload as object };
       const results: unknown[] = [];
       for (const handler of lifecycleHandlers.get(event) ?? []) {
         results.push(await handler(payload, eventContext));
@@ -473,23 +474,6 @@ function waitForSessionModel(client: InstanceType<typeof IntercomClient>, name: 
   return waitForSession(client, (session) => session.name === name && session.model === model,
     (sessions) => `Timed out waiting for ${name} model ${model}; saw ${JSON.stringify(sessions.map((session) => ({ name: session.name, model: session.model })))}`);
 }
-
-test("checkpoint without a connected client does not diagnose an older broker", async () => {
-  const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
-  const harness = createExtensionHarness();
-  const controller = new AbortController();
-  piIntercomExtension(harness.pi as never);
-  try {
-    const results = await harness.emitLifecycle("session_checkpoint", {
-      type: "session_checkpoint", boundary: "settled", signal: controller.signal,
-      invalidate: () => controller.abort(),
-    });
-    assert.deepEqual(results, [{ sleepReady: false, reason: "Intercom client is disconnected; waiting for broker connection" }]);
-  } finally {
-    controller.abort();
-    await harness.emitLifecycle("session_shutdown");
-  }
-});
 
 test("intercom tool renders compact call and result rows", async (t) => {
   const sdk = import.meta.resolve("@earendil-works/pi-coding-agent");
@@ -1849,6 +1833,7 @@ test("unconsumed inbound steers re-deliver after the recipient aborts", { concur
     assert.deepEqual(harness.sentMessages[0]?.options, { deliverAs: "steer" });
 
     idle = true;
+    await harness.emitLifecycle("turn_end");
     await harness.emitLifecycle("agent_end");
     await harness.emitLifecycle("agent_settled");
 
@@ -1913,6 +1898,7 @@ test("unconsumed inbound messages survive a second abort", { concurrency: false 
     })).delivered, true);
     await waitForSentMessages(harness, 2);
 
+    await harness.emitLifecycle("turn_end");
     await harness.emitLifecycle("agent_end");
     await harness.emitLifecycle("agent_settled");
     assert.equal(harness.sentMessages.length, 4);
@@ -1921,6 +1907,7 @@ test("unconsumed inbound messages survive a second abort", { concurrency: false 
     assert.match(harness.sentMessages[2]?.message.content ?? "", /Second leftover/);
     assert.match(harness.sentMessages[3]?.message.content ?? "", /First leftover/);
 
+    await harness.emitLifecycle("turn_end");
     await harness.emitLifecycle("agent_end");
     await harness.emitLifecycle("agent_settled");
     assert.equal(harness.sentMessages.length, 6);
@@ -1954,6 +1941,7 @@ test("outstanding inbound recovery retains every accepted message beyond 100 lef
       })).delivered, true);
     }
     await waitForSentMessages(harness, 101);
+    await harness.emitLifecycle("turn_end");
     await harness.emitLifecycle("agent_end");
     await harness.emitLifecycle("agent_settled");
     const redelivered = harness.sentMessages.slice(101);
@@ -1994,6 +1982,7 @@ test("recovery appends plain followers before waking the selected ask", { concur
     })).delivered, true);
     await waitForSentMessages(harness, 2);
 
+    await harness.emitLifecycle("turn_end");
     await harness.emitLifecycle("agent_end");
     await harness.emitLifecycle("agent_settled");
     assert.equal(harness.sentMessages.length, 4);
@@ -3374,7 +3363,7 @@ async function waitForIntercomEntry(harness: ReturnType<typeof createExtensionHa
   throw new Error(`Timed out waiting for ${type}`);
 }
 
-for (const unavailable of ["offline", "checkpoint", "lookup-error"] as const) {
+for (const unavailable of ["offline", "lookup-error"] as const) {
   test(`supervisor notification bounds retry logs and recovers after ${unavailable}`, { concurrency: false }, async (t) => {
     const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
     const { planner, orchestrator, cleanup } = await setupClients();
@@ -3388,7 +3377,6 @@ for (const unavailable of ["offline", "checkpoint", "lookup-error"] as const) {
     });
     try {
       if (unavailable === "offline") await orchestrator.disconnect();
-      else if (unavailable === "checkpoint") assert.equal(await orchestrator.holdCheckpoint(), true);
       await withChildOrchestratorEnv({ orchestratorTarget: "orchestrator", runId: `retry-${unavailable}`, agent: "worker", index: "0" }, async () => {
         const harness = createExtensionHarness(`retry-${unavailable}-child`);
         piIntercomExtension(harness.pi as never);
@@ -3422,7 +3410,6 @@ for (const unavailable of ["offline", "checkpoint", "lookup-error"] as const) {
           assert.equal(harness.entries.filter((entry) => entry.type === diagnosticType).length, 1);
           const notification = once(orchestrator, "message", { signal: AbortSignal.timeout(5000) }) as Promise<[SessionInfo, Message]>;
           if (unavailable === "offline") await connectClient(orchestrator, "orchestrator");
-          else if (unavailable === "checkpoint") await orchestrator.releaseCheckpoint();
           else failLookup = false;
           const [from, message] = await notification;
           assert.equal(message.id, rejected.messageId ?? rejected.questionId);

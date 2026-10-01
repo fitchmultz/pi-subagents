@@ -1,7 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${PI_LINUX_PI_ARCHIVE:?Set PI_LINUX_PI_ARCHIVE to an absolute path to a credential-free prebuilt Linux Pi .tar.gz (top-level pi/) containing Pi 0.87.1 at 06a195979349ae6da54752b562b5c8b4cfc32f35 (https://github.com/fitchmultz/pi/commit/06a195979349ae6da54752b562b5c8b4cfc32f35); the full native suite requires its custom-queue, prompt-admission, and context-window contracts.}"
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  printf '%s\n' 'Usage: bash scripts/linux-smoke.sh
+
+Validate committed HEAD in Docker against a credential-free, prebuilt Pi 1.0
+Linux archive with a single top-level pi/ directory and built SDK/CLI output.
+
+Example:
+  PI_LINUX_PI_ARCHIVE=/tmp/pi-linux.tar.gz bash scripts/linux-smoke.sh
+
+Environment:
+  PI_LINUX_PI_ARCHIVE  Absolute archive path (required)
+  PI_LINUX_IMAGE      Node 24.21.0+ Linux image (default: node:24-bookworm)
+
+Exit codes: 0 passed; 1 validation failed; 2 invalid arguments.'
+  exit 0
+fi
+if [[ $# -ne 0 ]]; then
+  printf '%s\n' 'No arguments accepted; use --help.' >&2
+  exit 2
+fi
+: "${PI_LINUX_PI_ARCHIVE:?Set PI_LINUX_PI_ARCHIVE to an absolute path to a credential-free prebuilt Linux Pi 1.0 .tar.gz (top-level pi/) with its Linux dependencies and built SDK/CLI.}"
 
 # Validate committed HEAD without passing host credentials or mounting the checkout.
 git -C "$(dirname "$0")/.." archive HEAD | docker run --rm --init -i \

@@ -7,7 +7,10 @@
 
 ### Changed
 - Load the Agents picker in 50-run pages and selected conversations in 100-physical-record pages. Retain full-assignment filtering, full validated reports/details/Reply, drafts, saved/unread anchors, exact-child controls and same-parent reload. Explicit history navigation supersedes stale loads; unavailable detail notices cannot become quoted evidence.
-- Use optional independent native sibling-branch creation when available, retaining the complete official-host per-child fallback. Qualify against official Pi 0.99.2 and native candidate f6d7ec473 (PR #163), without changing the pinned 0.99.1 development cohort or activating a runtime.
+- Require Pi 1.0.0 and Node 24.21.0. Pin the coherent official development cohort while keeping Pi packages optional runtime peers; runtime-only SDK and bundled CLI installations need no private Pi copy.
+- Remove retired fork checkpoint, immediate-usage, metadata/revision, sibling-branch and native pending-call branches. Keep durable detached owners, saved questions/results/delivery and legacy usage deduplication. Attribute new child usage only through finalized native tool results.
+- Use native default-active declarations and a narrow initial-SDK-resume restoration fallback without overriding native reload/tree selection or explicit exclusions. Fork CI reports below-floor hosts as unattempted, not supported qualifications.
+- Share verified parent receipt snapshots within synchronous recovery batches only, refreshing after appends and never across awaits. Poll visited terminal Agents metadata only when relevant or changed, retaining drafts, unread/results and full selected history.
 
 ### Fixed
 - Keep session startup responsive while recovering saved runs, unanswered questions and Intercom receipts. Replay recovery and queued message delivery in small batches and use asynchronous retention cleanup without changing ownership, checkpoint checks or the host's performance-warning budget. Preserve directory snapshots, session-name registration and in-flight completions across asynchronous startup and shutdown.

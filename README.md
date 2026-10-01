@@ -4,7 +4,7 @@
 
 ## Installation
 
-`pi-subagents` works with official Pi **0.99.2** on Node 24 or later, including saved-child continuation in a different directory. No Pi fork is required. Indexed history requires the qualified built-in SQLite **3.53.4** binding (Node **24.21.0**); other bindings report history as unavailable rather than silently scanning journals on the interactive thread. Optional native asynchronous results and immediate usage accounting require additional public host capabilities; see [host capabilities and result delivery](#host-capabilities-and-result-delivery). Known Intercom host limitations are listed in the [Intercom guide](docs/intercom.md#limitations).
+`pi-subagents` requires Pi **1.0.0** and Node **24.21.0** or later, including saved-child continuation in a different directory. No Pi fork is required. Indexed history requires the qualified built-in SQLite **3.53.4** binding; other bindings report history as unavailable rather than silently scanning journals on the interactive thread. Usage is attributed through finalized native tool results; see [usage accounting](#usage-accounting). Known Intercom host limitations are listed in the [Intercom guide](docs/intercom.md#limitations).
 
 New sessions inherit the child process's working directory. Saved sessions retain their file, identity, header, and history; a requested directory change uses Pi's native SDK cwd override before startup. Same-directory resumes, including symlink and trailing-slash spellings, need no override. Structured-output startup preserves active tools and enables its capture tool. Use an explicit tool policy for restricted child runs; Pi can restore default built-ins when resuming without one.
 
@@ -35,7 +35,7 @@ Use the normal development workflow below for editing and validation, then rerun
 
 Supported platforms: **macOS and Linux**. Termux on Android is unverified; Windows is not supported.
 
-Pi core packages and TypeBox remain optional wildcard peers. Detached runners resolve TypeBox from the same Pi installation as the session APIs, so runtime-only installs need no private TypeBox copy. Development dependencies are pinned to the coherent official Pi 0.99.1 cohort for typechecking and package checks.
+Pi core packages and TypeBox remain optional wildcard peers. Detached runners resolve TypeBox from the same Pi installation as the session APIs, so runtime-only installs need no private TypeBox copy. Development dependencies are pinned to the coherent official Pi 1.0.0 cohort for typechecking and package checks.
 
 ### Saved conversations and run records
 
@@ -49,15 +49,17 @@ Child lifecycle aggregates are not copied into the owner event feed. Committed n
 
 A completion is delivered only when its identity appears in a persisted parent message or completed wait receipt. Queued, journaled and dropped states remain separate across reload/restart. Hosts without an individual pending-queue boundary retain ambiguous work as pending rather than send another copy.
 
-Official Pi 0.99.2 still eagerly loads native journals during its own startup; extension installation alone does not remove that host limitation. Optional public metadata APIs on the maintained fork avoid that native loading. Explicit fork context uses the optional independent native branch API when available, with a complete per-child official-host fallback. Neither path removes required branch publication/fsync costs.
+Pi 1.0 still eagerly loads native journals during its own startup; extension installation alone does not remove that host cost. Explicit fork context opens the parent separately for each child and publishes an independent native branch without changing the parent. Required branch publication/fsync costs remain.
 
 ## Local validation
 
 `npm run check:compat` uses the selected host installed in this checkout, never a hidden Pi from PATH. It checks host SDK/manifest-bin identity, typechecks, builds, and qualifies both compiled entries with a private Intercom broker through the native SDK and bundled RPC CLI. Official hosts exercise same/different-cwd resume, acceptance, structured output, native result routing/ownership and tool activation. No provider credentials or inference services are used.
 
-Repository CI runs three pull-request qualification checks: Linux Node 24 with the maintained fork's current `main` runs units, package/install smokes, and focused integration for delegation, Intercom delivery, checkpoint/replay, native usage, and process cleanup; Linux Node 24 typechecks and checks the locked official Pi graph with its portable native contracts and a clean production source install; macOS Node 24 checks a pruned fork installation, broker/checkpoint startup, and macOS process identity. One resolver job selects the fork commit for every platform lane, so a run never mixes moving `main` revisions. Main pushes run only official and fork installation/startup checks. The complete integration suite remains available locally through `npm run test:integration` against the fork; it is not repeated across pull-request jobs.
+Repository CI qualifies the locked official Pi graph and the maintained fork through the existing Linux/macOS lanes. One resolver selects the fork commit for every platform lane, so a run never mixes moving `main` revisions. Focused delegation, Intercom, native usage and process checks run alongside package/install smokes; the complete integration suite remains available locally through `npm run ci`.
 
-The fork CI job supplies `PI_COMPAT_HOST=fork`, `PI_COMPAT_EXPECTED_VERSION`, `PI_COMPAT_EXPECTED_PACKAGE_DIR`, `PI_HOST_INDEX`, and `PI_HOST_CLI` to verify the selected SDK and CLI. The official job uses the locked Pi cohort installed by `npm ci` with `PI_COMPAT_HOST=official`. Fork CI requires native checkpoint and immediate usage APIs instead of silently skipping them. Portable child/background delivery contracts always run; legacy native pending-call tests run only when the host exposes that optional API, which the current fork retired. The ordinary official lane does **not** certify the extended replay/working-session contract: the earlier full official 0.87.1 integration exposed queue visibility, prompt-preparation ownership/startup, and retired `newContext` failures. That historical result is not a full-suite qualification of official 0.99.2. The fork CI target follows [`fitchmultz/pi` main](https://github.com/fitchmultz/pi/tree/main); each run records and qualifies its resolved commit. See [host capabilities](#host-capabilities-and-result-delivery) and [limitations](docs/intercom.md#limitations).
+Fork jobs supply `PI_COMPAT_HOST=fork`, `PI_COMPAT_EXPECTED_VERSION`, `PI_COMPAT_EXPECTED_PACKAGE_DIR`, `PI_HOST_INDEX`, and `PI_HOST_CLI` to verify the selected SDK and CLI. The official job uses the locked Pi cohort with `PI_COMPAT_HOST=official`. Both targets use ordinary 1.0 lifecycle and finalized tool-result accounting, without checkpoint, immediate-usage or pending-call APIs. A resolved fork below 1.0 reports qualification as `UNATTEMPTED` rather than run unsupported-host tests or certify that host; the official lane and supported-fork checks remain unchanged. See [host capabilities](#host-capabilities-and-result-delivery) and [limitations](docs/intercom.md#limitations).
+
+For a fresh development worktree, run `npm ci` before launching Pi there: project-local `.pi/extensions` can autoload before dependencies exist. Alternatively launch from a neutral directory and use `change_dir` to enter the owned worktree after startup. Do not disable all extensions or remove project extensions to hide missing dependencies.
 
 Use an empty HOME outside your real home ancestry and a short temporary directory whose ancestors have no project/package or agent markers. Set HOME, TMPDIR, TMP, TEMP, cache and fixture cwd consistently; never create mutable fixtures beneath the real home or retained evidence directory. Child tests use local fixtures and their own broker/profile. CI runs the latest Node 24 release on Linux and macOS without claiming a full platform-by-host matrix.
 
@@ -87,7 +89,7 @@ The [host limitations](docs/intercom.md#limitations) include historical official
 
 That command runs TypeScript no-emit checking, package shape smoke checks, an isolated single-package install smoke, and the full unit/integration suite. The bundled agent tests cover the Fitch profile set directly, so validation does not require pi-fitch-kit. `npm test` is intentionally the fast unit-test shortcut (`npm run test:unit`), not the full completion gate.
 
-For a credential-free Linux gate against committed `HEAD`, Docker and `PI_LINUX_PI_ARCHIVE` are required. Supply an absolute path to a `.tar.gz` containing one top-level `pi/`: a checkpoint-capable Pi fork source checkout, its Linux `node_modules` (including workspace dependencies), and all built `dist/` output. It must include `pi/packages/coding-agent/dist/index.js` and `pi/packages/coding-agent/dist/bundle/cli.js`.
+For a credential-free Linux gate against committed `HEAD`, Docker and `PI_LINUX_PI_ARCHIVE` are required. Supply an absolute path to a `.tar.gz` containing one top-level `pi/`: a Pi 1.0 source checkout, its Linux `node_modules` (including workspace dependencies), and all built `dist/` output. It must include `pi/packages/coding-agent/dist/index.js` and `pi/packages/coding-agent/dist/bundle/cli.js`.
 
 Prepare that checkout in a clean Linux build environment matching the image's CPU architecture and Node version. Install locked dependencies and complete Pi's workspace build, including its generated model data, before archiving. Do not copy host `node_modules`, Pi user state, `auth.json`, secret `.env` files, or credential-bearing npm/Git configuration. From the Linux build environment:
 
@@ -192,13 +194,13 @@ Run controls also appear when the same saved session owns actionable work: live 
 
 ### Owned runs, review, and continuation
 
-`continue` and `answer` accept `async: false` to wait for the actual new or redirected run's saved result. Cancelling a newly launched `async: false` continuation requests cancellation of that new run, not an older sibling. On the portable path, important steered Intercom messages release the wait so the parent can respond while the child keeps working. Continue useful work or end the turn; the saved completion is delivered separately. Background calls return a receipt even on native asynchronous models; completion arrives as a separate wake-up message. Explicit native foreground waits and older unresolved native calls stay pending through Intercom attention and blocking child questions. Explicit queue/passive messages do not release waits.
+`continue` and `answer` accept `async: false` to wait for the actual new or redirected run's saved result. Cancelling a newly launched `async: false` continuation requests cancellation of that new run, not an older sibling. On the portable path, important steered Intercom messages release the wait so the parent can respond while the child keeps working. Continue useful work or end the turn; the saved completion is delivered separately. Background calls return a receipt; completion arrives as a separate wake-up message. A blocking child question releases the foreground wait with its durable question so the parent can answer it. Explicit queue/passive messages do not release waits.
 
 Stop receipts mean **requested**, not process exit. Saved results separately record the actual agent-process exit code/signal when observed. A returned tool result is not proof that every command descendant exited, and an unrecorded command result means **exit unconfirmed**, not “still running” or exit zero.
 
 If a background runner exits while its children remain alive, Stop signals those recorded child process groups directly after checking their saved process identities. Selected-child Stop still leaves siblings running. Older runs without saved process identities report that ownership cannot be verified.
 
-`agent_runs({ action: "list" })` puts unanswered questions first, then failures, interrupted or unconfirmed work, live work, completed-but-unreviewed results, and other runs. It returns 20 runs by default. Filter globally with `agent`, `state`, or `text`, and choose `sort: "attention" | "newest" | "oldest"`. Use `limit` (1–100) with the returned `details.runList.nextCursor`, or use `offset`/`nextOffset`. Cursors belong to the exact owner, query and indexed snapshot; after a stale-cursor error, restart paging without a cursor. Paging never discards history or disables exact-ID lookup. Ambiguous run-ID prefixes report the total match count and at most five candidates; retry with a longer prefix or full run ID. Ordering/filtering use the off-thread browse index; only the selected page rechecks canonical owner/control facts. Index freshness remains an observation, never authority. `inspect` shows a concise task/result summary, acceptance outcome, questions, errors, paths, review, continuation links, and available live diagnostics. Use `full: true` for the full task and saved launch configuration (also supported by exact `subagent` status). Stored details and history are unchanged. Explicit continuation links identify separate work; a successor's result or review never satisfies the predecessor automatically. Final continuation results name the current run ID and its predecessor, including results recovered through a native pending call.
+`agent_runs({ action: "list" })` puts unanswered questions first, then failures, interrupted or unconfirmed work, live work, completed-but-unreviewed results, and other runs. It returns 20 runs by default. Filter globally with `agent`, `state`, or `text`, and choose `sort: "attention" | "newest" | "oldest"`. Use `limit` (1–100) with the returned `details.runList.nextCursor`, or use `offset`/`nextOffset`. Cursors belong to the exact owner, query and indexed snapshot; after a stale-cursor error, restart paging without a cursor. Paging never discards history or disables exact-ID lookup. Ambiguous run-ID prefixes report the total match count and at most five candidates; retry with a longer prefix or full run ID. Ordering/filtering use the off-thread browse index; only the selected page rechecks canonical owner/control facts. Index freshness remains an observation, never authority. `inspect` shows a concise task/result summary, acceptance outcome, questions, errors, paths, review, continuation links, and available live diagnostics. Use `full: true` for the full task and saved launch configuration (also supported by exact `subagent` status). Stored details and history are unchanged. Explicit continuation links identify separate work; a successor's result or review never satisfies the predecessor automatically. Final continuation results name the current run ID and its predecessor, including results recovered from the saved parent's durable run records.
 
 ### Indexed history and saved-text search
 
@@ -265,19 +267,11 @@ When you finish implementing, run a reviewer subagent before summarizing.
 
 ## Host capabilities and result delivery
 
-**Portable Pi:** ordinary background calls return a launch receipt. The detached owner keeps working, saves its result, and notifies the same saved parent. Use `async: false` or `--fg` when the calling tool must wait for the result, including one-shot callers that need it on stdout. These waits are abort-aware. Official Pi 0.99.2 supports this receipt path. Portable qualification is separate from the enhanced checkpoint/replay contract; see [host limitations](docs/intercom.md#limitations).
+Ordinary background calls return a durable launch receipt. The detached owner keeps working, saves its result, and notifies the same saved parent. `continue`/`answer` without `async: false` also return immediate receipts. Completion is appended separately through Intercom when available, otherwise `subagent-notify`; a published parent message, not broker or queue acceptance, prevents repeat delivery after reload/restart.
 
-**Native asynchronous tools:** an enhanced host must expose `Tool.async`, `Tool.resume`, and `ctx.getPendingToolCalls()`, and the selected model must advertise `supportsAsyncTools`. The extension enables this path only when the actual invocation appears in the host's pending calls. `async: true` alone is not evidence of native support.
+Use `async: false` or `--fg` when the calling tool must wait for the result, including one-shot callers that need it on stdout. These waits are abort-aware, release for important Intercom attention or durable questions, and never adopt another parent's work. Stopping a wait on existing work leaves the child alive; cancellation of newly launched foreground work requests cancellation without claiming process exit.
 
-Background launches and `continue`/`answer` without `async: false` return immediate durable receipts on every host. Completion is appended separately as a wake-up message (Intercom when available, otherwise `subagent-notify`), not returned later on the original call. Saved delivery records prevent repeat notifications after parent reload/restart.
-
-Explicit `async: false` native calls still wait for the actual result. Older unresolved native calls retain their journaled `subagent-invocation` binding: resuming the same parent after restart, compaction, or branch navigation reconnects to saved work without relaunching it or sending a duplicate completion notice. A forked parent cannot adopt the original parent's calls. Receipt calls never become pending native calls retroactively.
-
-Native immediate parent accounting separately requires the public idempotent `recordUsage` API. Without it, usage is carried by finalized tool-result receipts; see [usage accounting](#usage-accounting). Official Pi 0.99.2 does not provide the immediate `recordUsage` API. Current hosts also retired native pending-call execution; capability checks preserve legacy handling only where those APIs actually exist.
-
-**Enhanced-host qualification candidate:** [`fitchmultz/pi` at `f6d7ec473baabe1ef33f3703940a44aa87e58c0f`](https://github.com/fitchmultz/pi/commit/f6d7ec473baabe1ef33f3703940a44aa87e58c0f) (Pi 0.99.1), proposed in [native PR #163](https://github.com/fitchmultz/pi/pull/163). This is an isolated validation target, not a merged release or an installed-runtime update. Public checkpoints and immediate native usage remain available; native pending-call execution is retired. Current background work uses durable detached owners, separate completion receipts and saved-parent ownership. Legacy native-call tests are conditional on their real capability, not proof of current execution support.
-
-To require current enhanced-host APIs, set `PI_CHECKPOINT_TEST_REQUIRED=1` with `PI_CHECKPOINT_TEST_SDK`, and `PI_PARENT_USAGE_REQUIRE_NATIVE=1` with `PI_PARENT_USAGE_TEST_SDK`. Missing checkpoints/usage then fail rather than skip. Do not require the retired `PI_NATIVE_ASYNC_REQUIRE_HOST` contract on these current hosts. The declared Node 24 floor is unchanged; cold loading frozen fork 18a on Node 24.0 has a host CommonJS resolution defect (`context.conditions.includes` on a Set), not an extension workaround or a claimed pass.
+Pi 1.0 does not provide the old fork's native pending-call recovery, idle checkpoint or immediate `recordUsage` APIs. Existing saved run, question, delivery and usage records remain readable, but obsolete pending-call metadata does not reserve completion forever. Resume the same saved parent and use its durable run controls to inspect or continue work. Finalized tool-result usage is charged once; background notifications alone are not usage receipts.
 
 ## Good first prompts
 
@@ -392,7 +386,7 @@ Background runs are the default and keep working independently of the parent's v
 
 An incomplete active Pi goal does not require foreground execution. If child evidence gates the next step, end the current turn and continue the goal after automatic completion delivery; do not advance past the missing evidence.
 
-All children share the task-labelled Agents strip. A waiting tool returns the saved result; a native pending call receives its own completion; other background runs send completion notifications. Parallel groups show per-agent progress. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. Nested delegation remains disabled in bundled profiles.
+All children share the task-labelled Agents strip. A waiting tool returns the saved result; other background runs send completion notifications. Parallel groups show per-agent progress. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. Nested delegation remains disabled in bundled profiles.
 
 You can also ask naturally:
 
@@ -475,11 +469,11 @@ The child can use one dedicated coordination tool:
 
 - `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` only when the ephemeral child cannot safely continue and must remain alive for one steered supervisor reply. Use `reason: "interview_request"` only when it cannot safely continue until it receives multiple structured answers. Use `reason: "progress_update"` only for discoveries or changes the parent needs while working. These steer at the next tool boundary; skip starts, redundant status, and routine completion, and retain material findings in the final result. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
 
-Children return routine completion through their normal result. For portable background delivery, the parent sends one grouped completion through `pi-intercom` per finished run, including child targets, summaries, nested-child summaries, and saved evidence paths. A waiting tool or native pending call receives the saved result directly; the watcher suppresses a duplicate completion notice. Intercom remains available for live questions and guidance while work continues.
+Children return routine completion through their normal result. For portable background delivery, the parent sends one grouped completion through `pi-intercom` per finished run, including child targets, summaries, nested-child summaries, and saved evidence paths. A waiting tool receives the saved result directly; the watcher suppresses a duplicate completion notice. Intercom remains available for live questions and guidance while work continues.
 
 ### Questions that survive a reload
 
-Blocking supervisor questions are saved before notification, with their owner session, child session, and launch-time acceptance/output requirements. They do not expire at the ordinary intercom ask timeout. A portable waiting call returns so the supervisor can answer while the same owner and child remain available. An explicit native foreground wait or an older unresolved native call stays pending. Background calls have already returned their receipt. Neither state is successful completion.
+Blocking supervisor questions are saved before notification, with their owner session, child session, and launch-time acceptance/output requirements. They do not expire at the ordinary intercom ask timeout. A waiting call returns so the supervisor can answer while the same owner and child remain available. Background calls have already returned their receipt. Neither state is successful completion.
 
 ```typescript
 agent_runs({ action: "questions" })
@@ -1110,7 +1104,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `chainDir` | string | temp chain dir | Persistent directory for chain artifacts. |
 | `clarify` | boolean | false | Show TUI preview/edit flow only when explicitly set to `true`. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
-| `async` | boolean | top-level: true | Background delivery from the shared owner. Set `false` to wait for the saved result. Child-safe nested calls default to waiting so their results can appear in the calling child's report; `clarify: true` and timeout fields also request a wait. Native async result routing additionally requires host/model capability and an actual pending call. |
+| `async` | boolean | top-level: true | Background delivery from the shared owner. Set `false` to wait for the saved result. Child-safe nested calls default to waiting so their results can appear in the calling child's report; `clarify: true` and timeout fields also request a wait. |
 | `cwd` | string | selected execution cwd | Override working directory. Relative paths resolve from the parent's current selection; omitted continuation cwd retains the saved child launch and selection. Without a directory extension, use native Pi cwd. |
 | `progress` | boolean | agent default | Maintain `progress.md` for a single run. Parallel task-level progress is maintained in each task cwd; chain progress is maintained in `chainDir`. |
 | `maxOutput` | object | 200KB, 5000 lines | Final output truncation limits. |
@@ -1221,7 +1215,7 @@ The default is `true`. Restart children after changing the setting. It does not 
 { "forceTopLevelAsync": true }
 ```
 
-Forces depth-0 single, parallel, and chain calls to request background delivery and bypasses clarify UI by forcing `clarify: false`. Nested calls keep their own inherited settings. This does not enable a host's native async API.
+Forces depth-0 single, parallel, and chain calls to request background delivery and bypasses clarify UI by forcing `clarify: false`. Nested calls keep their own inherited settings. The detached owner still records the eventual outcome.
 
 ### `parallel`
 
@@ -1320,7 +1314,7 @@ Metadata records timing, usage, exit code, final model, attempted models, fallba
 
 Session files are stored under a per-run session directory. With `context: "fork"`, each child starts with `--session <branched-session-file>` produced from the parent’s current leaf. That is a real session fork, not an injected summary.
 
-Native parent `subagent-run` entries store ownership, continuation links, delivery receipts, and parent review outside model context. They are restored from the full saved session, not only its current context window. Native asynchronous invocations also retain their original call binding in `subagent-invocation` entries.
+Native parent `subagent-run` entries store ownership, continuation links, delivery receipts, and parent review outside model context. They are restored from the full saved session, not only its current context window. Legacy `subagent-invocation` entries remain in old saved sessions but no longer reserve completion or reconnect a native pending call.
 
 New runs use storage version 2 under `${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions/subagent-runs/<run-id>/`. The detached owner is the sole writer of execution status and the final result. Controls submit separate identified requests; questions, answers, revival claims, parent review, and UI state retain their own ownership. Inspection reads the owner's evidence without rewriting its execution state or fabricating a successful result. No separate task service or database is used.
 
@@ -1345,13 +1339,13 @@ ${PI_CODING_AGENT_DIR:-~/.pi/agent}/sessions/subagent-runs/<run-id>/
 
 Temporary cleanup does not remove these canonical records. Legacy temporary run directories and `foreground.json` snapshots remain readable. Active old owners drain on their original runtime; recovery does not replay their side effects, guess missing launch settings, or delete native session history. Missing or ambiguous evidence remains unavailable.
 
-The result watcher emits `subagent:async-complete` for the saved parent's delivery and accounting. Runs with a waiting tool or native pending-call owner suppress ordinary completion notices; the canonical result remains available after delivery.
+The result watcher emits `subagent:async-complete` for the saved parent's delivery and accounting. Runs with a waiting tool suppress ordinary completion notices; the canonical result remains available after delivery.
 
 ### Usage accounting
 
 Child usage comes from finalized native records after the attempt's launch baseline. Inherited fork history and nonbillable checkpoints are excluded. Retries, self-review, summaries, and nested tool usage are included once, with recorded provider/model attribution; unavailable attribution is explicit. Reasoning tokens are part of output tokens, and one-hour cache writes are part of cache writes, not extra totals.
 
-On hosts exposing idempotent `recordUsage`, finalized child contributions enter the parent's totals at completion using stable native entry IDs. Reopening the parent or reading the result again does not charge them again. On portable hosts, the finalized execution/wait tool result carries each contribution once when Pi persists that message. A launch receipt, custom completion notification, or slash-command result card alone does not add child usage to parent totals. Portable fire-and-forget background work therefore does not automatically enter the parent's usage totals. Run inspection and streaming progress never charge usage. Subscription-route cost fields remain estimates, not invoices.
+The finalized execution/wait tool result carries each stable native contribution once when Pi persists that message. Reopening the parent or reading the result again does not charge it again. Saved usage entries from older hosts remain deduplication evidence. A launch receipt, custom completion notification, or slash-command result card alone does not add child usage to parent totals. Portable fire-and-forget background work therefore does not automatically enter the parent's usage totals. Run inspection and streaming progress never charge usage. Subscription-route cost fields remain estimates, not invoices.
 
 ## Acceptance Gates
 
@@ -1476,7 +1470,7 @@ Intercom delivery events:
 - `subagent:intercom-health-request`
 - `subagent:supervisor-question-resolved` — `{ questionId }` after a durable answer or explicit cancellation; clears pending-ask presence without starting a turn.
 
-The result watcher emits `subagent:async-complete`; `src/extension/index.ts` handles saved-result accounting and notification routing. Waiting tools and native pending calls suppress ordinary completion notices. Raw control events remain in the owner's event log. Idle notices wait until the current parent turn ends and are discarded if their child has finished; previously delivered obsolete idle notices are omitted from future model context without removing saved history. Unresolved supervisor questions and completion-guard findings remain visible. A terminal completion-guard notice leaves automatic completion delivery to the matching result, avoiding two triggered turns. A parallel group delivers one aggregate result after its siblings finish; a mid-group guard notice is visible immediately. With `pi-intercom`, needs-attention notices, live nudges, best-effort child health, and portable grouped results can reach the orchestrator over Intercom.
+The result watcher emits `subagent:async-complete`; `src/extension/index.ts` handles saved-result accounting and notification routing. Waiting tools suppress ordinary completion notices. Raw control events remain in the owner's event log. Idle notices wait until the current parent turn ends and are discarded if their child has finished; previously delivered obsolete idle notices are omitted from future model context without removing saved history. Unresolved supervisor questions and completion-guard findings remain visible. A terminal completion-guard notice leaves automatic completion delivery to the matching result, avoiding two triggered turns. A parallel group delivers one aggregate result after its siblings finish; a mid-group guard notice is visible immediately. With `pi-intercom`, needs-attention notices, live nudges, best-effort child health, and portable grouped results can reach the orchestrator over Intercom.
 
 ## Prompt-template integration
 
@@ -1515,7 +1509,7 @@ The main runtime files are:
 | `src/runs/shared/run-records.ts` | Native parent ownership, saved launch/result recovery, attention-first lists, and lineage/review views. |
 | `src/agents/chain-serializer.ts` / `src/runs/shared/chain-outputs.ts` / `src/runs/shared/dynamic-fanout.ts` | Saved chain parsing, named outputs, and bounded dynamic expansion. |
 | `src/runs/shared/native-finalization.ts` | Same-process Pi self-review and current typed report submission. |
-| `src/runs/shared/native-async.ts` / `src/runs/shared/parent-usage.ts` | Optional native pending-call binding and idempotent parent usage. |
+| `src/runs/foreground/wait-run.ts` / `src/runs/shared/parent-usage.ts` | Abort-aware durable waits and finalized native tool-result usage. |
 | `src/shared/settings.ts` | Chain behavior, instructions, and config helpers. |
 | `src/runs/shared/worktree.ts` | Git worktree isolation. |
 | `src/intercom/intercom-bridge.ts` | Fixed intercom instructions, target names, and agent wiring. |

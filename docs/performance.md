@@ -44,20 +44,13 @@ The changed boundaries are exercised through real extension functions and regist
 
 Primary owners are `test/integration/{history-index,owned-run-list,agent-interaction,tool-activation,lazy-coordination,session-resume-cost}.test.ts` and `test/unit/{run-history,journal-reader,temp-root-cleanup}.test.ts`. Run the [local validation](../README.md#local-validation) against an explicitly selected coherent host graph. Operation counts are more repeatable than timing thresholds.
 
-## Separate native preparation improvement
+## Receipt and loadout work
 
-[Native PR #163](https://github.com/fitchmultz/pi/pull/163), candidate `f6d7ec473`, safely reuses active-context decoded bodies with fresh returned objects, retains selected digest checks, exposes independent sibling branch creation and emits accepted-output indices. It is a separately qualified native change, not something the extension can activate or simulate on official Pi. Official hosts keep the complete per-child branch fallback.
+A completion-recovery batch shares one SHA-verified parent receipt snapshot only within its synchronous stack. Parent append/count/leaf changes refresh that snapshot, and it is discarded before any awaited delivery resumes. Receipt identities are indexed once per snapshot; unchanged hits do not each hash the whole journal. The eight-hit regression beside a 1,051,980-byte parent reads at most three journal lengths (initial parse/hash, then verification per yielded batch), instead of verification per hit. Awaited delivery rechecks external journal changes even when the in-memory count and leaf are unchanged. SHA, LF publication, replacement/truncation and same-stamp-edit guards remain mandatory.
 
-A same-machine deterministic probe (Node 24.21.0, private synthetic inputs) compared installed-base `76dfe3d1` with that candidate:
+Native default-active declarations keep advanced orchestration and Intercom lazy without startup deactivation. A small initial-SDK-resume fallback restores this package's declared tools because official 1.0 does not restore its saved loadout during creation. Native tree/reload selection remains authoritative, and activation only adds available owned tools, never excluded ones.
 
-| Synthetic native operation | Before | Candidate |
-| --- | --- | --- |
-| 8,000-message complete prompt/tool cycle | 1.22–1.24 s | 0.255–0.280 s |
-| Tool end → deterministic next provider | 570–602 ms | 120–130 ms |
-| Nine warm projections | 72,000 body reads | 0 body reads |
-| Four independent branches of a 24.7 MB source | 1.27–1.55 s | 545–552 ms |
-
-Both branch cases preserve four exclusive/fsynced publications. These are controlled preparation/copy measurements, not production latency guarantees. A captured historical real Intercom case instead reached its next adapter about 10 ms after the tool and waited about 7.636 s until the next tool, near the provider response's terminal event. Neither SQLite nor native context reuse establishes a fix for that post-submission interval.
+The Agents dock polls while live work, questions, selected/pinned conversations or delivery outboxes need observation. Visited terminal rows reuse their observed metadata until their run changes; full completed history loads on selection. With 50 visited rows (49 terminal), two unchanged refreshes query only the live row; pinned, selected, question, outbox and changed terminal metadata remain observable. The 20/227-terminal-row fixtures also prove three idle ticks request no parent redraw. These are bounded-work optimizations, not archive-size or provider-latency guarantees.
 
 ## Historical 0.43.1 baseline
 
@@ -80,6 +73,6 @@ Cold factory startup did not measurably change in that comparison: five isolated
 
 Cold recovery still enumerates genuine owner handles and verifies relevant published bytes. Mutable native prefixes require integrity validation before appended suffix reuse; stat-only caches or unchecked SQL negative receipt lookups cannot replace that safeguard. Selected controls and canonical receipt/accounting reconciliation remain separate from browsing.
 
-Official Pi 0.99.2 still eagerly loads native session bodies at its own startup. Optional fork metadata APIs avoid that native cost; extension installation alone cannot. Explicit fork context still copies and publishes each sibling, with required fsync. An explicit full individual record must fit its detail budget and the consumer's heap.
+Pi 1.0 still eagerly loads native session bodies at its own startup; extension installation alone cannot remove that host cost. Explicit fork context still copies and publishes each sibling, with required fsync. An explicit full individual record must fit its detail budget and the consumer's heap.
 
 Full-archive backfill/capacity, sustained contention, power-loss durability and cross-platform performance are not qualified by these macOS/APFS synthetic regressions. No journal deletion, live archive migration, installed-runtime activation or inference request is part of this work. Intentional tool/queue boundaries, provider response time, host rendering and other extensions remain separate possible costs.
