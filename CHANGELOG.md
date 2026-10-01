@@ -10,7 +10,7 @@
 - Use optional independent native sibling-branch creation when available, retaining the complete official-host per-child fallback. Qualify against official Pi 0.99.2 and native candidate f6d7ec473 (PR #163), without changing the pinned 0.99.1 development cohort or activating a runtime.
 
 ### Fixed
-- Resolve Pi session APIs through the selected host in production-only history workers. Keep unavailable history quiet during background refreshes, with explicit F5 or run-list/history/search retries.
+- Keep production-only history workers free of parent-only fork imports and resolve terminal stripping through the selected host, without loading another Pi runtime into the parent. Keep unavailable history quiet during background refreshes, with explicit F5 or run-list/history/search retries.
 - Serialize shared history staging across processes, verify publication before advancing cursors, and rebuild older derived indexes that may have omitted records. Recover interrupted writers without lock-file expiry or changing native journals.
 - Tokenize search after streaming terminal-sequence removal. Match unquoted words across a whole native record, retain contiguous quoted phrases, and page one excerpt per matching record/child attempt.
 - Restore the picker’s visible filter on reopen and keep the settled idle dock hidden during background refresh.

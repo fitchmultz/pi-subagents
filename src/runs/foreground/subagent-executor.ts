@@ -9,12 +9,12 @@ import { providerQualifiedModelId, toModelInfo, type ModelInfo } from "../../sha
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { getArtifactsDir } from "../../shared/artifacts.ts";
 import {
+	collectInvocationAgentNames,
 	isParallelStep,
 	isDynamicParallelStep,
 } from "../../shared/settings.ts";
 import {
 	buildFlatAgentNameResolver,
-	collectInvocationAgentNames,
 	createPerAgentForkContextResolver,
 	invocationUsesForkContext,
 	resolveAgentContext,

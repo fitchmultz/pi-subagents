@@ -59,14 +59,6 @@ function collectInvocationAgentTargets(params: SubagentParamsLikeForContext): In
 	return params.agent ? [{ agent: params.agent, model: params.model }] : [];
 }
 
-export function collectInvocationAgentNames(params: SubagentParamsLikeForContext): string[] {
-	const names: string[] = [];
-	if (params.agent) names.push(params.agent);
-	for (const task of params.tasks ?? []) names.push(task.agent);
-	for (const step of params.chain ?? []) names.push(...getStepAgents(step));
-	return names;
-}
-
 export function validateForkContextModelPolicy(
 	params: SubagentParamsLikeForContext,
 	agents: readonly AgentConfig[],

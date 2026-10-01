@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { SessionManager } from "./native-session.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { requestChildExecutionCwd } from "../runs/shared/child-execution-cwd.ts";
 
 type SubagentExecutionContext = "fresh" | "fork";

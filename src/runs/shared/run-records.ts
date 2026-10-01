@@ -21,7 +21,7 @@ import { resolveFinalizationOutput } from "./acceptance-finalization.ts";
 import { parseAcceptanceReport, validateAcceptanceReportShape } from "./acceptance-reports.ts";
 import { sumAttemptUsage } from "./model-fallback.ts";
 import { workflowAgentNodes } from "./workflow-graph.ts";
-import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
+import { collectInvocationAgentNames } from "../../shared/settings.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
 import { compactOwnerResult, getRunMetadataDir, listOwnedRunQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionOwner, saveQuestionContract, type SupervisorRunContract } from "./supervisor-questions.ts";
 import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, truncateOutput, type AgentProgress, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";

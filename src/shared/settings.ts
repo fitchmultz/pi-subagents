@@ -121,6 +121,14 @@ export function getStepAgents(step: ChainStep): string[] {
 	return [step.agent];
 }
 
+export function collectInvocationAgentNames(params: { agent?: string; tasks?: Array<{ agent: string }>; chain?: ChainStep[] }): string[] {
+	const names: string[] = [];
+	if (params.agent) names.push(params.agent);
+	for (const task of params.tasks ?? []) names.push(task.agent);
+	for (const step of params.chain ?? []) names.push(...getStepAgents(step));
+	return names;
+}
+
 // =============================================================================
 // Chain Directory Management
 // =============================================================================

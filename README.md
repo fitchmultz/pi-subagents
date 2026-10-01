@@ -74,7 +74,7 @@ PI_EDITOR_RECEIPT_TEST_ROOT=/absolute/path/to/pi-apply-edits \
 
 Before loading a pruned package with `DefaultResourceLoader`, set `process.env.PI_PACKAGE_DIR = getPackageDir()` from the **selected SDK**. This is the existing host-location contract for native session APIs and detached runners. Alternatively the host must be discoverable through the extension's dependency graph or an actual Pi executable on PATH. CLI consumers resolve their own host normally.
 
-Without any of those host-location sources, `src/shared/native-session.ts` cannot locate session APIs. With a pruned compiled package, Node 24/Jiti can turn that failed top-level initialization into a module-loader assertion rather than surfacing the intended missing-host error. This is an unresolved loader diagnostic defect in the unsupported/misconfigured embedding path, not a general CLI/package failure. Qualification does not disable native imports or suppress loader errors: the supported explicit-host SDK path and the real bundled CLI both load the full runtime-only package.
+Detached history workers need one of those host-location sources to resolve the selected host's terminal-stripping implementation. The parent uses Pi's normal extension-loader imports without loading another runtime. Qualification covers both the explicit-host SDK path and the real bundled CLI with a production-only package.
 
 To diagnose the full suite against the locked published Pi dependencies:
 
