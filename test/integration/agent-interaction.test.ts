@@ -1248,12 +1248,14 @@ for (const loss of ["missing", "replacement", "truncation"]) test(`native detail
 
 for (const nativeAnswer of [false, true]) test(`completed structured-output history opens at the readable report without duplicates (native answer: ${nativeAnswer})`, async (t) => {
 	const f = await fixture(t), manager = f.childSessions[0];
-	for (let index = 0; index < 140; index++) assistant(manager, `Earlier report activity ${index}`);
 	const report = "**The login fix is ready.**\n\n## Verification\n" + Array.from({ length: 120 }, (_, index) => `- Checked behavior ${index + 1}.`).join("\n");
 	const submitted = `${report}\n\n\`\`\`acceptance-report\n${JSON.stringify({ criteriaSatisfied: [{ id: "login", status: "satisfied", evidence: "ACCEPTANCE-DETAIL-END" }], noStagedFiles: true })}\n\`\`\``;
+	const earlierAnswer = nativeAnswer ? assistant(manager, submitted) : undefined;
+	for (let index = 0; index < 140; index++) assistant(manager, `Earlier report activity ${index}`);
 	if (nativeAnswer) assistant(manager, submitted);
 	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "final-report", name: "structured_output", arguments: { value: { report: submitted } } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
 	manager.appendMessage({ role: "toolResult", toolCallId: "final-report", toolName: "structured_output", content: [{ type: "text", text: "Structured output captured." }], details: { stored: true }, isError: false, timestamp: Date.now() });
+	if (nativeAnswer) for (let index = 0; index < 140; index++) manager.appendCustomEntry("after-report", { index });
 	const original = fs.readFileSync(manager.getSessionFile(), "utf8");
 	saveAsyncRunResult(f.run.runId, { runtimeVersion: 2, id: f.run.runId, state: "complete", timestamp: Date.now(), results: [{ agent: "worker", task: f.run.children[0].task!, success: true, exitCode: 0, finalOutput: report, sessionFile: manager.getSessionFile(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } }] });
 	await refreshFixture(f);
@@ -1277,11 +1279,23 @@ for (const nativeAnswer of [false, true]) test(`completed structured-output hist
 	assert.match(f.overlay.scroll.render(118).map(stripTerminalSequences).join("\n"), /Checked behavior 120\./, "reopening a saved report anchor retains the full report before Latest is requested");
 	f.overlay.handleInput("\x1bl"); await historyReady(f);
 	const all = plain(f.overlay, 120);
-	assert.equal(all.match(/The login fix is ready\./g)?.length, 1, "only one visible final answer, even when native history already contains it");
+	assert.equal(all.match(/The login fix is ready\./g)?.length, 1, "Latest keeps one canonical report even when its native answer is outside the current page");
 	assert.doesNotMatch(all, /ACCEPTANCE-DETAIL-END|criteriaSatisfied/);
 	assert.equal(fs.readFileSync(manager.getSessionFile(), "utf8"), original, "viewing must not rewrite the native history");
 	assert.equal(f.calls.length, 0);
 	f.overlay.handleInput("\x1b"); await reopen;
+	const reopenLatest = f.controller.open();
+	await historyReady(f);
+	assert.equal(plain(f.overlay, 120).match(/The login fix is ready\./g)?.length, 1, "reopening the saved Latest position keeps the canonical report visible exactly once");
+	f.overlay.handleInput("\x1b"); await reopenLatest;
+	if (earlierAnswer) {
+		f.controller.visit(f.key).anchor = { id: `${earlierAnswer}:0`, line: 0 };
+		const reopenEarlier = f.controller.open(); await historyReady(f);
+		const olderPage = f.overlay.scroll.render(118).map(stripTerminalSequences).join("\n");
+		assert.equal(olderPage.match(/The login fix is ready\./g)?.length, 1, "a page-visible earlier exact answer prevents a duplicate canonical card even when the latest matching answer is off-page");
+		assert.match(olderPage, /Checked behavior 120\./, "page-visible matching uses the full canonical answer, not preview equality");
+		f.overlay.handleInput("\x1b"); await reopenEarlier;
+	}
 });
 
 test("native grouped tools retain recorded diffs, full context and old result-entry reading positions", async (t) => {
@@ -2244,7 +2258,8 @@ test("indexed Agents selected detail rejects source replacement without dropping
 	assistant(manager, `Saved selected body ${"detail ".repeat(200)}FULL-SELECTED-END`);
 	await indexedReady(f);
 	const opening = f.controller.open(f.key); f.tui.start(); await historyReady(f);
-	f.overlay.handleInput("Keep this draft"); f.overlay.handleInput("\t"); plain(f.overlay);
+	f.overlay.handleInput("Keep this draft"); plain(f.overlay);
+	f.overlay.handleInput("\t"); f.overlay.handleInput("\x1b[F"); await historyReady(f); plain(f.overlay);
 	const file = manager.getSessionFile();
 	fs.writeFileSync(`${file}.replacement`, fs.readFileSync(file)); fs.renameSync(`${file}.replacement`, file);
 	f.overlay.handleInput("\r");

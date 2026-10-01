@@ -145,8 +145,9 @@ export function historyItems(entries: SessionEntry[]): AgentHistory {
 export function withFinalResult(history: AgentHistory, output: string, runId: string, timestamp: number): AgentHistory {
 	const text = readableText(output).trim();
 	if (!text) return history;
-	const existing = history.finalId ?? (history.findFinalResult ? history.findFinalResult(text) : history.items.findLast((item) => item.kind === "assistant" && (stripAcceptanceReport(item.text).trim() === text
+	const matched = history.finalId ?? (history.findFinalResult ? history.findFinalResult(text) : history.items.findLast((item) => item.kind === "assistant" && (stripAcceptanceReport(item.text).trim() === text
 		|| item.assistant?.content.some((part) => part.type === "text" && stripAcceptanceReport(readableText(part.text)).trim() === text)))?.id);
+	const existing = history.items.some((item) => item.id === matched) ? matched : undefined;
 	const id = `result:${runId}`;
 	let items: AgentHistoryItem[] | undefined;
 	return { get items() { return items ??= existing ? history.items.map((item) => item.id === existing ? { ...item, assistant: undefined, text } : item) : [...history.items, { id, kind: "assistant", title: "Saved result", text, timestamp }]; },

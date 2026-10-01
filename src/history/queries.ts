@@ -113,7 +113,6 @@ export class HistoryQueries {
 			if (human) deliveredMessages.push([id, Boolean(this.store.get(`SELECT rowid FROM entries WHERE ${metadataWhere} AND start>? AND assistant_text=1 LIMIT 1`, ...metadataParams, human.start))]);
 		}
 		const outputDigest = this.store.get("SELECT output_digest FROM children WHERE run_id=? AND child_index=?", input.runId, input.index)?.output_digest;
-		const finalResultId = outputDigest ? this.finalResultId(input, outputDigest) : undefined;
 		const configuration = this.configuration(source, input);
 		const count = Number(this.store.get(`SELECT COUNT(*) AS count FROM entries WHERE ${metadataWhere}`, ...metadataParams).count);
 		const before = cursor ? integer(cursor.keys[0], 0) : input.before;
@@ -124,6 +123,7 @@ export class HistoryQueries {
 		const more = fetched.length > limit, rows = fetched.slice(0, limit);
 		if (!forward) rows.reverse();
 		const first = rows[0], last = rows.at(-1);
+		const finalResultId = outputDigest ? this.finalResultId(input, outputDigest, first && last ? [first.start, last.start] : undefined) : undefined;
 		const previous = first && this.store.get(`SELECT start FROM entries WHERE ${metadataWhere} AND start<? LIMIT 1`, ...metadataParams, first.start);
 		return { ...empty, configuration, deliveredMessages, latestEntryId: latest?.visible_id ?? null, terminalSequence,
 			...(input.readThrough !== undefined ? { unreadAfter: Boolean(latest && (!marker || latest.start > marker.start || latest.start === marker.start && latest.visible_id !== input.readThrough)) } : {}),
@@ -171,11 +171,11 @@ export class HistoryQueries {
 			ref: { sourceId: row.source_id, generation: row.generation, start: row.start, end: row.end, digest: row.digest }, preview: row.document_preview, field: row.field, textStart: row.text_start, textEnd: row.text_end, score: row.score })),
 			...(more ? { nextCursor: this.cursor(query, [page.at(-1)!.score, page.at(-1)!.document_id, page.at(-1)!.run_id, page.at(-1)!.child_index], (cursor?.offset ?? 0) + page.length) } : {}) };
 	}
-	finalResultId(input: Pick<HistoryPageInput, "runId" | "index" | "terminalEntryId" | "endedAt">, digest: string): string | undefined {
+	finalResultId(input: Pick<HistoryPageInput, "runId" | "index" | "terminalEntryId" | "endedAt">, digest: string, preferredRange?: readonly [number, number]): string | undefined {
 		const { source } = this.child(input.runId, input.index);
 		if (!source) return;
 		const boundary = this.boundary(source, input, "e");
-		return this.store.get(`SELECT a.item_id FROM answers a JOIN entries e ON e.rowid=a.entry_rowid WHERE a.digest=? AND ${boundary.clauses.join(" AND ")} ORDER BY e.start DESC LIMIT 1`, digest, ...boundary.params)?.item_id;
+		return this.store.get(`SELECT a.item_id FROM answers a JOIN entries e ON e.rowid=a.entry_rowid WHERE a.digest=? AND ${boundary.clauses.join(" AND ")} ORDER BY ${preferredRange ? "(e.start BETWEEN ? AND ?) DESC," : ""}e.start DESC LIMIT 1`, digest, ...boundary.params, ...(preferredRange ?? []))?.item_id;
 	}
 	selected(input: HistoryEntryInput, full: boolean): any {
 		const { source } = this.child(input.runId, input.index);

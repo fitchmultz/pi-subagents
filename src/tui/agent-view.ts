@@ -966,7 +966,7 @@ export class AgentConversation extends Container {
 			if (result.readThroughSequence !== undefined) this.readSequence = result.readThroughSequence;
 			this.latestPage = result.latestPage;
 			let history = result.history;
-			if ((this.latestPage || history.finalId && history.entryIds.includes(history.finalId)) && task.child.state !== "live" && task.child.result && getSingleResultOutput(task.child.result)) {
+			if ((this.initialPosition || this.latestPage || history.finalId && history.entryIds.includes(history.finalId)) && task.child.state !== "live" && task.child.result && getSingleResultOutput(task.child.result)) {
 				const report = await this.controller.savedResult(this.key, `result:${task.run.runId}`);
 				if (this.closed || request !== this.pageRequest || this.task?.run.runId !== task.run.runId) return;
 				history = withFinalResult(history, report.text, task.run.runId, task.run.updatedAt);

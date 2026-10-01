@@ -101,7 +101,7 @@ export interface HistoryPage extends HistoryVersion {
 	latestEntryId: string | null;
 	unreadAfter?: boolean;
 	terminalSequence?: number;
-	/** Exact sanitized canonical answer match, never a truncated-preview comparison. */
+	/** Exact canonical answer match: prefer this page, otherwise locate the latest in the attempt. Never compare truncated previews. */
 	finalResultId?: string;
 	unavailable?: string;
 }
