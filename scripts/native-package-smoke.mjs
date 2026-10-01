@@ -45,6 +45,9 @@ try {
   await session.agent.state.tools.find(tool => tool.name === "load_intercom").execute("peers", {}, new AbortController().signal);
   const status = await session.agent.state.tools.find(tool => tool.name === "intercom").execute("status", { action: "status" }, new AbortController().signal);
   assert.match(JSON.stringify(status.content), /Connected: Yes/);
+  const runs = await session.agent.state.tools.find(tool => tool.name === "agent_runs").execute("history-list", { action: "list" }, new AbortController().signal);
+  assert.notEqual(runs.isError, true, JSON.stringify(runs.content));
+  assert.equal(runs.details.runList.total, 0);
   assert.deepEqual(errors, []);
   if (process.env.PI_COMPAT_HOST === "fork") {
     assert.equal(typeof session.acquireCheckpoint, "function", "fork checkpoint hook is required");
@@ -55,20 +58,26 @@ try {
   const marker = join(root, "cli.json");
   const observer = join(root, "observer.ts");
   writeFileSync(observer, `import { writeFileSync } from "node:fs";
-export default function(pi) { pi.on("session_start", (_event, ctx) => {
-writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ tools: pi.getActiveTools(), commands: pi.getCommands().map(c => c.name) }));
-ctx.shutdown();
+import { SubagentHistoryIndex } from ${JSON.stringify(join(packageRoot, "dist/history/index.js"))};
+export default function(pi) { pi.on("session_start", async (_event, ctx) => {
+const index = new SubagentHistoryIndex(${JSON.stringify(agentDir)});
+try {
+  await index.setOwner({ ownerSessionId: ctx.sessionManager.getSessionId(), runs: [] });
+  const history = await index.listRuns();
+  writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ tools: pi.getActiveTools(), commands: pi.getCommands().map(c => c.name), historyRuns: history.total }));
+} finally { await index.close(); ctx.shutdown(); }
 }); }`);
-  const cliEnv = { ...process.env };
+  const cliEnv = { ...process.env, PATH: "/usr/bin:/bin" };
   delete cliEnv.PI_PACKAGE_DIR; // Ordinary CLI consumers locate their host through argv, unlike detached SDK embeddings.
   const child = spawnSync(process.execPath, [hostCli, "--mode", "rpc", "--no-session", "-ne", "-ns", "-np", "-nc", "--no-themes", "--approve", "-e", packageRoot, "-e", observer], { cwd: root, env: cliEnv, input: "", encoding: "utf8", timeout: 30_000 });
   assert.equal(child.status, 0, `${child.error ?? ""}\n${child.stderr}`);
   assert.doesNotMatch(child.stderr, /Failed to load extension|ERR_INTERNAL_ASSERTION|Extension error/);
   const observed = JSON.parse(readFileSync(marker, "utf8"));
+  assert.equal(observed.historyRuns, 0, "CLI workers must inherit the selected host without Pi on PATH");
   for (const name of ["delegate", "load_subagent", "load_intercom"]) assert.ok(observed.tools.includes(name), name);
   for (const name of ["agent_runs", "subagent", "intercom"]) assert.ok(!observed.tools.includes(name), `${name} starts lazy in CLI`);
   assert.ok(observed.commands.includes("subagents-doctor"));
-  console.log("[native-package-smoke] both compiled entries, broker registration/status, bundled RPC startup, and shutdown passed");
+  console.log("[native-package-smoke] both compiled entries, history worker, broker registration/status, bundled RPC startup, and shutdown passed");
 } finally {
   try {
     if (session) { await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); session.dispose(); }

@@ -9,7 +9,7 @@ export async function ownedHistoryQuery(state: SubagentState, params: SubagentPa
 	const requested = params.id ?? params.runId;
 	const run = requested ? resolveOwnedRun(state, requested) : undefined;
 	if (requested && !run) throw new Error("Run not found in this owning session.");
-	const index = await runHistoryIndex(state);
+	const index = await runHistoryIndex(state, true);
 	if (params.action === "history") {
 		if (!run) throw new Error("History requires an owned run ID.");
 		const view = ownedRunView(run, state, { includeContinuations: false, readConfiguration: false, reconcile: false });

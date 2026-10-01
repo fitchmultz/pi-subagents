@@ -411,6 +411,7 @@ test("background catch-up leaves parent/query progress responsive and hard cance
 	const backfill = f.index.refresh(undefined, { signal: controller.signal });
 	setTimeout(() => controller.abort(), 20);
 	await assert.rejects(backfill, code("CANCELLED"));
+	await assert.rejects(f.index.historyPage({ runId: "backfill", index: 0 }), code("CANCELLED"));
 	assert.ok(beats > 0, "parent timers must run while parser/SQLite are busy");
 	await f.index.refresh();
 	assert.equal((await f.index.historyPage({ runId: "backfill", index: 0 })).count, 1200);

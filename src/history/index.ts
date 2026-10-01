@@ -2,6 +2,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 import { HistoryIndexError } from "./types.ts";
+import { requirePiPackageRoot } from "../runs/shared/pi-spawn.ts";
 import type { ForegroundResumeRun, HistoryEntry, HistoryEntryInput, HistoryIndexStatus, HistoryOwner, HistoryPage, HistoryPageInput, HistoryRunOptions, HistoryRunPage, HistoryResult, HistorySearchInput, HistorySearchPage, OwnedRun, Request, Response } from "./types.ts";
 export * from "./types.ts";
 
@@ -11,6 +12,7 @@ export class SubagentHistoryIndex {
 	private children = new Map<ChildProcess, Promise<void>>();
 	private owner?: HistoryOwner;
 	private ready?: Promise<void>;
+	private unavailable?: Error;
 	private closed = false;
 	private closing?: Promise<void>;
 	private sequence = 0;
@@ -18,12 +20,14 @@ export class SubagentHistoryIndex {
 	private listeners = new Set<() => void>();
 	private agentDir: string;
 	constructor(agentDir: string) { this.agentDir = path.resolve(agentDir); }
+	get failure(): Error | undefined { return this.unavailable; }
 
 	private spawn(): void {
 		const child = fork(fileURLToPath(new URL(`worker${import.meta.url.endsWith(".ts") ? ".ts" : ".js"}`, import.meta.url)), [this.agentDir], {
 			execArgv: [], stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "advanced",
-			env: { ...process.env, PI_CODING_AGENT_DIR: this.agentDir },
+			env: { ...process.env, PI_PACKAGE_DIR: requirePiPackageRoot(), PI_CODING_AGENT_DIR: this.agentDir },
 		});
+		this.unavailable = undefined;
 		this.process = child;
 		this.children.set(child, new Promise<void>((resolve) => {
 			const exited = () => {
@@ -51,6 +55,7 @@ export class SubagentHistoryIndex {
 	}
 	private stop(error: Error, child = this.process, kill = true): void {
 		if (!child || child !== this.process) return;
+		this.unavailable = error;
 		this.process = undefined; this.ready = undefined;
 		for (const pending of this.pending.values()) { pending.cleanup(); pending.reject(error); }
 		this.pending.clear();
@@ -73,6 +78,7 @@ export class SubagentHistoryIndex {
 	}
 	private async ensure(): Promise<void> {
 		if (this.closed) throw new HistoryIndexError("CLOSED", "History index is closed.");
+		if (this.unavailable) throw this.unavailable;
 		if (!this.owner) throw new HistoryIndexError("NO_OWNER", "Set genuine restored ownership before querying history.");
 		if (!this.process) {
 			await Promise.all(this.children.values());
@@ -123,16 +129,18 @@ export class SubagentHistoryIndex {
 	/** Selected canonical output, never a transcript scan or a truncated-preview match. */
 	result(input: Pick<HistoryEntryInput, "runId" | "index" | "signal">): Promise<HistoryResult | null> { return this.query("result", input); }
 	async refresh(runId?: string, options: { signal?: AbortSignal } = {}): Promise<void> {
+		if (!this.closed) this.unavailable = undefined;
 		await this.ensure();
 		return this.send("refresh", { runId }, options.signal, 120_000);
 	}
 	onChanged(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
 	/** Hard cancellation affects this instance's outstanding work, not native sessions or other indexers. */
-	cancel(): void { this.stop(new HistoryIndexError("CANCELLED", "History process cancelled; the next request reopens it.")); }
+	cancel(): void { this.stop(new HistoryIndexError("CANCELLED", "History process cancelled; explicitly refresh or retry to reopen it.")); }
 	close(): Promise<void> {
 		if (this.closing) return this.closing;
 		const child = this.process;
 		this.closed = true; this.listeners.clear();
+		this.unavailable ??= new HistoryIndexError("CLOSED", "History index closed.");
 		const timers = [...this.children.keys()].map((owned) => { const timer = setTimeout(() => owned.kill("SIGKILL"), 1000); timer.unref(); return timer; });
 		this.closing = Promise.all(this.children.values()).then(() => { for (const timer of timers) clearTimeout(timer); });
 		if (child) {

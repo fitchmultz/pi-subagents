@@ -1,6 +1,7 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import childProcess from "node:child_process";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
@@ -2267,5 +2268,54 @@ test("indexed Agents selected detail rejects source replacement without dropping
 	f.overlay.handleInput("\x1b");
 	assert.equal(f.overlay.editor.getText(), "Keep this draft");
 	assert.equal(f.calls.length, 0);
+	f.overlay.handleInput("\x1b"); await opening;
+});
+
+for (const retry of ["F5", "run list"] as const) test(`unavailable Agents history stays quiet through background refreshes and recovers with ${retry}`, async (t) => {
+	const f = await fixture(t);
+	f.controller.dispose(); await closeRunHistory(f.state);
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	const agentDir = path.join(f.cwd, "unavailable-agent");
+	fs.mkdirSync(agentDir);
+	const indexDir = path.join(agentDir, "history-index");
+	fs.symlinkSync(path.join(previous!, "history-index"), indexDir, "dir");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	t.after(async () => {
+		f.controller.dispose(); await closeRunHistory(f.state);
+		process.env.PI_CODING_AGENT_DIR = previous;
+		fs.rmSync(agentDir, { recursive: true, force: true });
+	});
+	const fork = childProcess.fork;
+	const starts = t.mock.method(childProcess, "fork", (...args) => Reflect.apply(fork, childProcess, args));
+	const errors = t.mock.method(console, "error", () => {});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+
+	f.controller.start(f.ctx); await f.controller.refresh();
+	assert.match(f.controller.listError!, /History directory must not be a symbolic link/);
+	for (let update = 0; update < 3; update++) {
+		f.state.onRunsChanged?.(); await f.controller.refresh();
+	}
+	assert.equal(starts.mock.callCount(), 1, "background updates must not keep restarting failed history");
+	assert.equal(errors.mock.callCount(), 0, "unavailable history must be rendered without raw terminal output");
+	assert.match(plain(f.strip), /Agents history unavailable/);
+	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
+
+	const opening = f.controller.open();
+	await until(() => Boolean(f.overlay), "unavailable picker opens");
+	assert.match(plain(f.overlay), /Retry \(F5\)/);
+	fs.unlinkSync(indexDir);
+	if (retry === "F5") f.overlay.handleInput("\x1b[15~");
+	else {
+		const result = await f.executor.execute("history-retry", { action: "status" }, undefined, undefined, f.ctx);
+		assert.notEqual(result.isError, true);
+		assert.equal(result.details.runList?.total, 1);
+		await f.controller.refresh();
+	}
+	await until(() => !f.controller.listError && f.controller.listPage?.total === 1, "explicit retry restores history");
+	assert.equal(starts.mock.callCount(), 2);
+	assert.equal(errors.mock.callCount(), 0);
+	assert.match(plain(f.overlay), /Fix login/);
+	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
 	f.overlay.handleInput("\x1b"); await opening;
 });

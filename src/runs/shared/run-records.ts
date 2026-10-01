@@ -21,7 +21,7 @@ import { resolveFinalizationOutput } from "./acceptance-finalization.ts";
 import { parseAcceptanceReport, validateAcceptanceReportShape } from "./acceptance-reports.ts";
 import { sumAttemptUsage } from "./model-fallback.ts";
 import { workflowAgentNodes } from "./workflow-graph.ts";
-import { collectInvocationAgentNames } from "../../shared/agent-context-policy.ts";
+import { collectInvocationAgentNames } from "../../shared/settings.ts";
 import type { SubagentParamsLike } from "../foreground/subagent-params.ts";
 import { compactOwnerResult, getRunMetadataDir, listOwnedRunQuestions, migrateSupervisorQuestions, questionProcessAlive, readQuestionContract, readRunJson, saveAsyncRunResult, saveRunStatus, saveQuestionOwner, saveQuestionContract, type SupervisorRunContract } from "./supervisor-questions.ts";
 import { ASYNC_DIR, DEFAULT_MAX_OUTPUT, RESULTS_DIR, SLASH_RESULT_TYPE, truncateOutput, type AgentProgress, type AsyncResultChild, type AsyncStatus, type Details, type ForegroundResumeRun, type ManagementRunState, type OwnedRun, type OwnedRunView, type SingleResult, type SubagentExecutionResult, type SubagentState, type WorkflowGraphSnapshot } from "../../shared/types.ts";
@@ -565,7 +565,7 @@ function unavailableRunView(run: OwnedRun, error: unknown): OwnedRunView {
 export async function ownedRunList(state: SubagentState, params: Pick<SubagentParamsLike, "offset" | "limit" | "cursor" | "sort" | "agent" | "state" | "text"> & { signal?: AbortSignal }): Promise<SubagentExecutionResult> {
 	const limit = params.limit ?? 20, sort = params.sort;
 	if (sort === "relevance") throw new Error("Run list sort must be attention, newest, or oldest.");
-	const indexed = await (await runHistoryIndex(state)).listRuns({ ...params, sort });
+	const indexed = await (await runHistoryIndex(state, true)).listRuns({ ...params, sort });
 	// The index orders observations; only the bounded selected page gets authoritative controls.
 	const page = indexed.rows.map((row) => {
 		const run = state.ownedRuns?.get(row.runId);

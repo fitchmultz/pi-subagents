@@ -5,9 +5,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import type { AgentConfig } from "../../src/agents/agents.ts";
+import { collectInvocationAgentNames } from "../../src/shared/settings.ts";
 import {
 	buildFlatAgentNameResolver,
-	collectInvocationAgentNames,
 	createPerAgentForkContextResolver,
 	invocationUsesForkContext,
 	resolveAgentContext,

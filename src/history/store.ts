@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { historyDirectory, historyTransaction, openHistoryDatabase } from "./database.ts";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { stripTerminalSequences } from "../shared/native-tui.ts";
 import { HistoryIndexError } from "./types.ts";
 import { readSavedOutput } from "./canonical-result.ts";
 import type { HistoryEntry, HistoryFreshness, HistoryRunRow, HistoryVersion } from "./types.ts";

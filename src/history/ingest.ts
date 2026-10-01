@@ -3,7 +3,7 @@ import { createHash, type Hash } from "node:crypto";
 import { JournalFrames, type Projection } from "../shared/journal-reader.ts";
 import { HistoryIndexError } from "./types.ts";
 import { exactTextDigest, HistoryStore, safeText, type SourceRow } from "./store.ts";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { stripTerminalSequences } from "../shared/native-tui.ts";
 import { stripAcceptanceReport } from "../runs/shared/acceptance-reports.ts";
 
 export function identity(stat: fs.BigIntStats): string { return `${stat.dev}:${stat.ino}`; }
