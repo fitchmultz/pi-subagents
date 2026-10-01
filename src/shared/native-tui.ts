@@ -1,9 +1,10 @@
-import { createRequire } from "node:module";
+import { findPackageJSON } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { requirePiPackageRoot } from "../runs/shared/pi-spawn.ts";
 
 // Detached Node workers use the selected host's TUI, without extension-loader aliases.
-const require = createRequire(path.join(requirePiPackageRoot(), "dist/index.js"));
-const tui: Pick<typeof import("@earendil-works/pi-tui"), "stripTerminalSequences"> = await import(pathToFileURL(require.resolve("@earendil-works/pi-tui")).href);
+const manifest = findPackageJSON("@earendil-works/pi-tui", pathToFileURL(path.join(requirePiPackageRoot(), "dist/index.js")));
+if (!manifest) throw new Error("Could not locate the selected Pi TUI package.");
+const tui: Pick<typeof import("@earendil-works/pi-tui"), "stripTerminalSequences"> = await import(new URL("./dist/index.js", pathToFileURL(manifest)).href);
 export const { stripTerminalSequences } = tui;
