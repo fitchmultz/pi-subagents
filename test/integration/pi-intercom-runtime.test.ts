@@ -3137,7 +3137,7 @@ test("busy non-interactive sessions auto-reply to top-level asks without abortin
     assert.equal(harness.sentMessages.length, 2);
     assert.match(harness.sentMessages[1]?.message.content ?? "", /Latest replace while busy/);
     assert.doesNotMatch(harness.sentMessages[1]?.message.content ?? "", /Old replace/);
-    assert.equal(harness.sentMessages[1]?.options?.triggerTurn, true);
+    assert.equal(harness.sentMessages[1]?.options?.deliverAs, "steer", "the busy tool boundary queues the latest replacement without requesting a new turn");
 
     const askId = "pipe-mode-ask";
     const replyPromise = waitForReply(planner, askId, 1000);

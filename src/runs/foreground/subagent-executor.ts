@@ -497,6 +497,5 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 		}
 		return projectSupervisorQuestions(result, args[1], args[4].sessionManager.getSessionId(), Boolean(nestedResolutionScopeForExecutor(deps)));
-
 	} };
 }
