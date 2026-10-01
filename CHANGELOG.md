@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.44.0] - 2026-10-01
 
 ### Added
 - Browse owned saved runs through an off-thread private SQLite index: global task/agent/state filters, attention/newest/oldest ordering, bounded cursors, native history pages and lexical visible-text search. Index observations report catch-up/degraded freshness and never replace canonical ownership, controls, receipts or billing evidence.
@@ -13,6 +13,7 @@
 - Share verified parent receipt snapshots within synchronous recovery batches only, refreshing after appends and never across awaits. Poll visited terminal Agents metadata only when relevant or changed, retaining drafts, unread/results and full selected history.
 
 ### Fixed
+- Preserve every admitted completion notification while any native pending batch remains, including multiple completions retained across abort and reload. A next-batch preview cannot cause a watcher resend; matching published receipts retire consumed identities, and genuinely empty queues allow recovery. Individual removal while other queue items remain is unobservable, so ambiguous admissions stay pending.
 - Retain legacy-only completion files until matching verified parent publication, not native queue admission. Recover an accepted but unpersisted completion after a process crash without replaying a published receipt or fabricating run ownership.
 - Keep session startup responsive while recovering saved runs, unanswered questions and Intercom receipts. Replay recovery and queued message delivery in small batches and use asynchronous retention cleanup without changing ownership, verified delivery or the host's performance-warning budget. Preserve directory snapshots, session-name registration and in-flight completions across asynchronous startup and shutdown.
 - Keep production-only history workers free of parent-only fork imports and resolve terminal stripping through the selected host, without loading another Pi runtime into the parent. Keep unavailable history quiet during background refreshes, with explicit F5 or run-list/history/search retries.
