@@ -98,7 +98,7 @@ export default function(pi) {
 		assert.equal(child.status, 0, child.stderr || child.error?.message);
 		assert.deepEqual(JSON.parse(fs.readFileSync(shutdown, "utf8")), { providerCalls: 0 });
 		assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")).sort(),
-			process.env.PI_COMPAT_HOST === "fork" ? ["bash", "discover_tools", "fixture_custom_tool", "read"] : ["bash", "fixture_custom_tool", "read"]);
+			process.env.PI_COMPAT_HOST === "fork" ? ["background_command", "bash", "discover_tools", "fixture_custom_tool", "read"] : ["bash", "fixture_custom_tool", "read"]);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}

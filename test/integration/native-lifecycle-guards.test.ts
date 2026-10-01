@@ -85,4 +85,3 @@ test("watcher stop retains an awaited relay without stale events and restart rec
   watcher.stopResultWatcher();
   writeFileSync(path.join(root, "watcher-tail.json"), JSON.stringify({ completedAfterRestart: completed, recovered: !existsSync(file) }));
 });
-
