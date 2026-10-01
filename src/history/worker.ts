@@ -19,6 +19,7 @@ const dirtyRuns = new Set<string>(), dirtySources = new Map<string, boolean>();
 const watchers = new Map<string, fs.FSWatcher>();
 const watchedSources = new Map<string, Map<string, string>>();
 let job: SourceIngest | undefined, scheduled = false, closed = false;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let runErrors = new Set<string>();
 const barriers: Array<{ id: number; runId?: string }> = [];
 const controlQueries: number[] = [];
@@ -136,7 +137,7 @@ function finishBarriers(): void {
 	}
 }
 function schedule(): void {
-	if (scheduled || closed) return;
+	if (scheduled || closed || retryTimer) return;
 	scheduled = true; setImmediate(pump);
 }
 function pump(): void {
@@ -162,11 +163,14 @@ function pump(): void {
 		const id = job?.id ?? activeSource;
 		job?.close(); job = undefined;
 		if (id && store.source(id)) {
-			if (error instanceof HistoryIndexError && error.code === "SOURCE_CHANGED") dirtySources.set(id, true);
+			if (error instanceof HistoryIndexError && error.code === "INDEX_BUSY") {
+				dirtySources.set(id, true);
+				retryTimer = setTimeout(() => { retryTimer = undefined; schedule(); }, 50);
+			} else if (error instanceof HistoryIndexError && error.code === "SOURCE_CHANGED") dirtySources.set(id, true);
 			else if ((error as NodeJS.ErrnoException).code === "ENOENT") store.resetSource(id, "missing", "Linked native conversation is missing.");
 			else store.run("UPDATE sources SET state='error',error=?,checked_at=? WHERE id=?", "Linked native conversation could not be indexed.", Date.now(), id);
 		}
-		changed();
+		if (!(error instanceof HistoryIndexError && error.code === "INDEX_BUSY")) changed();
 	}
 	activeSource = undefined;
 	finishBarriers();
@@ -181,6 +185,7 @@ function census(): void {
 }
 const timer = setInterval(census, 30_000); timer.unref();
 function clear(): void {
+	clearTimeout(retryTimer); retryTimer = undefined;
 	job?.close(); job = undefined;
 	for (const watcher of watchers.values()) watcher.close(); watchers.clear(); watchedSources.clear();
 	dirtyRuns.clear(); dirtySources.clear(); runs.clear(); foreground.clear(); runErrors = new Set();

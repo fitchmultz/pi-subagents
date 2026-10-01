@@ -373,7 +373,7 @@ export class AgentViewController {
 		if (!browse && !this.state.ownedRuns?.size && !this.state.historyIndex) return Promise.resolve();
 		if (this.refreshPromise) return this.refreshPromise;
 		const generation = this.generation, request = this.listRequest, offset = this.offset, text = this.filter;
-		this.listLoading = true;
+		this.listLoading = this.listPending;
 		this.refreshPromise = (async () => {
 			try {
 				const index = await runHistoryIndex(this.state);
@@ -426,6 +426,7 @@ export class AgentViewController {
 		return this.refreshPromise;
 	}
 
+	get listFilter(): string { return this.filter; }
 	get listPending(): boolean { return !this.listPage || this.appliedListRequest !== this.listRequest; }
 
 	filterTasks(text: string): void {
@@ -553,7 +554,7 @@ export class AgentViewController {
 		const generation = this.generation;
 		if (!this.listPage) await this.refresh(true);
 		if (!this.live(generation)) return;
-		let selected = key ?? (this.tasks.length === 1 && this.listPage?.total === 1 ? this.tasks[0]!.key : undefined);
+		let selected = key ?? (!this.filter && this.tasks.length === 1 && this.listPage?.total === 1 ? this.tasks[0]!.key : undefined);
 		while (this.live(generation)) {
 			this.selectedKey = selected;
 			if (selected) this.refreshSelected(selected);
@@ -725,6 +726,7 @@ class AgentPicker extends Container {
 		super();
 		this.tui = tui; this.theme = theme; this.controller = controller; this.done = done;
 		this.search = new Input({ placeholder: "Filter agents or assignments…", placeholderStyle: (text) => theme.fg("dim", text) });
+		this.search.setValue(controller.listFilter);
 		this.render(tui.terminal.columns);
 	}
 	get focused(): boolean { return this.hasFocus; }

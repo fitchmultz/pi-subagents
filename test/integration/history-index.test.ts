@@ -1,6 +1,8 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { fork } from "node:child_process";
+import { once } from "node:events";
 import { syncBuiltinESMExports } from "node:module";
 import { readSavedOutput } from "../../src/history/canonical-result.ts";
 import * as os from "node:os";
@@ -222,6 +224,78 @@ test("FTS indexes only visible text, validates grammar, respects owner filters a
 	assert.equal((await f.index.status()).physicalSources, 2);
 });
 
+test("search tokenizes visible text after streaming terminal-sequence removal", async (t) => {
+	const f = fixture(t);
+	const file = f.file("terminal-search.jsonl", [header(),
+		message("colored", "\x1b[31mredneedle\x1b[0m re\x1b[32mdjoined\x1b[0m \x1b]8;;https://hiddenurl\x1b\\linkneedle\x1b]8;;\x1b\\"),
+		message("split-controls", "padding ".repeat(8190) + "\x1b]" + "hiddenpayload ".repeat(6000) + "\x1b\\splitneedle \x9b31mc1needle\x9b0m"),
+		{ ...message("field-isolation", ""), message: { role: "user", content: [{ type: "text", text: "\x1b]unterminated" }, { type: "text", text: "fieldneedle" }] } },
+		message("record-isolation", "recordneedle"),
+	]);
+	await owned(f.index, [run("terminal-records", file)]);
+	for (const query of ["redneedle", "redjoined", "linkneedle", "splitneedle", "c1needle", "fieldneedle", "recordneedle"]) assert.equal((await f.index.search({ query })).matches.length, 1, query);
+	for (const query of ["31mredneedle", "hiddenurl", "hiddenpayload", "unterminated"]) assert.equal((await f.index.search({ query })).matches.length, 0, query);
+});
+
+test("multiword search matches whole native records before ranking and pagination", async (t) => {
+	const f = fixture(t);
+	const file = f.file("record-search.jsonl", [header(),
+		message("far-apart", "firstneedle " + "padding ".repeat(600) + "lastneedle"),
+		{ ...message("separate-fields", ""), message: { role: "user", content: [{ type: "text", text: "firstneedle" }, { type: "text", text: "lastneedle" }] } },
+		message("only-first", "firstneedle"), message("only-last", "lastneedle"),
+	]);
+	await owned(f.index, [run("search-records", file)]);
+	for (const sort of ["relevance", "newest"] as const) {
+		const first = await f.index.search({ query: "firstneedle lastneedle", sort, limit: 1 });
+		assert.equal(first.matches.length, 1); assert.ok(first.nextCursor);
+		const second = await f.index.search({ query: "firstneedle lastneedle", sort, limit: 1, cursor: first.nextCursor });
+		assert.deepEqual([first.matches[0].entryId, second.matches[0].entryId].sort(), ["far-apart", "separate-fields"]);
+		assert.equal(second.nextCursor, undefined);
+	}
+	assert.equal((await f.index.search({ query: '"firstneedle lastneedle"' })).matches.length, 0, "phrases cannot jump windows or text fields");
+	assert.equal((await f.index.search({ query: "padding", runId: "search-records" })).matches.length, 1, "overlapping windows do not duplicate native-record results");
+});
+
+for (const interrupted of [false, true]) test(`concurrent workers preserve staged entries when the first writer ${interrupted ? "is killed" : "finishes"}`, async (t) => {
+	const f = fixture(t), file = f.file("concurrent.jsonl", [header()]), runs = [run("concurrent", file)];
+	await owned(f.index, runs);
+	await f.index.close();
+	fs.appendFileSync(file, lines([
+		{ type: "model_change", id: "configuration", parentId: null, timestamp, provider: "synthetic", modelId: "concurrent" },
+		{ ...message("retained", "concurrentneedle " + "padding ".repeat(9000)), parentId: "configuration" },
+	]));
+	const original = fs.readFileSync(file);
+	const start = async (pause: "staged" | "opened") => {
+		const worker = fork(new URL("../fixtures/history-staged-writer.ts", import.meta.url), [f.agentDir, pause], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+		const exited = once(worker, "exit");
+		t.after(async () => { if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL"); await exited; });
+		assert.deepEqual((await once(worker, "message"))[0], { ready: true });
+		return { worker, exited, async finish() { const finished = once(worker, "message"); worker.send("finish"); assert.deepEqual((await finished)[0], { finished: true }); await exited; } };
+	};
+	const first = await start("staged");
+	if (interrupted) {
+		await f.restart(); await f.index.setOwner({ ownerSessionId: "parent", runs });
+		const refresh = f.index.refresh();
+		// The public worker keeps serving IPC while waiting for another writer.
+		for (let request = 0; request < 8; request++) await f.index.listRuns();
+		first.worker.kill("SIGKILL"); await first.exited; await refresh;
+	} else {
+		// Open the second ingest before the first publishes, but don't let it
+		// replay yet: this deterministically exposed deletion of shared staging.
+		const second = await start("opened");
+		await first.finish(); await second.finish();
+		await f.restart(); await owned(f.index, runs);
+	}
+	const page = await f.index.historyPage({ runId: "concurrent", index: 0 });
+	assert.deepEqual(page.entries.map((entry) => entry.id), ["configuration", "retained"]);
+	assert.equal(page.configuration.model, "synthetic/concurrent");
+	assert.equal(page.freshness.state, "current");
+	assert.equal((await f.index.search({ query: "concurrentneedle" })).matches.length, 1);
+	assert.deepEqual(fs.readFileSync(file), original);
+	await f.restart(); await owned(f.index, runs);
+	assert.equal((await f.index.historyPage({ runId: "concurrent", index: 0 })).count, 2);
+});
+
 test("over-budget non-text structures degrade the index without assembling them or losing later published records", async (t) => {
 	const f = fixture(t);
 	let nested: unknown = "ignored";
@@ -296,10 +370,17 @@ test("persistent replay publishes cursor and entries together; legacy missing id
 	const published = db.prepare("SELECT COUNT(*) AS count FROM entries WHERE published=1").get()!.count;
 	assert.equal(cursor, fs.statSync(file).size); assert.equal(published, 2);
 	assert.equal(db.prepare("SELECT COUNT(*) AS count FROM entries WHERE published=0").get()!.count, 0);
-	db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); db.close();
-	fs.writeFileSync(status.databaseFile, "corrupted disposable SQLite");
+	// The previous schema could mark a cursor current after losing an entry.
+	// Upgrade must rebuild, not trust that apparently complete cursor.
+	db.exec("DELETE FROM entries; PRAGMA user_version=4; PRAGMA wal_checkpoint(TRUNCATE)"); db.close();
 	await f.restart(); await owned(f.index, runs);
-	assert.notEqual((await f.index.status()).databaseFile, status.databaseFile);
+	const repaired = await f.index.status();
+	assert.notEqual(repaired.databaseFile, status.databaseFile);
+	assert.equal((await f.index.historyPage({ runId: "legacy", index: 0 })).count, 2);
+	await f.index.close();
+	fs.writeFileSync(repaired.databaseFile, "corrupted disposable SQLite");
+	await f.restart(); await owned(f.index, runs);
+	assert.notEqual((await f.index.status()).databaseFile, repaired.databaseFile);
 	assert.equal((await f.index.search({ query: "replayword" })).matches.length, 1);
 });
 

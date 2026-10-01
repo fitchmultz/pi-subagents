@@ -143,18 +143,29 @@ export class HistoryQueries {
 		}
 		const query = hash(JSON.stringify(["search", expression, sort, input.runId ?? null, input.index ?? null, input.agent ?? null]));
 		const cursor = this.parseCursor(input.cursor, query);
-		const clauses = ["corpus MATCH ?", "e.published=1", "e.generation=s.generation", "(c.terminal_entry_id IS NULL OR e.start<=terminal.start)", "(c.ended_at IS NULL OR e.timestamp<=c.ended_at)"], params: SQLInputValue[] = [expression];
+		const clauses = ["e.published=1", "e.generation=s.generation", "(c.terminal_entry_id IS NULL OR e.start<=terminal.start)", "(c.ended_at IS NULL OR e.timestamp<=c.ended_at)"], params: SQLInputValue[] = [...expression];
 		if (input.runId) { clauses.push("c.run_id=?"); params.push(input.runId); }
 		if (input.index !== undefined) { clauses.push("c.child_index=?"); params.push(input.index); }
 		if (input.agent) { if (input.agent.length > 256) throw new HistoryIndexError("INVALID", "Agent filter is too long."); clauses.push("c.agent=?"); params.push(input.agent); }
 		// Ordering/filters apply globally before limit. Common terms may still require an FTS
 		// scan/sort; the parent enforces a hard deadline by killing this separate process.
-		const score = sort === "relevance" ? "bm25(corpus)" : "-COALESCE(e.timestamp,0)";
+		const score = sort === "relevance" ? "matched.score" : "-COALESCE(e.timestamp,0)";
 		if (cursor) {
 			if (cursor.keys.length !== 4) throw new HistoryIndexError("INVALID_CURSOR", "Invalid search seek tuple.");
 			clauses.push(`(${score},d.id,c.run_id,c.child_index)>(?,?,?,?)`); params.push(...cursor.keys);
 		}
-		const rows = this.store.all(`SELECT d.*,${score} AS score,e.*,d.id AS document_id,s.path,s.session_id,c.run_id,c.child_index,c.agent,d.preview AS document_preview FROM corpus JOIN documents d ON d.id=corpus.rowid JOIN entries e ON e.rowid=d.entry_rowid JOIN sources s ON s.id=e.source_id JOIN children c ON c.source_id=s.id LEFT JOIN entries terminal ON terminal.source_id=s.id AND terminal.generation=s.generation AND terminal.id=c.terminal_entry_id AND terminal.published=1 WHERE ${clauses.join(" AND ")} ORDER BY score,d.id,c.run_id,c.child_index LIMIT ?`, ...params, limit + 1);
+		// Match words across all visible fields/windows of one native record. A quoted
+		// phrase remains a single FTS expression, so it cannot span unrelated fields.
+		const rows = this.store.all(`WITH hits AS MATERIALIZED (
+			${expression.map((_term, index) => `SELECT d.id,d.entry_rowid,bm25(corpus) AS score,${index} AS term FROM corpus JOIN documents d ON d.id=corpus.rowid WHERE corpus MATCH ?`).join(" UNION ALL ")}
+		), terms AS (
+			SELECT entry_rowid,term,MIN(score) AS score FROM hits GROUP BY entry_rowid,term
+		), matched AS (
+			SELECT entry_rowid,SUM(score) AS score FROM terms GROUP BY entry_rowid HAVING COUNT(*)=${expression.length}
+		), excerpts AS (
+			SELECT id,entry_rowid,ROW_NUMBER() OVER (PARTITION BY entry_rowid ORDER BY score,id) AS choice FROM hits
+		)
+		SELECT d.*,${score} AS score,e.*,d.id AS document_id,s.path,s.session_id,c.run_id,c.child_index,c.agent,d.preview AS document_preview FROM matched JOIN excerpts ON excerpts.entry_rowid=matched.entry_rowid AND excerpts.choice=1 JOIN documents d ON d.id=excerpts.id JOIN entries e ON e.rowid=matched.entry_rowid JOIN sources s ON s.id=e.source_id JOIN children c ON c.source_id=s.id LEFT JOIN entries terminal ON terminal.source_id=s.id AND terminal.generation=s.generation AND terminal.id=c.terminal_entry_id AND terminal.published=1 WHERE ${clauses.join(" AND ")} ORDER BY score,d.id,c.run_id,c.child_index LIMIT ?`, ...params, limit + 1);
 		const more = rows.length > limit, page = rows.slice(0, limit);
 		return { ...this.info(), matches: page.map((row) => ({ id: row.document_id, runId: row.run_id, index: row.child_index, agent: row.agent, entryId: row.id, nativeId: row.native_id, sessionId: row.session_id, sessionFile: row.path, timestamp: row.timestamp,
 			ref: { sourceId: row.source_id, generation: row.generation, start: row.start, end: row.end, digest: row.digest }, preview: row.document_preview, field: row.field, textStart: row.text_start, textEnd: row.text_end, score: row.score })),
@@ -183,12 +194,12 @@ export class HistoryQueries {
 		return full ? body : { ...this.store.entry(row), entry: { ...compactEntry(body), id: row.id } };
 	}
 }
-function searchGrammar(query: string): string {
+function searchGrammar(query: string): string[] {
 	if (typeof query !== "string" || !query.trim() || query.length > 1024) throw new HistoryIndexError("INVALID_QUERY", "Search requires 1–12 tokens or one quoted phrase.");
 	const text = query.trim(), phrase = text.startsWith('"') && text.endsWith('"');
 	const words = (phrase ? text.slice(1, -1) : text).trim().split(/\s+/u);
 	if (!words.length || words.length > 12 || words.some((word) => !/^[\p{L}\p{N}\p{M}]{1,64}$/u.test(word) || !phrase && ["AND", "OR", "NOT", "NEAR"].includes(word))) throw new HistoryIndexError("INVALID_QUERY", "Only lexical tokens or one quoted phrase are supported; operators, punctuation, and prefixes are not allowed.");
-	return phrase ? `"${words.join(" ")}"` : words.map((word) => `"${word}"`).join(" AND ");
+	return phrase ? [`"${words.join(" ")}"`] : [...new Set(words.map((word) => `"${word}"`))];
 }
 function validateRecord(source: SourceRow, row: EntryRow, full: boolean): Record<string, any> {
 	let fd: number | undefined;

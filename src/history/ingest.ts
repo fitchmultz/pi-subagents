@@ -97,7 +97,30 @@ function visibleId(value: any, id: string): string | null {
 	return value.message.errorMessage ? `${id}:error` : last < 0 ? null : `${id}:${last}`;
 }
 interface TextToken { text: string; start: number; end: number }
-interface TextBuffer { word: string; wordStart: number; received: number; tokens: TextToken[]; length: number }
+interface TextBuffer { word: string; wordStart: number; received: number; tokens: TextToken[]; length: number; terminal: TerminalText }
+/** Streaming ECMA-48 removal, retaining original UTF-16 positions without buffering control payloads. */
+class TerminalText {
+	private state: "text" | "escape" | "intermediate" | "csi" | "string" | "stringEscape" = "text";
+	write(text: string, visible: (text: string, start: number) => void): void {
+		let position = 0;
+		while (position < text.length) {
+			if (this.state === "text") {
+				const next = text.slice(position).search(/[\x1b\x90\x98\x9b\x9d-\x9f]/);
+				if (next < 0) { visible(text.slice(position), position); return; }
+				visible(text.slice(position, position + next), position); position += next;
+				const control = text[position++];
+				this.state = control === "\x1b" ? "escape" : control === "\x9b" ? "csi" : "string";
+				continue;
+			}
+			const char = text[position++];
+			if (this.state === "escape") this.state = char === "[" ? "csi" : "]PX^_".includes(char) ? "string" : char >= " " && char <= "/" ? "intermediate" : "text";
+			else if (this.state === "intermediate") { if (char >= "0" && char <= "~") this.state = "text"; }
+			else if (this.state === "csi") { if (char >= "@" && char <= "~") this.state = "text"; }
+			else if (char === "\x07" || char === "\x9c" || this.state === "stringEscape" && char === "\\") this.state = "text";
+			else this.state = char === "\x1b" ? "stringEscape" : "string";
+		}
+	}
+}
 /** Token windows overlap 12 tokens, including phrases across arbitrarily long whitespace. */
 class TextChunks {
 	private fields = new Map<string, TextBuffer>();
@@ -120,16 +143,18 @@ class TextChunks {
 		let buffer = this.fields.get(field);
 		if (!buffer) {
 			if (this.fields.size >= 4096) throw new HistoryIndexError("RECORD_COMPLEXITY", "Record exceeds the 4096 visible text-field indexing budget.");
-			this.fields.set(field, buffer = { word: "", wordStart: 0, received: 0, tokens: [], length: 0 });
+			this.fields.set(field, buffer = { word: "", wordStart: 0, received: 0, tokens: [], length: 0, terminal: new TerminalText() });
 		}
-		for (const part of text.matchAll(/[\p{L}\p{N}\p{M}]+|[^\p{L}\p{N}\p{M}]+/gu)) {
-			const start = buffer.received + part.index!;
-			if (/^[\p{L}\p{N}\p{M}]/u.test(part[0])) {
-				if (!buffer.word) buffer.wordStart = start;
-				buffer.word += part[0];
-				if (buffer.word.length > 65_536) throw new HistoryIndexError("RECORD_COMPLEXITY", "Record contains a lexical token exceeding the 64 KiB indexing budget.");
-			} else this.token(field, buffer, start);
-		}
+		buffer.terminal.write(text, (visible, offset) => {
+			for (const part of visible.matchAll(/[\p{L}\p{N}\p{M}]+|[^\p{L}\p{N}\p{M}]+/gu)) {
+				const start = buffer.received + offset + part.index!;
+				if (/^[\p{L}\p{N}\p{M}]/u.test(part[0])) {
+					if (!buffer.word) buffer.wordStart = start;
+					buffer.word += part[0];
+					if (buffer.word.length > 65_536) throw new HistoryIndexError("RECORD_COMPLEXITY", "Record contains a lexical token exceeding the 64 KiB indexing budget.");
+				} else this.token(field, buffer, start);
+			}
+		});
 		buffer.received += text.length;
 	}
 	flush(store: HistoryStore, finish = false): void {
@@ -170,24 +195,34 @@ export class SourceIngest {
 	readonly id: string;
 	constructor(store: HistoryStore, source: SourceRow, force = false) {
 		this.store = store; this.source = source; this.id = source.id;
-		store.operations.sourceChecks++; store.operations.sourceOpens++;
-		this.fd = fs.openSync(source.path, "r"); this.initial = fs.fstatSync(this.fd, { bigint: true });
-		if (!this.initial.isFile() || this.initial.size > BigInt(Number.MAX_SAFE_INTEGER)) { fs.closeSync(this.fd); throw new Error("Journal is not a supported regular file."); }
-		if (source.identity && (source.identity !== identity(this.initial) || Number(this.initial.size) < source.cursor)) { store.resetSource(source.id); this.source = source = store.source(source.id)!; }
-		this.position = source.cursor;
-		this.headerSeen = source.cursor > 0;
-		store.clearUnpublished(source.id);
-		store.run("DELETE FROM pending_text");
-		this.phase = !force && source.stamp === stamp(this.initial) ? "done" : source.cursor ? "verify" : "read";
-		if (this.phase !== "done") store.run("UPDATE sources SET state='indexing',error=NULL WHERE id=?", source.id);
-		this.frames = new JournalFrames(previewProjection, (record) => {
-			this.record = { ...record, digest: this.recordDigest.copy().digest("hex") };
-		}, "inspect", source.cursor, (_start, _end, error) => { this.malformed = true; this.complexity = error instanceof RangeError || error instanceof HistoryIndexError && error.code === "RECORD_COMPLEXITY"; }, (keys, chunk) => { this.text.write(keys, chunk); this.answerTexts.write(keys, chunk); }, undefined, true, previewLimits);
+		store.beginIngest();
+		let opened: number | undefined;
+		try {
+			this.source = source = store.source(source.id)!;
+			if (!source) throw new HistoryIndexError("SOURCE_CHANGED", "Source was removed before ingestion.");
+			store.operations.sourceChecks++; store.operations.sourceOpens++;
+			this.fd = opened = fs.openSync(source.path, "r"); this.initial = fs.fstatSync(this.fd, { bigint: true });
+			if (!this.initial.isFile() || this.initial.size > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Journal is not a supported regular file.");
+			if (source.identity && (source.identity !== identity(this.initial) || Number(this.initial.size) < source.cursor)) { store.resetSource(source.id); this.source = source = store.source(source.id)!; }
+			this.position = source.cursor;
+			this.headerSeen = source.cursor > 0;
+			store.clearUnpublished(source.id);
+			store.run("DELETE FROM pending_text");
+			this.phase = !force && source.stamp === stamp(this.initial) ? "done" : source.cursor ? "verify" : "read";
+			if (this.phase !== "done") store.run("UPDATE sources SET state='indexing',error=NULL WHERE id=?", source.id);
+			this.frames = new JournalFrames(previewProjection, (record) => {
+				this.record = { ...record, digest: this.recordDigest.copy().digest("hex") };
+			}, "inspect", source.cursor, (_start, _end, error) => { this.malformed = true; this.complexity = error instanceof RangeError || error instanceof HistoryIndexError && error.code === "RECORD_COMPLEXITY"; }, (keys, chunk) => { this.text.write(keys, chunk); this.answerTexts.write(keys, chunk); }, undefined, true, previewLimits);
+		} catch (error) {
+			if (opened !== undefined) fs.closeSync(opened);
+			store.endIngest();
+			throw error;
+		}
 	}
 	private published(end: number, work?: () => void): void {
 		this.store.transaction(() => {
 			const current = this.store.source(this.id)!;
-			if (current.generation !== this.source.generation || current.cursor !== this.source.cursor) throw new HistoryIndexError("SOURCE_CHANGED", "Another writer advanced this source; reconcile before replaying.");
+			if (!current || current.generation !== this.source.generation || current.cursor !== this.source.cursor) throw new HistoryIndexError("SOURCE_CHANGED", "Another writer advanced this source; reconcile before replaying.");
 			work?.();
 			this.store.run("UPDATE sources SET cursor=?,prefix_digest=?,identity=? WHERE id=?", end, this.prefix.copy().digest("hex"), identity(this.initial), this.id);
 			this.store.bump();
@@ -242,7 +277,7 @@ export class SourceIngest {
 		const value = this.record!.value, rowid = this.stagedEntry!;
 		const answers = this.answerTexts.fingerprints(value, typeof value.id === "string" ? value.id : `legacy-${this.record!.start}`);
 		this.published(this.record!.end, () => {
-			this.store.run("UPDATE entries SET published=1 WHERE rowid=?", rowid);
+			if (this.store.run("UPDATE entries SET published=1 WHERE rowid=? AND source_id=? AND generation=? AND published=0", rowid, this.id, this.source.generation).changes !== 1) throw new HistoryIndexError("SOURCE_CHANGED", "Staged entry disappeared before publication; reconcile before advancing the source.");
 			for (const [digest, item] of answers) this.store.run("INSERT OR IGNORE INTO answers VALUES (?,?,?)", rowid, digest, item);
 			for (const part of Array.isArray(value.message?.content) ? value.message.content : []) if (part.type === "toolCall" && typeof part.id === "string") this.store.run("INSERT INTO tools VALUES (?,?,?,?,?)", rowid, this.id, this.source.generation, part.id, "call");
 			if (value.message?.role === "toolResult" && typeof value.message.toolCallId === "string") this.store.run("INSERT INTO tools VALUES (?,?,?,?,?)", rowid, this.id, this.source.generation, value.message.toolCallId, "result");
@@ -293,5 +328,5 @@ export class SourceIngest {
 		this.store.run("UPDATE sources SET identity=?,stamp=?,checked_at=?,state=?,error=? WHERE id=?", identity(this.initial), stamp(this.initial), Date.now(), malformed ? "degraded" : this.source.cursor < Number(this.initial.size) ? "partial" : "current", malformed ? `${malformed} malformed, duplicate or over-budget LF-published records were skipped.${complexity ? ` ${complexity} exceeded bounded history structure/text budgets.` : ""}` : null, this.id);
 		this.phase = "done"; this.close(); return true;
 	}
-	close(): void { if (!this.closed) { fs.closeSync(this.fd); this.closed = true; } }
+	close(): void { if (!this.closed) { fs.closeSync(this.fd); this.store.endIngest(); this.closed = true; } }
 }

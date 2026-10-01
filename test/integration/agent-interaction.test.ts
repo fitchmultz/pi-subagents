@@ -1404,6 +1404,35 @@ test("twenty-task picker is framed, width-aware and searchable by the full assig
 	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
 	assert.equal(f.calls.length, 0);
 	f.overlay.handleInput("\x1b"); await opening;
+	f.terminal.columns = 140; f.terminal.rows = 40;
+	const reopened = f.controller.open();
+	assert.ok(!(f.overlay instanceof AgentConversation), "a retained filter reopens the picker, not an unexplained single result");
+	assert.match(plain(f.overlay, 140), /Distinctive assignment needle/);
+	assert.doesNotMatch(plain(f.overlay, 140), /Filter agents or assignments/);
+	f.overlay.handleInput("\x05"); f.overlay.handleInput("\x15");
+	await until(() => !f.controller.listPending && f.controller.tasks.length === 20, "clearing the visible retained filter restores other agents");
+	assert.match(plain(f.overlay, 140), /Review behavior 18/);
+	f.overlay.handleInput("\x1b"); await reopened;
+});
+
+for (const mode of ["regular", "fullscreen"] as const) test(`settled idle Agents dock stays hidden throughout delayed background refresh (${mode})`, async (t) => {
+	const f = await fixture(t, mode);
+	await f.complete(); f.tui.start(); f.tui.renderNow();
+	assert.equal(plain(f.strip), "");
+	const index = await runHistoryIndex(f.state), original = index.listRuns.bind(index);
+	let release!: () => void, entered!: () => void;
+	const held = new Promise<void>((resolve) => { release = resolve; });
+	const requested = new Promise<void>((resolve) => { entered = resolve; });
+	t.mock.method(index, "listRuns", async (...args) => { entered(); await held; return original(...args); });
+	const refresh = f.controller.refresh();
+	await requested;
+	try {
+		for (const width of [110, 56, 24]) {
+			f.terminal.resize(width, 38); f.tui.renderNow();
+			assert.deepEqual(f.strip.render(width), [], "an in-flight background observation must not add a loading row or move the editor");
+		}
+	} finally { release(); await refresh; }
+	assert.equal(plain(f.strip), "");
 });
 
 test("active Agents rows distinguish running, queued and needs-action work, then disappear after completion", async (t) => {

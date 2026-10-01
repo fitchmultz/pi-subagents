@@ -10,6 +10,9 @@
 - Use optional independent native sibling-branch creation when available, retaining the complete official-host per-child fallback. Qualify against official Pi 0.99.2 and native candidate f6d7ec473 (PR #163), without changing the pinned 0.99.1 development cohort or activating a runtime.
 
 ### Fixed
+- Serialize shared history staging across processes, verify publication before advancing cursors, and rebuild older derived indexes that may have omitted records. Recover interrupted writers without lock-file expiry or changing native journals.
+- Tokenize search after streaming terminal-sequence removal. Match unquoted words across a whole native record, retain contiguous quoted phrases, and page one excerpt per matching record/child attempt.
+- Restore the picker’s visible filter on reopen and keep the settled idle dock hidden during background refresh.
 - Keep growing historical source scans and searches off the interactive event loop. Bound preview structure and selected full-record/output reads, reject changed references, preserve LF publication and atomic index progress, and recover corrupt browse generations without rewriting journals or adopting unrelated archives.
 - Keep completed-attempt search inside its saved terminal/time boundary when a continuation shares the native file. Distinguish human delivery from a nonempty assistant reply and preserve sparse-child canonical result selection.
 - Stop timing-history readers from erasing concurrent writes or another agent's samples. Serialize writer-side import/insertion/per-agent latest-1,000 retention in SQLite, bound legacy reads to 1 MiB and leave the old JSONL untouched. Retry concurrent first-open WAL conversion within a bounded budget.

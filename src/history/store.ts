@@ -38,6 +38,7 @@ export class HistoryStore {
 	readonly file: string;
 	readonly owner: string;
 	readonly operations = { sourceChecks: 0, sourceOpens: 0, sourceBytesRead: 0, runProjections: 0, queries: 0 };
+	private ingestLock?: DatabaseSync;
 	private outputDigests = new Map<string, { stamp: string; digest: string }>();
 	constructor(agentDir: string, owner: string) {
 		this.owner = owner;
@@ -54,7 +55,7 @@ export class HistoryStore {
 				const file = path.join(directory, name);
 				if (!fs.existsSync(file) || fs.lstatSync(file).isSymbolicLink()) throw new HistoryIndexError("CORRUPT", "Invalid index generation.");
 				db = openHistoryDatabase(file);
-				if (db.prepare("PRAGMA user_version").get()?.user_version !== 4) throw new HistoryIndexError("CORRUPT", "Invalid index schema.");
+				if (db.prepare("PRAGMA user_version").get()?.user_version !== 5) throw new HistoryIndexError("CORRUPT", "Invalid index schema.");
 				db.prepare("SELECT value FROM meta WHERE key='generation'").get();
 			} catch (error) {
 				db?.close(); db = undefined;
@@ -103,7 +104,7 @@ export class HistoryStore {
 			CREATE TABLE documents(id INTEGER PRIMARY KEY,entry_rowid INTEGER NOT NULL REFERENCES entries(rowid) ON DELETE CASCADE,field TEXT NOT NULL,text_start INTEGER NOT NULL,text_end INTEGER NOT NULL,preview TEXT NOT NULL);
 			CREATE INDEX documents_entry ON documents(entry_rowid);
 			CREATE VIRTUAL TABLE corpus USING fts5(text,content='',contentless_delete=1,tokenize='unicode61');
-			PRAGMA user_version=4;
+			PRAGMA user_version=5;
 		`);
 	}
 	get(sql: string, ...params: SQLInputValue[]): any { return this.db.prepare(sql).get(...params); }
@@ -181,7 +182,21 @@ export class HistoryStore {
 		return { id: row.id, nativeId: row.native_id, parentId: row.parent_id, sequence: row.start, timestamp: row.timestamp, type: row.type,
 			ref: { sourceId: row.source_id, generation: row.generation, start: row.start, end: row.end, digest: row.digest }, entry: JSON.parse(row.preview) };
 	}
-	close(): void { this.db.close(); }
+	/** A separate SQLite transaction serializes incremental staging without blocking browse queries.
+	 * SQLite releases it on process death; no PID lease, expiry, or stale-file deletion is needed. */
+	beginIngest(): void {
+		if (!this.ingestLock) {
+			this.ingestLock = openHistoryDatabase(`${this.file}.ingest.sqlite`);
+			this.ingestLock.exec("PRAGMA busy_timeout=0");
+		}
+		try { this.ingestLock.exec("BEGIN IMMEDIATE"); }
+		catch (error) {
+			if (/locked|busy/i.test(String((error as Error).message))) throw new HistoryIndexError("INDEX_BUSY", "Another worker is indexing this generation.");
+			throw error;
+		}
+	}
+	endIngest(): void { if (this.ingestLock?.isTransaction) this.ingestLock.exec("ROLLBACK"); }
+	close(): void { this.ingestLock?.close(); this.db.close(); }
 }
 function isCorruption(error: unknown): boolean {
 	return error instanceof HistoryIndexError && error.code === "CORRUPT" || /malformed|not a database|no such table|corrupt/i.test(String((error as Error).message));
