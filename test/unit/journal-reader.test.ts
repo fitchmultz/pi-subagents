@@ -9,7 +9,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { test } from "node:test";
 import { JournalFrames, JsonProjection, NativeJournal, readOutputPage } from "../../src/shared/journal-reader.ts";
 import { readNativeUsage, snapshotNativeBaseline } from "../../src/runs/shared/native-usage.ts";
-import { NativeAgentHistory } from "../../src/tui/agent-history.ts";
+
 
 const usage = { input: 3, output: 5, cacheRead: 7, cacheWrite: 11, totalTokens: 26,
 	cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 7, total: 13 } };
@@ -51,97 +51,27 @@ test("sealed inspection accepts a valid unterminated record without repair; stri
 	assert.throws(() => readNativeUsage(file, new Set()), SyntaxError);
 });
 
-test("live history requires LF even after sealed inspection, tolerates broken historical lines, and exposes full selected bodies after publication", (t) => {
-	const file = path.join(temporary(t), "native.jsonl");
-	const text = "Complete selected body ".repeat(400) + "FULL-END";
+test("sealed inspection and LF-published native bodies never weaken strict accounting or inherited baselines", (t) => {
+	const file = path.join(temporary(t), "native.jsonl"), text = "Complete selected body ".repeat(400) + "FULL-END";
 	const original = '{"type":"session","id":"child","version":3}\nnot JSON\n'
-		+ JSON.stringify({ type: "message", id: "terminal", parentId: null, message: { role: "assistant", provider: "fixture", model: "faux",
-			timestamp: 7, stopReason: "stop", usage, content: [{ type: "text", text }] } });
+		+ JSON.stringify({ type: "message", id: "terminal", parentId: null, message: { role: "assistant", provider: "fixture", model: "faux", timestamp: 7, stopReason: "stop", usage, content: [{ type: "text", text }] } });
 	fs.writeFileSync(file, original);
-	const history = new NativeAgentHistory();
-	const sealed = history.read(file);
-	assert.deepEqual(sealed.entryIds, ["terminal:0"], "sealed read-only inspection remains available");
-	assert.deepEqual(history.read(file, true).entryIds, [], "a cached sealed snapshot cannot become published live history");
-	assert.equal(history.read(file, true).configuration?.model, undefined, "live configuration uses the same published boundary");
+	const sealed = new NativeJournal(file), unpublished = new NativeJournal(file, "inspect", true);
+	assert.equal(sealed.body(sealed.byId.get("terminal")!).message.content[0].text, text);
+	assert.equal(unpublished.byId.has("terminal"), false);
+	assert.equal(unpublished.configuration().model, undefined);
 	assert.equal(fs.readFileSync(file, "utf8"), original);
 	fs.appendFileSync(file, "\n");
-	assert.equal(sealed.items[0]!.load!().text, text, "LF publication preserves the same selected full body from sealed inspection");
-	const live = history.read(file, true);
-	assert.deepEqual(live.entryIds, ["terminal:0"]);
-	assert.equal(live.configuration?.model, "fixture/faux");
-	assert.equal(live.items[0]!.load!().text, text, "exact native ID selection retains the full body");
-	assert.throws(() => readNativeUsage(file, new Set()), SyntaxError, "history tolerance cannot weaken required accounting");
-	const clean = original.replace("not JSON\n", "");
-	fs.writeFileSync(file, clean);
+	const published = new NativeJournal(file, "inspect", true);
+	assert.equal(published.configuration().model, "fixture/faux");
+	assert.equal(published.body(published.byId.get("terminal")!).message.content[0].text, text);
+	assert.throws(() => readNativeUsage(file, new Set()), SyntaxError, "inspection tolerance cannot weaken required accounting");
+	fs.writeFileSync(file, original.replace("not JSON\n", ""));
 	assert.throws(() => snapshotNativeBaseline(file), SyntaxError, "an unpublished entry cannot become an inherited attempt baseline");
 	assert.throws(() => readNativeUsage(file, new Set(), [], { terminalEntryId: "terminal" }), SyntaxError);
 	fs.appendFileSync(file, "\n");
 	assert.deepEqual([...snapshotNativeBaseline(file).ids], ["child", "terminal"]);
 	assert.equal(readNativeUsage(file, new Set(), [], { terminalEntryId: "terminal" })![0]!.input, 3);
-});
-
-test("live history tokenizes only appended records and revalidates torn tails, edited prefixes, replacements and truncation", (t) => {
-	const file = path.join(temporary(t), "native.jsonl");
-	const header = JSON.stringify({ type: "session", id: "child", version: 3 }) + "\n";
-	const record = (id: string, text: string) => JSON.stringify({ type: "message", id, parentId: null, timestamp: "2026-01-01",
-		message: { role: "user", content: text } }) + "\n";
-	fs.writeFileSync(file, header + Array.from({ length: 2000 }, (_, index) => record(`entry-${index}`, "x".repeat(2048))).join(""));
-	const reader = new NativeAgentHistory(), initial = reader.read(file, true), selected = initial.items[0]!;
-	const write = JsonProjection.prototype.write;
-	let parsedBytes = 0;
-	t.mock.method(JsonProjection.prototype, "write", function(chunk) { if (typeof chunk === "string") parsedBytes += Buffer.byteLength(chunk); return write.call(this, chunk); });
-	const appended = record("appended", "New published message");
-	fs.appendFileSync(file, appended);
-	assert.equal(reader.read(file, true).entryIds.at(-1), "appended");
-	assert.equal(parsedBytes, Buffer.byteLength(appended) - 1, "an append cannot retokenize the old multi-megabyte transcript");
-	const pending = record("pending", "Published after the next LF");
-	fs.appendFileSync(file, pending.slice(0, -1));
-	assert.equal(reader.read(file, true).entryIds.at(-1), "appended", "a valid EOF object is not published live");
-	fs.appendFileSync(file, "\n");
-	assert.equal(reader.read(file, true).entryIds.at(-1), "pending");
-	assert.equal(parsedBytes, Buffer.byteLength(appended) - 1 + 2 * (Buffer.byteLength(pending) - 1), "only the torn tail is retokenized");
-	const live = reader.read(file, true), missing = reader.read(file, true, { terminalEntryId: "missing" });
-	assert.match(missing.unavailable!, /terminal entry is unavailable/);
-	assert.equal(reader.read(file, true, { terminalEntryId: "missing" }), missing, "unchanged unavailable boundaries are cached");
-	assert.equal(reader.read(file, true), live, "a missing terminal boundary cannot discard a valid live index");
-	assert.equal(parsedBytes, Buffer.byteLength(appended) - 1 + 2 * (Buffer.byteLength(pending) - 1), "unavailable boundaries cannot repeatedly tokenize the source");
-	assert.equal(selected.load!().text, "x".repeat(2048), "append preserves the old exact native selection");
-	fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("x".repeat(2048), "y".repeat(2048)) + record("after-edit", "Grew while the prefix changed"));
-	assert.equal(reader.read(file, true).items[0]!.load!().text, "y".repeat(2048), "growth cannot hide a rewrite of prior entries");
-	assert.throws(() => selected.load!(), /replaced or truncated/);
-	fs.writeFileSync(`${file}.replacement`, header + record("replacement", "Different source"));
-	fs.renameSync(`${file}.replacement`, file);
-	assert.deepEqual(reader.read(file, true).entryIds, ["replacement"]);
-	assert.throws(() => selected.load!(), /replaced or truncated/);
-	fs.writeFileSync(file, header);
-	assert.deepEqual(reader.read(file, true).entryIds, []);
-});
-
-test("history caches stable unreadable sources but retries changed files and transient I/O failures", (t) => {
-	const file = path.join(temporary(t), "native.jsonl"), reader = new NativeAgentHistory();
-	fs.writeFileSync(file, '{"type":"custom","id":"not-a-session"}\n');
-	const write = JsonProjection.prototype.write;
-	let parsedBytes = 0;
-	t.mock.method(JsonProjection.prototype, "write", function(chunk) { if (typeof chunk === "string") parsedBytes += Buffer.byteLength(chunk); return write.call(this, chunk); });
-	assert.match(reader.read(file, true).unavailable!, /Not a readable native Pi session/);
-	const firstPass = parsedBytes;
-	assert.ok(firstPass > 0);
-	reader.configuration(file, undefined, undefined, true);
-	assert.match(reader.read(file, true).unavailable!, /Not a readable native Pi session/);
-	assert.equal(parsedBytes, firstPass, "unchanged invalid journals are not retokenized on every refresh");
-	fs.writeFileSync(file, '{"type":"session","id":"child","version":3}\n');
-	assert.equal(reader.read(file, true).unavailable, undefined, "changed source bytes retry the index");
-	reader.clear();
-	const open = fs.openSync;
-	let failed = false;
-	t.mock.method(fs, "openSync", function(target, ...args) {
-		if (target === file && !failed) { failed = true; throw Object.assign(new Error("EMFILE fixture"), { code: "EMFILE", syscall: "open" }); }
-		return open.call(this, target, ...args);
-	});
-	syncBuiltinESMExports();
-	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-	assert.match(reader.read(file, true).unavailable!, /EMFILE/);
-	assert.equal(reader.read(file, true).unavailable, undefined, "transient I/O can recover without a journal rewrite");
 });
 
 test("strict/live JSONL reject non-object roots and invalid UTF-8 inside skipped payloads without committing their cursors", () => {
@@ -182,22 +112,29 @@ test("a valid ignored individual value larger than Node's string ceiling preserv
 	const checksum = hash.digest("hex");
 	const nativeModule = new URL("../../src/runs/shared/native-usage.ts", import.meta.url).href;
 	const journalModule = new URL("../../src/shared/journal-reader.ts", import.meta.url).href;
-	const historyModule = new URL("../../src/tui/agent-history.ts", import.meta.url).href;
+	const historyModule = new URL("../../src/history/index.ts", import.meta.url).href;
 	const check = spawnSync(process.execPath, ["--max-old-space-size=96", "--input-type=module", "-e", `
 		import assert from 'node:assert/strict'; import {createHash} from 'node:crypto'; import {createReadStream} from 'node:fs';
 		import {snapshotNativeUsage,readNativeUsage} from ${JSON.stringify(nativeModule)};
-		import {NativeJournal} from ${JSON.stringify(journalModule)}; import {NativeAgentHistory} from ${JSON.stringify(historyModule)};
+		import {NativeJournal} from ${JSON.stringify(journalModule)}; import {SubagentHistoryIndex} from ${JSON.stringify(historyModule)};
 		const file=process.argv[1];
 		assert.deepEqual([...snapshotNativeUsage(file)],['child','inherited','noise','paid','abandoned','terminal']);
 		const totals=readNativeUsage(file,new Set(['child','inherited']),['paid','terminal']);
 		assert.deepEqual(totals.map(x=>[x.input,x.output,x.cost,x.turns]),[[3,5,13,1],[6,10,26,1]]);
 		assert.deepEqual(totals.flatMap(x=>x.contributions.map(c=>c.id)),['child:paid','child:abandoned','child:terminal']);
-		const history=new NativeAgentHistory();
-		assert.equal(history.configuration(file).model,'p/selected');
-		assert.equal(history.read(file).items.find(item=>item.id==='terminal:0').load().text,'Final 🦄 answer');
+		assert.equal(new NativeJournal(file).configuration().model,'p/selected');
+		const history=new SubagentHistoryIndex(process.argv[3]);
+		try {
+			await history.setOwner({ownerSessionId:'synthetic-owner',runs:[{runId:'synthetic-run',rootRunId:'synthetic-run',ownerSessionId:'synthetic-owner',source:'foreground',mode:'single',cwd:process.argv[3],task:'synthetic retained history',startedAt:1,children:[{agent:'worker',index:0,sessionFile:file}]}]});
+			await history.refresh();
+			const page=await history.historyPage({runId:'synthetic-run',index:0,terminalEntryId:'terminal'});
+			assert.equal(page.configuration.model,'p/selected');
+			const selected=page.entries.find(entry=>entry.id==='terminal'); assert.ok(selected);
+			assert.equal((await history.record({runId:'synthetic-run',index:0,ref:selected.ref})).message.content[0].text,'Final 🦄 answer');
+		} finally { await history.close(); }
 		const hash=createHash('sha256'); for await(const bytes of createReadStream(file)) hash.update(bytes);
 		assert.equal(hash.digest('hex'),process.argv[2]); console.log('bounded native storage: exact counters/IDs/configuration/history, source unchanged, heap limit 96 MiB');
-	` , file, checksum], { encoding: "utf8", timeout: 170_000, maxBuffer: 64 * 1024 });
+	` , file, checksum, root], { encoding: "utf8", timeout: 170_000, maxBuffer: 64 * 1024, env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=96" } });
 	assert.equal(check.status, 0, check.stderr);
 	t.diagnostic(check.stdout.trim());
 	// A successor may append paid work to the same journal. The predecessor's

@@ -19,6 +19,8 @@ import {
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { createResultWatcher } from "../../src/runs/background/result-watcher.ts";
 import { rememberOwnedRun } from "../../src/runs/shared/run-records.ts";
+import { closeRunHistory } from "../../src/runs/shared/history-index.ts";
+import type { SubagentState } from "../../src/shared/types.ts";
 import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, RESULTS_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
@@ -79,6 +81,7 @@ function createRecordingEventBus(options: { acknowledgeResults?: boolean; acknow
 describe("intercom result delivery cutover", () => {
 	let tempDir: string;
 	let mockPi: MockPi;
+	const states = new Set<SubagentState>();
 
 	before(() => {
 		mockPi = createMockPi();
@@ -94,7 +97,9 @@ describe("intercom result delivery cutover", () => {
 		mockPi.reset();
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
+		await Promise.all([...states].map(closeRunHistory));
+		states.clear();
 		removeTempDir(tempDir);
 	});
 
@@ -137,6 +142,7 @@ describe("intercom result delivery cutover", () => {
 				clear: () => {},
 			},
 		};
+		states.add(state);
 		const executor = createSubagentExecutor({
 			pi: {
 				events,

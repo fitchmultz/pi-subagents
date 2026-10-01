@@ -14,6 +14,7 @@ import {
 	type ExtensionConfig,
 	type JsonSchemaObject,
 	type MaxOutputConfig,
+	type ManagementRunState,
 	type NestedRouteInfo,
 	type ResolvedControlConfig,
 	type SingleResult,
@@ -82,6 +83,12 @@ export interface SubagentParamsLike {
 	decision?: "accepted" | "needs_changes";
 	offset?: number;
 	limit?: number;
+	cursor?: string;
+	sort?: "attention" | "newest" | "oldest" | "relevance";
+	state?: ManagementRunState;
+	text?: string;
+	query?: string;
+	before?: number;
 	full?: boolean;
 	dir?: string;
 	index?: number;
@@ -222,6 +229,12 @@ export function normalizeSubagentParamsLike(params: RawSubagentParamsLike): Suba
 		decision: params.decision === "accepted" || params.decision === "needs_changes" ? params.decision : undefined,
 		offset: numberValue(params, "offset"),
 		limit: numberValue(params, "limit"),
+		cursor: stringValue(params, "cursor"),
+		sort: ["attention", "newest", "oldest", "relevance"].includes(String(params.sort)) ? params.sort as SubagentParamsLike["sort"] : undefined,
+		state: ["live", "completed", "failed", "blocked", "paused", "unknown"].includes(String(params.state)) ? params.state as ManagementRunState : undefined,
+		text: stringValue(params, "text"),
+		query: stringValue(params, "query"),
+		before: numberValue(params, "before"),
 		full: booleanValue(params, "full"),
 		dir: stringValue(params, "dir"),
 		index: numberValue(params, "index"),

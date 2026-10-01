@@ -30,10 +30,12 @@ delegate({ agent: "worker", task: "Implement the approved fix", worktree: true }
 agent_runs({ action: "list" })
 agent_runs({ action: "inspect", id: "<run-id>" })
 agent_runs({ action: "review", id: "<run-id>", decision: "accepted", message: "Checked the evidence." })
-agent_runs({ action: "list", offset: 20, limit: 20 })
+agent_runs({ action: "list", text: "login", sort: "newest", limit: 20 })
+agent_runs({ action: "history", id: "<run-id>", index: 0, limit: 100 })
+agent_runs({ action: "search", query: '"login timeout"', agent: "worker", limit: 20 })
 ```
 
-These share the full executor, including acceptance and isolated single-writer worktrees. The list prioritizes pending questions, failures/interrupted or unconfirmed work, and completed-but-unreviewed results. `offset`/`limit` page the display (default 20, maximum 100), never the retained history. `review` records `accepted` or `needs_changes` separately from execution, validation, and notification; it never launches a repair or reviewer. Use `continue` explicitly for more work. Use `load_subagent` and `subagent(...)` for parallel groups, chains, detailed overrides, and profile administration.
+These share the full executor, including acceptance and isolated single-writer worktrees. The list prioritizes pending questions, failures/interrupted or unconfirmed work, and completed-but-unreviewed results. Global `agent`/`state`/`text` filters and attention/newest/oldest sorting apply before paging (default 20, maximum 100), never cap retained history. Reuse the returned cursor with the same query, or use `offset`; restart without a cursor when the indexed snapshot changes. `history` requires an owned ID and a child index for multi-child runs, defaults to 100 native-entry previews, and returns an earlier-page cursor. `search` accepts 1–12 lexical words or one quoted phrase, excludes thinking/arguments/hidden payloads, and supports relevance/newest order and owned ID/child/agent filters. Finished attempts keep their own terminal/time boundary even when a continuation shares the source. Browse freshness and excerpts are observations, not canonical completion or delivery proof. For validated full selected bodies, use Agents details/Reply; oversized or changed records fail explicitly. `review` records `accepted` or `needs_changes` separately from execution, validation, and notification; it never launches a repair or reviewer. Use `continue` explicitly for more work. Use `load_subagent` and `subagent(...)` for parallel groups, chains, detailed overrides, and profile administration.
 Humans often use the slash-command layer instead:
 
 - `/run` — launch a single agent

@@ -14,6 +14,7 @@ process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
 const { AgentRunsValidationParams: AgentRunsParams, SubagentParams, AcceptanceOverride } = await import("../../src/extension/schemas.ts");
 const { createSubagentExecutor, normalizeSubagentParamsLike } = await import("../../src/runs/foreground/subagent-executor.ts");
 const { ownedRunList, resolveOwnedRun, saveForegroundRun } = await import("../../src/runs/shared/run-records.ts");
+const { closeRunHistory, runHistoryIndex } = await import("../../src/runs/shared/history-index.ts");
 const questions = await import("../../src/runs/shared/supervisor-questions.ts");
 const { buildControlEvent, formatControlNoticeMessage } = await import("../../src/runs/shared/subagent-control.ts");
 const { resolveEffectiveAcceptance } = await import("../../src/runs/shared/acceptance.ts");
@@ -163,7 +164,7 @@ test("feedback public and advanced schemas expose full inspection and explain un
 	assert.match(AcceptanceOverride.description, /never to a live child's acceptance/);
 });
 
-test("feedback live runs precede 31 unreviewed results while history and explicit continuation links remain intact", () => {
+test("feedback live runs precede 31 unreviewed results while history and explicit continuation links remain intact", async (t) => {
 	const fixture = setup("list-live");
 	fixture.run.source = "async";
 	fixture.run.asyncDir = questions.getRunMetadataDir(fixture.run.runId);
@@ -176,13 +177,15 @@ test("feedback live runs precede 31 unreviewed results while history and explici
 	}
 	const successor = { ...fixture.run, predecessorRunId: "finished-0", predecessorIndex: 0, rootRunId: "finished-0" };
 	fixture.state.ownedRuns!.set(successor.runId, successor);
-	const list = ownedRunList(fixture.state, { limit: 2 });
+	t.after(() => closeRunHistory(fixture.state));
+	await (await runHistoryIndex(fixture.state)).needsControls();
+	const list = await ownedRunList(fixture.state, { limit: 2 });
 	assert.equal(list.details.runs?.[0]?.runId, fixture.run.runId);
 	assert.match(list.content[0]!.text, /from finished-0:0/);
 	const all = [];
 	let predecessorText = "";
 	for (let offset = 0; offset < 32; offset += 5) {
-		const page = ownedRunList(fixture.state, { offset, limit: 5 });
+		const page = await ownedRunList(fixture.state, { offset, limit: 5 });
 		assert.equal(page.details.runList?.total, 32);
 		all.push(...page.details.runs!.map((run) => run.runId));
 		predecessorText += page.content[0]!.text;

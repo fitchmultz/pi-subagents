@@ -150,7 +150,7 @@ Package skill content.
 
 	it("records run history and cleans session artifacts under the configured agent dir", () => {
 		recordRun("env-agent", "Inspect", 0, 42);
-		const historyPath = path.join(agentDir, "run-history.jsonl");
+		const historyPath = path.join(agentDir, "history-index", "run-timing.sqlite");
 		assert.equal(fs.existsSync(historyPath), true);
 		const history = loadRunsForAgent("env-agent");
 		assert.equal(history.length, 1);

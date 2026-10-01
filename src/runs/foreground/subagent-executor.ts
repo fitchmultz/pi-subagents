@@ -32,6 +32,7 @@ import { queryLiveIntercomHealth, queryLiveIntercomStatus } from "../../intercom
 import { saveQuestionOwner } from "../shared/supervisor-questions.ts";
 import { buildWorkflowGraphSnapshot, workflowAgentNodes } from "../shared/workflow-graph.ts";
 import { ownedRunList, ownedRunStatusResult, ownedRunView, rememberOwnedRun, resolveOwnedRun, workflowChildren } from "../shared/run-records.ts";
+import { ownedHistoryQuery } from "../shared/run-history-queries.ts";
 import { cancelSupervisorInput, controlSupervisorQuestion, projectSupervisorQuestions } from "./question-control.ts";
 import {
 	type AgentScope,
@@ -114,6 +115,12 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
 				}
 			}
+			if (params.action === "history" || params.action === "search") {
+				try { return await ownedHistoryQuery(deps.state, params, signal); }
+				catch (error) {
+					return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
+				}
+			}
 			if (params.action === "questions" || params.action === "answer") {
 				return controlSupervisorQuestion({ params: paramsWithResolvedCwd, requestCwd, ctx, deps });
 			}
@@ -157,7 +164,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			if (params.action === "status") {
 				const targetRunId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
 				if (!targetRunId && !params.dir && deps.state.ownedRuns && deps.allowMutatingManagementActions !== false) {
-					try { return ownedRunList(deps.state, params); } catch (error) {
+					try { return await ownedRunList(deps.state, { ...params, signal }); } catch (error) {
 						return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
 					}
 				}

@@ -678,11 +678,11 @@ describe("nested control routing", () => {
 			realClearInterval(handle as NodeJS.Timeout);
 		};
 
-		let shutdownHandler: (() => void) | undefined;
+		let shutdownHandler: (() => void | Promise<void>) | undefined;
 		const makePi = () => ({
 			events: { emit() {}, on() { return () => {}; } },
 			registerTool() {},
-			on(_event: string, handler: () => void) { shutdownHandler = handler; },
+			on(_event: string, handler: () => void | Promise<void>) { shutdownHandler = handler; },
 			getSessionName() { return "child"; },
 		}) as any;
 
@@ -698,7 +698,7 @@ describe("nested control routing", () => {
 
 			// Graceful shutdown clears the active interval and the store entry.
 			assert.equal(typeof shutdownHandler, "function", "session_shutdown handler registered");
-			shutdownHandler!();
+			await shutdownHandler!();
 			assert.ok(cleared.length >= 2, "expected active interval cleared on session_shutdown, got " + cleared.length);
 			assert.equal(globalStore[cleanupKey], undefined, "cleanup store cleared on session_shutdown");
 		} finally {

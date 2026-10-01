@@ -3,7 +3,8 @@ import { Type } from "../shared/native-typebox.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import type { SubagentExecutionResult, SubagentState } from "../shared/types.ts";
 import { activateTools, restoreLazyTools } from "../shared/lazy-tools.ts";
-import { ownedRunView } from "../runs/shared/run-records.ts";
+import { runHistoryIndex } from "../runs/shared/history-index.ts";
+import type { HistoryRunOptions } from "../history/types.ts";
 import { listSupervisorQuestions } from "../runs/shared/supervisor-questions.ts";
 import type { AsyncContext } from "../runs/shared/native-async.ts";
 import { renderSubagentResult } from "../tui/render.ts";
@@ -31,17 +32,29 @@ export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 	guidelines: readonly string[];
 	childSafe?: boolean;
 	keepAdvancedActive?: boolean;
-	listRuns?: (params: { offset?: number; limit?: number }, ctx: ExtensionContext) => SubagentExecutionResult;
+	listRuns?: (params: HistoryRunOptions, ctx: ExtensionContext) => Promise<SubagentExecutionResult>;
 	asyncByDefault: boolean;
-}): () => void {
+}): () => Promise<void> {
 	const { executor, adapt, guidelines, childSafe, asyncByDefault, state } = options;
-	const reconcileRuns = () => {
-		if (pi.getActiveTools().includes("agent_runs")) return;
-		if ([...(state.ownedRuns?.values() ?? [])].some((run) => {
-			const view = ownedRunView(run, state, { readConfiguration: false, includeContinuations: false });
-			return view.state === "live" || view.attention.length > 0;
-		})) activateTools(pi, ["agent_runs"]);
+	let checking: { owner: string | null | undefined; promise: Promise<void> } | undefined;
+	const checkRuns = (): Promise<void> => {
+		if (pi.getActiveTools().includes("agent_runs") || !state.ownedRuns?.size) return Promise.resolve();
+		const owner = state.lastUiContext?.sessionManager.getSessionId() ?? state.currentSessionId;
+		if (checking?.owner === owner) return checking.promise;
+		const promise = Promise.resolve().then(async () => {
+			try {
+				const index = await runHistoryIndex(state);
+				const needed = await index.needsControls();
+				if (state.historyIndex === index && needed) activateTools(pi, ["agent_runs"]);
+			} catch {
+				// An unavailable browse index cannot establish that genuine owned work is inert.
+				if ((state.lastUiContext?.sessionManager.getSessionId() ?? state.currentSessionId) === owner && state.ownedRuns?.size) activateTools(pi, ["agent_runs"]);
+			} finally { if (checking?.promise === promise) checking = undefined; }
+		});
+		checking = { owner, promise };
+		return promise;
 	};
+	const reconcileRuns = () => checkRuns();
 	const onRunsChanged = state.onRunsChanged;
 	state.onRunsChanged = () => { reconcileRuns(); onRunsChanged?.(); };
 	const lifecycle = subagentToolLifecycle(executor, adapt);
@@ -58,7 +71,9 @@ export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 			const request = worktree
 				? { tasks: [task], worktree: true, context, async: background, cwd: task.cwd }
 				: { ...task, context, async: background };
-			return adapt(await executor.execute(id, normalizeSubagentParamsLike(request), signal, onUpdate, ctx), ctx);
+			const result = await executor.execute(id, normalizeSubagentParamsLike(request), signal, onUpdate, ctx);
+			await checkRuns();
+			return adapt(result, ctx);
 		},
 		renderResult: renderSubagentResult,
 	});
@@ -66,12 +81,12 @@ export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 		...lifecycle,
 		name: "agent_runs",
 		label: "Agent Runs",
-		description: `List ${childSafe ? "only this child's directly owned" : "your delegated"} runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; async:false waits for its actual result. Saved continuations keep settings unless agent selects a current profile; model overrides win. Live guidance never mutates model or acceptance. profiles lists roles, sources, context and model/thinking/fallback defaults. History survives reload.`,
+		description: `List ${childSafe ? "only this child's directly owned" : "your delegated"} runs across working directories (questions/failures, then live work, then unreviewed results; 20 per page). Filter globally by agent/state/text, sort, and page with the returned cursor. history reads 100 bounded native-entry previews; search finds saved visible text using words or quoted phrases, not operators or prefixes. Browse freshness is not completion or delivery proof. Inspect concise results, paths and continuations; full:true includes the full task/configuration. Answer durable questions, nudge, stop, continue, or save parent-only review. Review notes are not sent to children; put actionable instructions in continue/nudge. Inspect/review/nudge never restart finished work. Continue/answer can launch a saved child; async:false waits for its actual result. Saved continuations keep settings unless agent selects a current profile; model overrides win. Live guidance never mutates model or acceptance. profiles lists roles, sources, context and model/thinking/fallback defaults. History survives reload.`,
 		parameters: AgentRunsParams,
 		async execute(id, params, signal, onUpdate, ctx) {
 			const normalized = normalizeEverydayParams(params, true);
-			if (params.action === "list" && !params.id && options.listRuns) return adapt(options.listRuns(normalized, ctx), ctx);
-			const actions = { list: "status", inspect: "status", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list", questions: "questions", answer: "answer", review: "review" };
+			if (params.action === "list" && !params.id && options.listRuns) return adapt(await options.listRuns({ ...normalized, signal }, ctx), ctx);
+			const actions = { list: "status", inspect: "status", history: "history", search: "search", nudge: "nudge", stop: "interrupt", continue: "resume", profiles: "list", questions: "questions", answer: "answer", review: "review" };
 			return adapt(await executor.execute(id, normalizeSubagentParamsLike({ ...normalized, action: actions[params.action] }), signal, onUpdate, ctx), ctx);
 		},
 		renderResult: renderSubagentResult,
@@ -91,25 +106,26 @@ export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 			const added = !pi.getActiveTools().includes(advanced ? "subagent" : "agent_runs");
 			activateTools(pi, advanced ? ["agent_runs", "subagent"] : ["agent_runs"]);
 			return {
-				content: [{ type: "text" as const, text: advanced ? [`Subagent ${added ? "enabled" : "already enabled"}.`, ...guidelines.map((line) => `- ${line}`)].join("\n") : "Run controls enabled. Use agent_runs({action:'profiles'}) to discover agents or agent_runs({action:'list'}) for owned history." }],
+				content: [{ type: "text" as const, text: advanced ? [`Subagent ${added ? "enabled" : "already enabled"}.`, ...guidelines.map((line) => `- ${line}`)].join("\n") : "Run controls enabled. Use agent_runs({action:'profiles'}) to discover agents; list, history, or search browses owned saved work." }],
 				details: {},
 			};
 		},
 	});
-	const reconcile = (ctx: ExtensionContext) => {
+	const reconcile = async (ctx: ExtensionContext) => {
 		const pending = (ctx as AsyncContext).getPendingToolCalls?.() ?? [];
 		activateTools(pi, pending.filter((call) => ["subagent", "delegate", "agent_runs"].includes(call.toolName)).map((call) => call.toolName));
 		if (options.keepAdvancedActive) activateTools(pi, ["subagent"]);
 		if (pending.some((call) => ["subagent", "delegate", "agent_runs"].includes(call.toolName))) activateTools(pi, ["agent_runs"]);
-		reconcileRuns();
+		await checkRuns();
 		if (!pi.getActiveTools().includes("agent_runs") && listSupervisorQuestions(ctx.sessionManager.getSessionId()).some((question) => question.state === "awaiting_input" || question.state === "answer_pending")) activateTools(pi, ["agent_runs"]);
 	};
-	const restore = (_event: unknown, ctx: ExtensionContext) => {
+	const restore = async (_event: unknown, ctx: ExtensionContext) => {
 		restoreLazyTools(pi, ctx, "load_subagent", ["subagent", "agent_runs"]);
-		reconcile(ctx);
+		await reconcile(ctx);
 	};
 	pi.on("session_start", restore);
 	pi.on("session_tree", restore);
 	pi.on("session_compact", (_event, ctx) => reconcile(ctx));
+	pi.on("before_agent_start", (_event, ctx) => reconcile(ctx));
 	return reconcileRuns;
 }
