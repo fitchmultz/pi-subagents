@@ -13,6 +13,7 @@
 - Share verified parent receipt snapshots within synchronous recovery batches only, refreshing after appends and never across awaits. Poll visited terminal Agents metadata only when relevant or changed, retaining drafts, unread/results and full selected history.
 
 ### Fixed
+- Retain legacy-only completion files until matching verified parent publication, not native queue admission. Recover an accepted but unpersisted completion after a process crash without replaying a published receipt or fabricating run ownership.
 - Keep session startup responsive while recovering saved runs, unanswered questions and Intercom receipts. Replay recovery and queued message delivery in small batches and use asynchronous retention cleanup without changing ownership, verified delivery or the host's performance-warning budget. Preserve directory snapshots, session-name registration and in-flight completions across asynchronous startup and shutdown.
 - Keep production-only history workers free of parent-only fork imports and resolve terminal stripping through the selected host, without loading another Pi runtime into the parent. Keep unavailable history quiet during background refreshes, with explicit F5 or run-list/history/search retries.
 - Serialize shared history staging across processes, verify publication before advancing cursors, and rebuild older derived indexes that may have omitted records. Recover interrupted writers without lock-file expiry or changing native journals.

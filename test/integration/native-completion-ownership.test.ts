@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -27,6 +28,24 @@ const { default: registerRoot } = await import("../../src/extension/index.ts");
 const { default: registerChild } = await import("../../src/extension/fanout-child.ts");
 const { createCompletionDelivery } = await import("../../src/runs/background/completion-delivery.ts");
 const { registerParentUsage } = await import("../../src/runs/shared/parent-usage.ts");
+
+test("legacy-only completion survives a native queued crash and fresh-process recovery without replay or fabricated ownership", () => {
+	const proofRoot = fs.mkdtempSync(path.join(root, "cold-"));
+	const run = (mode: string) => spawnSync(process.execPath, [path.resolve("test/fixtures/native-legacy-completion.mjs"), mode, proofRoot, process.cwd(), sdkRoot], { encoding: "utf8", timeout: 15_000 });
+	const readProof = (mode: string) => JSON.parse(fs.readFileSync(path.join(proofRoot, `${mode}-proof.json`), "utf8"));
+	const queued = run("queue");
+	assert.equal(queued.error, undefined);
+	assert.equal(queued.signal, "SIGKILL", queued.stderr);
+	assert.deepEqual(readProof("queue"), { mode: "queue", hintExists: true, canonicalExists: false, queued: true, persistedNotices: 0, ownedEntries: 0, sent: 1, calls: 1, errors: [] },
+		"accepted native steering retains the sole legacy result until publication");
+	for (const mode of ["reopen", "again"]) {
+		const result = run(mode);
+		assert.equal(result.error, undefined);
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(readProof(mode), { mode, ...(mode === "reopen" ? { hintExists: false } : {}), sent: mode === "reopen" ? 1 : 0,
+			calls: mode === "reopen" ? 1 : 0, persistedNotices: 1, ownedEntries: 0, errors: [] });
+	}
+});
 
 for (const childSafe of [false, true]) for (const drop of [false, true]) for (const unowned of [false, true]) test(`${childSafe ? "child-safe" : "root"} ${unowned ? "unowned legacy" : "owned"} queued completion ${drop ? "retries once after being dropped" : "survives streaming beyond the TTL"}${!childSafe && !drop ? " and abort/reload" : ""}`, async (t) => {
 	const previousChild = process.env.PI_SUBAGENT_CHILD, previousFanout = process.env.PI_SUBAGENT_FANOUT_CHILD;
@@ -97,6 +116,12 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 			success: true, timestamp: Date.now(), summary: "QUEUED_RESULT", results: [{ agent: "worker", success: true, exitCode: 0, output: "QUEUED_RESULT" }] };
 		const notice = path.join(RESULTS_DIR, `${runId}.json`);
 		const recreateNotice = () => fs.writeFileSync(notice, JSON.stringify(result));
+		const awaitHintReconciliation = async (reason: string) => {
+			if (unowned) {
+				await delay(50);
+				assert.ok(fs.existsSync(notice), "a queued legacy-only result stays recoverable until its actual published receipt");
+			} else await until(() => !fs.existsSync(notice), reason);
+		};
 		if (!unowned) saveRunStatus(runId, { runtimeVersion: 2, runId, mode: "single", sessionId: manager.getSessionFile(), state: "complete",
 			startedAt: Date.now(), lastUpdate: Date.now(), cwd, steps: [{ agent: "worker", status: "complete" }] });
 		if (unowned) recreateNotice(); else saveAsyncRunResult(runId, result);
@@ -149,7 +174,7 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 		if (!childSafe && !drop) {
 			recreateNotice();
 			t.mock.timers.tick(3000);
-			await until(() => !fs.existsSync(notice), "the first watcher remains active before abort/reload");
+			await awaitHintReconciliation("the first watcher remains active before abort/reload");
 			assert.equal(sent.length, 1);
 			await session.abort();
 			await prompt;
@@ -157,14 +182,14 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 			assert.equal(session.agent.hasQueuedMessages(), true, "abort settles without consuming the native custom queue");
 			recreateNotice();
 			t.mock.timers.tick(11 * 60_000);
-			await until(() => !fs.existsSync(notice), "the active aborted owner's watcher reconciles recreated input");
+			await awaitHintReconciliation("the active aborted owner's watcher reconciles recreated input");
 			assert.equal(sent.length, 1, "an idle aborted parent must not duplicate its still-pending custom message");
 			assert.equal(factoryRuns, 1);
 			await session.reload();
 			assert.equal(factoryRuns, 2, "native reload replaces the extension controller");
 			recreateNotice();
 			t.mock.timers.tick(11 * 60_000);
-			await until(() => !fs.existsSync(notice), "the replacement watcher actively reconciles recreated input");
+			await awaitHintReconciliation("the replacement watcher actively reconciles recreated input");
 			await session.waitForIdle();
 			assert.equal(sent.length, 1, "reload preserves the actual pending admission rather than sending a second notice");
 			assert.equal(notices().length, 0, "native reload has not consumed the pending completion");
@@ -297,6 +322,7 @@ for (const scenario of [
 			await until(() => Boolean(projection().delivery?.entryId), "the owner reconciles its published receipt");
 			assert.equal(projection().delivery.entryId, notices()[0].id);
 		}
+		if (scenario.unowned) await until(() => !fs.existsSync(hint), "the published legacy receipt, not fallback queue admission, retires the sole result");
 		assert.equal(fs.existsSync(hint), false);
 		assert.equal(fs.existsSync(path.join(asyncDir, "result.json")), !scenario.unowned);
 		assert.deepEqual(errors, []);

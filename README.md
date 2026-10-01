@@ -267,7 +267,7 @@ When you finish implementing, run a reviewer subagent before summarizing.
 
 ## Host capabilities and result delivery
 
-Ordinary background calls return a durable launch receipt. The detached owner keeps working, saves its result, and notifies the same saved parent. `continue`/`answer` without `async: false` also return immediate receipts. Completion is appended separately through Intercom when available, otherwise `subagent-notify`; a published parent message, not broker or queue acceptance, prevents repeat delivery after reload/restart.
+Ordinary background calls return a durable launch receipt. The detached owner keeps working, saves its result, and notifies the same saved parent. `continue`/`answer` without `async: false` also return immediate receipts. Completion is appended separately through Intercom when available, otherwise `subagent-notify`; a published parent message, not broker or queue acceptance, prevents repeat delivery after reload/restart. When a legacy notification file is the only saved result, it stays in its existing location until a matching verified parent receipt is published, so a lost native queue cannot erase it.
 
 Use `async: false` or `--fg` when the calling tool must wait for the result, including one-shot callers that need it on stdout. These waits are abort-aware, release for important Intercom attention or durable questions, and never adopt another parent's work. Stopping a wait on existing work leaves the child alive; cancellation of newly launched foreground work requests cancellation without claiming process exit.
 

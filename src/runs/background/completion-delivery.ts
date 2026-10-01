@@ -72,6 +72,8 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 	};
 	const consumedReceipt = (index: ReturnType<typeof indexReceipts>, runId: string) => index.completed.get(runId)
 		?? (state.ownedRuns?.get(runId)?.mode === "single" ? index.singles.get(runId) : undefined);
+	const publishedReceipt = (index: ReturnType<typeof indexReceipts>, runId: string, key: string) => consumedReceipt(index, runId)
+		?? index.completions.get(`${runId}\0${key}`) ?? (key.startsWith("completion:legacy:") ? index.legacy.get(runId) : undefined);
 	const completedCursor = new SessionEntryCursor();
 	const receiptEntryIds = new Set<string>();
 	const readParentChanges = () => {
@@ -117,8 +119,7 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 	const reconcileDelivery = (runId: string, key: string, accounting = true): boolean => {
 		const run = state.ownedRuns?.get(runId);
 		const index = readReceipts(), saved = index.saved;
-		const receipt = consumedReceipt(index, runId) ?? index.completions.get(`${runId}\0${key}`)
-			?? (key.startsWith("completion:legacy:") ? index.legacy.get(runId) : undefined);
+		const receipt = publishedReceipt(index, runId, key);
 		if (receipt) {
 			queued.delete(key);
 			state.completionSeen.delete(key);
@@ -156,7 +157,8 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 		}
 		return false;
 	};
-	const watcher = createResultWatcher(pi, state, RESULTS_DIR, { reconcileDelivery, withReceiptBatch });
+	const watcher = createResultWatcher(pi, state, RESULTS_DIR, { reconcileDelivery, withReceiptBatch,
+		isCompletionPublished: (runId, key) => Boolean(publishedReceipt(readReceipts(), runId, key)) });
 	let unsubscribe: (() => void) | undefined, unsubscribeNotify: (() => void) | undefined;
 	const markQueued = (runId: string, key: string, channel: "notification" | "intercom" = "notification") => {
 		const run = state.ownedRuns?.get(runId);

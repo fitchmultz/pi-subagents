@@ -37,6 +37,7 @@ type ResultWatcherTimers = {
 
 type ResultWatcherDeps = {
 	reconcileDelivery?: (runId: string, completionKey: string, accounting?: boolean) => boolean;
+	isCompletionPublished?: (runId: string, completionKey: string) => boolean;
 	withReceiptBatch?: (work: () => void) => void;
 	fs?: ResultWatcherFs;
 	timers?: ResultWatcherTimers;
@@ -145,6 +146,9 @@ export function createResultWatcher(
 			}
 			foreignResults.delete(resultPath);
 			const consumeNotification = () => {
+				// A legacy hint can be the only saved result. Native queue admission
+				// is not publication; retain it until the verified parent receipt exists.
+				if (!durableFile && !canonicalPath && deps.isCompletionPublished && !deps.isCompletionPublished(runId, completionKey)) return;
 				const hint = durableFile ? path.join(resultsDir, `${runId}.json`) : resultPath;
 				if (fsApi.existsSync(hint)) fsApi.unlinkSync(hint);
 			};
