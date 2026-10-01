@@ -1,5 +1,4 @@
 import * as fs from "node:fs";
-import { createHash, type Hash } from "node:crypto";
 import * as parserModule from "stream-json/core/parser.js";
 import type { Token } from "stream-json/core/parser.js";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -11,6 +10,7 @@ export function entryMetadata(manager: { getEntries(): SessionEntry[] }): Iterab
 }
 export type Projection = (path: readonly (string | number)[], root?: JsonObject) => boolean | number;
 type KeyLimit = (parentPath: readonly (string | number)[], root?: JsonObject) => number;
+export interface ProjectionLimits { depth: number; nodes: number; arrayLength: number; keyLength: number }
 export interface JournalRecord { value: JsonObject; start: number; end: number }
 export type JournalPolicy = "strict" | "live" | "inspect";
 
@@ -28,17 +28,22 @@ export class JsonProjection {
 	private key = false;
 	private keyLimit = 4096;
 	private keys: KeyLimit;
+	private limits?: ProjectionLimits;
+	private nodes = 0;
 	value?: JsonObject;
 	private select: Projection;
 	private stringChunk?: (path: readonly (string | number)[], text: string, root?: JsonObject) => void;
 	constructor(select: Projection, stringChunk?: (path: readonly (string | number)[], text: string, root?: JsonObject) => void,
-		keys: KeyLimit = () => 4096) { this.select = select; this.stringChunk = stringChunk; this.keys = keys; }
+		keys: KeyLimit = () => 4096, limits?: ProjectionLimits) { this.select = select; this.stringChunk = stringChunk; this.keys = keys; this.limits = limits; }
 
 	private selected(path: (string | number)[]): boolean | number {
-		return this.stack.length && this.stack.at(-1)!.value === undefined ? false : this.select(path, this.value);
+		const keep = this.stack.length && this.stack.at(-1)!.value === undefined ? false : this.select(path, this.value);
+		if (keep && this.limits && ++this.nodes > this.limits.nodes) throw new RangeError("JSON projection exceeds its assembled-node budget.");
+		return keep;
 	}
 	private nextPath(): (string | number)[] {
 		const parent = this.stack.at(-1);
+		if (this.limits && (this.stack.length > this.limits.depth || parent && parent.index >= this.limits.arrayLength)) throw new RangeError("JSON projection exceeds its depth or array-position budget.");
 		return parent ? [...parent.path, Array.isArray(parent.value) || parent.index >= 0 ? parent.index++ : parent.key] : [];
 	}
 	private put(path: (string | number)[], value: any): void {
@@ -74,6 +79,7 @@ export class JsonProjection {
 				case "stringChunk": case "numberChunk":
 					if (this.key) {
 						const parent = this.stack.at(-1)!;
+						if (parent.value !== undefined && this.limits && parent.key.length + token.value.length > this.limits.keyLength) throw new RangeError("JSON projection exceeds its property-key budget.");
 						if (parent.key.length < this.keyLimit) parent.key += token.value.slice(0, this.keyLimit - parent.key.length);
 					} else if (this.scalar) {
 						if (token.name === "stringChunk") this.stringChunk?.(this.scalar.path, token.value, this.value);
@@ -112,15 +118,16 @@ export class JournalFrames {
 	private stringChunk?: ConstructorParameters<typeof JsonProjection>[1];
 	private keys?: KeyLimit;
 	private requireNewline: boolean;
+	private limits?: ProjectionLimits;
 	constructor(select: Projection, record: (record: JournalRecord) => void,
 		policy: JournalPolicy = "strict", offset = 0,
 		malformed?: (start: number, end: number, error: unknown) => void,
-		stringChunk?: ConstructorParameters<typeof JsonProjection>[1], keys?: KeyLimit, requireNewline = policy === "live") {
+		stringChunk?: ConstructorParameters<typeof JsonProjection>[1], keys?: KeyLimit, requireNewline = policy === "live", limits?: ProjectionLimits) {
 		this.select = select; this.record = record; this.policy = policy; this.malformed = malformed;
 		this.stringChunk = stringChunk; this.keys = keys;
-		this.requireNewline = requireNewline;
+		this.requireNewline = requireNewline; this.limits = limits;
 		this.start = this.offset = offset;
-		this.projection = new JsonProjection(select, stringChunk, keys);
+		this.projection = new JsonProjection(select, stringChunk, keys, limits);
 	}
 	private part(bytes: Buffer): void {
 		if (!this.nonblank && bytes.some((byte) => ![9, 10, 13, 32].includes(byte))) this.nonblank = true;
@@ -142,7 +149,7 @@ export class JournalFrames {
 			} else record = { value: value!, start, end };
 		}
 		this.start = end;
-		this.projection = new JsonProjection(this.select, this.stringChunk, this.keys);
+		this.projection = new JsonProjection(this.select, this.stringChunk, this.keys, this.limits);
 		this.decoder = new TextDecoder("utf8", { fatal: true });
 		this.error = undefined;
 		this.nonblank = false;
@@ -244,28 +251,16 @@ export class NativeJournal {
 	readonly records: NativeRecord[] = [];
 	readonly byId = new Map<string, NativeRecord>();
 	readonly stamp: string;
-	readonly identity: string;
 	readonly end: number;
-	private readonly publishedEnd: number;
-	private readonly prefixHash?: Hash;
-	private readonly policy: JournalPolicy;
-	private readonly requireNewline: boolean;
 	readonly file: string;
-	constructor(file: string, policy: JournalPolicy = "inspect", requireNewline = policy === "live", previous?: NativeJournal, verifyPrefix = false) {
-		this.file = file; this.policy = policy; this.requireNewline = requireNewline;
+	constructor(file: string, policy: JournalPolicy = "inspect", requireNewline = policy === "live") {
+		this.file = file;
 		const fd = fs.openSync(file, "r");
 		try {
 			const stat = fs.fstatSync(fd, { bigint: true });
-			this.stamp = journalStamp(stat); this.identity = `${stat.dev}:${stat.ino}`; this.end = Number(stat.size);
-			const candidate = verifyPrefix && requireNewline && previous?.prefixHash && previous.requireNewline && previous.policy === policy && previous.file === file && previous.identity === this.identity && previous.end < this.end;
-			const prefix = candidate ? this.hashRange(fd, previous.publishedEnd) : undefined;
-			const append = candidate && prefix!.copy().digest("hex") === previous.prefixHash.copy().digest("hex");
-			if (append) {
-				this.records = previous.records.slice();
-				this.byId = new Map(previous.byId);
-			}
-			let parent: string | null = this.records.findLast((record) => record.value.type !== "session")?.value.id ?? null;
-			this.publishedEnd = scanJournal(fd, nativeProjection, (record) => {
+			this.stamp = journalStamp(stat); this.end = Number(stat.size);
+			let parent: string | null = null;
+			scanJournal(fd, nativeProjection, (record) => {
 				const entry = record.value;
 				if (entry.type !== "session") {
 					// Read-only legacy v1 presentation uses stable offset IDs, without rewriting the source.
@@ -274,30 +269,10 @@ export class NativeJournal {
 					parent = entry.id;
 				}
 				this.records.push(record as NativeRecord); this.byId.set(entry.id, record as NativeRecord);
-			}, { policy, requireNewline, start: append ? previous.publishedEnd : 0, end: this.end });
-			if (verifyPrefix) this.prefixHash = this.hashRange(fd, this.publishedEnd, append ? previous.publishedEnd : 0, append ? prefix : undefined);
+			}, { policy, requireNewline, end: this.end });
 			if (journalStamp(fs.fstatSync(fd, { bigint: true })) !== this.stamp) throw new Error("Journal changed while indexing; refresh history.");
 		} finally { fs.closeSync(fd); }
 		if (this.records[0]?.value.type !== "session") throw new Error("Not a readable native Pi session.");
-	}
-	// ponytail: mutable journals require linear byte verification. Only appended
-	// records are tokenized; a native immutable-prefix contract could remove hashing.
-	private hashRange(fd: number, end: number, start = 0, hash = createHash("sha256")): Hash {
-		const bytes = Buffer.allocUnsafe(64 * 1024);
-		for (let offset = start; offset < end;) {
-			const count = fs.readSync(fd, bytes, 0, Math.min(bytes.length, end - offset), offset);
-			if (!count) throw new Error("Journal truncated while verifying history.");
-			hash.update(bytes.subarray(0, count)); offset += count;
-		}
-		return hash;
-	}
-	hasPrefix(previous: NativeJournal): boolean {
-		if (!previous.prefixHash || this.identity !== previous.identity || this.end < previous.end) return false;
-		const fd = fs.openSync(this.file, "r");
-		try {
-			return journalStamp(fs.fstatSync(fd, { bigint: true })) === this.stamp
-				&& this.hashRange(fd, previous.publishedEnd).digest("hex") === previous.prefixHash.copy().digest("hex");
-		} finally { fs.closeSync(fd); }
 	}
 	branch(leaf?: string | null, endedAt?: number): NativeRecord[] {
 		if (leaf === null) return [];

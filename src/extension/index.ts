@@ -30,6 +30,7 @@ import { SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { OWNED_RUN_ENTRY, rememberOwnedRun, restoreOwnedRuns } from "../runs/shared/run-records.ts";
+import { closeRunHistory, startRunHistory } from "../runs/shared/history-index.ts";
 import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { createCompletionDelivery } from "../runs/background/completion-delivery.ts";
 import { onNativeCheckpoint } from "../shared/native-checkpoint.ts";
@@ -277,6 +278,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 	const runtimeCleanup = () => {
 		agentView?.dispose();
+		void closeRunHistory(state).catch((error) => console.error("Could not close subagent history:", error));
 		completionDelivery.stop();
 		if (state.poller) {
 			clearInterval(state.poller);
@@ -433,7 +435,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		...nativeAsyncLifecycle,
 		name: SUBAGENT_TOOL_NAME,
 		label: "Subagent",
-		description: `Delegate bounded work to configured Pi subagents, chains, or parallel reviewers; manage agent definitions; inspect/control async runs. Use exactly one execution mode (agent, tasks, or chain) or one management/control action. Before execution, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled. Parallel tasks support output?,reads?,progress?. maxOutput accepts { bytes?: number, lines?: number }. Prefer acceptance for goal/spec handoffs and status/resume/interrupt/extend/nudge for active runs. Exact status is concise by default; full:true includes the full task/configuration. Review notes are parent-only, not sent to children; put actionable instructions in resume/nudge. Resume/answer preserves saved settings unless agent selects a current profile (including model/thinking/fallbacks); a separate model override wins. Live guidance never mutates model or acceptance.`,
+		description: `Delegate bounded work to configured Pi subagents, chains, or parallel reviewers; manage agent definitions; inspect/control async runs. Indexed status lists support global agent/state/text filters and sort/cursors; history pages bounded native previews and search finds saved visible words or one quoted phrase. Browse freshness is not canonical proof. Use exactly one execution mode (agent, tasks, or chain) or one management/control action. Before execution, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled. Parallel tasks support output?,reads?,progress?. maxOutput accepts { bytes?: number, lines?: number }. Prefer acceptance for goal/spec handoffs and status/resume/interrupt/extend/nudge for active runs. Exact status is concise by default; full:true includes the full task/configuration. Review notes are parent-only, not sent to children; put actionable instructions in resume/nudge. Resume/answer preserves saved settings unless agent selects a current profile (including model/thinking/fallbacks); a separate model override wins. Live guidance never mutates model or acceptance.`,
 		parameters: SubagentParams,
 
 		async execute(id, params, signal, onUpdate, ctx) {
@@ -564,6 +566,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	function resetSessionState(ctx: ExtensionContext) {
 		pendingIdleNotices.clear();
 		agentView?.dispose();
+		void closeRunHistory(state).catch((error) => console.error("Could not close subagent history:", error));
 		ensureAccessibleDir(RESULTS_DIR);
 		ensureAccessibleDir(ASYNC_DIR);
 		state.baseCwd = ctx.cwd;
@@ -577,7 +580,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			console.error("Failed to restore active async jobs:", error);
 			resetJobs(ctx);
 		}
-		reconcileRunTools();
+		startRunHistory(state, ctx);
+		void reconcileRunTools();
 		agentView?.start(ctx);
 		cleanupOldRunStorage();
 		cleanupOldChainDirs();
@@ -587,12 +591,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		completionDelivery.start();
 	}
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		if (!eventUnsubscribes.length) {
 			eventUnsubscribes = subscribeEvents();
 			globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
 		}
 		resetSessionState(ctx);
+		await reconcileRunTools();
 	});
 
 	onNativeCheckpoint(pi, async (event, ctx) => {
@@ -613,8 +618,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		return { sleepReady: true };
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", async () => {
 		agentView?.dispose();
+		await closeRunHistory(state);
 		for (const unsubscribe of eventUnsubscribes) {
 			try {
 				unsubscribe();

@@ -20,6 +20,7 @@ import { type Details, type SubagentExecutionResult, type SubagentState } from "
 import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { OWNED_RUN_ENTRY, ownedRunList, restoreOwnedRuns } from "../runs/shared/run-records.ts";
+import { closeRunHistory, startRunHistory } from "../runs/shared/history-index.ts";
 import { createCompletionDelivery } from "../runs/background/completion-delivery.ts";
 import { onNativeCheckpoint } from "../shared/native-checkpoint.ts";
 import { subagentCheckpointBlocker } from "../runs/shared/checkpoint.ts";
@@ -217,9 +218,11 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		state.lastUiContext = ctx;
 		if (state.currentSessionId === sessionId) return;
 		completionDelivery.stop();
+		void closeRunHistory(state).catch((error) => console.error("Could not close child history:", error));
 		state.foregroundRuns?.clear();
 		restoreOwnedRuns(state, ctx);
 		state.currentSessionId = sessionId;
+		startRunHistory(state, ctx);
 		completionDelivery.start();
 	};
 	pi.on("session_start", (_event, ctx) => {
@@ -281,7 +284,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		description: [
 			"Delegate to subagents from child-safe fanout mode.",
 			...acceptanceGuidelines,
-			"Allowed management/control actions: list, get, status, nudge, interrupt, extend, resume, questions, answer, review, doctor. Exact status is concise; full:true includes the full task/configuration. Review notes are parent-only, not sent to children. Put actionable instructions in resume/nudge. Resume/answer overrides do not amend live acceptance.",
+			"Allowed management/control actions: list, get, status, history, search, nudge, interrupt, extend, resume, questions, answer, review, doctor. History/search browse only directly owned saved work; bounded previews and index freshness are not canonical proof. Exact status is concise; full:true includes the full task/configuration. Review notes are parent-only, not sent to children. Put actionable instructions in resume/nudge. Resume/answer overrides do not amend live acceptance.",
 			"Agent config mutation actions create, update, and delete are blocked in this mode.",
 		].join("\n"),
 		promptSnippet: "Delegate nested child-safe subagent work from an explicitly allowed fanout child.",
@@ -296,14 +299,15 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	pi.registerTool(tool);
 
 	const controlInboxTimer = startNestedControlInboxListener(pi, state);
-	const clearControlInboxTimer = (): void => {
+	const clearControlInboxTimer = (): Promise<void> => {
 		if (controlInboxTimer) clearInterval(controlInboxTimer);
 		completionDelivery.stop();
+		return closeRunHistory(state);
 	};
 	globalStore[controlInboxCleanupStoreKey] = clearControlInboxTimer;
 
-	pi.on("session_shutdown", () => {
-		clearControlInboxTimer();
+	pi.on("session_shutdown", async () => {
+		await clearControlInboxTimer();
 		if (globalStore[controlInboxCleanupStoreKey] === clearControlInboxTimer) {
 			delete globalStore[controlInboxCleanupStoreKey];
 		}

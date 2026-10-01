@@ -74,10 +74,17 @@ it("native stop records the agent process exit separately from real bash/descend
 	assert.ok(result.agentProcessExit, "real process exit evidence must be retained");
 	assert.ok(result.agentProcessExit.code !== 0 || result.agentProcessExit.signal, "the stopped process outcome is not manufactured exit zero");
 	await waitFor(() => !questionProcessAlive({ pid: shellPid }) && !questionProcessAlive({ pid: descendantPid }), "the known test shell and descendant must exit");
-	const { NativeAgentHistory } = await import("../../src/tui/agent-history.ts");
-	const history = new NativeAgentHistory().read(result.sessionFile);
-	const command = history.items.find((item) => item.kind === "tool" && item.title.startsWith("bash"));
-	assert.ok(command);
-	if (command.title.includes("result not recorded")) assert.match(command.details!, /exit is unconfirmed/);
-	fs.writeFileSync(path.join(cwd, "stop-evidence.json"), JSON.stringify({ result, shellPid, descendantPid, knownPidsGone: true, history }, null, 2));
+	const { SubagentHistoryIndex } = await import("../../src/history/index.ts");
+	const { indexedHistory } = await import("../../src/tui/agent-history.ts");
+	const run = state.ownedRuns.get(id)!;
+	const index = new SubagentHistoryIndex(path.join(root, "a"));
+	try {
+		await index.setOwner({ ownerSessionId: run.ownerSessionId, runs: [run] });
+		await index.refresh(run.runId);
+		const { history } = await indexedHistory(index, { runId: run.runId, index: 0, terminalEntryId: result.terminalEntryId });
+		const command = history.items.find((item) => item.kind === "tool" && item.title.startsWith("bash"));
+		assert.ok(command);
+		if (command.title.includes("result not recorded")) assert.match(command.details!, /exit is unconfirmed/);
+		fs.writeFileSync(path.join(cwd, "stop-evidence.json"), JSON.stringify({ result, shellPid, descendantPid, knownPidsGone: true, history }, null, 2));
+	} finally { await index.close(); }
 });

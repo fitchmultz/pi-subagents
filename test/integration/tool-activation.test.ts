@@ -5,7 +5,8 @@ import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { ASYNC_DIR, SLASH_SUBAGENT_REQUEST_EVENT, SLASH_SUBAGENT_RESPONSE_EVENT } from "../../src/shared/types.ts";
 import { PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT } from "../../src/slash/prompt-template-bridge.ts";
-import { createSupervisorQuestion, QUESTIONS_DIR, saveQuestionOwner } from "../../src/runs/shared/supervisor-questions.ts";
+import { createSupervisorQuestion, QUESTIONS_DIR, saveQuestionOwner, saveQuestionContract } from "../../src/runs/shared/supervisor-questions.ts";
+import { OWNED_RUN_ENTRY, saveForegroundRun } from "../../src/runs/shared/run-records.ts";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import { getModel } from "@earendil-works/pi-ai/compat";
@@ -23,7 +24,7 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const extensionPath = path.join(projectRoot, "src/extension/index.ts");
 
 async function withSdkSession(
-	options: Pick<CreateAgentSessionOptions, "tools" | "excludeTools">,
+	options: Pick<CreateAgentSessionOptions, "tools" | "excludeTools" | "sessionManager">,
 	check: (session: AgentSession, events: ReturnType<typeof createEventBus>) => Promise<void> | void,
 ): Promise<void> {
 	const agentDir = createTempDir("pi-subagent-sdk-tools-");
@@ -178,6 +179,55 @@ describe("subagent lazy activation with SDK tool filters", () => {
 				fs.rmSync(path.join(QUESTIONS_DIR, `${runId}-other`), { recursive: true, force: true });
 			}
 		});
+	});
+
+	it("registered history and search retain owned paging, validated input and reload through both tool routes", async () => {
+		const directory = createTempDir("pi-subagents-history-tools-");
+		const parent = SessionManager.inMemory(projectRoot), child = SessionManager.create(projectRoot, directory);
+		const runId = `history-${parent.getSessionId()}`;
+		try {
+			for (let number = 0; number < 140; number++) child.appendMessage({ role: "user", content: number === 10 ? "uniqueregisteredword saved evidence" : `Saved activity ${number}`, timestamp: Date.now() });
+			const source = child.getSessionFile()!;
+			saveQuestionOwner(runId, parent.getSessionId());
+			saveQuestionContract(runId, 0, { task: "Read-only archive", sessionFile: source });
+			saveForegroundRun({ runId, mode: "single", cwd: projectRoot, results: [{ agent: "worker", task: "Read-only archive", sessionFile: source, exitCode: 0, finalOutput: "Saved result", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } }] });
+			parent.appendCustomEntry(OWNED_RUN_ENTRY, { runId, rootRunId: runId, ownerSessionId: parent.getSessionId(), source: "foreground", mode: "single", cwd: projectRoot, task: "Read-only archive", startedAt: Date.now(), children: [{ agent: "worker", index: 0, sessionFile: source }] });
+			const before = fs.readFileSync(source);
+			await withSdkSession({ sessionManager: parent }, async (session) => {
+				await activeTool(session, "load_subagent")!.execute("load-history", {}, new AbortController().signal);
+				for (const name of ["agent_runs", "subagent"]) {
+					const tool = activeTool(session, name)!;
+					let result;
+					const deadline = Date.now() + 10_000;
+					do {
+						result = await tool.execute("history", { action: "history", id: runId, index: 0, limit: 10 }, new AbortController().signal);
+						if (result.details.history?.freshness.state === "current") break;
+						assert.ok(Date.now() < deadline, "registered history catches up without a filesystem fallback");
+						await new Promise((resolve) => setTimeout(resolve, 10));
+					} while (true);
+					assert.equal(result.details.history.count, 140);
+					assert.equal(result.details.history.entries.length, 10);
+					assert.equal(result.details.history.freshness.authoritative, false);
+					const earlier = await tool.execute("earlier", { action: "history", id: runId, index: 0, limit: 10, cursor: result.details.history.previousCursor }, new AbortController().signal);
+					assert.notEqual(earlier.details.history.entries[0].id, result.details.history.entries[0].id);
+					const search = await tool.execute("search", { action: "search", query: "uniqueregisteredword", limit: 1 }, new AbortController().signal);
+					assert.equal(search.details.historySearch.matches.length, 1);
+					assert.equal(search.details.historySearch.matches[0].runId, runId);
+					const denied = await tool.execute("foreign", { action: "history", id: "not-owned", index: 0 }, new AbortController().signal);
+					assert.equal(denied.isError, true);
+					const invalid = await tool.execute("grammar", { action: "search", query: "word*" }, new AbortController().signal);
+					assert.equal(invalid.isError, true);
+					assert.match(JSON.stringify(invalid.content), /operators, punctuation, and prefixes/);
+				}
+				await session.reload();
+				const restored = await activeTool(session, "agent_runs")!.execute("restored-search", { action: "search", id: runId, query: "uniqueregisteredword" }, new AbortController().signal);
+				assert.equal(restored.details.historySearch.matches[0].runId, runId);
+			});
+			assert.deepEqual(fs.readFileSync(source), before, "browse transport never rewrites the native source");
+		} finally {
+			fs.rmSync(path.join(QUESTIONS_DIR, runId), { recursive: true, force: true });
+			removeTempDir(directory);
+		}
 	});
 
 	it("enables the available full tool through Pi's public active-tool API",  async () => {

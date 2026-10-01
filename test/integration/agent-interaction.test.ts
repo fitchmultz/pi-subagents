@@ -21,8 +21,9 @@ process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
 const sdkRoot = process.env.PI_OWNERSHIP_TEST_PACKAGE_ROOT ?? path.dirname(path.dirname(new URL(import.meta.resolve("@earendil-works/pi-coding-agent")).pathname));
 const { SessionManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/session-manager.js")).href);
 const { AgentViewController, AgentConversation } = await import("../../src/tui/agent-view.ts");
-const { NativeAgentHistory, historyItems, withFinalResult } = await import("../../src/tui/agent-history.ts");
-const { JsonProjection } = await import("../../src/shared/journal-reader.ts");
+const { historyItems, withFinalResult } = await import("../../src/tui/agent-history.ts");
+const { getSingleResultOutput } = await import("../../src/shared/utils.ts");
+const { runHistoryIndex, closeRunHistory } = await import("../../src/runs/shared/history-index.ts");
 const { restoreOwnedRuns, ownedRunView, OWNED_RUN_ENTRY } = await import("../../src/runs/shared/run-records.ts");
 const { getRunMetadataDir, readQuestionState, saveRunStatus, saveAsyncRunResult, saveQuestionOwner, saveQuestionContract, createSupervisorQuestion } = await import("../../src/runs/shared/supervisor-questions.ts");
 const { createSubagentExecutor } = await import("../../src/runs/foreground/subagent-executor.ts");
@@ -36,11 +37,12 @@ function setTestKeybindings(t, keys) {
 	setKeybindings(keys); sdkTui.setKeybindings(keys);
 	t.after(() => { setKeybindings(previous); sdkTui.setKeybindings(sdkPrevious); });
 }
-const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 }, turns: 0 };
+const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, turns: 0 };
 function assistant(manager, text: string) { return manager.appendMessage({ role: "assistant", content: [{ type: "text", text }], provider: "fixture", model: "fixture", api: "openai-responses", stopReason: "stop", usage, timestamp: Date.now() }); }
 const plain = (component, width = 90) => component.render(width).map(stripTerminalSequences).join("\n");
 const altLabel = process.platform === "darwin" ? "option" : "Alt";
-function readDetails(view, width = 90): string {
+async function readDetails(view, width = 90): Promise<string> {
+	await until(() => !plain(view, width).includes("Loading selected details"), "selected full native details loaded");
 	view.handleInput("\x1b[H");
 	const pages: string[] = [];
 	let previous = -1;
@@ -75,7 +77,7 @@ function nativeChild(cwd: string, scenario: "streaming" | "tool" | "question") {
 	return { release, restore() { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } } };
 }
 
-function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, executeControl?, profiles = ["worker", "reviewer"].map((name) => makeAgent(name, { completionGuard: false })), theme = uiTheme) {
+async function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, executeControl?, profiles = ["worker", "reviewer"].map((name) => makeAgent(name, { completionGuard: false })), theme = uiTheme) {
 	const cwd = path.join(root, randomUUID()); fs.mkdirSync(cwd);
 	const parent = SessionManager.create(cwd, path.join(cwd, "parent"));
 	assistant(parent, "Parent context stays unchanged");
@@ -131,16 +133,20 @@ function fixture(t, mode: "regular" | "fullscreen" = "regular", children = 1, ex
 	state.onRunsChanged = () => controller.refresh(true);
 	state.persistOwnedRun = (owned) => parent.appendCustomEntry(OWNED_RUN_ENTRY, structuredClone(owned));
 	controller.start(ctx);
-	t.after(() => { controller.dispose(); tui.stop(); if (state.poller) clearInterval(state.poller); for (const timer of state.cleanupTimers.values()) clearTimeout(timer); });
-	return { cwd, parent, run, state, status, childSessions,
+	t.after(async () => { controller.dispose(); tui.stop(); if (state.poller) clearInterval(state.poller); for (const timer of state.cleanupTimers.values()) clearTimeout(timer); await closeRunHistory(state); });
+	const ready = (async () => { const index = await runHistoryIndex(state); await index.refresh(); await controller.refresh(); })();
+	await ready;
+	const result = { ready, cwd, parent, run, state, status, childSessions,
 		get interrupts() { const dir = path.join(run.asyncDir!, "control-requests"); const requests = fs.existsSync(dir) ? fs.readdirSync(dir).map((file) => JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"))) : []; assert.ok(requests.every((request) => request.action === "interrupt" && request.index !== undefined), "selected controls never stop the whole group"); return run.children.map((child) => requests.filter((request) => request.index === child.index).length); }, controller, executor, ctx, pi, tui, terminal, mainEditor, sent, calls, commands, renderers, copied,
 		get overlay() { return overlay; }, get overlayBounds() { return overlayHandle?.getBounds(); }, get strip() { return strip; }, key: `${run.runId}:0`,
-		complete() { saveAsyncRunResult(run.runId, { runtimeVersion: 2, id: run.runId, state: "complete", timestamp: Date.now(), results: run.children.map((child) => ({ agent: child.agent, task: child.task!, success: true, exitCode: 0, finalOutput: "Finished", sessionFile: child.sessionFile, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } })) }); controller.refresh(true); },
+		async complete() { saveAsyncRunResult(run.runId, { runtimeVersion: 2, id: run.runId, state: "complete", timestamp: Date.now(), results: run.children.map((child) => ({ agent: child.agent, task: child.task!, success: true, exitCode: 0, finalOutput: "Finished", sessionFile: child.sessionFile, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } })) }); await refreshFixture(result); },
 	};
+	await refreshFixture(result);
+	return result;
 }
 
-for (const count of [20, 227]) test(`Agents startup shares ${count} transcript indexes and hydrates only requested details beside 8000 unrelated runs`, async (t) => {
-	const f = fixture(t, "regular", count);
+for (const count of [20, 227]) test(`Agents startup asynchronously pages ${count} owned runs and hydrates only selected details beside 8000 unrelated runs`, async (t) => {
+	const f = await fixture(t, "regular", count);
 	f.controller.dispose();
 	f.state.ownedRuns.clear();
 	for (const [index, manager] of f.childSessions.entries()) {
@@ -173,24 +179,25 @@ for (const count of [20, 227]) test(`Agents startup shares ${count} transcript i
 	syncBuiltinESMExports();
 	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 	f.controller.start(f.ctx);
-	assert.equal(reads.length, count, "configuration and history share one captured-descriptor index per file");
-	assert.equal(new Set(reads).size, count);
+	await indexedReady(f);
+	assert.equal(reads.length, 0, "startup never opens a native source on the UI thread");
 	assert.deepEqual(rootListings, [], "known run questions never enumerate global roots");
 	assert.deepEqual(formatted, [], "closed-panel startup does not format raw tool details");
-	assert.equal(f.controller.tasks.length, count);
+	assert.equal(f.controller.tasks.length, Math.min(count, 50));
 	timestampParses = 0;
-	f.controller.refresh(); f.controller.refresh(true);
-	assert.equal(reads.length, count, "unchanged live/forced refreshes reuse the parsed file");
+	await f.controller.refresh(); await f.controller.refresh(true);
+	assert.equal(reads.length, 0, "unchanged live/forced observations stay off-thread");
 	assert.equal(timestampParses, 0, "closed dock refreshes do not rebuild completed conversations");
 	const opening = f.controller.open(f.controller.tasks[0].key);
+	await historyReady(f);
 	plain(f.overlay);
 	for (const item of f.controller.tasks[0].history) displayedItems.add(item);
 	plain(f.overlay); plain(f.overlay);
 	assert.equal(historySerializations, 0, "unchanged conversation renders do not serialize stable message bodies");
-	assert.equal(reads.length, count, "opening one conversation does not reread all child bodies");
+	assert.equal(reads.length, 0, "opening one conversation does not read historical bodies on the UI thread");
 	assert.equal(formatted.length, 0, "ordinary pages do not materialize raw tool details");
 	const tool = f.controller.tasks[0].history.find((item) => item.kind === "tool")!;
-	assert.match(tool.load!().details!, /historyProbe/);
+	assert.match((await tool.load!()).details!, /historyProbe/);
 	assert.equal(formatted.length, 1, "explicitly selected details hydrate only their native records");
 	assert.equal(f.controller.tasks.every((task) => task.child.task?.startsWith("Full assignment")), true);
 	f.overlay.handleInput("\x1b"); await opening;
@@ -198,9 +205,64 @@ for (const count of [20, 227]) test(`Agents startup shares ${count} transcript i
 	t.diagnostic(`${count} children: ${reads.length} transcript reads, ${rootListings.length} global question listings, ${formatted.length} formatted conversations`);
 });
 
-test("Agents predecessor and live continuation reuse both journal indexes across unchanged mixed-mode refreshes", (t) => {
+test("selected Agents controls refresh their own authority without touching unrelated completed histories", async (t) => {
+	const f = await fixture(t, "regular", 25);
+	await f.ready;
+	f.controller.dispose(); f.state.ownedRuns.clear();
+	fs.rmSync(path.join(f.run.asyncDir!, "contracts"), { recursive: true });
+	const unrelated = new Set<string>();
+	for (const [index, manager] of f.childSessions.entries()) {
+		const runId = index === 0 ? f.run.runId : randomUUID();
+		const child = { ...f.run.children[index], index: 0 };
+		const run = { ...f.run, runId, rootRunId: runId, mode: "single", asyncDir: getRunMetadataDir(runId), children: [child] };
+		saveQuestionOwner(runId, run.ownerSessionId);
+		saveQuestionContract(runId, 0, { task: child.task, sessionFile: child.sessionFile });
+		saveRunStatus(runId, { ...f.status, runId, mode: "single", steps: [{ ...f.status.steps[index] }] });
+		if (index) {
+			saveAsyncRunResult(runId, { runtimeVersion: 2, id: runId, state: "complete", timestamp: Date.now(), results: [{ agent: child.agent, task: child.task, sessionFile: child.sessionFile, success: true, exitCode: 0, finalOutput: "Unrelated saved report" }] });
+			unrelated.add(run.asyncDir); unrelated.add(manager.getSessionFile());
+		}
+		f.state.ownedRuns.set(runId, run);
+	}
+	f.controller.start(f.ctx);
+	await indexedReady(f);
+	const accesses: string[] = [];
+	for (const method of ["readFileSync", "statSync", "existsSync", "readdirSync", "openSync"] as const) {
+		const original = fs[method];
+		t.mock.method(fs, method, function(file, ...args) {
+			const name = String(file);
+			if ([...unrelated].some((root) => name === root || name.startsWith(`${root}${path.sep}`))) accesses.push(name);
+			return original.call(this, file, ...args);
+		});
+	}
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const opening = f.controller.open(f.key);
+	assert.deepEqual(accesses, [], "opening a selected conversation must not force every completed run");
+	const deliveries = [];
+	f.pi.events.on("subagent:live-intercom", (payload) => {
+		deliveries.push(payload);
+		f.pi.events.emit("subagent:live-intercom-delivery", { requestId: payload.requestId, accepted: true, delivered: true, messageId: payload.messageId });
+	});
+	f.controller.visit(f.key).draft = "Keep my selected draft";
+	await f.controller.send(f.key, "Keep my selected draft");
+	assert.equal(deliveries.length, 1);
+	assert.equal(deliveries[0].human.index, 0);
+	assert.deepEqual(accesses, [], "send and its completion refresh are isolated to the selected run");
+	await f.controller.stop(f.key);
+	assert.equal(f.calls.at(-1).index, 0);
+	assert.deepEqual(accesses, [], "Stop must not hydrate unrelated completed records");
+	saveAsyncRunResult(f.run.runId, { runtimeVersion: 2, id: f.run.runId, state: "complete", timestamp: Date.now(), results: [{ agent: "worker", task: f.run.children[0].task, sessionFile: f.childSessions[0].getSessionFile(), success: true, exitCode: 0, finalOutput: "Selected completion" }] });
+	await f.controller.send(f.key, "Another direction");
+	assert.equal(deliveries.length, 1, "selected authority is rechecked before sending to a child that completed meanwhile");
+	assert.equal(f.controller.visit(f.key).draft, "Keep my selected draft");
+	assert.deepEqual(accesses, []);
+	f.overlay.handleInput("\x1b"); await opening;
+});
+
+test("Agents predecessor and live continuation retain task identity and published history through bounded indexed refreshes", async (t) => {
 	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2030-01-01T00:00:00Z") });
-	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
+	const f = await fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
 	f.controller.dispose();
 	const terminal = manager.getLeafId(), launch = { model: "fixture/fixture", cwd: f.cwd };
 	saveQuestionContract(f.run.runId, 0, { launch });
@@ -224,7 +286,8 @@ test("Agents predecessor and live continuation reuse both journal indexes across
 	syncBuiltinESMExports();
 	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 	f.controller.start(f.ctx);
-	assert.equal(reads, 1, "the superseded predecessor needs no sealed index; only the live continuation is indexed");
+	await refreshFixture(f);
+	assert.equal(reads, 0, "the UI never reads the shared continuation journal");
 	assert.equal(f.controller.tasks.length, 1);
 	assert.equal(f.controller.task(f.key)!.run.runId, runId);
 	assert.equal(f.controller.task(f.key)!.child.state, "live");
@@ -233,22 +296,15 @@ test("Agents predecessor and live continuation reuse both journal indexes across
 	f.controller.visit(f.key).draft = "Keep my continuation draft";
 	for (let pass = 0; pass < 3; pass++) {
 		t.mock.timers.tick(500);
-		f.controller.refresh(true);
-		assert.equal(reads, 1, "unchanged scheduled and forced predecessor/live refreshes must not rescan the journal");
+		await f.controller.refresh(true);
+		assert.equal(reads, 0, "unchanged predecessor/live refreshes remain off-thread");
 	}
 	assert.equal(f.controller.visit(f.key).draft, "Keep my continuation draft");
 	assert.equal(fs.readFileSync(file, "utf8"), original);
 	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
-	const write = JsonProjection.prototype.write;
-	let parsedBytes = 0;
-	t.mock.method(JsonProjection.prototype, "write", function(chunk) {
-		const result = write.call(this, chunk);
-		if (typeof chunk === "string" && ["session", "message"].includes(this.value?.type)) parsedBytes += Buffer.byteLength(chunk);
-		return result;
-	});
 	fs.appendFileSync(file, "\n");
-	f.controller.refresh();
-	assert.equal(parsedBytes, Buffer.byteLength(original.slice(original.lastIndexOf("\n") + 1)), "shared-file growth revalidates only the previously unpublished live tail, never the superseded predecessor");
+	await refreshFixture(f);
+	assert.ok(f.controller.task(f.key)!.historyIds.includes("unpublished:0"), "published continuation entries become visible after off-thread catch-up");
 	let latest = successor;
 	for (let index = 0; index < 64; index++) {
 		t.mock.timers.tick(10);
@@ -263,96 +319,11 @@ test("Agents predecessor and live continuation reuse both journal indexes across
 	const get = f.state.ownedRuns.get;
 	let lookups = 0;
 	t.mock.method(f.state.ownedRuns, "get", function(id) { lookups++; return get.call(this, id); });
-	f.controller.refresh();
+	await refreshFixture(f);
 	assert.equal(f.controller.tasks.length, 1);
 	assert.equal(f.controller.task(f.key)!.run.runId, latest.runId, "long continuation chains retain the original conversation/draft identity");
 	assert.ok(lookups <= 5 * f.state.ownedRuns.size, `continuation identity resolution must be linear, observed ${lookups} run lookups`);
 	assert.equal(f.controller.visit(f.key).draft, "Keep my continuation draft");
-});
-
-test("native snapshots invalidate append, same-size rewrite/replacement, truncation and disappearance while keeping terminal cutoffs distinct", (t) => {
-	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
-	const reader = new NativeAgentHistory(), open = fs.openSync;
-	let reads = 0;
-	t.mock.method(fs, "openSync", function(target, flags, ...args) { if (flags === "r" && String(target) === file) reads++; return open.call(this, target, flags, ...args); });
-	syncBuiltinESMExports();
-	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-	const initial = reader.read(file);
-	const terminal = manager.getLeafId();
-	const bounded = reader.read(file, false, { terminalEntryId: terminal, leaf: terminal });
-	assert.equal(reader.read(file, false, { leaf: terminal, terminalEntryId: terminal }), bounded, "equivalent terminal boundaries reuse the same presentation");
-	assert.notEqual(reader.read(file, false, { terminalEntryId: terminal, leaf: null }), bounded, "different branch configuration boundaries stay distinct");
-	reader.configuration(file); reader.configuration(file, 0);
-	assert.equal(reader.read(file), initial);
-	assert.equal(reads, 1);
-	const initialIds = [...initial.entryIds], appended = assistant(manager, "Appended reply");
-	assert.ok(reader.read(file).entryIds.includes(`${appended}:0`));
-	assert.equal(reads, 2);
-	const entries = [
-		{ type: "session", version: 3, id: "child", cwd: f.cwd, timestamp: "2026-01-01T00:00:00Z" },
-		{ type: "model_change", id: "first", parentId: null, provider: "fixture", modelId: "first", timestamp: "2026-01-01T00:01:00Z" },
-		{ type: "thinking_level_change", id: "high", parentId: "first", thinkingLevel: "high", timestamp: "2026-01-01T00:02:00Z" },
-		{ type: "model_change", id: "later", parentId: "high", provider: "fixture", modelId: "later", timestamp: "2026-01-01T00:03:00Z" },
-		{ type: "thinking_level_change", id: "low", parentId: "later", thinkingLevel: "low", timestamp: "2026-01-01T00:04:00Z" },
-	];
-	const write = (target, values) => fs.writeFileSync(target, values.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-	write(file, entries);
-	const firstEnd = Date.parse("2026-01-01T00:02:30Z"), laterEnd = Date.parse("2026-01-01T00:04:30Z");
-	const first = reader.configuration(file, firstEnd), later = reader.configuration(file, laterEnd);
-	assert.deepEqual([first.model, first.thinking, later.model, later.thinking], ["fixture/first", "high", "fixture/later", "low"]);
-	assert.equal(reader.configuration(file, firstEnd), first);
-	assert.equal(reader.configuration(file, laterEnd), later);
-	assert.equal(reader.read(file).entryIds.length, 0);
-	assert.equal(reads, 3, "all cutoff projections use the same parse");
-	for (const [endedAt, model] of [[firstEnd, "fixture/first"], [laterEnd, "fixture/later"]]) {
-		const runId = randomUUID(), run = { ...f.run, runId, rootRunId: runId, asyncDir: getRunMetadataDir(runId) };
-		saveQuestionContract(runId, 0, { sessionFile: file, launch: { model: "fixture/requested", cwd: f.cwd } });
-		saveAsyncRunResult(runId, { runtimeVersion: 2, id: runId, state: "complete", timestamp: endedAt, results: [{ agent: "worker", task: "Shared conversation", sessionFile: file, success: true, exitCode: 0 }] });
-		assert.equal(ownedRunView(run, f.state, { pendingInput: false, includeContinuations: false, readConfiguration: (file, cutoff) => reader.configuration(file, cutoff) }).children[0].launch.model, model);
-	}
-	assert.equal(reads, 3, "separate completed runs sharing a transcript retain their own model cutoff without rereading");
-	const stat = fs.statSync(file);
-	entries[3].modelId = "other";
-	write(`${file}.replacement`, entries); fs.utimesSync(`${file}.replacement`, stat.atime, stat.mtime); fs.renameSync(`${file}.replacement`, file);
-	assert.equal(reader.configuration(file, laterEnd).model, "fixture/other", "atomic replacement invalidates even with the same size and restored mtime");
-	assert.equal(reader.configuration(file, firstEnd).model, "fixture/first");
-	assert.equal(reads, 4);
-	entries[3].modelId = "again"; write(file, entries); fs.utimesSync(file, stat.atime, stat.mtime);
-	assert.equal(reader.configuration(file, laterEnd).model, "fixture/again", "ctime invalidates in-place same-size writes with restored mtime");
-	assert.equal(reads, 5);
-	write(file, entries.slice(0, 3));
-	assert.equal(reader.configuration(file, laterEnd).model, "fixture/first", "truncation cannot retain the later choice");
-	assert.equal(reads, 6);
-	fs.unlinkSync(file);
-	assert.deepEqual(reader.configuration(file, laterEnd), {});
-	assert.match(reader.read(file, true).unavailable, /unavailable/);
-	assert.equal(reader.read(file, true).entryIds.length, 0);
-	write(file, entries);
-	assert.equal(reader.configuration(file, laterEnd).model, "fixture/again", "a disappeared file is not negative-cached");
-	assert.equal(reads, 7);
-	reader.clear();
-	reader.read(file);
-	assert.equal(reads, 8, "session disposal drops all snapshots");
-	assert.equal(initial.entryIds.length, initialIds.length, "old presentation snapshots remain immutable");
-});
-
-test("native detail snapshots retain valid bodies when append falls between cache stat and descriptor indexing", (t) => {
-	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile(), reader = new NativeAgentHistory();
-	const stat = fs.statSync;
-	let appended = false;
-	t.mock.method(fs, "statSync", function(target, ...args) {
-		const observed = stat.call(this, target, ...args);
-		if (String(target) === file && !appended) {
-			appended = true;
-			assistant(manager, "Appended before descriptor indexing");
-		}
-		return observed;
-	});
-	syncBuiltinESMExports();
-	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-	const history = reader.read(file, true);
-	assert.equal(history.items.find((item) => item.kind === "assistant")!.load!().text, "I found the relevant code.");
-	assert.equal(history.items.at(-1)!.load!().text, "Appended before descriptor indexing");
 });
 
 test("history reading IDs and delivery facts never need raw tool serialization", () => {
@@ -372,28 +343,6 @@ test("history reading IDs and delivery facts never need raw tool serialization",
 	assert.equal(formatted, 1);
 	assert.match(history.items[2].details, /RAW-DETAIL/);
 	assert.equal(formatted, 1, "display details are formatted once per snapshot");
-});
-
-test("legacy native snapshots migrate the full journal before projecting different terminal cutoffs", (t) => {
-	const f = fixture(t), file = f.childSessions[0].getSessionFile();
-	const entries = [
-		{ type: "session", version: 1, id: "legacy-child", cwd: f.cwd, timestamp: "2026-01-01T00:00:00Z" },
-		{ type: "model_change", provider: "fixture", modelId: "first", timestamp: "2026-01-01T00:01:00Z" },
-		{ type: "thinking_level_change", thinkingLevel: "high", timestamp: "2026-01-01T00:02:00Z" },
-		{ type: "message", message: { role: "user", content: "Full legacy assignment", timestamp: 0 }, timestamp: "2026-01-01T00:02:01Z" },
-		{ type: "model_change", provider: "fixture", modelId: "later", timestamp: "2026-01-01T00:03:00Z" },
-		{ type: "thinking_level_change", thinkingLevel: "low", timestamp: "2026-01-01T00:04:00Z" },
-	];
-	const original = entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
-	fs.writeFileSync(file, original);
-	const reader = new NativeAgentHistory();
-	const early = reader.configuration(file, Date.parse("2026-01-01T00:02:30Z"));
-	const later = reader.configuration(file, Date.parse("2026-01-01T00:04:30Z"));
-	assert.deepEqual([early.model, early.thinking, later.model, later.thinking], ["fixture/first", "high", "fixture/later", "low"]);
-	assert.equal(reader.read(file).configuration.model, "fixture/later");
-	assert.equal(reader.read(file).items[0].text, "Full legacy assignment");
-	assert.ok(reader.read(file).entryIds.every((id) => typeof id === "string" && id.length > 0));
-	assert.equal(fs.readFileSync(file, "utf8"), original, "presentation migration never rewrites the saved native journal");
 });
 
 test("shared-history saved-result matching indexes exact sanitized text once and retains the latest matching native ID", () => {
@@ -416,11 +365,11 @@ test("shared-history saved-result matching indexes exact sanitized text once and
 
 test("Agents model identity follows native branch settings and tool-only messages, not requested routes", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-01-01T00:00:00Z") });
-	const f = fixture(t, "regular", 2);
+	const f = await fixture(t, "regular", 2);
 	t.mock.timers.tick(10);
 	f.status.steps = f.status.steps.map((step, index) => ({ ...step, model: `requested-${index}/vendor/model:low`, modelStartedAt: Date.now() }));
 	saveRunStatus(f.run.runId, f.status);
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.match(plain(f.strip, 160), /Fix login.*selected: requested-0\/vendor\/model · thinking low/);
 	assert.equal(f.controller.task(f.key)!.model.summary, "selected: requested-0/vendor/model · thinking low", "old native history is not the current attempt");
 	t.mock.timers.tick(10);
@@ -428,7 +377,7 @@ test("Agents model identity follows native branch settings and tool-only message
 	first.appendModelChange("openrouter", "vendor/model:7b");
 	const branch = first.appendThinkingLevelChange("high");
 	second.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "native-model-tool", name: "read", arguments: { path: "login.ts" } }], provider: "vertex", model: "google/gemini-test", api: "openai-responses", stopReason: "toolUse", usage, timestamp: Date.now() });
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.equal(f.controller.task(f.key)!.model.summary, "openrouter/vendor/model:7b · thinking high");
 	assert.equal(f.controller.task(`${f.run.runId}:1`)!.model.summary, "vertex/google/gemini-test", "tool-only assistants carry model data without inventing a thinking level");
 	assert.match(f.controller.task(f.key)!.model.details, /Model \(session\): openrouter\/vendor\/model:7b · thinking high/);
@@ -444,30 +393,30 @@ test("Agents model identity follows native branch settings and tool-only message
 	const opening = f.controller.open(`${f.run.runId}:1`), view = f.overlay;
 	assert.match(plain(view, 160), /worker · working · vertex\/google\/gemini-test/);
 	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160); view.handleInput("\r");
-	assert.match(readDetails(view, 160), /Messagemodel:vertex\/google\/gemini-test/);
+	assert.match(await readDetails(view, 160), /Messagemodel:vertex\/google\/gemini-test/);
 	view.handleInput("\x1b"); view.handleInput("\x1b"); await opening;
 	t.mock.timers.tick(10);
 	first.appendModelChange("abandoned", "wrong-route");
 	first.branch(branch); first.appendCustomEntry("branch-marker", {});
 	first.appendThinkingLevelChange("medium");
 	const saved = fs.readFileSync(first.getSessionFile(), "utf8");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.equal(f.controller.task(f.key)!.model.summary, "openrouter/vendor/model:7b · thinking medium", "native branch traversal ignores a later abandoned model change");
 	assert.equal(fs.readFileSync(first.getSessionFile(), "utf8"), saved, "reading configuration never rewrites native history");
 	fs.writeFileSync(path.join(f.cwd, "model-frames.txt"), strip);
 	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
 });
 
-test("Agents strip spends reclaimed status space on the model at screenshot and narrow widths", (t) => {
+test("Agents strip spends reclaimed status space on the model at screenshot and narrow widths", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-01-01T00:00:00Z") });
-	const f = fixture(t, "fullscreen", 2);
+	const f = await fixture(t, "fullscreen", 2);
 	f.run.children[0].label = "Live fallback diagnosis";
 	f.run.children[1].label = "Fix streamed-credit failover";
 	f.status.steps = f.status.steps.map((step) => ({ ...step, model: "openai-codex/gpt-6", modelStartedAt: Date.now() }));
 	saveRunStatus(f.run.runId, f.status);
 	t.mock.timers.tick(10);
 	for (const manager of f.childSessions) manager.appendModelChange("openai-codex", "gpt-6");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const frames = [];
 	for (const width of [90, 64, 56, 24]) {
 		const rows = f.strip.render(width).map(stripTerminalSequences);
@@ -483,17 +432,17 @@ test("Agents strip spends reclaimed status space on the model at screenshot and 
 	assert.equal(f.calls.length, 0); assert.equal(f.sent.length, 0);
 });
 
-for (const [name, mode, success] of [["dark", "truecolor", "#a0c880"], ["light", "truecolor", "#408060"], ["dark", "256color", "#a0c880"], ["dark", "truecolor", 112], ["dark", "truecolor", ""]]) test(`Agents running dot pulses slowly without changing theme, attention or pending rows (${name}/${mode}/${success})`, (t) => {
+for (const [name, mode, success] of [["dark", "truecolor", "#a0c880"], ["light", "truecolor", "#408060"], ["dark", "256color", "#a0c880"], ["dark", "truecolor", 112], ["dark", "truecolor", ""]]) test(`Agents running dot pulses slowly without changing theme, attention or pending rows (${name}/${mode}/${success})`, async (t) => {
 	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2030-01-01T00:00:00Z") });
 	const intervals = t.mock.method(globalThis, "setInterval");
 	const data = JSON.parse(fs.readFileSync(new URL(`./modes/interactive/theme/${name}.json`, import.meta.resolve("@earendil-works/pi-coding-agent")), "utf8"));
 	data.colors.success = success;
 	const themeFile = path.join(root, `pulse-${randomUUID()}.json`); fs.writeFileSync(themeFile, JSON.stringify(data));
-	const theme = loadThemeFromPath(themeFile, mode), f = fixture(t, "regular", 3, undefined, undefined, theme);
+	const theme = loadThemeFromPath(themeFile, mode), f = await fixture(t, "regular", 3, undefined, undefined, theme);
 	f.status.steps[1].status = "pending";
 	saveRunStatus(f.run.runId, f.status);
 	createSupervisorQuestion({ runId: f.run.runId, index: 2, agent: "worker", ownerTarget: "fixture-owner", childTarget: "fixture-child", childSessionId: f.childSessions[2].getSessionId(), sessionFile: f.childSessions[2].getSessionFile(), cwd: f.cwd, pid: process.pid, reason: "need_decision", message: "Which fixture choice?" });
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const frames = [f.strip.render(90)];
 	for (let step = 0; step < 12; step++) { t.mock.timers.tick(500); frames.push(f.strip.render(90)); }
 	const runningRow = frames[0].findIndex((row) => row.includes("●"));
@@ -519,10 +468,10 @@ for (const [name, mode, success] of [["dark", "truecolor", "#a0c880"], ["light",
 	fs.writeFileSync(path.join(f.cwd, "pulse-frames.json"), JSON.stringify(frames));
 });
 
-test("regular Agents pulse leaves offscreen history alone and resumes when the row returns", (t) => {
+test("regular Agents pulse leaves offscreen history alone and resumes when the row returns", async (t) => {
 	t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2030-01-01T00:00:00Z") });
 	const theme = loadThemeFromPath(new URL("./modes/interactive/theme/dark.json", import.meta.resolve("@earendil-works/pi-coding-agent")).pathname, "truecolor");
-	const f = fixture(t, "regular", 1, undefined, undefined, theme), document = f.tui.children[0] as Text;
+	const f = await fixture(t, "regular", 1, undefined, undefined, theme), document = f.tui.children[0] as Text;
 	document.setText(Array.from({ length: 1440 }, (_, i) => `PARENT-HISTORY-${i}`).join("\n"));
 	const historyRender = t.mock.method(document, "render");
 	let expanded = true;
@@ -565,19 +514,19 @@ test("regular Agents pulse leaves offscreen history alone and resumes when the r
 });
 
 test("Agents model details preserve a provider-matching model namespace in assistant and tool cards", async (t) => {
-	const f = fixture(t), manager = f.childSessions[0];
+	const f = await fixture(t), manager = f.childSessions[0];
 	const model = { provider: "openrouter", id: "openrouter/fixture", api: "openai-completions" };
 	manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Namespaced reply" }, { type: "toolCall", id: "namespace-read", name: "read", arguments: { path: "namespace.txt" } }], provider: model.provider, model: model.id, api: model.api, stopReason: "toolUse", usage, timestamp: Date.now() });
 	const saved = fs.readFileSync(manager.getSessionFile(), "utf8");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const opening = f.controller.open(), view = f.overlay;
 	view.render(160); view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160); view.handleInput("\r");
-	const toolDetail = readDetails(view, 160);
+	const toolDetail = await readDetails(view, 160);
 	assert.match(toolDetail, /namespace\.txt/);
 	assert.match(toolDetail, /Messagemodel:openrouter\/openrouter\/fixture/, "tool details keep the entire native model ID, not just the provider prefix");
 	view.handleInput("\x1b"); view.render(160); view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160);
 	view.handleInput("\x1b[A"); view.render(160); view.handleInput("\r");
-	const detail = readDetails(view, 160);
+	const detail = await readDetails(view, 160);
 	assert.match(detail, /Namespacedreply/);
 	assert.match(detail, /Messagemodel:openrouter\/openrouter\/fixture/, "assistant details use the same full journal identity");
 	view.handleInput("\x1b"); view.handleInput("\x1b"); await opening;
@@ -586,18 +535,18 @@ test("Agents model details preserve a provider-matching model namespace in assis
 });
 
 test("Agents model details retain an empty-content error model after fallback", async (t) => {
-	const f = fixture(t), manager = f.childSessions[0];
+	const f = await fixture(t), manager = f.childSessions[0];
 	const failed = { provider: "openrouter", id: "vendor/failed-fixture", api: "anthropic-messages" };
 	const fallback = { provider: "openrouter", id: "openrouter/fixture", api: "openai-completions" };
 	assert.equal(failed.provider, "openrouter"); assert.notEqual(failed.id, fallback.id);
 	manager.appendMessage({ role: "assistant", content: [], provider: failed.provider, model: failed.id, api: failed.api, stopReason: "error", errorMessage: "quota exceeded", usage, timestamp: Date.now() });
 	manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fallback completed" }], provider: fallback.provider, model: fallback.id, api: fallback.api, stopReason: "stop", usage, timestamp: Date.now() });
 	const saved = fs.readFileSync(manager.getSessionFile(), "utf8");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const opening = f.controller.open(), view = f.overlay;
 	assert.match(plain(view, 160), /saved: openrouter\/openrouter\/fixture/, "the conversation status has moved to the fallback");
 	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(160); view.handleInput("\x1b[A"); view.render(160); view.handleInput("\r");
-	const detail = readDetails(view, 160);
+	const detail = await readDetails(view, 160);
 	assert.match(detail, /Agenterror[\s\S]*quotaexceeded/);
 	assert.ok(detail.includes(`Messagemodel:openrouter/${failed.id}`), "the empty error still identifies the failed message's own provider/model");
 	view.handleInput("\x1b"); view.handleInput("\x1b"); await opening;
@@ -606,12 +555,12 @@ test("Agents model details retain an empty-content error model after fallback", 
 });
 
 for (const [columns, rows] of [[110, 38], [24, 18]]) test(`Agents model identity remains fully accessible with native compact controls (${columns}×${rows})`, async (t) => {
-	const f = fixture(t, "fullscreen", 2);
+	const f = await fixture(t, "fullscreen", 2);
 	const model = "openrouter/vendor/very-long-model-namespace/long-model-name-with-full-identity-ENDROUTE:high";
 	Object.assign(f.status.steps[0], { model, modelStartedAt: Date.now() + 1 });
 	saveRunStatus(f.run.runId, f.status);
 	f.controller.visit(f.key).readThrough = null;
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	f.terminal.resize(columns, rows);
 	const opening = f.controller.open(f.key); f.tui.start(); f.tui.renderNow();
 	f.terminal.input("Keep the child draft"); f.tui.renderNow();
@@ -619,7 +568,7 @@ for (const [columns, rows] of [[110, 38], [24, 18]]) test(`Agents model identity
 	await clickHint(f, compact ? "F2" : "F2 Actions");
 	for (let index = 0; index < 3; index++) f.terminal.input("\x1b[B");
 	f.tui.renderNow(); await clickHint(f, "Enter");
-	const width = f.overlayBounds.width, full = readDetails(f.overlay, width);
+	const width = f.overlayBounds.width, full = await readDetails(f.overlay, width);
 	assert.match(full, /openrouter/); assert.match(full, /ENDROUTE/);
 	const content = f.overlay.scroll.render(width - 2).map(stripTerminalSequences).join("\n").replace(/\s/g, "");
 	assert.ok(content.includes(model.replace(":high", "")), "the full route is wrapped, not shortened, in the existing assignment details");
@@ -633,12 +582,12 @@ for (const [columns, rows] of [[110, 38], [24, 18]]) test(`Agents model identity
 	assert.equal(f.calls.length, 0); assert.deepEqual(f.interrupts, [0, 0]);
 });
 
-test("Agents model identity leaves bare selections and unavailable metadata honest", (t) => {
-	const f = fixture(t);
+test("Agents model identity leaves bare selections and unavailable metadata honest", async (t) => {
+	const f = await fixture(t);
 	f.ctx.model = { provider: "not-evidence", id: "qwen2.5-coder:7b" };
 	Object.assign(f.status.steps[0], { model: "qwen2.5-coder:7b", modelStartedAt: Date.now() + 1 });
 	saveRunStatus(f.run.runId, f.status);
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.match(plain(f.strip, 160), /selected: qwen2\.5-coder:7b/);
 	assert.equal(f.controller.task(f.key)!.model.summary, "selected: qwen2.5-coder:7b");
 	assert.doesNotMatch(plain(f.strip, 160), /not-evidence|ollama/);
@@ -647,15 +596,15 @@ test("Agents model identity leaves bare selections and unavailable metadata hone
 	saveRunStatus(f.run.runId, f.status);
 	f.run.children[0].sessionFile = undefined;
 	saveQuestionContract(f.run.runId, 0, { sessionFile: undefined });
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.equal(f.controller.task(f.key)!.model.summary, "model unavailable");
 });
 
 for (const [background, nativeReply] of [[false, true], [false, false], [true, true], [true, false]]) test(`Agents model identity follows the ${background ? "background" : "foreground"} fallback before its first response and freezes ${nativeReply ? "native" : "selection-only"} completion`, async (t) => {
 	const primary = "requested/vendor/primary:high", fallback = "backup/vendor/fallback:low";
-	const f = fixture(t, "regular", 1, undefined, [makeAgent("worker", { model: primary, fallbackModels: [fallback], completionGuard: false })]);
+	const f = await fixture(t, "regular", 1, undefined, [makeAgent("worker", { model: primary, fallbackModels: [fallback], completionGuard: false })]);
 	const mock = createMockPi(); mock.install();
-	f.state.ownedRuns!.clear(); f.controller.refresh(true);
+	f.state.ownedRuns!.clear(); await refreshFixture(f);
 	const releasePrimary = path.join(f.cwd, "release-primary"), releaseFallback = path.join(f.cwd, "release-fallback");
 	mock.onCall({ matchArgsIncludes: primary, waitForFile: releasePrimary, stderr: "quota exceeded", exitCode: 1 });
 	mock.onCall({ matchArgsIncludes: fallback, waitForFile: releaseFallback, output: "Fallback finished" });
@@ -668,7 +617,7 @@ for (const [background, nativeReply] of [[false, true], [false, false], [true, t
 		mock.uninstall();
 	});
 	await until(() => mock.callCount() === 1, "primary attempt starts");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const task = f.controller.tasks[0]!; runId = task.run.runId;
 	assert.match(plain(f.strip, 160), /selected: requested\/vendor\/primary · thinking high/);
 	assert.equal(task.model.summary, "selected: requested/vendor/primary · thinking high");
@@ -676,34 +625,36 @@ for (const [background, nativeReply] of [[false, true], [false, false], [true, t
 	native.appendMessage({ role: "assistant", content: [{ type: "text", text: "Prior attempt" }], provider: "observed-primary", model: "vendor/native-primary", api: "openai-responses", stopReason: "error", errorMessage: "quota exceeded", usage, timestamp: Date.now() });
 	fs.writeFileSync(releasePrimary, "released");
 	await until(() => mock.callCount() === 2, "fallback starts without a saved response");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.equal(f.controller.task(task.key)!.model.summary, "selected: backup/vendor/fallback · thinking low", "old native history and the initial launch cannot mask the selected fallback");
 	assert.match(f.controller.task(task.key)!.model.details, /Last saved session model \(may precede this attempt\): observed-primary\/vendor\/native-primary/);
 	if (nativeReply) {
 		native.appendThinkingLevelChange("high");
 		native.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fallback finished" }], provider: "observed-fallback", model: "vendor/native-final", api: "openai-responses", stopReason: "stop", usage, timestamp: Date.now() });
-		f.controller.refresh(true);
+		await refreshFixture(f);
 		assert.equal(f.controller.task(task.key)!.model.summary, "observed-fallback/vendor/native-final · thinking high");
 	}
 	fs.writeFileSync(releaseFallback, "released"); await pending;
 	if (background) await until(() => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "fallback completion is saved");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const completed = f.controller.task(task.key)!;
 	assert.equal(completed.child.state, "completed");
 	assert.equal(completed.model.summary, nativeReply ? "saved: observed-fallback/vendor/native-final · thinking high" : "selected: backup/vendor/fallback · thinking low");
 	assert.equal(completed.child.result?.model, fallback, "candidate-first execution results and routing stay unchanged");
-	assert.deepEqual(completed.child.result?.attemptedModels, [primary, fallback]);
+	const completedView = ownedRunView(f.state.ownedRuns!.get(runId!)!, f.state);
+	assert.deepEqual(completedView.children[0]!.result?.attemptedModels, [primary, fallback]);
 	assert.equal(mock.callCount(), 2);
 	native.appendModelChange("later-session", "vendor/continuation");
 	f.controller.start(f.ctx);
+	await refreshFixture(f);
 	assert.equal(f.controller.task(task.key)!.model.summary, completed.model.summary, "completed display uses the frozen per-run snapshot, not later shared-file choices");
 	const owned = f.state.ownedRuns!.get(runId!)!, successorId = randomUUID(), startedAt = Date.now() + 1;
 	const successor = { ...owned, runId: successorId, source: "async" as const, asyncDir: getRunMetadataDir(successorId), pid: process.pid, predecessorRunId: runId, predecessorIndex: 0, startedAt };
 	f.state.ownedRuns!.set(successorId, successor);
-	saveQuestionContract(successorId, 0, { task: "New continuation", sessionFile: task.child.sessionFile, launch: completed.child.launch });
+	saveQuestionContract(successorId, 0, { task: "New continuation", sessionFile: task.child.sessionFile, launch: completedView.children[0]!.launch });
 	saveRunStatus(successorId, { ...f.status, runId: successorId, mode: "single", startedAt, lastUpdate: startedAt,
 		steps: [{ agent: "worker", status: "running", sessionFile: task.child.sessionFile, model: "next-provider/vendor/model", modelStartedAt: startedAt }] });
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.equal(f.controller.tasks.length, 1);
 	assert.equal(f.controller.task(task.key)!.run.runId, successorId);
 	assert.equal(f.controller.task(task.key)!.model.summary, "selected: next-provider/vendor/model", "the successor must not claim the predecessor's frozen or last saved model as current");
@@ -714,17 +665,18 @@ for (const [background, nativeReply] of [[false, true], [false, false], [true, t
 
 test("Agents model identity keeps the owner's latest selection after response-less finalization", async (t) => {
 	const requested = "requested/vendor/finalization:low";
-	const f = fixture(t), native = f.childSessions[0];
+	const f = await fixture(t), native = f.childSessions[0];
 	native.appendMessage({ role: "assistant", content: [{ type: "text", text: "Initial report" }], provider: "observed", model: "vendor/earlier-remap", api: "openai-responses", stopReason: "stop", usage, timestamp: Date.now() });
 	const modelSelection = { model: requested, modelStartedAt: Date.now() + 1 };
 	saveQuestionContract(f.run.runId, 0, { modelSelection });
 	Object.assign(f.status.steps[0], modelSelection);
 	saveRunStatus(f.run.runId, f.status);
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.equal(f.controller.task(f.key)!.model.summary, "selected: requested/vendor/finalization · thinking low");
 	saveAsyncRunResult(f.run.runId, { runtimeVersion: 2, id: f.run.runId, state: "failed", timestamp: modelSelection.modelStartedAt + 1,
 		results: [{ agent: "worker", task: f.run.children[0].task, model: requested, sessionFile: native.getSessionFile(), success: false, exitCode: 1, error: "quota exceeded" }] });
 	f.controller.start(f.ctx);
+	await refreshFixture(f);
 	assert.equal(f.controller.task(f.key)!.child.result?.model, requested);
 	assert.equal(f.controller.task(f.key)!.child.state, "failed");
 	const opening = f.controller.open(f.key);
@@ -734,7 +686,7 @@ test("Agents model identity keeps the owner's latest selection after response-le
 });
 
 for (const mode of ["regular", "fullscreen"] as const) test(`Agents strip and single-child open are native, read-only, and preserve the parent (${mode})`, async (t) => {
-	const f = fixture(t, mode);
+	const f = await fixture(t, mode);
 	assert.match(plain(f.strip, 90), /^Agents.*1 running[\s\S]*Fix login/);
 	assert.doesNotMatch(plain(f.strip), /tokens|Combined tasks/);
 	assert.match(plain(f.strip, 12), /^Agents/);
@@ -756,7 +708,7 @@ for (const mode of ["regular", "fullscreen"] as const) test(`Agents strip and si
 });
 
 test("clickable Agents hints: Esc Back closes the native conversation and preserves both drafts", async (t) => {
-	const f = fixture(t, "fullscreen"), opening = f.controller.open();
+	const f = await fixture(t, "fullscreen"), opening = f.controller.open();
 	f.tui.start(); f.tui.renderNow();
 	f.terminal.input("Keep this child draft"); f.tui.renderNow();
 	const bounds = f.overlayBounds, lines = f.overlay.render(bounds.width).map(stripTerminalSequences);
@@ -773,7 +725,7 @@ test("clickable Agents hints: Esc Back closes the native conversation and preser
 });
 
 for (const [columns, rows] of [[110, 38], [56, 38], [24, 18]]) test(`clickable Agents hints: actions, read/write, details, reply and quote (${columns}×${rows})`, async (t) => {
-	const f = fixture(t, "fullscreen"), opening = f.controller.open();
+	const f = await fixture(t, "fullscreen"), opening = f.controller.open();
 	f.terminal.resize(columns, rows); f.tui.start(); f.tui.renderNow();
 	f.terminal.input("Unsent child draft"); f.tui.renderNow();
 	const compact = f.controller.availableHeight(f.tui) < 16;
@@ -793,6 +745,7 @@ for (const [columns, rows] of [[110, 38], [56, 38], [24, 18]]) test(`clickable A
 	assert.ok(!f.overlay.render(f.overlayBounds.width).some((line) => line.includes(CURSOR_MARKER)), "details hide the composer");
 	assert.doesNotMatch(plain(f.overlay, f.overlayBounds.width), /Tab/);
 	await clickHint(f, compact ? `${altLabel}+R` : "Reply");
+	await until(() => Boolean(f.controller.visit(f.key).quote), "full contextual reply loaded");
 	assert.equal(f.overlay.editor.focused, true);
 	assert.ok(f.controller.visit(f.key).quote?.text);
 	assert.equal(f.overlay.editor.getText(), "Unsent child draft");
@@ -810,14 +763,16 @@ for (const [columns, rows] of [[110, 38], [56, 38], [24, 18]]) test(`clickable A
 });
 
 for (const [columns, rows] of [[110, 38], [56, 38], [24, 18]]) test(`clickable Agents hints: picker navigation, filter, open and back (${columns}×${rows})`, async (t) => {
-	const f = fixture(t, "fullscreen", 2), opening = f.controller.open();
+	const f = await fixture(t, "fullscreen", 2), opening = f.controller.open();
 	f.terminal.resize(columns, rows); f.tui.start(); f.tui.renderNow();
 	await clickHint(f, "↓");
 	assert.match(plain(f.overlay, f.overlayBounds.width), /→.*Revi/);
 	await clickHint(f, "↑");
 	assert.match(plain(f.overlay, f.overlayBounds.width), /→.*Fix/);
 	if (f.controller.availableHeight(f.tui) >= 16) await clickHint(f, "Type to filter");
-	f.terminal.input("Review"); f.tui.renderNow();
+	f.terminal.input("Review");
+	await until(() => !f.controller.listLoading && f.controller.tasks.length === 1 && f.controller.tasks[0].child.index === 1, "global picker filter loaded");
+	f.tui.renderNow();
 	assert.doesNotMatch(plain(f.overlay, f.overlayBounds.width), /Fix login/);
 	await clickHint(f, "Enter");
 	assert.equal(f.overlay.key, `${f.run.runId}:1`);
@@ -830,13 +785,13 @@ for (const [columns, rows] of [[110, 38], [56, 38], [24, 18]]) test(`clickable A
 });
 
 test("clickable Agents hints: latest leaves a scrolled reading position only on activation", async (t) => {
-	const f = fixture(t, "fullscreen"), manager = f.childSessions[0];
+	const f = await fixture(t, "fullscreen"), manager = f.childSessions[0];
 	for (let i = 0; i < 30; i++) assistant(manager, `Saved message ${i}`);
-	f.controller.refresh(true);
-	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
+	await refreshFixture(f);
+	const opening = f.controller.open(); await historyReady(f); f.tui.start(); f.tui.renderNow();
 	f.terminal.input("Keep my draft"); f.terminal.input("\x1b[5~"); f.tui.renderNow();
 	const anchor = structuredClone(f.controller.visit(f.key).anchor);
-	assistant(manager, "New activity arrived"); f.controller.refresh(true); f.tui.renderNow();
+	assistant(manager, "New activity arrived"); await refreshFixture(f); f.tui.renderNow();
 	assert.deepEqual(f.controller.visit(f.key).anchor, anchor);
 	await clickHint(f, "Actions");
 	assert.ok(!plain(f.overlay, f.overlayBounds.width).includes(`${altLabel}+L`), "menus do not advertise a shortcut they ignore");
@@ -854,7 +809,7 @@ test("clickable Agents hints: latest leaves a scrolled reading position only on 
 for (const binding of ["ctrl+o", "ctrl+e"]) test(`clickable Agents hints: direct-user breadcrumb uses native custom-message expansion (${binding})`, async (t) => {
 	const { KeybindingsManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/keybindings.js")).href);
 	setTestKeybindings(t, new KeybindingsManager({ "app.tools.expand": binding }));
-	const f = fixture(t, "fullscreen");
+	const f = await fixture(t, "fullscreen");
 	const message = { customType: "subagent-human-direction", content: "Informational only", details: { label: "Fix login", text: "Preserve the API", quote: { title: "Recorded change", text: "FULL-QUOTED-CONTEXT" } } };
 	let card, done;
 	const opening = f.ctx.ui.custom((_tui, _theme, _keys, close) => {
@@ -875,7 +830,7 @@ for (const binding of ["ctrl+o", "ctrl+e"]) test(`clickable Agents hints: direct
 });
 
 for (const columns of [100, 24]) test(`clickable Agents hints: Send keeps a draft until native receipt and cannot duplicate (${columns} columns)`, async (t) => {
-	const f = fixture(t, "fullscreen"); f.terminal.resize(columns, 48);
+	const f = await fixture(t, "fullscreen"); f.terminal.resize(columns, 48);
 	const deliveries = [], opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
 	f.pi.events.on("subagent:live-intercom", (payload) => {
 		deliveries.push(payload);
@@ -893,7 +848,7 @@ for (const columns of [100, 24]) test(`clickable Agents hints: Send keeps a draf
 	assert.equal(deliveries.length, 1);
 	assert.equal(f.sent.length, 1); assert.equal(f.sent[0].options.triggerTurn, false);
 	f.childSessions[0].appendCustomMessageEntry("subagent-human-message", draft.trim(), true, { bodyText: draft.trim(), message: { id: deliveries[0].messageId } });
-	f.controller.refresh(true); f.tui.renderNow();
+	await refreshFixture(f); f.tui.renderNow();
 	assert.equal(f.overlay.editor.getText(), "");
 	assert.equal(f.controller.visit(f.key).outbox.length, 0);
 	await clickHint(f, "Esc"); await opening;
@@ -902,10 +857,10 @@ for (const columns of [100, 24]) test(`clickable Agents hints: Send keeps a draf
 
 for (const surface of ["footer", "notice", "menu"]) test(`clickable Agents hints: explicit Continue from ${surface} uses the saved assignment`, async (t) => {
 	let release;
-	const f = fixture(t, "fullscreen", 1, () => new Promise((resolve) => { release = () => resolve({ content: [{ type: "text", text: "Continued" }], details: { mode: "single", results: [] } }); }));
+	const f = await fixture(t, "fullscreen", 1, () => new Promise((resolve) => { release = () => resolve({ content: [{ type: "text", text: "Continued" }], details: { mode: "single", results: [] } }); }));
 	const agent = makeAgent("worker", { completionGuard: false });
 	saveQuestionContract(f.run.runId, 0, { launch: { agent, systemPrompt: "Saved instructions", skills: [], cwd: f.cwd, context: "fresh", artifacts: false, output: false, outputMode: "inline", share: false } });
-	f.complete(); f.terminal.resize(180, 42);
+	await f.complete(); f.terminal.resize(180, 42);
 	let opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
 	f.terminal.input("Continue with this exact draft"); f.tui.renderNow();
 	assert.equal(f.calls.length, 0);
@@ -914,6 +869,7 @@ for (const surface of ["footer", "notice", "menu"]) test(`clickable Agents hints
 		assert.equal(f.calls.length, 0, "Enter cannot restart a completed child");
 		await clickHint(f, "Esc Back"); await opening;
 		f.controller.dispose(); f.controller.start(f.ctx);
+		await refreshFixture(f);
 		opening = f.controller.open(); f.tui.renderNow();
 		await clickHint(f, "Continue with this message (");
 	} else if (surface === "menu") {
@@ -931,7 +887,7 @@ for (const surface of ["footer", "notice", "menu"]) test(`clickable Agents hints
 });
 
 test("clickable Agents hints: native menu Stop remains explicit and targets only the selected child", async (t) => {
-	const f = fixture(t, "fullscreen", 2); f.terminal.resize(100, 48);
+	const f = await fixture(t, "fullscreen", 2); f.terminal.resize(100, 48);
 	const opening = f.controller.open(`${f.run.runId}:1`); f.tui.start(); f.tui.renderNow();
 	await clickHint(f, "Actions");
 	assert.deepEqual(f.interrupts, [0, 0]);
@@ -943,7 +899,7 @@ test("clickable Agents hints: native menu Stop remains explicit and targets only
 });
 
 test("clickable Agents hints: more-agents command opens the picker without choosing a child", async (t) => {
-	const f = fixture(t, "fullscreen", 6); f.tui.start(); f.tui.renderNow();
+	const f = await fixture(t, "fullscreen", 6); f.tui.start(); f.tui.renderNow();
 	const rows = f.strip.render(f.terminal.columns).map(stripTerminalSequences), row = rows.findIndex((line) => line.includes("/agents"));
 	assert.ok(row >= 0);
 	const dockTop = f.terminal.rows - rows.length - f.mainEditor.render(f.terminal.columns).length - 1;
@@ -956,10 +912,11 @@ test("clickable Agents hints: more-agents command opens the picker without choos
 });
 
 test("clickable Agents hints: native Option labels preserve Alt bindings and clipped quote actions", async (t) => {
-	const f = fixture(t, "fullscreen"), opening = f.controller.open();
+	const f = await fixture(t, "fullscreen"), opening = f.controller.open();
 	f.terminal.resize(100, 48); f.tui.start(); f.tui.renderNow();
 	const draft = "Literal Alt+R stays in my draft";
-	f.terminal.input(draft); f.terminal.input("\x1br"); f.tui.renderNow();
+	f.terminal.input(draft); f.terminal.input("\x1br");
+	await until(() => Boolean(f.controller.visit(f.key).quote), "full quoted context loaded"); f.tui.renderNow();
 	assert.ok(plain(f.overlay, f.overlayBounds.width).includes(`Quote · ${altLabel}+Q remove`));
 	f.terminal.input("\t"); f.terminal.input("\r"); f.tui.renderNow();
 	assert.ok(plain(f.overlay, f.overlayBounds.width).includes(`${altLabel}+R Reply`));
@@ -974,10 +931,10 @@ test("clickable Agents hints: native Option labels preserve Alt bindings and cli
 });
 
 test("clickable Agents hints: Back unwinds details and its menu without losing read position or native selection", async (t) => {
-	const f = fixture(t, "fullscreen");
+	const f = await fixture(t, "fullscreen");
 	for (let i = 0; i < 30; i++) assistant(f.childSessions[0], `Historical message ${i}\nRecorded detail ${i}`);
-	f.controller.refresh(true);
-	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
+	await refreshFixture(f);
+	const opening = f.controller.open(); await historyReady(f); f.tui.start(); f.tui.renderNow();
 	f.terminal.input("Unsent draft"); f.terminal.input("\x1b[5~"); f.tui.renderNow();
 	const anchor = f.controller.visit(f.key).anchor?.id;
 	assert.ok(anchor);
@@ -1009,7 +966,7 @@ test("clickable Agents hints: Back unwinds details and its menu without losing r
 test("clickable Agents hints: configured native selection and submit keys keep matching their labels", async (t) => {
 	const { KeybindingsManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/keybindings.js")).href);
 	setTestKeybindings(t, new KeybindingsManager({ "tui.select.down": "ctrl+e", "tui.select.confirm": "ctrl+g", "tui.select.cancel": "ctrl+q", "tui.input.submit": "alt+enter" }));
-	const f = fixture(t, "fullscreen", 2), deliveries = [], opening = f.controller.open();
+	const f = await fixture(t, "fullscreen", 2), deliveries = [], opening = f.controller.open();
 	f.tui.start(); f.tui.renderNow();
 	await clickHint(f, "ctrl+e Choose");
 	await clickHint(f, "ctrl+g Open");
@@ -1029,12 +986,13 @@ test("clickable Agents hints: configured native selection and submit keys keep m
 });
 
 test("clickable Agents hints: quoted shell tabs keep native text and remove-control coordinates aligned", async (t) => {
-	const f = fixture(t, "fullscreen"); f.terminal.resize(120, 48);
+	const f = await fixture(t, "fullscreen"); f.terminal.resize(120, 48);
 	f.childSessions[0].appendMessage({ role: "bashExecution", command: "printf\tquote", output: "Recorded output", exitCode: 0, cancelled: false, timestamp: Date.now() });
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
 	f.terminal.input("\t"); f.terminal.input("\x1b[F"); f.tui.renderNow();
-	f.terminal.input("\x1br"); f.terminal.input("Unsent draft"); f.tui.renderNow();
+	f.terminal.input("\x1br"); f.terminal.input("Unsent draft");
+	await until(() => Boolean(f.controller.visit(f.key).quote), "full quoted shell context loaded"); f.tui.renderNow();
 	assert.ok(f.controller.visit(f.key).quote?.title.includes("printf\tquote"));
 	assert.match(plain(f.overlay, f.overlayBounds.width), /Shell: printf   quote/);
 	await clickHint(f, `${altLabel}+Q remove`);
@@ -1047,7 +1005,7 @@ test("clickable Agents hints: quoted shell tabs keep native text and remove-cont
 test("clickable Agents hints: remapped picker Up owns its displayed cell, not a letter in Type to filter", async (t) => {
 	const { KeybindingsManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/core/keybindings.js")).href);
 	setTestKeybindings(t, new KeybindingsManager({ "tui.select.up": "p" }));
-	const f = fixture(t, "fullscreen", 2), opening = f.controller.open();
+	const f = await fixture(t, "fullscreen", 2), opening = f.controller.open();
 	f.tui.start(); f.tui.renderNow();
 	f.terminal.input("\x1b[B"); f.tui.renderNow();
 	assert.match(plain(f.overlay, f.overlayBounds.width), /→.*Review changes/);
@@ -1065,16 +1023,16 @@ test("clickable Agents hints: remapped picker Up owns its displayed cell, not a 
 });
 
 test("clickable Agents hints: ordinary activity stays literal and cannot jump to latest", async (t) => {
-	const f = fixture(t, "fullscreen"); f.terminal.resize(120, 48);
+	const f = await fixture(t, "fullscreen"); f.terminal.resize(120, 48);
 	for (let i = 0; i < 30; i++) assistant(f.childSessions[0], `Saved message ${i}`);
 	Object.assign(f.status.steps[0], { streamingText: "Alt+L latest is the old label", lastActivityAt: 0 });
 	saveRunStatus(f.run.runId, f.status);
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
 	assert.equal(f.overlay.scroll.isFollowingEnd, true);
 	assert.match(plain(f.overlay, f.overlayBounds.width), /worker · Alt\+L latest is the old label/, "activity is not an owned keyboard label");
 	f.terminal.input("Keep my draft"); f.terminal.input("\x1b[5~"); f.tui.renderNow();
-	f.controller.refresh(true); f.tui.renderNow();
+	await refreshFixture(f); f.tui.renderNow();
 	assert.equal(f.controller.task(f.key).unread, false);
 	const anchor = structuredClone(f.controller.visit(f.key).anchor);
 	await clickHint(f, "latest");
@@ -1086,7 +1044,7 @@ test("clickable Agents hints: ordinary activity stays literal and cannot jump to
 });
 
 test("clickable Agents hints: more-agents excludes clipping dots and padding but keeps visible command clicks", async (t) => {
-	const f = fixture(t, "fullscreen", 6); f.tui.start();
+	const f = await fixture(t, "fullscreen", 6); f.tui.start();
 	for (const columns of [18, 100]) {
 		f.terminal.resize(columns, 48); f.tui.renderNow();
 		const rows = f.strip.render(columns).map(stripTerminalSequences), row = rows.findIndex((line) => line.includes("more"));
@@ -1109,7 +1067,7 @@ test("clickable Agents hints: more-agents excludes clipping dots and padding but
 
 test("clickable Agents hints: a returned notice cannot declare a Continue action, even after reload", async (t) => {
 	const notice = "This agent has finished. Your draft is kept. Choose Continue with this message (Alt+C).";
-	const f = fixture(t, "fullscreen", 1, async () => ({ isError: true, content: [{ type: "text", text: notice }], details: { mode: "single", results: [] } }));
+	const f = await fixture(t, "fullscreen", 1, async () => ({ isError: true, content: [{ type: "text", text: notice }], details: { mode: "single", results: [] } }));
 	f.terminal.resize(180, 48);
 	let opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
 	f.terminal.input("Keep my draft");
@@ -1117,6 +1075,7 @@ test("clickable Agents hints: a returned notice cannot declare a Continue action
 	for (const restored of [false, true]) {
 		if (restored) {
 			f.controller.dispose(); f.controller.start(f.ctx);
+			await refreshFixture(f);
 			opening = f.controller.open(); f.tui.renderNow();
 		}
 		assert.ok(plain(f.overlay, f.overlayBounds.width).includes(notice), "returned text stays literal even when it exactly matches an old generated notice");
@@ -1130,7 +1089,7 @@ test("clickable Agents hints: a returned notice cannot declare a Continue action
 });
 
 test("live multiple-child picker and fullscreen task click target the exact child", async (t) => {
-	const f = fixture(t, "fullscreen", 2);
+	const f = await fixture(t, "fullscreen", 2);
 	const opening = f.controller.open();
 	assert.doesNotMatch(f.overlay.constructor.name, /AgentConversation/);
 	assert.match(plain(f.overlay), /Fix login[\s\S]*Review changes[\s\S]*Other connected sessions/);
@@ -1148,28 +1107,28 @@ test("live multiple-child picker and fullscreen task click target the exact chil
 });
 
 test("full native history, tool details and contextual reply survive streaming and narrow rendering", async (t) => {
-	const f = fixture(t);
+	const f = await fixture(t);
 	const manager = f.childSessions[0];
 	for (let index = 0; index < 30; index++) assistant(manager, `Historical message ${index}\nReadable detail ${index}`);
 	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "edit-1", name: "edit", arguments: { path: "login.ts", oldText: "before", newText: "after" } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
 	manager.appendMessage({ role: "toolResult", toolCallId: "edit-1", toolName: "edit", content: [{ type: "text", text: "Edited login.ts" }], isError: false, details: { diff: "-before\n+after", completeDetail: "FULL-DETAIL-END" }, timestamp: Date.now() });
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const opening = f.controller.open();
 	const view = f.overlay as InstanceType<typeof AgentConversation>;
-	view.render(90);
+	await historyReady(f); view.render(90);
 	const readThrough = f.controller.visit(f.key).readThrough;
 	view.handleInput("\x1b[5~"); view.render(90);
 	assert.equal(f.controller.visit(f.key).readThrough, readThrough, "reading backwards cannot regress the unread boundary");
 	const anchor = f.controller.visit(f.key).anchor;
 	assistant(manager, "New streamed response\n".repeat(20));
-	f.controller.refresh(true); view.render(90);
+	await refreshFixture(f); view.render(90);
 	assert.deepEqual(f.controller.visit(f.key).anchor, anchor, "append must not pull a scrolled reader to the bottom");
 	assert.match(plain(view), /New activity/);
 	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(90);
 	// The last native message follows the edit result, so Up selects that result.
 	view.handleInput("\x1b[A"); view.render(90);
 	view.handleInput("\x1bd");
-	assert.match(readDetails(view), /FULL-DETAIL-END/);
+	assert.match(await readDetails(view), /FULL-DETAIL-END/);
 	assert.equal(f.calls.length, 0);
 	view.handleInput("\x1br"); view.render(90);
 	assert.match(f.controller.visit(f.key).quote!.text, /FULL-DETAIL-END/);
@@ -1192,7 +1151,7 @@ test("full native history, tool details and contextual reply survive streaming a
 	assert.match(f.sent[0].message.content, /Keep this API/);
 	assert.equal(view.editor.getExpandedText(), "Keep this API", "keep the draft until native receipt confirms conversation delivery");
 	manager.appendCustomMessageEntry("subagent-human-message", "Keep this API", true, { bodyText: "Keep this API", message: { id: observed[0].messageId } });
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.equal(view.editor.getExpandedText(), "");
 	assert.equal(f.controller.visit(f.key).outbox.length, 0);
 	assert.equal(f.controller.visit(f.key).notice, undefined, "the native receipt clears the obsolete already-waiting notice");
@@ -1204,40 +1163,69 @@ test("full native history, tool details and contextual reply survive streaming a
 });
 
 test("native Agents earlier/later pages and Latest retain access to exact selected full bodies", async (t) => {
-	const f = fixture(t), manager = f.childSessions[0];
+	const f = await fixture(t), manager = f.childSessions[0];
 	const full = `History card 97\n${"full-detail ".repeat(600)}PAGE-97-FULL-END`;
 	for (let index = 0; index < 250; index++) assistant(manager, index === 97 ? full : `History card ${index}`);
-	f.controller.refresh(true);
-	const opening = f.controller.open(f.key); f.tui.start(); f.tui.renderNow();
-	const page = async (label: string) => {
-		f.overlay.handleInput("\x1bOQ");
-		f.overlay.handleInput("\x1b[A"); if (label === "Earlier history") f.overlay.handleInput("\x1b[A");
-		assert.ok(plain(f.overlay).includes(`→ ${label}`));
-		f.overlay.handleInput("\r");
-		f.tui.renderNow();
-	};
+	await refreshFixture(f);
+	const opening = f.controller.open(f.key); await historyReady(f); f.tui.start(); f.tui.renderNow();
+	const page = async (label: string) => { await historyAction(f, label); f.tui.renderNow(); };
 	await page("Earlier history");
 	assert.match(plain(f.overlay), /History card 149/);
-	await page("Earlier history");
 	assert.match(f.overlay.scroll.render(88).map(stripTerminalSequences).join("\n"), /History card 97/);
+	await page("Earlier history");
+	assert.match(plain(f.overlay), /History card 49/, "the first physical page remains reachable");
+	await page("Later history");
 	f.terminal.input("\t"); f.tui.renderNow();
+	for (let index = 0; index < 105; index++) { f.terminal.input("\x1b[A"); f.tui.renderNow(); }
+	// Two page-heading cards precede card 50; native Down selects card 97.
+	for (let index = 0; index < 49; index++) { f.terminal.input("\x1b[B"); f.tui.renderNow(); }
 	assistant(manager, "Continuation appended after selection, before detail input");
+	f.terminal.input("\x1br");
+	await until(() => Boolean(f.controller.visit(f.key).quote), "full selected contextual reply loaded");
+	assert.equal(f.controller.visit(f.key).quote!.text, full, "direct Reply quotes the full selected body, not its bounded preview");
+	f.terminal.input("\x1bq"); f.terminal.input("\t"); f.tui.renderNow();
 	f.terminal.input("\r"); f.tui.renderNow();
-	assert.match(readDetails(f.overlay), /PAGE-97-FULL-END/);
+	assert.match(await readDetails(f.overlay), /PAGE-97-FULL-END/);
 	f.terminal.input("\x1b"); f.tui.renderNow();
 	await page("Later history");
-	assert.match(plain(f.overlay), /History card 197/);
-	f.terminal.input("\x1bl"); f.tui.renderNow();
+	assert.match(plain(f.overlay), /History card 249/);
+	await page("Earlier history");
+	assert.match(plain(f.overlay), /History card 149/);
+	f.terminal.input("\x1bl"); await historyReady(f); f.tui.renderNow();
 	assert.match(plain(f.overlay), /History card 249/, "Latest returns to the current final page, not merely its old page's last row");
-	assert.doesNotMatch(plain(f.overlay), /History card 197/);
+	assert.doesNotMatch(plain(f.overlay), /History card 149/);
+	f.terminal.input("\t"); f.terminal.input("\x1b[H"); f.tui.renderNow();
+	assert.equal(f.controller.visit(f.key).anchor?.id, "assignment");
 	f.terminal.input("\x1b"); await opening;
+	const reopen = f.controller.open(f.key); await historyReady(f); f.tui.renderNow();
+	assert.match(plain(f.overlay), /History · 100 of .* · latest/, "synthetic saved anchors still load the latest physical page");
+	await page("Later history");
+	assert.equal(f.controller.task(f.key)!.page!.entries.length, 100, "Later on the latest page cannot replace it with a forward-past-end page");
+	const original = f.controller.historyPage.bind(f.controller);
+	let held = false, release!: () => void;
+	const delayed = new Promise<void>((resolve) => { release = resolve; });
+	t.mock.method(f.controller, "historyPage", async (...args) => {
+		const result = await original(...args);
+		if (args[1]?.before !== undefined) { held = true; await delayed; }
+		return result;
+	});
+	try {
+		const earlier = historyAction(f, "Earlier history");
+		await until(() => held, "earlier page is in flight");
+		f.terminal.input("\x1bl"); await historyReady(f); f.tui.renderNow();
+		assert.match(plain(f.overlay), /History card 249/, "explicit Latest supersedes a pending older-page request");
+		release(); await earlier; await turn(); f.tui.renderNow();
+		assert.match(plain(f.overlay), /History card 249/, "a late older-page result cannot overwrite Latest");
+		assert.doesNotMatch(plain(f.overlay), /History card 149/);
+	} finally { release(); t.mock.restoreAll(); }
+	f.terminal.input("\x1b"); await reopen;
 	assert.equal(f.calls.length, 0);
 });
 
 for (const loss of ["missing", "replacement", "truncation"]) test(`native detail requests show ${loss} failures without escaping TUI input or losing drafts`, async (t) => {
-	const f = fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
+	const f = await fixture(t), manager = f.childSessions[0], file = manager.getSessionFile();
 	assistant(manager, `Full selected body\n${"detail ".repeat(600)}SELECTED-END`);
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const opening = f.controller.open(f.key);
 	f.tui.start(); f.tui.renderNow();
 	f.terminal.input("Keep my unsent message");
@@ -1249,38 +1237,45 @@ for (const loss of ["missing", "replacement", "truncation"]) test(`native detail
 	} else fs.truncateSync(file, fs.readFileSync(file, "utf8").indexOf("\n") + 1);
 	assert.doesNotThrow(() => f.terminal.input("\r"), "detail failures cannot escape the native input listener");
 	f.tui.renderNow();
-	assert.match(plain(f.overlay), /Details unavailable/);
-	f.terminal.input("\x1b"); f.tui.renderNow();
+	await until(() => plain(f.overlay).includes("Details unavailable"), "selected detail validation reports source loss asynchronously");
+	f.terminal.input("\x1br"); f.tui.renderNow();
+	assert.equal(f.controller.visit(f.key).quote, undefined, "Reply cannot quote an unavailable-details notice as saved evidence");
+	assert.match(plain(f.overlay), /Quoted context unavailable; draft kept/);
 	assert.equal(f.overlay.editor.getExpandedText(), "Keep my unsent message");
 	assert.equal(f.calls.length, 0);
 	f.terminal.input("\x1b"); await opening;
 });
 
 for (const nativeAnswer of [false, true]) test(`completed structured-output history opens at the readable report without duplicates (native answer: ${nativeAnswer})`, async (t) => {
-	const f = fixture(t), manager = f.childSessions[0];
-	const report = "**The login fix is ready.**\n\n## Verification\n" + Array.from({ length: 40 }, (_, index) => `- Checked behavior ${index + 1}.`).join("\n");
+	const f = await fixture(t), manager = f.childSessions[0];
+	for (let index = 0; index < 140; index++) assistant(manager, `Earlier report activity ${index}`);
+	const report = "**The login fix is ready.**\n\n## Verification\n" + Array.from({ length: 120 }, (_, index) => `- Checked behavior ${index + 1}.`).join("\n");
 	const submitted = `${report}\n\n\`\`\`acceptance-report\n${JSON.stringify({ criteriaSatisfied: [{ id: "login", status: "satisfied", evidence: "ACCEPTANCE-DETAIL-END" }], noStagedFiles: true })}\n\`\`\``;
 	if (nativeAnswer) assistant(manager, submitted);
 	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "final-report", name: "structured_output", arguments: { value: { report: submitted } } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
 	manager.appendMessage({ role: "toolResult", toolCallId: "final-report", toolName: "structured_output", content: [{ type: "text", text: "Structured output captured." }], details: { stored: true }, isError: false, timestamp: Date.now() });
 	const original = fs.readFileSync(manager.getSessionFile(), "utf8");
 	saveAsyncRunResult(f.run.runId, { runtimeVersion: 2, id: f.run.runId, state: "complete", timestamp: Date.now(), results: [{ agent: "worker", task: f.run.children[0].task!, success: true, exitCode: 0, finalOutput: report, sessionFile: manager.getSessionFile(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } }] });
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const opening = f.controller.open(), view = f.overlay;
+	await historyReady(f);
 	const first = plain(view);
 	assert.match(first, /The login fix is ready\./, "a long finished report opens at its beginning, not its tail or serialized submission");
 	assert.doesNotMatch(first, /criteriaSatisfied|\\n|"value"|"report"/);
+	assert.match(view.scroll.render(88).map(stripTerminalSequences).join("\n"), /Checked behavior 120\./, "the selected report retains its full body beyond the indexed preview");
 	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(90);
 	view.handleInput("\x1b[A"); view.render(90);
 	view.handleInput("\r");
-	assert.match(readDetails(view), /ACCEPTANCE-DETAIL-END/, "the recorded structured payload is still inspectable in full details");
+	assert.match(await readDetails(view), /ACCEPTANCE-DETAIL-END/, "the recorded structured payload is still inspectable in full details");
 	view.handleInput("\x1br");
 	assert.match(f.controller.visit(f.key).quote!.text, /ACCEPTANCE-DETAIL-END/, "replying to the submission retains its actual recorded data");
 	view.handleInput("\x1bq");
 	view.handleInput("\x1b"); await opening;
 	const reopen = f.controller.open();
-	f.terminal.rows = 150;
-	f.overlay.handleInput("\x1bl");
+	f.terminal.rows = 200;
+	await historyReady(f);
+	assert.match(f.overlay.scroll.render(118).map(stripTerminalSequences).join("\n"), /Checked behavior 120\./, "reopening a saved report anchor retains the full report before Latest is requested");
+	f.overlay.handleInput("\x1bl"); await historyReady(f);
 	const all = plain(f.overlay, 120);
 	assert.equal(all.match(/The login fix is ready\./g)?.length, 1, "only one visible final answer, even when native history already contains it");
 	assert.doesNotMatch(all, /ACCEPTANCE-DETAIL-END|criteriaSatisfied/);
@@ -1290,7 +1285,7 @@ for (const nativeAnswer of [false, true]) test(`completed structured-output hist
 });
 
 test("native grouped tools retain recorded diffs, full context and old result-entry reading positions", async (t) => {
-	const f = fixture(t), manager = f.childSessions[0];
+	const f = await fixture(t), manager = f.childSessions[0];
 	for (let index = 0; index < 25; index++) assistant(manager, `Earlier history ${index}`);
 	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "saved-bash", name: "bash", arguments: { command: "printf NATIVE-BASH-RESULT", timeout: 15 } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
 	const resultId = manager.appendMessage({ role: "toolResult", toolCallId: "saved-bash", toolName: "bash", content: [{ type: "text", text: "NATIVE-BASH-RESULT" }], details: { receipt: "BASH-RAW-DETAIL" }, isError: false, timestamp: Date.now() });
@@ -1298,21 +1293,22 @@ test("native grouped tools retain recorded diffs, full context and old result-en
 	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "saved-edit", name: "edit", arguments: { path: file, oldText: "before", newText: "after" } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
 	manager.appendMessage({ role: "toolResult", toolCallId: "saved-edit", toolName: "edit", content: [{ type: "text", text: "Edited login.ts" }], details: { diff: "-before\n+after", receipt: "EDIT-RAW-DETAIL" }, isError: false, timestamp: Date.now() });
 	for (let index = 0; index < 25; index++) assistant(manager, `Later history ${index}`);
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const visit = f.controller.visit(f.key);
 	visit.readThrough = f.controller.task(f.key)!.history.at(-1)!.id;
 	visit.anchor = { id: resultId, line: 0 };
 	const opening = f.controller.open(), view = f.overlay;
+	await historyReady(f);
 	assert.match(plain(view), /\$ printf NATIVE-BASH-RESULT/, "restoring an old standalone result ID opens its grouped native tool card");
 	assert.doesNotMatch(plain(view), /"command"|"timeout"|BASH-RAW-DETAIL|Today's file|Could not find/);
 	view.handleInput("\t"); view.render(90); view.handleInput("\r");
-	assert.match(readDetails(view), /BASH-RAW-DETAIL/);
+	assert.match(await readDetails(view), /BASH-RAW-DETAIL/);
 	view.handleInput("\x1br");
 	assert.match(visit.quote!.text, /printf NATIVE-BASH-RESULT/);
 	assert.match(visit.quote!.text, /BASH-RAW-DETAIL/);
 	view.handleInput("\x1bq"); view.handleInput("\t"); view.render(90);
 	view.handleInput("\x1b[B"); view.render(90); view.handleInput("\r");
-	assert.match(readDetails(view), /-before[\s\S]*\+after/);
+	assert.match(await readDetails(view), /-before[\s\S]*\+after/);
 	view.handleInput("\x1br");
 	assert.match(visit.quote!.text, /EDIT-RAW-DETAIL/);
 	assert.match(visit.quote!.text, /-before\n\+after/);
@@ -1322,7 +1318,7 @@ test("native grouped tools retain recorded diffs, full context and old result-en
 });
 
 test("paired tool details show recorded diff on physical lines before raw metadata", async (t) => {
-	const f = fixture(t, "fullscreen"), manager = f.childSessions[0];
+	const f = await fixture(t, "fullscreen"), manager = f.childSessions[0];
 	f.terminal.resize(64, 78);
 	const file = path.join(f.cwd, "history-only.ts"), current = "Today's file does not match the old edit.\n";
 	fs.writeFileSync(file, current);
@@ -1330,17 +1326,17 @@ test("paired tool details show recorded diff on physical lines before raw metada
 	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "saved-apply", name: "apply_edits", arguments: { path: file, rewrite: "return after;\n" } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
 	manager.appendMessage({ role: "toolResult", toolCallId: "saved-apply", toolName: "apply_edits", content: [{ type: "text", text: "Rewrote history-only.ts." }], details: { diff, diffTruncated: false, warnings: ["RECORDED-WARNING"] }, isError: false, timestamp: Date.now() });
 	const original = fs.readFileSync(manager.getSessionFile(), "utf8");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const opening = f.controller.open(); f.tui.start(); f.tui.renderNow();
 	const view = f.overlay, width = f.overlayBounds.width;
 	assert.doesNotMatch(plain(view, width), /return before|RECORDED-WARNING|"rewrite"/, "ordinary cards stay compact");
-	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(width); view.handleInput("\r"); view.handleInput("\x1b[H");
+	view.handleInput("\t"); view.handleInput("\x1b[F"); view.render(width); view.handleInput("\r"); await readDetails(view, width); view.handleInput("\x1b[H");
 	const lines = view.render(width).map(stripTerminalSequences).map((line) => line.trim());
 	const removed = lines.indexOf("-return before;"), metadata = lines.indexOf('"call": {');
 	assert.ok(removed >= 0, "the recorded removal is a physical diff line, not an escaped JSON substring");
 	assert.equal(lines[removed + 1], "+return after;", "the recorded addition follows on its own line");
 	assert.ok(metadata > removed + 1, "readable diff appears before raw metadata");
-	const full = readDetails(view, width);
+	const full = await readDetails(view, width);
 	assert.match(full, /"rewrite"/); assert.match(full, /RECORDED-WARNING/);
 	view.handleInput("\x1br");
 	assert.ok(f.controller.visit(f.key).quote!.text.startsWith(`${diff}\n\n`));
@@ -1351,17 +1347,17 @@ test("paired tool details show recorded diff on physical lines before raw metada
 });
 
 test("a newly paired custom-tool result stays unread and supports native expansion without losing raw details", async (t) => {
-	const f = fixture(t, "fullscreen"), manager = f.childSessions[0];
+	const f = await fixture(t, "fullscreen"), manager = f.childSessions[0];
 	manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "custom-call", name: "custom_check", arguments: { check: "login", payload: { retained: "RAW-ARGUMENT" } } }], stopReason: "toolUse", provider: "fixture", model: "fixture", api: "openai-responses", usage, timestamp: Date.now() });
-	f.controller.refresh(true);
-	const pending = f.controller.open();
+	await refreshFixture(f);
+	const pending = f.controller.open(); await historyReady(f);
 	assert.match(plain(f.overlay), /result not recorded/);
 	f.overlay.handleInput("\x1b"); await pending;
 	const resultId = manager.appendMessage({ role: "toolResult", toolCallId: "custom-call", toolName: "custom_check", content: [{ type: "text", text: `Checks completed\n${"Checked a behavior\n".repeat(20)}FINAL-TOOL-LINE` }], details: { receipt: "RAW-RESULT" }, isError: false, timestamp: Date.now() });
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.equal(f.controller.task(f.key)!.unread, true, "a result is new activity even though it joins an existing tool card");
 	const opening = f.controller.open(), view = f.overlay;
-	f.terminal.rows = 60;
+	await historyReady(f); f.terminal.rows = 60;
 	const collapsed = view.render(90).map(stripTerminalSequences);
 	assert.match(collapsed.join("\n"), /Checks completed/);
 	assert.doesNotMatch(collapsed.join("\n"), /RAW-ARGUMENT|RAW-RESULT|FINAL-TOOL-LINE/);
@@ -1372,7 +1368,7 @@ test("a newly paired custom-tool result stays unread and supports native expansi
 	view.handleInput("\x0f"); view.handleInput("\x0f");
 	assert.doesNotMatch(plain(view), /FINAL-TOOL-LINE/, "native tool expansion keys can collapse it again");
 	view.handleInput("\r");
-	const details = readDetails(view);
+	const details = await readDetails(view);
 	assert.match(details, /RAW-ARGUMENT/); assert.match(details, /RAW-RESULT/); assert.match(details, /FINAL-TOOL-LINE/);
 	view.handleInput("\x1br");
 	assert.match(f.controller.visit(f.key).quote!.text, /RAW-ARGUMENT[\s\S]*RAW-RESULT/);
@@ -1381,14 +1377,14 @@ test("a newly paired custom-tool result stays unread and supports native expansi
 });
 
 test("twenty-task picker is framed, width-aware and searchable by the full assignment", async (t) => {
-	const f = fixture(t, "regular", 20);
+	const f = await fixture(t, "regular", 20);
 	f.terminal.columns = 140; f.terminal.rows = 40;
 	const label = "Fix authentication for team memberships across regions";
 	for (const child of f.run.children) {
 		child.label = child.index === 0 ? label : `Review behavior ${child.index}`;
 		saveQuestionContract(f.run.runId, child.index, { task: `Assignment ${child.index}\n${child.index === 19 ? "Distinctive assignment needle" : "Other work"}\nFULL-ASSIGNMENT-END` });
 	}
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const opening = f.controller.open(), picker = f.overlay;
 	const wide = picker.render(140).map(stripTerminalSequences);
 	assert.match(wide[0], /─{20}/, "the picker has a visible themed boundary");
@@ -1396,6 +1392,7 @@ test("twenty-task picker is framed, width-aware and searchable by the full assig
 	assert.ok(wide.some((line) => line.includes("→") && line.includes(label)), "the task column uses available width instead of clipping at 30 characters");
 	assert.match(wide.join("\n"), /worker/);
 	picker.handleInput("Distinctive assignment needle");
+	await until(() => !f.controller.listLoading && f.controller.listPage?.total === 1, "full assignment filter loaded");
 	const filtered = plain(picker, 140);
 	assert.match(filtered, /Review behavior 19/); assert.doesNotMatch(filtered, /Review behavior 18/);
 	assert.equal(picker.focused, true, "native filter input owns focus without touching the parent editor");
@@ -1411,7 +1408,7 @@ test("twenty-task picker is framed, width-aware and searchable by the full assig
 
 test("active Agents rows distinguish running, queued and needs-action work, then disappear after completion", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: new Date("2030-01-01T00:00:00Z") });
-	const f = fixture(t, "fullscreen", 4);
+	const f = await fixture(t, "fullscreen", 4);
 	for (const [index, label] of ["Fix login", "Queued docs", "Approve change", "Finished report"].entries()) f.run.children[index].label = label;
 	for (const index of [1, 2, 3]) f.status.steps[index].status = "pending";
 	saveRunStatus(f.run.runId, f.status);
@@ -1421,7 +1418,7 @@ test("active Agents rows distinguish running, queued and needs-action work, then
 	saveQuestionContract(f.run.runId, 2, { result: { ...result, acceptance: { status: "blocked", explicit: true, effectiveAcceptance, criteria: effectiveAcceptance.criteria, runtimeChecks: [], verifyRuns: [], childReport: { criteriaSatisfied: [{ id: "criterion-1", status: "blocked", evidence: "The approval control requires a person.", humanAction: "Confirm the approval control." }] } } } });
 	saveQuestionContract(f.run.runId, 3, { result });
 	f.controller.visit(`${f.run.runId}:3`).readThrough = null;
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const raw = f.strip.render(90), rows = raw.map(stripTerminalSequences);
 	assert.match(rows[0], /1 running/);
 	for (const label of ["Fix login", "Queued docs", "Approve change"]) assert.equal(rows.filter((line) => line.includes(label)).length, 1);
@@ -1438,12 +1435,13 @@ test("active Agents rows distinguish running, queued and needs-action work, then
 	visit.lastSentId = messageId;
 	visit.readThrough = f.childSessions[0].appendCustomMessageEntry("subagent-human-message", "Please check the API", true, { bodyText: "Please check the API", message: { id: messageId } });
 	assistant(f.childSessions[0], "The API is unchanged.");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.match(plain(f.strip).split("\n").find((line) => line.includes("Fix login"))!, /replied/, "an actual child response retains its existing distinction from other unread activity");
 	f.controller.pin(f.key); f.controller.visit(f.key).draft = "Retained private draft";
-	f.complete();
+	await f.complete();
 	assert.equal(plain(f.strip), "", "no Agents area, results badge, completed row or finished pin remains when all work finishes");
 	f.controller.start(f.ctx);
+	await refreshFixture(f);
 	assert.equal(plain(f.strip), ""); assert.equal(f.controller.pinned, f.key); assert.equal(f.controller.visit(f.key).draft, "Retained private draft");
 	assert.equal(f.controller.task(`${f.run.runId}:3`)!.unread, true, "hiding the area does not discard unread completed history");
 	const opening = f.commands.get("agents").handler("", f.ctx);
@@ -1453,10 +1451,10 @@ test("active Agents rows distinguish running, queued and needs-action work, then
 });
 
 for (const [children, columns, rows] of [[1, 90, 28], [2, 90, 28], [2, 24, 18]]) test(`native entrance pointer toggles the same spot for ${children === 1 ? "a conversation" : "the picker and a conversation"} (${columns}×${rows})`, async (t) => {
-	const f = fixture(t, "fullscreen", children);
+	const f = await fixture(t, "fullscreen", children);
 	f.terminal.resize(columns, rows);
 	for (let index = 0; index < 25; index++) assistant(f.childSessions[0], `Prior history ${index}\n${"Readable earlier detail. ".repeat(6)}`);
-	f.controller.refresh(true); f.tui.start(); f.tui.renderNow();
+	await refreshFixture(f); f.tui.start(); f.tui.renderNow();
 	const width = f.terminal.columns;
 	// The native fixed dock contains this widget, the four-row parent draft, and a one-row footer.
 	const y = f.terminal.rows - f.strip.render(width).length - f.mainEditor.render(width).length - 1, x = 5;
@@ -1498,7 +1496,7 @@ for (const [children, columns, rows] of [[1, 90, 28], [2, 90, 28], [2, 24, 18]])
 });
 
 test("short native conversation keeps reply, pending-send notice, draft and actions visible after pinning", async (t) => {
-	const f = fixture(t, "fullscreen", 4), draft = "Please keep the API unchanged.", deliveries = [];
+	const f = await fixture(t, "fullscreen", 4), draft = "Please keep the API unchanged.", deliveries = [];
 	f.terminal.resize(24, 18);
 	const opening = f.controller.open(f.key);
 	f.tui.start(); f.tui.renderNow();
@@ -1506,7 +1504,8 @@ test("short native conversation keeps reply, pending-send notice, draft and acti
 		deliveries.push(payload);
 		f.pi.events.emit("subagent:live-intercom-delivery", { requestId: payload.requestId, accepted: true, delivered: true, messageId: payload.messageId });
 	});
-	f.terminal.input(draft); f.terminal.input("\x1br"); f.tui.renderNow();
+	f.terminal.input(draft); f.terminal.input("\x1br");
+	await until(() => Boolean(f.controller.visit(f.key).quote), "full quoted context loaded"); f.tui.renderNow();
 	f.terminal.input("\r"); await turn();
 	f.terminal.input("\r"); await turn();
 	f.terminal.input("\x1bp"); f.tui.renderNow();
@@ -1559,7 +1558,7 @@ test("configured Agents shortcut registration, hint and native overlay closing u
 	const previous = fs.existsSync(configPath) ? fs.readFileSync(configPath) : undefined;
 	fs.writeFileSync(configPath, JSON.stringify({ shortcut: "ctrl+shift+k" }));
 	t.after(() => { if (previous) fs.writeFileSync(configPath, previous); else fs.rmSync(configPath); });
-	const f = fixture(t, "fullscreen", 2);
+	const f = await fixture(t, "fullscreen", 2);
 	const { createExtensionRuntime } = await import("@earendil-works/pi-coding-agent");
 	const { loadExtensionFromFactory } = await import(new URL("./core/extensions/loader.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
 	const { default: registerIntercom } = await import("../../src/pi-intercom/index.ts");
@@ -1584,7 +1583,7 @@ test("configured Agents shortcut registration, hint and native overlay closing u
 });
 
 for (const surface of ["widget", "picker"]) test(`64-column ${surface} keeps task identity, full state and unread badges ahead of activity`, async (t) => {
-	const f = fixture(t, "fullscreen", 2);
+	const f = await fixture(t, "fullscreen", 2);
 	f.terminal.resize(64, 78);
 	f.run.children[0].label = "Build native Agents experience";
 	f.run.children[1].label = "Review current UX changes and preserve every public interface";
@@ -1593,7 +1592,7 @@ for (const surface of ["widget", "picker"]) test(`64-column ${surface} keeps tas
 		...(child.index === 0 ? { currentTool: "bash", currentToolArgs: "export VERY_VERBOSE_COMMAND_PREVIEW=the_command_must_not_replace_task_identity; printf finished" } : {}) }));
 	saveRunStatus(f.run.runId, f.status);
 	for (const child of f.run.children) f.controller.visit(`${f.run.runId}:${child.index}`).readThrough = null;
-	f.controller.refresh(true); f.tui.start();
+	await refreshFixture(f); f.tui.start();
 	const opening = surface === "picker" ? f.controller.open() : undefined;
 	f.tui.renderNow();
 	const component = surface === "picker" ? f.overlay : f.strip, width = surface === "picker" ? f.overlayBounds.width : 64;
@@ -1608,13 +1607,13 @@ for (const surface of ["widget", "picker"]) test(`64-column ${surface} keeps tas
 		assert.match(plain(component, width), /bash export/, "selected preview retains activity detail");
 		f.status.steps[0].currentToolArgs = "export UPDATED_ACTIVITY_PROOF=1";
 		saveRunStatus(f.run.runId, f.status);
-		f.controller.refresh(true); f.tui.renderNow();
+		await refreshFixture(f); f.tui.renderNow();
 		assert.match(plain(component, width), /UPDATED_ACTIVITY_PROOF/, "selected activity stays fresh when state and badge have not changed");
 	} else assert.match(rows[0], /2 running/);
 	const messageId = randomUUID(), visit = f.controller.visit(f.key);
 	visit.lastSentId = messageId;
 	visit.readThrough = f.childSessions[0].appendCustomMessageEntry("subagent-human-message", "Keep the API", true, { bodyText: "Keep the API", message: { id: messageId } });
-	assistant(f.childSessions[0], "The API is preserved."); f.controller.refresh(true); f.tui.renderNow();
+	assistant(f.childSessions[0], "The API is preserved."); await refreshFixture(f); f.tui.renderNow();
 	const repliedRows = component.render(width).map(stripTerminalSequences);
 	assert.match(repliedRows.find((line) => line.includes("Build")) ?? "", surface === "picker" ? /Build native Agents[\s\S]*working · replied/ : /Build native Agents[\s\S]*· replied/);
 	assert.match(repliedRows.find((line) => line.includes("Review current")) ?? "", surface === "picker" ? /Review current UX[\s\S]*working · new/ : /Review current UX[\s\S]*· new/);
@@ -1626,21 +1625,22 @@ for (const surface of ["widget", "picker"]) test(`64-column ${surface} keeps tas
 	assert.equal(f.calls.length, 0); assert.deepEqual(f.interrupts, [0, 0]);
 });
 
-test("native delivery clears an obsolete saved duplicate notice after reload, not unrelated notices", (t) => {
-	const f = fixture(t), messageId = randomUUID();
+test("native delivery clears an obsolete saved duplicate notice after reload, not unrelated notices", async (t) => {
+	const f = await fixture(t), messageId = randomUUID();
 	f.childSessions[0].appendCustomMessageEntry("subagent-human-message", "Delivered direction", true, { bodyText: "Delivered direction", message: { id: messageId } });
 	for (const [notice, expected] of [["This message is already waiting for the child. You can keep working or write a different message.", undefined], ["Changes unavailable: repository could not be read", "Changes unavailable: repository could not be read"]]) {
 		f.controller.dispose();
 		f.parent.appendCustomEntry("subagent-view", { ownerSessionId: f.parent.getSessionId(), visits: [[f.key, { draft: "", outbox: [], lastSentId: messageId, notice }]] });
 		f.controller.start(f.ctx);
+		await refreshFixture(f);
 		assert.equal(f.controller.visit(f.key).notice, expected);
 	}
 });
 
 test("completion during compose keeps the draft, and viewing a finished child never continues it", async (t) => {
-	const f = fixture(t);
+	const f = await fixture(t);
 	const opening = f.controller.open(); const view = f.overlay;
-	view.handleInput("Follow up after completion"); f.complete();
+	view.handleInput("Follow up after completion"); await f.complete();
 	view.handleInput("\r"); await turn();
 	assert.equal(f.calls.length, 0);
 	assert.equal(view.editor.getExpandedText(), "Follow up after completion");
@@ -1656,8 +1656,8 @@ test("completion during compose keeps the draft, and viewing a finished child ne
 });
 
 test("a first foreground launch updates the strip without a manual open", async (t) => {
-	const f = fixture(t), mock = createMockPi(); mock.install();
-	f.state.ownedRuns!.clear(); f.controller.refresh(true);
+	const f = await fixture(t), mock = createMockPi(); mock.install();
+	f.state.ownedRuns!.clear(); await refreshFixture(f);
 	const release = path.join(f.cwd, "first-launch-release");
 	mock.onCall({ waitForFile: release, output: "Fresh foreground completed" });
 	const pending = f.executor.execute("first-launch", { agent: "worker", task: "A first foreground task", label: "Fresh foreground", async: false, artifacts: false, output: false }, undefined, undefined, f.ctx);
@@ -1673,8 +1673,8 @@ test("a first foreground launch updates the strip without a manual open", async 
 });
 
 test("new async chain preserves its launch identity, draft and pin through first status persistence", async (t) => {
-	const f = fixture(t), mock = createMockPi(); mock.install();
-	f.state.ownedRuns!.clear(); f.controller.refresh(true);
+	const f = await fixture(t), mock = createMockPi(); mock.install();
+	f.state.ownedRuns!.clear(); await refreshFixture(f);
 	const release = path.join(f.cwd, "startup-release"), draft = "Keep the existing public API";
 	mock.onCall({ matchArgsIncludes: "Fix login with original assignment", waitForFile: release, output: "Fixed" });
 	let initial, opening, runId: string | undefined;
@@ -1715,8 +1715,8 @@ test("new async chain preserves its launch identity, draft and pin through first
 });
 
 test("the first native streaming response is readable before its final assistant message is saved", async (t) => {
-	const f = fixture(t), native = nativeChild(f.cwd, "streaming"), { release } = native;
-	f.state.ownedRuns!.clear(); f.controller.refresh(true);
+	const f = await fixture(t), native = nativeChild(f.cwd, "streaming"), { release } = native;
+	f.state.ownedRuns!.clear(); await refreshFixture(f);
 	const requested = "requested/vendor/streaming:high";
 	const pending = f.executor.execute("initial-stream", { agent: "worker", model: requested, task: "Read initial streaming output", async: false, artifacts: false, output: false }, undefined, undefined, f.ctx);
 	t.after(async () => { fs.writeFileSync(release, "released"); await pending; native.restore(); });
@@ -1734,7 +1734,7 @@ test("the first native streaming response is readable before its final assistant
 		"early native model metadata supersedes requested display without inventing an assistant completion");
 	const receipt = JSON.parse(fs.readFileSync(`${release}.json`, "utf8"));
 	assert.equal(receipt.events.some((event) => event.type === "message_end" && event.role === "assistant"), false);
-	const opening = f.controller.open(task.key);
+	const opening = f.controller.open(task.key); await historyReady(f);
 	assert.match(plain(f.overlay), /First live text/);
 	assert.doesNotMatch(plain(f.overlay), /Conversation unavailable|Saved conversation unavailable|ENOENT/);
 	f.overlay.handleInput("Draft for after the first response");
@@ -1745,24 +1745,25 @@ test("the first native streaming response is readable before its final assistant
 	const completed = SessionManager.open(task.child.sessionFile!);
 	for (let index = 0; index < 30; index++) assistant(completed, `Later response ${index}\n${"Later detail ".repeat(15)}`);
 	f.controller.start(f.ctx);
+	await refreshFixture(f);
 	assert.equal(f.controller.task(task.key)!.unavailable, undefined);
 	assert.match(f.controller.task(task.key)!.model.summary, /^saved: feedback-fixture\/faux-1\b/, "native saved choices replace requested display without rereading a later continuation");
 	assert.equal((await pending).details.results[0].model, requested, "display must not change the candidate-first execution result");
 	assert.equal(f.controller.task(task.key)!.unread, true, "visiting before native message_end must retain the before-first-saved-entry boundary after completion and reload");
 	assert.equal(plain(f.strip), "", "completed unread history and a saved pin do not keep the active area visible");
 	assert.equal(f.controller.pinned, task.key);
-	const reopen = f.controller.open(task.key);
+	const reopen = f.controller.open(task.key); await historyReady(f);
 	assert.match(plain(f.overlay), /Second live text block continues before message end\./, "reopening must show the first finished reply, not the tail of later history");
 	assert.equal(f.overlay.editor.getText(), "Draft for after the first response");
 	f.overlay.handleInput("\x1b"); await reopen;
-	fs.renameSync(task.child.sessionFile!, `${task.child.sessionFile}.removed`); f.controller.refresh(true);
+	fs.renameSync(task.child.sessionFile!, `${task.child.sessionFile}.removed`); await refreshFixture(f);
 	assert.match(f.controller.tasks[0]!.unavailable!, /Saved conversation unavailable/, "a missing completed history remains an honest error");
 });
 
 test("explicit Continue uses the saved launch and follows the active successor without a duplicate runtime", async (t) => {
-	const f = fixture(t), native = nativeChild(f.cwd, "tool"), agent = makeAgent("worker", { model: "feedback-fixture/faux-1", completionGuard: false, output: false, extensions: [] });
+	const f = await fixture(t), native = nativeChild(f.cwd, "tool"), agent = makeAgent("worker", { model: "feedback-fixture/faux-1", completionGuard: false, output: false, extensions: [] });
 	saveQuestionContract(f.run.runId, 0, { launch: { agent, systemPrompt: "Saved effective instructions", skills: [], model: agent.model, modelCandidates: [agent.model], cwd: f.cwd, context: "fresh", artifacts: false, output: false, outputMode: "inline", share: false } });
-	f.complete();
+	await f.complete();
 	const opening = f.controller.open(f.key), view = f.overlay;
 	view.handleInput("Continue after my check"); view.handleInput("\r"); await turn();
 	assert.equal(f.calls.length, 0); assert.equal(view.editor.getText(), "Continue after my check");
@@ -1772,11 +1773,12 @@ test("explicit Continue uses the saved launch and follows the active successor w
 	assert.notEqual(successor.run.runId, f.run.runId);
 	t.after(async () => { fs.writeFileSync(native.release, "released"); await until(() => fs.existsSync(path.join(getRunMetadataDir(successor.run.runId), "result.json")), "continuation cleanup"); native.restore(); });
 	await until(() => fs.existsSync(`${native.release}.json`) && JSON.parse(fs.readFileSync(`${native.release}.json`, "utf8")).events.some((event) => event.type === "tool_execution_start"), "native continuation must run");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.equal(f.controller.task(f.key)!.child.sessionFile, f.run.children[0].sessionFile);
-	assert.equal(f.controller.task(f.key)!.child.launch!.systemPrompt, "Saved effective instructions");
+	assert.equal(ownedRunView(f.state.ownedRuns!.get(successor.run.runId)!, f.state).children[0]!.launch!.systemPrompt, "Saved effective instructions");
 	assert.equal(view.editor.getText(), "");
-	assert.match(f.controller.task(f.key)!.history.map((item) => item.text).join("\n"), /direct user follow-up \(human origin\)[\s\S]*Continue after my check/);
+	const direction = f.controller.task(f.key)!.history.find((item) => item.kind === "user" && item.text.includes("direct user follow-up"))!;
+	assert.match((await direction.load!()).text, /direct user follow-up \(human origin\)[\s\S]*Continue after my check/);
 	const deliveries = [];
 	f.pi.events.on("subagent:live-intercom", (payload) => { deliveries.push(payload); f.pi.events.emit("subagent:live-intercom-delivery", { requestId: payload.requestId, delivered: true, accepted: true, messageId: payload.messageId }); });
 	view.handleInput("More direction to the active continuation"); view.handleInput("\x1bc"); await turn();
@@ -1787,15 +1789,15 @@ test("explicit Continue uses the saved launch and follows the active successor w
 	assert.equal(f.state.ownedRuns!.size, 2);
 	fs.writeFileSync(native.release, "released");
 	await until(() => fs.existsSync(path.join(getRunMetadataDir(successor.run.runId), "result.json")), "saved continuation result");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.equal(f.controller.task(f.key)!.child.state, "completed");
 	assert.match(f.controller.task(f.key)!.history.at(-1)!.text, /Synthetic child finished normally/);
 	view.handleInput("\x1b"); await opening;
 });
 
 test("answering in the view releases the real native durable question with human provenance", async (t) => {
-	const f = fixture(t), native = nativeChild(f.cwd, "question");
-	f.state.ownedRuns!.clear(); f.controller.refresh(true);
+	const f = await fixture(t), native = nativeChild(f.cwd, "question");
+	f.state.ownedRuns!.clear(); await refreshFixture(f);
 	const pending = f.executor.execute("question", { agent: "worker", task: "Ask for the required choice", async: false, artifacts: false, output: false }, undefined, undefined, f.ctx);
 	t.after(async () => { await pending; native.restore(); });
 	await until(() => { f.controller.refresh(true); return Boolean(f.controller.tasks[0]?.question); }, "real native durable question");
@@ -1810,7 +1812,7 @@ test("answering in the view releases the real native durable question with human
 	assert.equal(f.calls[0].questionId, question.questionId);
 	await pending;
 	await until(() => readQuestionState(question).delivery?.kind === "live", "native child consumes the saved answer");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.equal(readQuestionState(question).delivery?.kind, "live");
 	assert.equal(f.state.ownedRuns!.size, 1, "answering a live question starts no continuation");
 	assert.match(f.controller.task(task.key)!.history.map((item) => item.text).join("\n"), /Direct user answer \(human origin\)[\s\S]*Use the first path/);
@@ -1819,8 +1821,8 @@ test("answering in the view releases the real native durable question with human
 });
 
 test("foreground chain parallel updates retain both live children's unfinished text", async (t) => {
-	const f = fixture(t), native = nativeChild(f.cwd, "streaming");
-	f.state.ownedRuns!.clear(); f.controller.refresh(true);
+	const f = await fixture(t), native = nativeChild(f.cwd, "streaming");
+	f.state.ownedRuns!.clear(); await refreshFixture(f);
 	const seen = new Set<number>(); let observation;
 	const pending = f.executor.execute("parallel-stream", { chain: [{ parallel: [{ agent: "worker", task: "A streaming", output: false }, { agent: "worker", task: "B streaming", output: false }] }], async: false, artifacts: false }, undefined, (update) => {
 		for (const progress of update.details.progress ?? []) if (progress.streamingText?.includes("Second live text")) seen.add(progress.index);
@@ -1834,13 +1836,13 @@ test("foreground chain parallel updates retain both live children's unfinished t
 });
 
 for (const background of [false, true]) test(`${background ? "background" : "foreground"} queued child is waiting to start, keeps its draft, and cannot create duplicate continuation`, async (t) => {
-	const f = fixture(t), native = nativeChild(f.cwd, "tool"), releaseA = `${native.release}-0`, releaseB = `${native.release}-1`;
+	const f = await fixture(t), native = nativeChild(f.cwd, "tool"), releaseA = `${native.release}-0`, releaseB = `${native.release}-1`;
 	process.env.PI_FEEDBACK_RELEASE_FILE = `${native.release}-{index}`;
-	f.state.ownedRuns!.clear(); f.controller.refresh(true);
+	f.state.ownedRuns!.clear(); await refreshFixture(f);
 	const pending = f.executor.execute("queued-child", { tasks: [{ agent: "worker", task: "Held original A", output: false }, { agent: "worker", task: "Queued original B", output: false }], concurrency: 1, async: background, artifacts: false }, undefined, undefined, f.ctx);
 	t.after(async () => { fs.writeFileSync(releaseA, "released"); fs.writeFileSync(releaseB, "released"); await pending; if (background) await until(() => [...f.state.ownedRuns!.keys()].every((id) => fs.existsSync(path.join(getRunMetadataDir(id), "result.json"))), "queued workflow cleanup"); native.restore(); });
 	await until(() => fs.existsSync(`${releaseA}.json`) && JSON.parse(fs.readFileSync(`${releaseA}.json`, "utf8")).events.some((event) => event.type === "tool_execution_start"), "first native child holds the queue");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const task = f.controller.tasks.find((task) => task.child.index === 1)!;
 	assert.equal(task.child.state, "live");
 	assert.equal(task.child.activity?.status, "pending");
@@ -1855,7 +1857,7 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 	view.handleInput("\x1bOQ"); assert.doesNotMatch(plain(view), /Continue with this message|Stop this agent only/); view.handleInput("\x1b");
 	fs.writeFileSync(releaseA, "released");
 	await until(() => fs.existsSync(`${releaseB}.json`) && JSON.parse(fs.readFileSync(`${releaseB}.json`, "utf8")).events.some((event) => event.type === "tool_execution_start"), "queued B must start normally");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.doesNotMatch(plain(view), /waiting to start/i, "a prior pending action must not leave a stale state notice once B starts");
 	fs.writeFileSync(releaseB, "released"); await pending;
 	if (background) await until(() => fs.existsSync(path.join(getRunMetadataDir(task.run.runId), "result.json")), "queued workflow publishes its result");
@@ -1868,8 +1870,8 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 });
 
 for (const background of [false, true]) test(`${background ? "background" : "foreground"} dynamic expansion preserves a later assignment's open view, draft, pin and controls`, async (t) => {
-	const f = fixture(t), mock = createMockPi(); mock.install();
-	f.state.ownedRuns!.clear(); f.controller.refresh(true);
+	const f = await fixture(t), mock = createMockPi(); mock.install();
+	f.state.ownedRuns!.clear(); await refreshFixture(f);
 	const discover = path.join(f.cwd, "discover-release"), reviews = path.join(f.cwd, "reviews-release"), final = path.join(f.cwd, "final-release");
 	mock.onCall({ matchArgsIncludes: "Discover two targets", waitForFile: discover, structuredOutput: { items: [{ name: "alpha" }, { name: "beta" }] }, output: "Targets ready" });
 	mock.onCall({ matchArgsIncludes: "Review alpha", waitForFile: reviews, output: "Alpha review complete" });
@@ -1889,7 +1891,7 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 		mock.uninstall();
 	});
 	await until(() => mock.callCount() === 1, "discovery starts before materialization");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const later = f.controller.tasks.find((task) => task.label === "Finalize")!;
 	assert.ok(later, "later pending assignments must remain visible");
 	runId = later.run.runId;
@@ -1899,7 +1901,7 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 	f.pi.events.on("subagent:live-intercom", (payload) => { deliveries.push(payload); f.pi.events.emit("subagent:live-intercom-delivery", { requestId: payload.requestId, accepted: true, delivered: true, messageId: payload.messageId }); });
 	fs.writeFileSync(discover, "released");
 	await until(() => mock.callCount() === 3, "both materialized reviewers start");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	await f.controller.send(later.key, view.editor.getText());
 	await f.controller.stop(later.key);
 	t.diagnostic(JSON.stringify({ phase: "expanded", background, key: later.key, task: f.controller.task(later.key)?.child.task, labels: f.controller.tasks.map((task) => task.label), deliveries: deliveries.map((payload) => payload.to), controls: f.calls }));
@@ -1912,11 +1914,12 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 	assert.doesNotMatch(f.controller.task(later.key)!.model.summary, /reviews\/model/, "the shifted pending assignment must not inherit a reviewer's model");
 	view.handleInput("\x1b"); await opening;
 	restoreOwnedRuns(f.state, f.ctx); f.controller.start(f.ctx);
+	await refreshFixture(f);
 	assert.equal(f.controller.pinned, later.key);
 	assert.equal(f.controller.visit(later.key).draft, "Directions intended only for Finalize");
 	fs.writeFileSync(reviews, "released");
 	await until(() => mock.callCount() === 4, "original final assignment starts normally");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const active = f.controller.task(later.key)!;
 	assert.equal(active.child.agent, "worker"); assert.match(active.child.task!, /^Finalize from/);
 	assert.equal(active.model.summary, "selected: final/model", "model metadata follows the workflow node after its child index changes");
@@ -1930,6 +1933,7 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 	await pending;
 	if (background) await until(() => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "selected final child stops");
 	restoreOwnedRuns(f.state, f.ctx); f.controller.start(f.ctx);
+	await refreshFixture(f);
 	assert.equal(f.controller.task(later.key)!.child.state, "paused");
 	assert.equal(f.controller.visit(later.key).draft, "Directions intended only for Finalize");
 	assert.equal(f.controller.pinned, later.key);
@@ -1938,7 +1942,7 @@ for (const background of [false, true]) test(`${background ? "background" : "for
 
 for (const identity of ["graph", "session", "missing"]) test(`restored legacy dynamic assignments ${identity === "missing" ? "keep unidentifiable drafts unavailable" : `recover saved ${identity} identities`} instead of reusing child slots`, async (t) => {
 	const graphAvailable = identity === "graph";
-	const f = fixture(t), id = randomUUID(), asyncDir = path.join(ASYNC_DIR, id);
+	const f = await fixture(t), id = randomUUID(), asyncDir = path.join(ASYNC_DIR, id);
 	f.state.ownedRuns!.clear();
 	fs.mkdirSync(asyncDir, { recursive: true });
 	const finalSession = path.join(f.cwd, "legacy-final.jsonl");
@@ -1954,6 +1958,7 @@ for (const identity of ["graph", "session", "missing"]) test(`restored legacy dy
 	const save = () => fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify(status));
 	save(); f.state.asyncJobs.set(id, { asyncId: id, asyncDir, status: "running" });
 	restoreOwnedRuns(f.state, f.ctx); f.controller.start(f.ctx);
+	await refreshFixture(f);
 	const later = f.controller.tasks.find((task) => task.run.runId === id && task.child.index === 2)!;
 	const opening = f.controller.open(later.key), view = f.overlay;
 	view.handleInput("Only Finalize should see this"); view.handleInput("\x1bp");
@@ -1963,7 +1968,7 @@ for (const identity of ["graph", "session", "missing"]) test(`restored legacy dy
 	graph.nodes[1].children = ["alpha", "beta"].map((name, index) => ({ id: `step-1-item-${name}`, kind: "agent", agent: "reviewer", label: `Review ${name}`, status: "running", stepIndex: 1, flatIndex: index + 1, itemKey: name }));
 	status.steps = [{ ...status.steps[0], status: "complete" }, ...["alpha", "beta"].map((name) => ({ agent: "reviewer", label: `Review ${name}`, status: "running", sessionFile: f.childSessions[0].getSessionFile() })), { agent: "worker", label: "Finalize", status: "pending", sessionFile: finalSession }];
 	for (const index of [1, 2]) saveQuestionContract(id, index, { pid: process.pid, task: `Review ${index === 1 ? "alpha" : "beta"}` });
-	save(); f.controller.refresh(true);
+	save(); await refreshFixture(f);
 	await f.controller.send(later.key, f.controller.visit(later.key).draft);
 	await f.controller.stop(later.key);
 	assert.equal(deliveries.length, 0, "a restored legacy draft must not be sent to a reviewer occupying its former slot");
@@ -1975,7 +1980,7 @@ for (const identity of ["graph", "session", "missing"]) test(`restored legacy dy
 		assert.equal(f.controller.task(later.key)!.child.activity?.status, "pending");
 		status.steps[1].status = status.steps[2].status = "complete"; status.steps[3].status = "running";
 		saveQuestionContract(id, 3, { pid: process.pid, task: "Finalize the reviews", sessionFile: finalSession });
-		save(); f.controller.refresh(true);
+		save(); await refreshFixture(f);
 		await f.controller.send(later.key, f.controller.visit(later.key).draft);
 		assert.equal(deliveries.length, 1);
 		assert.equal(deliveries[0].to, `subagent-worker-${id}-4`);
@@ -1988,6 +1993,7 @@ for (const identity of ["graph", "session", "missing"]) test(`restored legacy dy
 		view.handleInput("\x1b"); await opening;
 		status.workflowGraph = graph; save();
 		restoreOwnedRuns(f.state, f.ctx); f.controller.start(f.ctx);
+		await refreshFixture(f);
 		const reopen = f.controller.open(later.key);
 		assert.ok(f.overlay instanceof AgentConversation, "an unmatched saved draft remains inspectable after reliable graph data becomes available");
 		assert.equal(f.overlay.editor.getText(), "Only Finalize should see this");
@@ -2001,11 +2007,11 @@ for (const identity of ["graph", "session", "missing"]) test(`restored legacy dy
 });
 
 test("native history reflow preserves the same reading message and draft across terminal widths", async (t) => {
-	const f = fixture(t); f.terminal.columns = 99; f.terminal.rows = 34;
+	const f = await fixture(t); f.terminal.columns = 99; f.terminal.rows = 34;
 	for (let index = 0; index < 25; index++) assistant(f.childSessions[0], `HISTORY-${index}\n${`Message ${index} contains an inspectable long line. `.repeat(9)}`);
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	const opening = f.controller.open(), view = f.overlay;
-	view.handleInput("Unsent while reading"); view.render(99);
+	await historyReady(f); view.handleInput("Unsent while reading"); view.render(99);
 	view.handleInput("\x1b[5~"); view.handleInput("\x1b[5~"); view.render(99);
 	const anchor = f.controller.visit(f.key).anchor!.id;
 	f.terminal.columns = 64; f.terminal.rows = 24; view.render(64);
@@ -2017,7 +2023,7 @@ test("native history reflow preserves the same reading message and draft across 
 });
 
 test("native word deletion stays native while composing and F2 retains full-details access", async (t) => {
-	const f = fixture(t), opening = f.controller.open();
+	const f = await fixture(t), opening = f.controller.open();
 	const view = f.overlay;
 	view.handleInput("one two"); view.handleInput("\x01"); view.handleInput("\x1bd");
 	assert.equal(view.editor.getText(), " two");
@@ -2028,31 +2034,32 @@ test("native word deletion stays native while composing and F2 retains full-deta
 });
 
 test("reopen starts at the first real unread reply rather than already-read history", async (t) => {
-	const f = fixture(t);
+	const f = await fixture(t);
 	for (let i = 0; i < 25; i++) assistant(f.childSessions[0], `Read earlier ${i}`);
-	f.controller.refresh(true);
-	const opening = f.controller.open();
+	await refreshFixture(f);
+	const opening = f.controller.open(); await historyReady(f);
 	f.overlay.render(90); const highWater = f.controller.visit(f.key).readThrough;
 	f.overlay.handleInput("\x1b[5~"); f.overlay.render(90);
 	assert.equal(f.controller.visit(f.key).readThrough, highWater);
 	f.overlay.handleInput("\x1b"); await opening;
 	const first = assistant(f.childSessions[0], "FIRST UNREAD REPLY");
 	assistant(f.childSessions[0], "Later unread activity\n".repeat(30));
-	f.controller.refresh(true);
-	const reopen = f.controller.open();
+	await refreshFixture(f);
+	const reopen = f.controller.open(); await historyReady(f);
 	assert.match(plain(f.overlay), /FIRST UNREAD REPLY/);
 	assert.equal(f.controller.visit(f.key).anchor?.id, `${first}:0`);
 	f.overlay.handleInput("\x1b"); await reopen;
-	f.controller.pin(f.key); f.complete();
+	f.controller.pin(f.key); await f.complete();
 	assert.equal(plain(f.strip), "", "finished agents and pins do not keep the live widget visible");
 	assert.equal(f.controller.pinned, f.key, "the explicit pin is retained for reopening, not deleted");
 });
 
 test("same-parent restore retains drafts/pin and a replaced session ignores late delivery", async (t) => {
-	const f = fixture(t);
+	const f = await fixture(t);
 	const opening = f.controller.open();
 	f.overlay.handleInput("Preserved draft"); f.overlay.handleInput("\x1bp"); f.overlay.handleInput("\x1b"); await opening;
 	f.controller.start(f.ctx);
+	await refreshFixture(f);
 	assert.equal(f.controller.visit(f.key).draft, "Preserved draft");
 	assert.equal(f.controller.pinned, f.key);
 	let delivery;
@@ -2071,4 +2078,150 @@ test("same-parent restore retains drafts/pin and a replaced session ignores late
 	assert.equal(f.controller.pinned, undefined);
 	assert.equal(fork.getEntries().length, entries, "late delivery cannot append into a replaced session");
 	assert.equal(f.sent.length, 0, "no stale breadcrumb");
+});
+
+async function indexedReady(f): Promise<void> {
+	await f.ready;
+	const index = await runHistoryIndex(f.state);
+	await index.setOwner({ ownerSessionId: f.parent.getSessionId(), ownerSessionFile: f.parent.getSessionFile(), runs: [...f.state.ownedRuns.values()], foregroundRuns: [...f.state.foregroundRuns.values()] });
+	try { await index.refresh(); }
+	catch (error) {
+		assert.equal(error.code, "DEGRADED", "only honest absent native sources are expected in restored/unstarted fixtures");
+		const runs = await index.listRuns({ limit: 100 });
+		assert.equal(runs.freshness.pending, 0);
+		let missing = 0;
+		for (const run of runs.rows) for (const child of run.children) {
+			assert.equal(run.diagnosis, undefined, "canonical run projection must succeed");
+			const page = await index.historyPage({ runId: run.runId, index: child.index });
+			if (child.sessionFile && !fs.existsSync(child.sessionFile)) {
+				assert.equal(page.sourceState, "missing"); assert.ok(page.unavailable); missing++;
+			} else assert.ok(["current", "unlinked"].includes(page.sourceState), `unexpected indexed source ${page.sourceState}: ${page.unavailable}`);
+		}
+		assert.ok(missing > 0, "DEGRADED requires an independently verified missing source");
+	}
+	await f.controller.refresh();
+	await f.controller.refresh();
+}
+
+async function refreshFixture(f): Promise<void> {
+	await indexedReady(f);
+	for (const task of f.controller.tasks) {
+		if (task.child.missingSession && task.child.state !== "live") continue;
+		const value = await f.controller.historyPage(task.key);
+		if (!value) continue;
+		const history = task.child.state !== "live" && task.child.result ? withFinalResult(value.history, getSingleResultOutput(task.child.result), task.run.runId, task.run.updatedAt) : value.history;
+		task.history = history.items; task.historyIds = history.entryIds; task.page = value.page; task.finalId = history.finalId;
+	}
+	if (f.tui.hasOverlay() && f.overlay instanceof AgentConversation) { f.overlay.refresh(); await historyReady(f); }
+}
+
+async function historyReady(f): Promise<void> {
+	await until(() => {
+		const task = f.controller.task(f.overlay?.key);
+		return Boolean(task && (task.page || task.child.identityUnavailable || task.unavailable && plain(f.overlay).includes("History unavailable")) && !task.historyLoading);
+	}, "selected physical page loaded");
+}
+
+async function historyAction(f, label: string): Promise<void> {
+	f.overlay.handleInput("\x1bOQ");
+	for (let step = 0; step < 24 && !plain(f.overlay).includes(`→ ${label}`); step++) f.overlay.handleInput("\x1b[B");
+	assert.ok(plain(f.overlay).includes(`→ ${label}`), `native action ${label} is reachable`);
+	f.overlay.handleInput("\r");
+	await historyReady(f);
+}
+
+test("indexed Agents startup, ticks, global filter and pagination never hydrate historical sources on the UI thread", async (t) => {
+	const f = await fixture(t);
+	await f.ready; f.controller.dispose(); await closeRunHistory(f.state);
+	f.state.ownedRuns.clear();
+	for (let position = 0; position < 125; position++) {
+		const runId = `indexed-ui-${String(position).padStart(3, "0")}`;
+		const run = { ...f.run, runId, rootRunId: runId, asyncDir: getRunMetadataDir(runId), startedAt: f.run.startedAt + position,
+			children: [{ ...f.run.children[0], label: `Owned assignment ${position}`, task: position === 3 ? "A unique needle outside the first two pages" : `Original work ${position}` }] };
+		saveQuestionOwner(runId, run.ownerSessionId);
+		saveQuestionContract(runId, 0, { task: run.children[0].task, sessionFile: run.children[0].sessionFile });
+		saveAsyncRunResult(runId, { runtimeVersion: 2, id: runId, state: "complete", timestamp: run.startedAt + 1, results: [{ agent: "worker", task: run.children[0].task, sessionFile: run.children[0].sessionFile, success: true, exitCode: 0, finalOutput: "Completed" }] });
+		f.state.ownedRuns.set(runId, run);
+	}
+	const accesses: string[] = [], metadataRoot = path.dirname(getRunMetadataDir(f.run.runId));
+	for (const method of ["readFileSync", "statSync", "existsSync", "readdirSync", "openSync"] as const) {
+		const original = fs[method];
+		t.mock.method(fs, method, function(file, ...args) {
+			const name = String(file);
+			if (name.startsWith(metadataRoot) || name === f.childSessions[0].getSessionFile()) accesses.push(`${method}:${name}`);
+			return original.call(this, file, ...args);
+		});
+	}
+	syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	f.controller.start(f.ctx);
+	const index = await runHistoryIndex(f.state); await index.refresh(); await f.controller.refresh();
+	assert.equal(f.controller.listPage?.total, 125);
+	assert.equal(f.controller.tasks.length, 50);
+	assert.ok(f.controller.tasks.every((task) => task.history.length === 0), "closed startup retains no native history cards");
+	await f.controller.refresh(); await f.controller.refresh(true);
+	assert.deepEqual(accesses, [], "startup and forced/scheduled observations are genuinely off-thread");
+	const opening = f.controller.open();
+	assert.match(plain(f.overlay), /page 1/);
+	f.overlay.handleInput("\x1b[6~");
+	await until(() => f.controller.listPage?.offset === 50 && !f.controller.listLoading, "second run page");
+	assert.equal(f.controller.tasks.length, 50);
+	f.overlay.handleInput("\x1b[6~");
+	await until(() => f.controller.listPage?.offset === 100 && !f.controller.listLoading, "third run page");
+	assert.equal(f.controller.tasks.length, 25, "tasks after the first 100 remain discoverable");
+	f.overlay.handleInput("unique needle");
+	await until(() => f.controller.listPage?.total === 1 && !f.controller.listLoading, "filter applies to all owned tasks, not just loaded rows");
+	assert.equal(f.controller.tasks[0].run.runId, "indexed-ui-003");
+	assert.deepEqual(accesses, []);
+	f.overlay.handleInput("\x1b"); await opening;
+});
+
+test("indexed Agents history pages retain cross-page tool pairing, validated full details, drafts and abandoned-overlay guards", async (t) => {
+	const f = await fixture(t, "fullscreen"), manager = f.childSessions[0];
+	await f.ready;
+	for (let position = 0; position < 220; position++) {
+		if (position === 80) manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "cross-page-call", name: "check", arguments: { command: "Saved command", payload: "FULL-ARGUMENT-END" } }], provider: "fixture", model: "fixture", api: "openai-responses", stopReason: "toolUse", usage, timestamp: Date.now() });
+		else if (position === 190) manager.appendMessage({ role: "toolResult", toolCallId: "cross-page-call", toolName: "check", content: [{ type: "text", text: "Saved result" }], details: { receipt: "FULL-RESULT-END" }, isError: false, timestamp: Date.now() });
+		else assistant(manager, `Physical history ${position}`);
+	}
+	await indexedReady(f);
+	const opening = f.controller.open(f.key); f.tui.start();
+	await historyReady(f);
+	const task = f.controller.task(f.key)!, firstSequence = task.page!.entries[0].sequence;
+	assert.equal(task.page?.entries.length, 100);
+	assert.ok(task.history.length <= 100, "only the current physical page is retained");
+	const paired = task.history.find((item) => item.call?.id === "cross-page-call")!;
+	assert.equal(paired.result?.toolCallId, "cross-page-call", "a result page resolves its call on an earlier physical page");
+	assert.match((await paired.load!()).details!, /FULL-ARGUMENT-END[\s\S]*FULL-RESULT-END/);
+	f.overlay.handleInput("Unsent child draft");
+	await historyAction(f, "Earlier history");
+	assert.ok(f.controller.task(f.key)!.page!.entries.at(-1)!.sequence < firstSequence);
+	assert.equal(f.overlay.editor.getText(), "Unsent child draft");
+	await historyAction(f, "Later history");
+	assert.ok(f.controller.task(f.key)!.history.some((item) => item.call?.id === "cross-page-call"));
+	f.overlay.handleInput("\x1bl"); await historyReady(f);
+	assert.match(f.overlay.scroll.render(88).map(stripTerminalSequences).join("\n"), /Physical history 219/);
+	f.overlay.handleInput("\t"); f.overlay.handleInput("\x1b[F"); plain(f.overlay); f.overlay.handleInput("\r");
+	assert.match(plain(f.overlay), /Loading selected details/);
+	f.overlay.handleInput("\x1b");
+	await delay(50);
+	assert.doesNotMatch(plain(f.overlay), /› details/, "a late selected-detail result cannot reopen an abandoned detail view");
+	assert.equal(f.overlay.editor.getText(), "Unsent child draft");
+	f.overlay.handleInput("\x1b"); await opening;
+});
+
+test("indexed Agents selected detail rejects source replacement without dropping the draft", async (t) => {
+	const f = await fixture(t, "fullscreen"), manager = f.childSessions[0];
+	await f.ready;
+	assistant(manager, `Saved selected body ${"detail ".repeat(200)}FULL-SELECTED-END`);
+	await indexedReady(f);
+	const opening = f.controller.open(f.key); f.tui.start(); await historyReady(f);
+	f.overlay.handleInput("Keep this draft"); f.overlay.handleInput("\t"); plain(f.overlay);
+	const file = manager.getSessionFile();
+	fs.writeFileSync(`${file}.replacement`, fs.readFileSync(file)); fs.renameSync(`${file}.replacement`, file);
+	f.overlay.handleInput("\r");
+	await until(() => plain(f.overlay).includes("Details unavailable"), "native byte references reject replaced sources");
+	f.overlay.handleInput("\x1b");
+	assert.equal(f.overlay.editor.getText(), "Keep this draft");
+	assert.equal(f.calls.length, 0);
+	f.overlay.handleInput("\x1b"); await opening;
 });

@@ -8,6 +8,7 @@ import type { Message, Usage as NativeUsage } from "@earendil-works/pi-ai";
 import type { FSWatcher } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { SubagentHistoryIndex } from "../history/index.ts";
 
 // ============================================================================
 // Basic Types
@@ -583,7 +584,9 @@ export interface Details {
 	wait?: { runId: string; completionId?: string; index?: number; status: "completed" | "cancelled" | "yielded" | "awaiting_input" | "unavailable" };
 	run?: OwnedRunView;
 	runs?: Array<Pick<OwnedRunView, "runId" | "source" | "mode" | "cwd" | "task" | "state" | "updatedAt" | "attention" | "review" | "rootRunId" | "predecessorRunId" | "predecessorIndex"> & { summary?: string; continuations?: string[] }>;
-	runList?: { total: number; offset: number; limit: number; nextOffset?: number };
+	runList?: { total: number; offset: number; limit: number; nextOffset?: number; nextCursor?: string; version: number; freshness: import("../history/types.ts").HistoryFreshness };
+	history?: import("../history/types.ts").HistoryPage;
+	historySearch?: import("../history/types.ts").HistorySearchPage;
 	intercomDelivery?: {
 		delivered: boolean;
 		to: string;
@@ -938,6 +941,9 @@ export interface SubagentState {
 	hasNativeResultOwner?: (runId: string) => boolean;
 	foregroundRuns?: Map<string, ForegroundResumeRun>;
 	ownedRuns?: Map<string, OwnedRun>;
+	historyIndex?: SubagentHistoryIndex;
+	historyReady?: Promise<void>;
+	historyClosing?: Promise<void>;
 	persistOwnedRun?: (run: OwnedRun) => void;
 	onRunsChanged?: () => void;
 	cleanupTimers: Map<string, ReturnType<typeof setTimeout>>;
@@ -1134,7 +1140,7 @@ export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
 export const POLL_INTERVAL_MS = 1000;
 export const MAX_WIDGET_JOBS = 4;
 export const DEFAULT_SUBAGENT_MAX_DEPTH = 1;
-export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "extend", "resume", "nudge", "questions", "answer", "review", "doctor"] as const;
+export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "history", "search", "interrupt", "extend", "resume", "nudge", "questions", "answer", "review", "doctor"] as const;
 
 export const DEFAULT_FORK_PREAMBLE =
 	"You are a delegated subagent running from a fork of the parent session. " +

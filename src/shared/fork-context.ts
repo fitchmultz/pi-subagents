@@ -4,15 +4,21 @@ import { requestChildExecutionCwd } from "../runs/shared/child-execution-cwd.ts"
 
 type SubagentExecutionContext = "fresh" | "fork";
 
+interface ForkSource {
+	createBranchedSession(leafId: string): string | undefined;
+	/** Optional native sibling-fork API; unlike createBranchedSession it leaves the source manager on its parent. */
+	forkBranch?: (leafId: string) => { getSessionFile(): string | undefined };
+}
+
 interface ForkableSessionManager {
 	getSessionFile(): string | undefined;
 	getLeafId(): string | null;
 	getSessionDir(): string;
-	openSession?: (path: string, sessionDir?: string) => { createBranchedSession(leafId: string): string | undefined };
+	openSession?: (path: string, sessionDir?: string) => ForkSource;
 }
 
 export interface ForkContextResolverOptions {
-	openSession?: (path: string, sessionDir?: string) => { createBranchedSession(leafId: string): string | undefined };
+	openSession?: (path: string, sessionDir?: string) => ForkSource;
 }
 
 interface ForkContextResolver {
@@ -44,11 +50,12 @@ export function createForkContextResolver(
 		throw new Error("Forked subagent context requires a current leaf to fork from.");
 	}
 
-	const openSession = options.openSession
+	const openSession: (file: string, dir?: string) => ForkSource = options.openSession
 		?? sessionManager.openSession
 		?? ((file: string, dir?: string) => SessionManager.open(file, dir));
 	const sessionDir = sessionManager.getSessionDir();
 	const cachedSessionFiles = new Map<number, string>();
+	let siblingSource: ForkSource | undefined;
 
 	return {
 		sessionFileForIndex(index = 0): string | undefined {
@@ -58,8 +65,12 @@ export function createForkContextResolver(
 				if (!fs.existsSync(parentSessionFile)) {
 					throw new Error(`Parent session file does not exist: ${parentSessionFile}. Pi has not persisted enough history to fork yet.`);
 				}
-				const sourceManager = openSession(parentSessionFile, sessionDir);
-				const sessionFile = sourceManager.createBranchedSession(leafId);
+				const sourceManager = siblingSource ?? openSession(parentSessionFile, sessionDir);
+				let sessionFile: string | undefined;
+				if (typeof sourceManager.forkBranch === "function") {
+					siblingSource = sourceManager;
+					sessionFile = sourceManager.forkBranch(leafId).getSessionFile();
+				} else sessionFile = sourceManager.createBranchedSession(leafId);
 				if (!sessionFile) {
 					throw new Error("Session manager did not return a forked session file.");
 				}

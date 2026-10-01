@@ -11,6 +11,7 @@ process.env.PI_CODING_AGENT_DIR = path.join(suiteRoot, "agent");
 process.env.PI_SUBAGENT_TEMP_ROOT = path.join(suiteRoot, "pi-subagents-runtime");
 const { inspectSubagentStatus } = await import("../../src/runs/background/run-status.ts");
 const { ownedRunList } = await import("../../src/runs/shared/run-records.ts");
+const { closeRunHistory } = await import("../../src/runs/shared/history-index.ts");
 const { createNestedRoute, writeNestedEvent } = await import("../../src/runs/shared/nested-events.ts");
 const { TEMP_ROOT_DIR } = await import("../../src/shared/types.ts");
 after(() => rmrf(suiteRoot));
@@ -46,13 +47,17 @@ function statusState(baseCwd: string, currentSessionId: string): SubagentState {
 }
 
 describe("async run status inspection", () => {
-	it("keeps out-of-range owned-run pages empty without inverted display ranges", () => {
+	it("keeps out-of-range owned-run pages empty without inverted display ranges", async (t) => {
 		const state = statusState("/repo", "parent");
 		state.ownedRuns = new Map([["owned-empty-page", { runId: "owned-empty-page", ownerSessionId: "parent", source: "foreground", mode: "single", cwd: "/repo", task: "Saved work", startedAt: 100, rootRunId: "owned-empty-page", children: [] }]]);
-		const result = ownedRunList(state, { offset: 20, limit: 20 });
+		t.after(() => closeRunHistory(state));
+		const result = await ownedRunList(state, { offset: 20, limit: 20 });
 		assert.deepEqual(result.details.runs, []);
-		assert.deepEqual(result.details.runList, { total: 1, offset: 20, limit: 20 });
-		assert.match(textContent(result), /Owned runs: 1 \(showing none; attention first\)/);
+		assert.equal(result.details.runList?.total, 1);
+		assert.equal(result.details.runList?.offset, 20);
+		assert.equal(result.details.runList?.limit, 20);
+		assert.equal(result.details.runList?.freshness.authoritative, false);
+		assert.match(textContent(result), /Owned runs: 1 \(showing none; attention order\)/);
 	});
 
 	it("omits the completion reminder when no async runs are active", () => {
