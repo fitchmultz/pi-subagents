@@ -5,6 +5,7 @@ import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { formatRunAction } from "../../shared/status-format.ts";
 import { NativeJournal, ownerProjection, readJsonProjection } from "../../shared/journal-reader.ts";
 import { getAgentDir } from "../../shared/utils.ts";
+import { runCooperatively, runSynchronously } from "../../shared/cooperative.ts";
 import { ASYNC_DIR, TEMP_ROOT_DIR, type AsyncStatus, type AsyncResultFile, type ResolvedAcceptanceConfig, type JsonSchemaObject, type OutputMode, type SavedLaunchConfig, type SingleResult, type AgentProgress } from "../../shared/types.ts";
 
 export const LEGACY_QUESTIONS_DIR = path.join(TEMP_ROOT_DIR, "supervisor-questions");
@@ -191,9 +192,14 @@ export function readQuestionContract(runId: string, index: number, root = QUESTI
 }
 
 export function migrateSupervisorQuestions(ownerSessionId: string, runId?: string): void {
+	runSynchronously(migrateSupervisorQuestionSteps(ownerSessionId, runId));
+}
+
+export function* migrateSupervisorQuestionSteps(ownerSessionId: string, runId?: string): Generator<void> {
 	if (!fs.existsSync(LEGACY_QUESTIONS_DIR)) return;
 	const runs = runId === undefined ? fs.readdirSync(LEGACY_QUESTIONS_DIR, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name) : [safeId(runId)];
 	for (const id of runs) {
+		yield;
 		try {
 			const source = getRunMetadataDir(id, LEGACY_QUESTIONS_DIR);
 			const owner = readRunJson<{ sessionId?: string }>(path.join(source, "question-owner.json"));
@@ -284,18 +290,27 @@ export function pendingSupervisorQuestion(input: { runId: string; agent: string;
 }
 
 export function listSupervisorQuestions(ownerSessionId: string, runId?: string, root = QUESTIONS_DIR): SupervisorQuestionView[] {
+	return runSynchronously(supervisorQuestionSteps(ownerSessionId, runId, root));
+}
+
+export function listSupervisorQuestionsAsync(ownerSessionId: string): Promise<SupervisorQuestionView[]> {
+	return runCooperatively(supervisorQuestionSteps(ownerSessionId));
+}
+
+function* supervisorQuestionSteps(ownerSessionId: string, runId?: string, root = QUESTIONS_DIR): Generator<void, SupervisorQuestionView[]> {
 	if (runId !== undefined) safeId(runId);
-	if (root === QUESTIONS_DIR) migrateSupervisorQuestions(ownerSessionId);
+	if (root === QUESTIONS_DIR) yield* migrateSupervisorQuestionSteps(ownerSessionId);
 	if (!fs.existsSync(root)) return [];
 	const runs = fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory() && (!runId || entry.name.startsWith(runId)));
-	const questions = runs.flatMap((entry) => {
-		try { return listRunQuestions(path.join(root, entry.name)); }
+	const questions: SupervisorQuestionView[] = [];
+	for (const entry of runs) {
+		yield;
+		try { questions.push(...listRunQuestions(path.join(root, entry.name)).filter((question) => question.ownerSessionId === ownerSessionId)); }
 		catch (error) {
 			if (runId !== undefined) throw error;
 			console.error(`Could not list questions for ${entry.name}: ${String(error)}`);
-			return [];
 		}
-	}).filter((question) => question.ownerSessionId === ownerSessionId);
+	}
 	if (runId && new Set(questions.map((question) => question.runId)).size > 1) throw new Error(`Ambiguous run ID prefix '${runId}'.`);
 	return questions.sort((a, b) => a.createdAt - b.createdAt);
 }

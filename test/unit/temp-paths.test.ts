@@ -100,7 +100,7 @@ describe("temp-root write boundaries", () => {
 		try {
 			fs.symlinkSync(target, path.join(configuredRoot, "async-subagent-results"), "dir");
 			const tempRootModule = new URL("../../src/shared/temp-root.ts", import.meta.url).href;
-			const script = `import { cleanupOldRunStorage } from ${JSON.stringify(tempRootModule)}; cleanupOldRunStorage();`;
+			const script = `import { cleanupOldRunStorage } from ${JSON.stringify(tempRootModule)}; await cleanupOldRunStorage();`;
 			const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
 				encoding: "utf-8",
 				env: { ...process.env, PI_SUBAGENT_TEMP_ROOT: configuredRoot },

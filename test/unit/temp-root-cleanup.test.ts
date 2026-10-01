@@ -31,73 +31,73 @@ function makeRun(id: string, state: string, old: boolean): void {
 }
 
 describe("cleanupOldRunStorage nested events", () => {
-	it("retains an unanswered question and its exited run beyond normal retention", () => {
+	it("retains an unanswered question and its exited run beyond normal retention", async () => {
 		const runId = "test-question-retention";
 		makeRun(runId, "failed", true);
 		saveQuestionOwner(runId, "owner");
 		createSupervisorQuestion({ runId, ownerTarget: "owner", agent: "worker", index: 0, childSessionId: "child", childTarget: "child", sessionFile: path.join(TEST_ROOT, "session.jsonl"), cwd: TEST_ROOT, pid: process.pid, reason: "need_decision", message: "Which path?" });
 		const questionRunDir = path.join(QUESTIONS_DIR, runId);
 		fs.utimesSync(questionRunDir, OLD, OLD);
-		cleanupOldRunStorage();
+		await cleanupOldRunStorage();
 		assert.equal(fs.existsSync(questionRunDir), true);
 		assert.equal(fs.existsSync(path.join(ASYNC_DIR, runId)), true);
 	});
 
-	it("removes stale routes whose root run is gone", () => {
+	it("removes stale routes whose root run is gone", async () => {
 		const route = makeRoute("test-cleanup-gone", true);
-		cleanupOldRunStorage();
+		await cleanupOldRunStorage();
 		assert.equal(fs.existsSync(route), false);
 	});
 
-	it("removes stale routes with malformed route metadata", () => {
+	it("removes stale routes with malformed route metadata", async () => {
 		for (const [name, content] of [["junk", "not json"], ["null", "null"]] as const) {
 			const routeRoot = path.join(NESTED_EVENTS_DIR, `test-cleanup-${name}-token`);
 			fs.mkdirSync(routeRoot, { recursive: true });
 			fs.writeFileSync(path.join(routeRoot, "route.json"), content);
 			fs.utimesSync(routeRoot, OLD, OLD);
-			cleanupOldRunStorage();
+			await cleanupOldRunStorage();
 			assert.equal(fs.existsSync(routeRoot), false);
 		}
 	});
 
-	it("keeps stale routes while the root run is active", () => {
+	it("keeps stale routes while the root run is active", async () => {
 		makeRun("test-cleanup-live", "running", true);
 		const route = makeRoute("test-cleanup-live", true);
-		cleanupOldRunStorage();
+		await cleanupOldRunStorage();
 		assert.equal(fs.existsSync(route), true);
 	});
 
-	it("keeps fresh routes even when the root run is gone", () => {
+	it("keeps fresh routes even when the root run is gone", async () => {
 		const route = makeRoute("test-cleanup-fresh", false);
-		cleanupOldRunStorage();
+		await cleanupOldRunStorage();
 		assert.equal(fs.existsSync(route), true);
 	});
 
-	it("keeps stale routes while writes still land inside them", () => {
+	it("keeps stale routes while writes still land inside them", async () => {
 		makeRun("test-cleanup-terminal", "complete", false);
 		const route = makeRoute("test-cleanup-terminal", true);
 		// Nested descendants can outlive a terminal root, and foreground roots have no
 		// async status at all: recent event writes are the only liveness signal.
 		fs.mkdirSync(path.join(route, "events"), { recursive: true });
-		cleanupOldRunStorage();
+		await cleanupOldRunStorage();
 		assert.equal(fs.existsSync(route), true);
 	});
 
-	it("removes stale runs whose status is not a JSON object", () => {
+	it("removes stale runs whose status is not a JSON object", async () => {
 		const dir = path.join(ASYNC_DIR, "test-cleanup-nullstatus");
 		fs.mkdirSync(dir, { recursive: true });
 		fs.writeFileSync(path.join(dir, "status.json"), "null");
 		fs.utimesSync(dir, OLD, OLD);
-		cleanupOldRunStorage();
+		await cleanupOldRunStorage();
 		assert.equal(fs.existsSync(dir), false);
 	});
 
-	it("fails closed when route metadata cannot be read", () => {
+	it("fails closed when route metadata cannot be read", async () => {
 		const route = makeRoute("test-cleanup-eacces", true);
 		const routeFile = path.join(route, "route.json");
 		fs.chmodSync(routeFile, 0o000);
 		try {
-			cleanupOldRunStorage();
+			await cleanupOldRunStorage();
 			assert.equal(fs.existsSync(route), true);
 		} finally {
 			fs.chmodSync(routeFile, 0o600);

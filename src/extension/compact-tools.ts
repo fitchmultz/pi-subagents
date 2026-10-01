@@ -5,7 +5,7 @@ import type { SubagentExecutionResult, SubagentState } from "../shared/types.ts"
 import { activateTools, restoreLazyTools } from "../shared/lazy-tools.ts";
 import { runHistoryIndex } from "../runs/shared/history-index.ts";
 import type { HistoryRunOptions } from "../history/types.ts";
-import { listSupervisorQuestions } from "../runs/shared/supervisor-questions.ts";
+import { listSupervisorQuestionsAsync } from "../runs/shared/supervisor-questions.ts";
 import type { AsyncContext } from "../runs/shared/native-async.ts";
 import { renderSubagentResult } from "../tui/render.ts";
 import { AgentRunsParams, DelegateParams } from "./schemas.ts";
@@ -117,7 +117,7 @@ export function registerCompactSubagentTools(pi: ExtensionAPI, options: {
 		if (options.keepAdvancedActive) activateTools(pi, ["subagent"]);
 		if (pending.some((call) => ["subagent", "delegate", "agent_runs"].includes(call.toolName))) activateTools(pi, ["agent_runs"]);
 		await checkRuns();
-		if (!pi.getActiveTools().includes("agent_runs") && listSupervisorQuestions(ctx.sessionManager.getSessionId()).some((question) => question.state === "awaiting_input" || question.state === "answer_pending")) activateTools(pi, ["agent_runs"]);
+		if (!pi.getActiveTools().includes("agent_runs") && (await listSupervisorQuestionsAsync(ctx.sessionManager.getSessionId())).some((question) => question.state === "awaiting_input" || question.state === "answer_pending")) activateTools(pi, ["agent_runs"]);
 	};
 	const restore = async (_event: unknown, ctx: ExtensionContext) => {
 		restoreLazyTools(pi, ctx, "load_subagent", ["subagent", "agent_runs"]);

@@ -21,9 +21,10 @@ import { registerSubagentLiveEventHandlers } from "./subagent-live-events.ts";
 import { formatRunAction } from "../shared/status-format.ts";
 import { setPromptSection } from "../shared/prompt-sections.ts";
 import { activateTools, restoreLazyTools } from "../shared/lazy-tools.ts";
+import { runCooperatively } from "../shared/cooperative.ts";
 import type { AsyncContext } from "../runs/shared/native-async.ts";
 import { onNativeCheckpoint, type NativeCheckpointEvent } from "../shared/native-checkpoint.ts";
-import { cancelSupervisorQuestion, createSupervisorQuestion, getRunMetadataDir, listSupervisorQuestions, readRunJson, readQuestionState, recordQuestionDelivery, saveQuestionAnswer, type SupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
+import { cancelSupervisorQuestion, createSupervisorQuestion, getRunMetadataDir, listSupervisorQuestionsAsync, readRunJson, readQuestionState, recordQuestionDelivery, saveQuestionAnswer, type SupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -691,6 +692,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   const completedChildren = new Map<string, SubagentCompletion["children"][number]>();
   let reconciledLeafId: string | null = null;
   let inboundFlushTimer: NodeJS.Timeout | null = null;
+  let inboundRestore: Promise<void> | undefined;
+  let inboundBatch: Promise<void> | undefined;
   let replyWaiter: {
     from: string;
     replyTo: string;
@@ -939,18 +942,42 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const askIndex = entries.findIndex((entry) => canTrigger(entry) && entry.message.expectsReply === true);
     return askIndex === -1 ? entries.findIndex(canTrigger) : askIndex;
   }
-  function sendTriggerLast(entries: PendingInboundMessage[], generation = runtimeGeneration): void {
+  function runInboundBatch(deliver: () => Promise<void>, generation = runtimeGeneration): Promise<void> {
+    if (inboundBatch) return inboundBatch;
+    // Native appends emit subscriber callbacks synchronously; publish ownership first.
+    const batch = Promise.resolve().then(deliver);
+    inboundBatch = batch;
+    inboundTails.add(batch);
+    const finish = () => {
+      inboundTails.delete(batch);
+      if (inboundBatch !== batch) return;
+      inboundBatch = undefined;
+      if (getLiveContext(runtimeContext, generation) && queuedInbound().length) scheduleInboundFlush(0);
+    };
+    void batch.then(finish, finish);
+    return batch;
+  }
+  function* sendTriggerLast(entries: PendingInboundMessage[], generation = runtimeGeneration): Generator<void, void> {
     const passives: PendingInboundMessage[] = [];
     const rest: PendingInboundMessage[] = [];
     for (const entry of entries) {
       if (entry.flushDelivery === "passive") passives.push(entry);
       else rest.push(entry);
     }
-    for (const entry of passives) sendIncomingMessage(entry, "passive", generation);
+    for (const entry of passives) {
+      if (!getLiveContext(runtimeContext, generation)) return;
+      sendIncomingMessage(entry, "passive", generation);
+      yield;
+    }
+    if (!getLiveContext(runtimeContext, generation)) return;
     const triggerIndex = queuedTriggerIndex(rest);
     const trigger = triggerIndex === -1 ? undefined : rest.splice(triggerIndex, 1)[0];
-    if (trigger) replyTracker.queueTurnContext({ ...trigger, receivedAt: Date.now() });
-    for (const entry of rest) sendIncomingMessage(entry, entry.flushDelivery === "steer" ? "steer" : "followUp", generation);
+    if (trigger && pendingInbound.get(trigger.message.id) === trigger) replyTracker.queueTurnContext({ ...trigger, receivedAt: Date.now() });
+    for (const entry of rest) {
+      if (!getLiveContext(runtimeContext, generation)) return;
+      sendIncomingMessage(entry, entry.flushDelivery === "steer" ? "steer" : "followUp", generation);
+      yield;
+    }
     if (trigger) sendIncomingMessage(trigger, "trigger", generation);
   }
   function currentSessionTargetMatches(to: string, resolvedTo?: string | null, activeClient?: IntercomClient): boolean {
@@ -1032,18 +1059,21 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if ([...pendingInbound.values()].some(needsIntercom) || replyTracker.listPending().some(needsIntercom)
       || (ctx as AsyncContext).getPendingToolCalls?.().some((call) => call.toolName === "intercom")) activateTools(pi, ["intercom"]);
   }
-  function restoreInbound(ctx: ExtensionContext): void {
+  function* restoreInboundEntries(ctx: ExtensionContext, generation: number): Generator<void, void> {
     consumedInboundIds.clear();
     completedChildren.clear();
+    const leafId = ctx.sessionManager.getLeafId();
     for (const metadata of entryMetadata(ctx.sessionManager)) {
+      yield;
+      if (!getLiveContext(ctx, generation)) return;
       if (!(metadata.type === "custom_message" && ["intercom_message", "subagent-human-message"].includes(metadata.customType)
         || metadata.type === "custom" && [INBOUND_CHECKPOINT_TYPE, "intercom_sent"].includes(metadata.customType))) continue;
       const item = ctx.sessionManager.getEntry(metadata.id) ?? metadata;
       if (item.type === "custom_message") {
         const receipt = item.details as InboundMessageEntry | undefined;
         if (receipt?.subagentCompletion) rememberCompletedChildren(receipt);
-        const id = inboundIdFromCustomMessage(item);
-        if (id) {
+        const id = receipt && typeof receipt === "object" ? receipt.message?.id : undefined;
+        if (typeof id === "string") {
           consumedInboundIds.add(id);
           pendingInbound.delete(id);
         }
@@ -1069,15 +1099,23 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         if (sent?.message?.replyTo) replyTracker.markReplied(sent.message.replyTo);
       }
     }
-    reconciledLeafId = ctx.sessionManager.getLeafId();
+    if (!getLiveContext(ctx, generation)) return;
+    reconciledLeafId = leafId;
     for (const entry of pendingInbound.values()) {
       discardObsoleteProgress(entry);
     }
+  }
+  async function restoreInbound(ctx: ExtensionContext, generation: number): Promise<void> {
+    await runCooperatively(restoreInboundEntries(ctx, generation));
+    if (!getLiveContext(ctx, generation)) return;
     if (replyTracker.hasReplyContext) {
-      for (const question of listSupervisorQuestions(ctx.sessionManager.getSessionId())) {
+      const questions = await listSupervisorQuestionsAsync(ctx.sessionManager.getSessionId());
+      if (!getLiveContext(ctx, generation)) return;
+      for (const question of questions) {
         if (question.answer || question.state === "cancelled") replyTracker.markReplied(question.questionId);
       }
     }
+    reconcileConsumedInbound(ctx);
     reconcileIntercom(ctx);
   }
   function sendIncomingMessage(entry: InboundMessageEntry, delivery: InboundDelivery, generation = runtimeGeneration): void {
@@ -1158,26 +1196,41 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     clearInboundFlushTimer();
     inboundFlushTimer = setTimeout(() => {
       inboundFlushTimer = null;
-      flushIdleMessages(scheduledGeneration);
+      void flushIdleMessages(scheduledGeneration)?.catch((error) => console.error("Intercom inbound delivery failed:", error));
     }, delayMs);
     inboundFlushTimer.unref?.();
   }
-  function flushIdleMessages(generation = runtimeGeneration): void {
+  function flushIdleMessages(generation = runtimeGeneration): Promise<void> | undefined {
+    if (inboundBatch) return inboundBatch;
     const entries = queuedInbound();
     if (entries.length === 0) return;
     const ctx = getLiveContext(runtimeContext, generation);
     if (!ctx) return;
 
     if (!isRecipientIdle(ctx)) {
-      if (!ctx.hasUI && activeTools.size === 0) {
-        for (const entry of entries) {
-          if (entry.flushDelivery === "steer") sendIncomingMessage(entry, "trigger", generation);
-        }
+      const steers = entries.filter((entry) => entry.flushDelivery === "steer"
+        && (requestedDelivery(entry.message) === "steer" || !ctx.hasUI && activeTools.size === 0));
+      if (!steers.length) {
+        scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
+        return;
       }
-      if (queuedInbound().length > 0) scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
-      return;
+      return runInboundBatch(async () => {
+        const detachments: Promise<boolean>[] = [];
+        await runCooperatively((function* () {
+          for (const entry of steers) {
+            if (!getLiveContext(runtimeContext, generation)) return;
+            if (pendingInbound.get(entry.message.id) !== entry) continue;
+            sendIncomingMessage(entry, "steer", generation);
+            if (requestedDelivery(entry.message) === "steer" && entry.from.id !== "subagent-result" && entry.from.id !== "subagent-control") {
+              detachments.push(requestSubagentDetachForBlockingSupervisorMessage(entry, !isBlockingSubagentSupervisorMessage(entry)));
+            }
+            yield;
+          }
+        })());
+        await Promise.all(detachments);
+      }, generation);
     }
-    sendTriggerLast(entries, generation);
+    return runInboundBatch(() => runCooperatively(sendTriggerLast(entries, generation)), generation);
   }
   function queueIdleMessage(entry: InboundMessageEntry, flushDelivery: PendingInboundMessage["flushDelivery"] = "auto", delayMs = INBOUND_FLUSH_DELAY_MS): void {
     rememberInbound(entry, "queued", flushDelivery);
@@ -1209,11 +1262,14 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     reconciledLeafId = leafId;
   }
-  function redeliverUnconsumedInbound(ctx: ExtensionContext): void {
+  async function redeliverUnconsumedInbound(ctx: ExtensionContext, generation: number): Promise<void> {
+    if (inboundBatch) await inboundBatch;
+    if (!getLiveContext(ctx, generation)) return;
     reconcileConsumedInbound(ctx);
     // Abort can leave native custom messages queued; only recover cleared ones.
     if (pendingInbound.size === 0 || ctx.hasPendingMessages()) return;
-    sendTriggerLast([...pendingInbound.values()].filter((entry) => entry.stage === "native"));
+    const entries = [...pendingInbound.values()].filter((entry) => entry.stage === "native");
+    await runInboundBatch(() => runCooperatively(sendTriggerLast(entries, generation)), generation);
   }
   function isOwnedHumanMessage(from: SessionInfo, message: Message): boolean {
     const origin = message.human;
@@ -1224,6 +1280,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   async function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): Promise<void> {
     invalidateCheckpoint();
     const messageGeneration = runtimeGeneration;
+    if (inboundRestore) await inboundRestore;
     const liveContext = getLiveContext(ctx, messageGeneration);
     if (!liveContext) {
       return;
@@ -1260,6 +1317,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       const delivery = requestedDelivery(message);
+      if (inboundBatch) {
+        queueIdleMessage(entry, delivery === "passive" ? "passive" : delivery === "steer" ? "steer" : "auto");
+        return;
+      }
       if (delivery === "queue" && message.queueMode === "replace") {
         if (!isRecipientIdle(activeContext) && !activeContext.hasUI) {
           queueIdleMessage(entry, "steer", NON_UI_REPLACE_FLUSH_DELAY_MS);
@@ -1403,7 +1464,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   }
   async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay" | "peer-awareness"): Promise<IntercomClient> {
     invalidateCheckpoint();
-    if (disposed) {
+    const generationAtStart = runtimeGeneration;
+    if (inboundRestore) await inboundRestore;
+    if (disposed || generationAtStart !== runtimeGeneration) {
       throw new Error("Intercom shutting down");
     }
     if (reconnectPromise && reconnectPromiseGeneration === runtimeGeneration) return reconnectPromise;
@@ -1411,7 +1474,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return client;
     }
     const contextAtStart = getLiveContext();
-    const generationAtStart = runtimeGeneration;
     if (!contextAtStart || !currentSessionId) {
       throw new Error("Intercom runtime not initialized");
     }
@@ -1435,6 +1497,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           throw new Error("Intercom runtime no longer active");
         }
         client = nextClient;
+        // Startup can change the name before registration accepts presence updates.
+        syncPresenceIdentity(contextAtStart.sessionManager.getSessionId());
         reconnectAttempt = 0;
         if (nextClient.supportsTopics) {
           const failure = await restoreTopics(nextClient);
@@ -1524,7 +1588,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     };
     if (consumedInboundIds.has(entry.message.id) || pendingInbound.has(entry.message.id)) return;
     rememberCompletedChildren(entry);
-    sendIncomingMessage(entry, "trigger");
+    if (inboundBatch) queueIdleMessage(entry, "steer");
+    else sendIncomingMessage(entry, "trigger");
   }
   function recordSubagentDeliveryError(entryType: string, to: string, message: string, error: unknown): void {
     pi.appendEntry(entryType, {
@@ -1553,60 +1618,31 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (!parsed) return;
 
     const relayGeneration = runtimeGeneration;
-      const relayStillLive = () => !runtimeStarted || Boolean(getLiveContext(runtimeContext, relayGeneration));
-      if (!relayStillLive()) {
-        return;
-      }
-      if (currentSessionTargetMatches(parsed.to)) {
-        if (options.sender === "subagent-control" && (parsed.source === "foreground" || parsed.source === "async")) {
+    const relayStillLive = () => !runtimeStarted || Boolean(getLiveContext(runtimeContext, relayGeneration));
+    try {
+      if (inboundRestore) await inboundRestore;
+      if (!relayStillLive()) return;
+      if (!currentSessionTargetMatches(parsed.to)) {
+        const activeClient = await ensureConnected("background");
+        const target = await resolveSessionTarget(activeClient, parsed.to) ?? parsed.to;
+        if (!relayStillLive()) return;
+        if (!currentSessionTargetMatches(parsed.to, target, activeClient)) {
+          const result = await activeClient.send(target, { text: parsed.message });
+          if (!relayStillLive()) return;
+          if (!result.accepted) throw new Error(result.reason ?? "Session may not exist or has disconnected.");
           if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
           return;
         }
+      }
+      if (!(options.sender === "subagent-control" && (parsed.source === "foreground" || parsed.source === "async"))) {
         deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, parsed.completion);
-        if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
-        return;
       }
-
-      let activeClient: IntercomClient;
-      let target: string;
-      try {
-        activeClient = await ensureConnected("background");
-        target = await resolveSessionTarget(activeClient, parsed.to) ?? parsed.to;
-      } catch (error) {
-        if (!relayStillLive()) return;
-        recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
-        if (options.acknowledge) emitResultDelivery(parsed.requestId, false, error);
-        return;
-      }
-
-      if (!relayStillLive()) {
-        return;
-      }
-      if (currentSessionTargetMatches(parsed.to, target, activeClient)) {
-        if (options.sender === "subagent-control" && (parsed.source === "foreground" || parsed.source === "async")) {
-          if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
-          return;
-        }
-        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, parsed.completion);
-        if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
-        return;
-      }
-
-      try {
-        const result = await activeClient.send(target, { text: parsed.message });
-        if (!relayStillLive()) return;
-        if (!result.accepted) {
-          const error = new Error(result.reason ?? "Session may not exist or has disconnected.");
-          recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
-          if (options.acknowledge) emitResultDelivery(parsed.requestId, false, error);
-          return;
-        }
-        if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
-      } catch (error) {
-        if (!relayStillLive()) return;
-        recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
-        if (options.acknowledge) emitResultDelivery(parsed.requestId, false, error);
-      }
+      if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
+    } catch (error) {
+      if (!relayStillLive()) return;
+      recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
+      if (options.acknowledge) emitResultDelivery(parsed.requestId, false, error);
+    }
   }
   // Subagent event bridges (live/health/control/result) are torn down on session_shutdown.
   // Re-register them on session_start so they survive an in-process restart; the guard skips
@@ -1659,7 +1695,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   }
   let eventUnsubscribes = registerSubagentEventBridges();
   let eventBridgesActive = true;
-  pi.on("session_start", (event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     if (!eventBridgesActive) {
       eventUnsubscribes = registerSubagentEventBridges();
       eventBridgesActive = true;
@@ -1667,6 +1703,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     disposed = false;
     runtimeStarted = true;
     runtimeGeneration += 1;
+    const generation = runtimeGeneration;
     // A session boundary starts from a cold prompt cache, so re-detect peers
     // instead of carrying a pin from a previous session in this process.
     peerAwarenessHintPinned = false;
@@ -1684,13 +1721,19 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     pendingInbound.clear();
     replyTracker.reset();
     restoreLazyTools(pi, ctx, "load_intercom", ["intercom"]);
-    restoreInbound(ctx);
+    const restoration = Promise.resolve().then(() => restoreInbound(ctx, generation));
+    inboundRestore = restoration;
+    inboundTails.add(restoration);
+    try { await restoration; }
+    finally { inboundTails.delete(restoration); }
+    if (!getLiveContext(ctx, generation)) return;
+    if (inboundRestore === restoration) inboundRestore = undefined;
     // A fresh runtime has no inherited native queues. Reload keeps those queues
     // and in-flight prompts, so only its intercom-staged entries are flushed here.
     if (event.reason !== "reload" && !ctx.signal && !ctx.hasPendingMessages()) {
       for (const entry of [...pendingInbound.values()]) setInboundStage(entry, "queued");
     }
-    scheduleStartupConnection(ctx, runtimeGeneration);
+    scheduleStartupConnection(ctx, generation);
     if (queuedInbound().length > 0) scheduleInboundFlush();
   });
 
@@ -1742,11 +1785,17 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     eventUnsubscribes = [];
     eventBridgesActive = false;
-    disposed = true;
-    runtimeGeneration += 1;
     clearStartupConnectTimer();
     clearReconnectTimer();
+    clearInboundFlushTimer();
     rejectReplyWaiter(new Error("Session shutting down"));
+    // Native reload keeps this runner valid until shutdown completes. Finish the
+    // owned handoff before invalidating it so cleared native messages cannot strand.
+    await Promise.allSettled([inboundRestore, inboundBatch]);
+    disposed = true;
+    runtimeGeneration += 1;
+    inboundRestore = undefined;
+    inboundBatch = undefined;
     replyTracker.reset();
     pendingInbound.clear();
     consumedInboundIds.clear();
@@ -1761,6 +1810,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     runtimeContext = null;
     currentSessionId = null;
+  });
+  pi.on("session_info_changed", (_event, ctx) => {
+    if (getLiveContext(ctx) && currentSessionId) syncPresenceIdentity(currentSessionId);
   });
   pi.on("session_tree", (_event, ctx) => {
     restoreLazyTools(pi, ctx, "load_intercom", ["intercom"]);
@@ -1812,6 +1864,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     agentRunning = true;
     activeTools.clear();
     syncPresenceStatus();
+    return flushIdleMessages();
   });
   pi.on("tool_execution_start", (event) => {
     if (!getLiveContext()) {
@@ -1826,19 +1879,20 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     activeTools.delete(event.toolCallId);
     syncPresenceStatus();
-    flushIdleMessages();
+    return flushIdleMessages();
   });
-  pi.on("agent_settled", (_event, ctx) => {
+  pi.on("agent_settled", async (_event, ctx) => {
     // A rejected concurrent prompt may settle while the original run is active.
     if (!getLiveContext(ctx) || ctx.signal) {
       return;
     }
+    const generation = runtimeGeneration;
     agentRunning = false;
     activeTools.clear();
     replyTracker.endAgent();
     syncPresenceStatus();
-    redeliverUnconsumedInbound(ctx);
-    scheduleInboundFlush(0);
+    await redeliverUnconsumedInbound(ctx, generation);
+    if (getLiveContext(ctx, generation)) scheduleInboundFlush(0);
   });
   pi.on("turn_start", (_event, ctx) => {
     if (!getLiveContext(ctx)) {

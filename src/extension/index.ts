@@ -29,7 +29,7 @@ import { withMouseExpansion } from "../tui/action-hints.ts";
 import { SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
-import { OWNED_RUN_ENTRY, rememberOwnedRun, restoreOwnedRuns } from "../runs/shared/run-records.ts";
+import { OWNED_RUN_ENTRY, rememberOwnedRun, restoreOwnedRuns, restoreOwnedRunsAsync } from "../runs/shared/run-records.ts";
 import { closeRunHistory, startRunHistory } from "../runs/shared/history-index.ts";
 import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { createCompletionDelivery } from "../runs/background/completion-delivery.ts";
@@ -257,6 +257,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const tempArtifactsDir = getArtifactsDir(null);
 
 	let agentView: AgentViewController | undefined;
+	let sessionReset: Promise<void> | undefined;
 	const state: SubagentState = {
 		baseCwd: "",
 		currentSessionId: null,
@@ -298,7 +299,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		expandTilde,
 		discoverAgents,
 		ensureSessionState: (ctx) => {
-			if (state.currentSessionId !== resolveCurrentSessionId(ctx.sessionManager)) resetSessionState(ctx);
+			if (sessionReset) return sessionReset;
+			if (state.currentSessionId !== resolveCurrentSessionId(ctx.sessionManager)) return resetSessionState(ctx);
 		},
 	});
 
@@ -552,20 +554,29 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	const cleanupSessionArtifacts = (ctx: ExtensionContext) => {
+	const cleanupSessionArtifacts = async (ctx: ExtensionContext) => {
 		try {
 			const sessionFile = ctx.sessionManager.getSessionFile();
 			if (sessionFile) {
-				cleanupOldArtifacts(getArtifactsDir(sessionFile), ARTIFACT_CLEANUP_DAYS);
+				await cleanupOldArtifacts(getArtifactsDir(sessionFile), ARTIFACT_CLEANUP_DAYS);
 			}
 		} catch {
 			// Cleanup failures should not block session lifecycle events.
 		}
 	};
 
-	function resetSessionState(ctx: ExtensionContext) {
+	function resetSessionState(ctx: ExtensionContext): Promise<void> {
+		if (sessionReset) return sessionReset;
+		sessionReset = restoreSession(ctx).finally(() => { sessionReset = undefined; });
+		return sessionReset;
+	}
+
+	async function restoreSession(ctx: ExtensionContext): Promise<void> {
 		pendingIdleNotices.clear();
 		agentView?.dispose();
+		if (state.poller) clearInterval(state.poller);
+		state.poller = null;
+		await completionDelivery.stopAndJoin();
 		void closeRunHistory(state).catch((error) => console.error("Could not close subagent history:", error));
 		ensureAccessibleDir(RESULTS_DIR);
 		ensureAccessibleDir(ASYNC_DIR);
@@ -573,7 +584,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		state.lastUiContext = ctx;
 		resetJobs();
-		const restoration = restoreOwnedRuns(state, ctx);
+		const restoration = await restoreOwnedRunsAsync(state, ctx);
 		try {
 			restoreJobs(state.currentSessionId, ctx, restoration);
 		} catch (error) {
@@ -583,10 +594,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		startRunHistory(state, ctx);
 		void reconcileRunTools();
 		agentView?.start(ctx);
-		cleanupOldRunStorage();
-		cleanupOldChainDirs();
-		cleanupAllArtifactDirs(ARTIFACT_CLEANUP_DAYS);
-		cleanupSessionArtifacts(ctx);
+		await cleanupOldRunStorage();
+		await cleanupOldChainDirs();
+		await cleanupAllArtifactDirs(ARTIFACT_CLEANUP_DAYS);
+		await cleanupSessionArtifacts(ctx);
 		restoreSlashFinalSnapshots(ctx.sessionManager.getEntries());
 		completionDelivery.start();
 	}
@@ -596,7 +607,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			eventUnsubscribes = subscribeEvents();
 			globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
 		}
-		resetSessionState(ctx);
+		await resetSessionState(ctx);
 		await reconcileRunTools();
 	});
 
@@ -620,6 +631,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async () => {
 		agentView?.dispose();
+		if (state.poller) clearInterval(state.poller);
+		state.poller = null;
+		await completionDelivery.stopAndJoin({ preservePending: true });
 		await closeRunHistory(state);
 		for (const unsubscribe of eventUnsubscribes) {
 			try {
@@ -632,9 +646,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			delete globalStore[eventUnsubscribeStoreKey];
 		}
 		eventUnsubscribes = [];
-		completionDelivery.stop();
-		if (state.poller) clearInterval(state.poller);
-		state.poller = null;
 		for (const timer of state.cleanupTimers.values()) {
 			clearTimeout(timer);
 		}

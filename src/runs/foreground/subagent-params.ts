@@ -294,7 +294,7 @@ export interface ExecutorDeps {
 	expandTilde: (p: string) => string;
 	discoverAgents: (cwd: string, scope: AgentScope, options?: AgentDiscoveryOptions) => { agents: AgentConfig[] };
 	allowMutatingManagementActions?: boolean;
-	ensureSessionState?: (ctx: ExtensionContext) => void;
+	ensureSessionState?: (ctx: ExtensionContext) => void | Promise<void>;
 }
 
 export interface ExecutionContextData {

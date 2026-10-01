@@ -4,6 +4,8 @@
 
 Native journals and canonical run/control/receipt files remain the sources of truth. SQLite supplies private browse observations, not a new execution owner, completion receipt, billing authority or transcript format. Installing the extension does not adopt unrelated archives or remove provider and queue waits.
 
+Startup recovers saved ownership, unanswered questions and Intercom receipts in small batches, allowing input between batches. Queued Intercom delivery also yields between batches, preserving followers before the final wake-up and staging new arrivals durably until the batch finishes. Retention cleanup uses asynchronous filesystem operations. Tools capture their invocation directory before awaiting restoration, and coordination publishes the current session name even if it changes during recovery. Checkpoint reconciliation remains synchronous and strict. Recovery still checks the complete eligible history and legacy records, without increasing or suppressing the host's performance-warning budget. A single recovery record, native append/projection or integrity scan remains atomic.
+
 ### Indexed browsing and lazy Agents work
 
 - A separate Node process incrementally indexes only the current saved parent's admitted runs and linked native sources. A fresh session with no owned work starts no history process or database until it browses. No directory-wide transcript backfill runs at startup.
@@ -28,6 +30,8 @@ Best-effort timeout samples use a separate `run-timing.sqlite` metadata database
 The changed boundaries are exercised through real extension functions and registered SDK tools with synthetic isolated data, not personal transcripts or provider inference:
 
 - 20 and 227 genuinely owned runs beside 8,000 unrelated records: Agents startup does no parent-thread child transcript reads or global question listing; only the selected conversation is formatted.
+- Native extension startup beside 2,048 foreign owner directories services input during discovery and restores only the current parent's saved runs and unanswered questions.
+- Native Intercom reload restores all 1,024 historical receipts while servicing input. Cleared-queue recovery also services input before its 100 followers finish appending, retaining each message once and one final wake-up across an in-flight reload or a cleared busy handoff. New results and explicit steers are staged before acknowledgement and handed to native steering for the next tool boundary; ordinary queued and passive arrivals wait.
 - 125 owned assignments: global filtering finds an item beyond the first two picker pages; all later pages remain reachable without UI-thread source access.
 - 65 retained runs: off-page reads/stats and migration scans are zero while displayed controls, questions, review and continuation identities remain fresh.
 - Warm indexed list/search queries perform no source checks, opens or canonical projections. Cold ingestion and explicit refresh still do necessary verification off-thread.
@@ -38,7 +42,7 @@ The changed boundaries are exercised through real extension functions and regist
 - Four independent timing writers preserve each completed sample, another agent's samples, per-agent retained row counts and database integrity. A legacy snapshot read cannot erase an acknowledged write.
 - Native tool loading covers list/history/search validation, owned paging and same-parent reload on both compact and advanced routes. UI regressions cover narrow/wide native layouts, full reports/Reply, loading navigation, saved anchors and disposal.
 
-Primary owners are `test/integration/{history-index,owned-run-list,agent-interaction,tool-activation,lazy-coordination}.test.ts` and `test/unit/{run-history,journal-reader}.test.ts`. Run the [local validation](../README.md#local-validation) against an explicitly selected coherent host graph. Operation counts are more repeatable than timing thresholds.
+Primary owners are `test/integration/{history-index,owned-run-list,agent-interaction,tool-activation,lazy-coordination,session-resume-cost}.test.ts` and `test/unit/{run-history,journal-reader,temp-root-cleanup}.test.ts`. Run the [local validation](../README.md#local-validation) against an explicitly selected coherent host graph. Operation counts are more repeatable than timing thresholds.
 
 ## Separate native preparation improvement
 

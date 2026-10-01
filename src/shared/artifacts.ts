@@ -30,17 +30,17 @@ export function appendJsonl(filePath: string, line: string): void {
 	fs.appendFileSync(filePath, `${line}\n`);
 }
 
-export function cleanupOldArtifacts(dir: string, maxAgeDays: number): void {
+export async function cleanupOldArtifacts(dir: string, maxAgeDays: number): Promise<void> {
 	ensureSafeTempPath(dir);
-	if (!fs.existsSync(dir)) return;
+	try { await fs.promises.access(dir); } catch { return; }
 
 	const markerPath = path.join(dir, CLEANUP_MARKER_FILE);
 	const now = Date.now();
 
 	try {
-		const stat = fs.lstatSync(markerPath);
+		const stat = await fs.promises.lstat(markerPath);
 		if (!stat.isSymbolicLink() && now - stat.mtimeMs < 24 * 60 * 60 * 1000) return;
-		fs.unlinkSync(markerPath);
+		await fs.promises.unlink(markerPath);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") return;
 	}
@@ -48,13 +48,13 @@ export function cleanupOldArtifacts(dir: string, maxAgeDays: number): void {
 	const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
 	const cutoff = now - maxAgeMs;
 
-	for (const file of fs.readdirSync(dir)) {
+	for (const file of await fs.promises.readdir(dir)) {
 		if (file === CLEANUP_MARKER_FILE) continue;
 		const filePath = path.join(dir, file);
 		try {
-			const stat = fs.lstatSync(filePath);
+			const stat = await fs.promises.lstat(filePath);
 			if (stat.mtimeMs < cutoff) {
-				fs.unlinkSync(filePath);
+				await fs.promises.unlink(filePath);
 			}
 		} catch {
 			// Artifact cleanup is best-effort housekeeping. Skip files that disappear
@@ -63,21 +63,20 @@ export function cleanupOldArtifacts(dir: string, maxAgeDays: number): void {
 	}
 
 	try {
-		fs.writeFileSync(markerPath, String(now), { flag: "wx", mode: 0o600 });
+		await fs.promises.writeFile(markerPath, String(now), { flag: "wx", mode: 0o600 });
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 	}
 }
 
-export function cleanupAllArtifactDirs(maxAgeDays: number): void {
-	cleanupOldArtifacts(TEMP_ARTIFACTS_DIR, maxAgeDays);
+export async function cleanupAllArtifactDirs(maxAgeDays: number): Promise<void> {
+	await cleanupOldArtifacts(TEMP_ARTIFACTS_DIR, maxAgeDays);
 
 	const sessionsBase = path.join(getAgentDir(), "sessions");
-	if (!fs.existsSync(sessionsBase)) return;
 
 	let dirs: string[];
 	try {
-		dirs = fs.readdirSync(sessionsBase);
+		dirs = await fs.promises.readdir(sessionsBase);
 	} catch {
 		// Session artifact cleanup is best-effort. If the sessions root cannot be read,
 		// skip cleanup instead of failing extension startup.
@@ -87,7 +86,7 @@ export function cleanupAllArtifactDirs(maxAgeDays: number): void {
 	for (const dir of dirs) {
 		const artifactsDir = path.join(sessionsBase, dir, "subagent-artifacts");
 		try {
-			cleanupOldArtifacts(artifactsDir, maxAgeDays);
+			await cleanupOldArtifacts(artifactsDir, maxAgeDays);
 		} catch {
 			// Session cleanup is best-effort. Keep going so one unreadable session dir
 			// does not block cleanup for the rest.

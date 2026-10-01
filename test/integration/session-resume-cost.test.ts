@@ -13,12 +13,72 @@ import { createEventBus } from "../support/helpers.ts";
 
 const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
 process.env.PI_PACKAGE_DIR = sdkRoot;
-const { SessionManager } = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
+const { SessionManager, DefaultResourceLoader, SettingsManager, createAgentSession } = await import(pathToFileURL(path.join(sdkRoot, "dist/index.js")).href);
 const { createCompletionDelivery } = await import("../../src/runs/background/completion-delivery.ts");
 const { registerParentUsage } = await import("../../src/runs/shared/parent-usage.ts");
 const { createParentReceiptReader } = await import("../../src/runs/shared/parent-receipts.ts");
-const { saveAsyncRunResult, getRunMetadataDir } = await import("../../src/runs/shared/supervisor-questions.ts");
+const { saveAsyncRunResult, getRunMetadataDir, saveQuestionOwner, createSupervisorQuestion } = await import("../../src/runs/shared/supervisor-questions.ts");
+const { saveForegroundRun } = await import("../../src/runs/shared/run-records.ts");
 const { JsonProjection } = await import("../../src/shared/journal-reader.ts");
+
+test("native session startup services input during archive discovery and restores only its own runs and questions", async (t) => {
+	const root = fs.mkdtempSync(path.join(tmpdir(), "subagent-startup-cost-"));
+	const prefix = path.basename(root), foreignCount = 2048;
+	const manager = SessionManager.inMemory(root);
+	const runId = `${prefix}-owned`;
+	const run: OwnedRun = { runId, rootRunId: runId, ownerSessionId: manager.getSessionId(), source: "foreground",
+		mode: "single", cwd: root, task: "Retain saved work", startedAt: 1, children: [{ agent: "worker", index: 0 }],
+		review: { decision: "accepted", reviewedAt: 2 } };
+	manager.appendCustomEntry("subagent-run", run);
+	saveForegroundRun({ runId, mode: "single", cwd: root, results: [{ agent: "worker", task: run.task, exitCode: 0,
+		finalOutput: "Saved report", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } }] });
+	saveQuestionOwner(runId, manager.getSessionId());
+	const question = createSupervisorQuestion({ runId, ownerTarget: "fixture", agent: "worker", index: 0, childSessionId: "child",
+		childTarget: "child", sessionFile: path.join(root, "child.jsonl"), cwd: root, pid: process.pid, reason: "need_decision", message: "Keep this question available." });
+	for (let index = 0; index < foreignCount; index++) saveQuestionOwner(`${prefix}-foreign-${index}`, "another-parent");
+	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+	const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir: path.join(root, "agent"), settingsManager,
+		noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+		additionalExtensionPaths: [path.resolve("src/extension/index.ts")] });
+	await resourceLoader.reload();
+	assert.deepEqual(resourceLoader.getExtensions().errors, []);
+	const { session } = await createAgentSession({ cwd: root, agentDir: path.join(root, "agent"), settingsManager, resourceLoader,
+		sessionManager: manager, noTools: "builtin" });
+	t.after(async () => {
+		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+		session.dispose();
+	});
+	t.after(() => {
+		fs.rmSync(root, { recursive: true, force: true });
+		for (const id of [runId, ...Array.from({ length: foreignCount }, (_, index) => `${prefix}-foreign-${index}`)]) fs.rmSync(getRunMetadataDir(id), { recursive: true, force: true });
+	});
+	const open = fs.openSync;
+	let foreignReads = 0, running = true, input: NodeJS.Immediate;
+	const readsAtInput: number[] = [];
+	t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+		if (String(args[0]).includes(`${prefix}-foreign-`) && String(args[0]).endsWith("question-owner.json")) foreignReads++;
+		return Reflect.apply(open, fs, args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const serviceInput = () => {
+		readsAtInput.push(foreignReads);
+		if (running) input = setImmediate(serviceInput);
+	};
+	input = setImmediate(serviceInput);
+	const errors: unknown[] = [];
+	try { await session.bindExtensions({ mode: "print", onError: (error) => errors.push(error) }); }
+	finally { running = false; clearImmediate(input!); }
+	assert.equal(foreignReads, foreignCount, "each unrelated owner is classified once");
+	assert.ok(readsAtInput.some((count) => count > 0 && count < foreignCount), "input must run before the archive census finishes");
+	assert.deepEqual(errors, []);
+	const controls = session.agent.state.tools.find((tool) => tool.name === "agent_runs")!;
+	assert.ok(controls, "restored questions keep controls available");
+	const listed = await controls.execute("owned-list", { action: "list" }, new AbortController().signal);
+	assert.deepEqual(listed.details.runs.map((entry) => entry.runId), [runId], "foreign archives cannot establish ownership");
+	const questions = await controls.execute("owned-questions", { action: "questions" }, new AbortController().signal);
+	assert.deepEqual(questions.details.questions.map((entry) => entry.questionId), [question.questionId]);
+});
 
 test("resuming legacy delivered runs parses old parent receipts once and never rehydrates unrelated output or resends completions", async (t) => {
 	const root = fs.mkdtempSync(path.join(tmpdir(), "subagent-resume-cost-"));

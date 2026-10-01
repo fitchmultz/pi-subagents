@@ -19,7 +19,7 @@ import { renderSubagentResult } from "../tui/render.ts";
 import { type Details, type SubagentExecutionResult, type SubagentState } from "../shared/types.ts";
 import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
-import { OWNED_RUN_ENTRY, ownedRunList, restoreOwnedRuns } from "../runs/shared/run-records.ts";
+import { OWNED_RUN_ENTRY, ownedRunList, restoreOwnedRuns, restoreOwnedRunsAsync } from "../runs/shared/run-records.ts";
 import { closeRunHistory, startRunHistory } from "../runs/shared/history-index.ts";
 import { createCompletionDelivery } from "../runs/background/completion-delivery.ts";
 import { onNativeCheckpoint } from "../shared/native-checkpoint.ts";
@@ -62,7 +62,7 @@ function addBounded(set: Set<string>, value: string, max = 1000): void {
 	while (set.size > max) set.delete(set.values().next().value!);
 }
 
-function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState): NodeJS.Timeout | undefined {
+function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState, isRestoring: () => boolean): NodeJS.Timeout | undefined {
 	let route;
 	try {
 		route = resolveNestedRouteFromEnv();
@@ -77,6 +77,7 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 	const parsedChildIndex = Number(process.env[SUBAGENT_PARENT_CHILD_INDEX_ENV]);
 	const localChildIndex = Number.isInteger(parsedChildIndex) && parsedChildIndex >= 0 ? parsedChildIndex : undefined;
 	const timer = setInterval(() => {
+		if (isRestoring()) return;
 		try {
 			for (const request of readNestedControlRequests(route, seenFiles)) {
 				if (seen.has(request.requestId) || inFlight.has(request.requestId)) continue;
@@ -213,21 +214,25 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	const config = loadConfig();
 	const state = createChildSafeState();
 	state.persistOwnedRun = (run) => pi.appendEntry(OWNED_RUN_ENTRY, run);
-	const ensureSessionState = (ctx: ExtensionContext) => {
+	let sessionReset: Promise<void> | undefined;
+	const ensureSessionState = (ctx: ExtensionContext): void | Promise<void> => {
 		const sessionId = resolveCurrentSessionId(ctx.sessionManager);
-		state.lastUiContext = ctx;
-		if (state.currentSessionId === sessionId) return;
-		completionDelivery.stop();
-		void closeRunHistory(state).catch((error) => console.error("Could not close child history:", error));
-		state.foregroundRuns?.clear();
-		restoreOwnedRuns(state, ctx);
-		state.currentSessionId = sessionId;
-		startRunHistory(state, ctx);
-		completionDelivery.start();
+		if (sessionReset) return sessionReset;
+		if (state.currentSessionId === sessionId) { state.lastUiContext = ctx; return; }
+		sessionReset = (async () => {
+			await completionDelivery.stopAndJoin();
+			state.lastUiContext = ctx;
+			void closeRunHistory(state).catch((error) => console.error("Could not close child history:", error));
+			state.foregroundRuns?.clear();
+			await restoreOwnedRunsAsync(state, ctx);
+			state.currentSessionId = sessionId;
+			startRunHistory(state, ctx);
+			completionDelivery.start();
+		})().finally(() => { sessionReset = undefined; });
+		return sessionReset;
 	};
-	pi.on("session_start", (_event, ctx) => {
-		ensureSessionState(ctx);
-		completionDelivery.start();
+	pi.on("session_start", async (_event, ctx) => {
+		await ensureSessionState(ctx);
 	});
 	const executor = createSubagentExecutor({
 		pi,
@@ -275,7 +280,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	];
 	if (compact) registerCompactSubagentTools(pi, { executor, state, adapt: toRegisteredToolResult, guidelines: [...guidelines, ...acceptanceGuidelines], childSafe: true,
 		asyncByDefault: config.asyncByDefault === true, keepAdvancedActive: process.env[SUBAGENT_EAGER_TOOL_ENV] === "1",
-		listRuns: (params, ctx) => { ensureSessionState(ctx); return ownedRunList(state, params); },
+		listRuns: async (params, ctx) => { await ensureSessionState(ctx); return ownedRunList(state, params); },
 	});
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		...nativeAsyncLifecycle,
@@ -298,7 +303,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 
 	pi.registerTool(tool);
 
-	const controlInboxTimer = startNestedControlInboxListener(pi, state);
+	const controlInboxTimer = startNestedControlInboxListener(pi, state, () => sessionReset !== undefined);
 	const clearControlInboxTimer = (): Promise<void> => {
 		if (controlInboxTimer) clearInterval(controlInboxTimer);
 		completionDelivery.stop();
@@ -307,7 +312,9 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	globalStore[controlInboxCleanupStoreKey] = clearControlInboxTimer;
 
 	pi.on("session_shutdown", async () => {
-		await clearControlInboxTimer();
+		if (controlInboxTimer) clearInterval(controlInboxTimer);
+		await completionDelivery.stopAndJoin({ preservePending: true });
+		await closeRunHistory(state);
 		if (globalStore[controlInboxCleanupStoreKey] === clearControlInboxTimer) {
 			delete globalStore[controlInboxCleanupStoreKey];
 		}

@@ -148,7 +148,7 @@ Package skill content.
 		assert.ok(available.find((skill) => skill.name === "package-skill" && skill.source === "user-package"));
 	});
 
-	it("records run history and cleans session artifacts under the configured agent dir", () => {
+	it("records run history and cleans session artifacts under the configured agent dir", async () => {
 		recordRun("env-agent", "Inspect", 0, 42);
 		const historyPath = path.join(agentDir, "history-index", "run-timing.sqlite");
 		assert.equal(fs.existsSync(historyPath), true);
@@ -162,7 +162,7 @@ Package skill content.
 		const oldTime = new Date(Date.now() - 60_000);
 		fs.utimesSync(artifactPath, oldTime, oldTime);
 
-		cleanupAllArtifactDirs(0);
+		await cleanupAllArtifactDirs(0);
 		assert.equal(fs.existsSync(artifactPath), false);
 	});
 
