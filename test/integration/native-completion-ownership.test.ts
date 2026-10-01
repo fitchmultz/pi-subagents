@@ -58,11 +58,12 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 	const cwd = fs.mkdtempSync(path.join(root, "queued-"));
 	const manager = sdk.SessionManager.create(cwd, path.join(cwd, "sessions"));
 	manager.appendMessage(ai.fauxAssistantMessage("Delegate bounded work"));
-	const runId = randomUUID(), asyncDir = getRunMetadataDir(runId);
-	if (!unowned) {
-		manager.appendCustomEntry("subagent-run", { runId, rootRunId: runId, ownerSessionId: manager.getSessionId(), source: "async", mode: "single",
-			cwd, task: "Bounded work", startedAt: Date.now(), asyncDir, children: [{ agent: "worker", index: 0 }] });
-		saveQuestionOwner(runId, manager.getSessionId());
+	const queuedCount = !childSafe && !drop ? 2 : 1;
+	const runIds = Array.from({ length: queuedCount }, () => randomUUID()), runId = runIds[0];
+	if (!unowned) for (const id of runIds) {
+		manager.appendCustomEntry("subagent-run", { runId: id, rootRunId: id, ownerSessionId: manager.getSessionId(), source: "async", mode: "single",
+			cwd, task: "Bounded work", startedAt: Date.now(), asyncDir: getRunMetadataDir(id), children: [{ agent: "worker", index: 0 }] });
+		saveQuestionOwner(id, manager.getSessionId());
 	}
 	const sent = [], errors = [];
 	let factoryRuns = 0;
@@ -122,11 +123,15 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 				assert.ok(fs.existsSync(notice), "a queued legacy-only result stays recoverable until its actual published receipt");
 			} else await until(() => !fs.existsSync(notice), reason);
 		};
-		if (!unowned) saveRunStatus(runId, { runtimeVersion: 2, runId, mode: "single", sessionId: manager.getSessionFile(), state: "complete",
-			startedAt: Date.now(), lastUpdate: Date.now(), cwd, steps: [{ agent: "worker", status: "complete" }] });
-		if (unowned) recreateNotice(); else saveAsyncRunResult(runId, result);
+		for (const id of runIds) {
+			if (!unowned) saveRunStatus(id, { runtimeVersion: 2, runId: id, mode: "single", sessionId: manager.getSessionFile(), state: "complete",
+				startedAt: Date.now(), lastUpdate: Date.now(), cwd, steps: [{ agent: "worker", status: "complete" }] });
+			const completion = { ...result, id };
+			if (unowned) fs.writeFileSync(path.join(RESULTS_DIR, `${id}.json`), JSON.stringify(completion));
+			else saveAsyncRunResult(id, completion);
+		}
 		t.mock.timers.tick(3000);
-		await until(() => sent.length === 1, "completion reaches the real host queue");
+		await until(() => sent.length === queuedCount, "completions reach the real host queue");
 		assert.equal(notices().length, 0);
 		assert.equal(delivered(), false, "queued is not durably delivered");
 		assert.equal(session.agent.hasQueuedMessages(), true);
@@ -139,7 +144,7 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 				if (unowned) recreateNotice();
 				t.mock.timers.tick(11 * 60_000);
 				await delay(50);
-				assert.equal(sent.length, 1, "streaming past TTL must not queue another wake-up");
+				assert.equal(sent.length, queuedCount, "streaming past TTL must not queue another wake-up");
 			}
 		}
 		if (unowned && !childSafe && !drop) {
@@ -175,7 +180,7 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 			recreateNotice();
 			t.mock.timers.tick(3000);
 			await awaitHintReconciliation("the first watcher remains active before abort/reload");
-			assert.equal(sent.length, 1);
+			assert.equal(sent.length, queuedCount);
 			await session.abort();
 			await prompt;
 			assert.equal(ctx.isIdle(), true);
@@ -183,7 +188,8 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 			recreateNotice();
 			t.mock.timers.tick(11 * 60_000);
 			await awaitHintReconciliation("the active aborted owner's watcher reconciles recreated input");
-			assert.equal(sent.length, 1, "an idle aborted parent must not duplicate its still-pending custom message");
+			assert.equal(sent.length, queuedCount, "an idle aborted parent must not duplicate either still-pending custom message");
+			assert.equal(notices().length, 0, "a watcher scan must not start a recovery turn while native completions remain queued");
 			assert.equal(factoryRuns, 1);
 			await session.reload();
 			assert.equal(factoryRuns, 2, "native reload replaces the extension controller");
@@ -191,7 +197,7 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 			t.mock.timers.tick(11 * 60_000);
 			await awaitHintReconciliation("the replacement watcher actively reconciles recreated input");
 			await session.waitForIdle();
-			assert.equal(sent.length, 1, "reload preserves the actual pending admission rather than sending a second notice");
+			assert.equal(sent.length, queuedCount, "reload preserves all actual pending admissions rather than sending another notice");
 			assert.equal(notices().length, 0, "native reload has not consumed the pending completion");
 			assert.equal(session.agent.hasQueuedMessages(), true);
 			prompt = session.prompt("Resume the parent and consume its pending completion");
@@ -210,8 +216,14 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 		if (!unowned) await until(delivered, "journal reconciliation records delivery");
 		t.mock.timers.tick(11 * 60_000);
 		await delay(50);
-		assert.equal(sent.length, drop ? 2 : 1);
-		assert.equal(notices().length, 1);
+		assert.equal(sent.length, drop ? 2 : queuedCount);
+		assert.equal(notices().length, queuedCount);
+		const published = fs.readFileSync(manager.getSessionFile(), "utf8").trim().split("\n").map((line) => JSON.parse(line))
+			.filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify");
+		assert.equal(published.length, queuedCount, "each completion has exactly one physical native journal notice");
+		assert.deepEqual(published.map((entry) => entry.details.completion.runId).sort(), [...runIds].sort());
+		assert.equal(new Set(published.map((entry) => entry.details.completion.key)).size, queuedCount);
+		if (!childSafe && !drop) assert.equal(faux.state.callCount, 3, "only the aborted request and explicit two-completion continuation run");
 		if (unowned) {
 			assert.equal(delivered(), false, "native receipt authority does not fabricate an owned-run projection");
 			assert.equal((globalThis.__pi_subagents_queued_notifications__ as Map<string, unknown>).has(sent[0].details.completion.key), false,

@@ -5,7 +5,7 @@ import { SessionEntryCursor } from "../../shared/session-entries.ts";
 import { createParentReceiptReader } from "../shared/parent-receipts.ts";
 import { finalizedChildUsage, type registerParentUsage } from "../shared/parent-usage.ts";
 import { ownedRunView, rememberOwnedRun, repairOwnedRunAccounting } from "../shared/run-records.ts";
-import registerSubagentNotify, { type SubagentNotifyDetails } from "./notify.ts";
+import registerSubagentNotify from "./notify.ts";
 import { createResultWatcher } from "./result-watcher.ts";
 
 /** Completion authority is the published parent receipt, never queue/send acceptance. */
@@ -16,14 +16,12 @@ export function createCompletionDelivery(pi: ExtensionAPI, state: SubagentState,
 	const queued = store[queueKey] instanceof Map ? store[queueKey] as Map<string, Admission> : new Map<string, Admission>();
 	store[queueKey] = queued;
 	pi.on("turn_end", (event, ctx) => {
-		const pending = new Set(event.context.pendingMessages.flatMap((message) => {
-			const completion = message.role === "custom" && message.customType === "subagent-notify"
-				? (message.details as SubagentNotifyDetails)?.completion : undefined;
-			return completion ? [completion.key] : [];
-		}));
+		// ponytail: this is the next batch, not the whole queue. Retain ambiguous
+		// admissions until publication or empty queues; selective removal needs a public full-queue snapshot.
+		const pending = event.context.pendingMessages.length > 0;
 		for (const [key, admission] of queued) {
 			if (admission.channel !== "notification" || admission.sessionId !== ctx.sessionManager.getSessionId()) continue;
-			admission.pending = pending.has(key);
+			admission.pending = pending;
 			if (!admission.pending) {
 				queued.delete(key); state.completionSeen.delete(key);
 			}
