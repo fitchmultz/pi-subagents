@@ -1199,7 +1199,7 @@ The setting applies when a top-level tool or slash call does not explicitly set 
 
 ### `compactChildTools`
 
-Authorized children start with `delegate` and `load_subagent`; run controls and the full `subagent` schema load on demand. Native declarations restore the selected branch's tools on startup and tree navigation; compaction preserves current selection. A pending native call keeps its original tool active so its result can recover, subject to tool exclusions. Explicit `tools: subagent` profiles keep the advanced tool active. Agent-definition mutations remain blocked in children, including after loading.
+Authorized children start with `delegate` and `load_subagent`; run controls and the full `subagent` schema load on demand. Native declarations restore the selected branch's tools on startup and tree navigation; compaction preserves current selection. Saved owned runs and unanswered questions enable available run controls; obsolete pending-call records do not reserve tool activation or completion. Explicit `tools: subagent` profiles keep the advanced tool active. Agent-definition mutations remain blocked in children, including after loading.
 
 Set this flag to `false` to restore the previous full `subagent`-only child surface:
 
