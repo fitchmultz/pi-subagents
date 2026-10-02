@@ -131,7 +131,11 @@ describe("foreground result payload compaction", () => {
 			makeCtx(tempDir),
 		);
 
-		assert.equal(result.isError, undefined);
+		assert.equal(result.isError, undefined, result.isError ? JSON.stringify({
+			content: result.content,
+			runId: result.details?.runId,
+			wait: result.details?.wait,
+		}) : undefined);
 		assert.equal(result.details?.mode, "single");
 		assert.equal(result.details?.results?.length, 1);
 
