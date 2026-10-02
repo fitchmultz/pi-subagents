@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.44.2] - 2026-10-02
+
+### Changed
+- Simplify internal runtime boundaries by removing obsolete test-only exports and dependency-injection paths. Supported delegation, controls, receipts, continuation, shutdown and broker behavior are unchanged.
+- Audit the full test surface: retain meaningful native and security contracts, consolidate duplicate mock/helper layers, and check actual publication, readiness and rendered output. Isolate each native test process's storage so parallel fixtures cannot remove another runner's results.
+
 ## [0.44.1] - 2026-10-02
 
 ### Fixed
