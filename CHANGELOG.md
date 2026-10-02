@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.44.1] - 2026-10-02
+
+### Fixed
+- Keep saved-run browsing and Agents history available for deeply branched native sessions. Traverse each child’s indexed ancestry before joining its messages, avoiding repeated whole-index scans without changing branch selection, history boundaries, privacy or billing.
+
+### Changed
+- Clarify the performance guide’s full-step and per-step `maxItems` alternatives.
+- Update development tooling to Node 24.21.0 typings and TypeBox 1.3.34 with a regenerated lockfile; runtime Pi and TypeBox remain optional host-provided peers.
+
 ## [0.44.0] - 2026-10-01
 
 ### Added
