@@ -76,3 +76,46 @@ Cold recovery still enumerates genuine owner handles and verifies relevant publi
 Pi 1.0 still eagerly loads native session bodies at its own startup; extension installation alone cannot remove that host cost. Explicit fork context still copies and publishes each sibling, with required fsync. An explicit full individual record must fit its detail budget and the consumer's heap.
 
 Full-archive backfill/capacity, sustained contention, power-loss durability and cross-platform performance are not qualified by these macOS/APFS synthetic regressions. No journal deletion, live archive migration, installed-runtime activation or inference request is part of this work. Intentional tool/queue boundaries, provider response time, host rendering and other extensions remain separate possible costs.
+
+## Cached-input traffic and delegation
+
+This section supersedes the investigation in [PR #112](https://github.com/fitchmultz/pi-subagents/pull/112), which inspected `29903ad` before Pi 1.0 modernization. The architecture below was checked against released `4f288484` (0.44.0). No private session journals, invoices or provider requests were inspected. It explains possible traffic, not the cause of a particular account's usage or its dollar cost.
+
+### What grows the provider input
+
+- **Fresh is the default.** A fresh child starts without the parent's conversation. Project context, skills and the child's system prompt can still add substantial input. Explicit `context` overrides the profile; the bundled oracle alone defaults to `fork`. Inspect effective profiles and user/project overrides rather than assuming installed defaults.
+- **Fork is a branch, not a summary.** `src/shared/fork-context.ts` creates a separate native branched session per child index. The child uses inherited conversation context plus its new task, subject to Pi's native context/compaction rules and child filtering. Fork failure is explicit, not a fallback to the parent's file.
+- **Each child is a separate CLI tool loop.** Pi-backed children use `pi --mode json -p`; Claude-backed children use `claude -p`. Later model turns can send a large stable input prefix again. The extension does not implement provider prompt caching.
+- **Async work can overlap.** The root defaults to async, so the parent can continue making requests while children run. A fork is a launch-time snapshot; later parent turns do not update an already-running child.
+- **Filtering can change cache sharing.** Child context filtering removes parent-only orchestration messages and tool history where applicable. Native prompt fixtures prove unchanged-history prefix preservation and a changed prefix after filtering; neither is a guarantee that a provider will reuse a cache. A changed prefix does not establish that the entire context must be cache-written.
+- **Results can enlarge later input.** Inline results, chain substitutions, completion messages and supervisor notices add parent/next-child text. Some notices or deliveries can trigger a parent turn. Parallel completion is grouped; terminal async completion-guard notices leave the automatic wakeup to their matching result.
+- **Fanout is not a daily budget.** Top-level `tasks` uses `parallel.maxTasks` (default 8) after repeat expansion, with default concurrency 4. Static chain `parallel`/`count` is not covered by that top-level size limit. Dynamic fanout requires `expand.maxItems` or `config.chain.dynamicFanout.maxItems`; the per-step limit takes precedence. Bundled profiles disallow nested delegation; explicit opt-in remains depth-bounded. Successful sequential launches are not subject to a daily launch quota.
+
+Sources: `src/runs/{foreground/run-async-path,foreground/execution-input,shared/child-attempt,shared/subagent-prompt-runtime}.ts`, `src/shared/agent-context-policy.ts`, `agents/oracle.md`, and `test/fixtures/native-prompt-sections.mjs`.
+
+### Arithmetic, not attribution
+
+For a hypothetical constant **500,000 cached tokens per request**:
+
+```text
+4.26 billion cache-read tokens / 500,000 = 8,520 requests
+11.2 million output tokens / 8,520       = 1,314.55 output tokens/request
+```
+
+If "97% hit" means cached tokens divided by cached plus uncached input tokens, the corresponding uncached input is `4.26 billion × 0.03 / 0.97 = 131.75 million`, or about `15,463.92` per request. A request-based hit percentage would not support that calculation.
+
+| Hypothetical steady workload | Cache-read tokens |
+| --- | ---: |
+| One 500k-prefix session, one request/10 seconds for 24 hours | 4.32 billion |
+| Parent plus eight 500k-prefix children, one request/30 seconds each for 8 hours | 4.32 billion |
+| Eight 50k-prefix fresh children, one request/30 seconds each for 8 hours | 384 million |
+
+These assumptions include sustained activity and a full cache hit on that prefix; they are not measured workloads, throughput guarantees or pricing estimates. Token counts alone cannot establish dollars, double billing, a spawn loop, or which sessions made the requests.
+
+### Accounting and useful checks
+
+`src/runs/shared/native-usage.ts` excludes inherited launch-baseline entries and nonbillable checkpoints, then validates and deduplicates new native contributions. Excluding old journal usage does **not** make newly sending inherited context free. Pi 1.0 attribution uses finalized execution/wait tool results, not the removed `recordUsage` hook. Background notifications alone do not enter parent totals. Claude totals may remain explicitly accounting-incomplete when per-category evidence is unavailable. See [usage accounting](../README.md#usage-accounting); local attribution is not an additional provider request.
+
+To investigate an actual spike, compare provider usage for the relevant time/model/account with parent and child native usage, launch counts, effective `fresh`/`fork` settings and context sizes. Do not sum attributed parent totals and the same child totals as independent traffic. Keep private prompts, journals and credentials out of public issues.
+
+Use existing controls deliberately: prefer fresh context when a bounded handoff suffices, use file-only output when the parent needs references rather than full text, and set suitable concurrency and child runtime/token limits. `maxTokens` is best-effort and is not an invoice or whole-account spending cap. This investigation changes no profile defaults, fork capability, notice routing or quotas.

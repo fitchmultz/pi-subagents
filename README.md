@@ -809,7 +809,7 @@ For `output`, `reads`, `skills`, and `progress`, chain behavior is three-state: 
 
 Use `phase` to group related work in status output, `label` for a readable step name, and `as` to store a successful step or parallel task result for later `{outputs.name}` references. Duplicate `as` names, invalid identifiers, and unknown output references fail before child execution.
 
-Dynamic fanout is available only through direct `subagent({ chain: [...] })` JSON or saved `.chain.json` files. It expands an array from a prior structured named output, runs one child template per item, and stores the ordered collection under `collect.as`. The source must be structured output; prose is never parsed. `expand.maxItems` is required, over-limit arrays fail, nested fanout and arbitrary expressions are not supported, and `.chain.md` has no dynamic syntax in this release.
+Dynamic fanout is available only through direct `subagent({ chain: [...] })` JSON or saved `.chain.json` files. It expands an array from a prior structured named output, runs one child template per item, and stores the ordered collection under `collect.as`. The source must be structured output; prose is never parsed. Either `expand.maxItems` or `config.chain.dynamicFanout.maxItems` is required (the per-step limit takes precedence), over-limit arrays fail, nested fanout and arbitrary expressions are not supported, and `.chain.md` has no dynamic syntax in this release.
 
 ```json
 {
@@ -1346,6 +1346,8 @@ The result watcher emits `subagent:async-complete` for the saved parent's delive
 Child usage comes from finalized native records after the attempt's launch baseline. Inherited fork history and nonbillable checkpoints are excluded. Retries, self-review, summaries, and nested tool usage are included once, with recorded provider/model attribution; unavailable attribution is explicit. Reasoning tokens are part of output tokens, and one-hour cache writes are part of cache writes, not extra totals.
 
 The finalized execution/wait tool result carries each stable native contribution once when Pi persists that message. Reopening the parent or reading the result again does not charge it again. Saved usage entries from older hosts remain deduplication evidence. A launch receipt, custom completion notification, or slash-command result card alone does not add child usage to parent totals. Portable fire-and-forget background work therefore does not automatically enter the parent's usage totals. Run inspection and streaming progress never charge usage. Subscription-route cost fields remain estimates, not invoices.
+
+See [cached-input traffic and delegation](docs/performance.md#cached-input-traffic-and-delegation) for the fresh/fork boundary, repeated-prefix arithmetic and evidence needed to investigate an actual usage spike.
 
 ## Acceptance Gates
 
