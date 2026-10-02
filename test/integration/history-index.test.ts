@@ -81,6 +81,35 @@ test("owned compact run ordering, filtering and seek pagination do not adopt orp
 	assert.equal((await f.index.listRuns()).total, 0);
 });
 
+test("a full Agents page retains deep native branch configuration within the history process deadline", async (t) => {
+	const f = fixture(t), depth = 2500;
+	const records = [
+		{ type: "model_change", id: "model", parentId: null, timestamp, provider: "synthetic", modelId: "selected" },
+		{ type: "thinking_level_change", id: "thinking", parentId: "model", timestamp, thinkingLevel: "high" },
+		...Array.from({ length: depth }, (_, index) => ({ ...message(`deep-${index}`, `Native history ${index}`), parentId: index ? `deep-${index - 1}` : "thinking" })),
+		{ type: "model_change", id: "other-branch", parentId: "model", timestamp, provider: "synthetic", modelId: "not-selected" },
+	];
+	const file = f.file("deep.jsonl", [header(), ...records]), terminal = `deep-${depth - 1}`;
+	const runs = Array.from({ length: 50 }, (_, index) => run(`deep-run-${index}`, file));
+	await owned(f.index, runs, { foregroundRuns: runs.map((entry) => ({
+		runId: entry.runId, mode: "single", cwd: "/synthetic", updatedAt: Date.parse(timestamp),
+		children: [{ index: 0, agent: "worker", status: "completed", sessionFile: file, result: {
+			agent: "worker", task: entry.task, exitCode: 0, terminalEntryId: terminal, terminalLeafId: terminal,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+		} }],
+	})) });
+	const page = await f.index.listRuns({ limit: 50, latestTasksOnly: true });
+	assert.equal(page.total, 50); assert.equal(page.rows.length, 50); assert.equal(page.nextCursor, undefined);
+	assert.deepEqual(new Set(page.rows.map((row) => row.runId)), new Set(runs.map((entry) => entry.runId)));
+	for (const row of page.rows) {
+		assert.deepEqual(row.matchedChildIndexes, [0]);
+		assert.deepEqual(row.children[0].nativeConfiguration, { model: "synthetic/selected", modelRecordedAt: Date.parse(timestamp), thinking: "high" });
+	}
+	const history = await f.index.historyPage({ runId: runs[0].runId, index: 0, terminalEntryId: terminal, leaf: terminal, limit: 1 });
+	assert.equal(history.count, depth + 2); assert.equal(history.entries[0].id, terminal);
+	assert.deepEqual(history.configuration, page.rows[0].children[0].nativeConfiguration);
+});
+
 test("canonical foreground summaries stay compact, while physical archive pages retain >100 entries and tool pairs", async (t) => {
 	const f = fixture(t), records = Array.from({ length: 235 }, (_, number) => message(`entry-${number}`, `retained entry ${number}`));
 	records[4] = { type: "message", id: "entry-4", parentId: null, timestamp, message: { role: "assistant", content: [{ type: "toolCall", id: "call-one", name: "synthetic", arguments: { payload: "arguments-secret" } }] } } as any;
