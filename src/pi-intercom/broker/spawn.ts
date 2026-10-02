@@ -28,11 +28,10 @@ export function getBrokerLaunchSpec(
   brokerPath: string,
   brokerCommand: string,
   brokerArgs: string[],
-  nodePath: string = process.execPath,
 ): { command: string; args: string[] } {
   if (usesLegacyTsxDefault(brokerCommand, brokerArgs)) {
     return {
-      command: nodePath,
+      command: process.execPath,
       args: [brokerPath],
     };
   }
@@ -43,7 +42,7 @@ export function getBrokerLaunchSpec(
   };
 }
 
-export function getBrokerSpawnOptions(extensionDir: string = EXTENSION_DIR): {
+export function getBrokerSpawnOptions(): {
   detached: true;
   stdio: "ignore";
   cwd: string;
@@ -52,7 +51,7 @@ export function getBrokerSpawnOptions(extensionDir: string = EXTENSION_DIR): {
   return {
     detached: true,
     stdio: "ignore",
-    cwd: extensionDir,
+    cwd: EXTENSION_DIR,
     env: { ...process.env, NODE_NO_WARNINGS: "1" },
   };
 }
@@ -127,31 +126,27 @@ export async function isBrokerRunning(): Promise<boolean> {
   return checkSocketConnectable();
 }
 
-function readLivePid(pidPath = BROKER_PID, kill: typeof process.kill = process.kill): number | null {
-  if (!existsSync(pidPath)) return null;
+function readLivePid(): number | null {
+  if (!existsSync(BROKER_PID)) return null;
   let raw: string;
   try {
-    raw = readFileSync(pidPath, "utf-8");
+    raw = readFileSync(BROKER_PID, "utf-8");
   } catch {
     return null;
   }
   const pid = parseInt(raw.trim(), 10);
   if (!Number.isFinite(pid) || pid <= 0) return null;
   try {
-    kill(pid, 0);
+    process.kill(pid, 0);
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM" ? pid : null;
   }
   return isBrokerPidReused(pid, raw) ? null : pid;
 }
 
-export async function stopUnhealthyBrokerBeforeSpawn(
-  pidPath = BROKER_PID,
-  socketConnectable: () => Promise<boolean> = checkSocketConnectable,
-  kill: typeof process.kill = process.kill,
-): Promise<void> {
-  if (await socketConnectable()) return;
-  const pid = readLivePid(pidPath, kill);
+export async function stopUnhealthyBrokerBeforeSpawn(): Promise<void> {
+  if (await checkSocketConnectable()) return;
+  const pid = readLivePid();
   if (pid === null) return;
   throw new Error(`Intercom broker PID ${pid} may still own accepted work but its socket is unhealthy; refusing to spawn a second broker. Let the broker exit normally, then retry.`);
 }

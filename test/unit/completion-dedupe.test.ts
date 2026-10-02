@@ -16,9 +16,11 @@ describe("buildCompletionKey", () => {
 	});
 
 	it("builds deterministic fallback key when id is missing", () => {
-		const a = buildCompletionKey({ agent: "reviewer", timestamp: 123, taskIndex: 1, totalTasks: 2, success: true }, "x");
-		const b = buildCompletionKey({ agent: "reviewer", timestamp: 123, taskIndex: 1, totalTasks: 2, success: true }, "x");
-		assert.equal(a, b);
+		const data = { agent: "reviewer", timestamp: 123, taskIndex: 1, totalTasks: 2, success: true };
+		assert.equal(buildCompletionKey(data, "x"), "meta:no-session:reviewer:123:1:2:1:x");
+		assert.equal(buildCompletionKey({ ...data, sessionId: "parent" }, "x"), "meta:parent:reviewer:123:1:2:1:x");
+		assert.equal(buildCompletionKey({ ...data, taskIndex: 0 }, "x"), "meta:no-session:reviewer:123:0:2:1:x");
+		assert.equal(buildCompletionKey(data, "result"), "meta:no-session:reviewer:123:1:2:1:result");
 	});
 });
 
@@ -34,10 +36,15 @@ describe("markSeenWithTtl", () => {
 
 describe("getGlobalSeenMap", () => {
 	it("returns the same map for the same global store key", () => {
-		const a = getGlobalSeenMap("__test_seen_key__");
-		a.set("x", 1);
-		const b = getGlobalSeenMap("__test_seen_key__");
-		assert.equal(b.get("x"), 1);
-		assert.equal(a, b);
+		const storeKey = `__test_seen_${process.pid}__`;
+		try {
+			const a = getGlobalSeenMap(storeKey);
+			a.set("x", 1);
+			const b = getGlobalSeenMap(storeKey);
+			assert.equal(b.get("x"), 1);
+			assert.equal(a, b);
+		} finally {
+			Reflect.deleteProperty(globalThis, storeKey);
+		}
 	});
 });

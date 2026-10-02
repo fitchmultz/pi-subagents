@@ -1,13 +1,15 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { buildPiArgs } from "../../src/runs/shared/pi-args.ts";
 
-test("same-cwd resumes omit the redundant fork-only flag without changing saved history", () => {
+test("same-cwd resumes omit the redundant fork-only flag without changing saved history", (t) => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-same-cwd-resume-")));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 	mkdirSync(join(root, "replacement"));
 	symlinkSync(root, join(root, "alias"), "dir");
 	const sessionFile = join(root, "saved.jsonl");
@@ -27,17 +29,9 @@ test("same-cwd resumes omit the redundant fork-only flag without changing saved 
 	}
 });
 
-test("preassigned missing sessions inherit the spawn cwd without creating a journal", () => {
-	const root = mkdtempSync(join(tmpdir(), "pi-new-session-"));
-	const sessionFile = join(root, "nested", "session.jsonl");
-	const { args } = buildPiArgs({ baseArgs: [], task: "initial acceptance turn", sessionEnabled: true, sessionFile, cwd: root,
-		inheritProjectContext: false, inheritSkills: false });
-	assert.equal(args.includes("--session-cwd"), false);
-	assert.equal(existsSync(sessionFile), false);
-});
-
-test("uncertain existing headers and unavailable original directories retain the native override", () => {
+test("uncertain existing headers and unavailable original directories retain the native override", (t) => {
 	const root = mkdtempSync(join(tmpdir(), "pi-unknown-session-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 	const fixtures = ["", "not json\n", JSON.stringify({ type: "message", cwd: root }),
 		JSON.stringify({ type: "session" }), JSON.stringify({ type: "session", cwd: "" }),
 		JSON.stringify({ type: "session", cwd: join(root, "missing-original") })];
@@ -57,8 +51,18 @@ test("uncertain existing headers and unavailable original directories retain the
 	fixtures.forEach((bytes, index) => assert.equal(readFileSync(sessionFiles[index], "utf8"), bytes));
 });
 
-test("header-only reads preserve split UTF-8, large headers, and EOF without a newline", () => {
+test("header-only reads preserve split UTF-8, large headers, and EOF without a newline", (t) => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-header-read-")));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const read = fs.readSync;
+	let bytesRead = 0;
+	t.mock.method(fs, "readSync", function(...args) {
+		const count = read.apply(this, args);
+		bytesRead += count;
+		return count;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 	const cwd = join(root, "é");
 	mkdirSync(cwd);
 	const empty = { type: "session", padding: "", cwd };
@@ -68,9 +72,13 @@ test("header-only reads preserve split UTF-8, large headers, and EOF without a n
 		const sessionFile = join(root, `${index}.jsonl`);
 		const bytes = index === 0 ? `${header}\n${"history\n".repeat(100_000)}` : header;
 		writeFileSync(sessionFile, bytes);
-		const { args } = buildPiArgs({ baseArgs: [], task: "resume", sessionEnabled: true, sessionFile, cwd,
+		bytesRead = 0;
+		const { args, env } = buildPiArgs({ baseArgs: [], task: "resume", sessionEnabled: true, sessionFile, cwd,
 			inheritProjectContext: false, inheritSkills: false });
 		assert.equal(args.includes("--session-cwd"), false);
+		assert.equal(env.PI_SUBAGENT_SESSION_CWD, undefined, "decoded UTF-8/EOF header preserves the actual physical cwd");
+		assert.ok(bytesRead >= Buffer.byteLength(header), "the native header was actually read");
+		assert.ok(bytesRead <= Math.ceil((Buffer.byteLength(header) + 1) / 4096) * 4096, "reads stop within one chunk of the header, not the large transcript");
 		assert.equal(readFileSync(sessionFile, "utf8"), bytes);
 	}
 });

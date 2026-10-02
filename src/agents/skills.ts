@@ -633,8 +633,3 @@ export function discoverAvailableSkills(cwd: string, options: { projectTrusted?:
 		}))
 		.sort((a, b) => a.name.localeCompare(b.name));
 }
-
-export function clearSkillCache(): void {
-	skillCache.clear();
-	loadSkillsCache = null;
-}

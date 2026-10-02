@@ -2,44 +2,24 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-interface SlashLiveStateModule {
-	applySlashUpdate?: typeof import("../../src/slash/slash-live-state.ts").applySlashUpdate;
-	buildSlashInitialResult?: typeof import("../../src/slash/slash-live-state.ts").buildSlashInitialResult;
-	clearSlashSnapshots?: typeof import("../../src/slash/slash-live-state.ts").clearSlashSnapshots;
-	finalizeSlashResult?: typeof import("../../src/slash/slash-live-state.ts").finalizeSlashResult;
-	getSlashRenderableSnapshot?: typeof import("../../src/slash/slash-live-state.ts").getSlashRenderableSnapshot;
-	restoreSlashFinalSnapshots?: typeof import("../../src/slash/slash-live-state.ts").restoreSlashFinalSnapshots;
-}
+import {
+	applySlashUpdate,
+	buildSlashInitialResult,
+	clearSlashSnapshots,
+	finalizeSlashResult,
+	getSlashRenderableSnapshot,
+	restoreSlashFinalSnapshots,
+} from "../../src/slash/slash-live-state.ts";
 
-let applySlashUpdate: SlashLiveStateModule["applySlashUpdate"];
-let buildSlashInitialResult: SlashLiveStateModule["buildSlashInitialResult"];
-let clearSlashSnapshots: SlashLiveStateModule["clearSlashSnapshots"];
-let finalizeSlashResult: SlashLiveStateModule["finalizeSlashResult"];
-let getSlashRenderableSnapshot: SlashLiveStateModule["getSlashRenderableSnapshot"];
-let restoreSlashFinalSnapshots: SlashLiveStateModule["restoreSlashFinalSnapshots"];
-let available = true;
-try {
-	({
-		applySlashUpdate,
-		buildSlashInitialResult,
-		clearSlashSnapshots,
-		finalizeSlashResult,
-		getSlashRenderableSnapshot,
-		restoreSlashFinalSnapshots,
-	} = await import("../../src/slash/slash-live-state.ts") as SlashLiveStateModule);
-} catch {
-	available = false;
-}
-
-describe("slash live state", { skip: !available ? "slash-live-state.ts not importable" : undefined }, () => {
+describe("slash live state", () => {
 	it("streams progress updates into the visible slash snapshot", () => {
-		clearSlashSnapshots!();
-		const details = buildSlashInitialResult!("req-1", {
+		clearSlashSnapshots();
+		const details = buildSlashInitialResult("req-1", {
 			agent: "scout",
 			task: "scan codebase",
 		});
 
-		applySlashUpdate!("req-1", {
+		applySlashUpdate("req-1", {
 			requestId: "req-1",
 			currentTool: "find",
 			toolCount: 2,
@@ -57,7 +37,7 @@ describe("slash live state", { skip: !available ? "slash-live-state.ts not impor
 			}],
 		});
 
-		const snapshot = getSlashRenderableSnapshot!(details);
+		const snapshot = getSlashRenderableSnapshot(details);
 		const progress = snapshot.result.details.results[0]?.progress;
 		assert.equal(progress?.currentTool, "find");
 		assert.deepEqual(progress?.recentOutput, ["src/index.ts", "src/render.ts"]);
@@ -65,13 +45,13 @@ describe("slash live state", { skip: !available ? "slash-live-state.ts not impor
 	});
 
 	it("prefers finalized snapshots and restores them from persisted custom messages", () => {
-		clearSlashSnapshots!();
-		const details = buildSlashInitialResult!("req-2", {
+		clearSlashSnapshots();
+		const details = buildSlashInitialResult("req-2", {
 			agent: "scout",
 			task: "scan codebase",
 		});
 
-		const finalDetails = finalizeSlashResult!({
+		const finalDetails = finalizeSlashResult({
 			requestId: "req-2",
 			result: {
 				content: [{ type: "text", text: "Done." }],
@@ -89,11 +69,11 @@ describe("slash live state", { skip: !available ? "slash-live-state.ts not impor
 			isError: false,
 		});
 
-		const liveFinal = getSlashRenderableSnapshot!(details);
+		const liveFinal = getSlashRenderableSnapshot(details);
 		assert.equal((liveFinal.result.content[0] as { text: string }).text, "Done.");
 
-		clearSlashSnapshots!();
-		restoreSlashFinalSnapshots!([
+		clearSlashSnapshots();
+		restoreSlashFinalSnapshots([
 			{
 				type: "custom_message",
 				customType: "subagent-slash-result",
@@ -102,7 +82,7 @@ describe("slash live state", { skip: !available ? "slash-live-state.ts not impor
 			},
 		]);
 
-		const restored = getSlashRenderableSnapshot!(details);
+		const restored = getSlashRenderableSnapshot(details);
 		assert.equal((restored.result.content[0] as { text: string }).text, "Done.");
 	});
 });

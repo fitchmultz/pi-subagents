@@ -8,7 +8,6 @@ import { createSubagentExecutor, type SubagentParamsLike } from "../../src/runs/
 import { createSupervisorQuestion, getRunMetadataDir, questionProcessAlive, readQuestionContract } from "../../src/runs/shared/supervisor-questions.ts";
 import { ASYNC_DIR, RESULTS_DIR, getAsyncConfigPath, type AsyncResultFile, type ForegroundResumeRun, type SubagentExecutionResult } from "../../src/shared/types.ts";
 import { readStatus } from "../../src/shared/utils.ts";
-import { NativeJournal } from "../../src/shared/journal-reader.ts";
 import { createEventBus, createMockPi, createTempDir, makeAgent, makeMinimalCtx, removeTempDir, type MockPi } from "../support/helpers.ts";
 
 async function waitFor(check: () => boolean, message: string): Promise<void> {
@@ -399,13 +398,20 @@ describe("saved output choices", () => {
 		const previous = savedLaunch(original.details.asyncId!);
 		assert.ok(typeof previous.output === "string");
 		const bytes = fs.readFileSync(previous.output);
-		mockPi.onCall({ output: "Short assistant receipt", delay: 300 });
+		const release = path.join(tempDir, "release-successor");
+		mockPi.onCall({ output: "Short assistant receipt", waitForFile: release });
 		const pending = run({ action: "resume", id: original.details.asyncId, message: "Write the detailed successor report" });
-		await waitFor(() => mockPi.callCount() === 2, "successor child must start before its file is written");
-		const successor = savedLaunch([...runIds].at(-1)!);
-		assert.ok(typeof successor.output === "string");
-		fs.mkdirSync(path.dirname(successor.output), { recursive: true });
-		fs.writeFileSync(successor.output, "Detailed child-written report\n");
+		let successor: ReturnType<typeof savedLaunch>;
+		try {
+			await waitFor(() => mockPi.callCount() === 2, "successor child must start before its file is written");
+			successor = savedLaunch([...runIds].at(-1)!);
+			assert.ok(typeof successor.output === "string");
+			fs.mkdirSync(path.dirname(successor.output), { recursive: true });
+			fs.writeFileSync(successor.output, "Detailed child-written report\n");
+		} finally {
+			fs.writeFileSync(release, "");
+			await pending;
+		}
 		const continued = await pending;
 		const payload = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, `${continued.details.asyncId}.json`), "utf8")) as AsyncResultFile;
 		const artifactPath = payload.results?.[0]?.artifactPaths?.outputPath;
@@ -500,11 +506,6 @@ describe("saved output choices", () => {
 			{ type: "thinking_level_change", id: "thinking", parentId: "model", thinkingLevel: "low", timestamp },
 		].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
 		assert.equal(readQuestionContract(id, 0)?.launch?.model, "mock/chosen:high", "default reads retain the captured selection");
-		const display = readQuestionContract(id, 0, undefined, {
-			readConfiguration: (file, endedAt, leaf) => new NativeJournal(file!, "inspect", true).configuration(endedAt, leaf),
-		})!.launch!;
-		assert.equal(display.model, "native/later", "explicit inspection projects current native metadata");
-		assert.equal(display.thinking, "low");
 		const continued = await run({ action: "resume", id, message: "Continue" });
 		const successor = readQuestionContract(continued.details.asyncId!, 0, undefined, { readConfiguration: false })!.launch!;
 		assert.equal(successor.model, "mock/chosen:high");

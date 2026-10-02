@@ -83,8 +83,11 @@ if (mode === "seed") {
   // The test kills this process while native queues and intercom staging are pending.
   await session.prompt("Hold an unfinished provider request");
 } else {
-  // Let the restored delivery timer and its native run finish; zero calls is expected for fork/new and a second resume.
-  await sleep(350);
+  const deadline = Date.now() + 5_000;
+  while (!(await summary()).status.includes("Pending inbound messages: 0") || !session.isIdle) {
+    assert.ok(Date.now() < deadline, "restored native delivery finishes without waking passive messages");
+    await sleep(5);
+  }
   await session.waitForIdle();
   const result = await summary();
   await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });

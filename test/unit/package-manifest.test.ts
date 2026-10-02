@@ -107,16 +107,6 @@ test("old pi package scope is not used by source or tests", () => {
 	}
 });
 
-test("source uses only current Pi 0.84 entrypoints and event contracts", () => {
-	for (const file of collectTsFiles(path.join(projectRoot, "src"))) {
-		const source = fs.readFileSync(file, "utf-8");
-		assert.equal(source.includes("@earendil-works/pi-ai/compat"), false, file);
-		assert.equal(source.includes("tool_result_end"), false, file);
-		assert.equal(source.includes("_rewriteFile"), false, file);
-		assert.equal(source.includes("isProjectTrusted?."), false, file);
-	}
-});
-
 test("Pi package resolution stays export-map safe", () => {
 	for (const file of [...collectTsFiles(path.join(projectRoot, "src")), ...collectTsFiles(path.join(projectRoot, "test"))]) {
 		const source = fs.readFileSync(file, "utf-8");

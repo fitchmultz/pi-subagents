@@ -7,267 +7,95 @@ import { describe, it } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createForkContextResolver, resolveSubagentContext } from "../../src/shared/fork-context.ts";
 
-function writeMinimalSessionFile(filePath: string, id = "session"): void {
-	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	fs.writeFileSync(filePath, `{"type":"session","version":1,"id":"${id}","timestamp":"2026-04-16T00:00:00.000Z","cwd":"/tmp"}\n`, "utf-8");
-}
-
 describe("resolveSubagentContext", () => {
 	it("defaults to fresh", () => {
 		assert.equal(resolveSubagentContext(undefined), "fresh");
 		assert.equal(resolveSubagentContext("anything"), "fresh");
 	});
-
-	it("accepts fork", () => {
-		assert.equal(resolveSubagentContext("fork"), "fork");
-	});
+	it("accepts fork", () => assert.equal(resolveSubagentContext("fork"), "fork"));
 });
 
 describe("createForkContextResolver", () => {
-	it("fresh mode never calls createBranchedSession", () => {
-		let calls = 0;
+	it("fresh mode never opens a parent session", (t) => {
+		const opener = t.mock.method(SessionManager, "open", () => { throw new Error("must not open"); });
 		const resolver = createForkContextResolver({
-			getSessionFile: () => "/tmp/parent.jsonl",
-			getLeafId: () => "leaf-123",
-			getSessionDir: () => "/tmp",
-		}, "fresh", {
-			openSession: () => ({
-				createBranchedSession: () => {
-					calls++;
-					return "/tmp/child.jsonl";
-				},
-			}),
-		});
-
+			getSessionFile: () => "/tmp/parent.jsonl", getLeafId: () => "leaf-123", getSessionDir: () => "/tmp",
+		}, "fresh");
 		assert.equal(resolver.sessionFileForIndex(0), undefined);
-		assert.equal(calls, 0);
+		assert.equal(opener.mock.callCount(), 0);
 	});
 
 	it("fails fast when parent session file is missing", () => {
-		assert.throws(
-			() => createForkContextResolver({
-				getSessionFile: () => undefined,
-				getLeafId: () => "leaf-123",
-				getSessionDir: () => "/tmp",
-			}, "fork", { openSession: () => ({ createBranchedSession: () => "/tmp/child.jsonl" }) }),
-			/Forked subagent context requires a persisted parent session\./,
-		);
+		assert.throws(() => createForkContextResolver({
+			getSessionFile: () => undefined, getLeafId: () => "leaf-123", getSessionDir: () => "/tmp",
+		}, "fork"), /Forked subagent context requires a persisted parent session\./);
 	});
 
 	it("fails fast when leaf id is missing", () => {
-		assert.throws(
-			() => createForkContextResolver({
-				getSessionFile: () => "/tmp/parent.jsonl",
-				getLeafId: () => null,
-				getSessionDir: () => "/tmp",
-			}, "fork", { openSession: () => ({ createBranchedSession: () => "/tmp/child.jsonl" }) }),
-			/Forked subagent context requires a current leaf to fork from\./,
-		);
+		assert.throws(() => createForkContextResolver({
+			getSessionFile: () => "/tmp/parent.jsonl", getLeafId: () => null, getSessionDir: () => "/tmp",
+		}, "fork"), /Forked subagent context requires a current leaf to fork from\./);
 	});
 
-	it("opens a throwaway manager from the persisted parent session file", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-open-"));
-		try {
-			const parentSessionFile = path.join(tempDir, "parent.jsonl");
-			writeMinimalSessionFile(parentSessionFile, "parent");
-			const openedPaths: string[] = [];
-			const seenLeafIds: string[] = [];
-			const resolver = createForkContextResolver({
-				getSessionFile: () => parentSessionFile,
-				getLeafId: () => "leaf-xyz",
-				getSessionDir: () => "/tmp",
-			}, "fork", {
-				openSession: (sessionFile: string) => {
-					openedPaths.push(sessionFile);
-					return {
-						createBranchedSession: (leafId: string) => {
-							seenLeafIds.push(leafId);
-							const childSessionFile = path.join(tempDir, `child-${seenLeafIds.length}.jsonl`);
-							writeMinimalSessionFile(childSessionFile, `child-${seenLeafIds.length}`);
-							return childSessionFile;
-						},
-					};
-				},
-			});
-
-			resolver.sessionFileForIndex(0);
-			resolver.sessionFileForIndex(1);
-			resolver.sessionFileForIndex(2);
-
-			assert.deepEqual(openedPaths, [parentSessionFile, parentSessionFile, parentSessionFile]);
-			assert.deepEqual(seenLeafIds, ["leaf-xyz", "leaf-xyz", "leaf-xyz"]);
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
+	it("creates isolated native branches per index without changing the parent", (t) => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-native-"));
+		t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+		const parent = SessionManager.create(dir, dir);
+		parent.appendMessage({ role: "user", content: "parent prompt", timestamp: 1 });
+		parent.appendMessage({ role: "assistant", content: "parent response" });
+		const parentFile = parent.getSessionFile()!;
+		const leaf = parent.getLeafId()!;
+		const bytes = fs.readFileSync(parentFile, "utf8");
+		const entries = parent.getBranch(leaf);
+		const resolver = createForkContextResolver(parent, "fork");
+		const children = [0, 1, 2, 3, 4, 7].map((index) => resolver.sessionFileForIndex(index)!);
+		assert.equal(new Set(children).size, 6, "single, parallel and chain indices have separate journals");
+		for (const file of children) {
+			assert.notEqual(file, parentFile);
+			assert.equal(fs.existsSync(file), true);
+			const child = SessionManager.open(file);
+			assert.equal(child.getLeafId(), leaf);
+			assert.deepEqual(child.getBranch(leaf), entries, "every child inherits the exact selected branch");
+			assert.deepEqual(JSON.parse(fs.readFileSync(`${file}.subagent-cwd-init`, "utf8")), {});
 		}
+		const cached = children.at(-1)!;
+		fs.unlinkSync(`${cached}.subagent-cwd-init`);
+		assert.equal(resolver.sessionFileForIndex(7), cached);
+		assert.equal(fs.existsSync(`${cached}.subagent-cwd-init`), false, "cached forks do not reset consumed directory intent");
+		assert.equal(parent.getSessionFile(), parentFile);
+		assert.equal(parent.getLeafId(), leaf);
+		assert.equal(fs.readFileSync(parentFile, "utf8"), bytes);
 	});
 
-	it("creates forked sessions through the default package opener", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-default-"));
-		try {
-			const sessionDir = path.join(tempDir, "sessions");
-			const parent = SessionManager.create(tempDir, sessionDir);
-			parent.appendMessage({ role: "user", content: "parent prompt" });
-			parent.appendMessage({ role: "assistant", content: "parent response" });
-			const parentSessionFile = parent.getSessionFile();
-			const leafId = parent.getLeafId();
-
-			assert.ok(parentSessionFile);
-			assert.ok(leafId);
-
-			const resolver = createForkContextResolver({
-				getSessionFile: () => parentSessionFile,
-				getLeafId: () => leafId,
-				getSessionDir: () => sessionDir,
-			}, "fork");
-
-			const childSessionFile = resolver.sessionFileForIndex(0);
-			assert.ok(childSessionFile);
-			assert.notEqual(childSessionFile, parentSessionFile);
-			assert.equal(fs.existsSync(childSessionFile), true);
-			assert.deepEqual(JSON.parse(fs.readFileSync(`${childSessionFile}.subagent-cwd-init`, "utf8")), {});
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
+	it("fails clearly when the parent file has not been persisted", (t) => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-unpersisted-"));
+		t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+		const file = path.join(dir, "parent.jsonl");
+		const parent = { getSessionFile: () => file, getLeafId: () => "unpersisted-leaf", getSessionDir: () => dir };
+		const resolver = createForkContextResolver(parent, "fork");
+		assert.throws(() => resolver.sessionFileForIndex(0), /Failed to create forked subagent session: Parent session file does not exist: .*Pi has not persisted enough history to fork yet\./);
+		assert.equal(parent.getSessionFile(), file);
+		assert.equal(parent.getLeafId(), "unpersisted-leaf");
+		assert.equal(fs.existsSync(file), false);
 	});
 
-	it("fails clearly when the parent file has not been persisted", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-unpersisted-"));
-		try {
-			const parentSessionFile = path.join(tempDir, "parent.jsonl");
-			const leafId = "unpersisted-leaf";
-			const parent = {
-				getSessionFile: () => parentSessionFile,
-				getLeafId: () => leafId,
-				getSessionDir: () => tempDir,
-			};
-
-			assert.equal(fs.existsSync(parentSessionFile), false);
-
-			const resolver = createForkContextResolver(parent, "fork");
-			assert.throws(
-				() => resolver.sessionFileForIndex(0),
-				/Failed to create forked subagent session: Parent session file does not exist: .*Pi has not persisted enough history to fork yet\./,
-			);
-			assert.equal(parent.getSessionFile(), parentSessionFile);
-			assert.equal(parent.getLeafId(), leafId);
-			assert.equal(fs.existsSync(parentSessionFile), false);
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
+	it("fails clearly when branch extraction returns a missing child file", (t) => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-missing-child-"));
+		t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+		const parentFile = path.join(dir, "parent.jsonl");
+		fs.writeFileSync(parentFile, "{}");
+		t.mock.method(SessionManager, "open", () => ({ createBranchedSession: () => path.join(dir, "missing-child.jsonl") }));
+		const resolver = createForkContextResolver({ getSessionFile: () => parentFile, getLeafId: () => "leaf", getSessionDir: () => dir }, "fork");
+		assert.throws(() => resolver.sessionFileForIndex(0), /Failed to create forked subagent session: Session manager returned a forked session file that does not exist: .*missing-child\.jsonl/);
 	});
 
-	it("creates isolated branched sessions per index (parallel and chain compatible)", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-index-"));
-		try {
-			const parentSessionFile = path.join(tempDir, "parent.jsonl");
-			writeMinimalSessionFile(parentSessionFile, "parent");
-			let count = 0;
-			const resolver = createForkContextResolver({
-				getSessionFile: () => parentSessionFile,
-				getLeafId: () => "leaf-abc",
-				getSessionDir: () => "/tmp",
-			}, "fork", {
-				openSession: () => ({
-					createBranchedSession: () => {
-						count++;
-						const childSessionFile = path.join(tempDir, `fork-${count}.jsonl`);
-						writeMinimalSessionFile(childSessionFile, `child-${count}`);
-						return childSessionFile;
-					},
-				}),
-			});
-
-			const singleSession = resolver.sessionFileForIndex(0);
-			const parallelSessions = [resolver.sessionFileForIndex(1), resolver.sessionFileForIndex(2)];
-			const chainSessions = [resolver.sessionFileForIndex(3), resolver.sessionFileForIndex(4)];
-
-			assert.equal(singleSession, path.join(tempDir, "fork-1.jsonl"));
-			assert.deepEqual(parallelSessions, [path.join(tempDir, "fork-2.jsonl"), path.join(tempDir, "fork-3.jsonl")]);
-			assert.deepEqual(chainSessions, [path.join(tempDir, "fork-4.jsonl"), path.join(tempDir, "fork-5.jsonl")]);
-			assert.equal(count, 5);
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
-	});
-
-	it("memoizes per index to keep behavior deterministic", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-memo-"));
-		try {
-			const parentSessionFile = path.join(tempDir, "parent.jsonl");
-			writeMinimalSessionFile(parentSessionFile, "parent");
-			let calls = 0;
-			const resolver = createForkContextResolver({
-				getSessionFile: () => parentSessionFile,
-				getLeafId: () => "leaf-abc",
-				getSessionDir: () => "/tmp",
-			}, "fork", {
-				openSession: () => ({
-					createBranchedSession: () => {
-						calls++;
-						const childSessionFile = path.join(tempDir, `fork-${calls}.jsonl`);
-						writeMinimalSessionFile(childSessionFile, `child-${calls}`);
-						return childSessionFile;
-					},
-				}),
-			});
-
-			const first = resolver.sessionFileForIndex(7);
-			fs.unlinkSync(`${first}.subagent-cwd-init`);
-			const second = resolver.sessionFileForIndex(7);
-			assert.equal(fs.existsSync(`${second}.subagent-cwd-init`), false, "a cached fork never resets later child selection");
-			assert.equal(first, second);
-			assert.equal(calls, 1);
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
-	});
-
-	it("fails clearly when branch extraction returns a missing child file", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-missing-child-"));
-		try {
-			const parentSessionFile = path.join(tempDir, "parent.jsonl");
-			const missingChildSessionFile = path.join(tempDir, "missing-child.jsonl");
-			writeMinimalSessionFile(parentSessionFile, "parent");
-			const resolver = createForkContextResolver({
-				getSessionFile: () => parentSessionFile,
-				getLeafId: () => "leaf-abc",
-				getSessionDir: () => "/tmp",
-			}, "fork", {
-				openSession: () => ({
-					createBranchedSession: () => missingChildSessionFile,
-				}),
-			});
-
-			assert.throws(
-				() => resolver.sessionFileForIndex(0),
-				/Failed to create forked subagent session: Session manager returned a forked session file that does not exist: .*missing-child\.jsonl/,
-			);
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
-	});
-
-	it("does not silently fallback to fresh when branch extraction fails", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-no-path-"));
-		try {
-			const parentSessionFile = path.join(tempDir, "parent.jsonl");
-			writeMinimalSessionFile(parentSessionFile, "parent");
-			const resolver = createForkContextResolver({
-				getSessionFile: () => parentSessionFile,
-				getLeafId: () => "leaf-abc",
-				getSessionDir: () => "/tmp",
-			}, "fork", {
-				openSession: () => ({
-					createBranchedSession: () => undefined,
-				}),
-			});
-
-			assert.throws(
-				() => resolver.sessionFileForIndex(0),
-				/Failed to create forked subagent session: Session manager did not return a forked session file\./,
-			);
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
+	it("does not silently fallback to fresh when branch extraction fails", (t) => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-no-path-"));
+		t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+		const parentFile = path.join(dir, "parent.jsonl");
+		fs.writeFileSync(parentFile, "{}");
+		t.mock.method(SessionManager, "open", () => ({ createBranchedSession: () => undefined }));
+		const resolver = createForkContextResolver({ getSessionFile: () => parentFile, getLeafId: () => "leaf", getSessionDir: () => dir }, "fork");
+		assert.throws(() => resolver.sessionFileForIndex(0), /Failed to create forked subagent session: Session manager did not return a forked session file\./);
 	});
 });

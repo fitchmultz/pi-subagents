@@ -61,12 +61,6 @@ const theme = {
 	},
 };
 
-function componentText(component: unknown): string {
-	if (typeof component !== "object" || component === null) return "";
-	if ("text" in component && typeof component.text === "string") return component.text;
-	if ("children" in component && Array.isArray(component.children)) return component.children.map(componentText).filter(Boolean).join("\n");
-	return "";
-}
 
 function result(agent: string, output: string) {
 	return {
@@ -205,14 +199,14 @@ test("async start rendering does not hide errors or management reports", () => {
 		{ mode: "management", results: [], asyncId: "existing-run" },
 	] as const) {
 		const receipt = { content: [{ type: "text", text: output }], details } as SubagentExecutionResult;
-		assert.equal(componentText(renderSubagentResult(receipt, { expanded: false }, theme as any)), output);
+		assert.equal(renderedText(renderSubagentResult(receipt, { expanded: false }, theme as any), 1000), output);
 		assert.ok(unwrap(renderedText(nativeTool("agent_runs", receipt), 40)).includes(unwrap(output)));
 	}
 	const error: SubagentExecutionResult = {
 		content: [{ type: "text", text: output }], isError: true,
 		details: { mode: "single", results: [], asyncId: "existing-run" },
 	};
-	assert.equal(componentText(renderSubagentResult(error, { expanded: false }, theme as any)), output);
+	assert.equal(renderedText(renderSubagentResult(error, { expanded: false }, theme as any), 1000), output);
 	const nativeError = nativeTool("delegate", { ...error, details: undefined as never });
 	assert.ok(unwrap(renderedText(nativeError, 40)).includes(unwrap(output)), "thrown tool errors have no launch details");
 });
@@ -529,7 +523,7 @@ test("empty-result management output preserves every line", () => {
 		details: { mode: "single", results: [] },
 	}, { expanded: false }, theme as any);
 
-	assert.equal(componentText(component), output);
+	assert.equal(renderedText(component, 1000), output);
 });
 
 test("empty-result management output collapses long reports", () => {
@@ -539,10 +533,10 @@ test("empty-result management output collapses long reports", () => {
 		details: { mode: "single", results: [] },
 	};
 
-	const compact = componentText(renderSubagentResult(result, { expanded: false }, theme as any));
+	const compact = renderedText(renderSubagentResult(result, { expanded: false }, theme as any), 1000);
 	assert.match(compact, /line 12\n\+2 more · ctrl\+o expands$/);
 	assert.doesNotMatch(compact, /line 13/);
-	assert.equal(componentText(renderSubagentResult(result, { expanded: true }, theme as any)), output);
+	assert.equal(renderedText(renderSubagentResult(result, { expanded: true }, theme as any), 1000), output);
 });
 
 test("single-line management output with a trailing newline stays compact", () => {
@@ -552,7 +546,8 @@ test("single-line management output with a trailing newline stays compact", () =
 		details: { mode: "single", results: [] },
 	}, { expanded: false }, theme as any);
 
-	assert.ok(componentText(component).length < output.length);
+	assert.ok(component.render(80).length <= 3, "a trailing newline must not turn one compact report into an expanded card");
+	assert.ok(renderedText(component, 80).length < output.length);
 });
 
 test("compact parallel rendering shows each child model", () => {
@@ -567,7 +562,7 @@ test("compact parallel rendering shows each child model", () => {
 		},
 	}, { expanded: false }, theme as any);
 
-	const text = componentText(component);
+	const text = renderedText(component, 1000);
 	assert.match(text, /Agent 1\/2: scout · cursor\/composer-2-5 · 28 tool uses · 18k token/);
 	assert.match(text, /Agent 2\/2: researcher · openai-codex\/gpt-5\.5:high · 24 tool uses · 119k token/);
 });
@@ -621,7 +616,7 @@ test("compact chain rendering uses workflow graph spans for dynamic fanout resul
 		},
 	}, { expanded: false }, theme as any);
 
-	const text = componentText(component);
+	const text = renderedText(component, 1000);
 	assert.match(text, /Step 1: scout/);
 	assert.match(text, /Agent 1\/2: reviewer/);
 	assert.match(text, /Agent 2\/2: reviewer/);
@@ -658,7 +653,7 @@ test("compact chain rendering shows failed zero-child dynamic fanout groups", ()
 		},
 	}, { expanded: false }, theme as any);
 
-	const text = componentText(component);
+	const text = renderedText(component, 1000);
 	assert.match(text, /step 1\/3/);
 	assert.doesNotMatch(text, /step 3\/3/);
 	assert.match(text, /Step 1: scout/);
@@ -699,7 +694,7 @@ test("expanded chain rendering uses workflow graph spans for dynamic fanout resu
 		},
 	}, { expanded: true }, theme as any);
 
-	const text = componentText(component);
+	const text = renderedText(component, 1000);
 	assert.match(text, /Step 1: scout/);
 	assert.match(text, /Agent 1\/2: reviewer/);
 	assert.match(text, /Agent 2\/2: reviewer/);
@@ -707,7 +702,7 @@ test("expanded chain rendering uses workflow graph spans for dynamic fanout resu
 });
 
 test("static sequential and static parallel chain rendering keep existing labels", () => {
-	const sequential = componentText(renderSubagentResult({
+	const sequential = renderedText(renderSubagentResult({
 		content: [{ type: "text", text: "done" }],
 		details: {
 			mode: "chain",
@@ -715,11 +710,11 @@ test("static sequential and static parallel chain rendering keep existing labels
 			totalSteps: 2,
 			results: [result("scout", "a"), result("writer", "b")],
 		},
-	}, { expanded: false }, theme as any));
+	}, { expanded: false }, theme as any), 1000);
 	assert.match(sequential, /Step 1: scout/);
 	assert.match(sequential, /Step 2: writer/);
 
-	const parallel = componentText(renderSubagentResult({
+	const parallel = renderedText(renderSubagentResult({
 		content: [{ type: "text", text: "done" }],
 		details: {
 			mode: "chain",
@@ -727,7 +722,7 @@ test("static sequential and static parallel chain rendering keep existing labels
 			totalSteps: 3,
 			results: [result("scout", "a"), result("reviewer", "b"), result("auditor", "c"), result("writer", "d")],
 		},
-	}, { expanded: false }, theme as any));
+	}, { expanded: false }, theme as any), 1000);
 	assert.match(parallel, /Step 1: scout/);
 	assert.match(parallel, /Agent 1\/2: reviewer/);
 	assert.match(parallel, /Agent 2\/2: auditor/);

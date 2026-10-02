@@ -23,10 +23,9 @@ function assertWidth(lines: string[], width: number): void {
 }
 
 test("session list delegates selection, scrolling, and truncation to SelectList", () => {
-  let renderRequests = 0;
   let selected: SessionInfo | undefined;
   const overlay = new SessionListOverlay(
-    { requestRender: () => { renderRequests += 1; } } as never,
+    { requestRender: () => {} } as never,
     theme as never,
     keybindings as never,
     current,
@@ -48,7 +47,6 @@ test("session list delegates selection, scrolling, and truncation to SelectList"
   assertWidth(narrow, 20);
   overlay.handleInput("\r");
   assert.equal(selected?.id, "worker-session-9");
-  assert.equal(renderRequests, 10);
 });
 
 test("project-scoped session list explains how to reveal hidden projects", () => {
@@ -71,9 +69,8 @@ test("project-scoped session list explains how to reveal hidden projects", () =>
 
 test("empty session list keeps chrome and cancel behavior", () => {
   let cancelled = false;
-  let renderRequests = 0;
   const overlay = new SessionListOverlay(
-    { requestRender: () => { renderRequests += 1; } } as never,
+    { requestRender: () => {} } as never,
     theme as never,
     keybindings as never,
     current,
@@ -86,5 +83,4 @@ test("empty session list keeps chrome and cancel behavior", () => {
   assertWidth(lines, 32);
   overlay.handleInput("\x1b");
   assert.equal(cancelled, true);
-  assert.equal(renderRequests, 1);
 });

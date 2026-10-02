@@ -232,6 +232,8 @@ for (const terminalState of ["complete", "failed"] as const) test(`waiting retur
 });
 
 test("foreground result collection requires durable publication, not an early terminal status", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const poll = t.mock.method(globalThis, "setInterval");
 	const f = setup(t), id = randomUUID(), asyncDir = path.join(f.cwd, "write-gap");
 	fs.mkdirSync(asyncDir);
 	const original = f.state.ownedRuns!.get(f.runId)!;
@@ -239,9 +241,14 @@ test("foreground result collection requires durable publication, not an early te
 	fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: id, mode: "single", state: "complete", startedAt: 1, pid: process.pid, steps: [{ agent: "worker", status: "complete" }] }));
 	let returned = false;
 	const pending = waitForOwnedRun({ id, deps: f.deps, ctx: makeMinimalCtx(f.cwd) }).then((result) => { returned = true; return result; });
-	await delay(160); assert.equal(returned, false);
+	assert.equal(poll.mock.callCount(), 1, "an early status must leave an active wait");
+	assert.equal(poll.mock.calls[0].arguments[1], POLL_INTERVAL_MS);
+	t.mock.timers.tick(POLL_INTERVAL_MS);
+	await Promise.resolve();
+	assert.equal(returned, false);
 	fs.mkdirSync(getRunMetadataDir(id), { recursive: true });
 	fs.writeFileSync(path.join(getRunMetadataDir(id), "result.json"), JSON.stringify({ id, mode: "single", success: true, state: "complete", results: [{ agent: "worker", output: "DURABLE-AFTER-GAP", exitCode: 0, success: true }] }));
+	t.mock.timers.tick(POLL_INTERVAL_MS);
 	assert.match((await pending).content[0]!.text, /DURABLE-AFTER-GAP/);
 });
 

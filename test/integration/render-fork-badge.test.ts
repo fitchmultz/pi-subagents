@@ -260,7 +260,8 @@ describe("renderSubagentResult fork indicator", () => {
 		assert.match(text, /output: \/tmp\/reviewer_output\.md/);
 	});
 
-	it("keeps running compact result output stable when progress is unchanged", async () => {
+	it("keeps running compact result output stable when progress is unchanged", (t) => {
+		t.mock.timers.enable({ apis: ["Date"], now: 10_000 });
 		const result = {
 			content: [{ type: "text" as const, text: "(running...)" }],
 			details: {
@@ -290,7 +291,7 @@ describe("renderSubagentResult fork indicator", () => {
 			},
 		};
 		const first = renderSubagentResult!(result, { expanded: false }, theme).render(120);
-		await new Promise((resolve) => setTimeout(resolve, 120));
+		t.mock.timers.tick(120);
 		const second = renderSubagentResult!(result, { expanded: false }, theme).render(120);
 
 		assert.deepEqual(second, first);

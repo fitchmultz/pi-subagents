@@ -270,7 +270,7 @@ function isServerCacheValid(entry: ServerCacheEntry | undefined, definition: Ser
 	return Date.now() - entry.cachedAt <= CACHE_MAX_AGE_MS;
 }
 
-export function computeMcpServerHash(definition: ServerEntry): string {
+function computeMcpServerHash(definition: ServerEntry): string {
 	const identity: Record<string, unknown> = {
 		command: definition.command,
 		args: definition.args,

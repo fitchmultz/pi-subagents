@@ -1,9 +1,11 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { setTimeout as delay } from "node:timers/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "node:test";
+import { describe, it, type TestContext } from "node:test";
 import { createResultWatcher } from "../../src/runs/background/result-watcher.ts";
 import { reconcileAsyncRun } from "../../src/runs/background/stale-run-reconciler.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
@@ -11,6 +13,14 @@ import type { SubagentState } from "../../src/shared/types.ts";
 import { createEventBus } from "../support/helpers.ts";
 import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
 import { randomUUID } from "node:crypto";
+
+async function waitFor(check: () => boolean, message: string) {
+	const deadline = performance.now() + 5_000;
+	while (!check()) {
+		assert.ok(performance.now() < deadline, message);
+		await delay(5);
+	}
+}
 
 function errno(code: string): NodeJS.ErrnoException {
 	const error = new Error(code) as NodeJS.ErrnoException;
@@ -36,8 +46,24 @@ function createState(): SubagentState {
 	};
 }
 
+function observeReads(t: TestContext) {
+	const reads = new Map<string, number>();
+	const open = fs.openSync;
+	t.mock.method(fs, "openSync", function(file, ...args) {
+		const fd = Reflect.apply(open, fs, [file, ...args]);
+		if (args[0] === "r") reads.set(String(file), (reads.get(String(file)) ?? 0) + 1);
+		return fd;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	return async (watcher: ReturnType<typeof createResultWatcher>, file: string, count = 1) => {
+		await waitFor(() => (reads.get(file) ?? 0) >= count, `watcher must read ${file}`);
+		await watcher.joinInFlight();
+	};
+}
+
 describe("result watcher", () => {
-	it("does not reread unchanged foreign results or probe delivered run files, but retries changed identity and ownership", async () => {
+	it("does not reread unchanged foreign results or probe delivered run files, but retries changed identity and ownership", async (t) => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-cost-"));
 		const state = createState(), events = createEventBus(), emitted: unknown[] = [];
 		state.currentSessionId = "parent";
@@ -47,30 +73,38 @@ describe("result watcher", () => {
 				cwd: "/repo", task: "Done", startedAt: 1, children: [], accounting: { state: "complete" as const },
 				delivery: { notifiedAt: 1, intercomDelivered: false, entryId: `receipt-${index}` } }];
 		}));
-		let reads = 0, completedProbes = 0;
+		let reads = 0, completedProbes = 0, stamps = 0;
 		events.on("subagent:async-complete", (data) => emitted.push(data));
-		const watcher = createResultWatcher({ events }, state, resultsDir, { fs: { ...fs,
-			readFileSync: ((...args: Parameters<typeof fs.readFileSync>) => { reads++; return Reflect.apply(fs.readFileSync, fs, args); }) as typeof fs.readFileSync,
-			existsSync(file) { if (String(file).includes("delivered-")) completedProbes++; return fs.existsSync(file); },
-		} });
+		const open = fs.openSync, exists = fs.existsSync, stat = fs.statSync;
+		t.mock.method(fs, "openSync", function(...args) { if (args[1] === "r") reads++; return Reflect.apply(open, fs, args); });
+		t.mock.method(fs, "existsSync", function(file) { if (String(file).includes("delivered-")) completedProbes++; return exists(file); });
+		t.mock.method(fs, "statSync", function(...args) { stamps++; return Reflect.apply(stat, fs, args); });
+		syncBuiltinESMExports();
+		t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+		const watcher = createResultWatcher({ events }, state, resultsDir);
 		const file = path.join(resultsDir, "foreign.json");
 		const write = (sessionId: string) => fs.writeFileSync(file, JSON.stringify({ id: "foreign", sessionId, success: true, summary: "Saved output" }));
-		const scan = async () => { watcher.primeExistingResults(); await new Promise((resolve) => setTimeout(resolve, 80)); };
+		const scan = async (decoded = false) => {
+			const before = stamps, priorReads = reads;
+			watcher.primeExistingResults();
+			await waitFor(() => decoded ? reads > priorReads : stamps > before, "result scan must observe the actual file identity");
+			await watcher.joinInFlight();
+		};
 		try {
 			write("other");
-			for (let index = 0; index < 3; index++) await scan();
+			for (let index = 0; index < 3; index++) await scan(index === 0);
 			assert.equal(reads, 1, "foreign content is decoded once, not on every safety poll");
 			assert.equal(completedProbes, 0, "delivered and billed runs do not need filesystem probes");
 			assert.equal(emitted.length, 0);
 			write("parent");
-			await scan();
+			await scan(true);
 			assert.equal(emitted.length, 1, "a changed result is validated and delivered");
 			write("other");
-			await scan();
+			await scan(true);
 			state.ownedRuns.set("foreign", { runId: "foreign", rootRunId: "foreign", ownerSessionId: "parent", source: "async", mode: "single",
 				cwd: "/repo", task: "Recovered work", startedAt: 1, children: [] });
 			state.completionSeen.clear();
-			await scan();
+			await scan(true);
 			assert.equal(emitted.length, 2, "new genuine ownership invalidates the foreign classification");
 			assert.equal(fs.existsSync(file), false);
 		} finally { watcher.stopResultWatcher(); fs.rmSync(resultsDir, { recursive: true, force: true }); }
@@ -91,13 +125,15 @@ describe("result watcher", () => {
 		});
 		try {
 			watcher.primeExistingResults();
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await waitFor(() => reconciled.length === 1, "first recovery must reconcile");
+			await watcher.joinInFlight();
 			assert.deepEqual(reconciled, ["first"], "queued work cannot mutate after stop");
 			assert.equal(fs.existsSync(path.join(resultsDir, "first.json")), false, "already-started work finishes normally");
 			assert.equal(fs.existsSync(path.join(resultsDir, "second.json")), true);
 			watcher.startResultWatcher();
 			watcher.primeExistingResults();
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await waitFor(() => reconciled.length === 2, "second recovery must reconcile");
+			await watcher.joinInFlight();
 			assert.deepEqual(reconciled, ["first", "second"], "the next start rediscovers retained work");
 			assert.equal(fs.existsSync(path.join(resultsDir, "second.json")), false);
 		} finally {
@@ -106,7 +142,7 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("recovers an owned canonical result once even when its disposable hint is corrupt, unreadable, or has another identity", async () => {
+	it("recovers an owned canonical result once even when its disposable hint is corrupt, unreadable, or has another identity", async (t) => {
 		for (const hintKind of ["corrupt", "unreadable", "wrong-identity", "valid"]) {
 			const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-canonical-")), runId = randomUUID();
 			const canonical = path.join(getRunMetadataDir(runId), "result.json"), hint = path.join(resultsDir, `${runId}.json`);
@@ -118,17 +154,19 @@ describe("result watcher", () => {
 			fs.writeFileSync(canonical, JSON.stringify(result));
 			fs.writeFileSync(hint, hintKind === "corrupt" ? "{" : JSON.stringify({ ...result, id: hintKind === "wrong-identity" ? "other" : runId }));
 			let canonicalReads = 0;
-			const watcher = createResultWatcher({ events }, state, resultsDir, { fs: { ...fs,
-				readFileSync: ((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+			const open = fs.openSync;
+			t.mock.method(fs, "openSync", function(file, ...args) {
 					if (file === canonical) canonicalReads++;
 					if (file === hint && hintKind === "unreadable") throw errno("EACCES");
-					return Reflect.apply(fs.readFileSync, fs, [file, ...args]);
-				}) as typeof fs.readFileSync,
-			} });
+					return Reflect.apply(open, fs, [file, ...args]);
+			});
+			syncBuiltinESMExports();
+			const watcher = createResultWatcher({ events }, state, resultsDir);
 			events.on("subagent:async-complete", (event) => completed.push(event));
 			try {
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 80));
+				await waitFor(() => completed.length === 1, "canonical recovery must publish");
+				await watcher.joinInFlight();
 				assert.equal(completed.length, 1, hintKind);
 				assert.equal((completed[0] as { summary: string }).summary, "Canonical output");
 				assert.equal(canonicalReads, 1, "canonical and hint candidates must not duplicate decoding");
@@ -136,6 +174,8 @@ describe("result watcher", () => {
 				assert.equal(fs.existsSync(hint), false, "successful recovery consumes the disposable hint");
 			} finally {
 				watcher.stopResultWatcher();
+				t.mock.restoreAll();
+				syncBuiltinESMExports();
 				fs.rmSync(getRunMetadataDir(runId), { recursive: true, force: true });
 				fs.rmSync(resultsDir, { recursive: true, force: true });
 			}
@@ -154,12 +194,12 @@ describe("result watcher", () => {
 		try {
 			watcher.primeExistingResults();
 			watcher.primeExistingResults();
-			await new Promise((resolve) => setTimeout(resolve, 100));
 			assert.equal(scans, 0, "live polls perform no parent receipt I/O");
 			fs.mkdirSync(getRunMetadataDir(runId), { recursive: true });
 			fs.writeFileSync(path.join(getRunMetadataDir(runId), "result.json"), JSON.stringify({ runtimeVersion: 2, id: runId, sessionId: "parent", success: true, summary: "Done", results: [] }));
 			watcher.primeExistingResults();
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await waitFor(() => completed.length === 1, "saved result must complete");
+			await watcher.joinInFlight();
 			assert.ok(scans > 0, "completed work still checks parent receipts");
 			assert.equal(completed.length, 1);
 		} finally {
@@ -169,7 +209,8 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("processes deferred session-scoped results after session identity is restored", async () => {
+	it("processes deferred session-scoped results after session identity is restored", async (t) => {
+		const processed = observeReads(t);
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-session-"));
 		try {
 			const emitted: Array<{ event: string; data: unknown }> = [];
@@ -193,13 +234,13 @@ describe("result watcher", () => {
 			const watcher = createResultWatcher(pi, state, resultsDir);
 			try {
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await processed(watcher, resultPath);
 				assert.equal(emitted.length, 0);
 				assert.equal(fs.existsSync(resultPath), true);
 
 				state.currentSessionId = "session-current";
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await processed(watcher, resultPath, 2);
 			} finally {
 				watcher.stopResultWatcher();
 			}
@@ -211,7 +252,8 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("resolves the current intercom identity only after the saved parent ownership gate", async () => {
+	it("resolves the current intercom identity only after the saved parent ownership gate", async (t) => {
+		const processed = observeReads(t);
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-restarted-owner-"));
 		const events = createEventBus();
 		const deliveries: Array<{ to: string; requestId: string }> = [];
@@ -235,7 +277,7 @@ describe("result watcher", () => {
 		try {
 			fs.writeFileSync(resultPath, JSON.stringify({ id: "restarted-owner", sessionId: "saved-parent", cwd: "/repo", success: true, summary: "Saved child evidence", intercomTarget: "previous-owner-runtime" }));
 			watcher.primeExistingResults();
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await processed(watcher, resultPath);
 			assert.equal(fs.existsSync(resultPath), true);
 			assert.equal(identityRequests, 0, "matching cwd or a copied run cannot bypass an explicit different owner");
 			assert.deepEqual(deliveries, []);
@@ -243,7 +285,7 @@ describe("result watcher", () => {
 
 			state.currentSessionId = "saved-parent";
 			watcher.primeExistingResults();
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await processed(watcher, resultPath, 2);
 			assert.deepEqual(deliveries.map((delivery) => delivery.to), ["current-owner-runtime"]);
 			assert.equal(identityRequests, 1);
 			assert.equal(completions.length, 1);
@@ -254,7 +296,8 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("requires saved ownership rather than matching cwd when delivering a stale legacy run", async () => {
+	it("requires saved ownership rather than matching cwd when delivering a stale legacy run", async (t) => {
+		const processed = observeReads(t);
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-stale-legacy-"));
 		const resultsDir = path.join(root, "results");
 		const asyncDir = path.join(root, "runs", "legacy-stale");
@@ -289,7 +332,7 @@ describe("result watcher", () => {
 			const foreignWatcher = createResultWatcher(pi, foreignState, resultsDir);
 			try {
 				foreignWatcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await processed(foreignWatcher, resultPath);
 			} finally {
 				foreignWatcher.stopResultWatcher();
 			}
@@ -301,11 +344,11 @@ describe("result watcher", () => {
 			const currentWatcher = createResultWatcher(pi, currentState, resultsDir);
 			try {
 				currentWatcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await processed(currentWatcher, resultPath, 2);
 				assert.equal(emitted.length, 0, "same cwd is not an ownership receipt");
 				currentState.ownedRuns = new Map([["legacy-stale", { runId: "legacy-stale", ownerSessionId: "parent", source: "async", mode: "single", cwd: "/repo-current", task: "Recovered work", startedAt: 100, rootRunId: "legacy-stale", children: [] }]]);
 				currentWatcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await processed(currentWatcher, resultPath, 3);
 			} finally {
 				currentWatcher.stopResultWatcher();
 			}
@@ -317,6 +360,7 @@ describe("result watcher", () => {
 	});
 
 	it("does not repeat changed results within the TTL and prunes expired transient completions", async (t) => {
+		const processed = observeReads(t);
 		t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-corrected-"));
 		try {
@@ -335,15 +379,15 @@ describe("result watcher", () => {
 			try {
 				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", sessionId: "parent", cwd: "/repo", success: false, summary: "old" }), "utf-8");
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await processed(watcher, path.join(resultsDir, "run-same.json"));
 				fs.writeFileSync(path.join(resultsDir, "run-same.json"), JSON.stringify({ id: "run-same", sessionId: "parent", cwd: "/repo", success: true, summary: "corrected" }), "utf-8");
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await processed(watcher, path.join(resultsDir, "run-same.json"), 2);
 				assert.equal(state.completionSeen.size, 1);
 				t.mock.timers.tick(11 * 60_000);
 				fs.writeFileSync(path.join(resultsDir, "run-next.json"), JSON.stringify({ id: "run-next", sessionId: "parent", success: true, summary: "next" }), "utf-8");
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await processed(watcher, path.join(resultsDir, "run-next.json"));
 				assert.deepEqual([...state.completionSeen.keys()], ["completion:legacy:run-next:unknown"], "a new transient completion retires expired keys instead of retaining every finished run");
 			} finally {
 				watcher.stopResultWatcher();
@@ -379,7 +423,8 @@ describe("result watcher", () => {
 			};
 			try {
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await waitFor(() => logged.length > 0, "malformed input must reach watcher diagnostics");
+				await watcher.joinInFlight();
 			} finally {
 				console.error = originalError;
 				watcher.stopResultWatcher();
@@ -395,7 +440,7 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("periodically scans result files when fs.watch stays quiet", async () => {
+	it("periodically scans result files when fs.watch stays quiet", async (t) => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-quiet-"));
 		try {
 			const emitted: Array<{ event: string; data: unknown }> = [];
@@ -409,33 +454,19 @@ describe("result watcher", () => {
 			};
 			const state = createState();
 			state.currentSessionId = "session-1";
-			let poll: (() => void) | undefined;
 			const fakeWatcher = {
 				on() { return fakeWatcher; },
 				close() {},
 				unref() {},
 			} as fs.FSWatcher;
-			const watcher = createResultWatcher(pi, state, resultsDir, {
-				fs: {
-					...fs,
-					watch: () => fakeWatcher,
-				},
-				timers: {
-					setTimeout,
-					clearTimeout,
-					setInterval(handler: () => void) {
-						poll = handler;
-						return { unref() {} } as NodeJS.Timeout;
-					},
-					clearInterval() {
-						poll = undefined;
-					},
-				},
-			});
+			t.mock.method(fs, "watch", () => fakeWatcher);
+			syncBuiltinESMExports();
+			t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+			t.mock.timers.enable({ apis: ["setInterval"] });
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			try {
 				watcher.startResultWatcher();
 				assert.equal(state.watcher, fakeWatcher);
-				assert.ok(poll, "expected active watcher to keep a periodic safety scan");
 
 				fs.writeFileSync(path.join(resultsDir, "missed.json"), JSON.stringify({
 					id: "missed",
@@ -444,8 +475,9 @@ describe("result watcher", () => {
 					state: "complete",
 					summary: "done despite a missed watch event",
 				}), "utf-8");
-				poll?.();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				t.mock.timers.tick(3_000);
+				await waitFor(() => emitted.some((entry) => entry.event === "subagent:async-complete"), "native safety poll must publish the result");
+				await watcher.joinInFlight();
 			} finally {
 				watcher.stopResultWatcher();
 			}
@@ -457,7 +489,7 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("falls back to polling when fs.watch throws EMFILE and preserves grouped intercom delivery", async () => {
+	it("falls back to polling when fs.watch throws EMFILE and preserves grouped intercom delivery", async (t) => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
 		try {
 			const emitted: Array<{ event: string; data: unknown }> = [];
@@ -484,28 +516,13 @@ describe("result watcher", () => {
 			};
 			const state = createState();
 			state.currentSessionId = "session-1";
-			let poll: (() => void) | undefined;
 			const emfile = new Error("too many open files") as NodeJS.ErrnoException;
 			emfile.code = "EMFILE";
-			const watcher = createResultWatcher(pi, state, resultsDir, {
-				fs: {
-					...fs,
-					watch: () => {
-						throw emfile;
-					},
-				},
-				timers: {
-					setTimeout,
-					clearTimeout() {},
-					setInterval(handler: () => void) {
-						poll = handler;
-						return { unref() {} } as NodeJS.Timeout;
-					},
-					clearInterval() {
-						poll = undefined;
-					},
-				},
-			});
+			t.mock.method(fs, "watch", () => { throw emfile; });
+			syncBuiltinESMExports();
+			t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+			t.mock.timers.enable({ apis: ["setInterval"] });
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			const originalError = console.error;
 			const childSessionPath = path.join(resultsDir, "a-session.jsonl");
 			console.error = () => {};
@@ -530,8 +547,9 @@ describe("result watcher", () => {
 					sessionId: "session-1",
 					intercomTarget: "subagent-chat-main",
 				}), "utf-8");
-				poll?.();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				t.mock.timers.tick(3_000);
+				await waitFor(() => emitted.some((entry) => entry.event === "subagent:async-complete"), "native safety poll must publish the result");
+				await watcher.joinInFlight();
 			} finally {
 				console.error = originalError;
 				watcher.stopResultWatcher();
@@ -558,7 +576,7 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("falls back to polling when an active fs.watch emits ENOSPC", async () => {
+	it("falls back to polling when an active fs.watch emits ENOSPC", async (t) => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
 		try {
 			const emitted: Array<{ event: string; data: unknown }> = [];
@@ -572,7 +590,6 @@ describe("result watcher", () => {
 			};
 			const state = createState();
 			state.currentSessionId = "session-1";
-			let poll: (() => void) | undefined;
 			let emitWatcherError: ((error: NodeJS.ErrnoException) => void) | undefined;
 			const fakeWatcher = {
 				on(event: string, handler: (error: NodeJS.ErrnoException) => void) {
@@ -582,23 +599,11 @@ describe("result watcher", () => {
 				close() {},
 				unref() {},
 			} as fs.FSWatcher;
-			const watcher = createResultWatcher(pi, state, resultsDir, {
-				fs: {
-					...fs,
-					watch: () => fakeWatcher,
-				},
-				timers: {
-					setTimeout,
-					clearTimeout() {},
-					setInterval(handler: () => void) {
-						poll = handler;
-						return { unref() {} } as NodeJS.Timeout;
-					},
-					clearInterval() {
-						poll = undefined;
-					},
-				},
-			});
+			t.mock.method(fs, "watch", () => fakeWatcher);
+			syncBuiltinESMExports();
+			t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+			t.mock.timers.enable({ apis: ["setInterval"] });
+			const watcher = createResultWatcher(pi, state, resultsDir);
 			const originalError = console.error;
 			console.error = () => {};
 			try {
@@ -611,8 +616,9 @@ describe("result watcher", () => {
 				assert.notEqual(state.watcherRestartTimer, null);
 
 				fs.writeFileSync(path.join(resultsDir, "done.json"), JSON.stringify({ sessionId: "session-1", summary: "done" }), "utf-8");
-				poll?.();
-				await new Promise((resolve) => setTimeout(resolve, 75));
+				t.mock.timers.tick(3_000);
+				await waitFor(() => emitted.some((entry) => entry.event === "subagent:async-complete"), "ENOSPC fallback must publish the result");
+				await watcher.joinInFlight();
 			} finally {
 				console.error = originalError;
 				watcher.stopResultWatcher();
@@ -675,7 +681,8 @@ describe("result watcher", () => {
 					intercomTarget: "subagent-chat-main",
 				}), "utf-8");
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await waitFor(() => emitted.some((entry) => entry.event === "subagent:async-complete"), "watcher must publish completion");
+				await watcher.joinInFlight();
 			} finally {
 				watcher.stopResultWatcher();
 			}
@@ -756,7 +763,8 @@ describe("result watcher", () => {
 					intercomTarget: "subagent-chat-main",
 				}), "utf-8");
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await waitFor(() => emitted.some((entry) => entry.event === "subagent:async-complete"), "watcher must publish completion");
+				await watcher.joinInFlight();
 			} finally {
 				watcher.stopResultWatcher();
 			}
@@ -836,7 +844,8 @@ describe("result watcher", () => {
 					intercomTarget: "subagent-chat-main",
 				}), "utf-8");
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await waitFor(() => emitted.some((entry) => entry.event === "subagent:async-complete"), "watcher must publish completion");
+				await watcher.joinInFlight();
 			} finally {
 				console.error = originalError;
 				watcher.stopResultWatcher();
@@ -913,7 +922,8 @@ describe("result watcher", () => {
 					intercomTarget: "subagent-chat-main",
 				}), "utf-8");
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await waitFor(() => logged.some((entry) => /will retry later/.test(String(entry[0]))), "nested enrichment failure must be processed");
+				await watcher.joinInFlight();
 
 				assert.equal(fs.existsSync(resultPath), true);
 				assert.equal(emitted.length, 0);
@@ -924,7 +934,8 @@ describe("result watcher", () => {
 
 				fs.rmSync(registryPath, { force: true });
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 650));
+				await waitFor(() => emitted.some((entry) => entry.event === "subagent:async-complete"), "recovered registry must publish");
+				await watcher.joinInFlight();
 			} finally {
 				console.error = originalError;
 				watcher.stopResultWatcher();
@@ -979,7 +990,8 @@ describe("result watcher", () => {
 					intercomTarget: "subagent-chat-main",
 				}), "utf-8");
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await waitFor(() => emitted.some((entry) => entry.event === "subagent:async-complete"), "watcher must publish completion");
+				await watcher.joinInFlight();
 			} finally {
 				watcher.stopResultWatcher();
 			}
@@ -1039,7 +1051,8 @@ describe("result watcher", () => {
 					intercomTarget: "subagent-chat-main",
 				}), "utf-8");
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await waitFor(() => emitted.some((entry) => entry.event === "subagent:async-complete"), "watcher must publish completion");
+				await watcher.joinInFlight();
 			} finally {
 				watcher.stopResultWatcher();
 			}
@@ -1064,7 +1077,8 @@ describe("result watcher", () => {
 		}
 	});
 
-	it("claims a result before awaiting intercom delivery", async () => {
+	it("claims a result before awaiting intercom delivery", async (t) => {
+		const processed = observeReads(t);
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-race-"));
 		try {
 			const emitted: Array<{ event: string; data: unknown }> = [];
@@ -1092,9 +1106,10 @@ describe("result watcher", () => {
 			console.error = () => {};
 			try {
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await waitFor(() => emitted.some((entry) => entry.event === "subagent:result-intercom"), "first delivery must be in flight");
 				watcher.primeExistingResults();
-				await new Promise((resolve) => setTimeout(resolve, 600));
+				await processed(watcher, resultPath, 2);
+				await waitFor(() => emitted.some((entry) => entry.event === "subagent:async-complete"), "claimed delivery must settle");
 			} finally {
 				console.error = originalError;
 				watcher.stopResultWatcher();

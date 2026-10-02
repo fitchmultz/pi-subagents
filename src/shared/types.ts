@@ -1063,43 +1063,26 @@ function sanitizeTempScopeSegment(value: string): string {
 	return sanitized || "unknown";
 }
 
-export function resolveTempScopeId(options?: {
-	env?: NodeJS.ProcessEnv;
-	getuid?: (() => number) | undefined;
-	userInfo?: (() => { username?: string | null }) | undefined;
-	homedir?: (() => string) | undefined;
-}): string {
-	const env = options?.env ?? process.env;
-	const getuid = options && Object.hasOwn(options, "getuid")
-		? options.getuid
-		: process.getuid?.bind(process);
-	if (typeof getuid === "function") {
-		return `uid-${getuid()}`;
-	}
+export function resolveTempScopeId(): string {
+	if (typeof process.getuid === "function") return `uid-${process.getuid()}`;
 
 	for (const key of ["USERNAME", "USER", "LOGNAME"] as const) {
-		const value = env[key];
+		const value = process.env[key];
 		if (value) return `user-${sanitizeTempScopeSegment(value)}`;
 	}
 
-	const userInfo = options && Object.hasOwn(options, "userInfo")
-		? options.userInfo
-		: os.userInfo;
 	try {
-		const username = userInfo?.().username;
+		const username = os.userInfo().username;
 		if (username) return `user-${sanitizeTempScopeSegment(username)}`;
 	} catch {
 		// Fall through to home-directory-based scoping.
 	}
 
-	const homedir = env.HOME;
+	const homedir = process.env.HOME;
 	if (homedir) return `home-${sanitizeTempScopeSegment(homedir)}`;
 
-	const resolveHomedir = options && Object.hasOwn(options, "homedir")
-		? options.homedir
-		: os.homedir;
 	try {
-		const fallbackHomedir = resolveHomedir?.();
+		const fallbackHomedir = os.homedir();
 		if (fallbackHomedir) return `home-${sanitizeTempScopeSegment(fallbackHomedir)}`;
 	} catch {
 		// Fall through to the last-resort shared scope.

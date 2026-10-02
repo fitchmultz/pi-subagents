@@ -8,6 +8,7 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import net from "node:net";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const root = realpathSync(mkdtempSync(path.join(tmpdir(), "native-lifecycle-")));
@@ -33,14 +34,20 @@ after(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-test("real broker startup writes a backward-readable PID identity and stays protected", async () => {
+test("real broker startup writes a backward-readable PID identity and stays protected", async (t) => {
   const { stopUnhealthyBrokerBeforeSpawn } = await import("../../src/pi-intercom/broker/spawn.ts");
   const pidPath = path.join(agentDir, "intercom/broker.pid");
   const record = readFileSync(pidPath, "utf8");
   assert.equal(Number.parseInt(record, 10), broker.pid);
   if (process.platform === "linux") assert.match(record, /^\d+\nlinux-v1 /);
   // An unhealthy-socket observation must not override a matching live identity.
-  await assert.rejects(stopUnhealthyBrokerBeforeSpawn(pidPath, async () => false), /refusing to spawn a second broker/);
+  const probe = t.mock.method(net, "connect", () => {
+    const socket = new net.Socket();
+    queueMicrotask(() => socket.emit("error", new Error("controlled unhealthy socket observation")));
+    return socket;
+  });
+  await assert.rejects(stopUnhealthyBrokerBeforeSpawn(), /refusing to spawn a second broker/);
+  probe.mock.restore();
   assert.equal(readFileSync(pidPath, "utf8"), record);
   assert.equal(keeper.isConnected(), true);
   await keeper.listSessions();

@@ -190,7 +190,8 @@ describe("result contracts", () => {
 		});
 
 		it(`${background ? "background" : "foreground"} finalization preserves an unchanged detailed handoff instead of overwriting it with review prose`, async () => {
-			mock.onCall({ nativeReport: { scenario: "single", initialReport: `Wrote the report\n${report()}`, initialDelay: 300, report: `Report is complete; no changes needed.\n${report()}`, receiptPath: path.join(cwd, "native.json") } });
+			const release = path.join(cwd, "release-report-child");
+			mock.onCall({ waitForFile: release, nativeReport: { scenario: "single", initialReport: `Wrote the report\n${report()}`, report: `Report is complete; no changes needed.\n${report()}`, receiptPath: path.join(cwd, "native.json") } });
 			const outputPath = path.join(cwd, "report.md");
 			const contract = { ...acceptance, verify: [{ id: "contents", command: `grep -q 'CRITICAL DETAIL' '${outputPath}'` }] };
 			let completion;
@@ -200,12 +201,17 @@ describe("result contracts", () => {
 					artifactsDir: cwd, sessionFile: path.join(cwd, "child.jsonl"), shareEnabled: false, maxSubagentDepth: 2 });
 				completion = waitForResult(id).then((payload) => payload.results[0]);
 			}
-			const deadline = Date.now() + 10_000;
-			while (!mock.callCount()) {
-				assert.ok(Date.now() < deadline, "initial child must start");
-				await new Promise((resolve) => setTimeout(resolve, 10));
+			try {
+				const deadline = Date.now() + 10_000;
+				while (!mock.callCount()) {
+					assert.ok(Date.now() < deadline, "initial child must start");
+					await new Promise((resolve) => setTimeout(resolve, 10));
+				}
+				fs.writeFileSync(outputPath, "Detailed report\nCRITICAL DETAIL: preserve this artifact.\n");
+			} finally {
+				fs.writeFileSync(release, "");
+				await completion;
 			}
-			fs.writeFileSync(outputPath, "Detailed report\nCRITICAL DETAIL: preserve this artifact.\n");
 			const result = await completion;
 			assert.equal(result.exitCode, 0, result.error);
 			assert.equal(result.acceptance.status, "verified");
@@ -319,10 +325,11 @@ describe("result contracts", () => {
 		});
 
 		it(`${background ? "background" : "foreground"} live dynamic graphs keep out-of-order child outcomes at their own indices`, async () => {
+			const release = path.join(cwd, "release-first-child");
 			mock.onCall({ output: "Items", structuredOutput: { items: ["Slow first", "Fail second"] } });
 			mock.onCall({ matchArgsIncludes: "Review Slow first", steps: [
 				{ jsonl: [events.toolStart("read", { path: "still-running" })] },
-				{ delay: 700, jsonl: [events.assistantMessage("Finished first")] },
+				{ waitForFile: release, jsonl: [events.assistantMessage("Finished first")] },
 			] });
 			mock.onCall({ matchArgsIncludes: "Review Fail second", waitForCalls: 3, exitCode: 1, stderr: "Second child failed" });
 			const chain = [{ agent: "worker", task: "Produce", as: "items", outputSchema: { type: "object" } },
@@ -333,17 +340,21 @@ describe("result contracts", () => {
 					ctx: { pi: { events: createEventBus() }, cwd, currentSessionId: id }, shareEnabled: false, maxSubagentDepth: 2 });
 				const statusPath = path.join(getRunMetadataDir(id), "status.json");
 				const deadline = Date.now() + 10_000;
-				while (Date.now() < deadline) {
-					if (fs.existsSync(statusPath)) {
-						const status = JSON.parse(fs.readFileSync(statusPath, "utf8"));
-						if (status.steps[1]?.status === "running" && status.steps[2]?.status === "failed") {
-							children = status.workflowGraph.nodes[1].children;
-							break;
+				try {
+					while (Date.now() < deadline) {
+						if (fs.existsSync(statusPath)) {
+							const status = JSON.parse(fs.readFileSync(statusPath, "utf8"));
+							if (status.steps[1]?.status === "running" && status.steps[2]?.status === "failed") {
+								children = status.workflowGraph.nodes[1].children;
+								break;
+							}
 						}
+						await new Promise((resolve) => setTimeout(resolve, 10));
 					}
-					await new Promise((resolve) => setTimeout(resolve, 10));
+				} finally {
+					fs.writeFileSync(release, "");
+					await waitForResult(id);
 				}
-				await waitForResult(id);
 			}
 			assert.ok(children, "must observe the second child failing while the first is still running");
 			assert.deepEqual(children.map((child) => [child.flatIndex, child.status]), [[1, "running"], [2, "failed"]]);

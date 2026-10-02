@@ -38,31 +38,6 @@ function normalizeResultChild(value: unknown, index: number, resultPath: string)
 	return value as AsyncResultChild;
 }
 
-export function parseAsyncResultFileContent(content: string, resultPath = "<inline>"): ParsedAsyncResultFile {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(content);
-	} catch (error) {
-		throw new Error(`Failed to parse async result file '${resultPath}': ${getErrorMessage(error)}`, {
-			cause: error instanceof Error ? error : undefined,
-		});
-	}
-	if (!isRecord(parsed)) {
-		throw new Error(`Failed to parse async result file '${resultPath}': expected a JSON object.`);
-	}
-
-	const data = parsed as AsyncResultFile;
-	if (data.results !== undefined && !Array.isArray(data.results)) {
-		throw new Error(`Invalid async result file '${resultPath}': results must be an array.`);
-	}
-	const results = Array.isArray(data.results) ? data.results.map((child, index) => normalizeResultChild(child, index, resultPath)) : undefined;
-	return {
-		...data,
-		...(results ? { results } : {}),
-		terminalState: deriveAsyncResultTerminalState(data),
-	};
-}
-
 export function readAsyncResultFile(resultPath: string): ParsedAsyncResultFile {
 	let data: AsyncResultFile;
 	try {

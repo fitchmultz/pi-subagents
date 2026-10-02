@@ -23,6 +23,14 @@ const { createResultWatcher } = await import("../../src/runs/background/result-w
 const { createEventBus } = await import("../support/helpers.ts");
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 
+async function waitFor(check: () => boolean, message: string) {
+	const deadline = performance.now() + 5_000;
+	while (!check()) {
+		assert.ok(performance.now() < deadline, message);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
 function write(file: string, value: object) {
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	fs.writeFileSync(file, JSON.stringify(value));
@@ -141,7 +149,8 @@ it("the watcher consumes only notifications and reconnects to an undelivered dur
 	let watcher = createResultWatcher({ events }, local, RESULTS_DIR);
 	try {
 		watcher.primeExistingResults();
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await waitFor(() => delivered.length === 1, "canonical result must publish");
+		await watcher.joinInFlight();
 		assert.equal(delivered.length, 1);
 		assert.equal((delivered[0] as typeof result).results[0]?.output, "Canonical full result");
 		assert.equal(fs.existsSync(path.join(RESULTS_DIR, `${run.runId}.json`)), false);
@@ -150,7 +159,8 @@ it("the watcher consumes only notifications and reconnects to an undelivered dur
 		local.completionSeen.clear();
 		watcher = createResultWatcher({ events }, local, RESULTS_DIR);
 		watcher.primeExistingResults();
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await waitFor(() => delivered.length === 2, "restarted watcher must rediscover canonical result");
+		await watcher.joinInFlight();
 		assert.equal(delivered.length, 2, "a watcher restart can rediscover an undelivered canonical result; event emission itself is no parent receipt");
 		assert.equal(fs.readFileSync(file, "utf8"), before);
 	} finally { watcher.stopResultWatcher(); }
@@ -170,7 +180,8 @@ it("waiting tools retain delivery ownership until they settle or detach", async 
 	const watcher = createResultWatcher({ events }, local, RESULTS_DIR);
 	try {
 		watcher.primeExistingResults();
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await waitFor(() => delivered.length > 0, "waiting owner must process result");
+		await watcher.joinInFlight();
 		assert.ok(delivered.length > 0);
 		assert.ok(delivered.every((entry) => entry.suppressNotification));
 		assert.equal(fs.existsSync(notification), true);
@@ -178,7 +189,8 @@ it("waiting tools retain delivery ownership until they settle or detach", async 
 		assert.equal(run.delivery, undefined);
 		local.waitingRuns.clear();
 		watcher.primeExistingResults();
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await waitFor(() => delivered.some((entry) => !entry.suppressNotification), "detached owner must publish once");
+		await watcher.joinInFlight();
 		assert.equal(delivered.filter((entry) => !entry.suppressNotification).length, 1);
 		assert.equal(fs.existsSync(notification), false);
 		assert.equal(fs.existsSync(path.join(dir, "result.json")), true);
@@ -186,7 +198,8 @@ it("waiting tools retain delivery ownership until they settle or detach", async 
 		local.completionSeen.clear();
 		write(notification, { runtimeVersion: 2, id: run.runId, sessionId: "parent-file" });
 		watcher.primeExistingResults();
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await waitFor(() => !fs.existsSync(notification), "consumed receipt must retire recreated hint");
+		await watcher.joinInFlight();
 		assert.equal(delivered.filter((entry) => !entry.suppressNotification).length, 1, "native consumption prevents a second notification");
 		assert.equal(fs.existsSync(notification), false);
 		assert.equal(fs.existsSync(path.join(dir, "result.json")), true);

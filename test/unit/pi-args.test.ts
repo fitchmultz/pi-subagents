@@ -4,7 +4,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { computeMcpServerHash } from "../../src/runs/shared/mcp-direct-tool-allowlist.ts";
 import {
 	SUBAGENT_FANOUT_CHILD_ENV,
 	SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV,
@@ -18,7 +17,7 @@ import {
 	SUBAGENT_PARENT_RUN_ID_ENV,
 	SUBAGENT_RUN_ID_ENV,
 	applyThinkingSuffix,
-	buildPiArgs,
+	buildPiArgs as buildArgs,
 	resolveChildProjectTrustArgs,
 	resolveConfiguredChildProjectTrustPolicy,
 } from "../../src/runs/shared/pi-args.ts";
@@ -42,6 +41,12 @@ const originalEnv = {
 };
 const originalCwd = process.cwd();
 const tempRoots: string[] = [];
+
+function buildPiArgs(input: Parameters<typeof buildArgs>[0]) {
+	const built = buildArgs(input);
+	if (built.tempDir) tempRoots.push(built.tempDir);
+	return built;
+}
 
 interface McpFixture {
 	root: string;
@@ -78,6 +83,7 @@ function writeMcpFixture(
 		tools?: Array<{ name: string; description?: string }>;
 		resources?: Array<{ name: string; uri: string; description?: string }>;
 		configPath?: string;
+		configHash?: string;
 		cachedAt?: number;
 	} = {},
 ): void {
@@ -93,7 +99,8 @@ function writeMcpFixture(
 		version: 1,
 		servers: {
 			[serverName]: {
-				configHash: computeMcpServerHash(definition),
+				// Captured from the adapter's computeServerHash, not this consumer.
+				configHash: options.configHash ?? "828ef4354212f96420c4acb1064c13835dd4af183cc3bb557bfae5914c6e6be7",
 				cachedAt: options.cachedAt ?? Date.now(),
 				tools: options.tools ?? [
 					{ name: "take_screenshot" },
@@ -261,6 +268,7 @@ describe("buildPiArgs project trust wiring", () => {
 		});
 
 		assert.ok(args.includes("--approve"));
+		assert.ok(args.indexOf("--approve") < args.indexOf("Task: hello"));
 		assert.ok(!args.includes("--no-approve"));
 	});
 });
@@ -472,6 +480,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		writeMcpFixture(fixture, {
 			serverName: "github",
 			definition: { command: "github-mcp" },
+			configHash: "a0d4aa9799c749ff6f713fdba352c0d91bb4918958058d1a9eb8f88e40f2f56d",
 			tools: [{ name: "search_repositories" }, { name: "create_issue" }],
 		});
 
@@ -520,6 +529,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		writeMcpFixture(fixture, {
 			serverName: "browser-mcp",
 			definition: { excludeTools: ["browser_click"] },
+			configHash: "694a79edf1bb09686e2a1241c218db5ced72c6fdf859a8a834266cb945efc843",
 			tools: [{ name: "click" }, { name: "navigate" }],
 			resources: [{ name: "Console Logs", uri: "resource://console" }],
 		});
@@ -837,6 +847,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		writeMcpFixture(fixture, {
 			serverName: "delegator",
 			definition: { command: "delegator-mcp" },
+			configHash: "c94788d452f8ed764ff21ebeb863e932a60f29476bc756f1e865ef3e40599fb2",
 			tools: [{ name: "subagent" }],
 		});
 
@@ -886,5 +897,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		});
 
 		assert.ok(args.includes("--system-prompt"));
+		assert.equal(fs.readFileSync(args[args.indexOf("--system-prompt") + 1]!, "utf8"), "");
+		assert.equal(args.includes("--append-system-prompt"), false);
 	});
 });

@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import {
 	checkSubagentDepth,
 	getSubagentDepthEnv,
-	DEFAULT_SUBAGENT_MAX_DEPTH,
 	normalizeMaxSubagentDepth,
 	resolveTopLevelParallelConcurrency,
 	resolveTopLevelParallelMaxTasks,
@@ -25,12 +24,6 @@ afterEach(() => {
 	else process.env.PI_SUBAGENT_DEPTH = savedDepth;
 	if (savedMaxDepth === undefined) delete process.env.PI_SUBAGENT_MAX_DEPTH;
 	else process.env.PI_SUBAGENT_MAX_DEPTH = savedMaxDepth;
-});
-
-describe("DEFAULT_SUBAGENT_MAX_DEPTH", () => {
-	it("allows parent-launched subagents but no nested delegation", () => {
-		assert.equal(DEFAULT_SUBAGENT_MAX_DEPTH, 1);
-	});
 });
 
 describe("normalizeMaxSubagentDepth", () => {
@@ -179,14 +172,6 @@ describe("getSubagentDepthEnv", () => {
 		delete process.env.PI_SUBAGENT_MAX_DEPTH;
 		const env = getSubagentDepthEnv();
 		assert.equal(env.PI_SUBAGENT_DEPTH, "2");
-		assert.equal(env.PI_SUBAGENT_MAX_DEPTH, "1");
-	});
-
-	it("uses provided max depth override", () => {
-		process.env.PI_SUBAGENT_DEPTH = "0";
-		delete process.env.PI_SUBAGENT_MAX_DEPTH;
-		const env = getSubagentDepthEnv(1);
-		assert.equal(env.PI_SUBAGENT_DEPTH, "1");
 		assert.equal(env.PI_SUBAGENT_MAX_DEPTH, "1");
 	});
 

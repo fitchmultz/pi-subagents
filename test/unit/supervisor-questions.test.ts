@@ -141,7 +141,6 @@ test("contracts without a launch do not read discarded native configuration", ()
 	try {
 		saveQuestionContract(question.runId, 0, { task: "Legacy assignment", sessionFile: root }, root);
 		assert.equal(readQuestionContract(question.runId, 0, root)?.task, "Legacy assignment", "a transcript that cannot be read is irrelevant without a launch to project");
-		assert.equal(readQuestionContract(question.runId, 0, root, { readConfiguration() { assert.fail("unused configuration must not be projected"); } })?.task, "Legacy assignment");
 	} finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

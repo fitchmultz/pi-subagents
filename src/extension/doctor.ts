@@ -15,18 +15,6 @@ import {
 	type SubagentIntercomConnection,
 } from "../shared/types.ts";
 
-interface DoctorPaths {
-	tempRootDir: string;
-	asyncDir: string;
-	resultsDir: string;
-	chainRunsDir: string;
-}
-
-interface DoctorDeps {
-	discoverAgentsAll: typeof discoverAgentsAll;
-	discoverAvailableSkills: typeof discoverAvailableSkills;
-}
-
 interface DoctorReportInput {
 	cwd: string;
 	nativeSessionCwd?: string;
@@ -40,24 +28,10 @@ interface DoctorReportInput {
 	sessionError?: string;
 	expandTilde?: (value: string) => string;
 	projectTrusted?: boolean;
-	paths?: DoctorPaths;
-	deps?: Partial<DoctorDeps>;
 }
 
 const PI_PACKAGE_DIR = getPackageDir();
 const EXTENSION_MODULE = fileURLToPath(import.meta.url);
-
-const DEFAULT_PATHS: DoctorPaths = {
-	tempRootDir: TEMP_ROOT_DIR,
-	asyncDir: ASYNC_DIR,
-	resultsDir: RESULTS_DIR,
-	chainRunsDir: CHAIN_RUNS_DIR,
-};
-
-const DEFAULT_DEPS: DoctorDeps = {
-	discoverAgentsAll,
-	discoverAvailableSkills,
-};
 
 function errorText(error: unknown): string {
 	return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
@@ -129,10 +103,10 @@ function formatSessionLines(input: DoctorReportInput): string[] {
 	return lines;
 }
 
-function formatDiscovery(input: DoctorReportInput, deps: DoctorDeps): string[] {
+function formatDiscovery(input: DoctorReportInput): string[] {
 	return [
 		lineFromCheck("agents/chains", () => {
-			const discovered = deps.discoverAgentsAll(input.cwd, { projectTrusted: input.projectTrusted ?? true });
+			const discovered = discoverAgentsAll(input.cwd, { projectTrusted: input.projectTrusted ?? true });
 			const agentCounts = {
 				builtin: discovered.builtin.length,
 				user: discovered.user.length,
@@ -148,7 +122,7 @@ function formatDiscovery(input: DoctorReportInput, deps: DoctorDeps): string[] {
 			].join("\n");
 		}),
 		lineFromCheck("skills", () => {
-			const skills = deps.discoverAvailableSkills(input.cwd, { projectTrusted: input.projectTrusted ?? true });
+			const skills = discoverAvailableSkills(input.cwd, { projectTrusted: input.projectTrusted ?? true });
 			return `- skills: total ${skills.length} (${formatSkillSourceCounts(skills)})`;
 		}),
 	];
@@ -164,8 +138,6 @@ function formatIntercomSection(input: DoctorReportInput): string[] {
 }
 
 export function buildDoctorReport(input: DoctorReportInput): string {
-	const paths = input.paths ?? DEFAULT_PATHS;
-	const deps = { ...DEFAULT_DEPS, ...input.deps };
 	const lines = [
 		"Subagents doctor report",
 		"",
@@ -183,13 +155,13 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		...formatSessionLines(input),
 		"",
 		"Filesystem",
-		formatExistingDirectory("temp root", paths.tempRootDir),
-		formatExistingDirectory("async runs", paths.asyncDir),
-		formatExistingDirectory("results", paths.resultsDir),
-		formatExistingDirectory("chain runs", paths.chainRunsDir),
+		formatExistingDirectory("temp root", TEMP_ROOT_DIR),
+		formatExistingDirectory("async runs", ASYNC_DIR),
+		formatExistingDirectory("results", RESULTS_DIR),
+		formatExistingDirectory("chain runs", CHAIN_RUNS_DIR),
 		"",
 		"Discovery",
-		...formatDiscovery(input, deps),
+		...formatDiscovery(input),
 		"",
 		"Intercom",
 		...formatIntercomSection(input),

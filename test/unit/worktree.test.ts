@@ -667,7 +667,4 @@ describe("worktree summary helpers", () => {
 		assert.equal(appendWorktreeSummary("output", ""), "output");
 		assert.equal(appendWorktreeSummary("output", "=== Worktree Changes ==="), "output\n\n=== Worktree Changes ===");
 	});
-
-	it("extracts the worktree marker and following text", () => {
-	});
 });

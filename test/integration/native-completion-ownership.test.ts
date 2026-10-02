@@ -11,6 +11,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { after, test } from "node:test";
 import { Type } from "typebox";
 
+async function until(check: () => boolean, reason: string) {
+	const deadline = performance.now() + 5_000;
+	while (!check()) { assert.ok(performance.now() < deadline, reason); await delay(10); }
+}
+
 const root = fs.mkdtempSync(path.join(tmpdir(), "native-completion-ownership-"));
 process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
 process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
@@ -291,10 +296,6 @@ for (const scenario of [
 	};
 	let runtime = await sdk.createAgentSessionRuntime(createRuntime, { cwd, agentDir: process.env.PI_CODING_AGENT_DIR, sessionManager: manager });
 	let disposed = false;
-	const until = async (check: () => boolean, reason: string) => {
-		const deadline = performance.now() + 5000;
-		while (!check()) { assert.ok(performance.now() < deadline, reason); await delay(10); }
-	};
 	const notices = () => runtime.session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify");
 	const projection = () => runtime.session.sessionManager.getEntries().findLast((entry) => entry.type === "custom" && entry.customType === "subagent-run" && entry.data.runId === runId)?.data;
 	try {
@@ -424,7 +425,9 @@ for (const scenario of [
 		const { session } = await sdk.createAgentSession({ cwd, agentDir: process.env.PI_CODING_AGENT_DIR, settingsManager, resourceLoader: loader, sessionManager, modelRuntime, model: faux.getModel() });
 		try {
 			await session.bindExtensions({ mode: "json", onError: (error) => errors.push(error) });
-			await delay(150);
+			if (unowned && !reopen) await until(() => completions.length > 0, "legacy completion must reach native publication before its hint is consumed");
+			else await until(() => !fs.existsSync(notice), "startup watcher must process the recovery hint");
+			if (!scenario.suppress) await until(() => sessionManager.getEntries().some((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify"), "native completion must be published");
 			await session.waitForIdle();
 			const visible = sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify");
 			assert.equal(visible.length, scenario.suppress ? 0 : 1, `reopen=${reopen}: whole-run completion is delivered exactly once`);
@@ -432,7 +435,7 @@ for (const scenario of [
 				t.mock.timers.tick(11 * 60_000);
 				fs.writeFileSync(notice, JSON.stringify(final));
 				t.mock.timers.tick(3000);
-				await delay(150);
+				await until(() => !fs.existsSync(notice), "published legacy receipt must consume replayed input after TTL");
 				await session.waitForIdle();
 				assert.equal(sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify").length, 1,
 					"a published runless native receipt prevents replay of retained/recreated input past TTL");

@@ -3,67 +3,43 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createFileCoalescer } from "../../src/shared/file-coalescer.ts";
 
-type TimerTask = { id: number; cb: () => void; delay: number };
-
-function createFakeTimers() {
-	let nextId = 1;
-	const tasks = new Map<number, TimerTask>();
-	return {
-		timerApi: {
-			setTimeout(handler: () => void, delayMs: number): unknown {
-				const id = nextId++;
-				tasks.set(id, { id, cb: handler, delay: delayMs });
-				return id;
-			},
-			clearTimeout(handle: unknown): void {
-				if (typeof handle === "number") tasks.delete(handle);
-			},
-		},
-		runAll(): void {
-			const batch = Array.from(tasks.values()).sort((a, b) => a.id - b.id);
-			tasks.clear();
-			for (const task of batch) task.cb();
-		},
-		pendingCount(): number {
-			return tasks.size;
-		},
-	};
-}
-
 describe("createFileCoalescer", () => {
-	it("coalesces duplicate schedule calls per file", () => {
+	it("coalesces duplicate schedule calls per file", (t) => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
 		const events: string[] = [];
-		const timers = createFakeTimers();
-		const coalescer = createFileCoalescer((file) => events.push(file), 50, timers.timerApi);
+		const coalescer = createFileCoalescer((file) => events.push(file), 50);
 		assert.equal(coalescer.schedule("a.json"), true);
 		assert.equal(coalescer.schedule("a.json"), false);
-		assert.equal(timers.pendingCount(), 1);
-		timers.runAll();
+		t.mock.timers.tick(49);
+		assert.deepEqual(events, []);
+		t.mock.timers.tick(1);
 		assert.deepEqual(events, ["a.json"]);
 		assert.equal(coalescer.schedule("a.json"), true);
+		t.mock.timers.tick(50);
+		assert.deepEqual(events, ["a.json", "a.json"]);
 	});
 
-	it("allows different files to schedule independently", () => {
+	it("allows different files to schedule independently", (t) => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
 		const events: string[] = [];
-		const timers = createFakeTimers();
-		const coalescer = createFileCoalescer((file) => events.push(file), 50, timers.timerApi);
+		const coalescer = createFileCoalescer((file) => events.push(file), 50);
 		coalescer.schedule("a.json");
 		coalescer.schedule("b.json");
-		assert.equal(timers.pendingCount(), 2);
-		timers.runAll();
+		t.mock.timers.tick(50);
 		assert.deepEqual(events.sort(), ["a.json", "b.json"]);
 	});
 
-	it("clear cancels all pending handlers", () => {
+	it("clear cancels all pending handlers", (t) => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
 		const events: string[] = [];
-		const timers = createFakeTimers();
-		const coalescer = createFileCoalescer((file) => events.push(file), 50, timers.timerApi);
+		const coalescer = createFileCoalescer((file) => events.push(file), 50);
 		coalescer.schedule("a.json");
 		coalescer.schedule("b.json");
-		assert.equal(timers.pendingCount(), 2);
 		coalescer.clear();
-		assert.equal(timers.pendingCount(), 0);
-		timers.runAll();
+		t.mock.timers.tick(50);
 		assert.deepEqual(events, []);
+		assert.equal(coalescer.schedule("a.json"), true, "clear also releases the dedupe key");
+		t.mock.timers.tick(50);
+		assert.deepEqual(events, ["a.json"]);
 	});
 });

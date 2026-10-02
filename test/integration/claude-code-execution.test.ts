@@ -106,7 +106,9 @@ describe("Claude Code child backend", () => {
 		assert.equal(first.exitCode, 0);
 		assert.equal(first.finalOutput, "MOCK_STARTED");
 		assert.equal(first.model, "claude-code/sonnet:high");
-		assert.equal(first.sessionFile, sessionFile);
+		assert.ok(sessionFile);
+		assert.equal(fs.existsSync(sessionFile), true);
+		assert.match(fs.readFileSync(sessionFile, "utf8"), /MOCK_STARTED/);
 		const metadata = readClaudeCodeSessionMetadata(sessionFile);
 		assert.ok(metadata?.sessionId);
 
@@ -116,6 +118,7 @@ describe("Claude Code child backend", () => {
 		assert.deepEqual(firstCall.args.slice(firstCall.args.indexOf("--model"), firstCall.args.indexOf("--model") + 2), ["--model", "sonnet"]);
 		assert.deepEqual(firstCall.args.slice(firstCall.args.indexOf("--effort"), firstCall.args.indexOf("--effort") + 2), ["--effort", "high"]);
 		assert.ok(firstCall.args.includes("--session-id"));
+		assert.equal(firstCall.args[firstCall.args.indexOf("--session-id") + 1], metadata.sessionId);
 		assert.deepEqual(firstCall.args.slice(firstCall.args.indexOf("--setting-sources"), firstCall.args.indexOf("--setting-sources") + 2), ["--setting-sources", ""]);
 		assert.ok(firstCall.args.includes("--disable-slash-commands"));
 		assert.ok(firstCall.args.includes("--disallowedTools=Agent"));
@@ -129,6 +132,9 @@ describe("Claude Code child backend", () => {
 		const second = continued.details.results[0];
 		assert.equal(second.exitCode, 0);
 		assert.equal(second.finalOutput, "MOCK_RESUMED");
+		assert.equal(second.sessionFile, sessionFile);
+		assert.equal(readClaudeCodeSessionMetadata(second.sessionFile)?.sessionId, metadata.sessionId);
+		assert.match(fs.readFileSync(sessionFile, "utf8"), /MOCK_RESUMED/);
 		const secondCall = readCalls(mock.callsDir)[1]!;
 		assert.ok(secondCall.args.includes("--resume"));
 		assert.equal(secondCall.args[secondCall.args.indexOf("--resume") + 1], metadata.sessionId);

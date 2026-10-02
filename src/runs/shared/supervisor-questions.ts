@@ -173,9 +173,7 @@ export function saveQuestionContract(runId: string, index: number, contract: Sup
 		...(previous?.launch ? { launch: previous.launch } : {}) });
 }
 
-export type NativeConfigurationReader = (sessionFile: string | undefined, endedAt?: number, leaf?: string | null, index?: number) => ReturnType<NativeJournal["configuration"]>;
-
-export function readQuestionContract(runId: string, index: number, root = QUESTIONS_DIR, projection: { sessionFile?: string; endedAt?: number; readConfiguration?: NativeConfigurationReader | false } = {}): SupervisorRunContract | undefined {
+export function readQuestionContract(runId: string, index: number, root = QUESTIONS_DIR, projection: { sessionFile?: string; endedAt?: number; readConfiguration?: false } = {}): SupervisorRunContract | undefined {
 	const contract = readRunJson<SupervisorRunContract>(path.join(root, safeId(runId), "contracts", `${index}.json`));
 	if (!contract?.launch || projection.readConfiguration === false) return contract;
 	const sessionFile = projection.sessionFile ?? contract.sessionFile;
@@ -186,8 +184,7 @@ export function readQuestionContract(runId: string, index: number, root = QUESTI
 		contract.effectiveConfiguration = journal.configuration(projection.endedAt, contract.terminalLeafId);
 		saveQuestionContract(runId, index, { effectiveConfiguration: contract.effectiveConfiguration }, root);
 	}
-	const native = projection.readConfiguration ? projection.readConfiguration(sessionFile, projection.endedAt, contract.terminalLeafId, index)
-		: contract.effectiveConfiguration ?? {};
+	const native = contract.effectiveConfiguration ?? {};
 	return { ...contract, launch: { ...contract.launch, ...native } };
 }
 
