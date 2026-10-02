@@ -1347,6 +1347,8 @@ Child usage comes from finalized native records after the attempt's launch basel
 
 The finalized execution/wait tool result carries each stable native contribution once when Pi persists that message. Reopening the parent or reading the result again does not charge it again. Saved usage entries from older hosts remain deduplication evidence. A launch receipt, custom completion notification, or slash-command result card alone does not add child usage to parent totals. Portable fire-and-forget background work therefore does not automatically enter the parent's usage totals. Run inspection and streaming progress never charge usage. Subscription-route cost fields remain estimates, not invoices.
 
+See [cached-input traffic and delegation](docs/performance.md#cached-input-traffic-and-delegation) for the fresh/fork boundary, repeated-prefix arithmetic and evidence needed to investigate an actual usage spike.
+
 ## Acceptance Gates
 
 `acceptance` is an explicit contract. Omit it for lightweight runs. For review-only tasks, omit it unless the user explicitly requests a same-session acceptance contract; the extra finalization turn is not independent review. Set it on single runs, top-level parallel task items, sequential chain steps, static parallel task items, and dynamic fanout child templates when the child must prove the work meets concrete criteria. Do not set it on static parallel groups or dynamic fanout aggregate groups; those groups do not own a same-session child turn.
