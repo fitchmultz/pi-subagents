@@ -350,7 +350,7 @@ function runAttention(run: OwnedRun, executionState: ManagementRunState, pending
 	];
 }
 
-export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pendingInput?: boolean; includeContinuations?: boolean; readConfiguration?: import("./supervisor-questions.ts").NativeConfigurationReader | false; reconcile?: boolean } = {}): OwnedRunView {
+export function ownedRunView(run: OwnedRun, state: SubagentState, options: { pendingInput?: boolean; includeContinuations?: boolean; readConfiguration?: false; reconcile?: boolean } = {}): OwnedRunView {
 	run = state.ownedRuns?.get(run.runId) ?? run;
 	const root = getRunMetadataDir(run.runId);
 	const foreground = readRunJson<ForegroundResumeRun>(path.join(root, "foreground.json")) ?? state.foregroundRuns?.get(run.runId);

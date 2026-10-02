@@ -2,9 +2,10 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
+import os from "node:os";
+import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import {
 	ASYNC_DIR,
 	CHAIN_RUNS_DIR,
@@ -17,43 +18,45 @@ import {
 } from "../../src/shared/types.ts";
 
 describe("resolveTempScopeId", () => {
+	let saved: NodeJS.ProcessEnv;
+	beforeEach(() => {
+		saved = { ...process.env };
+		for (const key of ["USERNAME", "USER", "LOGNAME", "HOME"]) delete process.env[key];
+	});
+	afterEach(() => {
+		mock.restoreAll();
+		syncBuiltinESMExports();
+		for (const key of ["USERNAME", "USER", "LOGNAME", "HOME"]) {
+			if (saved[key] === undefined) delete process.env[key];
+			else process.env[key] = saved[key];
+		}
+	});
+
 	it("prefers uid when available", () => {
-		const scope = resolveTempScopeId({
-			getuid: () => 501,
-			env: { USER: "alice" },
-			userInfo: () => ({ username: "alice" }),
-		});
-		assert.equal(scope, "uid-501");
+		mock.property(process, "getuid", () => 501);
+		process.env.USER = "alice";
+		assert.equal(resolveTempScopeId(), "uid-501");
 	});
 
 	it("falls back to environment usernames when uid is unavailable", () => {
-		const scope = resolveTempScopeId({
-			getuid: undefined,
-			env: { USERNAME: "Alice Example" },
-			userInfo: () => ({ username: "ignored" }),
-		});
-		assert.equal(scope, "user-Alice-Example");
+		mock.property(process, "getuid", undefined);
+		process.env.USERNAME = "Alice Example";
+		assert.equal(resolveTempScopeId(), "user-Alice-Example");
 	});
 
 	it("falls back to os.userInfo when environment is missing", () => {
-		const scope = resolveTempScopeId({
-			getuid: undefined,
-			env: {},
-			userInfo: () => ({ username: "svc_account" }),
-		});
-		assert.equal(scope, "user-svc_account");
+		mock.property(process, "getuid", undefined);
+		mock.method(os, "userInfo", () => ({ username: "svc_account" }));
+		syncBuiltinESMExports();
+		assert.equal(resolveTempScopeId(), "user-svc_account");
 	});
 
 	it("falls back to home path when os.userInfo throws", () => {
-		const scope = resolveTempScopeId({
-			getuid: undefined,
-			env: {},
-			userInfo: () => {
-				throw new Error("uv_os_get_passwd returned ENOENT");
-			},
-			homedir: () => "/home/12345/app user",
-		});
-		assert.equal(scope, "home-home-12345-app-user");
+		mock.property(process, "getuid", undefined);
+		mock.method(os, "userInfo", () => { throw new Error("uv_os_get_passwd returned ENOENT"); });
+		mock.method(os, "homedir", () => "/home/12345/app user");
+		syncBuiltinESMExports();
+		assert.equal(resolveTempScopeId(), "home-home-12345-app-user");
 	});
 });
 

@@ -818,6 +818,7 @@ for (const [columns, rows] of [[110, 38], [56, 38], [24, 18]]) test(`clickable A
 	const f = await fixture(t, "fullscreen"), opening = f.controller.open();
 	f.terminal.resize(columns, rows); f.tui.start(); f.tui.renderNow();
 	f.terminal.input("Unsent child draft"); f.tui.renderNow();
+	await historyReady(f); f.tui.renderNow();
 	const compact = f.controller.availableHeight(f.tui) < 16;
 	await clickHint(f, compact ? "Tab" : "Read/write");
 	assert.equal(f.overlay.editor.focused, false);
@@ -1812,30 +1813,39 @@ test("new async chain preserves its launch identity, draft and pin through first
 	const f = await fixture(t), mock = createMockPi(); mock.install();
 	f.state.ownedRuns!.clear(); await refreshFixture(f);
 	const release = path.join(f.cwd, "startup-release"), draft = "Keep the existing public API";
+	const startup = path.join(f.cwd, "launcher-release"), spawn = childProcess.spawn;
+	t.mock.method(childProcess, "spawn", function(command, args, options) {
+		if (!/subagent-runner-launcher\.(?:ts|js)$/.test(args[0] ?? "")) return spawn(command, args, options);
+		return spawn(command, ["--import", fileURLToPath(new URL("../fixtures/hold-runner-startup.mjs", import.meta.url)), ...args], {
+			...options, env: { ...process.env, PI_TEST_STARTUP_RELEASE: startup },
+		});
+	});
+	syncBuiltinESMExports();
+	t.after(() => { fs.writeFileSync(startup, "released"); t.mock.restoreAll(); syncBuiltinESMExports(); });
 	mock.onCall({ matchArgsIncludes: "Fix login with original assignment", waitForFile: release, output: "Fixed" });
 	let initial, opening, runId: string | undefined;
-	f.state.onRunsChanged = () => {
-		f.controller.refresh(true);
-		if (initial || !f.controller.tasks.length) return;
-		const task = f.controller.tasks[0]!;
-		// The executor publishes the owned assignment synchronously, before spawning the runner.
-		initial = { key: task.key, label: task.label, task: task.child.task,
-			statusExists: fs.existsSync(path.join(ASYNC_DIR, task.run.runId, "status.json")) || fs.existsSync(path.join(getRunMetadataDir(task.run.runId), "status.json")) };
-		opening = f.controller.open(task.key);
-		f.overlay.handleInput(draft); f.overlay.handleInput("\x1bp");
-	};
+	f.state.onRunsChanged = () => { void f.controller.refresh(true); };
 	const deliveries = [];
 	f.pi.events.on("subagent:live-intercom", (payload) => { deliveries.push(payload); f.pi.events.emit("subagent:live-intercom-delivery", { requestId: payload.requestId, accepted: true, delivered: true, messageId: payload.messageId }); });
 	const pending = f.executor.execute("startup-view", { chain: [{ agent: "worker", task: "Fix login with original assignment", label: "Fix login", output: false }], async: true, artifacts: false }, undefined, undefined, f.ctx);
 	t.after(async () => {
-		fs.writeFileSync(release, "released"); await pending;
+		fs.writeFileSync(startup, "released"); fs.writeFileSync(release, "released"); await pending;
 		if (runId) await until(() => fs.existsSync(path.join(getRunMetadataDir(runId!), "result.json")), "startup runner cleanup");
 		if (process.env.PI_AGENT_VIEW_EVIDENCE_DIR) fs.cpSync(mock.dir, path.join(f.cwd, "mock-receipts"), { recursive: true });
 		mock.uninstall();
 	});
 	const launched = await pending; assert.ok(!launched.isError); runId = launched.details.asyncId;
+	await until(() => fs.existsSync(`${startup}.held`), "native launcher is held before status persistence");
+	await refreshFixture(f);
+	const task = f.controller.tasks.find((task) => task.run.runId === runId)!;
+	assert.ok(task, "pre-status owned launch is observable before native runner starts");
+	initial = { key: task.key, label: task.label, task: task.child.task,
+		statusExists: fs.existsSync(path.join(ASYNC_DIR, task.run.runId, "status.json")) || fs.existsSync(path.join(getRunMetadataDir(task.run.runId), "status.json")) };
+	opening = f.controller.open(task.key);
+	f.overlay.handleInput(draft); f.overlay.handleInput("\x1bp");
+	fs.writeFileSync(startup, "released");
 	await until(() => mock.callCount() === 1, "the real runner persists status and starts the assigned child");
-	f.controller.refresh(true);
+	await refreshFixture(f);
 	assert.equal(initial.statusExists, false, "the initial view is captured before either status record exists");
 	assert.equal(initial.key, `${runId}:step-0`, "the new launch's authoritative assignment identity must survive the pre-status window");
 	assert.equal(initial.label, "Fix login"); assert.equal(initial.task, "Fix login with original assignment");
@@ -1959,13 +1969,15 @@ test("answering in the view releases the real native durable question with human
 test("foreground chain parallel updates retain both live children's unfinished text", async (t) => {
 	const f = await fixture(t), native = nativeChild(f.cwd, "streaming");
 	f.state.ownedRuns!.clear(); await refreshFixture(f);
-	const seen = new Set<number>(); let observation;
+	const seen = new Set<number>();
 	const pending = f.executor.execute("parallel-stream", { chain: [{ parallel: [{ agent: "worker", task: "A streaming", output: false }, { agent: "worker", task: "B streaming", output: false }] }], async: false, artifacts: false }, undefined, (update) => {
 		for (const progress of update.details.progress ?? []) if (progress.streamingText?.includes("Second live text")) seen.add(progress.index);
-		if (seen.size === 2 && !observation) { f.controller.refresh(true); observation = f.controller.tasks.map((task) => ({ index: task.child.index, state: task.child.state, text: task.child.activity?.streamingText })); }
 	}, f.ctx);
 	t.after(async () => { fs.writeFileSync(native.release, "released"); await pending; native.restore(); });
-	await until(() => Boolean(observation), "both native children streamed before message_end");
+	await until(() => seen.size === 2, "both native children streamed before message_end");
+	await refreshFixture(f);
+	const observation = f.controller.tasks.map((task) => ({ index: task.child.index, state: task.child.state, text: task.child.activity?.streamingText }));
+	assert.deepEqual(observation.map((child) => child.index), [0, 1]);
 	assert.deepEqual(observation.map((child) => child.state), ["live", "live"]);
 	for (const child of observation) assert.match(child.text ?? "", /Second live text/, `child ${child.index} retains its unfinished response when a sibling updates`);
 	fs.writeFileSync(native.release, "released"); await pending;
@@ -2336,10 +2348,22 @@ test("indexed Agents history pages retain cross-page tool pairing, validated ful
 	assert.ok(f.controller.task(f.key)!.history.some((item) => item.call?.id === "cross-page-call"));
 	f.overlay.handleInput("\x1bl"); await historyReady(f);
 	assert.match(f.overlay.scroll.render(88).map(stripTerminalSequences).join("\n"), /Physical history 219/);
+	const index = await runHistoryIndex(f.state), record = index.record.bind(index);
+	const ready = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+	t.after(() => release.resolve());
+	const selectedRecord = t.mock.method(index, "record", async (...args) => {
+		const result = await record(...args);
+		ready.resolve();
+		await release.promise;
+		return result;
+	});
 	f.overlay.handleInput("\t"); f.overlay.handleInput("\x1b[F"); plain(f.overlay); f.overlay.handleInput("\r");
+	await ready.promise;
 	assert.match(plain(f.overlay), /Loading selected details/);
 	f.overlay.handleInput("\x1b");
-	await delay(50);
+	release.resolve();
+	await selectedRecord.mock.calls[0].result;
+	await turn();
 	assert.doesNotMatch(plain(f.overlay), /› details/, "a late selected-detail result cannot reopen an abandoned detail view");
 	assert.equal(f.overlay.editor.getText(), "Unsent child draft");
 	f.overlay.handleInput("\x1b"); await opening;

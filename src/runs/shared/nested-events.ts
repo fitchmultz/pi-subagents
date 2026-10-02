@@ -309,7 +309,7 @@ function parseRecord(content: string, route: NestedRoute): NestedEventRecord | u
 	};
 }
 
-export function parseNestedEventRecords(content: string, route: NestedRoute): NestedEventRecord[] {
+function parseNestedEventRecords(content: string, route: NestedRoute): NestedEventRecord[] {
 	if (!content.includes("\n")) {
 		const record = parseRecord(content.trim(), route);
 		return record ? [record] : [];

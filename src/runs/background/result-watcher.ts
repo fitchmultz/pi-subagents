@@ -21,26 +21,15 @@ import {
 	resolveSubagentResultStatus,
 } from "../../intercom/result-intercom.ts";
 import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-events.ts";
-import { isDurableRun, parseAsyncResultFileContent, readAsyncResultFile } from "./async-result-file.ts";
+import { isDurableRun, readAsyncResultFile } from "./async-result-file.ts";
 
 const WATCHER_RESTART_DELAY_MS = 3000;
 const POLL_INTERVAL_MS = 3000;
-
-type ResultWatcherFs = Pick<typeof fs, "existsSync" | "readFileSync" | "unlinkSync" | "readdirSync" | "mkdirSync" | "watch"> & Partial<Pick<typeof fs, "statSync">>;
-
-type ResultWatcherTimers = {
-	setTimeout: typeof setTimeout;
-	clearTimeout: typeof clearTimeout;
-	setInterval: typeof setInterval;
-	clearInterval: typeof clearInterval;
-};
 
 type ResultWatcherDeps = {
 	reconcileDelivery?: (runId: string, completionKey: string, accounting?: boolean) => boolean;
 	isCompletionPublished?: (runId: string, completionKey: string) => boolean;
 	withReceiptBatch?: (work: () => void) => void;
-	fs?: ResultWatcherFs;
-	timers?: ResultWatcherTimers;
 };
 
 function sanitizeNestedResultChildren(value: unknown, resultPath: string, label: string): NestedRunSummary[] | undefined {
@@ -84,8 +73,6 @@ export function createResultWatcher(
 	stopResultWatcher: (options?: { preservePending?: boolean; joinInFlight?: boolean }) => void;
 	joinInFlight: () => Promise<void>;
 } {
-	const fsApi = deps.fs ?? fs;
-	const timers = deps.timers ?? { setTimeout, clearTimeout, setInterval, clearInterval };
 	let periodicScanTimer: ReturnType<typeof setInterval> | null = null;
 	const processingCompletionKeys = new Set<string>();
 	const inFlight = new Set<Promise<void>>();
@@ -93,14 +80,13 @@ export function createResultWatcher(
 	let joiningGeneration: number | undefined;
 	const foreignResults = new Map<string, { stamp: string; sessionId: string | null; runId: string; ownerSessionId?: string; canonicalPath?: string; canonicalStamp?: string }>();
 
-	const readResult = (file: string) => fsApi === fs ? readAsyncResultFile(file) : parseAsyncResultFileContent(fsApi.readFileSync(file, "utf-8"), file);
 	const pendingResultFiles = () => {
-		const files = fsApi.existsSync(resultsDir) ? fsApi.readdirSync(resultsDir).filter((name) => name.endsWith(".json")) : [];
+		const files = fs.existsSync(resultsDir) ? fs.readdirSync(resultsDir).filter((name) => name.endsWith(".json")) : [];
 		const notified = new Map(files.map((file, index) => [file, index]));
 		for (const run of state.ownedRuns?.values() ?? []) {
 			if (run.source !== "async" || run.accounting?.state !== "incomplete" && run.delivery?.entryId) continue;
 			const file = path.join(getRunMetadataDir(run.runId), "result.json");
-			if (!fsApi.existsSync(file)) continue;
+			if (!fs.existsSync(file)) continue;
 			// Disposable hints cannot veto canonical recovery, including corrupt hints.
 			const notification = notified.get(`${run.runId}.json`);
 			if (notification === undefined) files.push(file);
@@ -118,8 +104,8 @@ export function createResultWatcher(
 	const isForeignUnchanged = (resultPath: string): boolean => {
 		const cached = foreignResults.get(resultPath);
 		if (!cached || cached.sessionId !== state.currentSessionId || cached.ownerSessionId !== state.ownedRuns?.get(cached.runId)?.ownerSessionId) return false;
-		return fsApi.statSync !== undefined && cached.stamp === journalStamp(fsApi.statSync(resultPath, { bigint: true }))
-			&& (!cached.canonicalPath || cached.canonicalStamp === journalStamp(fsApi.statSync(cached.canonicalPath, { bigint: true })));
+		return cached.stamp === journalStamp(fs.statSync(resultPath, { bigint: true }))
+			&& (!cached.canonicalPath || cached.canonicalStamp === journalStamp(fs.statSync(cached.canonicalPath, { bigint: true })));
 	};
 
 	const handleResult = async (file: string) => {
@@ -128,16 +114,16 @@ export function createResultWatcher(
 		let completionEmitted = false;
 		const durableFile = path.isAbsolute(file);
 		const resultPath = durableFile ? file : path.join(resultsDir, file);
-		if (!fsApi.existsSync(resultPath)) return;
+		if (!fs.existsSync(resultPath)) return;
 		try {
 			if (isForeignUnchanged(resultPath)) return;
-			const stamp = fsApi.statSync ? journalStamp(fsApi.statSync(resultPath, { bigint: true })) : undefined;
-			const notification = readResult(resultPath);
+			const stamp = journalStamp(fs.statSync(resultPath, { bigint: true }));
+			const notification = readAsyncResultFile(resultPath);
 			const runId = notification.runId ?? notification.id ?? path.basename(file, ".json");
 			const run = state.ownedRuns?.get(runId);
 			const canonicalPath = isDurableRun(notification) && !durableFile ? path.join(getRunMetadataDir(runId), "result.json") : undefined;
-			const canonicalStamp = canonicalPath && fsApi.statSync ? journalStamp(fsApi.statSync(canonicalPath, { bigint: true })) : undefined;
-			const data = canonicalPath ? readResult(canonicalPath) : notification;
+			const canonicalStamp = canonicalPath ? journalStamp(fs.statSync(canonicalPath, { bigint: true })) : undefined;
+			const data = canonicalPath ? readAsyncResultFile(canonicalPath) : notification;
 			if ((data.runId ?? data.id ?? runId) !== runId) throw new Error(`Result identity does not match notification '${runId}'.`);
 			if (durableFile && resultPath !== path.join(getRunMetadataDir(runId), "result.json")) throw new Error(`Canonical result identity does not match path '${resultPath}'.`);
 			if (data.sessionId ? data.sessionId !== state.currentSessionId && run?.ownerSessionId !== state.currentSessionId : !run) {
@@ -150,7 +136,7 @@ export function createResultWatcher(
 				// is not publication; retain it until the verified parent receipt exists.
 				if (!durableFile && !canonicalPath && deps.isCompletionPublished && !deps.isCompletionPublished(runId, completionKey)) return;
 				const hint = durableFile ? path.join(resultsDir, `${runId}.json`) : resultPath;
-				if (fsApi.existsSync(hint)) fsApi.unlinkSync(hint);
+				if (fs.existsSync(hint)) fs.unlinkSync(hint);
 			};
 			data.completionId ??= `legacy:${runId}:${data.timestamp ?? "unknown"}`;
 			const completionKey = buildCompletionKey({ ...data, id: runId }, "result");
@@ -199,7 +185,7 @@ export function createResultWatcher(
 					index,
 					artifactPath: result.artifactPaths?.outputPath,
 					metadataPath: result.artifactPaths?.metadataPath,
-					...(typeof sessionPath === "string" && fsApi.existsSync(sessionPath) ? { sessionPath } : {}),
+					...(typeof sessionPath === "string" && fs.existsSync(sessionPath) ? { sessionPath } : {}),
 					...(result.intercomTarget ? { intercomTarget: result.intercomTarget } : {}),
 					...(childNestedChildren ? { children: childNestedChildren } : {}),
 				};
@@ -228,7 +214,7 @@ export function createResultWatcher(
 					completionId: data.completionId,
 					mode,
 					source: "async",
-					...(fsApi.existsSync(savedResultPath) ? { resultPath: savedResultPath } : {}),
+					...(fs.existsSync(savedResultPath) ? { resultPath: savedResultPath } : {}),
 					status: resolveSubagentResultStatus({ state: data.terminalState }),
 					error: data.workflowGraph?.nodes.find((node) => node.error)?.error,
 					children: normalizedChildren,
@@ -327,13 +313,13 @@ export function createResultWatcher(
 
 	const ensurePeriodicScan = () => {
 		if (periodicScanTimer) return;
-		periodicScanTimer = timers.setInterval(primeExistingResults, POLL_INTERVAL_MS);
+		periodicScanTimer = setInterval(primeExistingResults, POLL_INTERVAL_MS);
 		periodicScanTimer.unref?.();
 	};
 
 	const clearPeriodicScan = () => {
 		if (!periodicScanTimer) return;
-		timers.clearInterval(periodicScanTimer);
+		clearInterval(periodicScanTimer);
 		periodicScanTimer = null;
 	};
 
@@ -347,16 +333,16 @@ export function createResultWatcher(
 			`Subagent result watcher for '${resultsDir}' fell back to polling because native fs.watch is unavailable (${getErrorCode(reason) ?? "unknown error"}).`,
 		);
 		primeExistingResults();
-		state.watcherRestartTimer = timers.setInterval(primeExistingResults, POLL_INTERVAL_MS);
+		state.watcherRestartTimer = setInterval(primeExistingResults, POLL_INTERVAL_MS);
 		state.watcherRestartTimer.unref?.();
 	};
 
 	const scheduleRestart = () => {
 		if (state.watcherRestartTimer) return;
-		state.watcherRestartTimer = timers.setTimeout(() => {
+		state.watcherRestartTimer = setTimeout(() => {
 			state.watcherRestartTimer = null;
 			try {
-				fsApi.mkdirSync(resultsDir, { recursive: true });
+				fs.mkdirSync(resultsDir, { recursive: true });
 				startResultWatcher();
 			} catch (error) {
 				if (shouldFallBackToPolling(error)) {
@@ -376,16 +362,16 @@ export function createResultWatcher(
 			return;
 		}
 		if (state.watcherRestartTimer) {
-			timers.clearTimeout(state.watcherRestartTimer);
-			timers.clearInterval(state.watcherRestartTimer);
+			clearTimeout(state.watcherRestartTimer);
+			clearInterval(state.watcherRestartTimer);
 			state.watcherRestartTimer = null;
 		}
 		try {
-			state.watcher = fsApi.watch(resultsDir, (ev, file) => {
+			state.watcher = fs.watch(resultsDir, (ev, file) => {
 				if (ev !== "rename" || !file) return;
 				const fileName = file.toString();
 				if (!fileName.endsWith(".json")) return;
-				if (!fsApi.existsSync(path.join(resultsDir, fileName))) return;
+				if (!fs.existsSync(path.join(resultsDir, fileName))) return;
 				state.resultFileCoalescer.schedule(fileName);
 			});
 			state.watcher.on("error", (error) => {
@@ -419,8 +405,8 @@ export function createResultWatcher(
 		state.watcher = null;
 		clearPeriodicScan();
 		if (state.watcherRestartTimer) {
-			timers.clearTimeout(state.watcherRestartTimer);
-			timers.clearInterval(state.watcherRestartTimer);
+			clearTimeout(state.watcherRestartTimer);
+			clearInterval(state.watcherRestartTimer);
 		}
 		state.watcherRestartTimer = null;
 		state.resultFileCoalescer.clear();

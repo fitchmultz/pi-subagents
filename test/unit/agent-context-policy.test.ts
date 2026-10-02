@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../src/agents/agents.ts";
 import { collectInvocationAgentNames } from "../../src/shared/settings.ts";
 import {
@@ -193,41 +194,17 @@ describe("createPerAgentForkContextResolver", () => {
 	it("forks only indices whose agent defaults to fork", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-per-agent-fork-"));
 		try {
-			const parentSessionFile = path.join(tempDir, "parent.jsonl");
-			fs.mkdirSync(path.dirname(parentSessionFile), { recursive: true });
-			fs.writeFileSync(
-				parentSessionFile,
-				'{"type":"session","version":1,"id":"parent","timestamp":"2026-04-16T00:00:00.000Z","cwd":"/tmp"}\n',
-				"utf-8",
-			);
-
-			let forkCalls = 0;
-			const resolver = createPerAgentForkContextResolver(
-				{
-					getSessionFile: () => parentSessionFile,
-					getLeafId: () => "leaf-1",
-					getSessionDir: () => "/tmp",
-				},
-				(index = 0) => (index === 1 ? "fork" : "fresh"),
-				{
-					openSession: () => ({
-						createBranchedSession: () => {
-							forkCalls++;
-							const childSessionFile = path.join(tempDir, `child-${forkCalls}.jsonl`);
-							fs.writeFileSync(
-								childSessionFile,
-								`{"type":"session","version":1,"id":"child-${forkCalls}","timestamp":"2026-04-16T00:00:00.000Z","cwd":"/tmp"}\n`,
-								"utf-8",
-							);
-							return childSessionFile;
-						},
-					}),
-				},
-			);
-
+			const parent = SessionManager.create(tempDir, tempDir);
+			parent.appendMessage({ role: "user", content: "parent context", timestamp: 1 });
+			parent.appendMessage({ role: "assistant", content: "persist parent" });
+			const resolver = createPerAgentForkContextResolver(parent, (index = 0) => index === 1 ? "fork" : "fresh");
 			assert.equal(resolver.sessionFileForIndex(0), undefined);
-			assert.equal(resolver.sessionFileForIndex(1), path.join(tempDir, "child-1.jsonl"));
-			assert.equal(forkCalls, 1);
+			const fork = resolver.sessionFileForIndex(1);
+			assert.ok(fork);
+			assert.notEqual(fork, parent.getSessionFile());
+			assert.deepEqual(SessionManager.open(fork).getBranch(), parent.getBranch());
+			assert.equal(resolver.sessionFileForIndex(1), fork);
+			assert.equal(fs.readdirSync(tempDir).filter((file) => file.endsWith(".jsonl")).length, 2);
 		} finally {
 			fs.rmSync(tempDir, { recursive: true, force: true });
 		}

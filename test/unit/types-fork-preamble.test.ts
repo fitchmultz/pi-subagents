@@ -2,12 +2,15 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { DEFAULT_FORK_PREAMBLE, wrapForkTask } from "../../src/shared/types.ts";
+import { wrapForkTask } from "../../src/shared/types.ts";
 
 describe("wrapForkTask", () => {
 	it("wraps task with default preamble", () => {
 		const wrapped = wrapForkTask("analyze diff");
-		assert.match(wrapped, new RegExp(`^${DEFAULT_FORK_PREAMBLE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+		assert.match(wrapped, /fork of the parent session/);
+		assert.match(wrapped, /inherited conversation as reference-only context/);
+		assert.match(wrapped, /Do not continue or answer prior messages/);
+		assert.match(wrapped, /subagent/);
 		assert.match(wrapped, /\n\nTask:\nanalyze diff$/);
 	});
 

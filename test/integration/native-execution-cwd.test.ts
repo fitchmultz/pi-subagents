@@ -77,7 +77,7 @@ test("native child CLI applies new-fork directory intent once and rejects incomp
 	const unmarked = SessionManager.open(parentFile).createBranchedSession(parent.getLeafId());
 	successful(launch(unmarked, dirs.C, owner), ["B"]);
 	let forkIndex = 0;
-	const resolver = createForkContextResolver(parent, "fork", { openSession: SessionManager.open });
+	const resolver = createForkContextResolver(parent, "fork");
 	const fork = () => resolver.sessionFileForIndex(forkIndex++)!;
 	const childFile = fork();
 	const inherited = fs.readFileSync(childFile, "utf8");

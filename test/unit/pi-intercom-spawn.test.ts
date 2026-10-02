@@ -2,13 +2,12 @@ import "../support/isolated-home.ts";
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { Worker } from "node:worker_threads";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { brokerPidRecord, isBrokerPidReused } from "../../src/pi-intercom/broker/pid.ts";
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   getBrokerLaunchSpec,
@@ -17,9 +16,11 @@ import {
 } from "../../src/pi-intercom/broker/spawn.ts";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const { getPiAgentDir } = await import("../../src/pi-intercom/agent-dir.ts");
+const pidDir = path.join(getPiAgentDir(), "intercom");
 
 test("legacy PID alias to a real Linux thread cannot be a broker process", { skip: process.platform !== "linux" }, async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "pi-intercom-tid-"));
+  const dir = pidDir; fs.mkdirSync(dir, { recursive: true });
   const pidPath = path.join(dir, "broker.pid");
   const worker = new Worker(`
     const { parentPort } = require("node:worker_threads");
@@ -36,7 +37,7 @@ test("legacy PID alias to a real Linux thread cannot be a broker process", { ski
     assert.notEqual(identity.tid, process.pid);
     process.kill(identity.tid, 0); // Native signal-0 succeeds for this non-process TID.
     writeFileSync(pidPath, String(identity.tid));
-    await stopUnhealthyBrokerBeforeSpawn(pidPath, async () => false);
+    await stopUnhealthyBrokerBeforeSpawn();
     assert.equal(readFileSync(pidPath, "utf8"), String(identity.tid));
     process.kill(identity.tid, 0); // Guard neither signals nor removes the alias.
   } finally {
@@ -48,19 +49,19 @@ test("legacy PID alias to a real Linux thread cannot be a broker process", { ski
 });
 
 test("legacy numeric live process remains ambiguous and blocking", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "pi-intercom-live-"));
+  const dir = pidDir; fs.mkdirSync(dir, { recursive: true });
   const pidPath = path.join(dir, "broker.pid");
   try {
     writeFileSync(pidPath, String(process.pid));
-    await assert.rejects(stopUnhealthyBrokerBeforeSpawn(pidPath, async () => false), /refusing to spawn a second broker/);
+    await assert.rejects(stopUnhealthyBrokerBeforeSpawn(), /refusing to spawn a second broker/);
     assert.equal(readFileSync(pidPath, "utf8"), String(process.pid));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("native PID identity preserves a live process and only disproves comparable identities", { skip: process.platform !== "linux" }, async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "pi-intercom-identity-"));
+test("native PID identity preserves a live process and only disproves comparable identities", { skip: process.platform !== "linux" }, async (t) => {
+  const dir = pidDir; fs.mkdirSync(dir, { recursive: true });
   const pidPath = path.join(dir, "broker.pid");
   try {
     const record = brokerPidRecord();
@@ -74,7 +75,7 @@ test("native PID identity preserves a live process and only disproves comparable
     const stat = readFileSync("/proc/self/stat", "utf8");
     assert.equal(start, stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/)[19]);
     writeFileSync(pidPath, record);
-    await assert.rejects(stopUnhealthyBrokerBeforeSpawn(pidPath, async () => false), /refusing to spawn a second broker/);
+    await assert.rejects(stopUnhealthyBrokerBeforeSpawn(), /refusing to spawn a second broker/);
     assert.equal(readFileSync(pidPath, "utf8"), record);
     assert.equal(isBrokerPidReused(process.pid, record), false);
     // Format/decision controls against real proc metadata, not simulated procfs.
@@ -86,9 +87,9 @@ test("native PID identity preserves a live process and only disproves comparable
     assert.equal(isBrokerPidReused(process.pid, `${pid}\nlinux-v1 ${boot} pid:[0] ${clock} ${start}\n`), true);
     const otherBoot = `${boot[0] === "0" ? "1" : "0"}${boot.slice(1)}`;
     assert.equal(isBrokerPidReused(process.pid, `${pid}\nlinux-v1 ${otherBoot} ${namespace} ${clock} ${start}\n`), true);
-    const denied = (() => { throw Object.assign(new Error("not permitted"), { code: "EPERM" }); }) as typeof process.kill;
+    t.mock.method(process, "kill", () => { throw Object.assign(new Error("not permitted"), { code: "EPERM" }); });
     writeFileSync(pidPath, `${pid}\nlinux-v1 ${otherBoot} ${namespace} ${clock} ${start}\n`);
-    await assert.rejects(stopUnhealthyBrokerBeforeSpawn(pidPath, async () => false, denied), /refusing to spawn a second broker/);
+    await assert.rejects(stopUnhealthyBrokerBeforeSpawn(), /refusing to spawn a second broker/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -129,37 +130,37 @@ test("bundled broker resolves the package root", () => {
 });
 
 test("getBrokerLaunchSpec maps the legacy tsx default to native Node", () => {
-  const spec = getBrokerLaunchSpec("/repo/broker.ts", "npx", ["--no-install", "tsx"], "/usr/bin/node");
-  assert.equal(spec.command, "/usr/bin/node");
+  const spec = getBrokerLaunchSpec("/repo/broker.ts", "npx", ["--no-install", "tsx"]);
+  assert.equal(spec.command, process.execPath);
   assert.deepEqual(spec.args, ["/repo/broker.ts"]);
 });
 
 test("getBrokerLaunchSpec uses custom broker command", () => {
-  const spec = getBrokerLaunchSpec("/repo/broker.ts", "bun", [], "/usr/bin/node");
+  const spec = getBrokerLaunchSpec("/repo/broker.ts", "bun", []);
   assert.equal(spec.command, "bun");
   assert.deepEqual(spec.args, ["/repo/broker.ts"]);
 });
 
 test("getBrokerSpawnOptions detaches the broker with no inherited stdio", () => {
-  const options = getBrokerSpawnOptions("/repo");
+  const options = getBrokerSpawnOptions();
   assert.equal(options.detached, true);
   assert.equal(options.stdio, "ignore");
-  assert.equal(options.cwd, "/repo");
+  assert.equal(options.cwd, projectRoot);
 });
 
-test("spawn guard fails loud instead of killing a live unhealthy broker PID", async () => {
-  const intercomDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-"));
+test("spawn guard fails loud instead of killing a live unhealthy broker PID", async (t) => {
+  const intercomDir = pidDir; fs.mkdirSync(intercomDir, { recursive: true });
   const pidPath = path.join(intercomDir, "broker.pid");
   const signals: Array<NodeJS.Signals | 0> = [];
-  const kill = ((_: number, signal?: NodeJS.Signals | 0) => {
+  t.mock.method(process, "kill", (_: number, signal?: NodeJS.Signals | 0) => {
     signals.push(signal ?? "SIGTERM");
     return true;
-  }) as typeof process.kill;
+  });
 
   try {
     await import("node:fs").then(({ writeFileSync }) => writeFileSync(pidPath, "12345"));
     await assert.rejects(
-      () => stopUnhealthyBrokerBeforeSpawn(pidPath, async () => false, kill),
+      () => stopUnhealthyBrokerBeforeSpawn(),
       /refusing to spawn a second broker/,
     );
     assert.deepEqual(signals, [0]);
@@ -168,19 +169,19 @@ test("spawn guard fails loud instead of killing a live unhealthy broker PID", as
   }
 });
 
-test("spawn guard treats EPERM as a live unhealthy broker PID and fails loud", async () => {
-  const intercomDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-"));
+test("spawn guard treats EPERM as a live unhealthy broker PID and fails loud", async (t) => {
+  const intercomDir = pidDir; fs.mkdirSync(intercomDir, { recursive: true });
   const pidPath = path.join(intercomDir, "broker.pid");
-  const kill = ((_: number) => {
+  t.mock.method(process, "kill", (_: number) => {
     const error = new Error("alive but not owned") as NodeJS.ErrnoException;
     error.code = "EPERM";
     throw error;
-  }) as typeof process.kill;
+  });
 
   try {
     await import("node:fs").then(({ writeFileSync }) => writeFileSync(pidPath, "12345"));
     await assert.rejects(
-      () => stopUnhealthyBrokerBeforeSpawn(pidPath, async () => false, kill),
+      () => stopUnhealthyBrokerBeforeSpawn(),
       /refusing to spawn a second broker/,
     );
   } finally {

@@ -1,5 +1,8 @@
 import "../support/isolated-home.ts";
-import { describe, it, before, after, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach, mock } from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+
+const nativeOpen = SessionManager.open;
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -31,7 +34,6 @@ interface SessionManagerStub {
 	getSessionFile(): string | undefined;
 	getLeafId(): string | null;
 	getSessionDir(): string;
-	openSession(sessionFile: string): { createBranchedSession(leafId: string): string | undefined };
 }
 
 function makeSessionManagerRecorder(options: SessionStubOptions = {}) {
@@ -40,9 +42,6 @@ function makeSessionManagerRecorder(options: SessionStubOptions = {}) {
 		getSessionFile: () => options.sessionFile,
 		getLeafId: () => (options.leafId === undefined ? "leaf-current" : options.leafId),
 		getSessionDir: () => options.sessionFile ? path.dirname(options.sessionFile) : process.cwd(),
-		openSession: () => ({
-			createBranchedSession: () => "/tmp/child.jsonl",
-		}),
 	};
 	return { manager };
 }
@@ -85,6 +84,7 @@ describe("fork context execution wiring", () => {
 	});
 
 	afterEach(() => {
+		mock.restoreAll();
 		if (originalHome === undefined) delete process.env.HOME;
 		else process.env.HOME = originalHome;
 		if (originalUserProfile === undefined) delete process.env.USERPROFILE;
@@ -199,14 +199,21 @@ describe("fork context execution wiring", () => {
 	}
 
 
+	function isNativeFork(sessionFile: string): boolean {
+		if (path.dirname(sessionFile) !== tempDir || !fs.existsSync(sessionFile)) return false;
+		const header = JSON.parse(fs.readFileSync(sessionFile, "utf8").split("\n")[0]!);
+		return typeof header.parentSession === "string";
+	}
+
 	function forkedSessionFile(index: number): string {
-		return path.join(tempDir, `fork-${index}.jsonl`);
+		const files = fs.readdirSync(tempDir).filter((file) => file.endsWith(".jsonl"))
+			.map((file) => path.join(tempDir, file)).filter(isNativeFork);
+		assert.ok(files[index - 1], "expected an actual native fork journal");
+		return files[index - 1]!;
 	}
 
 	function countForkedSessionFiles(sessionArgs: string[]): number {
-		return sessionArgs.filter((sessionFile) =>
-			path.dirname(sessionFile) === tempDir && /^fork-\d+\.jsonl$/.test(path.basename(sessionFile)),
-		).length;
+		return sessionArgs.filter(isNativeFork).length;
 	}
 
 	async function waitForTaskCalls(tasks: string[], timeoutMs = 15_000): Promise<void> {
@@ -218,29 +225,24 @@ describe("fork context execution wiring", () => {
 	}
 
 	function makeForkingSessionManagerRecorder(options: { sessionFile: string; leafId: string }) {
-		const openedPaths: string[] = [];
-		const branchedLeafIds: string[] = [];
-		let counter = 0;
-		fs.mkdirSync(path.dirname(options.sessionFile), { recursive: true });
-		fs.writeFileSync(options.sessionFile, '{"type":"session","version":1,"id":"parent","timestamp":"2026-04-16T00:00:00.000Z","cwd":"/tmp"}\n', "utf-8");
-		const manager = {
-			getSessionId: () => "session-123",
-			getSessionFile: () => options.sessionFile,
-			getLeafId: () => options.leafId,
-			getSessionDir: () => path.dirname(options.sessionFile),
-			openSession: (sessionFile: string) => {
-				openedPaths.push(sessionFile);
-				return {
-					createBranchedSession: (leafId: string) => {
-						branchedLeafIds.push(leafId);
-						counter++;
-						const childSessionFile = path.join(tempDir, `fork-${counter}.jsonl`);
-						fs.writeFileSync(childSessionFile, '{"type":"session","version":1,"id":"child","timestamp":"2026-04-16T00:00:00.000Z","cwd":"/tmp"}\n', "utf-8");
-						return childSessionFile;
-					},
-				};
-			},
-		};
+		const parent = SessionManager.create(tempDir, tempDir);
+		parent.appendMessage({ role: "user", content: `Inherited context ${options.leafId}`, timestamp: 1 });
+		parent.appendMessage({ role: "assistant", content: "Persisted parent response" });
+		const generated = parent.getSessionFile()!;
+		fs.copyFileSync(generated, options.sessionFile);
+		fs.unlinkSync(generated);
+		const manager = nativeOpen(options.sessionFile, tempDir);
+		const openedPaths: string[] = [], branchedLeafIds: string[] = [];
+		mock.method(SessionManager, "open", (file: string, dir?: string) => {
+			openedPaths.push(file);
+			const branch = nativeOpen(file, dir);
+			const create = branch.createBranchedSession.bind(branch);
+			mock.method(branch, "createBranchedSession", (leaf: string) => {
+				branchedLeafIds.push(leaf);
+				return create(leaf);
+			});
+			return branch;
+		});
 		return { manager, openedPaths, branchedLeafIds };
 	}
 
@@ -327,22 +329,6 @@ describe("fork context execution wiring", () => {
 		assert.equal(fs.readdirSync(mockPi.dir).some((name) => name.startsWith("call-")), true);
 	});
 
-	it("allows short foreground timeouts for non-reviewer agents", async () => {
-		const { manager } = makeSessionManagerRecorder();
-		const executor = makeExecutor();
-
-		const result = await executor.execute(
-			"id",
-			{ agent: "echo", task: "Run with a small budget", timeoutMs: 180_000 },
-			new AbortController().signal,
-			undefined,
-			makeCtx(manager),
-		);
-
-		assert.equal(result.isError, undefined);
-		assert.equal(fs.readdirSync(mockPi.dir).some((name) => name.startsWith("call-")), true);
-	});
-
 	it("uses local duration history before raising planner foreground budgets", async () => {
 		const { recordRun } = await import("../../src/runs/shared/run-history.ts");
 		const agent = `planner-history-${process.pid}`;
@@ -420,10 +406,10 @@ describe("fork context execution wiring", () => {
 		assert.equal(fs.readdirSync(mockPi.dir).some((name) => name.startsWith("call-")), false);
 	});
 
-	it("does not treat non-reviewer names containing reviewer as reviewer-like", async () => {
+	for (const name of ["echo", "previewer"]) it(`honors short foreground timeouts for non-reviewer ${name}`, async () => {
 		const { manager } = makeSessionManagerRecorder();
 		const executor = makeExecutorWithDiscoverAgents(() => ({
-			agents: [{ name: "previewer", description: "Preview agent" }],
+			agents: [{ name, description: "Non-reviewer agent" }],
 			projectAgentsDir: null,
 		}));
 		mockPi.reset();
@@ -431,7 +417,7 @@ describe("fork context execution wiring", () => {
 
 		const result = await executor.execute(
 			"id",
-			{ agent: "previewer", task: "Preview this", timeoutMs: 180 },
+			{ agent: name, task: "Preview this", timeoutMs: 180 },
 			new AbortController().signal,
 			undefined,
 			makeCtx(manager),
@@ -479,8 +465,8 @@ describe("fork context execution wiring", () => {
 		assert.equal(result.isError, undefined);
 		assert.equal(result.details?.context, "fork");
 		assert.deepEqual(openedPaths, [parentSessionFile]);
-		assert.deepEqual(branchedLeafIds, ["leaf-current"]);
-		assert.deepEqual(readSessionArgsFromCalls(), [path.join(tempDir, "fork-1.jsonl")]);
+		assert.deepEqual(branchedLeafIds, [manager.getLeafId()]);
+		assert.deepEqual(readSessionArgsFromCalls(), [forkedSessionFile(1)]);
 		const args = readCallArgs();
 		assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), ["--model", model ?? "openai/gpt-5-main"]);
 	});
@@ -623,7 +609,7 @@ describe("fork context execution wiring", () => {
 		assert.equal(result.details?.context, undefined);
 		assert.deepEqual(openedPaths, []);
 		assert.deepEqual(branchedLeafIds, []);
-		assert.notEqual(readSessionArgsFromCalls()[0], path.join(tempDir, "fork-1.jsonl"));
+		assert.equal(countForkedSessionFiles(readSessionArgsFromCalls()), 0);
 	});
 
 	it("forks only fork-default agents in top-level parallel when launch context is omitted", async () => {
@@ -633,51 +619,22 @@ describe("fork context execution wiring", () => {
 			agents: [
 				{ name: "worker", description: "Worker", defaultContext: "fork" },
 				{ name: "second", description: "Second" },
-			],
-			projectAgentsDir: null,
-		}));
-
-		const result = await executor.execute(
-			"id",
-			{ tasks: [{ agent: "worker", task: "one" }, { agent: "second", task: "two" }] },
-			new AbortController().signal,
-			undefined,
-			makeCtx(manager),
-		);
-
-		assert.equal(result.isError, undefined);
-		assert.equal(result.details?.context, "fork");
-		const sessionArgs = readSessionArgsFromCalls();
-		assert.equal(sessionArgs.length, 2);
-		assert.equal(countForkedSessionFiles(sessionArgs), 1);
-		assert.ok(sessionArgs.includes(forkedSessionFile(1)));
-	});
-
-	it("keeps fresh-default agents on fresh context when mixed with fork-default agents in parallel", async () => {
-		const parentSessionFile = path.join(tempDir, "parent.jsonl");
-		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
-		const executor = makeExecutorWithDiscoverAgents(() => ({
-			agents: [
 				{ name: "scout", description: "Scout", defaultContext: "fresh" },
-				{ name: "worker", description: "Worker", defaultContext: "fork", tools: ["read"] },
-			],
-			projectAgentsDir: null,
+			], projectAgentsDir: null,
 		}));
-
-		const result = await executor.execute(
-			"id",
-			{ tasks: [{ agent: "scout", task: "find files" }, { agent: "worker", task: "implement fix" }] },
-			new AbortController().signal,
-			undefined,
-			makeCtx(manager),
-		);
-
+		const result = await executor.execute("id", {
+			tasks: [{ agent: "worker", task: "one" }, { agent: "second", task: "two" }, { agent: "scout", task: "find files" }],
+		}, new AbortController().signal, undefined, makeCtx(manager));
 		assert.equal(result.isError, undefined);
 		assert.equal(result.details?.context, "fork");
 		const sessionArgs = readSessionArgsFromCalls();
-		assert.equal(sessionArgs.length, 2);
+		assert.equal(sessionArgs.length, 3);
 		assert.equal(countForkedSessionFiles(sessionArgs), 1);
-		assert.ok(sessionArgs.includes(forkedSessionFile(1)));
+		for (const [task, fork] of [["one", true], ["two", false], ["find files", false]] as const) {
+			const args = callArgsForTaskContaining(task);
+			const file = args[args.indexOf("--session") + 1]!;
+			assert.equal(isNativeFork(file), fork, `${task} receives its own context policy`);
+		}
 	});
 
 	it("applies paired intercom wiring to fresh and fork parallel children", async () => {
@@ -707,8 +664,8 @@ describe("fork context execution wiring", () => {
 		const forkCall = callRecordForTaskContaining("implement fix");
 		assert.equal(toolsArg(freshCall.args), "read,intercom,contact_supervisor");
 		assert.equal(toolsArg(forkCall.args), "read,intercom,contact_supervisor");
-		assert.equal(freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
-		assert.equal(forkCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
+		assert.equal(freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, `subagent-chat-${manager.getSessionId().slice(0, 8)}`);
+		assert.equal(forkCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, `subagent-chat-${manager.getSessionId().slice(0, 8)}`);
 		assert.equal(freshCall.env?.PI_SUBAGENT_ROOT_SESSION_ID, manager.getSessionId());
 		assert.equal(forkCall.env?.PI_SUBAGENT_ROOT_SESSION_ID, manager.getSessionId());
 	});
@@ -762,6 +719,9 @@ describe("fork context execution wiring", () => {
 		assert.equal(sessionArgs.length, 2);
 		assert.equal(countForkedSessionFiles(sessionArgs), 1);
 		assert.ok(sessionArgs.includes(forkedSessionFile(1)));
+		const scan = callArgsForTaskContaining("scan"), write = callArgsForTaskContaining("write");
+		assert.equal(isNativeFork(scan[scan.indexOf("--session") + 1]!), false);
+		assert.equal(isNativeFork(write[write.indexOf("--session") + 1]!), true);
 	});
 
 	it("applies paired intercom wiring to fresh and fork chain steps", async () => {
@@ -834,9 +794,9 @@ describe("fork context execution wiring", () => {
 		assert.equal(toolsArg(reviewACall.args), "read,intercom,contact_supervisor,structured_output");
 		assert.equal(toolsArg(reviewBCall.args), "read,intercom,contact_supervisor,structured_output");
 		assert.equal(toolsArg(consumerCall.args), "read,intercom,contact_supervisor");
-		assert.equal(reviewACall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
-		assert.equal(reviewBCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
-		assert.equal(consumerCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
+		assert.equal(reviewACall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, `subagent-chat-${manager.getSessionId().slice(0, 8)}`);
+		assert.equal(reviewBCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, `subagent-chat-${manager.getSessionId().slice(0, 8)}`);
+		assert.equal(consumerCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, `subagent-chat-${manager.getSessionId().slice(0, 8)}`);
 		assert.equal(countForkedSessionFiles(readSessionArgsFromCalls()), 2);
 	});
 
@@ -881,7 +841,7 @@ describe("fork context execution wiring", () => {
 		const reviewSession = reviewArgs.at(reviewArgs.indexOf("--session") + 1);
 		const workerSession = workerArgs.at(workerArgs.indexOf("--session") + 1);
 		assert.ok(reviewSession?.endsWith(path.join("run-1", "session.jsonl")), `expected fresh dynamic child session, got ${reviewSession}`);
-		assert.match(workerSession ?? "", /fork-\d+\.jsonl$/);
+		assert.ok(workerSession && isNativeFork(workerSession), "worker uses an actual native fork");
 		assert.equal(countForkedSessionFiles(readSessionArgsFromCalls()), 1);
 	});
 
@@ -946,12 +906,8 @@ describe("fork context execution wiring", () => {
 			getSessionFile: () => parentSessionFile,
 			getLeafId: () => "leaf-fail",
 			getSessionDir: () => tempDir,
-			openSession: () => ({
-				createBranchedSession: () => {
-					throw new Error("branch write failed");
-				},
-			}),
 		};
+		mock.method(SessionManager, "open", () => { throw new Error("branch write failed"); });
 
 		const result = await executor.execute(
 			"id",
@@ -983,7 +939,7 @@ describe("fork context execution wiring", () => {
 
 		assert.equal(result.isError, undefined);
 		assert.deepEqual(openedPaths, [path.join(tempDir, "parent.jsonl")]);
-		assert.deepEqual(branchedLeafIds, ["leaf-123"]);
+		assert.deepEqual(branchedLeafIds, [manager.getLeafId()]);
 		const args = readCallArgs();
 		const sessionIndex = args.indexOf("--session");
 		assert.notEqual(sessionIndex, -1);
@@ -1015,7 +971,7 @@ describe("fork context execution wiring", () => {
 
 		assert.equal(result.isError, undefined);
 		assert.deepEqual(openedPaths, [path.join(tempDir, "parent-parallel.jsonl"), path.join(tempDir, "parent-parallel.jsonl")]);
-		assert.deepEqual(branchedLeafIds, ["leaf-777", "leaf-777"]);
+		assert.deepEqual(branchedLeafIds, Array(2).fill(manager.getLeafId()));
 		const sessionArgs = readSessionArgsFromCalls();
 		assert.equal(sessionArgs.length, 2);
 		assert.equal(new Set(sessionArgs).size, 2);
@@ -1049,7 +1005,7 @@ describe("fork context execution wiring", () => {
 			path.join(tempDir, "parent-count.jsonl"),
 			path.join(tempDir, "parent-count.jsonl"),
 		]);
-		assert.deepEqual(branchedLeafIds, ["leaf-count", "leaf-count", "leaf-count"]);
+		assert.deepEqual(branchedLeafIds, Array(3).fill(manager.getLeafId()));
 		const sessionArgs = readSessionArgsFromCalls();
 		assert.equal(sessionArgs.length, 3);
 		assert.equal(new Set(sessionArgs).size, 3);
@@ -1354,8 +1310,8 @@ describe("fork context execution wiring", () => {
 		const forkCall = callRecordForTaskContaining("async implement fix");
 		assert.equal(toolsArg(freshCall.args), "read,intercom,contact_supervisor");
 		assert.equal(toolsArg(forkCall.args), "read,intercom,contact_supervisor");
-		assert.equal(freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
-		assert.equal(forkCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-123");
+		assert.equal(freshCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, `subagent-chat-${manager.getSessionId().slice(0, 8)}`);
+		assert.equal(forkCall.env?.PI_SUBAGENT_ORCHESTRATOR_TARGET, `subagent-chat-${manager.getSessionId().slice(0, 8)}`);
 		assert.equal(freshCall.env?.PI_SUBAGENT_ROOT_SESSION_ID, manager.getSessionId());
 		assert.equal(forkCall.env?.PI_SUBAGENT_ROOT_SESSION_ID, manager.getSessionId());
 	});
@@ -1551,8 +1507,8 @@ describe("fork context execution wiring", () => {
 
 		assert.equal(result.isError, undefined);
 		assert.deepEqual(openedPaths, Array(6).fill(path.join(tempDir, "parent-chain.jsonl")));
-		assert.deepEqual(branchedLeafIds, Array(6).fill("leaf-chain"));
-		const sessionArgs = readSessionArgsFromCalls().filter((sessionFile) => path.dirname(sessionFile) === tempDir && path.basename(sessionFile).startsWith("fork-"));
+		assert.deepEqual(branchedLeafIds, Array(6).fill(manager.getLeafId()));
+		const sessionArgs = readSessionArgsFromCalls().filter(isNativeFork);
 		assert.equal(sessionArgs.length, 6, "1 sequential + 4 parallel + 1 sequential");
 		assert.equal(new Set(sessionArgs).size, 6);
 	});

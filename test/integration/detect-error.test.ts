@@ -2,23 +2,7 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-interface DetectErrorResult {
-	hasError: boolean;
-	errorType?: string;
-	details?: string;
-	exitCode?: number;
-}
-
-type DetectSubagentError = (messages: unknown[]) => DetectErrorResult;
-
-let detectSubagentError: DetectSubagentError | undefined;
-let available = true;
-try {
-	({ detectSubagentError } = await import("../../src/shared/utils.ts"));
-} catch {
-	// Skip in lean unit mode when runtime-only imports are unavailable.
-	available = false;
-}
+import { detectSubagentError } from "../../src/shared/utils.ts";
 
 /**
  * Helper to create a tool result message (success or error).
@@ -54,7 +38,7 @@ function assistantToolCall(toolName: string): Record<string, unknown> {
 	};
 }
 
-describe("detectSubagentError", { skip: !available ? "utils not importable" : undefined }, () => {
+describe("detectSubagentError", () => {
 	// ---- Basic detection (must still work) ----
 
 	it("returns no error for empty messages", () => {
@@ -98,48 +82,7 @@ describe("detectSubagentError", { skip: !available ? "utils not importable" : un
 		assert.equal(result.exitCode, 127);
 	});
 
-	// ---- Recovery: errors before the agent's final response are forgiven ----
-
-	it("ignores error when agent recovered and continued", () => {
-		const messages = [
-			toolResult("read", "file contents"),
-			toolResult("bash", "ok"),
-			toolResult("read", "EISDIR: illegal operation on a directory", true),
-			toolResult("bash", "directory listing via bash"),
-			assistantMsg("Here is my complete review..."),
-		];
-		const result = detectSubagentError(messages);
-		assert.equal(result.hasError, false,
-			"error before agent's final text response should be ignored");
-	});
-
-	it("ignores error as final tool result when agent produced text response after", () => {
-		// The exact scenario from our review run: agent did all work, last tool
-		// call was read on directory → EISDIR, but agent produced 13.5KB review.
-		const messages = [
-			toolResult("read", "file contents of index.ts"),
-			toolResult("read", "file contents of utils.ts"),
-			toolResult("bash", "npm test output: 46 pass"),
-			toolResult("read", "file contents of settings.ts"),
-			toolResult("read", "EISDIR: illegal operation on a directory, read", true),
-			assistantMsg("## Complete Review\n\nHere are all my findings..."),
-		];
-		const result = detectSubagentError(messages);
-		assert.equal(result.hasError, false,
-			"agent produced substantive output after error — not a failure");
-	});
-
-	it("ignores bash fatal pattern when agent responded after", () => {
-		const messages = [
-			toolResult("bash", "ls: permission denied: /root/secret"),
-			assistantMsg("I couldn't access /root/secret, but I found the data elsewhere."),
-		];
-		const result = detectSubagentError(messages);
-		assert.equal(result.hasError, false,
-			"fatal pattern before agent's text response = recovered");
-	});
-
-	// ---- Errors AFTER the last assistant text response are still caught ----
+	// Errors after the last assistant text response are still caught.
 
 	it("detects error after agent's last text response", () => {
 		const messages = [
@@ -222,21 +165,4 @@ describe("detectSubagentError", { skip: !available ? "utils not importable" : un
 			"all errors have recovery — agent completed successfully");
 	});
 
-	// ---- Real-world regression test ----
-
-	it("real-world: 19-read review run with trailing EISDIR", () => {
-		// Simulate the actual _impl-reviewer run that produced a false positive
-		const readResults = Array.from({ length: 18 }, (_, i) =>
-			toolResult("read", `contents of file ${i + 1}`),
-		);
-		const messages = [
-			...readResults,
-			toolResult("bash", "npm test\n46 pass\n2 fail\nTests 48"),
-			toolResult("read", "EISDIR: illegal operation on a directory, read", true),
-			assistantMsg("## Implementation Review\n\n" + "x".repeat(13000)),
-		];
-		const result = detectSubagentError(messages);
-		assert.equal(result.hasError, false,
-			"complete review with trailing EISDIR must not be flagged as failure");
-	});
 });

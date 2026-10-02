@@ -87,11 +87,24 @@ test("strict/live JSONL reject non-object roots and invalid UTF-8 inside skipped
 test("output pages preserve Unicode at byte boundaries and do not read the preceding output", (t) => {
 	const file = path.join(temporary(t), "output");
 	fs.writeFileSync(file, "prefix\n🦄日本語\nend");
+	const read = fs.readSync;
+	const reads: Array<{ length: number; position: number | bigint | null }> = [];
+	t.mock.method(fs, "readSync", function(fd, buffer, offset, length, position) {
+		reads.push({ length, position });
+		return read.call(this, fd, buffer, offset, length, position);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 	const first = readOutputPage(file, { offset: 7, length: 5 });
 	assert.equal(first.text, "🦄");
 	const next = readOutputPage(file, { offset: first.nextOffset, length: 9 });
 	assert.equal(next.text, "日本語");
 	assert.equal(readOutputPage(file, { length: 4 }).text, "\nend");
+	assert.deepEqual(reads, [
+		{ length: 5, position: 7 },
+		{ length: 9, position: 11 },
+		{ length: 4, position: 20 },
+	], "each page reads only its requested byte range, never the prefix");
 });
 
 test("a valid ignored individual value larger than Node's string ceiling preserves billing, configuration, baselines and source bytes under a 96 MiB heap", { timeout: 180_000 }, (t) => {

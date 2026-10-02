@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { discoverAgentsAll } from "../../src/agents/agents.ts";
 import { handleCreate } from "../../src/agents/agent-management.ts";
-import { clearSkillCache, discoverAvailableSkills, resolveSkillPath } from "../../src/agents/skills.ts";
+import { discoverAvailableSkills, resolveSkillPath } from "../../src/agents/skills.ts";
 import { loadConfig } from "../../src/extension/config.ts";
 import { loadRunsForAgent, recordRun } from "../../src/runs/shared/run-history.ts";
 import { cleanupAllArtifactDirs } from "../../src/shared/artifacts.ts";
@@ -38,13 +38,11 @@ describe("PI_CODING_AGENT_DIR runtime paths", () => {
 		cwd = path.join(tempDir, "workspace");
 		fs.mkdirSync(cwd, { recursive: true });
 		process.env.PI_CODING_AGENT_DIR = agentDir;
-		clearSkillCache();
 	});
 
 	afterEach(() => {
 		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
-		clearSkillCache();
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -137,7 +135,6 @@ Package skill content.
 			packages: ["file:./packages/env-package"],
 		}, null, 2));
 
-		clearSkillCache();
 		assert.deepEqual(resolveSkillPath("env-skill", cwd), { path: path.join(agentDir, "skills", "env-skill", "SKILL.md"), source: "user" });
 		assert.deepEqual(resolveSkillPath("settings-skill", cwd), { path: path.join(agentDir, "settings-skill.md"), source: "user-settings" });
 		assert.deepEqual(resolveSkillPath("package-skill", cwd), { path: path.join(packageRoot, "skills", "package-skill.md"), source: "user-package" });

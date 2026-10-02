@@ -1,7 +1,7 @@
 import type { AgentConfig } from "../agents/agents.ts";
 import type { ChainStep, SequentialStep } from "./settings.ts";
 import { getStepAgents, isDynamicParallelStep, isParallelStep } from "./settings.ts";
-import { createForkContextResolver, resolveSubagentContext, type ForkContextResolverOptions } from "./fork-context.ts";
+import { createForkContextResolver, resolveSubagentContext } from "./fork-context.ts";
 import { wrapForkTask } from "./types.ts";
 
 export type SubagentExecutionContext = "fresh" | "fork";
@@ -10,7 +10,6 @@ interface ForkableSessionManager {
 	getSessionFile(): string | undefined;
 	getLeafId(): string | null;
 	getSessionDir(): string;
-	openSession?: (path: string, sessionDir?: string) => { createBranchedSession(leafId: string): string | undefined };
 }
 
 export interface SubagentParamsLikeForContext {
@@ -165,12 +164,12 @@ export function wrapChainTasksForAgentContext(
 export function createPerAgentForkContextResolver(
 	sessionManager: ForkableSessionManager,
 	resolveContextForIndex: (index?: number) => SubagentExecutionContext,
-	options: ForkContextResolverOptions & { resolveContextForAgentIndex?: (agentName: string | undefined, index?: number) => SubagentExecutionContext } = {},
+	options: { resolveContextForAgentIndex?: (agentName: string | undefined, index?: number) => SubagentExecutionContext } = {},
 ): { sessionFileForIndex(index?: number): string | undefined; sessionFileForAgentIndex(agentName: string | undefined, index?: number): string | undefined } {
 	let forkResolver: ReturnType<typeof createForkContextResolver> | undefined;
 	const sessionFileForContext = (context: SubagentExecutionContext, index = 0): string | undefined => {
 		if (context !== "fork") return undefined;
-		if (!forkResolver) forkResolver = createForkContextResolver(sessionManager, "fork", options);
+		if (!forkResolver) forkResolver = createForkContextResolver(sessionManager, "fork");
 		return forkResolver.sessionFileForIndex(index);
 	};
 	return {

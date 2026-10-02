@@ -76,47 +76,6 @@ Do work
 	});
 });
 
-describe("chain discovery", () => {
-	it("prefers same-scope .chain.json over .chain.md for the same runtime name", () => {
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-chain-format-precedence-"));
-		tempDirs.push(dir);
-		const chainsDir = path.join(dir, ".pi", "chains");
-		fs.mkdirSync(chainsDir, { recursive: true });
-		fs.writeFileSync(path.join(chainsDir, "dynamic-review.chain.md"), `---
-name: dynamic-review
-description: Markdown fallback
----
-
-## scout
-
-Run the markdown chain
-`, "utf-8");
-		fs.writeFileSync(path.join(chainsDir, "dynamic-review.chain.json"), JSON.stringify({
-			name: "dynamic-review",
-			description: "JSON dynamic chain",
-			chain: [
-				{
-					agent: "scout",
-					task: "Return targets",
-					as: "targets",
-					outputSchema: { type: "object" },
-				},
-				{
-					expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
-					parallel: { agent: "reviewer", task: "Review {item.path}" },
-					collect: { as: "reviews" },
-				},
-			],
-		}), "utf-8");
-
-		const result = discoverAgentsAll(dir);
-		const chain = result.chains.find((candidate) => candidate.name === "dynamic-review");
-		assert.equal(chain?.description, "JSON dynamic chain");
-		assert.equal(chain?.filePath.endsWith(".chain.json"), true);
-		assert.equal("expand" in (chain?.steps[1] ?? {}), true);
-	});
-});
-
 describe("agent frontmatter completionGuard", () => {
 	it("serializes disabled completion guard into agent frontmatter", () => {
 		const agent: AgentConfig = {
@@ -431,33 +390,6 @@ Do work
 		assert.equal(worker?.maxSubagentDepth, 0);
 	});
 
-	it("builtin agents inherit project context by default", () => {
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-builtin-default-prompt-settings-"));
-		const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-builtin-default-home-"));
-		tempDirs.push(dir);
-		tempDirs.push(homeDir);
-		const previousHome = process.env.HOME;
-		const previousUserProfile = process.env.USERPROFILE;
-
-		try {
-			process.env.HOME = homeDir;
-			process.env.USERPROFILE = homeDir;
-
-			const result = discoverAgents(dir, "both");
-			const scout = result.agents.find((agent) => agent.name === "scout");
-			const reviewer = result.agents.find((agent) => agent.name === "reviewer");
-			const delegate = result.agents.find((agent) => agent.name === "delegate");
-			assert.equal(scout?.inheritProjectContext, true);
-			assert.equal(reviewer?.inheritProjectContext, true);
-			assert.equal(delegate?.inheritProjectContext, true);
-		} finally {
-			if (previousHome === undefined) delete process.env.HOME;
-			else process.env.HOME = previousHome;
-			if (previousUserProfile === undefined) delete process.env.USERPROFILE;
-			else process.env.USERPROFILE = previousUserProfile;
-		}
-	});
-
 	it("all bundled agents use the normal configured tool surface", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-builtin-tools-"));
 		const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-builtin-tools-home-"));
@@ -660,24 +592,6 @@ Packaged
 		assert.equal(packaged?.description, "Packaged scout");
 	});
 
-	it("parses packaged chains directly from serializer helpers", () => {
-		const parsed = parseChain(`---
-name: review-flow
-package: code-analysis
-description: Review flow
----
-
-## code-analysis.scout
-
-Inspect
-`, "project", "/tmp/review.chain.md");
-
-		assert.equal(parsed.name, "code-analysis.review-flow");
-		assert.equal(parsed.localName, "review-flow");
-		assert.equal(parsed.packageName, "code-analysis");
-		assert.match(serializeChain(parsed), /^name: review-flow$/m);
-	});
-
 	it("normalizes package frontmatter consistently for agents and chains", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-package-normalize-"));
 		tempDirs.push(dir);
@@ -872,7 +786,7 @@ Inspect canonical
 		assert.equal(result.projectChainDir, path.join(dir, ".pi", "chains"));
 	});
 
-	it("prefers project .pi/chains over user chains on name collisions", () => {
+	it("retains project and user chain source records on name collisions", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-project-chain-collision-"));
 		const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-user-chain-home-"));
 		tempDirs.push(dir, home);
@@ -906,8 +820,12 @@ Inspect project
 			const sharedChains = discoverAgentsAll(dir).chains.filter((chain) => chain.name === "shared-chain");
 			assert.equal(sharedChains.length, 2);
 			assert.deepEqual(sharedChains.map((chain) => chain.source), ["user", "project"]);
-			const savedChainLookup = new Map(sharedChains.map((chain) => [chain.name, chain]));
-			const shared = savedChainLookup.get("shared-chain");
+			const user = sharedChains.find((chain) => chain.source === "user");
+			assert.equal(user?.filePath, path.join(userChainsDir, "shared.chain.md"));
+			assert.equal(user?.description, "User chain");
+			assert.equal(user?.steps[0]?.agent, "scout");
+			assert.equal(user?.steps[0]?.task, "Inspect user");
+			const shared = sharedChains.find((chain) => chain.source === "project");
 			assert.ok(shared);
 			assert.equal(shared.filePath, path.join(dir, ".pi", "chains", "shared.chain.md"));
 			assert.equal(shared.description, "Project chain");

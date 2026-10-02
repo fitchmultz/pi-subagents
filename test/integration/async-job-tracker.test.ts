@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import { randomUUID } from "node:crypto";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createAsyncJobTracker } from "../../src/runs/background/async-job-tracker.ts";
@@ -11,7 +11,7 @@ import { restoreOwnedRuns } from "../../src/runs/shared/run-records.ts";
 import { getRunMetadataDir, saveQuestionOwner, saveRunStatus } from "../../src/runs/shared/supervisor-questions.ts";
 import { resolveAsyncRunLocation } from "../../src/runs/background/async-resume.ts";
 import { createNestedRoute, NESTED_EVENTS_DIR, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
-import { ASYNC_DIR, RESULTS_DIR, SLASH_RESULT_TYPE, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
+import { ASYNC_DIR, POLL_INTERVAL_MS, RESULTS_DIR, SLASH_RESULT_TYPE, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import { buildWidgetLines } from "../../src/tui/render.ts";
 import { createTempDir, removeTempDir } from "../support/helpers.ts";
 
@@ -84,6 +84,7 @@ function createUiContext() {
 }
 
 describe("async job tracker", () => {
+	afterEach(() => fs.rmSync(RESULTS_DIR, { recursive: true, force: true }));
 	it("reads an original-shaped >512 MiB event backlog without losing control cursors or replaying a torn tail", { timeout: 180_000 }, (t) => {
 		t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-subagents-large-owner-feed-"), runDir = path.join(asyncRoot, "large");
@@ -97,20 +98,20 @@ describe("async job tracker", () => {
 		for (let index = 0; index < 8193; index++) fs.writeSync(fd, block);
 		fs.writeSync(fd, '"}]}\n');
 		const boundary = fs.fstatSync(fd).size, tail = notice("after tail");
-		fs.writeSync(fd, tail.slice(0, -2)); fs.closeSync(fd);
+		fs.writeSync(fd, tail.slice(0, -1)); fs.closeSync(fd);
 		fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({ runId: "large", mode: "single", state: "running", pid: process.pid,
 			startedAt: 10_000, steps: [{ agent: "worker", status: "running" }] }));
 		const state = createState(), recorder = createEventRecorder();
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 700 });
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 		try {
 			tracker.resetJobs(createUiContext().ctx as never);
 			tracker.handleStarted({ id: "large", asyncDir: runDir, agent: "worker" });
-			t.mock.timers.tick(700);
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			assert.equal(state.asyncJobs.get("large").controlEventCursor, boundary);
 			assert.deepEqual(recorder.events.map(({ data }) => (data as { event: { message: string } }).event.message), ["before aggregate"]);
-			fs.appendFileSync(file, tail.slice(-2)); t.mock.timers.tick(700);
+			fs.appendFileSync(file, tail.slice(-1)); t.mock.timers.tick(POLL_INTERVAL_MS);
 			assert.equal(state.asyncJobs.get("large").controlEventCursor, fs.statSync(file).size);
-			t.mock.timers.tick(700);
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			assert.deepEqual(recorder.events.map(({ data }) => (data as { event: { message: string } }).event.message), ["before aggregate", "after tail"]);
 		} finally { tracker.resetJobs(); removeTempDir(asyncRoot); }
 	});
@@ -197,15 +198,21 @@ describe("async job tracker", () => {
 		const manager = SessionManager.inMemory("/repo", { id: owner });
 		const state = createState(), ui = createUiContext(), recorder = createEventRecorder();
 		const ctx = { ...ui.ctx, cwd: "/repo", sessionManager: manager };
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, ASYNC_DIR, { pollIntervalMs: 700 });
-		const status = (id: string, sessionId = owner) => ({ runtimeVersion: 2, runId: id, sessionId, mode: "single" as const,
-			state: "running" as const, pid: process.pid, startedAt: Date.now(), steps: [{ agent: "worker", status: "running" as const }] });
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, ASYNC_DIR);
+		const theme = { ...ui.ctx.ui.theme, bold: (text: string) => text };
+		const widgetText = () => {
+			const widget = ui.widgets.at(-1);
+			assert.equal(typeof widget, "function", "selected jobs must install a widget");
+			return (widget as (_tui: unknown, widgetTheme: typeof theme) => { render(width: number): string[] })(undefined, theme).render(120).join("\n");
+		};
+		const status = (id: string, agent: string, sessionId = owner) => ({ runtimeVersion: 2, runId: id, sessionId, mode: "single" as const,
+			state: "running" as const, pid: process.pid, startedAt: Date.now(), steps: [{ agent, status: "running" as const }] });
 		const event = (id: string, ts: number, message: string) => `${JSON.stringify({ type: "subagent.control", channels: ["event"],
 			event: { type: "needs_attention", to: "needs_attention", runId: id, agent: "worker", ts, message } })}\n`;
 		try {
-			saveQuestionOwner(ids[0]!, owner); saveRunStatus(ids[0]!, status(ids[0]!));
+			saveQuestionOwner(ids[0]!, owner); saveRunStatus(ids[0]!, status(ids[0]!, "initial"));
 			saveQuestionOwner(ids[1]!, owner);
-			saveRunStatus(ids[2]!, status(ids[2]!, "unresolved-legacy-path"));
+			saveRunStatus(ids[2]!, status(ids[2]!, "late-owner", "unresolved-legacy-path"));
 			const eventsFile = path.join(getRunMetadataDir(ids[0]!), "events.jsonl");
 			fs.writeFileSync(eventsFile, event(ids[0]!, 9_999, "historical"));
 			const read = fs.readFileSync;
@@ -221,19 +228,29 @@ describe("async job tracker", () => {
 			const restoration = restoreOwnedRuns(state as never, ctx as never);
 			assert.equal(appended, true);
 			tracker.restoreJobs(owner, ctx as never, restoration);
+			const initialWidget = widgetText();
+			assert.match(initialWidget, /\binitial\b/, "initial selected job is visible");
+			assert.doesNotMatch(initialWidget, /late-status|late-owner/, "unpublished jobs are not visible");
 			t.mock.timers.tick(1_999);
 			assert.deepEqual(recorder.events.map(({ data }) => data.event.message), ["during discovery"]);
 			const cursor = state.asyncJobs.get(ids[0]).controlEventCursor;
 			restoreOwnedRuns(state as never, ctx as never, { strict: true });
 			assert.equal(state.asyncJobs.get(ids[0]).controlEventCursor, cursor, "fresh checkpoint evidence must not reset delivery cursors");
-			saveRunStatus(ids[1]!, status(ids[1]!));
+			const rendersBeforePublication = ui.renderRequests;
+			saveRunStatus(ids[1]!, status(ids[1]!, "late-status"));
 			saveQuestionOwner(ids[2]!, owner);
 			fs.writeFileSync(path.join(getRunMetadataDir(ids[1]!), "events.jsonl"), event(ids[1]!, Date.now(), "before late discovery"));
+			t.mock.timers.setTime(12_001);
 			t.mock.timers.tick(101);
 			assert.deepEqual([...state.asyncJobs.keys()].sort(), [...ids].sort());
+			const lateWidget = widgetText();
+			assert.match(lateWidget, /\blate-status\b/, "late status publication must reach the rendered widget");
+			assert.match(lateWidget, /\blate-owner\b/, "late owner publication must reach the rendered widget");
+			assert.match(lateWidget, /\binitial\b/, "late discovery keeps the initial job visible");
+			assert.ok(ui.renderRequests > rendersBeforePublication, "late discovery requests a rerender");
 			assert.deepEqual([...state.ownedRuns.keys()].sort(), [...ids].sort(), "late job discovery also makes the owned handle available");
 			assert.deepEqual(recorder.events.map(({ data }) => data.event.message), ["during discovery", "before late discovery"]);
-			t.mock.timers.tick(700);
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			assert.equal(recorder.events.length, 2, "attention is delivered once across the final grace scan and polling");
 		} finally {
 			t.mock.restoreAll(); syncBuiltinESMExports();
@@ -242,21 +259,22 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("removes completed jobs after retention and requests a rerender", async () => {
+	it("removes completed jobs after retention and requests a rerender", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				completionRetentionMs: 5,
-			});
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-1", asyncDir: path.join(asyncRoot, "run-1"), agent: "worker" });
 			tracker.handleComplete({ id: "run-1", success: true });
 
 			assert.equal(state.asyncJobs.size, 1);
-			await new Promise((resolve) => setTimeout(resolve, 40));
+			t.mock.timers.tick(9_999);
+			assert.equal(state.asyncJobs.size, 1, "completion is retained for the full native window");
+			t.mock.timers.tick(1);
 
 			assert.equal(state.asyncJobs.size, 0);
 			assert.ok(ui.renderRequests > 0, "expected widget cleanup to request a rerender");
@@ -266,15 +284,14 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("keeps paused completion events paused instead of failed", () => {
+	it("keeps paused completion events paused instead of failed", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-paused-complete-");
 		try {
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				completionRetentionMs: 1_000,
-			});
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-paused", asyncDir: path.join(asyncRoot, "run-paused"), agent: "worker" });
 			tracker.handleComplete({ id: "run-paused", success: false, state: "paused", exitCode: 0 });
@@ -286,7 +303,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("restores active jobs for the current session after reload or resume", async () => {
+	it("restores active jobs for the current session after reload or resume", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-restore-");
 		const currentSession = "/sessions/current.jsonl";
 		const writeRun = (id: string, sessionId: string, state: "running" | "complete") => {
@@ -351,18 +369,19 @@ describe("async job tracker", () => {
 		const ui = createUiContext();
 		const recorder = createEventRecorder();
 		let eventsStatAttempts = 0;
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-			pollIntervalMs: 10,
-			kill: () => true,
-			statSync: (file) => {
-				if (String(file).endsWith("events.jsonl") && eventsStatAttempts++ === 0) {
-					const error = new Error("temporarily unavailable") as NodeJS.ErrnoException;
-					error.code = "EACCES";
-					throw error;
-				}
-				return fs.statSync(file);
-			},
+		const stat = fs.statSync;
+		t.mock.method(process, "kill", () => true);
+		t.mock.method(fs, "statSync", function(file, ...args) {
+			if (String(file).endsWith("events.jsonl") && eventsStatAttempts++ === 0) {
+				const error = new Error("temporarily unavailable") as NodeJS.ErrnoException;
+				error.code = "EACCES";
+				throw error;
+			}
+			return Reflect.apply(stat, fs, [file, ...args]);
 		});
+		syncBuiltinESMExports();
+		t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 		const originalError = console.error;
 		console.error = () => {};
 		try {
@@ -381,7 +400,7 @@ describe("async job tracker", () => {
 				channels: ["event"],
 				event: { type: "needs_attention", to: "needs_attention", ts: Date.now() + 1, runId: "run-current", agent: "scout", message: "new" },
 			})}\n`, "utf-8");
-			await new Promise((resolve) => setTimeout(resolve, 30));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			assert.equal(recorder.events.length, 1, "restoration should emit only post-boundary control events");
 			assert.equal((recorder.events[0]?.data as { event?: { message?: string } }).event?.message, "new");
 		} finally {
@@ -400,7 +419,7 @@ describe("async job tracker", () => {
 		const route = createNestedRoute(runId);
 		const nestedRoot = path.join(TEMP_ROOT_DIR, "nested-subagent-runs", runId);
 		const nestedDir = path.join(nestedRoot, "stale-child");
-		const resultsDir = path.join(asyncRoot, "results");
+		const resultsDir = RESULTS_DIR;
 		const writeRun = (id: string, sessionId: string, state: "running" | "queued" | "complete") => {
 			const runDir = path.join(asyncRoot, id);
 			fs.mkdirSync(runDir);
@@ -412,9 +431,8 @@ describe("async job tracker", () => {
 		const state = createState();
 		const ui = createUiContext();
 		const recorder = createEventRecorder();
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-			pollIntervalMs: 1_000, resultsDir, kill: pidGone,
-		});
+		t.mock.method(process, "kill", pidGone);
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 		const readDirectory = t.mock.method(fs, "readdirSync");
 		const listingsOf = (dir: string) => readDirectory.mock.calls.filter((call) => String(call.arguments[0]) === dir).length;
 		syncBuiltinESMExports();
@@ -464,7 +482,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("rejects malformed status updates before they reach restored widget state", async () => {
+	it("rejects malformed status updates before they reach restored widget state", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-restore-invalid-update-");
 		const runDir = path.join(asyncRoot, "run-current");
 		const statusPath = path.join(runDir, "status.json");
@@ -481,7 +500,7 @@ describe("async job tracker", () => {
 		const state = createState();
 		const ui = createUiContext();
 		const recorder = createEventRecorder();
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 10 });
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 		const originalError = console.error;
 		console.error = () => {};
 		try {
@@ -490,48 +509,12 @@ describe("async job tracker", () => {
 				...status,
 				steps: [{ agent: "worker", status: "failed", error: { message: "not a string" } }],
 			}), "utf-8");
-			await new Promise((resolve) => setTimeout(resolve, 30));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			const job = state.asyncJobs.get("run-current");
 			assert.equal(job?.status, "failed");
 			assert.equal(job?.steps?.[0]?.error, undefined);
 		} finally {
 			console.error = originalError;
-			tracker.resetJobs();
-			if (state.poller) clearInterval(state.poller);
-			removeTempDir(asyncRoot);
-		}
-	});
-
-	it("discovers a runner whose initial status appears after restoration", async () => {
-		const asyncRoot = createTempDir("pi-async-job-restore-delayed-");
-		const runDir = path.join(asyncRoot, "run-delayed");
-		fs.mkdirSync(runDir);
-		const state = createState();
-		const ui = createUiContext();
-		const recorder = createEventRecorder();
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 10 });
-		try {
-			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
-			assert.equal(state.asyncJobs.size, 0);
-			assert.notEqual(state.poller, null);
-
-			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
-				runId: "run-delayed",
-				sessionId: "/sessions/current.jsonl",
-				mode: "single",
-				state: "running",
-				startedAt: Date.now(),
-				lastUpdate: Date.now(),
-				steps: [{ agent: "worker", status: "running" }],
-			}), "utf-8");
-
-			const deadline = Date.now() + 200;
-			while (!state.asyncJobs.has("run-delayed") && Date.now() < deadline) {
-				await new Promise((resolve) => setTimeout(resolve, 10));
-			}
-			assert.equal(state.asyncJobs.has("run-delayed"), true);
-			assert.notEqual(ui.widgets.at(-1), undefined);
-		} finally {
 			tracker.resetJobs();
 			if (state.poller) clearInterval(state.poller);
 			removeTempDir(asyncRoot);
@@ -546,12 +529,12 @@ describe("async job tracker", () => {
 		const status = { runId: path.basename(runDir), mode: "single", state: "running", startedAt: Date.now(), steps: [] };
 		fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify(status));
 		const state = createState(), ui = createUiContext(), recorder = createEventRecorder();
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 700 });
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 		try {
 			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
 			assert.equal(state.asyncJobs.size, 0, "missing identity is not a matching undefined UUID alias");
 			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({ ...status, sessionId: "/sessions/current.jsonl" }));
-			t.mock.timers.tick(700);
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			assert.equal(state.asyncJobs.has(status.runId), true);
 		} finally {
 			tracker.resetJobs(); if (state.poller) clearInterval(state.poller);
@@ -565,7 +548,7 @@ describe("async job tracker", () => {
 		const state = createState();
 		const ui = createUiContext();
 		const recorder = createEventRecorder();
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 250 });
+		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 		try {
 			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
 			t.mock.timers.tick(2_000);
@@ -577,36 +560,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("performs a final discovery when the first post-deadline poll runs late", (t) => {
-		t.mock.timers.enable({ apis: ["setInterval", "Date"] });
-		const asyncRoot = createTempDir("pi-async-job-restore-final-scan-");
-		const runDir = path.join(asyncRoot, "run-late-tick");
-		fs.mkdirSync(runDir);
-		const state = createState();
-		const ui = createUiContext();
-		const recorder = createEventRecorder();
-		const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 700 });
-		try {
-			tracker.restoreJobs("/sessions/current.jsonl", ui.ctx as never);
-			t.mock.timers.tick(1_999);
-			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
-				runId: "run-late-tick",
-				sessionId: "/sessions/current.jsonl",
-				mode: "single",
-				state: "running",
-				startedAt: Date.now(),
-				steps: [{ agent: "worker", status: "running" }],
-			}), "utf-8");
-			t.mock.timers.tick(101);
-			assert.equal(state.asyncJobs.has("run-late-tick"), true);
-		} finally {
-			tracker.resetJobs();
-			if (state.poller) clearInterval(state.poller);
-			removeTempDir(asyncRoot);
-		}
-	});
-
-	it("uses flattened async-start agents for initial parallel group widget state", () => {
+	it("uses flattened async-start agents for initial parallel group widget state", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const state = createState();
@@ -634,7 +589,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("adds flat step indexes to polled active parallel group steps", async () => {
+	it("adds flat step indexes to polled active parallel group steps", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const runDir = path.join(asyncRoot, "run-chain");
@@ -666,13 +622,11 @@ describe("async job tracker", () => {
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				pollIntervalMs: 10,
-			});
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-chain", asyncDir: runDir, mode: "chain", agents: ["scout", "reviewer", "auditor", "writer"] });
 
-			await new Promise((resolve) => setTimeout(resolve, 50));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 
 			const job = state.asyncJobs.get("run-chain");
 			assert.deepEqual(job?.steps?.map((step: { index?: number }) => step.index), [1, 2]);
@@ -686,7 +640,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("rerenders changed polled status but not unchanged bookkeeping", async () => {
+	it("rerenders changed polled status but not unchanged bookkeeping", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const runDir = path.join(asyncRoot, "run-unchanged");
@@ -705,14 +660,12 @@ describe("async job tracker", () => {
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				pollIntervalMs: 10,
-			});
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-unchanged", asyncDir: runDir, agent: "worker" });
 
 			const requestsAfterStart = ui.renderRequests;
-			await new Promise((resolve) => setTimeout(resolve, 35));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			assert.ok(ui.renderRequests > requestsAfterStart, "first status load should redraw the widget");
 
 			const requestsAfterStatusLoaded = ui.renderRequests;
@@ -728,19 +681,20 @@ describe("async job tracker", () => {
 					message: "worker needs attention",
 				},
 			})}\n`, "utf-8");
-			await new Promise((resolve) => setTimeout(resolve, 40));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			assert.equal(recorder.events.some((event) => event.channel === "subagent:control-event"), true);
 			assert.equal(ui.renderRequests, requestsAfterStatusLoaded, "unchanged status and control cursors should not request widget redraws");
 
 			writeStatus(3000, 1);
-			await new Promise((resolve) => setTimeout(resolve, 40));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			assert.ok(ui.renderRequests > requestsAfterStatusLoaded, "changed non-terminal status should redraw the widget");
 		} finally {
 			removeTempDir(asyncRoot);
 		}
 	});
 
-	it("schedules cleanup when polling observes a completed status without a completion event", async () => {
+	it("schedules cleanup when polling observes a completed status without a completion event", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const runDir = path.join(asyncRoot, "run-2");
@@ -757,17 +711,13 @@ describe("async job tracker", () => {
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				completionRetentionMs: 5,
-				pollIntervalMs: 10,
-			});
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-2", asyncDir: runDir, agent: "worker" });
 
-			// Loaded CI runners can miss a fixed 80ms window for a 10ms poll plus 5ms retention.
-			for (const deadline = Date.now() + 2000; state.asyncJobs.size > 0 && Date.now() < deadline;) {
-				await new Promise((resolve) => setTimeout(resolve, 10));
-			}
+			t.mock.timers.tick(POLL_INTERVAL_MS);
+			assert.equal(state.cleanupTimers.has("run-2"), true, "terminal status schedules native cleanup");
+			t.mock.timers.tick(10_000);
 
 			assert.equal(state.asyncJobs.size, 0);
 			assert.ok(ui.renderRequests > 0, "expected polling cleanup to request a rerender");
@@ -781,7 +731,7 @@ describe("async job tracker", () => {
 		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-stale-");
 		try {
-			const resultsDir = path.join(asyncRoot, "results");
+			const resultsDir = RESULTS_DIR;
 			const runDir = path.join(asyncRoot, "run-stale");
 			fs.mkdirSync(runDir, { recursive: true });
 			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
@@ -797,21 +747,16 @@ describe("async job tracker", () => {
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				completionRetentionMs: 5,
-				pollIntervalMs: 10,
-				resultsDir,
-				kill: pidGone,
-				now: () => Date.now(),
-			});
+			t.mock.method(process, "kill", pidGone);
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-stale", asyncDir: runDir, agent: "worker" });
 
-			t.mock.timers.tick(10);
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			assert.equal(state.asyncJobs.get("run-stale")?.status, "failed");
 			assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "status.json"), "utf-8")).state, "failed");
 			assert.equal(JSON.parse(fs.readFileSync(path.join(resultsDir, "run-stale.json"), "utf-8")).success, false);
-			t.mock.timers.tick(5);
+			t.mock.timers.tick(10_000);
 			assert.equal(state.asyncJobs.size, 0);
 			assert.ok(ui.renderRequests > 0, "expected stale repair cleanup to request a rerender");
 		} finally {
@@ -819,21 +764,17 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("repairs started jobs whose runner dies before writing status", async () => {
+	it("repairs started jobs whose runner dies before writing status", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-no-status-");
 		try {
-			const resultsDir = path.join(asyncRoot, "results");
+			const resultsDir = RESULTS_DIR;
 			const runDir = path.join(asyncRoot, "run-no-status");
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				completionRetentionMs: 5,
-				pollIntervalMs: 10,
-				resultsDir,
-				kill: pidGone,
-				now: () => Date.now() + 2000,
-			});
+			t.mock.method(process, "kill", pidGone);
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({
 				id: "run-no-status",
@@ -846,7 +787,8 @@ describe("async job tracker", () => {
 				parallelGroups: [{ start: 0, count: 3, stepIndex: 0 }],
 			});
 
-			await new Promise((resolve) => setTimeout(resolve, 80));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
+			t.mock.timers.tick(10_000);
 
 			assert.equal(state.asyncJobs.size, 0);
 			const status = JSON.parse(fs.readFileSync(path.join(runDir, "status.json"), "utf-8"));
@@ -870,7 +812,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("cleans up jobs when status polling hits a terminal read error", async () => {
+	it("cleans up jobs when status polling hits a terminal read error", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-bad-status-");
 		try {
 			const runDir = path.join(asyncRoot, "run-bad-status");
@@ -879,14 +822,12 @@ describe("async job tracker", () => {
 			const state = createState();
 			const ui = createUiContext();
 			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				completionRetentionMs: 5,
-				pollIntervalMs: 10,
-			});
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-bad-status", asyncDir: runDir, agent: "worker" });
 
-			await new Promise((resolve) => setTimeout(resolve, 80));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
+			t.mock.timers.tick(10_000);
 
 			assert.equal(state.asyncJobs.size, 0);
 			assert.ok(ui.renderRequests > 0, "expected malformed status cleanup to request a rerender");
@@ -895,7 +836,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("does not clean up a status-read failure while nested descendants are live", async () => {
+	it("does not clean up a status-read failure while nested descendants are live", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-bad-status-nested-");
 		let tracker: ReturnType<typeof createAsyncJobTracker> | undefined;
 		const originalError = console.error;
@@ -906,10 +848,7 @@ describe("async job tracker", () => {
 			fs.writeFileSync(path.join(runDir, "status.json"), "{", "utf-8");
 			const state = createState();
 			const recorder = createEventRecorder();
-			tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				completionRetentionMs: 5,
-				pollIntervalMs: 10,
-			});
+			tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.handleStarted({ id: "run-bad-status-nested", asyncDir: runDir, agent: "worker" });
 			const job = state.asyncJobs.get("run-bad-status-nested");
 			assert.ok(job);
@@ -922,7 +861,8 @@ describe("async job tracker", () => {
 				agent: "nested-worker",
 			}];
 
-			await new Promise((resolve) => setTimeout(resolve, 80));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
+			t.mock.timers.tick(10_000);
 
 			assert.equal(state.asyncJobs.has("run-bad-status-nested"), true);
 			assert.equal(state.asyncJobs.get("run-bad-status-nested")?.status, "failed");
@@ -934,7 +874,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("keeps root jobs running when nested refresh fails during polling", async () => {
+	it("keeps root jobs running when nested refresh fails during polling", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-nested-refresh-um");
 		let tracker: ReturnType<typeof createAsyncJobTracker> | undefined;
 		const originalError = console.error;
@@ -953,10 +894,7 @@ describe("async job tracker", () => {
 
 			const state = createState();
 			const recorder = createEventRecorder();
-			tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				completionRetentionMs: 5,
-				pollIntervalMs: 10,
-			});
+			tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.handleStarted({
 				id: "run-nested-refresh",
 				asyncDir: runDir,
@@ -969,7 +907,7 @@ describe("async job tracker", () => {
 				},
 			});
 
-			await new Promise((resolve) => setTimeout(resolve, 50));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 
 			assert.equal(state.asyncJobs.get("run-nested-refresh")?.status, "running");
 			assert.equal(state.cleanupTimers.has("run-nested-refresh"), false);
@@ -980,7 +918,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("cancels cleanup timers when polling observes a non-terminal status", async () => {
+	it("cancels cleanup timers when polling observes a non-terminal status", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-cleanup-cancel-");
 		let tracker: ReturnType<typeof createAsyncJobTracker> | undefined;
 		try {
@@ -988,10 +927,7 @@ describe("async job tracker", () => {
 			fs.mkdirSync(runDir, { recursive: true });
 			const state = createState();
 			const recorder = createEventRecorder();
-			tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				completionRetentionMs: 1_000,
-				pollIntervalMs: 10,
-			});
+			tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.handleStarted({ id: "run-recovered", asyncDir: runDir, agent: "worker" });
 			tracker.handleComplete({ id: "run-recovered", success: true });
 			assert.equal(state.cleanupTimers.has("run-recovered"), true);
@@ -1005,10 +941,8 @@ describe("async job tracker", () => {
 				steps: [{ agent: "worker", status: "running" }],
 			}), "utf-8");
 
-			const deadline = Date.now() + 200;
-			while (Date.now() < deadline && state.cleanupTimers.has("run-recovered")) {
-				await new Promise((resolve) => setTimeout(resolve, 20));
-			}
+			t.mock.timers.tick(POLL_INTERVAL_MS);
+			t.mock.timers.tick(10_000);
 
 			assert.equal(state.cleanupTimers.has("run-recovered"), false);
 			assert.equal(state.asyncJobs.get("run-recovered")?.status, "running");
@@ -1018,53 +952,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("keeps incomplete async control event lines for the next poll", async () => {
-		const asyncRoot = createTempDir("pi-async-job-tracker-");
-		try {
-			const runDir = path.join(asyncRoot, "run-partial");
-			fs.mkdirSync(runDir, { recursive: true });
-			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
-				runId: "run-partial",
-				mode: "single",
-				state: "running",
-				startedAt: Date.now() - 1000,
-				lastUpdate: Date.now(),
-				steps: [{ agent: "worker", status: "running" }],
-			}), "utf-8");
-			const eventPath = path.join(runDir, "events.jsonl");
-			const partialRecord = JSON.stringify({
-				type: "subagent.control",
-				channels: ["event"],
-				event: {
-					type: "needs_attention",
-					to: "needs_attention",
-					ts: 123,
-					runId: "run-partial",
-					agent: "worker",
-					message: "worker needs attention",
-				},
-			});
-			fs.writeFileSync(eventPath, partialRecord, "utf-8");
-
-			const state = createState();
-			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				pollIntervalMs: 10,
-			});
-			tracker.handleStarted({ id: "run-partial", asyncDir: runDir, agent: "worker" });
-
-			await new Promise((resolve) => setTimeout(resolve, 30));
-			assert.equal(recorder.events.length, 0);
-
-			fs.appendFileSync(eventPath, "\n", "utf-8");
-			await new Promise((resolve) => setTimeout(resolve, 30));
-			assert.equal(recorder.events.some((event) => event.channel === "subagent:control-event"), true);
-		} finally {
-			removeTempDir(asyncRoot);
-		}
-	});
-
-	it("clears transient current tool fields when status clears them", async () => {
+	it("clears transient current tool fields when status clears them", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const runDir = path.join(asyncRoot, "run-clear-tool");
@@ -1083,12 +972,10 @@ describe("async job tracker", () => {
 
 			const state = createState();
 			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				pollIntervalMs: 10,
-			});
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.handleStarted({ id: "run-clear-tool", asyncDir: runDir, agent: "worker" });
 
-			await new Promise((resolve) => setTimeout(resolve, 30));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			let job = state.asyncJobs.get("run-clear-tool");
 			assert.equal(job?.currentTool, "edit");
 			assert.equal(job?.currentPath, "src/runs/background/subagent-runner.ts");
@@ -1102,7 +989,7 @@ describe("async job tracker", () => {
 				steps: [{ agent: "worker", status: "running" }],
 			}), "utf-8");
 
-			await new Promise((resolve) => setTimeout(resolve, 30));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			job = state.asyncJobs.get("run-clear-tool");
 			assert.equal(job?.currentTool, undefined);
 			assert.equal(job?.currentToolStartedAt, undefined);
@@ -1112,7 +999,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("honors async control notification channels", async () => {
+	it("honors async control notification channels", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const runDir = path.join(asyncRoot, "run-channels");
@@ -1141,12 +1029,10 @@ describe("async job tracker", () => {
 
 			const state = createState();
 			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				pollIntervalMs: 10,
-			});
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.handleStarted({ id: "run-channels", asyncDir: runDir, agent: "worker" });
 
-			await new Promise((resolve) => setTimeout(resolve, 30));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			assert.equal(recorder.events.some((event) => event.channel === "subagent:control-event"), false);
 			assert.equal(recorder.events.some((event) => event.channel === "subagent:control-intercom"), true);
 		} finally {
@@ -1154,7 +1040,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("ignores stale removed async control event types", async () => {
+	it("ignores stale removed async control event types", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const runDir = path.join(asyncRoot, "run-stale-active");
@@ -1183,12 +1070,10 @@ describe("async job tracker", () => {
 
 			const state = createState();
 			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				pollIntervalMs: 10,
-			});
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.handleStarted({ id: "run-stale-active", asyncDir: runDir, agent: "worker" });
 
-			await new Promise((resolve) => setTimeout(resolve, 30));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 			assert.equal(recorder.events.some((event) => event.channel === "subagent:control-event"), false);
 			assert.equal(recorder.events.some((event) => event.channel === "subagent:control-intercom"), false);
 		} finally {
@@ -1196,7 +1081,8 @@ describe("async job tracker", () => {
 		}
 	});
 
-	it("bridges async control events from events.jsonl to the parent event bus", async () => {
+	it("bridges async control events from events.jsonl to the parent event bus", (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: 10_000 });
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const runDir = path.join(asyncRoot, "run-3");
@@ -1228,12 +1114,10 @@ describe("async job tracker", () => {
 
 			const state = createState();
 			const recorder = createEventRecorder();
-			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
-				pollIntervalMs: 10,
-			});
+			const tracker = createAsyncJobTracker(recorder.pi, state as never, asyncRoot);
 			tracker.handleStarted({ id: "run-3", asyncDir: runDir, agent: "worker" });
 
-			await new Promise((resolve) => setTimeout(resolve, 40));
+			t.mock.timers.tick(POLL_INTERVAL_MS);
 
 			const controlEvent = recorder.events.find((event) => event.channel === "subagent:control-event");
 			assert.ok(controlEvent);

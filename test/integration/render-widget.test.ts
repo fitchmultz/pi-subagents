@@ -589,7 +589,8 @@ describe("subagent async widget rendering", () => {
 		);
 	});
 
-	it("keeps running widget output stable when progress seed is unchanged", async () => {
+	it("keeps running widget output stable when progress seed is unchanged", (t) => {
+		t.mock.timers.enable({ apis: ["Date"], now: 10_000 });
 		const job = {
 			asyncId: "run-stable",
 			asyncDir: "/tmp/run",
@@ -602,33 +603,35 @@ describe("subagent async widget rendering", () => {
 			lastActivityAt: 2_500,
 		};
 		const first = buildWidgetLines([job], theme, 120);
-		await new Promise((resolve) => setTimeout(resolve, 120));
+		t.mock.timers.tick(120);
 		const second = buildWidgetLines([job], theme, 120);
 
 		assert.deepEqual(second, first);
 		assert.equal(firstGrapheme(first[1] ?? ""), firstGrapheme(second[1] ?? ""));
 	});
 
-	it("does not animate queued-only widgets", async () => {
+	it("does not animate queued-only widgets", (t) => {
+		t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
 		const ui = createUiContext();
 		renderWidget(ui.ctx as never, [{ asyncId: "queued-only", asyncDir: "/tmp/queued", status: "queued", agents: ["planner"] }]);
 		const initialWidgetCount = ui.widgets.length;
-		await new Promise((resolve) => setTimeout(resolve, 190));
+		t.mock.timers.tick(190);
 		assert.equal(ui.widgets.length, initialWidgetCount, "static queued widget should not refresh at animation cadence");
 		assert.equal(ui.renderRequests, 0);
 	});
 
-	it("does not refresh running widgets at animation cadence", async () => {
+	it("does not refresh running widgets at animation cadence", (t) => {
+		t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
 		const ui = createUiContext();
 		renderWidget(ui.ctx as never, [{ asyncId: "run-static", asyncDir: "/tmp/run", status: "running", agents: ["scout"] }]);
 		const initialWidgetCount = ui.widgets.length;
-		await new Promise((resolve) => setTimeout(resolve, 190));
+		t.mock.timers.tick(190);
 		assert.equal(ui.widgets.length, initialWidgetCount, "running widget should wait for status updates instead of animation ticks");
 		assert.equal(ui.renderRequests, 0);
 
 		renderWidget(ui.ctx as never, []);
 		const afterClearCount = ui.widgets.length;
-		await new Promise((resolve) => setTimeout(resolve, 190));
+		t.mock.timers.tick(190);
 		assert.equal(ui.widgets.length, afterClearCount, "cleared widget should stay quiet");
 		assert.equal(ui.widgets.at(-1), undefined);
 	});

@@ -371,11 +371,13 @@ test("native steer reaches the next tool boundary, queue waits, and busy passive
   t.diagnostic("steer before next response; follow-up after current work; 3 visible once; no replay/passive turn.");
 });
 
-for (const { count, reload } of [{ count: 2 }, { count: 101 }, { count: 101, reload: true }]) test(`native clearQueue plus abort recovers ${count} messages once${reload ? " across an in-flight reload" : " without replaying appended followers"}`, async (t) => {
+for (const { count, reload, repeat } of [{ count: 2, repeat: true }, { count: 101 }, { count: 101, reload: true }]) test(`native clearQueue plus abort recovers ${count} messages once${reload ? " across an in-flight reload" : repeat ? " through a second abort" : " without replaying appended followers"}`, async (t) => {
   const responseGate = gate(t);
+  const secondResponseGate = gate(t);
   const receiver = await makeSession(t, `cleared-abort-${count}${reload ? "-reload" : ""}`);
   receiver.faux.setResponses([
     async () => { await responseGate.promise; return fauxAssistantMessage("Cancelled response"); },
+    ...(repeat ? [async () => { await secondResponseGate.promise; return fauxAssistantMessage("Cancelled recovery response"); }] : []),
     fauxAssistantMessage("Recovered all messages"),
   ]);
   const running = receiver.session.prompt("Start abortable work");
@@ -395,6 +397,17 @@ for (const { count, reload } of [{ count: 2 }, { count: 101 }, { count: 101, rel
   }));
   receiver.session.agent.abort();
   responseGate.resolve();
+  if (repeat) {
+    await waitFor(() => receiver.faux.state.callCount === 2, "held native recovery request");
+    for (const id of receiver.sends) assert.equal(receiver.visible(id).length, 1, "the first batch is consumed before later directions");
+    for (let index = 0; index < count; index++) await receiver.send(`second-abort-${index}`);
+    await waitFor(async () => (await receiver.status()).includes(`Pending inbound messages: ${count}`), "new directions during recovery");
+    assert.equal(receiver.session.agent.hasQueuedMessages(), true, "the second abort clears actual unconsumed native work");
+    for (let index = 0; index < count; index++) assert.equal(receiver.visible(`second-abort-${index}`).length, 0);
+    receiver.session.clearQueue();
+    receiver.session.agent.abort();
+    secondResponseGate.resolve();
+  }
   const receiptsAtInput: number[] = [];
   let servicingInput = true, input: NodeJS.Immediate;
   const serviceInput = () => {
@@ -408,14 +421,15 @@ for (const { count, reload } of [{ count: 2 }, { count: 101 }, { count: 101, rel
     await waitFor(() => !!reloading, "reload during recovery");
     await reloading;
   }
-  await waitFor(() => receiver.settled() >= 2 && receiver.session.isIdle, "recovery settlement");
+  const expectedRequests = repeat ? 3 : 2;
+  await waitFor(() => receiver.settled() >= expectedRequests && receiver.session.isIdle, "recovery settlement");
   for (const id of receiver.sends) assert.equal(receiver.visible(id).length, 1, id);
   if (count === 101) assert.ok(receiptsAtInput.some((received) => received > 0 && received < count - 1), "input must run before the recovery followers finish appending");
-  assert.equal(receiver.faux.state.callCount, 2);
-  assert.equal(receiver.settled(), 2);
+  assert.equal(receiver.faux.state.callCount, expectedRequests);
+  assert.equal(receiver.settled(), expectedRequests);
   assert.match(await receiver.status(), /Pending inbound messages: 0/);
   assert.deepEqual(receiver.errors, []);
-  t.diagnostic(`${count} sends, ${count} visible once; 1 aborted request + 1 recovery request; appended batch followers are not replayed.`);
+  t.diagnostic(`${receiver.sends.length} sends visible once; ${expectedRequests - 1} aborted requests + 1 recovery request; consumed batch followers are not replayed.`);
 });
 
 test("native abort during restored busy handoff recovers cleared steers once", async (t) => {
@@ -564,9 +578,8 @@ test("native ordinary steer bursts do not retain unanswered attention handshakes
     for (let index = 0; index < 12; index++) await receiver.send(`burst-${index}`);
     await waitFor(async () => (await receiver.status()).includes("Pending inbound messages: 12"), "all native handoffs");
     const retained = active;
-    await sleep(550);
-    receiver.events.push({ type: "fixture.attention-handshakes", peak, retained, afterTimeout: active });
-    t.diagnostic(`Attention response listeners: peak=${peak}, after handoff=${retained}, after timeout=${active}.`);
+    receiver.events.push({ type: "fixture.attention-handshakes", peak, retained });
+    t.diagnostic(`Attention response listeners: peak=${peak}, after handoff=${retained}.`);
     assert.equal(retained, 0, "without an owned wait, ordinary attention needs no outstanding response listener");
   } finally { responseGate.resolve(); await running; }
   for (const id of receiver.sends) assert.equal(receiver.visible(id).length, 1);
@@ -604,10 +617,10 @@ test("native abort retaining custom queues does not enqueue a second copy", asyn
   t.diagnostic("retained native queues survive reload; next prompt delivers both once, without a recovery-only turn.");
 });
 
-test("native idle multi-ask batch keeps the selected first ask as the default reply target", async (t) => {
+for (const recovery of [false, true]) test(`native ${recovery ? "recovered plain/ask" : "idle passive/plain/multi-ask"} batch keeps the selected ask as the default reply target`, async (t) => {
   const hold = gate(t);
-  let started = false;
-  const receiver = await makeSession(t, "ask-batch-priority", { hasUI: true, configure(pi) {
+  let started = false, replyContext = "";
+  const receiver = await makeSession(t, `ask-batch-priority-${recovery ? "recovery" : "idle"}`, { hasUI: true, configure(pi) {
     pi.registerTool({ name: "hold", label: "Hold", description: "Fixture gate", parameters: Type.Object({}), async execute() {
       started = true;
       await hold.promise;
@@ -615,33 +628,50 @@ test("native idle multi-ask batch keeps the selected first ask as the default re
     } });
   } });
   const replies: string[] = [];
-  receiver.sender.on("message", (_from, message) => { if (message.replyTo) replies.push(message.replyTo); });
+  receiver.sender.on("message", (_from, message) => { if (message.replyTo && message.content.text === "Answer the selected first ask") replies.push(message.replyTo); });
   receiver.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("hold", {}), { stopReason: "toolUse" }),
-    fauxAssistantMessage("Current work finished"),
-    fauxAssistantMessage(fauxToolCall("intercom", { action: "reply", message: "Answer the selected first ask" }), { stopReason: "toolUse" }),
+    ...(recovery ? [] : [fauxAssistantMessage("Current work finished")]),
+    (context: unknown) => {
+      replyContext = JSON.stringify(context);
+      return fauxAssistantMessage(fauxToolCall("intercom", { action: "reply", message: "Answer the selected first ask" }), { stopReason: "toolUse" });
+    },
     fauxAssistantMessage("Answer sent"),
   ]);
   const running = receiver.session.prompt("Hold before the ask batch");
   await waitFor(() => started, "busy native tool");
-  for (const id of ["first-ask", "second-ask"]) {
-    await receiver.send(id, { text: `Question ${id}`, expectsReply: true });
+  if (!recovery) await receiver.send("passive-first", { text: "Passive breadcrumb.", delivery: "passive" });
+  await receiver.send("plain-before-ask", { text: "Plain leftover.", delivery: recovery ? "steer" : "queue",
+    ...(!recovery ? { queueMode: "replace", threadId: "plain-thread" } : {}) });
+  for (const id of recovery ? ["first-ask"] : ["first-ask", "second-ask"]) {
+    await receiver.send(id, { text: `Question ${id}`, expectsReply: true, ...(recovery ? { delivery: "steer" } : {}) });
     await waitFor(async () => (await receiver.status()).includes(`Question ${id}`), "staged ask");
+  }
+  if (recovery) {
+    assert.equal(receiver.session.agent.hasQueuedMessages(), true);
+    receiver.session.clearQueue();
+    receiver.session.agent.abort();
   }
   hold.resolve();
   await running;
-  await waitFor(() => receiver.settled() === 2 && receiver.session.isIdle && replies.length === 1, "default reply delivery");
+  await waitFor(() => receiver.session.isIdle && replies.length === 1, "default reply delivery");
+  if (!recovery) assert.match(replyContext, /Passive breadcrumb/);
+  assert.match(replyContext, /Plain leftover/);
+  assert.match(replyContext, /Question first-ask/);
+  const ids = receiver.session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message").map(inboundId);
+  if (!recovery) assert.ok(ids.indexOf("passive-first") < ids.indexOf("first-ask"), "passive publication precedes the selected ask");
+  assert.ok(ids.indexOf("plain-before-ask") < ids.indexOf("first-ask"), "plain follower publication precedes the selected ask");
   assert.deepEqual(replies, ["first-ask"], "trigger-last must not switch the implicit reply to a follower ask");
   const intercom = receiver.session.agent.state.tools.find((tool: { name: string }) => tool.name === "intercom");
   const pending = await intercom.execute("remaining-ask", { action: "pending" }, new AbortController().signal);
-  assert.match(JSON.stringify(pending), /second-ask/);
+  if (!recovery) assert.match(JSON.stringify(pending), /second-ask/);
   assert.doesNotMatch(JSON.stringify(pending), /first-ask/);
   for (const id of receiver.sends) assert.equal(receiver.visible(id).length, 1, id);
-  assert.equal(receiver.faux.state.callCount, 4);
+  assert.equal(receiver.faux.state.callCount, recovery ? 3 : 4);
   assert.match(await receiver.status(), /Pending inbound messages: 0/);
   assert.deepEqual(receiver.errors, []);
   receiver.events.push({ type: "fixture.default_reply", replies });
-  t.diagnostic("Two queued asks append once in one delivery run; the real intercom reply tool targets the originally selected first ask.");
+  t.diagnostic("Actual provider context sees followers before the real intercom reply targets the selected ask; passive and multi-ask idle ordering stay distinct from abort recovery.");
 });
 
 test("native concurrent asks reserve one reply waiter after a completed ask", async (t) => {

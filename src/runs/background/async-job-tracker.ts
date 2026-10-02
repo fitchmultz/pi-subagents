@@ -25,12 +25,6 @@ import type { OwnedRunRestoration } from "../shared/run-records.ts";
 
 interface AsyncJobTrackerOptions {
 	render?: (ctx: ExtensionContext, jobs: AsyncJobState[]) => void;
-	completionRetentionMs?: number;
-	pollIntervalMs?: number;
-	resultsDir?: string;
-	statSync?: typeof fs.statSync;
-	kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
-	now?: () => number;
 }
 
 export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: SubagentState, asyncDirRoot: string, options: AsyncJobTrackerOptions = {}): {
@@ -40,9 +34,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	restoreJobs: (sessionId: string, ctx: ExtensionContext, restoration?: OwnedRunRestoration) => void;
 	resetJobs: (ctx?: ExtensionContext) => void;
 } {
-	const completionRetentionMs = options.completionRetentionMs ?? 10000;
-	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
-	const resultsDir = options.resultsDir ?? RESULTS_DIR;
+	const resultsDir = RESULTS_DIR;
 	let restoreDiscovery: (() => AsyncRunRecord[]) | undefined;
 	let restoreBoundary = 0;
 	let restoreDiscoveryDeadline = 0;
@@ -65,13 +57,13 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			if (state.lastUiContext) {
 				rerenderWidget(state.lastUiContext);
 			}
-		}, completionRetentionMs);
+		}, 10000);
 		state.cleanupTimers.set(asyncId, timer);
 	};
 	const emitNewControlEvents = (job: AsyncJobState) => {
 		const eventsPath = path.join(job.asyncDir, "events.jsonl");
 		try {
-			const stat = (options.statSync ?? fs.statSync)(eventsPath);
+			const stat = fs.statSync(eventsPath);
 			const identity = `${stat.dev}:${stat.ino}`;
 			if (job.controlEventIdentity !== identity || stat.size < (job.controlEventCursor ?? 0)) job.controlEventCursor = 0;
 			job.controlEventIdentity = identity;
@@ -99,7 +91,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 
 	const refreshNestedJob = (job: AsyncJobState) => {
 		if (!job.nestedRoute) return;
-		job.nestedChildren = reconcileNestedAsyncDescendants(job.nestedRoute, { resultsDir, kill: options.kill, now: options.now });
+		job.nestedChildren = reconcileNestedAsyncDescendants(job.nestedRoute, { resultsDir });
 		attachRootChildrenToSteps(job.asyncId, job.steps, job.nestedChildren);
 	};
 
@@ -147,8 +139,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 					refreshNestedProjection();
 					const reconciliation = restoredByDir.get(job.asyncDir) ?? reconcileAsyncRun(job.asyncDir, {
 						resultsDir,
-						kill: options.kill,
-						now: options.now,
 						startedRun: {
 							runId: job.asyncId,
 							pid: job.pid,
@@ -224,7 +214,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			}
 
 			if (widgetChanged && state.lastUiContext && isTuiContext(state.lastUiContext)) rerenderWidget(state.lastUiContext);
-		}, pollIntervalMs);
+		}, POLL_INTERVAL_MS);
 		state.poller.unref?.();
 	};
 
@@ -291,8 +281,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			states: ["queued", "running"],
 			records,
 			resultsDir,
-			kill: options.kill,
-			now: options.now,
 			skipInvalid: true,
 		})) {
 			if (state.asyncJobs.has(run.id)) continue;
@@ -308,7 +296,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			// Shared discovery has already started. An EOF observed now could swallow
 			// attention appended during it; late publications use the same original cut.
 			if (!sinceBoundary) try {
-				controlEventCursor = (options.statSync ?? fs.statSync)(path.join(run.asyncDir, "events.jsonl")).size;
+				controlEventCursor = fs.statSync(path.join(run.asyncDir, "events.jsonl")).size;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
 					controlEventSince = restoreBoundary;
@@ -361,7 +349,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	const restoreJobs = (sessionId: string, ctx: ExtensionContext, restoration?: OwnedRunRestoration) => {
 		restoreBoundary = restoration?.startedAt ?? Date.now();
 		restoreDiscovery = restoration?.discover ?? createAsyncRunDiscovery(asyncDirRoot, {
-			sessionId: ctx.sessionManager?.getSessionFile() ?? sessionId, ownerSessionId: ctx.sessionManager?.getSessionId(), resultsDir, kill: options.kill, now: options.now, skipInvalid: true,
+			sessionId: ctx.sessionManager?.getSessionFile() ?? sessionId, ownerSessionId: ctx.sessionManager?.getSessionId(), resultsDir, skipInvalid: true,
 		});
 		restoreDiscoveryDeadline = restoreBoundary + 2_000;
 		try {

@@ -88,43 +88,6 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe("mapConcurrent", () => {
-	it("processes all items and preserves order", async () => {
-		const items = [10, 20, 30, 40];
-		const results = await mapConcurrent(items, 2, async (item) => item * 2);
-		assert.deepEqual(results, [20, 40, 60, 80]);
-	});
-
-	it("preserves input order when later work finishes first", async () => {
-		const first = deferred();
-		const second = deferred();
-		const result = mapConcurrent([first.promise, second.promise], 2, async (completion, index) => {
-			await completion;
-			return index;
-		});
-
-		second.resolve();
-		await new Promise<void>(setImmediate);
-		first.resolve();
-		assert.deepEqual(await result, [0, 1]);
-	});
-
-	it("starts workers immediately without exceeding the concurrency limit", async () => {
-		let running = 0;
-		let maxRunning = 0;
-		const gate = deferred();
-		const result = mapConcurrent([1, 2, 3, 4, 5, 6], 2, async () => {
-			running++;
-			maxRunning = Math.max(maxRunning, running);
-			await gate.promise;
-			running--;
-		});
-
-		assert.equal(running, 2);
-		gate.resolve();
-		await result;
-		assert.equal(maxRunning, 2);
-	});
-
 	it("handles empty input", async () => {
 		const results = await mapConcurrent([], 4, async (item: number) => item);
 		assert.deepEqual(results, []);

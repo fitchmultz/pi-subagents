@@ -154,6 +154,14 @@ describe("detached chain workflow completion", { timeout: 60_000 }, () => {
 			if (scenario.shape === "dynamic") {
 				if (scenario.invalidCollection) assert.equal(durable.outputs.collected, undefined);
 				else assert.equal(durable.outputs.collected.structured.length, tokens.length);
+				if (scenario.empty && !scenario.invalidCollection) {
+					const status = readJson(path.join(getRunMetadataDir(runId), "status.json"));
+					assert.deepEqual(durable.outputs.collected.structured, []);
+					assert.deepEqual(status.parallelGroups, [{ start: 1, count: 0, stepIndex: 1 }]);
+					assert.equal(status.chainStepCount, 2);
+					assert.deepEqual(status.steps.map((step) => step.status), ["complete"]);
+					assert.equal(durable.workflowGraph.nodes[1].status, "completed");
+				}
 			}
 		} finally {
 			if (runId && !fs.existsSync(path.join(getRunMetadataDir(runId), "result.json"))) {

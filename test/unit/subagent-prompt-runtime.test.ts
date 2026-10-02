@@ -11,7 +11,6 @@ import registerSubagentPromptRuntime, {
 	CHILD_FANOUT_BOUNDARY_INSTRUCTIONS,
 	CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
 	SUBAGENT_INTERCOM_SESSION_NAME_ENV,
-	stripParentOnlySubagentMessages,
 } from "../../src/runs/shared/subagent-prompt-runtime.ts";
 
 const envSnapshot = {
@@ -240,50 +239,6 @@ describe("subagent prompt runtime", () => {
 		assert.equal(event.systemPromptOptions.forceSystemPrompt, `EXACT OVERRIDE\n\n<subagent_role>\n${CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS}\n</subagent_role>`);
 	});
 
-	it("strips parent-only subagent custom messages from forked child context", () => {
-		const user = { role: "user", content: "Task" };
-		const instruction = { role: "custom", customType: "subagent-orchestration-instructions", content: "Subagent orchestration is enabled." };
-		const slashResult = { role: "custom", customType: "subagent-slash-result", content: "## Orchestration" };
-		const notify = { role: "custom", customType: "subagent-notify", content: "Background task completed" };
-		const control = { role: "custom", customType: "subagent_control_notice", content: "needs attention" };
-		const otherCustom = { role: "custom", customType: "other", content: "keep" };
-
-		assert.deepEqual(stripParentOnlySubagentMessages([user, instruction, slashResult, notify, control, otherCustom]), [user, otherCustom]);
-	});
-
-	it("strips prior parent subagent tool calls and results from forked child context", () => {
-		const user = { role: "user", content: "Task" };
-		const subagentResult = { role: "toolResult", toolName: "subagent", content: "subagent results" };
-		const readResult = { role: "toolResult", toolName: "read", content: "file contents" };
-		const mixedAssistant = {
-			role: "assistant",
-			content: [
-				{ type: "text", text: "I will inspect the repo." },
-				{ type: "toolCall", name: "subagent", input: { agent: "worker" } },
-				{ type: "toolCall", name: "read", input: { path: "README.md" } },
-			],
-		};
-		const pureSubagentCall = {
-			role: "assistant",
-			content: [{ type: "toolCall", name: "subagent", input: { agent: "reviewer" } }],
-		};
-
-		assert.deepEqual(
-			stripParentOnlySubagentMessages([user, subagentResult, readResult, mixedAssistant, pureSubagentCall]),
-			[
-				user,
-				readResult,
-				{
-					role: "assistant",
-					content: [
-						{ type: "text", text: "I will inspect the repo." },
-						{ type: "toolCall", name: "read", input: { path: "README.md" } },
-					],
-				},
-			],
-		);
-	});
-
 	it("sets the child intercom session name from env during agent startup", async () => {
 		let sessionName: string | undefined;
 		let beforeAgentStart: ((event: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) | undefined;
@@ -302,20 +257,6 @@ describe("subagent prompt runtime", () => {
 		assert.equal(sessionName, "subagent-worker-78f659a3");
 	});
 
-	it("retains fanout call/result history, including on resumed children", () => {
-		const messages = [
-			{ role: "custom", customType: "subagent-orchestration-instructions", content: "Parent instructions" },
-			...["subagent", "delegate", "agent_runs", "load_subagent"].flatMap((name) => [
-				{ role: "assistant", content: [{ type: "toolCall", name, id: `${name}-call` }] },
-				{ role: "toolResult", toolName: name, toolCallId: `${name}-call`, content: "result" },
-			]),
-		];
-		const saved = structuredClone(messages);
-		assert.deepEqual(stripParentOnlySubagentMessages(messages), []);
-		assert.deepEqual(stripParentOnlySubagentMessages(messages, true), messages.slice(1));
-		assert.deepEqual(messages, saved);
-	});
-
 	it("filters parent-only artifacts from polluted fork context while preserving ordinary history", () => {
 		process.env[SUBAGENT_FANOUT_CHILD_ENV] = "0";
 		let contextHandler: ((event: { messages: unknown[] }) => { messages: unknown[] } | undefined) | undefined;
@@ -329,13 +270,31 @@ describe("subagent prompt runtime", () => {
 		const currentTask = { role: "user", content: "Now implement only the assigned fix." };
 		const instruction = { role: "custom", customType: "subagent-orchestration-instructions", content: "Subagent orchestration is enabled." };
 		const slashResult = { role: "custom", customType: "subagent-slash-result", content: "## Orchestration" };
-		const subagentResult = { role: "toolResult", toolName: "subagent", content: "subagent results" };
-		const subagentCall = { role: "assistant", content: [{ type: "toolCall", name: "subagent", input: { agent: "worker" } }] };
+		const notify = { role: "custom", customType: "subagent-notify", content: "Background task completed" };
+		const control = { role: "custom", customType: "subagent_control_notice", content: "needs attention" };
+		const callsAndResults = ["subagent", "delegate", "agent_runs", "load_subagent"].flatMap((name) => [
+			{ role: "assistant", content: [{ type: "toolCall", name, id: `${name}-call`, arguments: {} }] },
+			{ role: "toolResult", toolName: name, toolCallId: `${name}-call`, content: "result" },
+		]);
+		const readResult = { role: "toolResult", toolName: "read", content: "file contents" };
+		const mixedAssistant = {
+			role: "assistant", content: [
+				{ type: "text", text: "I will inspect the repo." },
+				{ type: "toolCall", name: "subagent", arguments: { agent: "worker" } },
+				{ type: "toolCall", name: "read", arguments: { path: "README.md" } },
+			],
+		};
 		const otherCustom = { role: "custom", customType: "other", content: "keep" };
-
-		assert.deepEqual(contextHandler?.({ messages: [priorParentTurn, instruction, slashResult, subagentCall, subagentResult, otherCustom, currentTask] }), {
-			messages: [priorParentTurn, otherCustom, currentTask],
+		const messages = [priorParentTurn, instruction, slashResult, notify, control, ...callsAndResults, readResult, mixedAssistant, otherCustom, currentTask];
+		const saved = structuredClone(messages);
+		assert.deepEqual(contextHandler?.({ messages }), {
+			messages: [priorParentTurn, readResult, { ...mixedAssistant, content: [mixedAssistant.content[0], mixedAssistant.content[2]] }, otherCustom, currentTask],
 		});
+		process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
+		assert.deepEqual(contextHandler?.({ messages }), {
+			messages: [priorParentTurn, ...callsAndResults, readResult, mixedAssistant, otherCustom, currentTask],
+		});
+		assert.deepEqual(messages, saved, "context projection never mutates the saved history");
 	});
 
 	it("does not rewrite child context when no parent-only artifacts are present", () => {

@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { INTERCOM_DETACH_REQUEST_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../../src/shared/types.ts";
+import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
@@ -119,7 +120,10 @@ describe("parallel agent execution", () => {
 	it("extends a top-level foreground parallel timeout", async () => {
 		mockPi.onCall({ delay: 450, output: "Slow result" });
 		mockPi.onCall({ output: "Second result" });
-		const executor = makeExecutor([makeAgent("slow"), makeAgent("second")]);
+		const bus = createEventBus();
+		let runId: string | undefined;
+		bus.on(SUBAGENT_ASYNC_STARTED_EVENT, (event) => { runId = event.id; });
+		const executor = makeExecutor([makeAgent("slow"), makeAgent("second")], tempDir, bus);
 
 		const resultPromise = executor.execute(
 			"parallel-extend",
@@ -135,10 +139,17 @@ describe("parallel agent execution", () => {
 			undefined,
 			makeMinimalCtx(tempDir),
 		) as Promise<any>;
-		await new Promise((resolve) => setTimeout(resolve, 75));
+		const deadline = Date.now() + 5_000;
+		while (!runId || !fs.existsSync(path.join(getRunMetadataDir(runId), "launch.json"))) {
+			assert.ok(Date.now() < deadline, "owner publishes its extendable launch before the control request");
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		const launch = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(runId), "launch.json"), "utf8"));
+		assert.equal(launch.runtimeVersion, 2);
+		assert.equal(launch.timeoutMs, 250);
 		const extension = await executor.execute(
 			"parallel-extend-control",
-			{ action: "extend", extendMs: 1500 },
+			{ action: "extend", id: runId, extendMs: 1500 },
 			new AbortController().signal,
 			undefined,
 			makeMinimalCtx(tempDir),

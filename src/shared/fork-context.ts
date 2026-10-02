@@ -4,19 +4,10 @@ import { requestChildExecutionCwd } from "../runs/shared/child-execution-cwd.ts"
 
 type SubagentExecutionContext = "fresh" | "fork";
 
-interface ForkSource {
-	createBranchedSession(leafId: string): string | undefined;
-}
-
 interface ForkableSessionManager {
 	getSessionFile(): string | undefined;
 	getLeafId(): string | null;
 	getSessionDir(): string;
-	openSession?: (path: string, sessionDir?: string) => ForkSource;
-}
-
-export interface ForkContextResolverOptions {
-	openSession?: (path: string, sessionDir?: string) => ForkSource;
 }
 
 interface ForkContextResolver {
@@ -30,7 +21,6 @@ export function resolveSubagentContext(value: unknown): SubagentExecutionContext
 export function createForkContextResolver(
 	sessionManager: ForkableSessionManager,
 	requestedContext: unknown,
-	options: ForkContextResolverOptions = {},
 ): ForkContextResolver {
 	if (resolveSubagentContext(requestedContext) !== "fork") {
 		return {
@@ -48,9 +38,6 @@ export function createForkContextResolver(
 		throw new Error("Forked subagent context requires a current leaf to fork from.");
 	}
 
-	const openSession: (file: string, dir?: string) => ForkSource = options.openSession
-		?? sessionManager.openSession
-		?? ((file: string, dir?: string) => SessionManager.open(file, dir));
 	const sessionDir = sessionManager.getSessionDir();
 	const cachedSessionFiles = new Map<number, string>();
 
@@ -62,7 +49,7 @@ export function createForkContextResolver(
 				if (!fs.existsSync(parentSessionFile)) {
 					throw new Error(`Parent session file does not exist: ${parentSessionFile}. Pi has not persisted enough history to fork yet.`);
 				}
-				const sessionFile = openSession(parentSessionFile, sessionDir).createBranchedSession(leafId);
+				const sessionFile = SessionManager.open(parentSessionFile, sessionDir).createBranchedSession(leafId);
 				if (!sessionFile) {
 					throw new Error("Session manager did not return a forked session file.");
 				}

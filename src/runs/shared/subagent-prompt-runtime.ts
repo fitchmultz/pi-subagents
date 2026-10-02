@@ -79,7 +79,7 @@ function stripAssistantSubagentToolCallBlocks(message: unknown): unknown | undef
 	return { ...m, content: filteredContent };
 }
 
-export function stripParentOnlySubagentMessages<T>(messages: T[], fanoutChild = false): T[] {
+function stripParentOnlySubagentMessages<T>(messages: T[], fanoutChild = false): T[] {
 	let changed = false;
 	const filtered: T[] = [];
 	for (const message of messages) {

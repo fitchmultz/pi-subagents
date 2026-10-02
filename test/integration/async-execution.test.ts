@@ -51,6 +51,7 @@ interface AsyncStatusPayload {
 		skills?: string[];
 		activityState?: string;
 		currentTool?: string;
+		currentPath?: string;
 		status?: string;
 		exitCode?: number;
 		error?: string;
@@ -186,34 +187,6 @@ describe("async execution utilities", () => {
 		if (fs.existsSync(runRoot)) for (const dir of fs.readdirSync(runRoot).filter((entry) => entry.startsWith(prefix))) fs.rmSync(path.join(runRoot, dir), { recursive: true, force: true });
 		if (fs.existsSync(RESULTS_DIR)) for (const file of fs.readdirSync(RESULTS_DIR).filter((entry) => entry.startsWith(prefix))) fs.rmSync(path.join(RESULTS_DIR, file), { force: true });
 		if (fs.existsSync(TEMP_ROOT_DIR)) for (const file of fs.readdirSync(TEMP_ROOT_DIR).filter((entry) => entry.includes(prefix))) fs.rmSync(path.join(TEMP_ROOT_DIR, file), { recursive: true, force: true });
-	});
-
-	it("readStatus returns null for missing directory", () => {
-		const status = readStatus("/nonexistent/path/abc123");
-		assert.equal(status, null);
-	});
-
-	it("readStatus parses valid status file", () => {
-		const dir = createTempDir();
-		try {
-			const statusData = {
-				runId: "test-123",
-				state: "running",
-				mode: "single",
-				startedAt: Date.now(),
-				lastUpdate: Date.now(),
-				steps: [{ agent: "test", status: "running" }],
-			};
-			fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify(statusData));
-
-			const status = readStatus(dir);
-			assert.ok(status, "should parse status");
-			assert.equal(status.runId, "test-123");
-			assert.equal(status.state, "running");
-			assert.equal(status.mode, "single");
-		} finally {
-			removeTempDir(dir);
-		}
 	});
 
 	it("carries root identity through detached runner configuration and child spawn", async () => {
@@ -486,7 +459,7 @@ describe("async execution utilities", () => {
 	});
 
 	it("async failFast interrupts running static parallel siblings", async () => {
-		mockPi.onCall({ matchArgsIncludes: "Fail now", exitCode: 1, stderr: "stop now" });
+		mockPi.onCall({ matchArgsIncludes: "Fail now", waitForCalls: 2, exitCode: 1, stderr: "stop now" });
 		mockPi.onCall({ matchArgsIncludes: "Wait slowly", delay: 5_000, output: "too slow" });
 		const id = `itest-ae-${process.pid}-parallel-fail-fast-${Date.now().toString(36)}`;
 		const startedAt = Date.now();
@@ -498,6 +471,8 @@ describe("async execution utilities", () => {
 			shareEnabled: false,
 			maxSubagentDepth: 2,
 		});
+		await waitForMockPiCalls(mockPi, 2, 10_000);
+		assert.ok([readMockPiArgs(mockPi, 0), readMockPiArgs(mockPi, 1)].some((args) => args.at(-1)?.includes("Wait slowly")), "slow sibling actually starts before failure is released");
 		const resultPath = await waitForAsyncResultFile(id, 10_000);
 		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
 		// Below the slow sibling's 5s delay: proves it was interrupted, with headroom for loaded CI shards.
@@ -1015,7 +990,8 @@ describe("async execution utilities", () => {
 	});
 
 	it("async dynamic status shows a placeholder before materialization", async () => {
-		mockPi.onCall({ delay: 800, output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
+		const release = path.join(tempDir, "release-producer");
+		mockPi.onCall({ waitForFile: release, output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" } });
 		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" } });
 		mockPi.onCall({ output: "used reviews" });
@@ -1037,26 +1013,32 @@ describe("async execution utilities", () => {
 			maxSubagentDepth: 2,
 		});
 
-		assert.ok(!result.isError);
-		const statusPath = path.join(getRunMetadataDir(id), "status.json");
-		const deadline = Date.now() + 5_000;
-		let status: AsyncStatusPayload | undefined;
-		while (!status) {
-			if (Date.now() > deadline) assert.fail(`Timed out waiting for async status file: ${statusPath}`);
-			if (fs.existsSync(statusPath)) status = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as AsyncStatusPayload;
-			else await new Promise((resolve) => setTimeout(resolve, 50));
-		}
-		assert.deepEqual(status.steps?.map((step) => step.agent), ["producer", "expand:reviewer", "consumer"]);
-		assert.equal(status.steps?.[1]?.label, "Review {target.path}");
-		assert.equal(status.steps?.[1]?.outputName, "reviews");
-		assert.deepEqual(status.parallelGroups, [{ start: 1, count: 1, stepIndex: 1 }]);
+		try {
+			assert.ok(!result.isError);
+			const statusPath = path.join(getRunMetadataDir(id), "status.json");
+			const deadline = Date.now() + 5_000;
+			let status: AsyncStatusPayload | undefined;
+			while (!status) {
+				if (Date.now() > deadline) assert.fail(`Timed out waiting for async status file: ${statusPath}`);
+				if (fs.existsSync(statusPath)) status = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as AsyncStatusPayload;
+				else await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			assert.deepEqual(status.steps?.map((step) => step.agent), ["producer", "expand:reviewer", "consumer"]);
+			assert.equal(status.steps?.[1]?.label, "Review {target.path}");
+			assert.equal(status.steps?.[1]?.outputName, "reviews");
+			assert.deepEqual(status.parallelGroups, [{ start: 1, count: 1, stepIndex: 1 }]);
+			fs.writeFileSync(release, "");
 
-		const resultPath = await waitForAsyncResultFile(id, 10_000);
-		const finalStatus = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as AsyncStatusPayload;
-		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		assert.equal(payload.success, true);
-		assert.deepEqual(finalStatus.steps?.map((step) => step.agent), ["producer", "reviewer", "reviewer", "consumer"]);
-		assert.deepEqual(finalStatus.parallelGroups, [{ start: 1, count: 2, stepIndex: 1 }]);
+			const resultPath = await waitForAsyncResultFile(id, 10_000);
+			const finalStatus = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as AsyncStatusPayload;
+			const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+			assert.equal(payload.success, true);
+			assert.deepEqual(finalStatus.steps?.map((step) => step.agent), ["producer", "reviewer", "reviewer", "consumer"]);
+			assert.deepEqual(finalStatus.parallelGroups, [{ start: 1, count: 2, stepIndex: 1 }]);
+		} finally {
+			fs.writeFileSync(release, "");
+			await waitForAsyncResultFile(id, 10_000);
+		}
 	});
 
 	it("async chains expand dynamic fanout and persist collected output", async () => {
@@ -1251,39 +1233,6 @@ describe("async execution utilities", () => {
 		assert.equal(payload.results.length, 1, "preflight failure does not invent a child");
 		assert.equal(mockPi.callCount(), 1);
 		assert.equal(fs.existsSync(path.join(tempDir, "same.md")), false);
-	});
-
-	it("async dynamic empty fanout completes and persists an empty collection", async () => {
-		mockPi.onCall({ output: "targets", structuredOutput: { items: [] } });
-		const id = `itest-ae-${process.pid}-dynamic-empty-${Date.now().toString(36)}`;
-		const result = executeAsyncChain(id, {
-			chain: [
-				{ agent: "producer", task: "Produce no targets", as: "targets", outputSchema: { type: "object" } },
-				{
-					expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4, onEmpty: "skip" },
-					parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: { type: "object" } },
-					collect: { as: "reviews" },
-				},
-			],
-			agents: [makeAgent("producer"), makeAgent("reviewer")],
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-dynamic-empty" },
-			shareEnabled: false,
-			maxSubagentDepth: 2,
-		});
-
-		assert.ok(!result.isError);
-		const resultPath = await waitForAsyncResultFile(id, 10_000);
-		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const status = JSON.parse(fs.readFileSync(path.join(getRunMetadataDir(id), "status.json"), "utf-8")) as AsyncStatusPayload;
-		assert.equal(payload.success, true);
-		assert.equal(payload.state, "complete");
-		assert.deepEqual(payload.outputs?.reviews?.structured, []);
-		assert.equal(status.state, "complete");
-		assert.deepEqual(status.steps?.map((step) => step.status), ["complete"]);
-		assert.deepEqual(status.parallelGroups, [{ start: 1, count: 0, stepIndex: 1 }]);
-		assert.equal(payload.workflowGraph?.nodes?.[1]?.status, "completed");
-		assert.equal((status as AsyncStatusPayload & { chainStepCount?: number }).chainStepCount, 2);
-		assert.equal(mockPi.callCount(), 1);
 	});
 
 	it("async dynamic fanout interrupt pauses without publishing collected outputs", async () => {
@@ -1618,6 +1567,7 @@ describe("async execution utilities", () => {
 	it("readStatus reuses unchanged files and invalidates replacement, rewrite, append, truncation and disappearance", () => {
 		const dir = createTempDir();
 		try {
+			assert.equal(readStatus(dir), null, "initial missing status is not fabricated");
 			const file = path.join(dir, "status.json");
 			const timestamp = new Date(10_000);
 			const statusData = {
@@ -1631,6 +1581,9 @@ describe("async execution utilities", () => {
 
 			const s1 = readStatus(dir);
 			assert.ok(s1);
+			assert.equal(s1.runId, "cache-test");
+			assert.equal(s1.mode, "single");
+			assert.equal(s1.state, "queued");
 			assert.equal(readStatus(dir), s1, "unchanged reads reuse the decoded object");
 			const oldStat = fs.statSync(file, { bigint: true });
 			fs.writeFileSync(`${file}.replacement`, JSON.stringify({ ...statusData, state: "paused" }));
@@ -2333,12 +2286,12 @@ describe("async execution utilities", () => {
 		while (!fs.existsSync(resultPath) && Date.now() < doneDeadline) {
 			if (fs.existsSync(statusPath)) {
 				const status = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as AsyncStatusPayload;
-				const runningTools = (status.steps ?? [])
-					.filter((step) => step.status === "running" && typeof step.currentTool === "string")
-					.map((step) => step.currentTool as string);
-				if (runningTools.length > 0) {
+				const running = (status.steps ?? []).filter((step) => step.status === "running" && typeof step.currentTool === "string");
+				if (running.length > 0) {
 					sawRunningTool = true;
-					if (!status.currentTool || !runningTools.includes(status.currentTool)) {
+					const paths = { read: "README.md", edit: "docs.md" };
+					if (!running.some((step) => step.currentTool === status.currentTool && step.currentPath === status.currentPath)
+						|| running.some((step) => step.currentPath !== paths[step.currentTool!])) {
 						invariantViolated = true;
 						break;
 					}
@@ -2346,11 +2299,9 @@ describe("async execution utilities", () => {
 			}
 			await new Promise((resolve) => setTimeout(resolve, 50));
 		}
-		if (!fs.existsSync(resultPath)) {
-			assert.fail(`Timed out waiting for async result file: ${resultPath}`);
-		}
+		await waitForAsyncResultFile(id, 10_000);
 		assert.equal(sawRunningTool, true, "expected at least one polling interval with a running step tool");
-		assert.equal(invariantViolated, false, "top-level currentTool drifted from running step tools");
+		assert.equal(invariantViolated, false, "top-level tool/path must belong to the same actual running child");
 	});
 
 	it("returns a tool error when the detached runner config cannot be written", () => {

@@ -218,15 +218,25 @@ describe("unified owner result retention through actual router", () => {
 		const git = (...args) => { const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" }); assert.equal(result.status, 0, result.stderr); };
 		git("init", "-q"); fs.writeFileSync(path.join(cwd, "tracked.txt"), "base\n"); git("add", "tracked.txt");
 		git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture");
-		mock.onCall({ output: "Binary change complete", delay: 700 });
+		const release = path.join(cwd, "release-binary-child");
+		mock.onCall({ output: "Binary change complete", waitForFile: release });
 		const pending = executor().execute("patch", { tasks: [{ agent: "worker", task: "Create binary" }], worktree: true, artifacts: false }, undefined, undefined, makeMinimalCtx(cwd));
 		let settled = false;
 		void pending.then(() => { settled = true; });
-		while (!mock.callCount() && !settled) await delay(10);
-		assert.ok(mock.callCount(), JSON.stringify(settled ? (await pending).content : []));
-		const callFile = fs.readdirSync(mock.dir).find((file) => file.startsWith("call-"));
-		const call = JSON.parse(fs.readFileSync(path.join(mock.dir, callFile!), "utf8"));
-		fs.writeFileSync(path.join(call.cwd, "image.bin"), Buffer.from([0, 255, 0, 128, 1, 0]));
+		try {
+			const deadline = Date.now() + 10_000;
+			while (!mock.callCount() && !settled) {
+				assert.ok(Date.now() < deadline, "binary child must start");
+				await delay(10);
+			}
+			assert.ok(mock.callCount(), JSON.stringify(settled ? (await pending).content : []));
+			const callFile = fs.readdirSync(mock.dir).find((file) => file.startsWith("call-"));
+			const call = JSON.parse(fs.readFileSync(path.join(mock.dir, callFile!), "utf8"));
+			fs.writeFileSync(path.join(call.cwd, "image.bin"), Buffer.from([0, 255, 0, 128, 1, 0]));
+		} finally {
+			fs.writeFileSync(release, "");
+			await pending;
+		}
 		const result = await pending;
 		assert.equal(result.isError, undefined, JSON.stringify(result.content));
 		const patchDir = result.content[0].text.match(/Full patches: ([^\n]+)/)?.[1];

@@ -10,8 +10,8 @@ function agentDigest(agentDir: string, uid?: number): string {
 	return createHash("sha256").update(uid === undefined ? agentDir : `${uid}:${agentDir}`).digest("hex").slice(0, 16);
 }
 
-export function getLegacyBrokerSocketPath(agentDir: string = getPiAgentDir(), tempDir: string = tmpdir()): string {
-	return join(tempDir, `pi-intercom-${agentDigest(agentDir)}.sock`);
+export function getLegacyBrokerSocketPath(agentDir: string = getPiAgentDir()): string {
+	return join(tmpdir(), `pi-intercom-${agentDigest(agentDir)}.sock`);
 }
 
 export function isOwnedBrokerSocket(socketPath: string): boolean {
@@ -24,22 +24,17 @@ export function isOwnedBrokerSocket(socketPath: string): boolean {
 	}
 }
 
-export function getBrokerSocketPath(
-	agentDir: string = getPiAgentDir(),
-	tempDir: string = tmpdir(),
-	uid: number | undefined = process.getuid?.(),
-): string {
+export function getBrokerSocketPath(agentDir: string = getPiAgentDir()): string {
+	const uid = process.getuid?.();
 	const suffix = `pi-intercom-${agentDigest(agentDir, uid)}`;
-	const preferred = join(tempDir, suffix, "broker.sock");
+	const preferred = join(tmpdir(), suffix, "broker.sock");
 	return Buffer.byteLength(preferred) <= MAX_UNIX_SOCKET_PATH_BYTES
 		? preferred
 		: join("/tmp", suffix, "broker.sock");
 }
 
-export function prepareBrokerSocketPath(
-	agentDir: string = getPiAgentDir(),
-): string {
-	const socketPath = getBrokerSocketPath(agentDir);
+export function prepareBrokerSocketPath(): string {
+	const socketPath = getBrokerSocketPath();
 	const brokerDir = dirname(socketPath);
 	fs.mkdirSync(brokerDir, { recursive: true, mode: 0o700 });
 	const stat = fs.lstatSync(brokerDir);

@@ -5,9 +5,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
-import { resolveSkillPath, clearSkillCache } from "../../src/agents/skills.ts";
+import { resolveSkillPath } from "../../src/agents/skills.ts";
 
-const tmpDir = path.join(os.tmpdir(), "pi-path-resolution-test");
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-path-resolution-test-"));
 const cwdDir = path.join(tmpDir, "cwd");
 const fakeHomeDir = path.join(tmpDir, "home");
 const fakeAgentDir = path.join(tmpDir, "pi-agent");
@@ -22,6 +22,12 @@ before(() => {
 	process.env.HOME = fakeHomeDir;
 	process.env.USERPROFILE = fakeHomeDir;
 	process.env.PI_CODING_AGENT_DIR = fakeAgentDir;
+	const skillsDir = path.join(cwdDir, ".agents", "skills");
+	const userSkillsDir = path.join(fakeHomeDir, ".agents", "skills");
+	fs.mkdirSync(skillsDir, { recursive: true });
+	fs.mkdirSync(userSkillsDir, { recursive: true });
+	fs.writeFileSync(path.join(skillsDir, "test-skill-1.md"), "---\nname: test-skill-1\ndescription: test desc\n---\nSkill content");
+	fs.writeFileSync(path.join(userSkillsDir, "test-skill-2.md"), "---\nname: test-skill-2\ndescription: test desc\n---\nSkill content");
 });
 
 after(() => {
@@ -37,10 +43,6 @@ after(() => {
 describe("Path resolution for .agents and ~/.agents", () => {
 	test("should resolve skills in .agents/skills", () => {
 		const skillsDir = path.join(cwdDir, ".agents", "skills");
-		fs.mkdirSync(skillsDir, { recursive: true });
-		fs.writeFileSync(path.join(skillsDir, "test-skill-1.md"), "---\nname: test-skill-1\ndescription: test desc\n---\nSkill content");
-
-		clearSkillCache();
 		const resolved = resolveSkillPath("test-skill-1", cwdDir);
 		assert.ok(resolved);
 		assert.strictEqual(resolved?.path, path.join(skillsDir, "test-skill-1.md"));
@@ -48,10 +50,6 @@ describe("Path resolution for .agents and ~/.agents", () => {
 
 	test("should resolve skills in ~/.agents/skills", () => {
 		const userSkillsDir = path.join(fakeHomeDir, ".agents", "skills");
-		fs.mkdirSync(userSkillsDir, { recursive: true });
-		fs.writeFileSync(path.join(userSkillsDir, "test-skill-2.md"), "---\nname: test-skill-2\ndescription: test desc\n---\nSkill content");
-
-		clearSkillCache();
 		const resolved = resolveSkillPath("test-skill-2", cwdDir);
 		assert.ok(resolved);
 		assert.strictEqual(resolved?.path, path.join(userSkillsDir, "test-skill-2.md"));

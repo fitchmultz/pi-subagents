@@ -31,7 +31,7 @@ const notifications = [];
 let current, session, mode;
 bus.on("subagent:result-intercom", (payload) => {
 	notifications.push(JSON.parse(JSON.stringify(payload)));
-	bus.emit("subagent:result-intercom-delivery", { requestId: payload.requestId, delivered: current?.stop === "detach" || current?.id === "intercom-receipt-success" });
+	bus.emit("subagent:result-intercom-delivery", { requestId: payload.requestId, delivered: current?.stop === "detach" });
 });
 const snapshot = (value) => JSON.parse(JSON.stringify(value));
 const waitFor = async (predicate, label) => {
@@ -401,7 +401,7 @@ try {
 			assert.ok(header(receipt.collapsed, "chain")?.startsWith(rejected ? "✗ chain · step 2/3 · parallel group: 1/1 succeeded" : "✓ chain · step 3/3"));
 		});
 	});
-	for (const delivered of [false, true]) await check(delivered ? "intercom-receipt-success" : "normal-success", async (receipt, verify) => {
+	await check("normal-success", async (receipt, verify) => {
 		mock.onCall({ output: "NORMAL_SUCCESS_EVIDENCE" });
 		await invoke(receipt, "delegate", { agent: "probe", task: "normal success", output: false, async: false, context: "fresh" });
 		verifyNative(receipt, verify, false);
@@ -426,7 +426,7 @@ try {
 		});
 	});
 	for (const action of ["continue", "answer"]) await check(`agent-runs-${action}`, async (receipt, verify) => {
-		const previous = evidence.cases.find((entry) => entry.name === (action === "continue" ? "normal-success" : "intercom-receipt-success")).result;
+		const previous = evidence.cases.find((entry) => entry.name === "normal-success").result;
 		const id = previous.details.runId;
 		const contract = readQuestionContract(id, 0);
 		assert.ok(contract.sessionFile, "continuation uses the original saved child session");

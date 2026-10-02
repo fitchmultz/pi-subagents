@@ -110,7 +110,11 @@ for (const receiptOwner of [undefined, "current", "foreign"]) test(`cold complet
 	const completion = createCompletionDelivery(pi, state, registerParentUsage(pi));
 	try {
 		completion.start();
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		const deadline = performance.now() + 5_000;
+		while (receiptOwner === "foreign" ? completed.length === 0 : state.ownedRuns!.get(runId)!.delivery?.entryId !== receiptId) {
+			assert.ok(performance.now() < deadline, "cold recovery must process actual owner/receipt evidence");
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
 		if (receiptOwner === "foreign") {
 			assert.equal(state.ownedRuns!.get(runId)!.delivery?.entryId, undefined);
 			assert.equal(completed.length, 1, "a foreign receipt cannot suppress the owner's completion");

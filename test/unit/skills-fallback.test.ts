@@ -7,7 +7,6 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
-	clearSkillCache,
 	discoverAvailableSkills,
 	resolveSkills,
 	resolveSkillsWithFallback,
@@ -51,11 +50,9 @@ async function importSkillsFresh() {
 describe("skills filesystem fallback", () => {
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-skills-fallback-"));
-		clearSkillCache();
 	});
 
 	afterEach(() => {
-		clearSkillCache();
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -215,7 +212,6 @@ describe("skills filesystem fallback", () => {
 			);
 
 			const fresh = await importSkillsFresh();
-			fresh.clearSkillCache();
 			const discovered = fresh.discoverAvailableSkills(tempDir);
 			const skill = discovered.find((entry) => entry.name === "user-settings-package-skill");
 			assert.ok(skill);
@@ -247,7 +243,6 @@ describe("skills filesystem fallback", () => {
 			);
 
 			const fresh = await importSkillsFresh();
-			fresh.clearSkillCache();
 			const discovered = fresh.discoverAvailableSkills(tempDir);
 			const skill = discovered.find((entry) => entry.name === "user-settings-git-package-skill");
 			assert.ok(skill);
@@ -284,7 +279,6 @@ describe("skills filesystem fallback", () => {
 			);
 
 			const fresh = await importSkillsFresh();
-			fresh.clearSkillCache();
 			const discovered = fresh.discoverAvailableSkills(tempDir);
 			const skill = discovered.find((entry) => entry.name === "user-settings-scoped-npm-package-skill");
 			assert.ok(skill);
