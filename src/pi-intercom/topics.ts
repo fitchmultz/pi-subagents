@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, ScrollView, Text, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { Container, ScrollView, Text, matchesKey } from "@earendil-works/pi-tui";
 import { actionHints } from "../tui/action-hints.ts";
 import { isTopicSubscription, isTopicUpdate, type Message, type SessionInfo, type TopicSubscription, type TopicUpdate } from "./types.ts";
 
@@ -36,7 +36,6 @@ export class IntercomTopics {
 			if (data.record && isTopicUpdate(data.record.update)) this.records.set(`${data.record.from.id}:${data.record.update.topic}`, { ...data.record, connected: false });
 		}
 		for (const topic of this.subscriptions.keys()) this.hydrate.add(topic);
-		this.renderOwner();
 	}
 	subscribe(topic: string, awaitRelease?: boolean): void {
 		this.subscriptions.set(topic, { topic, ...(awaitRelease ? { awaitRelease } : {}) });
@@ -50,7 +49,7 @@ export class IntercomTopics {
 		const key = `${from.id}:${update.topic}`, previous = this.records.get(key);
 		if (previous && previous.update.revision >= update.revision) return false;
 		const record = { from: { id: from.id, name: from.name }, update, connected: connected && !this.disconnectedOwners.has(from.id), notifiedRevision: previous?.notifiedRevision };
-		this.records.set(key, record); this.save({ record }); this.renderOwner(); this.render?.();
+		this.records.set(key, record); this.save({ record }); this.render?.();
 		return true;
 	}
 	/** True means handled as quiet state (or unsubscribed/obsolete), not a conversation message. */
@@ -82,19 +81,11 @@ export class IntercomTopics {
 			}
 		}
 		this.hydrate.clear();
-		this.renderOwner();
 	}
 	disconnected(id?: string): void {
 		if (id) this.disconnectedOwners.add(id);
 		for (const record of this.records.values()) if (!id || record.from.id === id) { record.connected = false; this.disconnectedOwners.add(record.from.id); }
-		this.renderOwner(); this.render?.();
-	}
-	private renderOwner(): void {
-		const ctx = this.getContext();
-		if (ctx?.mode !== "tui") return;
-		const owners = [...this.records.values()].filter((record) => record.update.resource && record.update.ownership);
-		const current = owners.sort((a, b) => b.update.updatedAt - a.update.updatedAt)[0];
-		ctx.ui.setStatus("intercom-owner", current ? truncateToWidth(`${current.update.resource}: ${current.from.name ?? current.from.id} · ${current.update.ownership === "released" ? "released" : current.connected ? "held" : "disconnected (not released)"}${owners.length > 1 ? ` · +${owners.length - 1}` : ""} · /intercom topics`, 110) : undefined);
+		this.render?.();
 	}
 	inspect(topic?: string): string {
 		const subscriptions = [...this.subscriptions.values()].filter((item) => !topic || item.topic === topic);

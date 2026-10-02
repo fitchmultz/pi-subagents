@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.44.3] - 2026-10-02
+
+### Changed
+- Remove the resource-ownership footer for held, released and disconnected topics. Current ownership remains available through `/intercom topics` and the Intercom tool; publication, subscriptions, saved state and release notifications are unchanged.
+
 ## [0.44.2] - 2026-10-02
 
 ### Changed

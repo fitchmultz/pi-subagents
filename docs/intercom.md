@@ -90,7 +90,7 @@ intercom({ action: "publish", topic: "browser/shared-profile/tab-4", event: "rel
 intercom({ action: "unsubscribe", topic: "browser/shared-profile/tab-4" })
 ```
 
-Routine `event: "update"` publications replace quiet inspectable state; they do not become passive conversation messages or wake a model. Use **`/intercom topics`** for the scrollable current records. A compact footer shows the latest declared resource owner. Ownership is advisory, not an exclusive lock; disconnect means **unavailable/disconnected**, never an implied release.
+Routine `event: "update"` publications replace quiet inspectable state; they do not become passive conversation messages or wake a model. Inspect current records and declared resource ownership in **`/intercom topics`** or `intercom({ action: "topics" })`; topic state does not appear in the footer. Ownership is advisory, not an exclusive lock; disconnect means **unavailable/disconnected**, never an implied release.
 
 `event: "blocker"` and `event: "decision"` steer subscribed sessions. An explicit `event: "release"` interrupts only subscriptions with `awaitRelease: true`; other subscribers get the quiet record. Direct messages, answers and stop acknowledgements bypass topic subscriptions. Keep routine status and browser handoff prose here rather than repeatedly sending it into conversations. The native raw entries remain available as history, but old topic records are not replayed as new work.
 
