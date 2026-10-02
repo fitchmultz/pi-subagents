@@ -82,7 +82,9 @@ export class HistoryQueries {
 		try { boundary = this.boundary(source, input); } catch (error) { if (!strict && error instanceof HistoryIndexError && error.code === "BOUNDARY_UNAVAILABLE") return {}; throw error; }
 		const leaf = input.leaf ?? this.store.get(`SELECT id FROM entries WHERE ${boundary.clauses.join(" AND ")} ORDER BY start DESC LIMIT 1`, ...boundary.params)?.id;
 		if (!leaf) return {};
-		const ancestry = `WITH RECURSIVE eligible AS (SELECT rowid,id,parent_id,start,timestamp,configuration_model,configuration_thinking FROM entries WHERE ${boundary.clauses.join(" AND ")}), branch AS (SELECT * FROM eligible WHERE id=? UNION SELECT parent.* FROM eligible parent JOIN branch child ON parent.id=child.parent_id)`;
+		// Fix recursive loop order: look up each child's parent by ID instead of
+		// rescanning the eligible transcript at every ancestry step.
+		const ancestry = `WITH RECURSIVE eligible AS (SELECT rowid,id,parent_id,start,timestamp,configuration_model,configuration_thinking FROM entries WHERE ${boundary.clauses.join(" AND ")}), branch AS (SELECT * FROM eligible WHERE id=? UNION SELECT parent.* FROM branch child CROSS JOIN eligible parent WHERE parent.id=child.parent_id)`;
 		const facts = this.store.get(`${ancestry} SELECT
 			(SELECT COUNT(*) FROM branch) AS count,
 			EXISTS(SELECT 1 FROM branch child WHERE parent_id IS NULL OR NOT EXISTS(SELECT 1 FROM eligible parent WHERE parent.id=child.parent_id)) AS rooted,
