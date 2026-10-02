@@ -822,6 +822,7 @@ for (const [columns, rows] of [[110, 38], [56, 38], [24, 18]]) test(`clickable A
 	const compact = f.controller.availableHeight(f.tui) < 16;
 	await clickHint(f, compact ? "Tab" : "Read/write");
 	assert.equal(f.overlay.editor.focused, false);
+	f.terminal.input("\x1b[F"); await historyReady(f); f.tui.renderNow();
 	if (!compact) {
 		assert.match(plain(f.overlay, f.overlayBounds.width), /Enter Details/);
 		assert.doesNotMatch(plain(f.overlay, f.overlayBounds.width), /Enter Send/);
@@ -835,11 +836,11 @@ for (const [columns, rows] of [[110, 38], [56, 38], [24, 18]]) test(`clickable A
 	assert.ok(plain(f.overlay, f.overlayBounds.width).includes(compact ? `${altLabel}+R · F2` : "details"));
 	assert.ok(!f.overlay.render(f.overlayBounds.width).some((line) => line.includes(CURSOR_MARKER)), "details hide the composer");
 	assert.doesNotMatch(plain(f.overlay, f.overlayBounds.width), /Tab/);
-	await until(() => !plain(f.overlay, f.overlayBounds.width).includes("Loading selected details"), "native selected details are ready before Reply");
+	await until(() => plain(f.overlay, f.overlayBounds.width).replace(/\s/g, "").includes("Messagemodel:fixture/fixture"), "native selected details are ready before Reply");
 	await clickHint(f, compact ? `${altLabel}+R` : "Reply");
 	await until(() => Boolean(f.controller.visit(f.key).quote), "full contextual reply loaded");
 	assert.equal(f.overlay.editor.focused, true);
-	assert.ok(f.controller.visit(f.key).quote?.text);
+	assert.equal(f.controller.visit(f.key).quote?.text, "I found the relevant code.");
 	assert.equal(f.overlay.editor.getText(), "Unsent child draft");
 	await clickHint(f, `${altLabel}+Q`);
 	assert.equal(f.controller.visit(f.key).quote, undefined);
