@@ -53,7 +53,7 @@ await session.bindExtensions({ mode: "json", onError: (error) => evidence.errors
 for (const name of ["delegate", "load_subagent"]) assert.ok(session.getActiveToolNames().includes(name));
 const originalCallId = "delegate_original";
 const resultEntries = () => manager.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === originalCallId);
-const childStarts = () => fs.existsSync(path.join(root, "child-starts.jsonl")) ? fs.readFileSync(path.join(root, "child-starts.jsonl"), "utf8").trim().split("\n").map(JSON.parse) : [];
+const childStarts = () => fs.existsSync(path.join(root, "child-starts.jsonl")) ? fs.readFileSync(path.join(root, "child-starts.jsonl"), "utf8").split("\n").slice(0, -1).map(JSON.parse) : [];
 const until = async (predicate, reason) => { const deadline = Date.now() + 20_000; while (!predicate()) { assert.ok(Date.now() < deadline, reason); await delay(20); } };
 try {
 	if (portableChild) {
