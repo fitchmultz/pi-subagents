@@ -72,7 +72,6 @@ import {
 import { runAsyncPath } from "./run-async-path.ts";
 import { clarifyInvocation } from "./clarify-invocation.ts";
 import { waitForOwnedRun } from "./wait-run.ts";
-import { bindNativeInvocation, isNativeAsyncCall, nativeInvocationTarget, nativeInvocations } from "../shared/native-async.ts";
 
 export type { SubagentParamsLike } from "./subagent-params.ts";
 export { normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "./subagent-params.ts";
@@ -83,7 +82,6 @@ type ExecuteSubagent = (id: string, params: SubagentParamsLike, signal: AbortSig
 
 export function createSubagentExecutor(deps: ExecutorDeps): {
 	execute: ExecuteSubagent;
-	resume: (...args: Parameters<ExecuteSubagent>) => Promise<SubagentExecutionResult | undefined>;
 } {
 	const execute = async (
 		_id: string,
@@ -377,7 +375,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const asyncMode = resolveAsyncExecutionMode(effectiveParams, deps.asyncByDefault);
 		const backgroundRequestedWhileClarifying = (hasChain || hasTasks) && asyncMode.backgroundRequestedWhileClarifying;
 		const effectiveAsync = asyncMode.effectiveAsync;
-		if (!effectiveAsync) bindNativeInvocation(deps.pi, ctx, params.nativeToolCallId, { runId, kind: "launch", ...(params.includeProgress ? { includeProgress: true } : {}) });
 		const foregroundTimeout = resolveForegroundTimeoutMs(effectiveParams);
 		if (foregroundTimeout.error) return buildRequestedModeError(effectiveParams, foregroundTimeout.error);
 		if (effectiveAsync && foregroundTimeout.timeoutMs !== undefined) {
@@ -464,7 +461,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			});
 			if (!effectiveAsync && result.details.asyncId) {
 				return withForkContext(await waitForOwnedRun({ id: runId, deps, ctx, signal, onUpdate: onUpdateWithContext,
-					cancelNewRun: !effectiveAsync, executionResult: true, includeProgress: effectiveParams.includeProgress, nativeAsync: Boolean(params.nativeToolCallId) }), invocationContext);
+					cancelNewRun: !effectiveAsync, executionResult: true, includeProgress: effectiveParams.includeProgress }), invocationContext);
 			}
 			return withForkContext(result, invocationContext);
 		} catch (error) {
@@ -477,19 +474,16 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 
 	return { execute: async (...args) => {
 		const [id, params, signal, onUpdate, ctx, executionCwd] = args;
-		// Launches bind only after resolving foreground mode; background controls never bind.
-		const nativeAsync = isNativeAsyncCall(ctx, id) && (!params.action || (params.async === false && (params.action === "resume" || params.action === "answer")));
-		const request = { ...params, nativeToolCallId: nativeAsync ? id : undefined };
 		const waiting = params.async === false && (params.action === "resume" || params.action === "answer");
 		const before = waiting ? new Set(deps.state.ownedRuns?.keys()) : undefined;
-		let result = await execute(id, request, signal, onUpdate, ctx, executionCwd);
+		let result = await execute(id, params, signal, onUpdate, ctx, executionCwd);
 		// Launch/answer receipts and claims are saved before waiting; execution failure must not undo a successful launch.
 		if (waiting && !result.isError) {
 			const question = result.details.questions?.find((question) => question.delivery || question.state === "answer_pending");
 			const id = result.details.asyncId ?? result.details.managementControl?.runId ?? question?.delivery?.runId ?? question?.runId ?? params.id ?? params.runId;
 			const index = result.details.asyncId || question?.delivery?.kind === "revive" ? 0
 				: result.details.managementControl?.nextActions.find((action) => action.index !== undefined)?.index ?? question?.index ?? params.index;
-			if (id) return waitForOwnedRun({ id, index, deps, ctx, signal, onUpdate, cancelNewRun: params.async === false && !before?.has(id) && deps.state.ownedRuns?.has(id), nativeAsync, executionResult: true, includeProgress: params.includeProgress });
+			if (id) return waitForOwnedRun({ id, index, deps, ctx, signal, onUpdate, cancelNewRun: params.async === false && !before?.has(id) && deps.state.ownedRuns?.has(id), executionResult: true, includeProgress: params.includeProgress });
 		}
 		if (args[1].action === "interrupt") return cancelSupervisorInput(result, args[1], args[4].sessionManager.getSessionId(), deps.pi.events);
 		if (args[1].action !== "status" || result.details.runList) return result;
@@ -503,12 +497,5 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 		}
 		return projectSupervisorQuestions(result, args[1], args[4].sessionManager.getSessionId(), Boolean(nestedResolutionScopeForExecutor(deps)));
-	}, resume: async (id, _params, signal, onUpdate, ctx) => {
-		await deps.ensureSessionState?.(ctx);
-		const invocation = nativeInvocations(ctx).find((call) => call.toolCallId === id);
-		const target = invocation && nativeInvocationTarget(ctx, invocation);
-		if (!target) return undefined;
-		if (!resolveOwnedRun(deps.state, target.runId) && resolveSubagentRunId(target.runId, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) })?.kind !== "nested") return undefined;
-		return waitForOwnedRun({ id: target.runId, index: target.index, deps, ctx, signal, onUpdate, nativeAsync: true, executionResult: true, includeProgress: invocation?.includeProgress });
 	} };
 }

@@ -147,6 +147,7 @@ async function fixture(t, mode: "regular" | "fullscreen" = "regular", children =
 }
 
 for (const count of [20, 227]) test(`Agents startup asynchronously pages ${count} owned runs and hydrates only selected details beside 8000 unrelated runs`, async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
 	const f = await fixture(t, "regular", count);
 	f.controller.dispose();
 	f.state.ownedRuns.clear();
@@ -189,6 +190,9 @@ for (const count of [20, 227]) test(`Agents startup asynchronously pages ${count
 	await f.controller.refresh(); await f.controller.refresh(true);
 	assert.equal(reads.length, 0, "unchanged live/forced observations stay off-thread");
 	assert.equal(timestampParses, 0, "closed dock refreshes do not rebuild completed conversations");
+	const renders = t.mock.method(f.tui, "requestRender");
+	t.mock.timers.tick(1500);
+	assert.equal(renders.mock.callCount(), 0, "an inert completed dock never requests full parent redraws");
 	const opening = f.controller.open(f.controller.tasks[0].key);
 	await historyReady(f);
 	plain(f.overlay);
@@ -204,6 +208,67 @@ for (const count of [20, 227]) test(`Agents startup asynchronously pages ${count
 	f.overlay.handleInput("\x1b"); await opening;
 	assert.equal(f.calls.length, 0);
 	t.diagnostic(`${count} children: ${reads.length} transcript reads, ${rootListings.length} global question listings, ${formatted.length} formatted conversations`);
+});
+
+test("Agents metadata queries follow relevant state, not all visited terminal rows", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const f = await fixture(t, "regular", 50);
+	f.controller.dispose(); f.state.ownedRuns.clear();
+	const runs: OwnedRun[] = [];
+	for (const [position, manager] of f.childSessions.entries()) {
+		const runId = randomUUID(), child = { ...f.run.children[position], index: 0 };
+		const run = { ...f.run, runId, rootRunId: runId, mode: "single" as const, asyncDir: getRunMetadataDir(runId), children: [child] };
+		saveQuestionOwner(runId, run.ownerSessionId);
+		saveQuestionContract(runId, 0, { task: child.task, sessionFile: child.sessionFile });
+		saveRunStatus(runId, { ...f.status, runId, mode: "single", steps: [f.status.steps[position]] });
+		if (position) saveAsyncRunResult(runId, { runtimeVersion: 2, id: runId, state: "complete", timestamp: run.startedAt,
+			results: [{ agent: child.agent, sessionFile: child.sessionFile, success: true, exitCode: 0, finalOutput: `Saved report ${position}` }] });
+		f.state.ownedRuns.set(runId, run); runs.push(run);
+	}
+	f.controller.start(f.ctx);
+	await indexedReady(f);
+	for (const task of f.controller.tasks) f.controller.visit(task.key).draft = "Retain my draft";
+	await f.controller.refresh();
+	const index = await runHistoryIndex(f.state), calls: string[] = [], historyPage = index.historyPage.bind(index);
+	t.mock.method(index, "historyPage", (input) => {
+		if (input.limit === 1) calls.push(input.runId);
+		return historyPage(input);
+	});
+	const check = async (expected: string[]) => {
+		calls.length = 0;
+		await f.controller.refresh(); await f.controller.refresh();
+		assert.deepEqual([...new Set(calls)].sort(), [...expected].sort());
+		assert.ok(calls.length <= expected.length * 2, "coalesced refreshes may share selected metadata, never poll unrelated terminal rows");
+	};
+	await check([runs[0].runId]);
+	const terminal = f.controller.task(`${runs[1].runId}:0`)!;
+	const unread = terminal.unread;
+	f.controller.pin(terminal.key);
+	await check([runs[0].runId, runs[1].runId]);
+	const outbox = f.controller.visit(`${runs[2].runId}:0`).outbox;
+	outbox.push({ id: "awaited-human-receipt", runId: runs[2].runId, index: 0, text: "Direction", draft: "Retain my draft", at: Date.now(), status: "unconfirmed" });
+	await check(runs.slice(0, 3).map((run) => run.runId));
+	assert.equal(f.controller.task(terminal.key)!.unread, unread, "skipped observations retain unread state");
+	assert.ok(f.controller.tasks.every((task) => f.controller.visit(task.key).draft === "Retain my draft"));
+	calls.length = 0;
+	const changed = runs[3];
+	saveAsyncRunResult(changed.runId, { runtimeVersion: 2, id: changed.runId, state: "complete", timestamp: changed.startedAt + 1000,
+		results: [{ agent: "worker", sessionFile: changed.children[0].sessionFile, success: true, exitCode: 0, finalOutput: "Updated saved report" }] });
+	await index.refresh(changed.runId); await f.controller.refresh();
+	assert.ok(calls.includes(changed.runId), "changed terminal rows refresh their metadata");
+	await check(runs.slice(0, 3).map((run) => run.runId));
+	const questionRun = runs[5];
+	createSupervisorQuestion({ runId: questionRun.runId, index: 0, agent: "worker", ownerTarget: "fixture-owner", childTarget: "fixture-child",
+		childSessionId: f.childSessions[5].getSessionId(), sessionFile: questionRun.children[0].sessionFile, cwd: f.cwd, pid: process.pid,
+		reason: "need_decision", message: "A question remains observable beside terminal rows" });
+	await index.refresh(questionRun.runId); await f.controller.refresh();
+	await check([runs[0].runId, runs[1].runId, runs[2].runId, questionRun.runId]);
+	const opening = f.controller.open(`${runs[4].runId}:0`);
+	await historyReady(f);
+	await check([runs[0].runId, runs[1].runId, runs[2].runId, runs[4].runId, questionRun.runId]);
+	assert.match(plain(f.overlay), /Saved report 4/);
+	f.overlay.handleInput("\x1b"); await opening;
+	t.diagnostic("50 visited rows (49 terminal): two unchanged ticks query only the live row; pin/outbox/question/selection and changed results remain observable.");
 });
 
 test("selected Agents controls refresh their own authority without touching unrelated completed histories", async (t) => {
@@ -687,25 +752,49 @@ test("Agents model identity keeps the owner's latest selection after response-le
 });
 
 for (const mode of ["regular", "fullscreen"] as const) test(`Agents strip and single-child open are native, read-only, and preserve the parent (${mode})`, async (t) => {
-	const f = await fixture(t, mode);
+	const f = await fixture(t, mode), frames = [];
+	const capture = (state: string) => {
+		f.tui.renderNow();
+		const native = f.tui instanceof TuiAltScreen ? f.tui.getScreenLines() : (() => {
+			const snapshot = f.tui.captureRenderState();
+			return snapshot.previousLines.slice(snapshot.previousViewportTop, snapshot.previousViewportTop + f.terminal.rows);
+		})();
+		const lines = native.map(stripTerminalSequences);
+		assert.ok(lines.length <= f.terminal.rows && lines.every((line) => visibleWidth(line) <= f.terminal.columns));
+		frames.push({ state, mode, columns: f.terminal.columns, rows: f.terminal.rows, lines });
+	};
+	f.tui.start(); capture("dock");
 	assert.match(plain(f.strip, 90), /^Agents.*1 running[\s\S]*Fix login/);
 	assert.doesNotMatch(plain(f.strip), /tokens|Combined tasks/);
 	assert.match(plain(f.strip, 12), /^Agents/);
 	const opening = f.controller.open();
 	assert.ok(f.overlay instanceof AgentConversation);
 	const view = f.overlay;
+	await historyReady(f);
 	assert.ok(view.editor instanceof Editor);
 	assert.equal(view.focused, true);
 	assert.equal(view.editor.focused, true);
-	view.handleInput("\x1b[200~first line\nsecond line 日本語\x1b[201~");
+	f.terminal.input("\x1b[200~first line\nsecond line 日本語\x1b[201~");
 	assert.equal(view.editor.getExpandedText(), "first line\nsecond line 日本語");
 	assert.equal(f.calls.length, 0);
-	view.handleInput("\x1b"); await opening;
+	for (const [columns, rows] of [[90, 28], [24, 18], [160, 40], [90, 28]]) {
+		f.terminal.resize(columns, rows); capture("composing");
+		assert.equal(view.editor.getExpandedText(), "first line\nsecond line 日本語");
+	}
+	f.terminal.input("\t"); capture("reading");
+	assert.equal(view.editor.focused, false);
+	f.terminal.input("\t"); assert.equal(view.editor.focused, true);
+	f.terminal.input("\x1b"); await opening; capture("closed");
 	assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
+	assert.equal(f.mainEditor.focused, true);
 	assert.deepEqual(f.interrupts, [0]);
 	const reopen = f.controller.open();
 	assert.equal(f.overlay.editor.getExpandedText(), "first line\nsecond line 日本語");
-	f.overlay.handleInput("\x1b"); await reopen;
+	f.controller.dispose(); await reopen; capture("disposed");
+	assert.equal(f.tui.hasOverlay(), false);
+	assert.equal(f.mainEditor.focused, true);
+	assert.equal(f.calls.length, 0);
+	if (process.env.PI_AGENT_VIEW_EVIDENCE_DIR) fs.writeFileSync(path.join(root, `native-${mode}-frames.json`), JSON.stringify(frames, null, 2));
 });
 
 test("clickable Agents hints: Esc Back closes the native conversation and preserves both drafts", async (t) => {
@@ -745,6 +834,7 @@ for (const [columns, rows] of [[110, 38], [56, 38], [24, 18]]) test(`clickable A
 	assert.ok(plain(f.overlay, f.overlayBounds.width).includes(compact ? `${altLabel}+R · F2` : "details"));
 	assert.ok(!f.overlay.render(f.overlayBounds.width).some((line) => line.includes(CURSOR_MARKER)), "details hide the composer");
 	assert.doesNotMatch(plain(f.overlay, f.overlayBounds.width), /Tab/);
+	await until(() => !plain(f.overlay, f.overlayBounds.width).includes("Loading selected details"), "native selected details are ready before Reply");
 	await clickHint(f, compact ? `${altLabel}+R` : "Reply");
 	await until(() => Boolean(f.controller.visit(f.key).quote), "full contextual reply loaded");
 	assert.equal(f.overlay.editor.focused, true);

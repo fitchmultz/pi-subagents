@@ -27,7 +27,7 @@ const usage = { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cacheWrite
 const contribution: UsageContribution = { id: "child-session:assistant-entry", provider: "child-provider", model: "actual-response-model", usage };
 const result = (): SubagentExecutionResult => ({ content: [{ type: "text", text: "Saved child result" }], details: { mode: "management", results: [] } });
 
-async function harness(t: TestContext, portable = true) {
+async function harness(t: TestContext) {
 	const root = mkdtempSync(path.join(tmpdir(), "parent-usage-"));
 	const sessions = new Set<InstanceType<typeof sdk.AgentSession>>();
 	async function close(session: InstanceType<typeof sdk.AgentSession>) {
@@ -43,15 +43,13 @@ async function harness(t: TestContext, portable = true) {
 	async function open(file?: string, delegation?: { tool: string; register: (pi: ExtensionAPI) => void }) {
 		let adapter!: ReturnType<typeof registerParentUsage>;
 		let ctx!: ExtensionContext;
-		let nativeAvailable = false;
 		let contributions = [contribution];
 		const errors: unknown[] = [];
 		const settingsManager = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
 		const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager,
 			noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 			extensionFactories: [(pi: ExtensionAPI) => {
-				nativeAvailable = typeof (pi as ExtensionAPI & { recordUsage?: unknown }).recordUsage === "function";
-				adapter = registerParentUsage(portable ? { on: pi.on } as ExtensionAPI : pi, ["usage_wait"]);
+				adapter = registerParentUsage(pi, ["usage_wait"]);
 				pi.on("session_start", (_event, context) => { ctx = context; });
 				pi.registerTool({ name: "usage_wait", label: "Usage wait", description: "Read a finalized fixture child", parameters: Type.Object({ discard: Type.Optional(Type.Boolean()), inspect: Type.Optional(Type.Boolean()) }),
 					async execute(_id, params, signal, onUpdate, context) {
@@ -80,7 +78,7 @@ async function harness(t: TestContext, portable = true) {
 			await session.prompt("Read saved child work");
 			assert.deepEqual(errors, []);
 		};
-		return { session, adapter, ctx, nativeAvailable, invoke, wait: (...args: object[]) => invoke("usage_wait", ...args), setContributions(value: UsageContribution[]) { contributions = value; } };
+		return { session, adapter, ctx, invoke, wait: (...args: object[]) => invoke("usage_wait", ...args), setContributions(value: UsageContribution[]) { contributions = value; } };
 	}
 	return { open, close };
 }
@@ -110,7 +108,6 @@ test("portable concurrent final waits charge once in native journal and survive 
 test("portable discarded result does not reserve usage; inspection and custom details never charge", async (t) => {
 	const h = await harness(t);
 	const { session, adapter, ctx, wait } = await h.open();
-	assert.equal(adapter.record([contribution], ctx), false, "async-only portable accounting is explicitly unsupported");
 	const prepared = adapter.attach(result(), [contribution], ctx);
 	session.sessionManager.appendCustomMessageEntry("subagent-notify", "finished", false, { result: prepared });
 	await wait({ inspect: true }, { discard: true });
@@ -119,77 +116,6 @@ test("portable discarded result does not reserve usage; inspection and custom de
 	await wait({}, {});
 	assert.equal(session.getSessionStats().cost, 10);
 	assert.deepEqual(toolMessages(session).slice(-2).map((message: any) => message.usage), [usage, undefined]);
-});
-
-test("native delayed recordUsage keeps attribution and deduplicates after recovery without a tool receipt", async (t) => {
-	const h = await harness(t, false);
-	const first = await h.open();
-	if (!first.nativeAvailable) {
-		assert.notEqual(process.env.PI_PARENT_USAGE_REQUIRE_NATIVE, "1", "native recordUsage required by this test invocation");
-		t.skip("host has no public recordUsage; portable path tested separately"); return;
-	}
-	await first.wait({ inspect: true });
-	const contributions = [contribution, { id: "child-session:summary-entry", usage }];
-	assert.equal(first.adapter.record(contributions, first.ctx), true);
-	assert.equal(first.session.getSessionStats().cost, 20);
-	assert.equal(first.adapter.attach(result(), contributions, first.ctx).usage, undefined, "native usage must not also travel on tool result");
-	first.setContributions(contributions);
-	await first.wait({});
-	assert.equal(first.session.getSessionStats().cost, 20);
-	assert.ok(toolMessages(first.session).every((message: any) => message.usage === undefined));
-	const entries = first.session.sessionManager.getEntries().filter((entry: any) => entry.type === "usage");
-	assert.deepEqual(entries.map((entry: any) => [entry.contributionId, entry.provider, entry.model, entry.usage]), [
-		["subagent:child-session:assistant-entry", "child-provider", "actual-response-model", usage],
-		["subagent:child-session:summary-entry", "unattributed", "unattributed", usage],
-	]);
-	const file = first.session.sessionManager.getSessionFile();
-	const before = readFileSync(file, "utf8");
-	await h.close(first.session);
-	const resumed = await h.open(file);
-	assert.equal(resumed.adapter.record(contributions, resumed.ctx), true);
-	assert.equal(readFileSync(file, "utf8"), before);
-	assert.throws(() => resumed.adapter.record([{ ...contribution, model: "changed" }], resumed.ctx), /conflict/i);
-	assert.equal(readFileSync(file, "utf8"), before);
-});
-
-test("native delayed usage survives restart before the parent's first assistant turn", async (t) => {
-	const h = await harness(t, false);
-	const first = await h.open();
-	if (!first.nativeAvailable) {
-		assert.notEqual(process.env.PI_PARENT_USAGE_REQUIRE_NATIVE, "1");
-		t.skip("host has no public recordUsage"); return;
-	}
-	first.adapter.record([contribution], first.ctx);
-	const file = first.session.sessionManager.getSessionFile();
-	assert.ok(existsSync(file), "successful native recordUsage must persist paid work even before the first assistant turn");
-	await h.close(first.session);
-	const resumed = await h.open(file);
-	resumed.adapter.record([contribution], resumed.ctx);
-	assert.equal(resumed.session.getSessionStats().cost, 10);
-	assert.equal(resumed.session.sessionManager.getEntries().filter((entry: any) => entry.type === "usage").length, 1);
-});
-
-test("native grandchild usage reaches the parent once through the child's own journal delta", async (t) => {
-	const h = await harness(t, false);
-	const child = await h.open();
-	if (!child.nativeAvailable) {
-		assert.notEqual(process.env.PI_PARENT_USAGE_REQUIRE_NATIVE, "1");
-		t.skip("host has no public recordUsage"); return;
-	}
-	await child.wait({ inspect: true });
-	const file = child.session.sessionManager.getSessionFile();
-	const baseline = snapshotNativeUsage(file);
-	child.adapter.record([contribution], child.ctx);
-	const delta = readNativeUsage(file, baseline)![0]!.contributions!;
-	assert.equal(delta.length, 1);
-	assert.notEqual(delta[0].id, contribution.id, "the parent imports its direct child's native entry, not a recursive grandchild rollup");
-	assert.equal(delta[0].provider, contribution.provider);
-	assert.equal(delta[0].model, contribution.model);
-	const parent = await h.open();
-	parent.adapter.record(delta, parent.ctx);
-	parent.adapter.record(delta, parent.ctx);
-	assert.equal(parent.session.getSessionStats().cost, 10);
-	assert.equal(parent.session.sessionManager.getEntries().filter((entry: any) => entry.type === "usage").length, 1);
 });
 
 for (const surface of ["parent", "child-advanced", "child-compact"]) test(`${surface} nested continuation charges only the later direct-child journal delta`, async (t) => {

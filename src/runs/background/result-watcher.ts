@@ -21,7 +21,6 @@ import {
 	resolveSubagentResultStatus,
 } from "../../intercom/result-intercom.ts";
 import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-events.ts";
-import type { NativeCheckpointEvent } from "../../shared/native-checkpoint.ts";
 import { isDurableRun, parseAsyncResultFileContent, readAsyncResultFile } from "./async-result-file.ts";
 
 const WATCHER_RESTART_DELAY_MS = 3000;
@@ -38,6 +37,8 @@ type ResultWatcherTimers = {
 
 type ResultWatcherDeps = {
 	reconcileDelivery?: (runId: string, completionKey: string, accounting?: boolean) => boolean;
+	isCompletionPublished?: (runId: string, completionKey: string) => boolean;
+	withReceiptBatch?: (work: () => void) => void;
 	fs?: ResultWatcherFs;
 	timers?: ResultWatcherTimers;
 };
@@ -80,17 +81,16 @@ export function createResultWatcher(
 ): {
 	startResultWatcher: () => void;
 	primeExistingResults: () => void;
-	stopResultWatcher: (preservePending?: boolean) => void;
+	stopResultWatcher: (options?: { preservePending?: boolean; joinInFlight?: boolean }) => void;
 	joinInFlight: () => Promise<void>;
-	holdCheckpoint: (event: NativeCheckpointEvent) => Promise<void>;
 } {
 	const fsApi = deps.fs ?? fs;
 	const timers = deps.timers ?? { setTimeout, clearTimeout, setInterval, clearInterval };
 	let periodicScanTimer: ReturnType<typeof setInterval> | null = null;
 	const processingCompletionKeys = new Set<string>();
 	const inFlight = new Set<Promise<void>>();
-	let checkpoint: NativeCheckpointEvent | undefined;
 	let startTail = Promise.resolve(), generation = 0, preserveBeforeGeneration = 0;
+	let joiningGeneration: number | undefined;
 	const foreignResults = new Map<string, { stamp: string; sessionId: string | null; runId: string; ownerSessionId?: string; canonicalPath?: string; canonicalStamp?: string }>();
 
 	const readResult = (file: string) => fsApi === fs ? readAsyncResultFile(file) : parseAsyncResultFileContent(fsApi.readFileSync(file, "utf-8"), file);
@@ -123,7 +123,7 @@ export function createResultWatcher(
 	};
 
 	const handleResult = async (file: string) => {
-		const resultGeneration = generation;
+		const startedGeneration = generation, ownerSessionId = state.currentSessionId;
 		let claimedCompletionKey: string | undefined;
 		let completionEmitted = false;
 		const durableFile = path.isAbsolute(file);
@@ -146,13 +146,16 @@ export function createResultWatcher(
 			}
 			foreignResults.delete(resultPath);
 			const consumeNotification = () => {
+				// A legacy hint can be the only saved result. Native queue admission
+				// is not publication; retain it until the verified parent receipt exists.
+				if (!durableFile && !canonicalPath && deps.isCompletionPublished && !deps.isCompletionPublished(runId, completionKey)) return;
 				const hint = durableFile ? path.join(resultsDir, `${runId}.json`) : resultPath;
 				if (fsApi.existsSync(hint)) fsApi.unlinkSync(hint);
 			};
 			data.completionId ??= `legacy:${runId}:${data.timestamp ?? "unknown"}`;
 			const completionKey = buildCompletionKey({ ...data, id: runId }, "result");
 			if (deps.reconcileDelivery ? deps.reconcileDelivery(runId, completionKey) : state.isRunResultConsumed?.(runId)) { consumeNotification(); return; }
-			if (state.waitingRuns?.has(runId) || state.hasNativeResultOwner?.(runId)) {
+			if (state.waitingRuns?.has(runId)) {
 				pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { ...data, runId, suppressNotification: true, intercomResultDelivered: false });
 				return;
 			}
@@ -175,7 +178,7 @@ export function createResultWatcher(
 					success: data.success,
 				}];
 			const normalizedChildren = attachNestedChildrenToResultChildren(runId, resultChildren.map((result = {}, index): SubagentResultIntercomChild => {
-				const baseOutput = result.output ?? data.summary;
+				const baseOutput = result.output ?? result.finalOutput ?? data.summary;
 				const hasRealOutput = typeof baseOutput === "string" && baseOutput.trim().length > 0;
 				const output = hasRealOutput ? baseOutput : "(no output)";
 				const summary = result.success === false && result.error
@@ -234,14 +237,20 @@ export function createResultWatcher(
 				});
 				intercomResultDelivered = await deliverSubagentResultIntercomEvent(pi.events, payload);
 			}
+			if (startedGeneration !== generation && startedGeneration !== joiningGeneration || ownerSessionId !== state.currentSessionId) {
+				state.completionSeen.delete(completionKey);
+				return;
+			}
 
 			// Shutdown closes native turn ingress. Retain failed deliveries for the
 			// next startup, while still recording acknowledgements already accepted.
-			if (!intercomResultDelivered && resultGeneration < preserveBeforeGeneration) return;
+			if (!intercomResultDelivered && startedGeneration < preserveBeforeGeneration) return;
 
 			const { terminalState: _terminalState, ...eventData } = data;
 			pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
 				...eventData,
+				agent: data.agent ?? normalizedChildren.map((child) => child.agent).join(", "),
+				summary: data.summary?.trim() ? data.summary : normalizedChildren.map((child) => child.summary).join("\n\n"),
 				runId,
 				completionKey,
 				intercomResultDelivered,
@@ -274,50 +283,43 @@ export function createResultWatcher(
 		}
 	};
 
-	state.resultFileCoalescer = createFileCoalescer((file) => {
+	const scheduled = new Set<string>();
+	let drainGeneration: number | undefined;
+	const scheduleResult = (file: string) => {
+		scheduled.add(file);
+		if (drainGeneration === generation) return;
+		drainGeneration = generation;
 		const scheduledGeneration = generation;
-		// Yield between synchronous recovery scans, without serializing async delivery.
 		startTail = startTail.then(async () => {
-			await yieldToInput();
-			if (checkpoint || scheduledGeneration !== generation) return;
-			const tail = handleResult(file);
-			inFlight.add(tail);
-			void tail.finally(() => inFlight.delete(tail));
+			try {
+				while (scheduled.size) {
+					await yieldToInput();
+					if (scheduledGeneration !== generation) return;
+					const files = [...scheduled].slice(0, 4);
+					for (const file of files) scheduled.delete(file);
+					// Only synchronous starts share publication proof. Async delivery
+					// resumes outside this scope; yield between batches for native input.
+					const start = () => {
+						for (const file of files) {
+							if (scheduledGeneration !== generation) return;
+							const tail = handleResult(file);
+							inFlight.add(tail);
+							void tail.finally(() => inFlight.delete(tail));
+						}
+					};
+					if (deps.withReceiptBatch) deps.withReceiptBatch(start); else start();
+				}
+			} finally { if (drainGeneration === scheduledGeneration) drainGeneration = undefined; }
 		});
-	}, 50);
-
-	const invalidatePendingResults = (event: NativeCheckpointEvent) => {
-		for (const file of pendingResultFiles()) {
-			const resultPath = path.isAbsolute(file) ? file : path.join(resultsDir, file);
-			if (isForeignUnchanged(resultPath)) continue;
-			const data = readResult(resultPath);
-			const runId = data.runId ?? data.id ?? file.replace(/\.json$/i, "");
-			data.completionId ??= `legacy:${runId}:${data.timestamp ?? "unknown"}`;
-			// A parent receipt can be committed before the next watcher tick saves its
-			// owner projection. Reconcile that receipt without billing work in the cut.
-			const consumed = deps.reconcileDelivery
-				? deps.reconcileDelivery(runId, buildCompletionKey({ ...data, id: runId }, "result"), false)
-				: state.isRunResultConsumed?.(runId);
-			const run = state.ownedRuns?.get(runId);
-			if (!run?.delivery?.entryId && !consumed && (data.sessionId ? data.sessionId === state.currentSessionId || run?.ownerSessionId === state.currentSessionId : run)) {
-				event.invalidate();
-				break;
-			}
-		}
 	};
+	state.resultFileCoalescer = createFileCoalescer(scheduleResult, 50);
 
 	const primeExistingResults = () => {
 		try {
-			if (checkpoint) {
-				// Polling must observe arrivals while held, without processing them.
-				// Reuse the acquisition ownership gate so foreign files do not block idle.
-				invalidatePendingResults(checkpoint);
-				return;
-			}
-			pendingResultFiles()
-				.forEach((file) => state.resultFileCoalescer.schedule(file, 0));
+			// Admit one recovery scan synchronously; separate zero-delay file timers
+			// can split the same scan into additional verification batches.
+			pendingResultFiles().forEach(scheduleResult);
 		} catch (error) {
-			checkpoint?.invalidate(); // An unreadable scan cannot establish a safe hold.
 			if (isNotFoundError(error)) return;
 			console.error(`Failed to scan subagent result directory '${resultsDir}':`, error);
 		}
@@ -352,7 +354,6 @@ export function createResultWatcher(
 	const scheduleRestart = () => {
 		if (state.watcherRestartTimer) return;
 		state.watcherRestartTimer = timers.setTimeout(() => {
-			checkpoint?.invalidate();
 			state.watcherRestartTimer = null;
 			try {
 				fsApi.mkdirSync(resultsDir, { recursive: true });
@@ -384,16 +385,10 @@ export function createResultWatcher(
 				if (ev !== "rename" || !file) return;
 				const fileName = file.toString();
 				if (!fileName.endsWith(".json")) return;
-				// Our unlink can arrive after delivery and a new hold. An existing
-				// replacement still invalidates, even when the previous result was consumed.
-				const runId = path.basename(fileName, ".json");
-				if (!fsApi.existsSync(path.join(resultsDir, fileName))
-					&& (state.ownedRuns?.get(runId)?.delivery || state.isRunResultConsumed?.(runId))) return;
-				checkpoint?.invalidate(); // Before accepting result work or deleting a file.
+				if (!fsApi.existsSync(path.join(resultsDir, fileName))) return;
 				state.resultFileCoalescer.schedule(fileName);
 			});
 			state.watcher.on("error", (error) => {
-				checkpoint?.invalidate();
 				if (shouldFallBackToPolling(error)) {
 					startPollingFallback(error);
 					return;
@@ -416,9 +411,10 @@ export function createResultWatcher(
 		}
 	};
 
-	const stopResultWatcher = (preservePending = false) => {
+	const stopResultWatcher = (options: { preservePending?: boolean; joinInFlight?: boolean } = {}) => {
+		joiningGeneration = options.joinInFlight ? generation : undefined;
 		generation++;
-		if (preservePending) preserveBeforeGeneration = generation;
+		if (options.preservePending) preserveBeforeGeneration = generation;
 		state.watcher?.close();
 		state.watcher = null;
 		clearPeriodicScan();
@@ -428,31 +424,14 @@ export function createResultWatcher(
 		}
 		state.watcherRestartTimer = null;
 		state.resultFileCoalescer.clear();
+		scheduled.clear();
 		foreignResults.clear();
 	};
 
-	const joinInFlight = async () => { await Promise.all([...inFlight]); };
-
-	const holdCheckpoint = async (event: NativeCheckpointEvent) => {
-		checkpoint = event;
-		state.resultFileCoalescer.clear();
-		event.signal.addEventListener("abort", () => {
-			if (checkpoint !== event) return;
-			checkpoint = undefined;
-			primeExistingResults();
-		}, { once: true });
-		if (inFlight.size) {
-			// Its native notification cannot run while held. Invalidate first, join
-			// the existing tail without cancelling it, then retry from real idle.
-			event.invalidate();
-			await joinInFlight();
-		} else {
-			// Do not capture the gap between notification and a failed unlink:
-			// completionSeen is only a runtime deduper. Finish ordinary delivery
-			// before qualifying idle instead of inventing another persisted queue.
-			invalidatePendingResults(event);
-		}
+	const joinInFlight = async () => {
+		await Promise.all([...inFlight]);
+		joiningGeneration = undefined;
 	};
 
-	return { startResultWatcher, primeExistingResults, stopResultWatcher, joinInFlight, holdCheckpoint };
+	return { startResultWatcher, primeExistingResults, stopResultWatcher, joinInFlight };
 }

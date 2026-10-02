@@ -150,22 +150,20 @@ describe("result watcher", () => {
 		let scans = 0;
 		state.isRunResultConsumed = () => { scans++; return false; };
 		events.on("subagent:async-complete", (event) => completed.push(event));
-		const watcher = createResultWatcher({ events }, state, resultsDir), controller = new AbortController();
+		const watcher = createResultWatcher({ events }, state, resultsDir);
 		try {
 			watcher.primeExistingResults();
 			watcher.primeExistingResults();
-			await watcher.holdCheckpoint({ type: "session_checkpoint", boundary: "settled", signal: controller.signal, invalidate: () => controller.abort() });
-			assert.equal(scans, 0, "no result means no parent receipt I/O during polls or checkpoint discovery");
-			assert.equal(controller.signal.aborted, false);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.equal(scans, 0, "live polls perform no parent receipt I/O");
 			fs.mkdirSync(getRunMetadataDir(runId), { recursive: true });
 			fs.writeFileSync(path.join(getRunMetadataDir(runId), "result.json"), JSON.stringify({ runtimeVersion: 2, id: runId, sessionId: "parent", success: true, summary: "Done", results: [] }));
 			watcher.primeExistingResults();
-			assert.equal(controller.signal.aborted, true, "a real completed result still invalidates the hold");
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			assert.ok(scans > 0, "completed work still checks parent receipts");
 			assert.equal(completed.length, 1);
 		} finally {
-			watcher.stopResultWatcher(); controller.abort();
+			watcher.stopResultWatcher();
 			fs.rmSync(getRunMetadataDir(runId), { recursive: true, force: true });
 			fs.rmSync(resultsDir, { recursive: true, force: true });
 		}

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
-import { NativeJournal, entryMetadata, journalStamp, readOutputPage } from "../../shared/journal-reader.ts";
+import { NativeJournal, journalStamp, readOutputPage } from "../../shared/journal-reader.ts";
 import { snapshotNativeUsage, readNativeUsage } from "./native-usage.ts";
 import { runHistoryIndex, updateRunHistory } from "./history-index.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
@@ -173,8 +173,8 @@ export interface OwnedRunRestoration {
 	discover: () => AsyncRunRecord[];
 }
 
-export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext, options: { strict?: boolean } = {}): OwnedRunRestoration {
-	return runSynchronously(restoreOwnedRunSteps(state, ctx, options));
+export function restoreOwnedRuns(state: SubagentState, ctx: ExtensionContext): OwnedRunRestoration {
+	return runSynchronously(restoreOwnedRunSteps(state, ctx));
 }
 
 export async function restoreOwnedRunsAsync(state: SubagentState, ctx: ExtensionContext): Promise<OwnedRunRestoration> {
@@ -185,11 +185,10 @@ export async function restoreOwnedRunsAsync(state: SubagentState, ctx: Extension
 	finally { state.onRunsChanged = onRunsChanged; }
 }
 
-function* restoreOwnedRunSteps(state: SubagentState, ctx: ExtensionContext, options: { strict?: boolean } = {}): Generator<void, OwnedRunRestoration> {
+function* restoreOwnedRunSteps(state: SubagentState, ctx: ExtensionContext): Generator<void, OwnedRunRestoration> {
 	const startedAt = Date.now();
 	const ownerSessionId = ctx.sessionManager.getSessionId();
-	const entries: SessionEntry[] = [];
-	for (const entry of entryMetadata(ctx.sessionManager)) { entries.push(entry); yield; }
+	const entries = ctx.sessionManager.getEntries();
 	state.ownedRuns = new Map();
 	yield* migrateSupervisorQuestionSteps(ownerSessionId);
 	for (const entry of entries) {
@@ -248,7 +247,6 @@ function* restoreOwnedRunSteps(state: SubagentState, ctx: ExtensionContext, opti
 			if (typeof owner?.sessionId !== "string" || !owner.sessionId.trim()) saveQuestionOwner(runId, ownerSessionId);
 			rememberOwnedRun(state, run);
 		} catch (error) {
-			if (options.strict) throw error;
 			// The genuine receipt still establishes ownership. Keep completion
 			// unconfirmed when its supplemental output/context cannot be recovered.
 			rememberOwnedRun(state, { ...run, recoveryError: `Saved child recovery remains incomplete: ${String(error)}` });
@@ -258,7 +256,7 @@ function* restoreOwnedRunSteps(state: SubagentState, ctx: ExtensionContext, opti
 	// Pre-update background runs may have no parent tool receipt (for example slash launches).
 	const scan = createAsyncRunDiscovery(ASYNC_DIR, {
 		sessionId: ctx.sessionManager.getSessionFile() ?? resolveCurrentSessionId(ctx.sessionManager), ownerSessionId,
-		receiptRunIds: () => state.ownedRuns!.keys(), skipInvalid: !options.strict,
+		receiptRunIds: () => state.ownedRuns!.keys(), skipInvalid: true,
 	});
 	function* discoverSteps(): Generator<void, AsyncRunRecord[]> {
 		const records = yield* scan.steps();
@@ -297,7 +295,6 @@ function* restoreOwnedRunSteps(state: SubagentState, ctx: ExtensionContext, opti
 					}
 				}
 			} catch (error) {
-				if (options.strict) throw error;
 				console.error(`Could not recover owned async metadata for '${location.resolvedId}':`, error);
 			}
 		}
@@ -317,7 +314,6 @@ function* restoreOwnedRunSteps(state: SubagentState, ctx: ExtensionContext, opti
 			const files = sessionFiles(root).sort();
 			if (files.length) rememberOwnedRun(state, { ...run, children: files.map((sessionFile, index) => ({ agent: run.children[index]?.agent ?? "unknown", index, sessionFile })) });
 		} catch (error) {
-			if (options.strict) throw error;
 			console.error(`Could not recover foreground owner ${run.runId}: ${String(error)}`);
 		}
 	}

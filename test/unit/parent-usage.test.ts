@@ -11,10 +11,10 @@ const a: UsageContribution = { id: "child:a", provider: "provider", model: "actu
 const b: UsageContribution = { id: "child:b", usage };
 const result = (): SubagentExecutionResult => ({ content: [{ type: "text", text: "done" }], details: { mode: "management", results: [] } });
 
-function harness(recordUsage?: (value: unknown) => void) {
+function harness() {
 	let messageEnd!: (event: MessageEndEvent, ctx: ExtensionContext) => MessageEndEventResult | undefined;
 	const entries: SessionEntry[] = [];
-	const pi = { on(event: string, handler: typeof messageEnd) { assert.equal(event, "message_end"); messageEnd = handler; }, recordUsage } as unknown as ExtensionAPI;
+	const pi = { on(event: string, handler: typeof messageEnd) { assert.equal(event, "message_end"); messageEnd = handler; } } as unknown as ExtensionAPI;
 	const ctx = { sessionManager: { getSessionId: () => "parent", getEntries: () => entries, getSessionFile: () => undefined, getEntry: (id: string) => entries.find((entry) => entry.id === id) } } as unknown as ExtensionContext;
 	const adapter = registerParentUsage(pi, ["delegate", "agent_runs"]);
 	const finalize = (value: SubagentExecutionResult) => {
@@ -65,31 +65,12 @@ test("details alone, custom messages and mismatched top-level usage are not port
 	assert.equal(h.finalize(prepared).usage, undefined);
 });
 
-test("native record delegates idempotence and retry to the host, preserving real and unknown attribution", () => {
-	const calls: unknown[] = [];
-	let fail = true;
-	const h = harness((value) => { if (fail) { fail = false; throw new Error("native persistence failed"); } calls.push(value); });
-	assert.throws(() => h.adapter.record([a], h.ctx), /persistence failed/);
-	assert.equal(h.adapter.record([a, b], h.ctx), true);
-	assert.deepEqual(calls, [
-		{ id: "subagent:child:a", kind: "subagent", provider: "provider", model: "actual-response", usage },
-		{ id: "subagent:child:b", kind: "subagent", provider: "unattributed", model: "unattributed", usage },
-	]);
-	assert.equal(h.adapter.attach({ ...result(), usage }, [a, b], h.ctx).usage, undefined);
-	assert.equal(calls.length, 4, "retries reach native idempotence, never a speculative local charged set");
-});
-
-test("portable receipts survive adding recordUsage and native receipts survive the portable fallback", () => {
-	const portable = harness();
-	portable.persist(portable.finalize(portable.adapter.attach(result(), [a], portable.ctx)));
-	const calls: unknown[] = [];
-	const native = harness((value) => calls.push(value));
-	native.entries.push(...portable.entries);
-	assert.equal(native.adapter.record([a, b], native.ctx), true);
-	assert.equal(calls.length, 1);
-	assert.equal((calls[0] as { id: string }).id, "subagent:child:b");
-	portable.entries.push({ type: "usage", id: "native", parentId: null, timestamp: "now", kind: "subagent", provider: "unattributed", model: "unattributed", usage, contributionId: "subagent:child:b" } as SessionEntry);
-	assert.equal(portable.adapter.attach(result(), [a, b], portable.ctx).details.parentUsage, undefined);
+test("legacy native usage and finalized portable receipts deduplicate new finalized results", () => {
+	const h = harness();
+	h.persist(h.finalize(h.adapter.attach(result(), [a], h.ctx)));
+	h.entries.push({ type: "usage", id: "native", parentId: null, timestamp: "now", kind: "subagent", provider: "unattributed", model: "unattributed", usage, contributionId: "subagent:child:b" } as SessionEntry);
+	assert.equal(h.adapter.attach(result(), [a, b], h.ctx).details.parentUsage, undefined);
+	assert.equal(h.adapter.isRecorded([a, b], h.ctx, new Map(h.entries.map((entry) => [entry.id, entry]))), true);
 });
 
 test("conflicting repeated native IDs fail before accounting and optional undefined fields survive JSON receipts", () => {

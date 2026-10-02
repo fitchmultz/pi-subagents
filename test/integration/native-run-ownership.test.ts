@@ -38,7 +38,8 @@ for (const route of ["receipt-result", "status-result", "status-session"]) it(`n
 		assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
 		assert.equal(result.stderr, "", "Valid legacy async metadata must migrate without warnings.");
 		const evidence = JSON.parse(fs.readFileSync(path.join(root, "legacy-evidence.json"), "utf8"));
-		assert.equal(evidence.nativeProviderRequests, 0);
+		assert.equal(evidence.nativeProviderRequests, 1, "recovered completion legitimately wakes its owner exactly once");
+		assert.equal(evidence.networkRequests, 0);
 		assert.deepEqual(evidence.failures, []);
 		assert.equal(evidence.legacyAsync.tempRemoved, true);
 		assert.equal(evidence.legacyAsync.nonOwners.length, 3);

@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -16,17 +17,35 @@ process.env.PI_SUBAGENT_TEMP_ROOT = path.join(root, "pi-subagents-runtime");
 process.env.PI_OFFLINE = "1";
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 const sdkRoot = process.env.PI_INTERCOM_TEST_SDK ?? path.dirname(findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url)!);
+process.env.PI_PACKAGE_DIR = sdkRoot;
 const sdkEntry = pathToFileURL(path.join(sdkRoot, "dist/index.js"));
 const sdk = await import(sdkEntry.href);
 const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry)!);
 const ai = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
-const { bindNativeInvocation } = await import("../../src/runs/shared/native-async.ts");
 const { getRunMetadataDir, saveQuestionOwner, saveRunStatus, saveAsyncRunResult, createSupervisorQuestion, saveQuestionAnswer, recordQuestionDelivery } = await import("../../src/runs/shared/supervisor-questions.ts");
 const { RESULTS_DIR } = await import("../../src/shared/types.ts");
 const { default: registerRoot } = await import("../../src/extension/index.ts");
 const { default: registerChild } = await import("../../src/extension/fanout-child.ts");
 const { createCompletionDelivery } = await import("../../src/runs/background/completion-delivery.ts");
 const { registerParentUsage } = await import("../../src/runs/shared/parent-usage.ts");
+
+test("legacy-only completion survives a native queued crash and fresh-process recovery without replay or fabricated ownership", () => {
+	const proofRoot = fs.mkdtempSync(path.join(root, "cold-"));
+	const run = (mode: string) => spawnSync(process.execPath, [path.resolve("test/fixtures/native-legacy-completion.mjs"), mode, proofRoot, process.cwd(), sdkRoot], { encoding: "utf8", timeout: 15_000 });
+	const readProof = (mode: string) => JSON.parse(fs.readFileSync(path.join(proofRoot, `${mode}-proof.json`), "utf8"));
+	const queued = run("queue");
+	assert.equal(queued.error, undefined);
+	assert.equal(queued.signal, "SIGKILL", queued.stderr);
+	assert.deepEqual(readProof("queue"), { mode: "queue", hintExists: true, canonicalExists: false, queued: true, persistedNotices: 0, ownedEntries: 0, sent: 1, calls: 1, errors: [] },
+		"accepted native steering retains the sole legacy result until publication");
+	for (const mode of ["reopen", "again"]) {
+		const result = run(mode);
+		assert.equal(result.error, undefined);
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(readProof(mode), { mode, ...(mode === "reopen" ? { hintExists: false } : {}), sent: mode === "reopen" ? 1 : 0,
+			calls: mode === "reopen" ? 1 : 0, persistedNotices: 1, ownedEntries: 0, errors: [] });
+	}
+});
 
 for (const childSafe of [false, true]) for (const drop of [false, true]) for (const unowned of [false, true]) test(`${childSafe ? "child-safe" : "root"} ${unowned ? "unowned legacy" : "owned"} queued completion ${drop ? "retries once after being dropped" : "survives streaming beyond the TTL"}${!childSafe && !drop ? " and abort/reload" : ""}`, async (t) => {
 	const previousChild = process.env.PI_SUBAGENT_CHILD, previousFanout = process.env.PI_SUBAGENT_FANOUT_CHILD;
@@ -39,11 +58,12 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 	const cwd = fs.mkdtempSync(path.join(root, "queued-"));
 	const manager = sdk.SessionManager.create(cwd, path.join(cwd, "sessions"));
 	manager.appendMessage(ai.fauxAssistantMessage("Delegate bounded work"));
-	const runId = randomUUID(), asyncDir = getRunMetadataDir(runId);
-	if (!unowned) {
-		manager.appendCustomEntry("subagent-run", { runId, rootRunId: runId, ownerSessionId: manager.getSessionId(), source: "async", mode: "single",
-			cwd, task: "Bounded work", startedAt: Date.now(), asyncDir, children: [{ agent: "worker", index: 0 }] });
-		saveQuestionOwner(runId, manager.getSessionId());
+	const queuedCount = !childSafe && !drop ? 2 : 1;
+	const runIds = Array.from({ length: queuedCount }, () => randomUUID()), runId = runIds[0];
+	if (!unowned) for (const id of runIds) {
+		manager.appendCustomEntry("subagent-run", { runId: id, rootRunId: id, ownerSessionId: manager.getSessionId(), source: "async", mode: "single",
+			cwd, task: "Bounded work", startedAt: Date.now(), asyncDir: getRunMetadataDir(id), children: [{ agent: "worker", index: 0 }] });
+		saveQuestionOwner(id, manager.getSessionId());
 	}
 	const sent = [], errors = [];
 	let factoryRuns = 0;
@@ -97,11 +117,21 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 			success: true, timestamp: Date.now(), summary: "QUEUED_RESULT", results: [{ agent: "worker", success: true, exitCode: 0, output: "QUEUED_RESULT" }] };
 		const notice = path.join(RESULTS_DIR, `${runId}.json`);
 		const recreateNotice = () => fs.writeFileSync(notice, JSON.stringify(result));
-		if (!unowned) saveRunStatus(runId, { runtimeVersion: 2, runId, mode: "single", sessionId: manager.getSessionFile(), state: "complete",
-			startedAt: Date.now(), lastUpdate: Date.now(), cwd, steps: [{ agent: "worker", status: "complete" }] });
-		if (unowned) recreateNotice(); else saveAsyncRunResult(runId, result);
+		const awaitHintReconciliation = async (reason: string) => {
+			if (unowned) {
+				await delay(50);
+				assert.ok(fs.existsSync(notice), "a queued legacy-only result stays recoverable until its actual published receipt");
+			} else await until(() => !fs.existsSync(notice), reason);
+		};
+		for (const id of runIds) {
+			if (!unowned) saveRunStatus(id, { runtimeVersion: 2, runId: id, mode: "single", sessionId: manager.getSessionFile(), state: "complete",
+				startedAt: Date.now(), lastUpdate: Date.now(), cwd, steps: [{ agent: "worker", status: "complete" }] });
+			const completion = { ...result, id };
+			if (unowned) fs.writeFileSync(path.join(RESULTS_DIR, `${id}.json`), JSON.stringify(completion));
+			else saveAsyncRunResult(id, completion);
+		}
 		t.mock.timers.tick(3000);
-		await until(() => sent.length === 1, "completion reaches the real host queue");
+		await until(() => sent.length === queuedCount, "completions reach the real host queue");
 		assert.equal(notices().length, 0);
 		assert.equal(delivered(), false, "queued is not durably delivered");
 		assert.equal(session.agent.hasQueuedMessages(), true);
@@ -114,7 +144,7 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 				if (unowned) recreateNotice();
 				t.mock.timers.tick(11 * 60_000);
 				await delay(50);
-				assert.equal(sent.length, 1, "streaming past TTL must not queue another wake-up");
+				assert.equal(sent.length, queuedCount, "streaming past TTL must not queue another wake-up");
 			}
 		}
 		if (unowned && !childSafe && !drop) {
@@ -149,24 +179,25 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 		if (!childSafe && !drop) {
 			recreateNotice();
 			t.mock.timers.tick(3000);
-			await until(() => !fs.existsSync(notice), "the first watcher remains active before abort/reload");
-			assert.equal(sent.length, 1);
+			await awaitHintReconciliation("the first watcher remains active before abort/reload");
+			assert.equal(sent.length, queuedCount);
 			await session.abort();
 			await prompt;
 			assert.equal(ctx.isIdle(), true);
 			assert.equal(session.agent.hasQueuedMessages(), true, "abort settles without consuming the native custom queue");
 			recreateNotice();
 			t.mock.timers.tick(11 * 60_000);
-			await until(() => !fs.existsSync(notice), "the active aborted owner's watcher reconciles recreated input");
-			assert.equal(sent.length, 1, "an idle aborted parent must not duplicate its still-pending custom message");
+			await awaitHintReconciliation("the active aborted owner's watcher reconciles recreated input");
+			assert.equal(sent.length, queuedCount, "an idle aborted parent must not duplicate either still-pending custom message");
+			assert.equal(notices().length, 0, "a watcher scan must not start a recovery turn while native completions remain queued");
 			assert.equal(factoryRuns, 1);
 			await session.reload();
 			assert.equal(factoryRuns, 2, "native reload replaces the extension controller");
 			recreateNotice();
 			t.mock.timers.tick(11 * 60_000);
-			await until(() => !fs.existsSync(notice), "the replacement watcher actively reconciles recreated input");
+			await awaitHintReconciliation("the replacement watcher actively reconciles recreated input");
 			await session.waitForIdle();
-			assert.equal(sent.length, 1, "reload preserves the actual pending admission rather than sending a second notice");
+			assert.equal(sent.length, queuedCount, "reload preserves all actual pending admissions rather than sending another notice");
 			assert.equal(notices().length, 0, "native reload has not consumed the pending completion");
 			assert.equal(session.agent.hasQueuedMessages(), true);
 			prompt = session.prompt("Resume the parent and consume its pending completion");
@@ -185,8 +216,14 @@ for (const childSafe of [false, true]) for (const drop of [false, true]) for (co
 		if (!unowned) await until(delivered, "journal reconciliation records delivery");
 		t.mock.timers.tick(11 * 60_000);
 		await delay(50);
-		assert.equal(sent.length, drop ? 2 : 1);
-		assert.equal(notices().length, 1);
+		assert.equal(sent.length, drop ? 2 : queuedCount);
+		assert.equal(notices().length, queuedCount);
+		const published = fs.readFileSync(manager.getSessionFile(), "utf8").trim().split("\n").map((line) => JSON.parse(line))
+			.filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-notify");
+		assert.equal(published.length, queuedCount, "each completion has exactly one physical native journal notice");
+		assert.deepEqual(published.map((entry) => entry.details.completion.runId).sort(), [...runIds].sort());
+		assert.equal(new Set(published.map((entry) => entry.details.completion.key)).size, queuedCount);
+		if (!childSafe && !drop) assert.equal(faux.state.callCount, 3, "only the aborted request and explicit two-completion continuation run");
 		if (unowned) {
 			assert.equal(delivered(), false, "native receipt authority does not fabricate an owned-run projection");
 			assert.equal((globalThis.__pi_subagents_queued_notifications__ as Map<string, unknown>).has(sent[0].details.completion.key), false,
@@ -264,17 +301,11 @@ for (const scenario of [
 		const bindings = { mode: "json", onError: (error) => errors.push(error) };
 		await runtime.session.bindExtensions(bindings);
 		await until(() => Boolean(request), "the first watcher starts Intercom delivery");
-		if (process.env.PI_CHECKPOINT_TEST_REQUIRED === "1") assert.equal(typeof runtime.disposeWithCheckpoint, "function");
 		disposed = scenario.shutdown;
-		const transition = scenario.shutdown
-			? typeof runtime.disposeWithCheckpoint === "function"
-				? runtime.disposeWithCheckpoint({ signal: AbortSignal.timeout(5000), waitForHost: async () => {} })
-				: runtime.dispose()
-			: runtime.session.bindExtensions(bindings);
+		const transition = scenario.shutdown ? runtime.dispose() : runtime.session.bindExtensions(bindings);
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		bus.emit("subagent:result-intercom-delivery", { requestId: request!.requestId, delivered: scenario.delivered });
-		const checkpoint = await transition;
-		checkpoint?.release();
+		await transition;
 		if (scenario.shutdown) {
 			assert.deepEqual(errors, [], "shutdown must not request a new native turn after ingress closes");
 			assert.equal(faux.state.callCount, 0);
@@ -303,6 +334,7 @@ for (const scenario of [
 			await until(() => Boolean(projection().delivery?.entryId), "the owner reconciles its published receipt");
 			assert.equal(projection().delivery.entryId, notices()[0].id);
 		}
+		if (scenario.unowned) await until(() => !fs.existsSync(hint), "the published legacy receipt, not fallback queue admission, retires the sole result");
 		assert.equal(fs.existsSync(hint), false);
 		assert.equal(fs.existsSync(path.join(asyncDir, "result.json")), !scenario.unowned);
 		assert.deepEqual(errors, []);
@@ -320,8 +352,8 @@ for (const scenario of [
 	{ name: "completed child answer", kind: "answer", index: 1, finished: true, suppress: false },
 	{ name: "completed child follow-up", kind: "delivery", index: 1, finished: true, suppress: false },
 	{ name: "pending child follow-up", kind: "delivery", index: 1, finished: false, suppress: false },
-	{ name: "detached whole-run launch", kind: "launch", index: undefined, finished: false, suppress: true },
-	{ name: "detached single-child follow-up", kind: "delivery", index: 0, mode: "single", finished: false, suppress: true },
+	{ name: "obsolete detached whole-run launch", kind: "launch", index: undefined, finished: false, suppress: false },
+	{ name: "obsolete detached single-child follow-up", kind: "delivery", index: 0, mode: "single", finished: false, suppress: false },
 	{ name: "failed whole-run call", kind: "launch", index: undefined, finished: true, failed: true, suppress: false },
 	{ name: "consumed whole-run call", kind: "launch", index: undefined, finished: true, suppress: true },
 	{ name: "persisted notice before owner/accounting save", kind: "launch", index: undefined, finished: true, receipt: true, published: true, suppress: false },
@@ -351,8 +383,8 @@ for (const scenario of [
 	if (scenario.finished && !unowned) manager.appendMessage(ai.fauxAssistantMessage(
 		ai.fauxToolCall("agent_runs", { action: scenario.kind === "answer" ? "answer" : "resume", id: runId, index: scenario.index }, { id: callId }),
 		{ stopReason: "toolUse" }));
-	if (!("receipt" in scenario)) bindNativeInvocation({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, { sessionManager: manager }, callId,
-		{ runId, index: scenario.index, kind: scenario.kind, accepted: true, ...(questionId ? { questionId, answer: "Yes" } : {}) });
+	if (!("receipt" in scenario)) manager.appendCustomEntry("subagent-invocation",
+		{ toolCallId: callId, ownerSessionId: sessionId, runId, index: scenario.index, kind: scenario.kind, accepted: true, ...(questionId ? { questionId, answer: "Yes" } : {}) });
 	if (scenario.finished && !unowned) manager.appendMessage({ role: "toolResult", toolName: "agent_runs", toolCallId: callId,
 		content: [{ type: "text", text: "Call finished" }], timestamp: Date.now(), isError: "failed" in scenario,
 		details: "receipt" in scenario ? { mode: "single", results: [], asyncId: runId } : "failed" in scenario ? {} : { mode: "management", results: [], wait: { runId, index: scenario.index, status: "completed" } } });
@@ -417,7 +449,7 @@ for (const scenario of [
 				assert.equal(projection.accounting.state, "incomplete");
 			}
 			assert.ok(completions.every((event) => Boolean(event.suppressNotification) === scenario.suppress));
-			assert.equal(fs.existsSync(notice), !scenario.finished && scenario.suppress, "only pending native owners retain their notification receipt");
+			assert.equal(fs.existsSync(notice), false, "finalized receipts or published notification consume recovery hints, not obsolete call bindings");
 			assert.deepEqual(errors, []);
 		} finally {
 			await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });

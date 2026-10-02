@@ -21,7 +21,6 @@ export async function waitForOwnedRun(input: {
 	cancelNewRun?: boolean;
 	executionResult?: boolean;
 	includeProgress?: boolean;
-	nativeAsync?: boolean;
 }): Promise<SubagentExecutionResult> {
 	const { deps, id, index, ctx } = input;
 	const owner = ctx.sessionManager.getSessionId(), session = deps.state.currentSessionId;
@@ -61,10 +60,9 @@ export async function waitForOwnedRun(input: {
 			if (timer) clearInterval(timer);
 			unsubscribe?.(); input.signal?.removeEventListener("abort", abort);
 			const execution = input.executionResult && status === "completed" ? ownedRunExecutionResult(target, deps.state, index, input.includeProgress) : undefined;
-			const pending = input.nativeAsync && input.signal?.aborted;
 			const saved = status === "completed" ? readRunJson<{ completionId?: string }>(path.join(getRunMetadataDir(target.runId), "result.json")) : undefined;
 			resolve({ ...result, ...execution, content: status === "completed" && execution ? execution.content : [{ type: "text", text }],
-				...(pending ? { pending: true } : status === "unavailable" || status === "cancelled" ? { isError: true } : {}),
+				...(status === "unavailable" || status === "cancelled" ? { isError: true } : {}),
 				details: { mode: "management", results: [], ...result?.details, ...execution?.details, wait: { runId: target.runId, completionId: saved?.completionId, index, status } } });
 		};
 		const abort = () => {
@@ -86,7 +84,7 @@ export async function waitForOwnedRun(input: {
 				const children = view.children.filter((child) => index === undefined || child.index === index);
 				if (index !== undefined && !children.length) { finish("unavailable", `Run ${target.runId} has no child at index ${index}.`); return; }
 				const questions = runQuestions.filter((question) => question.ownerSessionId === owner && (index === undefined || question.index === index) && question.state === "awaiting_input");
-				if (questions.length && !input.nativeAsync) {
+				if (questions.length) {
 					const result = ownedRunStatusResult(target, deps.state);
 					result.details.questions = questions; finish("awaiting_input", `Run ${target.runId} needs input; waiting ended without stopping it.\n\n${questions.map((question) => `Question ${question.questionId}: ${question.message}`).join("\n\n")}`, result); return;
 				}
@@ -112,7 +110,6 @@ export async function waitForOwnedRun(input: {
 			const requestId = (payload as { requestId?: unknown }).requestId;
 			if (typeof requestId !== "string") return;
 			deps.pi.events.emit(INTERCOM_DETACH_RESPONSE_EVENT, { requestId, accepted: true });
-			if (input.nativeAsync) return;
 			finish("yielded", `Released the wait for an incoming Intercom message. Run ${target.runId} is unchanged. Continue useful work or end the turn; completion will arrive automatically.`);
 		});
 		input.signal?.addEventListener("abort", abort, { once: true });

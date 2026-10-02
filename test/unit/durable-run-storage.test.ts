@@ -19,7 +19,6 @@ const { inspectSubagentStatus } = await import("../../src/runs/background/run-st
 const { reconcileAsyncRun, reconcileNestedAsyncDescendants } = await import("../../src/runs/background/stale-run-reconciler.ts");
 const { createNestedRoute, writeNestedEvent, projectNestedEvents } = await import("../../src/runs/shared/nested-events.ts");
 const { ownedRunView, ownedRunExecutionResult, restoreOwnedRuns } = await import("../../src/runs/shared/run-records.ts");
-const { subagentCheckpointBlocker } = await import("../../src/runs/shared/checkpoint.ts");
 const { createResultWatcher } = await import("../../src/runs/background/result-watcher.ts");
 const { createEventBus } = await import("../support/helpers.ts");
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -72,7 +71,7 @@ it("v2 discovery, inspection and restore are pure and never infer group success 
 	assert.equal(inspectSubagentStatus({ id: run.runId }, { kill: dead }).details.managementControl?.state, "failed");
 	assert.ok(listAsyncRuns(ASYNC_DIR, { kill: dead }).some((entry) => entry.id === run.runId));
 	const ctx = { cwd: root, sessionManager: { getSessionId: () => "parent", getSessionFile: () => "parent-file", getEntries: () => [], getHeader: () => ({}) } } as unknown as ExtensionContext;
-	restoreOwnedRuns(local, ctx, { strict: true });
+	restoreOwnedRuns(local, ctx);
 	assert.equal(local.ownedRuns?.get(run.runId)?.asyncDir, dir);
 	assert.equal(local.ownedRuns?.get(run.runId)?.legacy, false);
 	assert.deepEqual(snapshot(dir), before);
@@ -109,19 +108,6 @@ it("v2 final results survive temporary cleanup and supply full execution results
 	assert.deepEqual(snapshot(dir), before);
 });
 
-it("checkpoint guard follows durable process and completion evidence without a live host map", () => {
-	const { dir, status, run } = fixture("checkpoint-owner");
-	const local = state(); local.ownedRuns!.set(run.runId, run);
-	write(path.join(dir, "status.json"), { ...status, state: "running", pid: process.pid, steps: [{ agent: "worker", status: "running" }] });
-	assert.match(subagentCheckpointBlocker(local, "parent")!, /process is live/);
-	write(path.join(dir, "status.json"), { ...status, state: "complete", pid: process.pid });
-	assert.match(subagentCheckpointBlocker(local, "parent")!, /process is live/, "a terminal label does not prove process exit");
-	write(path.join(dir, "status.json"), { ...status, state: "complete" });
-	assert.match(subagentCheckpointBlocker(local, "parent")!, /completion is unconfirmed/, "an exited owner still needs its durable result");
-	write(path.join(dir, "result.json"), { runtimeVersion: 2, id: run.runId, state: "complete", timestamp: 300, results: [{ agent: "worker", success: true, exitCode: 0, output: "Done" }] });
-	assert.equal(subagentCheckpointBlocker(local, "parent"), undefined);
-});
-
 it("active legacy runs remain in their original directory and keep partial configuration", () => {
 	const id = "legacy-draining";
 	const sessionFile = path.join(root, "legacy.jsonl");
@@ -131,7 +117,7 @@ it("active legacy runs remain in their original directory and keep partial confi
 	const before = snapshot(path.join(ASYNC_DIR, id));
 	const local = state();
 	const ctx = { cwd: root, sessionManager: { getSessionId: () => "parent", getSessionFile: () => "parent-file", getEntries: () => [], getHeader: () => ({}) } } as unknown as ExtensionContext;
-	restoreOwnedRuns(local, ctx, { strict: true });
+	restoreOwnedRuns(local, ctx);
 	const run = local.ownedRuns!.get(id)!;
 	assert.equal(run.asyncDir, path.join(ASYNC_DIR, id));
 	assert.equal(resolveAsyncResumeTarget({ id }).kind, "live");

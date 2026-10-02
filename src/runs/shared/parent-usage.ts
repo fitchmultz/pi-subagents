@@ -9,11 +9,6 @@ import { validateNativeUsage } from "./native-usage.ts";
 const PREFIX = "subagent:";
 const UNATTRIBUTED = "unattributed";
 
-// Additive public API; official hosts without it use final tool-result usage below.
-type UsageAPI = ExtensionAPI & {
-	recordUsage?: (contribution: { id: string; kind: string; provider: string; model: string; usage: NativeUsage }) => void;
-};
-
 export function finalizedChildUsage(children: OwnedRunView["children"], index?: number): UsageContribution[] {
 	return children.flatMap((child) => (index === undefined || child.index === index) && child.state !== "live" && child.state !== "unknown" && !child.result?.detached && child.result?.accounting?.state !== "incomplete"
 		? child.result?.usage.contributions ?? [] : []);
@@ -55,10 +50,10 @@ function uniqueContributions(contributions: readonly UsageContribution[]): Usage
 
 function createReceiptIndex(toolNames: readonly string[]) {
 	const cursor = new SessionEntryCursor();
-	const received = new Map<string, UsageContribution>(), portable = new Map<string, UsageContribution>();
-	return (manager: ExtensionContext["sessionManager"], includeNative: boolean, saved: ReadonlyMap<string, SessionEntry>) => {
+	const received = new Map<string, UsageContribution>();
+	return (manager: ExtensionContext["sessionManager"], saved: ReadonlyMap<string, SessionEntry>) => {
 		const changes = cursor.read(manager);
-		if (changes.reset) { received.clear(); portable.clear(); }
+		if (changes.reset) received.clear();
 		for (const metadata of changes.entries) {
 			if (metadata.type === "usage") {
 				const id = (metadata as typeof metadata & { contributionId?: string }).contributionId;
@@ -71,10 +66,10 @@ function createReceiptIndex(toolNames: readonly string[]) {
 			const contributions = (entry.message.details as Details | undefined)?.parentUsage?.contributions;
 			// Details/custom notifications alone are never evidence that native accounting ran.
 			if (Array.isArray(contributions) && entry.message.usage && sameUsage(entry.message.usage, sumUsage(contributions))) {
-				for (const contribution of contributions) { received.set(contribution.id, contribution); portable.set(contribution.id, contribution); }
+				for (const contribution of contributions) received.set(contribution.id, contribution);
 			}
 		}
-		return includeNative ? received : portable;
+		return received;
 	};
 }
 
@@ -87,32 +82,19 @@ function unrecorded(contributions: readonly UsageContribution[], received: Map<s
 }
 
 /**
- * Register once per extension instance. Call record only on finalized completion;
- * false means this host needs an explicit tool wait. Call attach only on final
- * wait/execution results, never inspection or streaming updates. Both take native
- * entry contributions, not aggregate totals or recursively traversed descendants.
- * Include legacy tool aliases in toolNames so old journal receipts still count.
+ * Register once per extension instance. Attach only to finalized wait/execution
+ * results, never inspection or streaming updates. Legacy tool aliases and saved
+ * native usage entries still deduplicate old-session accounting.
  */
 export function registerParentUsage(pi: ExtensionAPI, toolNames: readonly string[]) {
-	const api = pi as UsageAPI;
 	const toolReceipts = createParentReceiptReader("inspect");
 	const receipts = createReceiptIndex(toolNames);
-	const record = (contributions: readonly UsageContribution[], ctx: ExtensionContext, saved?: ReadonlyMap<string, SessionEntry>): boolean => {
-		if (!api.recordUsage) return false;
-		if (!contributions.length) return true;
-		// Let native idempotence handle its own receipts, including retrying a failed flush.
-		const pending = unrecorded(contributions, receipts(ctx.sessionManager, false, saved ?? toolReceipts.read(ctx.sessionManager.getSessionFile())));
-		for (const contribution of pending) api.recordUsage({ id: `${PREFIX}${contribution.id}`, kind: "subagent",
-			provider: contribution.provider ?? UNATTRIBUTED, model: contribution.model ?? UNATTRIBUTED, usage: contribution.usage });
-		return true;
-	};
-
 	pi.on("message_end", (event, ctx): MessageEndEventResult | undefined => {
 		const message = event.message;
 		if (message.role !== "toolResult" || !toolNames.includes(message.toolName)) return;
 		const details = message.details as Details | undefined;
 		if (!details?.parentUsage) return;
-		const pending = unrecorded(details.parentUsage.contributions, receipts(ctx.sessionManager, true, toolReceipts.read(ctx.sessionManager.getSessionFile())));
+		const pending = unrecorded(details.parentUsage.contributions, receipts(ctx.sessionManager, toolReceipts.read(ctx.sessionManager.getSessionFile())));
 		const { usage: _usage, ...rest } = message;
 		const { parentUsage: _parentUsage, ...restDetails } = details;
 		// Public replacement hook: native emits/persists final tool messages serially,
@@ -122,18 +104,16 @@ export function registerParentUsage(pi: ExtensionAPI, toolNames: readonly string
 	});
 
 	return {
-		record,
+		isRecorded(contributions: readonly UsageContribution[], ctx: ExtensionContext, saved: ReadonlyMap<string, SessionEntry>): boolean {
+			return unrecorded(contributions, receipts(ctx.sessionManager, saved)).length === 0;
+		},
 		attach(result: SubagentExecutionResult, contributions: readonly UsageContribution[], ctx: ExtensionContext): SubagentExecutionResult {
 			const { usage: _usage, ...rest } = result;
 			const { parentUsage: _parentUsage, ...details } = result.details;
 			if (!contributions.length) return { ...rest, details };
 			// Required identity/conflict rejection precedes any optional host I/O.
 			const saved = toolReceipts.read(ctx.sessionManager.getSessionFile());
-			const portable = unrecorded(contributions, receipts(ctx.sessionManager, true, saved));
-			let recorded: boolean;
-			try { recorded = record(contributions, ctx, saved); }
-			catch (error) { return { ...rest, details: { ...details, accounting: { state: "incomplete", error: String(error) } } }; }
-			const pending = recorded ? [] : portable;
+			const pending = unrecorded(contributions, receipts(ctx.sessionManager, saved));
 			// Intent only. Top-level usage is added at final message_end, immediately before native persistence.
 			return { ...rest, details: { ...details, ...(pending.length ? { parentUsage: { contributions: pending } } : {}) } };
 		},

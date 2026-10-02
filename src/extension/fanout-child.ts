@@ -13,17 +13,15 @@ import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
 import { readStatus } from "../shared/utils.ts";
 import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
-import { registerCompactSubagentTools, subagentToolLifecycle } from "./compact-tools.ts";
+import { registerCompactSubagentTools } from "./compact-tools.ts";
 import { registerToolResultAdapter } from "./tool-result.ts";
 import { renderSubagentResult } from "../tui/render.ts";
 import { type Details, type SubagentExecutionResult, type SubagentState } from "../shared/types.ts";
 import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
-import { OWNED_RUN_ENTRY, ownedRunList, restoreOwnedRuns, restoreOwnedRunsAsync } from "../runs/shared/run-records.ts";
+import { OWNED_RUN_ENTRY, ownedRunList, restoreOwnedRunsAsync } from "../runs/shared/run-records.ts";
 import { closeRunHistory, startRunHistory } from "../runs/shared/history-index.ts";
 import { createCompletionDelivery } from "../runs/background/completion-delivery.ts";
-import { onNativeCheckpoint } from "../shared/native-checkpoint.ts";
-import { subagentCheckpointBlocker } from "../runs/shared/checkpoint.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
@@ -252,20 +250,12 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	const toolNames = compact ? ["subagent", "delegate", "agent_runs"] : ["subagent"];
 	const parentUsage = registerParentUsage(pi, toolNames);
 	const completionDelivery = createCompletionDelivery(pi, state, parentUsage);
-	onNativeCheckpoint(pi, async (event, ctx) => {
-		await completionDelivery.holdCheckpoint(event);
-		event.signal.throwIfAborted();
-		restoreOwnedRuns(state, ctx, { strict: true });
-		const reason = subagentCheckpointBlocker(state, ctx.sessionManager.getSessionId());
-		return reason ? { sleepReady: false, reason } : { sleepReady: true };
-	});
 	const adaptToolResult = registerToolResultAdapter(pi, toolNames);
 	const toRegisteredToolResult = (result: SubagentExecutionResult, ctx: ExtensionContext) => adaptToolResult(
 		result.details.wait?.status === "completed" && result.details.run?.ownerSessionId === ctx.sessionManager.getSessionId()
 			? parentUsage.attach(result, finalizedChildUsage(result.details.run.children, result.details.wait.index), ctx)
 			: result,
 	);
-	const nativeAsyncLifecycle = subagentToolLifecycle(executor, toRegisteredToolResult);
 	const acceptanceGuidelines = [
 		"For goal-style requests such as /goal, goal, active goal, or work until evidence says done, use explicit acceptance on the delegated run: criteria for the target, evidence/verify for proof, stopRules for constraints, and maxFinalizationTurns for the bounded loop.",
 		"For implementation handoffs from a plan, PRD, spec, issue, or broad fix, put implementation instructions and plan paths in task, and put the definition of done, evidence, verification commands, constraints, and loop cap in acceptance.",
@@ -283,8 +273,8 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		listRuns: async (params, ctx) => { await ensureSessionState(ctx); return ownedRunList(state, params); },
 	});
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
-		...nativeAsyncLifecycle,
 		name: "subagent",
+		defaultActive: !compact,
 		label: "Subagent",
 		description: [
 			"Delegate to subagents from child-safe fanout mode.",

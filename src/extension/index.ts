@@ -29,12 +29,10 @@ import { withMouseExpansion } from "../tui/action-hints.ts";
 import { SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, normalizeSubagentParamsLike, resolveAsyncExecutionMode } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
-import { OWNED_RUN_ENTRY, rememberOwnedRun, restoreOwnedRuns, restoreOwnedRunsAsync } from "../runs/shared/run-records.ts";
+import { OWNED_RUN_ENTRY, rememberOwnedRun, restoreOwnedRunsAsync } from "../runs/shared/run-records.ts";
 import { closeRunHistory, startRunHistory } from "../runs/shared/history-index.ts";
 import { finalizedChildUsage, registerParentUsage } from "../runs/shared/parent-usage.ts";
 import { createCompletionDelivery } from "../runs/background/completion-delivery.ts";
-import { onNativeCheckpoint } from "../shared/native-checkpoint.ts";
-import { subagentCheckpointBlocker } from "../runs/shared/checkpoint.ts";
 import { isObsoleteIdleNotice } from "../runs/shared/subagent-control.ts";
 import { applyForceTopLevelAsyncOverride } from "../runs/background/top-level-async.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
@@ -47,7 +45,7 @@ import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
 import { loadConfig } from "./config.ts";
 import { registerToolResultAdapter } from "./tool-result.ts";
-import { registerCompactSubagentTools, subagentToolLifecycle } from "./compact-tools.ts";
+import { registerCompactSubagentTools } from "./compact-tools.ts";
 import {
 	type Details,
 	type SubagentExecutionResult,
@@ -430,12 +428,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			? parentUsage.attach(result, finalizedChildUsage(result.details.run.children, result.details.wait.index), ctx)
 			: result,
 	);
-	const nativeAsyncLifecycle = subagentToolLifecycle(executor, toRegisteredToolResult);
 	const reconcileRunTools = registerCompactSubagentTools(pi, { executor, state, adapt: toRegisteredToolResult, guidelines: SUBAGENT_GUIDELINES, asyncByDefault });
 
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
-		...nativeAsyncLifecycle,
 		name: SUBAGENT_TOOL_NAME,
+		defaultActive: false,
 		label: "Subagent",
 		description: `Delegate bounded work to configured Pi subagents, chains, or parallel reviewers; manage agent definitions; inspect/control async runs. Indexed status lists support global agent/state/text filters and sort/cursors; history pages bounded native previews and search finds saved visible words or one quoted phrase. Browse freshness is not canonical proof. Use exactly one execution mode (agent, tasks, or chain) or one management/control action. Before execution, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled. Parallel tasks support output?,reads?,progress?. maxOutput accepts { bytes?: number, lines?: number }. Prefer acceptance for goal/spec handoffs and status/resume/interrupt/extend/nudge for active runs. Exact status is concise by default; full:true includes the full task/configuration. Review notes are parent-only, not sent to children; put actionable instructions in resume/nudge. Resume/answer preserves saved settings unless agent selects a current profile (including model/thinking/fallbacks); a separate model override wins. Live guidance never mutates model or acceptance.`,
 		parameters: SubagentParams,
@@ -609,24 +606,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}
 		await resetSessionState(ctx);
 		await reconcileRunTools();
-	});
-
-	onNativeCheckpoint(pi, async (event, ctx) => {
-		// Polling/reconciliation is synchronous; clearing the existing interval
-		// leaves no detached poll writer. Restore it when the native hold releases.
-		const hadPoller = Boolean(state.poller);
-		if (state.poller) clearInterval(state.poller);
-		state.poller = null;
-		event.signal.addEventListener("abort", () => { if (hadPoller) ensurePoller(); }, { once: true });
-		await completionDelivery.holdCheckpoint(event);
-		event.signal.throwIfAborted();
-		// Rediscover from the same durable records used on startup, rather than
-		// treating an empty UI job map (whose finished rows expire) as authority.
-		restoreOwnedRuns(state, ctx, { strict: true });
-		const reason = subagentCheckpointBlocker(state, ctx.sessionManager.getSessionId());
-		if (reason) return { sleepReady: false, reason };
-		if (!agentView?.prepareCheckpoint()) return { sleepReady: false, reason: "Agent conversation interaction is live" };
-		return { sleepReady: true };
 	});
 
 	pi.on("session_shutdown", async () => {

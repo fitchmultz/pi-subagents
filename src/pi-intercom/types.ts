@@ -238,7 +238,6 @@ export type TopicChange =
   | { action: "subscribe" | "restore"; subscription: TopicSubscription }
   | { action: "unsubscribe"; topic: string };
 export interface SessionSnapshot {
-  checkpointHeld?: boolean;
   sessions: SessionInfo[];
   receipts: Array<SendResult & { to: string }>;
 }
@@ -263,8 +262,8 @@ export function normalizeMessage(value: unknown): Message | null {
 }
 
 export type BrokerMessage =
-  | { type: "registered"; sessionId: string; topicsSupported?: true; topicFrames?: true; checkpointSupported?: true }
-  | { type: "sessions"; requestId: string; sessions: Array<Partial<SessionInfo> & Pick<SessionInfo, "id">>; more?: boolean; receipts?: SessionSnapshot["receipts"]; error?: string; checkpointHeld?: boolean }
+  | { type: "registered"; sessionId: string; topicsSupported?: true; topicFrames?: true }
+  | { type: "sessions"; requestId: string; sessions: Array<Partial<SessionInfo> & Pick<SessionInfo, "id">>; more?: boolean; receipts?: SessionSnapshot["receipts"]; error?: string }
   | { type: "message"; from: SessionInfo; message: Message | ReturnType<typeof compactTopicMessage> }
   | { type: "session_left"; sessionId: string }
   | { type: "delivered"; messageId: string }

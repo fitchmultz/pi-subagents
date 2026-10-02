@@ -5,7 +5,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "../shared/native-typebox.ts";
-import { entryMetadata } from "../shared/journal-reader.ts";
 import { MouseRegion, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { IntercomClient, type SendResult } from "./broker/client.ts";
 import { isBrokerRunning, spawnBrokerIfNeeded } from "./broker/spawn.ts";
@@ -22,8 +21,6 @@ import { formatRunAction } from "../shared/status-format.ts";
 import { setPromptSection } from "../shared/prompt-sections.ts";
 import { activateTools, restoreLazyTools } from "../shared/lazy-tools.ts";
 import { runCooperatively } from "../shared/cooperative.ts";
-import type { AsyncContext } from "../runs/shared/native-async.ts";
-import { onNativeCheckpoint, type NativeCheckpointEvent } from "../shared/native-checkpoint.ts";
 import { cancelSupervisorQuestion, createSupervisorQuestion, getRunMetadataDir, listSupervisorQuestionsAsync, readRunJson, readQuestionState, recordQuestionDelivery, saveQuestionAnswer, type SupervisorQuestion } from "../runs/shared/supervisor-questions.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -658,9 +655,6 @@ async function settleWithin<T>(operation: () => Promise<T>, timeoutMs: number): 
 }
 
 export default function piIntercomExtension(pi: ExtensionAPI) {
-  let checkpoint: NativeCheckpointEvent | undefined;
-  const inboundTails = new Set<Promise<void>>();
-  const invalidateCheckpoint = () => checkpoint?.invalidate();
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
   const childOrchestratorMetadata = readChildOrchestratorMetadata();
@@ -688,6 +682,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   const topics = new IntercomTopics(pi, () => getLiveContext());
   let topicSyncError: string | undefined;
   const pendingInbound = new Map<string, PendingInboundMessage>();
+  const nativePendingIds = new Set<string>();
   const consumedInboundIds = new Set<string>();
   const completedChildren = new Map<string, SubagentCompletion["children"][number]>();
   let reconciledLeafId: string | null = null;
@@ -749,7 +744,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         replyTo,
         question,
         resolve: (message) => {
-          invalidateCheckpoint();
           if (question && message.content.attachments?.some((attachment) => attachment.name === RECIPIENT_TURN_FAILED_ATTACHMENT)) {
             pi.appendEntry("intercom_question_notification_error", { questionId: question.questionId, error: message.content.text });
             return;
@@ -764,7 +758,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           }
         },
         reject: (error) => {
-          invalidateCheckpoint();
           cleanup();
           reject(error);
         },
@@ -896,6 +889,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     };
   }
   function isRecipientIdle(ctx: ExtensionContext): boolean {
+    // ponytail: Pi 1.0 exposes no busy signal during foreign prompt preparation;
+    // custom delivery may start a separate legitimate run. Use a public admission
+    // signal if the host adds one, rather than reserving rejected input here.
     if (agentRunning || activeTools.size > 0) return false;
     try {
       return ctx.isIdle();
@@ -947,9 +943,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     // Native appends emit subscriber callbacks synchronously; publish ownership first.
     const batch = Promise.resolve().then(deliver);
     inboundBatch = batch;
-    inboundTails.add(batch);
     const finish = () => {
-      inboundTails.delete(batch);
       if (inboundBatch !== batch) return;
       inboundBatch = undefined;
       if (getLiveContext(runtimeContext, generation) && queuedInbound().length) scheduleInboundFlush(0);
@@ -1056,14 +1050,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       && entry.from.id !== "subagent-result" && entry.from.id !== "subagent-control";
   }
   function reconcileIntercom(ctx: ExtensionContext): void {
-    if ([...pendingInbound.values()].some(needsIntercom) || replyTracker.listPending().some(needsIntercom)
-      || (ctx as AsyncContext).getPendingToolCalls?.().some((call) => call.toolName === "intercom")) activateTools(pi, ["intercom"]);
+    if ([...pendingInbound.values()].some(needsIntercom) || replyTracker.listPending().some(needsIntercom)) activateTools(pi, ["intercom"]);
   }
   function* restoreInboundEntries(ctx: ExtensionContext, generation: number): Generator<void, void> {
     consumedInboundIds.clear();
     completedChildren.clear();
     const leafId = ctx.sessionManager.getLeafId();
-    for (const metadata of entryMetadata(ctx.sessionManager)) {
+    for (const metadata of ctx.sessionManager.getEntries()) {
       yield;
       if (!getLiveContext(ctx, generation)) return;
       if (!(metadata.type === "custom_message" && ["intercom_message", "subagent-human-message"].includes(metadata.customType)
@@ -1125,6 +1118,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if ("stage" in entry && pendingInbound.get(entry.message.id) !== entry) return;
     if (discardObsoleteProgress(entry)) return;
     rememberInbound(entry, "native", delivery === "passive" ? "passive" : "auto");
+    if (delivery === "steer" || delivery === "followUp") nativePendingIds.add(entry.message.id);
     if (delivery !== "passive") {
       replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
     }
@@ -1188,7 +1182,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     });
   }
   function scheduleInboundFlush(delayMs = INBOUND_FLUSH_DELAY_MS): void {
-    if (checkpoint) return;
     if (!getLiveContext()) {
       return;
     }
@@ -1250,14 +1243,17 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         recent.push(entry);
         id = entry.parentId;
       }
-      for (const metadata of fullScan ? entryMetadata(ctx.sessionManager) : recent) {
+      for (const metadata of fullScan ? ctx.sessionManager.getEntries() : recent) {
         if (metadata.type !== "custom_message" || !["intercom_message", "subagent-human-message"].includes(metadata.customType)) continue;
         const entry = ctx.sessionManager.getEntry(metadata.id) ?? metadata;
         const inboundId = inboundIdFromCustomMessage(entry);
         if (inboundId) consumedInboundIds.add(inboundId);
       }
       for (const pendingId of pendingInbound.keys()) {
-        if (consumedInboundIds.has(pendingId)) pendingInbound.delete(pendingId);
+        if (consumedInboundIds.has(pendingId)) {
+          pendingInbound.delete(pendingId);
+          nativePendingIds.delete(pendingId);
+        }
       }
     }
     reconciledLeafId = leafId;
@@ -1266,9 +1262,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (inboundBatch) await inboundBatch;
     if (!getLiveContext(ctx, generation)) return;
     reconcileConsumedInbound(ctx);
-    // Abort can leave native custom messages queued; only recover cleared ones.
+    // Public coarse occupancy excludes custom queues on Pi 1.0; the existing
+    // turn boundary's occupancy distinguishes retained from fully cleared work.
     if (pendingInbound.size === 0 || ctx.hasPendingMessages()) return;
-    const entries = [...pendingInbound.values()].filter((entry) => entry.stage === "native");
+    const entries = [...pendingInbound.values()].filter((entry) => entry.stage === "native" && !nativePendingIds.has(entry.message.id));
     await runInboundBatch(() => runCooperatively(sendTriggerLast(entries, generation)), generation);
   }
   function isOwnedHumanMessage(from: SessionInfo, message: Message): boolean {
@@ -1278,7 +1275,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return owner?.sessionId === origin.ownerSessionId && from.id === `pi-${createHash("sha256").update(origin.ownerSessionId).digest("hex").slice(0, 32)}`;
   }
   async function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): Promise<void> {
-    invalidateCheckpoint();
     const messageGeneration = runtimeGeneration;
     if (inboundRestore) await inboundRestore;
     const liveContext = getLiveContext(ctx, messageGeneration);
@@ -1388,17 +1384,14 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (client !== nextClient || !liveContext) {
         return;
       }
-      const tail = handleIncomingMessage(liveContext, from, message);
-      inboundTails.add(tail);
-      void tail.catch((error) => {
+      void handleIncomingMessage(liveContext, from, message).catch((error) => {
         console.error("Intercom inbound delivery failed:", error);
-      }).finally(() => inboundTails.delete(tail));
+      });
     });
     nextClient.on("session_left", (sessionId: string) => {
       if (client !== nextClient) {
         return;
       }
-      invalidateCheckpoint();
       topics.disconnected(sessionId);
       rejectReplyWaiterForPeer(sessionId);
       for (const pending of replyTracker.listPending()) {
@@ -1417,7 +1410,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (client !== nextClient) {
         return;
       }
-      invalidateCheckpoint();
       if (!replyWaiter?.question) rejectReplyWaiter(new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }));
       client = null;
       topics.disconnected();
@@ -1431,7 +1423,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     });
   }
   function scheduleReconnect(): void {
-    if (checkpoint || disposed || reconnectTimer || reconnectPromise || !getLiveContext()) {
+    if (disposed || reconnectTimer || reconnectPromise || !getLiveContext()) {
       return;
     }
     const scheduledGeneration = runtimeGeneration;
@@ -1463,7 +1455,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return failure;
   }
   async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay" | "peer-awareness"): Promise<IntercomClient> {
-    invalidateCheckpoint();
     const generationAtStart = runtimeGeneration;
     if (inboundRestore) await inboundRestore;
     if (disposed || generationAtStart !== runtimeGeneration) {
@@ -1613,7 +1604,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     errorEntryType: string;
     acknowledge?: boolean;
   }): Promise<void> {
-    invalidateCheckpoint();
     const parsed = parseSubagentIntercomPayload(payload);
     if (!parsed) return;
 
@@ -1719,15 +1709,17 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     lastIntercomActivity = 0;
     activeTools.clear();
     pendingInbound.clear();
+    nativePendingIds.clear();
     replyTracker.reset();
-    restoreLazyTools(pi, ctx, "load_intercom", ["intercom"]);
+    if (event.reason !== "reload") restoreLazyTools(pi, ctx, "load_intercom", ["intercom"]);
     const restoration = Promise.resolve().then(() => restoreInbound(ctx, generation));
     inboundRestore = restoration;
-    inboundTails.add(restoration);
-    try { await restoration; }
-    finally { inboundTails.delete(restoration); }
+    await restoration;
     if (!getLiveContext(ctx, generation)) return;
     if (inboundRestore === restoration) inboundRestore = undefined;
+    if (event.reason === "reload") {
+      for (const entry of pendingInbound.values()) if (entry.stage === "native") nativePendingIds.add(entry.message.id);
+    }
     // A fresh runtime has no inherited native queues. Reload keeps those queues
     // and in-flight prompts, so only its intercom-staged entries are flushed here.
     if (event.reason !== "reload" && !ctx.signal && !ctx.hasPendingMessages()) {
@@ -1735,44 +1727,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     scheduleStartupConnection(ctx, generation);
     if (queuedInbound().length > 0) scheduleInboundFlush();
-  });
-
-  onNativeCheckpoint(pi, async (event) => {
-    checkpoint = event;
-    let requestedClient: IntercomClient | undefined;
-    clearStartupConnectTimer();
-    clearReconnectTimer();
-    clearInboundFlushTimer();
-    event.signal.addEventListener("abort", () => {
-      if (checkpoint !== event) return;
-      checkpoint = undefined;
-      // Wire order releases even if cancellation races the hold response.
-      void requestedClient?.releaseCheckpoint().catch(() => {});
-      if (getLiveContext()) {
-        if (!client?.isConnected()) scheduleReconnect();
-        if (queuedInbound().length) scheduleInboundFlush();
-      }
-    }, { once: true });
-    if (replyWaiter) return { sleepReady: false, reason: "Intercom reply waiter is live" };
-    // A tail may still need native sendMessage (forbidden during capture). Cancel
-    // this attempt before joining it; do not cancel/auto-answer the user's work.
-    if (inboundTails.size || reconnectPromise) {
-      event.invalidate();
-      await Promise.allSettled([...inboundTails, ...(reconnectPromise ? [reconnectPromise] : [])]);
-      return { sleepReady: false, reason: "Intercom inbound/reconnect work is settling" };
-    }
-    if (replyTracker.hasReplyContext) return { sleepReady: false, reason: "Intercom inbound reply context is live" };
-    const activeClient = client;
-    if (!activeClient?.isConnected()) return { sleepReady: false, reason: "Intercom client is disconnected; waiting for broker connection" };
-    if (!activeClient.supportsCheckpoint) return { sleepReady: false, reason: "Intercom broker admission hold unavailable; let an older broker exit normally" };
-    if (activeClient.hasPendingRequests) return { sleepReady: false, reason: "Intercom IPC request is pending" };
-    requestedClient = activeClient;
-    const held = await activeClient.holdCheckpoint();
-    event.signal.throwIfAborted();
-    // All earlier socket frames have been dispatched before the marker. Arrival
-    // invalidates before persistence; a positive marker therefore has no tail.
-    if (!held) return { sleepReady: false, reason: "Intercom broker has accepted queued delivery; retry after normal delivery" };
-    return { sleepReady: true };
   });
 
   pi.on("session_shutdown", async () => {
@@ -1798,6 +1752,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     inboundBatch = undefined;
     replyTracker.reset();
     pendingInbound.clear();
+    nativePendingIds.clear();
     consumedInboundIds.clear();
     completedChildren.clear();
     reconciledLeafId = null;
@@ -1815,15 +1770,19 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (getLiveContext(ctx) && currentSessionId) syncPresenceIdentity(currentSessionId);
   });
   pi.on("session_tree", (_event, ctx) => {
-    restoreLazyTools(pi, ctx, "load_intercom", ["intercom"]);
     if (getLiveContext(ctx)) reconcileConsumedInbound(ctx, true);
     reconcileIntercom(ctx);
   });
   pi.on("session_compact", (_event, ctx) => reconcileIntercom(ctx));
-  pi.on("turn_end", () => {
+  pi.on("turn_end", (event) => {
     if (!getLiveContext()) {
       return;
     }
+    // Pi exposes the next queued batch, not every custom queue item. Empty
+    // proves both queues cleared; a nonempty batch must retain all admitted IDs.
+    // ponytail: selective removal while other items remain is not observable;
+    // use a complete public queue snapshot if the host adds one.
+    if (event.context.pendingMessages.length === 0) nativePendingIds.clear();
     replyTracker.endTurn();
     scheduleInboundFlush(0);
   });
@@ -1833,6 +1792,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (inboundId) {
       consumedInboundIds.add(inboundId);
       pendingInbound.delete(inboundId);
+      nativePendingIds.delete(inboundId);
     }
     const activeClient = client;
     const context = replyTracker.currentTurn();
@@ -2278,6 +2238,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "intercom",
+    defaultActive: false,
     label: "Intercom",
     description: `Send a message to another pi session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.

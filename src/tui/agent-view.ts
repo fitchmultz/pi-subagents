@@ -70,6 +70,7 @@ export interface AgentTask {
 	replied: boolean;
 	page?: HistoryPage;
 	historyLoading?: boolean;
+	metadataAt?: number;
 }
 
 const short = (text: string, width = 48) => truncateToWidth(readableText(text).replace(/\s+/g, " ").trim(), width);
@@ -280,7 +281,12 @@ export class AgentViewController {
 			return widget;
 		});
 		void this.refresh();
-		this.timer = setInterval(() => { this.render?.(); if (!this.listError) void this.refresh(); }, 500);
+		this.timer = setInterval(() => {
+			if (!this.listError && (this.overlay || this.pinned || this.dockTasks.some((task) => task.child.state === "live" || task.question)
+				|| this.tasks.some((task) => this.visits.get(task.key)?.outbox.length))) {
+				this.render?.(); void this.refresh();
+			}
+		}, 500);
 		this.timer.unref?.();
 	}
 
@@ -320,14 +326,15 @@ export class AgentViewController {
 		return view.children.filter((child) => !view.matchedChildIndexes || view.matchedChildIndexes.includes(child.index)).map((child) => {
 			const key = this.taskKey(view, child), prior = this.task(key) ?? this.dockTasks.find((task) => task.key === key), visit = this.visits.get(key);
 			const sameAttempt = prior?.run.runId === view.runId;
+			const observed = sameAttempt && prior.child.state === child.state && prior.metadataAt === view.updatedAt;
 			const selected = !canonical && this.selectedKey === key && sameAttempt;
 			const displayChild = selected ? { ...child, task: prior.child.task, launch: prior.child.launch, result: child.result && prior.run.updatedAt === view.updatedAt ? prior.child.result : child.result,
 				activity: { ...prior.child.activity, ...child.activity } } : child;
 			return { key, label: child.identityUnavailable ? "Saved assignment unavailable" : sameAttempt ? agentTaskLabel(child) : prior?.label ?? agentTaskLabel(child), run: view, child: displayChild,
 				model: agentModel(displayChild, child.nativeConfiguration ?? (canonical && sameAttempt && child.sessionFile === prior.child.sessionFile ? prior.page?.configuration : undefined)), history: sameAttempt ? prior.history : [], historyIds: sameAttempt ? prior.historyIds : [],
-				page: sameAttempt ? prior.page : undefined, historyLoading: sameAttempt ? prior.historyLoading : false, finalId: sameAttempt ? prior.finalId : undefined, unavailable: child.missingSession && child.state !== "live" ? "Saved conversation unavailable." : view.diagnosis,
+				page: sameAttempt ? prior.page : undefined, metadataAt: observed ? prior.metadataAt : undefined, historyLoading: sameAttempt ? prior.historyLoading : false, finalId: sameAttempt ? prior.finalId : undefined, unavailable: child.missingSession && child.state !== "live" ? "Saved conversation unavailable." : view.diagnosis,
 				question: child.identityUnavailable ? undefined : questions.findLast((question) => question.index === child.index && ["awaiting_input", "answer_pending"].includes(question.state)),
-				unread: Boolean(visit && (child.activity?.lastActivityAt ?? view.updatedAt) > (visit.seenActivityAt ?? 0)), replied: sameAttempt ? prior.replied : false };
+				unread: observed ? prior.unread : Boolean(visit && (child.activity?.lastActivityAt ?? view.updatedAt) > (visit.seenActivityAt ?? 0)), replied: sameAttempt ? prior.replied : false };
 		});
 	}
 
@@ -404,6 +411,8 @@ export class AgentViewController {
 				for (const task of markers.values()) {
 					const visit = this.visits.get(task.key);
 					if (!visit || task.child.identityUnavailable) continue;
+					if (task.child.state !== "live" && !task.question && task.key !== this.selectedKey && task.key !== this.pinned
+						&& !visit.outbox.length && task.metadataAt === task.run.updatedAt) continue;
 					try {
 						const facts = await index.historyPage({ ...this.historyInput(task), limit: 1 });
 						if (!this.live(generation) || request !== this.listRequest) return;
@@ -485,6 +494,7 @@ export class AgentViewController {
 
 	applyMetadata(task: AgentTask, page: HistoryPage): void {
 		const visit = this.visits.get(task.key), delivered = new Map(page.deliveredMessages);
+		if (page.freshness.state !== "catching-up") task.metadataAt = task.run.updatedAt;
 		task.model = agentModel(task.child, page.configuration);
 		task.unread = Boolean(page.unreadAfter || visit && (task.child.activity?.lastActivityAt ?? 0) > (visit.seenActivityAt ?? 0));
 		task.replied = Boolean(visit?.lastSentId && delivered.get(visit.lastSentId));
@@ -506,13 +516,6 @@ export class AgentViewController {
 		this.saveTimer = setTimeout(() => this.save(), 300);
 		this.saveTimer.unref?.();
 		this.render?.();
-	}
-
-	/** Native idle capture flushes the existing debounced view entry, not a new store. */
-	prepareCheckpoint(): boolean {
-		if (this.busy.size || this.overlay) return false;
-		this.save();
-		return true;
 	}
 
 	private save(): void {

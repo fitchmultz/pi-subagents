@@ -89,7 +89,7 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
 	for (let index = 0; index < 6; index++) historicalIds.add(manager.appendMessage({ role: "toolResult", toolName: "subagent",
 		toolCallId: `old-${index}`, timestamp: Date.now(), content: [{ type: "text", text: "historical result" }],
 		details: { blob: "x".repeat(256 * 1024) } }));
-	const runs = new Map<string, OwnedRun>(), recorded: string[] = [], usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+	const runs = new Map<string, OwnedRun>(), usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 	for (let index = 0; index < 8; index++) {
 		const runId = `resume-${path.basename(root)}-${index}`, completionId = `done-${index}`;
@@ -129,8 +129,7 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
 	};
 	t.mock.method(manager, "getEntries", () => getEntries().map(guard));
 	t.mock.method(manager, "getEntry", (id: string) => { if (historicalIds.has(id)) historicalLookups++; return guard(getEntry(id)); });
-	const pi = { on() {}, events: createEventBus(), sendMessage() { sent++; },
-		recordUsage(contribution: { id: string }) { recorded.push(contribution.id); } } as unknown as Parameters<typeof createCompletionDelivery>[0];
+	const pi = { on() {}, events: createEventBus(), sendMessage() { sent++; } } as unknown as Parameters<typeof createCompletionDelivery>[0];
 	const state = { currentSessionId: manager.getSessionId(), ownedRuns: runs, foregroundRuns: new Map(), completionSeen: new Map(),
 		lastUiContext: { cwd: root, sessionManager: manager, isIdle: () => true, hasPendingMessages: () => false },
 		persistOwnedRun(run: unknown) {
@@ -142,7 +141,7 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
 	try {
 		delivery.start();
 		const deadline = performance.now() + 5000;
-		while ([...runs.values()].some((run) => run.accounting?.state !== "complete" || !run.delivery?.entryId)) {
+		while ([...runs.values()].some((run) => run.accounting?.state !== "pending" || !run.delivery?.entryId)) {
 			assert.ok(performance.now() < deadline, "all legacy runs finish reconciliation");
 			await delay(10);
 		}
@@ -150,7 +149,7 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
 		assert.equal(ownerWrites, 16, "each legacy run saves delivery identity and accounting once");
 		assert.ok(ownerWritesAtInput !== undefined && ownerWritesAtInput < 16, "native input is serviced before the recovery batch finishes");
 		assert.equal(sent, 0, "published completions never queue another model turn");
-		assert.deepEqual(recorded.sort(), Array.from({ length: 8 }, (_, index) => `subagent:native-${index}`));
+		assert.ok([...runs.values()].every((run) => run.accounting?.state === "pending"), "custom receipts never fabricate finalized tool-result billing");
 		assert.ok(parsedChars < fileBytes * 3, `${parsedChars} parsed characters: two compact indexes, not one full parse per run`);
 		assert.equal(historicalLookups, 0, "published billing fields do not look up unrelated historical results");
 		if (guardedHistoricalEntries) {
@@ -164,6 +163,91 @@ test("resuming legacy delivered runs parses old parent receipts once and never r
 		delivery.stop();
 		assert.equal(ownerWrites, 16, "a second start does not migrate completed runs again");
 		assert.equal(sent, 0);
+	} finally { delivery.stop(); }
+});
+
+test("unchanged completion hits share verified parent bytes only within each synchronous recovery batch", async (t) => {
+	const root = fs.mkdtempSync(path.join(tmpdir(), "subagent-receipt-batch-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const manager = SessionManager.create(root, path.join(root, "sessions"));
+	manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "x".repeat(1024 * 1024) }],
+		provider: "faux", model: "faux", stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: 0 });
+	const { RESULTS_DIR } = await import("../../src/shared/types.ts");
+	fs.mkdirSync(RESULTS_DIR, { recursive: true });
+	const hints = Array.from({ length: 8 }, (_, index) => {
+		const runId = `batch-${path.basename(root)}-${index}`;
+		manager.appendMessage({ role: "toolResult", toolName: "delegate", toolCallId: runId, timestamp: 0,
+			content: [{ type: "text", text: "Completed" }], details: { wait: { runId, status: "completed" } } });
+		const file = path.join(RESULTS_DIR, `${runId}.json`);
+		fs.writeFileSync(file, JSON.stringify({ id: runId, sessionId: manager.getSessionId(), success: true, summary: "Completed" }));
+		t.after(() => fs.rmSync(file, { force: true }));
+		return file;
+	});
+	const parentFile = manager.getSessionFile()!, parentStat = fs.statSync(parentFile), read = fs.readSync;
+	// Full-suite processes share RESULTS_DIR. Measure this fixture's eight-hit
+	// scan, not foreign hints that can legitimately split its four-file batches.
+	const readDirectory = fs.readdirSync, hintNames = new Set(hints.map((file) => path.basename(file)));
+	const listing = t.mock.method(fs, "readdirSync", (directory, ...args) => {
+		const names = readDirectory(directory, ...args);
+		return directory === RESULTS_DIR ? names.filter((name) => hintNames.has(name)) : names;
+	});
+	let parentBytes = 0, sent = 0;
+	const mock = t.mock.method(fs, "readSync", function(fd, ...args) {
+		const count = read.call(this, fd, ...args);
+		const stat = fs.fstatSync(fd);
+		if (stat.dev === parentStat.dev && stat.ino === parentStat.ino) parentBytes += count;
+		return count;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { mock.mock.restore(); listing.mock.restore(); syncBuiltinESMExports(); });
+	const pi = { on() {}, events: createEventBus(), sendMessage() { sent++; } } as Parameters<typeof createCompletionDelivery>[0];
+	const state = { currentSessionId: manager.getSessionId(), ownedRuns: new Map(), completionSeen: new Map(),
+		lastUiContext: { sessionManager: manager, isIdle: () => true, hasPendingMessages: () => false } } as Parameters<typeof createCompletionDelivery>[1];
+	const delivery = createCompletionDelivery(pi, state, registerParentUsage(pi, []));
+	try {
+		delivery.start();
+		const deadline = performance.now() + 5000;
+		while (hints.some((file) => fs.existsSync(file))) {
+			assert.ok(performance.now() < deadline, "published results retire all hints");
+			await delay(10);
+		}
+		assert.equal(sent, 0);
+		assert.ok(parentBytes <= parentStat.size * 3, `${parentBytes} bytes for eight hits: one initial parse/hash, then one hash per yielded batch`);
+		assert.ok(parentBytes >= parentStat.size * 2, "publication proof is not skipped");
+		t.diagnostic(`${parentStat.size} parent bytes; ${parentBytes} bytes read for eight unchanged receipt hits`);
+	} finally { delivery.stop(); }
+});
+
+test("awaited delivery refreshes verified receipts even when only external journal bytes changed", async (t) => {
+	const root = fs.mkdtempSync(path.join(tmpdir(), "subagent-receipt-await-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const manager = SessionManager.create(root, path.join(root, "sessions"));
+	manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Ready" }], provider: "faux", model: "faux",
+		stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: 0 });
+	const runId = `await-${path.basename(root)}`, completionId = `done-${runId}`, run: OwnedRun = {
+		runId, rootRunId: runId, ownerSessionId: manager.getSessionId(), source: "async", mode: "single", cwd: root, task: "Done", startedAt: 0, children: [],
+	};
+	t.after(() => fs.rmSync(getRunMetadataDir(runId), { recursive: true, force: true }));
+	saveAsyncRunResult(runId, { id: runId, sessionId: manager.getSessionId(), completionId, success: true, summary: "Done", results: [], intercomTarget: "parent" });
+	const events = createEventBus();
+	let relay: { requestId: string } | undefined, notices = 0;
+	events.on("subagent:result-intercom", (request) => { relay = request; });
+	const pi = { on() {}, events, sendMessage() { notices++; } } as Parameters<typeof createCompletionDelivery>[0];
+	const state = { currentSessionId: manager.getSessionId(), ownedRuns: new Map([[runId, run]]), completionSeen: new Map(),
+		lastUiContext: { sessionManager: manager, isIdle: () => true, hasPendingMessages: () => false } } as Parameters<typeof createCompletionDelivery>[1];
+	const delivery = createCompletionDelivery(pi, state, registerParentUsage(pi, []));
+	try {
+		delivery.start();
+		const deadline = performance.now() + 5000;
+		while (!relay) { assert.ok(performance.now() < deadline, "delivery enters its async tail"); await delay(10); }
+		const leaf = manager.getLeafId(), count = manager.getEntryCount();
+		fs.appendFileSync(manager.getSessionFile()!, JSON.stringify({ type: "custom_message", id: "external-receipt", parentId: leaf,
+			timestamp: new Date().toISOString(), customType: "intercom_message", details: { subagentCompletion: { runId, completionId } }, content: "Done", display: false }) + "\n");
+		assert.equal(manager.getEntryCount(), count, "external publication did not update the in-memory manager");
+		events.emit("subagent:result-intercom-delivery", { requestId: relay.requestId, delivered: true });
+		while (!state.ownedRuns!.get(runId)!.delivery?.entryId) { assert.ok(performance.now() < deadline, "async resume observes the new receipt"); await delay(10); }
+		assert.equal(state.ownedRuns!.get(runId)!.delivery?.entryId, "external-receipt");
+		assert.equal(notices, 0);
 	} finally { delivery.stop(); }
 });
 

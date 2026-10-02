@@ -14,6 +14,7 @@ import {
 	createAgentSession,
 	createEventBus,
 	DefaultResourceLoader,
+	SettingsManager,
 	SessionManager,
 	type AgentSession,
 	type CreateAgentSessionOptions,
@@ -24,7 +25,7 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const extensionPath = path.join(projectRoot, "src/extension/index.ts");
 
 async function withSdkSession(
-	options: Pick<CreateAgentSessionOptions, "tools" | "excludeTools" | "sessionManager">,
+	options: Pick<CreateAgentSessionOptions, "tools" | "excludeTools" | "sessionManager" | "settingsManager">,
 	check: (session: AgentSession, events: ReturnType<typeof createEventBus>) => Promise<void> | void,
 ): Promise<void> {
 	const agentDir = createTempDir("pi-subagent-sdk-tools-");
@@ -63,6 +64,37 @@ describe("subagent lazy activation with SDK tool filters", () => {
 		for (const name of ["subagent", "agent_runs"]) await withSdkSession({ tools: [name] }, (session) => {
 			assert.deepEqual(session.getAllTools().map((tool) => tool.name), [name]);
 			assert.deepEqual(session.getActiveToolNames(), [name]);
+		});
+	});
+
+	it("honors native fresh defaults and explicit selection without startup deactivation", async () => {
+		for (const [options, expected] of [
+			[{ tools: ["read", "load_subagent", "subagent"] }, ["load_subagent", "read", "subagent"]],
+			[{ settingsManager: SettingsManager.inMemory({ defaultTools: ["read", "load_subagent", "subagent"] }) }, ["delegate", "load_subagent", "read", "subagent"]],
+		] as const) await withSdkSession(options, (session) => {
+			assert.deepEqual(session.getActiveToolNames().sort(), expected);
+		});
+	});
+
+	it("restores initial SDK saved activation without widening an explicit tool restriction", async () => {
+		const saved = SessionManager.inMemory(projectRoot);
+		await withSdkSession({ sessionManager: saved }, async (session) => {
+			await activeTool(session, "load_subagent")!.execute("load-saved", {}, new AbortController().signal);
+			// Native tool selection is persisted in system messages at a turn boundary.
+			saved.appendMessage({ role: "system", content: "", timestamp: 0,
+				toolsAdded: session.agent.state.tools.filter((tool) => ["subagent", "agent_runs"].includes(tool.name))
+					.map(({ name, description, parameters }) => ({ name, description, parameters })) });
+		});
+		await withSdkSession({ sessionManager: saved }, async (session) => {
+			assert.ok(activeTool(session, "subagent"), "official initial SDK resume must recover declared advanced tools");
+			session.setActiveToolsByName(["read", "delegate", "load_subagent"]);
+			await session.reload();
+			assert.equal(activeTool(session, "subagent"), undefined, "reload retains native current selection rather than replaying our startup fallback");
+		});
+		await withSdkSession({ sessionManager: saved, tools: ["read", "load_subagent"] }, (session) => {
+			assert.equal(activeTool(session, "subagent"), undefined);
+			assert.equal(activeTool(session, "agent_runs"), undefined);
+			assert.deepEqual(session.getActiveToolNames().sort(), ["load_subagent", "read"]);
 		});
 	});
 
