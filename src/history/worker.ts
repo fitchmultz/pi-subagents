@@ -17,6 +17,7 @@ let store: HistoryStore | undefined, queries: HistoryQueries | undefined, owner:
 const runs = new Map<string, OwnedRun>(), foreground = new Map<string, ForegroundResumeRun>();
 const dirtyRuns = new Set<string>(), dirtySources = new Map<string, boolean>();
 const watchers = new Map<string, fs.FSWatcher>();
+const sourceWatchers = new Map<string, fs.FSWatcher>();
 const watchedSources = new Map<string, Map<string, string>>();
 let job: SourceIngest | undefined, scheduled = false, closed = false;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -70,30 +71,54 @@ function projection(run: OwnedRun): HistoryRunRow {
 	const options = { pendingInput: questions.length > 0, includeContinuations: false, readConfiguration: false as const, reconcile: false };
 	return { ...ownedRunView(run, state, options), questions };
 }
-function watch(directory: string, recursive: boolean, listener: (name: string | null) => void): void {
-	if (watchers.has(directory)) return;
+function watch(directory: string, recursive: boolean, listener: (name: string | null) => void, handles = watchers): void {
+	if (handles.has(directory)) return;
 	try {
+		if (recursive && !fs.existsSync(directory)) return;
 		const watcher = fs.watch(directory, { recursive }, (_event, name) => { listener(name?.toString() ?? null); schedule(); });
-		watcher.on("error", () => { watcher.close(); watchers.delete(directory); });
-		watchers.set(directory, watcher);
+		watcher.on("error", () => { watcher.close(); if (handles.get(directory) === watcher) handles.delete(directory); });
+		watcher.on("close", () => { if (handles.get(directory) === watcher) handles.delete(directory); });
+		handles.set(directory, watcher);
 	} catch { /* Known-handle background census recovers absent directories and dropped watches. */ }
+}
+function resetDirectoryWatch(directory: string): void {
+	watchers.get(directory)?.close(); watchers.delete(directory);
+	sourceWatchers.get(directory)?.close(); sourceWatchers.delete(directory);
+	for (const id of watchedSources.get(directory)?.keys() ?? []) dirtySources.set(id, false);
+}
+function watchSources(directory: string): void {
+	if (!watchedSources.has(directory)) return;
+	watch(directory, false, (name) => {
+		for (const [id, filename] of watchedSources.get(directory) ?? []) if (!name || filename === name) dirtySources.set(id, false);
+	}, sourceWatchers);
 }
 function installWatches(runId?: string): void {
 	if (!owner || !store) return;
 	const root = path.join(agentDir, "sessions", "subagent-runs");
-	watch(root, true, (name) => {
-		const runId = name?.split(path.sep)[0];
-		if (runId && runs.has(runId)) dirtyRuns.add(runId);
-		else if (!name) for (const id of runs.keys()) dirtyRuns.add(id);
+	// Linux emulates recursive watching by scanning directories on creation.
+	// Only admitted run trees may incur that work, never the global foreign tree.
+	watch(root, false, (name) => {
+		const runId = name;
+		for (const id of runId ? runs.has(runId) ? [runId] : [] : runs.keys()) {
+			const directory = path.join(root, id);
+			resetDirectoryWatch(directory);
+			dirtyRuns.add(id);
+		}
 	});
+	for (const id of runId ? [runId] : runs.keys()) {
+		const directory = path.join(root, id);
+		watch(directory, true, (name) => {
+			if (!name) resetDirectoryWatch(directory);
+			dirtyRuns.add(id);
+		});
+		watchSources(directory);
+	}
 	for (const source of store.all(`SELECT id,path FROM sources WHERE id IN (SELECT source_id FROM children${runId ? " WHERE run_id=?" : ""})`, ...(runId ? [runId] : []))) {
 		const directory = path.dirname(source.path);
 		let linked = watchedSources.get(directory);
 		if (!linked) watchedSources.set(directory, linked = new Map());
 		linked.set(source.id, path.basename(source.path));
-		watch(directory, false, (name) => {
-			for (const [id, filename] of watchedSources.get(directory) ?? []) if (!name || filename === name) dirtySources.set(id, false);
-		});
+		watchSources(directory);
 	}
 }
 function prune(previousSources?: string[]): void {
@@ -146,6 +171,7 @@ function pump(): void {
 	try {
 		if (dirtyRuns.size) {
 			const id = dirtyRuns.values().next().value!; dirtyRuns.delete(id);
+			installWatches(id);
 			const previousSources = store.all("SELECT source_id FROM children WHERE run_id=? AND source_id IS NOT NULL", id).map((child) => child.source_id);
 			try { store.operations.runProjections++; const view = projection(runs.get(id)!); store.putView(compactView(view), view); runErrors.delete(id); }
 			catch { const view = unknown(runs.get(id)!, "Canonical owner summary is unavailable. Completion remains unconfirmed."); store.putView(compactView(view), view); runErrors.add(id); }
@@ -188,6 +214,7 @@ function clear(): void {
 	clearTimeout(retryTimer); retryTimer = undefined;
 	job?.close(); job = undefined;
 	for (const watcher of watchers.values()) watcher.close(); watchers.clear(); watchedSources.clear();
+	for (const watcher of sourceWatchers.values()) watcher.close(); sourceWatchers.clear();
 	dirtyRuns.clear(); dirtySources.clear(); runs.clear(); foreground.clear(); runErrors = new Set();
 	for (const id of controlQueries.splice(0)) errorReply(id, new HistoryIndexError("OWNER_CHANGED", "History owner changed during control discovery."));
 	for (const barrier of barriers.splice(0)) errorReply(barrier.id, new HistoryIndexError("OWNER_CHANGED", "History owner changed during refresh."));

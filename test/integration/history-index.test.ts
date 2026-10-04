@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { fork } from "node:child_process";
 import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { readSavedOutput } from "../../src/history/canonical-result.ts";
 import * as os from "node:os";
@@ -430,6 +431,8 @@ test("canonical durable-run projection is read-only and never turns transcript p
 
 test("background catch-up leaves parent/query progress responsive and hard cancellation replays without orphan resources", async (t) => {
 	const f = fixture(t), file = f.file("backfill.jsonl", [header(), ...Array.from({ length: 1200 }, (_, index) => message(`backfill-${index}`, "heartbeatword " + "visible ".repeat(100)))]), runs = [run("backfill", file)];
+	const metadataRoot = path.join(f.agentDir, "sessions", "subagent-runs"), directory = path.join(metadataRoot, "backfill");
+	fs.mkdirSync(directory, { recursive: true });
 	let beats = 0, notifications = 0;
 	const timer = setInterval(() => beats++, 5);
 	t.after(async () => clearInterval(timer));
@@ -444,6 +447,57 @@ test("background catch-up leaves parent/query progress responsive and hard cance
 	assert.ok(beats > 0, "parent timers must run while parser/SQLite are busy");
 	await f.index.refresh();
 	assert.equal((await f.index.historyPage({ runId: "backfill", index: 0 })).count, 1200);
+	for (let index = 0; index < 8000; index++) fs.mkdirSync(path.join(metadataRoot, `foreign-${index}`));
+	assert.equal((await f.index.status()).publishedEntries, 1200, "foreign directory churn must not starve the history IPC deadline");
+	const observedTask = async (task: string) => {
+		const deadline = Date.now() + 10_000;
+		while ((await f.index.listRuns()).rows[0].children[0].task !== task) {
+			assert.ok(Date.now() < deadline, `watch publishes nested owned task ${task} without refresh or census`);
+			await delay(10);
+		}
+	};
+	const publishTask = (task: string) => {
+		fs.mkdirSync(path.join(directory, "contracts"), { recursive: true });
+		const temporary = path.join(directory, "contracts", "0.json.tmp");
+		fs.writeFileSync(temporary, JSON.stringify({ task, sessionFile: file }));
+		fs.renameSync(temporary, path.join(directory, "contracts", "0.json"));
+	};
+	publishTask("Nested owned publication"); await observedTask("Nested owned publication");
+	publishTask("Nested owned update"); await observedTask("Nested owned update");
+	fs.rmSync(directory, { recursive: true });
+	await observedTask("Task backfill");
+	publishTask("Recreated owned directory"); await observedTask("Recreated owned directory");
+	publishTask("Recreated nested update"); await observedTask("Recreated nested update");
+	fs.appendFileSync(file, lines([message("watched-append", "linked native source update")]));
+	const sourceDeadline = Date.now() + 10_000;
+	while ((await f.index.historyPage({ runId: "backfill", index: 0 })).count !== 1201) {
+		assert.ok(Date.now() < sourceDeadline, "linked source parent watch publishes native append without refresh");
+		await delay(10);
+	}
+	const colocated = path.join(directory, "shared-native.jsonl");
+	fs.writeFileSync(colocated, lines([header("shared-native")]));
+	await f.index.updateRun(run("shared-native", colocated)); await f.index.refresh("shared-native");
+	fs.appendFileSync(colocated, lines([message("shared-append", "source inside another admitted metadata tree")]));
+	const sharedDeadline = Date.now() + 10_000;
+	while ((await f.index.historyPage({ runId: "shared-native", index: 0 })).count !== 1) {
+		assert.ok(Date.now() < sharedDeadline, "co-located metadata and linked-source watches retain both dirty queues");
+		await delay(10);
+	}
+	fs.rmSync(directory, { recursive: true }); await observedTask("Task backfill");
+	publishTask("Recreated shared source parent");
+	fs.writeFileSync(colocated, lines([header("shared-native"), message("replacement", "recreated linked native source")]));
+	await observedTask("Recreated shared source parent");
+	const recreatedSourceDeadline = Date.now() + 10_000;
+	while ((await f.index.historyPage({ runId: "shared-native", index: 0 })).entries[0]?.id !== "replacement") {
+		assert.ok(Date.now() < recreatedSourceDeadline, "owned directory recreation catches up its co-located source without refresh");
+		await delay(10);
+	}
+	fs.appendFileSync(colocated, lines([message("replacement-append", "new source parent watch remains live")]));
+	while ((await f.index.historyPage({ runId: "shared-native", index: 0 })).count !== 2) {
+		assert.ok(Date.now() < recreatedSourceDeadline, "owned directory recreation reinstalls its co-located source-parent watch");
+		await delay(10);
+	}
+	await f.index.refresh();
 	assert.ok(notifications > 0); unsubscribe();
 	const done = await f.index.status(), start = done.operations;
 	for (let page = 0; page < 10; page++) await f.index.historyPage({ runId: "backfill", index: 0, limit: 10 });
@@ -451,5 +505,5 @@ test("background catch-up leaves parent/query progress responsive and hard cance
 	assert.equal(warm.operations.sourceChecks, start.sourceChecks); assert.equal(warm.operations.sourceBytesRead, start.sourceBytesRead); assert.equal(warm.operations.runProjections, start.runProjections);
 	await f.index.close(); await assert.rejects(f.index.listRuns(), code("CLOSED"));
 	await f.restart(); await owned(f.index, runs);
-	assert.equal((await f.index.status()).publishedEntries, 1200);
+	assert.equal((await f.index.status()).publishedEntries, 1201);
 });

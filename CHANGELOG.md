@@ -11,6 +11,7 @@
 
 ### Fixed
 - Join in-flight Intercom startup and reconnect attempts before session shutdown completes, without stopping a broker shared by other sessions.
+- Keep Agents history responsive on Linux when many unrelated run directories exist: recursively watch only admitted run directories and recover live updates after an owned run directory is deleted or recreated.
 
 ## [0.44.3] - 2026-10-02
 
