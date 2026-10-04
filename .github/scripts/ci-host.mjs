@@ -29,7 +29,7 @@ try {
     PI_EDITOR_RECEIPT_TEST_ROOT: resolve(process.env.PI_EDITOR_RECEIPT_TEST_ROOT) };
   const editorRef = run("git", ["rev-parse", "HEAD"], { cwd: testEnv.PI_EDITOR_RECEIPT_TEST_ROOT, env, quiet: true }).trim();
   console.log(JSON.stringify({ qualification: flavor, version: host.version, provenance: host.provenance, editorRef }));
-  run("npm", ["run", "check:compat"], { cwd: development, env: testEnv, timeout: 1_200_000 });
+  run("npm", ["run", "check:compat"], { cwd: development, env: testEnv, timeout: 1_200_000, stdio: "inherit" });
   const consumer = join(root, "git-consumer");
   stageSource(resolve(sourceArg), consumer);
   run("npm", ["install", "--omit=dev"], { cwd: consumer, env });
