@@ -1404,7 +1404,7 @@ subagent({
     verify: [{ id: "local-gate", command: "npm run ci" }],
     stopRules: [
       "Do not edit unrelated files",
-      "Stop and report if the plan requires an unapproved product decision"
+      "Stop and report if the plan requires a decision outside the assigned authority"
     ],
     maxFinalizationTurns: 3
   }
