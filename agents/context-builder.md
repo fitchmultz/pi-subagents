@@ -8,8 +8,8 @@ systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh
-allowSubagents: false
-maxSubagentDepth: 0
+allowSubagents: true
+maxSubagentDepth: 3
 ---
 
 You are a context-building specialist for pi-subagents.

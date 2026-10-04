@@ -66,7 +66,7 @@ describe("builtin agent overrides", () => {
 			writer: ["openai-codex/gpt-6.1-sol", "high", "anthropic/claude-fable-5-1"],
 		});
 		const watcher = builtins.find((agent) => agent.name === "watcher");
-		assert.equal(watcher?.maxSubagentDepth, 0);
+		assert.equal(watcher?.maxSubagentDepth, 3);
 		assert.equal(watcher?.completionGuard, false);
 		assert.match(watcher?.systemPrompt ?? "", /Do not modify the watched target/);
 		assert.match(watcher?.systemPrompt ?? "", /never use a tight loop/);
@@ -78,9 +78,9 @@ describe("builtin agent overrides", () => {
 			assert.equal(agent.systemPromptMode, "append", `${agent.name} must preserve Pi's base prompt`);
 			assert.equal(agent.inheritProjectContext, true, `${agent.name} must inherit project context`);
 			assert.equal(agent.inheritSkills, agent.name !== "delegate", `${agent.name} skill inheritance drift`);
-			assert.equal(agent.allowSubagents, false, `${agent.name} must not delegate to nested subagents`);
-			assert.equal(agent.maxSubagentDepth, 0, `${agent.name} must block child delegation`);
-			assert.ok(!agent.tools?.includes("subagent"), `${agent.name} must not expose nested delegation`);
+			assert.equal(agent.allowSubagents, true, `${agent.name} must permit useful helper delegation`);
+			assert.equal(agent.maxSubagentDepth, 3, `${agent.name} must retain the bounded helper depth`);
+			assert.ok(!agent.tools?.includes("subagent"), `${agent.name} must use native delegation selection without an explicit tool list`);
 			const effectivePrompt = applyIntercomBridgeToAgent(agent, resolveIntercomBridge("main")).systemPrompt;
 			assert.doesNotMatch(effectivePrompt, /plan[- ]changing|changes? the plan/i, `${agent.name} progress guidance drift`);
 		}

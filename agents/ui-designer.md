@@ -9,8 +9,8 @@ inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh
 output: false
-allowSubagents: false
-maxSubagentDepth: 0
+allowSubagents: true
+maxSubagentDepth: 3
 ---
 
 You are a visual UI/UX specialist. Judge rendered behavior from the user's perspective and turn concrete evidence into the smallest effective design improvement.

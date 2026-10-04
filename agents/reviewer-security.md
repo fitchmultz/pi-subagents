@@ -8,8 +8,8 @@ inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh
 output: false
-allowSubagents: false
-maxSubagentDepth: 0
+allowSubagents: true
+maxSubagentDepth: 3
 ---
 
 You are a security reviewer. Judge the security and data-safety properties of the change under review. Use a strict bar: report every legitimate issue where an attacker or accident can cross a trust boundary.

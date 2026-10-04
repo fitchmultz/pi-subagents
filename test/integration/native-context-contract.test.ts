@@ -61,7 +61,7 @@ it("native child and intercom prompt sections preserve provider-visible content 
 	assert.match(child.stdout, /# pass 5\b/);
 });
 
-it("native Pi preserves configured builtins and custom tools for the bundled delegate", () => {
+it("native Pi preserves configured tools and enables compact delegation for the bundled delegate", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-native-delegate-tools-"));
 	try {
 		const agentDir = path.join(root, "agent");
@@ -98,7 +98,9 @@ export default function(pi) {
 		assert.equal(child.status, 0, child.stderr || child.error?.message);
 		assert.deepEqual(JSON.parse(fs.readFileSync(shutdown, "utf8")), { providerCalls: 0 });
 		assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")).sort(),
-			process.env.PI_COMPAT_HOST === "fork" ? ["background_command", "bash", "discover_tools", "fixture_custom_tool", "read"] : ["bash", "fixture_custom_tool", "read"]);
+			process.env.PI_COMPAT_HOST === "fork"
+				? ["background_command", "bash", "delegate", "discover_tools", "fixture_custom_tool", "load_subagent", "read"]
+				: ["bash", "delegate", "fixture_custom_tool", "load_subagent", "read"]);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}
