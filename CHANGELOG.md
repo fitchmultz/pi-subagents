@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.44.4] - 2026-10-04
+
+### Added
+- Publish the maintained project as `@fitchmultz/pi-subagents` with public npm delivery from its repository pipeline. The unscoped npm package is unrelated; existing Git installs and release refs remain supported.
+- Discover specialist profiles declared by configured packages through `subagents.agents`. Package profiles are read-only fallbacks between builtins and user/trusted-project overrides, including installed `@fitchmultz/pi-workflows` recipes. User-installed package skills remain available even in untrusted projects; project skill sources stay trust-gated.
+
+### Changed
+- Resolve latest stable official Pi and maintained fork main once per qualification run, retaining native, Git production-build, packed-install and full CI contracts without below-floor skip routes.
+
+### Fixed
+- Join in-flight Intercom startup and reconnect attempts before session shutdown completes, without stopping a broker shared by other sessions.
+
 ## [0.44.3] - 2026-10-02
 
 ### Changed
@@ -1556,7 +1568,7 @@
 
 ### Changed
 - **Rebranded to `pi-subagents`** (was `pi-async-subagents`)
-- Now installable via `npx pi-subagents`
+- Historical upstream installer: `npx pi-subagents` (not this maintained project; use `npm:@fitchmultz/pi-subagents` today).
 
 ### Added
 - Chain TUI now supports editing output paths, reads lists, and toggling progress per step

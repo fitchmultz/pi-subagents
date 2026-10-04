@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AcceptanceInput, OutputMode } from "../shared/types.ts";
 import { getAgentDir } from "../shared/utils.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
@@ -17,7 +18,7 @@ export { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./
 
 export type AgentScope = "user" | "project" | "both";
 
-export type AgentSource = "builtin" | "user" | "project";
+export type AgentSource = "builtin" | "package" | "user" | "project";
 type SystemPromptMode = "append" | "replace";
 export type AgentDefaultContext = "fresh" | "fork";
 
@@ -129,7 +130,9 @@ export interface ChainDiscoveryDiagnostic {
 	error: string;
 }
 
-export type AgentDiscoveryDiagnostic = ChainDiscoveryDiagnostic;
+export interface AgentDiscoveryDiagnostic extends Omit<ChainDiscoveryDiagnostic, "source"> {
+	source: "user" | "project" | "package";
+}
 
 export interface AgentDiscoveryOptions {
 	projectTrusted?: boolean;
@@ -490,7 +493,7 @@ function clearAgentDiagnosticsForDirs(dirs: string[]): void {
 	}
 }
 
-function agentDiagnosticsForDir(dir: string, source: "user" | "project"): AgentDiscoveryDiagnostic[] {
+function agentDiagnosticsForDir(dir: string, source: AgentDiscoveryDiagnostic["source"]): AgentDiscoveryDiagnostic[] {
 	return [...reportedAgentDiagnostics.values()]
 		.filter((entry) => pathIsInside(dir, entry.filePath))
 		.map((entry) => ({ ...entry, source }));
@@ -731,6 +734,86 @@ function resolveNearestProjectChainDirs(cwd: string, options: AgentDiscoveryOpti
 }
 const BUILTIN_AGENTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "agents");
 
+let lastPackageManager: { key: string; manager: DefaultPackageManager; settingsManager: SettingsManager } | undefined;
+
+function loadConfiguredPackageAgents(cwd: string, scope: AgentScope, options: AgentDiscoveryOptions): { dirs: string[]; agents: AgentConfig[] } {
+	const projectRoot = findNearestProjectRoot(cwd) ?? cwd;
+	const agentDir = getAgentDir();
+	const projectTrusted = options.projectTrusted !== false;
+	const settings = {
+		global: scope === "project" ? undefined : JSON.stringify(readSettingsFileStrict(path.join(agentDir, "settings.json"))),
+		project: scope === "user" || !projectTrusted ? undefined : JSON.stringify(readSettingsFileStrict(path.join(projectRoot, ".pi", "settings.json"))),
+	};
+	const key = JSON.stringify([agentDir, projectRoot, scope, projectTrusted, settings]);
+	if (lastPackageManager?.key !== key) {
+		const settingsManager = SettingsManager.fromStorage({
+			withLock(settingsScope, read) { read(settings[settingsScope]); },
+		}, { projectTrusted });
+		const errors = settingsManager.drainErrors();
+		if (errors.length) throw errors[0]!.error;
+		lastPackageManager = { key, manager: new DefaultPackageManager({ cwd: projectRoot, agentDir, settingsManager }), settingsManager };
+	}
+	const { manager, settingsManager } = lastPackageManager;
+	const configuredPackages = manager.listConfiguredPackages();
+	const identities = new Map<string, { user?: typeof configuredPackages[number]; project?: typeof configuredPackages[number] }>();
+	for (const configured of configuredPackages) {
+		const npm = configured.source.startsWith("npm:");
+		const git = /^(?:git:|https?:\/\/|ssh:\/\/)/.test(configured.source.trim());
+		const userRoot = scope === "both" && configured.scope === "project" && (npm || git)
+			? manager.getInstalledPath(configured.source, "user") : undefined;
+		const gitBase = configured.scope === "user" ? path.join(agentDir, "git") : path.join(projectRoot, ".pi", "git");
+		// Pi treats unparseable Git-like names as local paths, not managed Git identities.
+		const kind = npm ? "npm" : git && (
+			(configured.installedPath && pathIsInside(gitBase, configured.installedPath))
+			|| (userRoot && pathIsInside(path.join(agentDir, "git"), userRoot))
+		) ? "git" : "local";
+		// Let Pi normalize remote names/URLs and ignore versions/refs; local paths keep their declaring scope.
+		const root = kind === "local" ? configured.installedPath : userRoot ?? configured.installedPath;
+		if (!root) continue;
+		const identity = `${kind}:${fs.realpathSync(root)}`;
+		const entries = identities.get(identity) ?? {};
+		if (configured.scope === "project") entries.project = configured;
+		else entries.user ??= configured;
+		identities.set(identity, entries);
+	}
+	const selected = new Set<typeof configuredPackages[number]>();
+	for (const { user, project } of identities.values()) {
+		const declaration = settingsManager.getProjectSettings().packages?.findLast(pkg => (typeof pkg === "string" ? pkg : pkg.source) === project?.source);
+		const delta = typeof declaration === "object" && declaration.autoload === false;
+		const entry = delta && user ? user : project ?? user;
+		if (entry) selected.add(entry);
+	}
+	const dirs: string[] = [];
+	const seenDirs = new Set<string>();
+	for (const configured of configuredPackages.filter(entry => selected.has(entry))) {
+		if (scope !== "both" && configured.scope !== scope) continue;
+		if (configured.scope === "project" && options.projectTrusted === false) continue;
+		const root = configured.installedPath;
+		if (!root || !fs.existsSync(path.join(root, "package.json"))) continue;
+		const manifest = readSettingsFileStrict(path.join(root, "package.json"));
+		const subagents = manifest.subagents;
+		if (subagents === undefined) continue;
+		if (!subagents || typeof subagents !== "object" || !("agents" in subagents) || !Array.isArray(subagents.agents)) {
+			throw new Error(`Package '${root}' subagents.agents must be an array of relative directories.`);
+		}
+		const realRoot = fs.realpathSync(root);
+		for (const entry of subagents.agents) {
+			if (typeof entry !== "string" || !entry || path.isAbsolute(entry) || entry.split(/[\\/]/).includes("..")) {
+				throw new Error(`Package '${root}' subagents.agents must contain relative directories inside the package.`);
+			}
+			const dir = path.resolve(root, entry);
+			const realDir = isDirectory(dir) ? fs.realpathSync(dir) : undefined;
+			if (!realDir || !pathIsInside(realRoot, realDir)) {
+				throw new Error(`Package '${root}' subagents.agents directory is missing or outside the package: ${entry}`);
+			}
+			if (!seenDirs.has(realDir)) dirs.push(dir);
+			seenDirs.add(realDir);
+		}
+	}
+	clearAgentDiagnosticsForDirs(dirs);
+	return { dirs, agents: dirs.flatMap(dir => loadAgentsFromDir(dir, "package")) };
+}
+
 export function discoverAgents(cwd: string, scope: AgentScope, options: AgentDiscoveryOptions = {}): AgentDiscoveryResult {
 	const userDirOld = path.join(getAgentDir(), "agents");
 	const userDirNew = path.join(os.homedir(), ".agents");
@@ -756,7 +839,8 @@ export function discoverAgents(cwd: string, scope: AgentScope, options: AgentDis
 	const userAgents = [...userAgentsOld, ...userAgentsNew];
 
 	const projectAgents = scope === "user" ? [] : projectAgentDirs.flatMap((dir) => loadAgentsFromDir(dir, "project"));
-	const agents = mergeAgentsForScope(scope, userAgents, projectAgents, builtinAgents)
+	const { agents: packageAgents } = loadConfiguredPackageAgents(cwd, scope, options);
+	const agents = mergeAgentsForScope(scope, userAgents, projectAgents, [...builtinAgents, ...packageAgents])
 		.filter((agent) => agent.disabled !== true);
 
 	return { agents, projectAgentsDir };
@@ -764,6 +848,7 @@ export function discoverAgents(cwd: string, scope: AgentScope, options: AgentDis
 
 export function discoverAgentsAll(cwd: string, options: AgentDiscoveryOptions = {}, scope: AgentScope = "both"): {
 	builtin: AgentConfig[];
+	package: AgentConfig[];
 	user: AgentConfig[];
 	project: AgentConfig[];
 	chains: ChainConfig[];
@@ -818,12 +903,14 @@ export function discoverAgentsAll(cwd: string, options: AgentDiscoveryOptions = 
 		...userChains.diagnostics,
 		...projectChainDiagnostics,
 	];
+	const packageProfiles = loadConfiguredPackageAgents(cwd, scope, options);
 	const agentDiagnostics = [
 		...(scope === "project" ? [] : [...agentDiagnosticsForDir(userDirOld, "user"), ...agentDiagnosticsForDir(userDirNew, "user")]),
 		...(scope === "user" ? [] : projectDirs.flatMap((dir) => agentDiagnosticsForDir(dir, "project"))),
+		...packageProfiles.dirs.flatMap(dir => agentDiagnosticsForDir(dir, "package")),
 	];
 
 	const userDir = userDirOld;
 
-	return { builtin, user, project, chains, chainDiagnostics, agentDiagnostics, userDir, projectDir, userChainDir, projectChainDir, userSettingsPath, projectSettingsPath };
+	return { builtin, package: packageProfiles.agents, user, project, chains, chainDiagnostics, agentDiagnostics, userDir, projectDir, userChainDir, projectChainDir, userSettingsPath, projectSettingsPath };
 }

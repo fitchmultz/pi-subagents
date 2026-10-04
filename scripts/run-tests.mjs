@@ -4,7 +4,6 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Units must report before compat-native's 330s kill; a full local integration run takes about six minutes on a loaded laptop.
 const DEFAULT_TIMEOUT_MS = { unit: 300_000, integration: 900_000 };
 
 function usage() {

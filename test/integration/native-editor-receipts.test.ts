@@ -17,7 +17,6 @@ test("actual editor receipts reach the mutation guard through native tool events
 	const sdk = await import(sdkEntry.href);
 	const aiRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", sdkEntry)!);
 	const { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } = await import(pathToFileURL(path.join(aiRoot, "dist/index.js")).href);
-	const { default: registerEditor } = await import(pathToFileURL(path.join(editor!, "extensions/apply-edits.ts")).href);
 	const evidenceRoot = process.env.PI_EDITOR_RECEIPT_EVIDENCE_DIR;
 	if (evidenceRoot) fs.mkdirSync(evidenceRoot, { recursive: true });
 	const cwd = fs.realpathSync(fs.mkdtempSync(path.join(evidenceRoot ?? os.tmpdir(), "native-editor-receipts-")));
@@ -27,16 +26,22 @@ test("actual editor receipts reach the mutation guard through native tool events
 	modelRuntime.registerNativeProvider(faux.provider);
 	const settingsManager = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
 	const loader = new sdk.DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, noSkills: true, noContextFiles: true, noThemes: true, noPromptTemplates: true,
-		extensionFactories: [(pi) => registerEditor({ ...pi, registerTool(tool) {
-			pi.registerTool({ ...tool, async execute(id, params, signal, update, ctx) {
-				if (tool.name !== "write_files" || params.files.length !== 3) return tool.execute(id, params, signal, update, ctx);
-				const cancellation = new AbortController();
-				return tool.execute(id, params, cancellation.signal, (progress) => {
-					update?.(progress);
-					if (progress.content.some((part) => part.type === "text" && part.text.startsWith("Completed 1/"))) cancellation.abort();
-				}, ctx);
-			} });
-		} })] });
+		additionalExtensionPaths: [path.join(editor!, "extensions/apply-edits.ts")],
+		extensionsOverride(base) {
+			for (const extension of base.extensions) for (const { definition } of extension.tools.values()) {
+				if (definition.name !== "write_files") continue;
+				const execute = definition.execute;
+				definition.execute = async (id, params, signal, update, ctx) => {
+					if (params.files.length !== 3) return execute(id, params, signal, update, ctx);
+					const cancellation = new AbortController();
+					return execute(id, params, cancellation.signal, (progress) => {
+						update?.(progress);
+						if (progress.content.some((part) => part.type === "text" && part.text.startsWith("Completed 1/"))) cancellation.abort();
+					}, ctx);
+				};
+			}
+			return base;
+		} });
 	await loader.reload();
 	assert.deepEqual(loader.getExtensions().errors, []);
 	const manager = sdk.SessionManager.create(cwd, path.join(cwd, "sessions"));

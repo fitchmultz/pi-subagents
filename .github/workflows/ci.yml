@@ -4,82 +4,62 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      official-version:
+        type: string
+        default: ''
+      fork-ref:
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   CI: 'true'
-  PI_AUTOMATION_REF: 201175005a2b801b7e482959ecf48d75e8bdcfe9
+  PI_AUTOMATION_REF: 6ec8741e1d5c7097e9b1f108bb698f5c5cd5d7f5 # main
   npm_config_cache: ${{ github.workspace }}/.npm-cache
 
 jobs:
-  official:
-    name: Official Pi / Linux / Node 24
-    runs-on: ubuntu-26.04
-    timeout-minutes: 9
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-      - name: Install native test prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y fd-find ripgrep
-          sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: npm run typecheck
-      - run: npm run build
-      - name: Qualify official native contracts
-        if: github.event_name == 'pull_request'
-        env:
-          PI_COMPAT_HOST: official
-        run: node scripts/compat-native.mjs
-      - name: Install and load a clean Git-source consumer
-        shell: bash
-        run: |
-          source_dir="$(mktemp -d /tmp/ps-source.XXXXXX)"
-          trap 'rm -rf "$source_dir"' EXIT
-          git archive HEAD | tar -xf - -C "$source_dir"
-          npm --prefix "$source_dir" install --omit=dev --no-audit --no-fund
-          test -f "$source_dir/dist/extension/index.js"
-          test -f "$source_dir/dist/pi-intercom/index.js"
-          test ! -e "$source_dir/node_modules/typescript"
-          PI_COMPAT_HOST=official node scripts/native-package-smoke.mjs "$source_dir"
-          (cd "$source_dir" && node "$GITHUB_WORKSPACE/scripts/local-install-smoke.mjs")
+  resolve:
+    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@6ec8741e1d5c7097e9b1f108bb698f5c5cd5d7f5 # main
+    with:
+      automation-ref: 6ec8741e1d5c7097e9b1f108bb698f5c5cd5d7f5 # main
+      official-version: ${{ inputs.official-version }}
+      fork-ref: ${{ inputs.fork-ref }}
 
-  resolve-fork:
-    runs-on: ubuntu-26.04
+  editor:
+    runs-on: ubuntu-latest
     outputs:
-      fork-ref: ${{ steps.fork.outputs.commit }}
+      ref: ${{ steps.source.outputs.commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        id: fork
+        id: source
         with:
-          repository: fitchmultz/pi
+          repository: fitchmultz/pi-apply-edits
           ref: main
           persist-credentials: false
 
-  fork:
-    name: Fork / ${{ matrix.os }} / ${{ matrix.suite }}
-    needs: resolve-fork
-    env:
-      PI_FORK_REF: ${{ needs.resolve-fork.outputs.fork-ref }}
+  qualification:
+    needs: [resolve, editor]
     strategy:
       fail-fast: false
-      # PRs run Linux core and macOS smoke; main pushes run Linux smoke only.
       matrix:
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-26.04","suite":"core"},{"os":"macos-latest","suite":"smoke"}]' || '[{"os":"ubuntu-26.04","suite":"smoke"}]') }}
+        include:
+          - { os: ubuntu-latest, host: official }
+          - { os: ubuntu-latest, host: fork }
+          - { os: macos-latest, host: fork }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 30
+    env:
+      PI_FORK_REF: ${{ needs.resolve.outputs.fork-ref }}
+      PI_EDITOR_RECEIPT_TEST_ROOT: ${{ github.workspace }}/editor
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,19 +73,34 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: fitchmultz/pi-apply-edits
+          ref: ${{ needs.editor.outputs.ref }}
+          path: editor
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: matrix.host == 'fork'
+        with:
           repository: fitchmultz/pi
-          ref: ${{ env.PI_FORK_REF }}
+          ref: ${{ needs.resolve.outputs.fork-ref }}
           path: fork
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-          cache: npm
-          cache-dependency-path: |
-            extension/package-lock.json
-            fork/package-lock.json
+          package-manager-cache: false
+      - name: Install native test prerequisites
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y fd-find ripgrep
+            sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+          else
+            brew install fd ripgrep
+          fi
       - run: npm install --global "$(node -p 'require("./automation/package.json").packageManager')"
       - name: Build the resolved fork on this platform
+        if: matrix.host == 'fork'
         working-directory: fork
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
@@ -113,5 +108,23 @@ jobs:
           PI_OFFLINE=1 PI_TELEMETRY=0 npm run build:offline
           node ../automation/scripts/pack-fork.mjs . "$RUNNER_TEMP/fork-package" "$PI_FORK_REF"
           git diff --exit-code
-      - name: Qualify the fork
-        run: node extension/.github/scripts/ci-fork.mjs "${{ matrix.suite }}" automation extension "$RUNNER_TEMP/fork-package" "$PI_FORK_REF"
+      - name: Qualify official full CI and production installs
+        if: matrix.host == 'official'
+        env:
+          OFFICIAL_VERSION: ${{ needs.resolve.outputs.official-version }}
+        run: node extension/.github/scripts/ci-host.mjs official "$OFFICIAL_VERSION" automation extension
+      - name: Qualify fork full CI and production installs
+        if: matrix.host == 'fork'
+        run: node extension/.github/scripts/ci-host.mjs fork "$RUNNER_TEMP/fork-package" automation extension
+
+  compatibility:
+    needs: [resolve, editor, qualification]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every selected host gate
+        env:
+          RESOLVE: ${{ needs.resolve.result }}
+          EDITOR: ${{ needs.editor.result }}
+          QUALIFICATION: ${{ needs.qualification.result }}
+        run: test "$RESOLVE" = success && test "$EDITOR" = success && test "$QUALIFICATION" = success

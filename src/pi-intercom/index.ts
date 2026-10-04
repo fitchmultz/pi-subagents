@@ -1748,6 +1748,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     await Promise.allSettled([inboundRestore, inboundBatch]);
     disposed = true;
     runtimeGeneration += 1;
+    // ponytail: joins the bounded attempt only; overdue custom launchers need lifecycle ownership in broker/spawn.ts.
+    await Promise.allSettled([reconnectPromise]);
     inboundRestore = undefined;
     inboundBatch = undefined;
     replyTracker.reset();

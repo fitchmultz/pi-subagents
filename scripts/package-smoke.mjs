@@ -99,8 +99,8 @@ for (const path of [
 
 assertNotPackedFile(pack.files, "install.mjs");
 
-if (packageJson.private !== true) fail("package.json must stay private for this GitHub/local fork");
-if (packageJson.bin !== undefined) fail("package.json must not expose an npx/bin installer for this GitHub/local fork");
+if (packageJson.name !== "@fitchmultz/pi-subagents" || packageJson.private === true || packageJson.publishConfig?.access !== "public") fail("package.json must expose the owned public scoped npm identity");
+if (packageJson.bin !== undefined) fail("package.json must not expose a legacy npx/bin installer");
 if (!packageJson.pi?.extensions?.includes("./dist/extension/index.js")) fail("package.json pi.extensions must include ./dist/extension/index.js");
 if (!packageJson.pi?.extensions?.includes("./dist/pi-intercom/index.js")) fail("package.json pi.extensions must include ./dist/pi-intercom/index.js");
 if (!packageJson.pi?.skills?.includes("./skills")) fail("package.json pi.skills must include ./skills");

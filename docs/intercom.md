@@ -29,6 +29,14 @@ Each Pi session with the bundled intercom extension loaded connects to a tiny lo
 Intercom requires Pi **1.0.0** and Node **24.21.0** or later. No Pi fork is required.
 
 ```bash
+pi install npm:@fitchmultz/pi-subagents
+```
+
+**The unscoped npm package `pi-subagents` is not this project.** Use `@fitchmultz/pi-subagents`.
+
+Git fallback (existing tags and branches remain installable):
+
+```bash
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
