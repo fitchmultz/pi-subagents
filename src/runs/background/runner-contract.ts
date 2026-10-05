@@ -2,53 +2,11 @@ import type {
   ArtifactPaths,
   AsyncResultChild,
   ChildProjectTrustPolicy,
-  MaxOutputConfig,
   NestedRouteInfo,
-  ResolvedControlConfig,
-  SubagentRunMode,
-  WorkflowGraphSnapshot,
 } from "../../shared/types.ts";
 import type { ChildEvent } from "../shared/child-attempt.ts";
 import type { MutationToolResult } from "../shared/mutating-tool-guard.ts";
-import type { RunnerStep } from "../shared/parallel-utils.ts";
-
-export interface SubagentRunConfig {
-  runtimeVersion?: 2;
-  timeoutMs?: number;
-  rootSessionId?: string;
-  id: string;
-  steps: RunnerStep[];
-  chainDir?: string;
-  originalTask?: string;
-  resultPath: string;
-  cwd: string;
-  placeholder: string;
-  taskIndex?: number;
-  totalTasks?: number;
-  maxOutput?: MaxOutputConfig;
-  artifactsDir?: string;
-  share?: boolean;
-  sessionDir?: string;
-  asyncDir: string;
-  sessionId?: string | null;
-  piPackageRoot?: string;
-  worktreeSetupHook?: string;
-  worktreeSetupHookTimeoutMs?: number;
-  controlConfig?: ResolvedControlConfig;
-  controlIntercomTarget?: string;
-  childIntercomTargets?: Array<string | undefined>;
-  resultMode?: SubagentRunMode;
-  dynamicFanoutMaxItems?: number;
-  workflowGraph?: WorkflowGraphSnapshot;
-  nestedRoute?: NestedRouteInfo;
-  nestedSelf?: {
-    parentRunId: string;
-    parentStepIndex?: number;
-    depth: number;
-    path?: Array<{ runId: string; stepIndex?: number; agent?: string }>;
-  };
-  projectTrust?: ChildProjectTrustPolicy;
-}
+export type { SubagentRunConfig } from "./runner-config.ts";
 
 export interface RunSingleStepResult extends AsyncResultChild {
   agent: string;
