@@ -7,11 +7,21 @@ export interface GitResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly status: number | null;
+  readonly error?: Error;
+}
+
+function normalizeGitStream(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 export function runGit(cwd: string, args: readonly string[]): GitResult {
   const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf-8" });
-  return { stdout: result.stdout, stderr: result.stderr, status: result.status };
+  return {
+    stdout: normalizeGitStream(result.stdout),
+    stderr: normalizeGitStream(result.stderr),
+    status: result.status,
+    error: result.error,
+  };
 }
 
 export function runGitChecked(cwd: string, args: readonly string[]): string {
@@ -19,8 +29,9 @@ export function runGitChecked(cwd: string, args: readonly string[]): string {
   if (result.status !== 0) {
     const message =
       [result.stderr.trim(), result.stdout.trim()].find((text) => text.length > 0) ??
+      result.error?.message ??
       `git -C ${cwd} ${args.join(" ")} failed`;
-    throw new Error(message);
+    throw new Error(message, { cause: result.error });
   }
   return result.stdout;
 }
