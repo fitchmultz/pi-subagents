@@ -1,4 +1,4 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import type { HistoryFreshness, HistoryPage, HistorySearchPage } from "./history.ts";
 import type { ReadonlyInput } from "./inputs.ts";
 import type { ManagementControl, OwnedRunView } from "./owned-runs.ts";
@@ -14,7 +14,7 @@ import type { ArtifactPaths, SingleResult } from "./results.ts";
 import type { UsageContribution } from "./usage.ts";
 import type { ChainOutputMap, WorkflowGraphSnapshot } from "./workflow.ts";
 
-/** Tool producer assembles details; nested published records retain their own readonly contracts. */
+/** Mutable assembly owner. Publish a ReadonlyDetails view without copying live progress sources. */
 export interface Details {
   accounting?: { readonly state: "incomplete"; readonly error: string };
   mode: SubagentRunMode | "management";
@@ -89,9 +89,10 @@ export interface Details {
   outputs?: ChainOutputMap;
 }
 
-export type SubagentExecutionResult = AgentToolResult<Details> & {
-  /** Executor marker transferred through Pi's native tool_result hook. */
-  isError?: boolean;
-};
-
 export type ReadonlyDetails = ReadonlyInput<Details>;
+
+/** Native result envelope with an application-owned readonly details snapshot. */
+export type SubagentExecutionResult = AgentToolResult<ReadonlyDetails>;
+
+/** Native streaming callback; its supplied result has the same published details contract. */
+export type SubagentExecutionUpdateCallback = AgentToolUpdateCallback<ReadonlyDetails>;

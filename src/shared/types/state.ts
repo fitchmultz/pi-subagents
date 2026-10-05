@@ -47,10 +47,10 @@ export type ReadonlySubagentState = Readonly<
     | "completionSeen"
   >
 > & {
-  readonly asyncJobs: ReadonlyMap<string, ReadonlyAsyncJobState>;
-  readonly waitingRuns?: ReadonlyMap<string, number>;
-  readonly foregroundRuns?: ReadonlyMap<string, ReadonlyForegroundResumeRun>;
-  readonly ownedRuns?: ReadonlyMap<string, OwnedRun>;
-  readonly cleanupTimers: ReadonlyMap<string, ReturnType<typeof setTimeout>>;
-  readonly completionSeen: ReadonlyMap<string, number>;
+  readonly asyncJobs: Readonly<ReadonlyMap<string, ReadonlyAsyncJobState>>;
+  readonly waitingRuns?: Readonly<ReadonlyMap<string, number>>;
+  readonly foregroundRuns?: Readonly<ReadonlyMap<string, ReadonlyForegroundResumeRun>>;
+  readonly ownedRuns?: Readonly<ReadonlyMap<string, OwnedRun>>;
+  readonly cleanupTimers: Readonly<ReadonlyMap<string, ReturnType<typeof setTimeout>>>;
+  readonly completionSeen: Readonly<ReadonlyMap<string, number>>;
 };
