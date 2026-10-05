@@ -2799,6 +2799,8 @@ test("native broker-staged progress recovers terminal child identity across relo
     text(parent.visible(completionId)[0].content).includes(summary),
     "local child output preserves literal ESC/NUL rather than adopting peer-wire restrictions",
   );
+  const senderId = parent.sender.sessionId;
+  assertDefined(senderId);
   await parent.sender.disconnect();
   const running = parent.session.prompt("Independent work while progress is deferred");
   await waitFor(() => started, "second native blocking tool");
@@ -2822,6 +2824,36 @@ test("native broker-staged progress recovers terminal child identity across relo
   await parent.session.reload();
   await parent.session.prompt("Continue independent work after reload");
   await waitFor(() => parent.session.isIdle, "independent work after reload/disconnect");
+  await parent.sender.connect(
+    { name: "sender-historical-reload", cwd: parent.context().cwd, model: "fixture" },
+    senderId,
+  );
+  await parent.send("post-reload-progress", {
+    text: "An obsolete finding from the completed child after native reload",
+    delivery: "queue",
+    queueMode: "replace",
+    threadId: "subagent-progress:reload-run:worker:0",
+  });
+  const discardedAfterReload = () =>
+    parent.session.sessionManager
+      .getEntries()
+      .some(
+        (entry) =>
+          entry.type === "custom" &&
+          entry.customType === "intercom_delivery" &&
+          at(entry, "data", "messageId") === "post-reload-progress" &&
+          at(entry, "data", "stage") === "discarded",
+      );
+  await waitFor(
+    () => discardedAfterReload() || parent.visible("post-reload-progress").length > 0,
+    "the restored terminal association processes a new stale child update",
+  );
+  assert.equal(parent.visible("post-reload-progress").length, 0);
+  assert.equal(
+    discardedAfterReload(),
+    true,
+    "literal local output must restore terminal identity, not only remain in raw history",
+  );
   await sleep(600);
   assert.equal(parent.visible("broker-delayed-progress").length, 0);
   assert.equal(parent.visible(completionId).length, 1, "reload must not replay a consumed result");
@@ -3258,13 +3290,13 @@ for (const mode of ["single", "parallel", "chain"] as const) {
                 ],
               };
             }
-            yielded = await executor.execute(
-              id,
-              { ...request, async: false, context: "fresh", artifacts: false },
+            yielded = await executor.execute({
+              toolCallId: id,
+              params: { ...request, async: false, context: "fresh", artifacts: false },
               signal,
-              update,
+              onUpdate: update,
               ctx,
-            );
+            });
             return yielded;
           },
         });

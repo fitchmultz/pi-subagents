@@ -239,13 +239,13 @@ describe("intercom result delivery cutover", () => {
     mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ORCHESTRATOR_TARGET"] });
     const { executor } = await makeExecutor({ identity: "exact-parent-session-id" });
 
-    const result = await executor.execute(
-      "exact-parent",
-      { agent: "worker", task: "Contact supervisor" },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "exact-parent",
+      params: { agent: "worker", task: "Contact supervisor" },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, undefined, textAt(result.content));
     assert.deepEqual(json(requireText(result.details.results[0]?.finalOutput)), {
@@ -267,17 +267,17 @@ describe("intercom result delivery cutover", () => {
           { agent: "worker", task: "FIRST" },
           { agent: "worker", task: "LAST" },
         ];
-        const result = await executor.execute(
-          "grouped",
-          {
+        const result = await executor.execute({
+          toolCallId: "grouped",
+          params: {
             ...(mode === "single" ? tasks[1] : {}),
             ...(mode === "parallel" ? { tasks, concurrency: 1 } : {}),
             ...(mode === "chain" ? { chain: tasks } : {}),
           },
-          undefined,
-          undefined,
-          makeMinimalCtx(tempDir),
-        );
+          signal: undefined,
+          onUpdate: undefined,
+          ctx: makeMinimalCtx(tempDir),
+        });
         assert.equal(result.isError, failed || undefined, textAt(result.content));
         assert.match(textAt(result.content), /LAST_EVIDENCE/);
         assert.equal(record(result.details.results.at(-1)).finalOutput, "LAST_EVIDENCE");
@@ -325,13 +325,13 @@ describe("intercom result delivery cutover", () => {
           assert.ok(
             fs.existsSync(requireText(record(records(payload.children).at(-1)).metadataPath)),
           );
-          const status = await executor.execute(
-            "inspect",
-            { action: "status", id: result.details.runId },
-            undefined,
-            undefined,
-            makeMinimalCtx(tempDir),
-          );
+          const status = await executor.execute({
+            toolCallId: "inspect",
+            params: { action: "status", id: result.details.runId },
+            signal: undefined,
+            onUpdate: undefined,
+            ctx: makeMinimalCtx(tempDir),
+          });
           assert.match(textAt(status.content), /LAST_EVIDENCE/);
           assert.equal(mockPi.callCount(), mode === "single" ? 1 : 2);
         } finally {
@@ -344,13 +344,13 @@ describe("intercom result delivery cutover", () => {
   it("an unacknowledged owner completion retains its saved output and publishes one fallback event", async () => {
     mockPi.onCall({ output: "UNACKNOWLEDGED_EVIDENCE" });
     const { executor, events: bus, state } = await makeExecutor({ acknowledgeResults: false });
-    const result = await executor.execute(
-      "unacknowledged",
-      { agent: "worker", task: "Report" },
-      undefined,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "unacknowledged",
+      params: { agent: "worker", task: "Report" },
+      signal: undefined,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
     const watcher = createResultWatcher({ events: bus }, state, RESULTS_DIR);
     try {
       watcher.primeExistingResults();
@@ -394,9 +394,9 @@ describe("intercom result delivery cutover", () => {
     mockPi.onCall({ matchArgsIncludes: "DOWNSTREAM", output: "DEPENDENT_EVIDENCE" });
     const { executor, events: bus, state } = await makeExecutor();
     let yielded = false;
-    const initial = await executor.execute(
-      "released",
-      {
+    const initial = await executor.execute({
+      toolCallId: "released",
+      params: {
         chain: [
           {
             parallel: [
@@ -409,8 +409,8 @@ describe("intercom result delivery cutover", () => {
         ],
         artifacts: false,
       },
-      undefined,
-      (update) => {
+      signal: undefined,
+      onUpdate: (update) => {
         if (
           !yielded &&
           update.details.progress?.some((child) => child.currentTool === "contact_supervisor") ===
@@ -420,8 +420,8 @@ describe("intercom result delivery cutover", () => {
           bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "release" });
         }
       },
-      makeMinimalCtx(tempDir),
-    );
+      ctx: makeMinimalCtx(tempDir),
+    });
     assertDefined(initial.details.wait);
     assert.equal(initial.details.wait.status, "yielded");
     const runId = initial.details.wait.runId;
@@ -482,18 +482,18 @@ describe("intercom result delivery cutover", () => {
       );
       const { executor, events } = await makeExecutor();
 
-      const result = await executor.execute(
-        "resume-live",
-        {
+      const result = await executor.execute({
+        toolCallId: "resume-live",
+        params: {
           action: "resume",
           id: runId,
           message: "Can you clarify the last change?",
           acceptance: { criteria: ["New contract"] },
         },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
 
       assert.equal(result.isError, undefined);
       assert.match(textAt(result.content), /Delivered follow-up to live async child/);
@@ -534,13 +534,13 @@ describe("intercom result delivery cutover", () => {
       );
       const { executor, events } = await makeExecutor({ acknowledgeLive: true });
 
-      const result = await executor.execute(
-        "nudge-live",
-        { action: "nudge", id: runId, message: "What is blocking you?" },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const result = await executor.execute({
+        toolCallId: "nudge-live",
+        params: { action: "nudge", id: runId, message: "What is blocking you?" },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
 
       assert.equal(result.isError, undefined);
       assert.match(textAt(result.content), /Nudge delivered to live subagent/);
@@ -581,13 +581,13 @@ describe("intercom result delivery cutover", () => {
       );
       fs.writeFileSync(path.join(asyncDir, "output-0.log"), "Verified completed outcome", "utf-8");
       const { executor, events } = await makeExecutor();
-      const result = await executor.execute(
-        "nudge-complete",
-        { action: "nudge", id: runId },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const result = await executor.execute({
+        toolCallId: "nudge-complete",
+        params: { action: "nudge", id: runId },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
       const text = textAt(result.content);
       assert.equal(result.isError, undefined);
       assert.match(text, /Nudge not sent: run is already completed/);
@@ -632,25 +632,25 @@ describe("intercom result delivery cutover", () => {
           reason: "Session not found",
         });
       });
-      const result = await executor.execute(
-        "nudge-race",
-        { action: "nudge", id: runId },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const result = await executor.execute({
+        toolCallId: "nudge-race",
+        params: { action: "nudge", id: runId },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
       assert.equal(result.isError, undefined);
       assert.equal(result.details.managementControl?.state, "failed");
       assert.match(textAt(result.content), /already failed/);
       assert.match(textAt(result.content), /Check failed: useful diagnosis/);
       assert.equal(result.details.managementControl.capabilities.includes("resume"), false);
-      const late = await executor.execute(
-        "nudge-after-race",
-        { action: "nudge", id: runId },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const late = await executor.execute({
+        toolCallId: "nudge-after-race",
+        params: { action: "nudge", id: runId },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
       assert.equal(
         late.isError,
         undefined,
@@ -674,13 +674,13 @@ describe("intercom result delivery cutover", () => {
     const { executor, state, events } = await makeExecutor();
     const ctx = makeMinimalCtx(tempDir);
     ctx.sessionManager.getSessionId = () => `owned-parent-${path.basename(tempDir)}`;
-    const completed = await executor.execute(
-      "completed-foreground",
-      { agent: "worker", task: "Report status" },
-      new AbortController().signal,
-      undefined,
+    const completed = await executor.execute({
+      toolCallId: "completed-foreground",
+      params: { agent: "worker", task: "Report status" },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
       ctx,
-    );
+    });
     saveRunStatus("another-live-run", {
       runtimeVersion: 2,
       runId: "another-live-run",
@@ -732,13 +732,13 @@ describe("intercom result delivery cutover", () => {
         children: [{ agent: "worker", index: 0 }],
       });
       const emitted = events.emitted.length;
-      const status = await executor.execute(
-        "discover-owned",
-        { action: "status" },
-        new AbortController().signal,
-        undefined,
+      const status = await executor.execute({
+        toolCallId: "discover-owned",
+        params: { action: "status" },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
         ctx,
-      );
+      });
       const text = status.content
         .filter((part) => part.type === "text")
         .map((part) => part.text)
@@ -789,13 +789,13 @@ describe("intercom result delivery cutover", () => {
       children: [{ agent: "worker", index: 0 }],
     });
 
-    const result = await executor.execute(
-      "nudge-foreground-wrong-index",
-      { action: "nudge", id: "fg-nudge", index: 1, message: "ping" },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "nudge-foreground-wrong-index",
+      params: { action: "nudge", id: "fg-nudge", index: 1, message: "ping" },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, true);
     assert.match(textAt(result.content), /has 0 matching live children/);
@@ -835,13 +835,13 @@ describe("intercom result delivery cutover", () => {
         ],
       });
 
-      const result = await executor.execute(
-        "status-health",
-        { action: "status", id: runId },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const result = await executor.execute({
+        toolCallId: "status-health",
+        params: { action: "status", id: runId },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
 
       assert.equal(result.isError, undefined);
       assert.match(
@@ -892,13 +892,13 @@ describe("intercom result delivery cutover", () => {
       children: [{ agent: "worker", index: 0 }],
     });
 
-    const result = await executor.execute(
-      "status-foreground-health",
-      { action: "status", id: "fg-health" },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "status-foreground-health",
+      params: { action: "status", id: "fg-health" },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, undefined);
     assert.match(
@@ -973,13 +973,13 @@ describe("intercom result delivery cutover", () => {
       );
       const { executor } = await makeExecutor({ agents: [makeAgent("a"), makeAgent("b")] });
 
-      const result = await executor.execute(
-        "resume-revive-multi",
-        { action: "resume", id: runId, index: 1, agent: "b", message: "What did b find?" },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const result = await executor.execute({
+        toolCallId: "resume-revive-multi",
+        params: { action: "resume", id: runId, index: 1, agent: "b", message: "What did b find?" },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
 
       assert.equal(result.isError, undefined, textAt(result.content));
       assert.match(textAt(result.content), /Revived async subagent from/);
@@ -1087,13 +1087,18 @@ describe("intercom result delivery cutover", () => {
       const testCtx = makeMinimalCtx(tempDir);
       testCtx.sessionManager.getSessionFile = () => parentSessionFile;
 
-      const result = await executor.execute(
-        "nested-resume-inherits-acceptance",
-        { action: "resume", id: nestedRunId, agent: "worker", message: "Finish the nested work" },
-        new AbortController().signal,
-        undefined,
-        testCtx,
-      );
+      const result = await executor.execute({
+        toolCallId: "nested-resume-inherits-acceptance",
+        params: {
+          action: "resume",
+          id: nestedRunId,
+          agent: "worker",
+          message: "Finish the nested work",
+        },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: testCtx,
+      });
 
       assert.equal(result.isError, undefined);
       const args = await readMockCallArgs(0);
@@ -1160,9 +1165,9 @@ describe("intercom result delivery cutover", () => {
         properties: { answer: { type: "string" } },
         required: ["answer"],
       };
-      const running = executor.execute(
-        "launch-contract",
-        {
+      const running = executor.execute({
+        toolCallId: "launch-contract",
+        params: {
           agent: "worker",
           task: "Wait for a decision",
           async: asyncMode,
@@ -1175,10 +1180,10 @@ describe("intercom result delivery cutover", () => {
             maxFinalizationTurns: 1,
           },
         },
-        undefined,
-        undefined,
+        signal: undefined,
+        onUpdate: undefined,
         ctx,
-      );
+      });
       const args = await readMockCallArgs(0);
       const callFile = fs.readdirSync(mockPi.dir).find((name) => /^call-.*\.json$/.test(name));
       assertDefined(callFile);
@@ -1212,13 +1217,18 @@ describe("intercom result delivery cutover", () => {
         await running;
       }
       const { executor: reloaded } = await makeExecutor();
-      const answer = await reloaded.execute(
-        "answer-contract",
-        { action: "answer", id: runId, questionId: question.questionId, message: "Use stable." },
-        undefined,
-        undefined,
+      const answer = await reloaded.execute({
+        toolCallId: "answer-contract",
+        params: {
+          action: "answer",
+          id: runId,
+          questionId: question.questionId,
+          message: "Use stable.",
+        },
+        signal: undefined,
+        onUpdate: undefined,
         ctx,
-      );
+      });
       assert.equal(answer.isError, undefined, textAt(answer.content));
       const resultPath = path.join(RESULTS_DIR, `${requireText(answer.details.asyncId)}.json`);
       await waitFor(() => fs.existsSync(resultPath), 10_000);
@@ -1297,13 +1307,18 @@ describe("intercom result delivery cutover", () => {
         );
       }
       const { executor } = await makeExecutor();
-      const repeat = await executor.execute(
-        "claim-repeat",
-        { action: "answer", id: runId, questionId: question.questionId, message: "Stable API" },
-        undefined,
-        undefined,
+      const repeat = await executor.execute({
+        toolCallId: "claim-repeat",
+        params: {
+          action: "answer",
+          id: runId,
+          questionId: question.questionId,
+          message: "Stable API",
+        },
+        signal: undefined,
+        onUpdate: undefined,
         ctx,
-      );
+      });
       assert.equal(
         fs.readdirSync(mockPi.dir).some((name) => name.startsWith("call-")),
         false,
@@ -1312,29 +1327,29 @@ describe("intercom result delivery cutover", () => {
         path.join(continuationDir, "status.json"),
         JSON.stringify({ runId: `answer-${question.questionId}`, state: "running" }),
       );
-      const uncertain = await executor.execute(
-        "uncertain-continue",
-        { action: "resume", id: runId, message: "Continue with the saved answer." },
-        undefined,
-        undefined,
+      const uncertain = await executor.execute({
+        toolCallId: "uncertain-continue",
+        params: { action: "resume", id: runId, message: "Continue with the saved answer." },
+        signal: undefined,
+        onUpdate: undefined,
         ctx,
-      );
+      });
       assert.equal(uncertain.isError, true, "uncertain continuation must not launch again");
       assert.match(textAt(uncertain.content), /may already have launched/);
       assert.equal(mockPi.callCount(), 0);
       fs.rmSync(path.join(continuationDir, "status.json"));
-      const continued = await executor.execute(
-        "claim-continue",
-        {
+      const continued = await executor.execute({
+        toolCallId: "claim-continue",
+        params: {
           action: "resume",
           id: runId,
           agent: "worker",
           message: "Continue with the saved answer.",
         },
-        undefined,
-        undefined,
+        signal: undefined,
+        onUpdate: undefined,
         ctx,
-      );
+      });
       assert.equal(continued.isError, undefined, textAt(continued.content));
       assert.match(textAt(repeat.content), /action: "continue"/);
       await waitFor(
@@ -1377,24 +1392,24 @@ describe("intercom result delivery cutover", () => {
     child.kill();
     await exited;
     const { executor } = await makeExecutor();
-    const listed = await executor.execute(
-      "after-reload",
-      { action: "status" },
-      undefined,
-      undefined,
+    const listed = await executor.execute({
+      toolCallId: "after-reload",
+      params: { action: "status" },
+      signal: undefined,
+      onUpdate: undefined,
       ctx,
-    );
+    });
     assert.equal(
       listed.details.questions?.find((entry) => entry.questionId === question.questionId)?.state,
       "awaiting_input",
     );
-    const inspected = await executor.execute(
-      "inspect-question",
-      { action: "status", id: runId },
-      undefined,
-      undefined,
+    const inspected = await executor.execute({
+      toolCallId: "inspect-question",
+      params: { action: "status", id: runId },
+      signal: undefined,
+      onUpdate: undefined,
       ctx,
-    );
+    });
     assert.equal(inspected.isError, false);
     assert.match(JSON.stringify(inspected.content), /awaiting_input/);
     const answerParams = {
@@ -1404,24 +1419,24 @@ describe("intercom result delivery cutover", () => {
       questionId: question.questionId,
       message: "Use the stable API.",
     };
-    const first = await executor.execute(
-      "answer-question",
-      answerParams,
-      undefined,
-      undefined,
+    const first = await executor.execute({
+      toolCallId: "answer-question",
+      params: answerParams,
+      signal: undefined,
+      onUpdate: undefined,
       ctx,
-    );
+    });
     assert.equal(first.isError, undefined, textAt(first.content));
     const revivedId = first.details.asyncId;
     assert.ok(revivedId !== undefined && revivedId.length > 0);
     const { executor: reloaded } = await makeExecutor();
-    const repeated = await reloaded.execute(
-      "repeat-answer",
-      answerParams,
-      undefined,
-      undefined,
+    const repeated = await reloaded.execute({
+      toolCallId: "repeat-answer",
+      params: answerParams,
+      signal: undefined,
+      onUpdate: undefined,
       ctx,
-    );
+    });
     assert.match(textAt(repeated.content), /already answered; no new work/);
     assert.equal(repeated.details.questions?.[0]?.delivery?.runId, revivedId);
     await waitFor(() => fs.existsSync(path.join(RESULTS_DIR, `${revivedId}.json`)), 10_000);
@@ -1438,22 +1453,22 @@ describe("intercom result delivery cutover", () => {
       ...question,
       message: "Another decision?",
     });
-    const stopped = await reloaded.execute(
-      "stop-exited-question",
-      { action: "interrupt", id: runId },
-      undefined,
-      undefined,
+    const stopped = await reloaded.execute({
+      toolCallId: "stop-exited-question",
+      params: { action: "interrupt", id: runId },
+      signal: undefined,
+      onUpdate: undefined,
       ctx,
-    );
+    });
     assert.equal(stopped.isError, undefined);
     assert.equal(stopped.details.questions?.[0]?.state, "cancelled");
-    const cancelledAnswer = await reloaded.execute(
-      "answer-stopped",
-      { ...answerParams, questionId: cancelledQuestion.questionId },
-      undefined,
-      undefined,
+    const cancelledAnswer = await reloaded.execute({
+      toolCallId: "answer-stopped",
+      params: { ...answerParams, questionId: cancelledQuestion.questionId },
+      signal: undefined,
+      onUpdate: undefined,
       ctx,
-    );
+    });
     assert.equal(cancelledAnswer.isError, true);
     assert.match(textAt(cancelledAnswer.content), /cancelled/);
   });
@@ -1486,19 +1501,19 @@ describe("intercom result delivery cutover", () => {
       );
       const { executor } = await makeExecutor();
 
-      const result = await executor.execute(
-        "resume-revive",
-        {
+      const result = await executor.execute({
+        toolCallId: "resume-revive",
+        params: {
           action: "resume",
           id: runId,
           agent: "worker",
           message: "What changed?",
           acceptance: { criteria: ["Resume override contract"] },
         },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
 
       assert.equal(result.isError, undefined);
       assert.match(textAt(result.content), /Revived async subagent from/);
@@ -1555,13 +1570,13 @@ describe("intercom result delivery cutover", () => {
       ],
     });
 
-    const result = await executor.execute(
-      "remembered-foreground-status",
-      { action: "status", id: "remembered-status" },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "remembered-foreground-status",
+      params: { action: "status", id: "remembered-status" },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, undefined);
     const text = textAt(result.content);
@@ -1577,13 +1592,13 @@ describe("intercom result delivery cutover", () => {
     assert.equal(result.details.managementControl?.state, "failed");
     assert.equal(result.details.managementControl.capabilities.includes("nudge"), false);
 
-    const nudge = await executor.execute(
-      "remembered-foreground-nudge",
-      { action: "nudge", id: "remembered-status-run" },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const nudge = await executor.execute({
+      toolCallId: "remembered-foreground-nudge",
+      params: { action: "nudge", id: "remembered-status-run" },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(nudge.isError, undefined);
     assert.match(textAt(nudge.content), /already failed/);
     assert.match(textAt(nudge.content), /Detached child timed out/);
@@ -1635,13 +1650,13 @@ describe("intercom result delivery cutover", () => {
       children: [{ agent: "a", index: 0, status: "detached", sessionFile: session }],
     });
 
-    const result = await executor.execute(
-      "remembered-detached-complete-status",
-      { action: "status", id: "detached-complete" },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "remembered-detached-complete-status",
+      params: { action: "status", id: "detached-complete" },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, undefined);
     const text = textAt(result.content);
@@ -1674,13 +1689,13 @@ describe("intercom result delivery cutover", () => {
       children: [{ agent: "a", index: 0, status: "completed", sessionFile: session }],
     });
 
-    const result = await executor.execute(
-      "remembered-foreground-latest-status",
-      { action: "status", id: "latest" },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const result = await executor.execute({
+      toolCallId: "remembered-foreground-latest-status",
+      params: { action: "status", id: "latest" },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(result.isError, undefined);
     assert.match(textAt(result.content), /Run: newer-foreground/);
@@ -1695,28 +1710,28 @@ describe("intercom result delivery cutover", () => {
       agents: [makeAgent("a"), makeAgent("b")],
     });
 
-    const original = await executor.execute(
-      "foreground-resume-original",
-      {
+    const original = await executor.execute({
+      toolCallId: "foreground-resume-original",
+      params: {
         tasks: [
           { agent: "a", task: "task-a" },
           { agent: "b", task: "task-b" },
         ],
       },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
     const runId = original.details.runId;
     assert.ok(runId !== undefined && runId.length > 0, "expected foreground run id");
 
-    const revived = await executor.execute(
-      "foreground-resume",
-      { action: "resume", id: runId, index: 1, message: "Follow up with b" },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const revived = await executor.execute({
+      toolCallId: "foreground-resume",
+      params: { action: "resume", id: runId, index: 1, message: "Follow up with b" },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(revived.isError, undefined);
     assert.match(textAt(revived.content), /Revived async subagent from/);
@@ -1770,13 +1785,13 @@ describe("intercom result delivery cutover", () => {
       maxFinalizationTurns: 1,
     };
 
-    const original = await executor.execute(
-      "foreground-timeout-resume-original",
-      { agent: "worker", task: "Implement the incident fix", timeoutMs: 1_000, acceptance },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const original = await executor.execute({
+      toolCallId: "foreground-timeout-resume-original",
+      params: { agent: "worker", task: "Implement the incident fix", timeoutMs: 1_000, acceptance },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
     const originalChild = original.details.results[0];
     assertDefined(originalChild);
     assertDefined(originalChild.acceptance);
@@ -1790,17 +1805,17 @@ describe("intercom result delivery cutover", () => {
       ["resume-verify"],
     );
 
-    const resumed = await executor.execute(
-      "foreground-timeout-resume",
-      {
+    const resumed = await executor.execute({
+      toolCallId: "foreground-timeout-resume",
+      params: {
         action: "resume",
         id: runId,
         message: "Format, validate, and commit the work already created before timeout.",
       },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(resumed.isError, undefined);
     const revivedId = resumed.details.asyncId;
     assert.ok(revivedId !== undefined && revivedId.length > 0, "expected revived async id");
@@ -1874,13 +1889,13 @@ describe("intercom result delivery cutover", () => {
       maxFinalizationTurns: 1,
     };
 
-    const original = await executor.execute(
-      "foreground-exhaust-original",
-      { agent: "worker", task: "Implement the incident fix", acceptance },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const original = await executor.execute({
+      toolCallId: "foreground-exhaust-original",
+      params: { agent: "worker", task: "Implement the incident fix", acceptance },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
     const originalChild = original.details.results[0];
     assertDefined(originalChild);
     assertDefined(originalChild.acceptance);
@@ -1896,13 +1911,17 @@ describe("intercom result delivery cutover", () => {
     );
     assert.equal(originalChild.acceptance.effectiveAcceptance.finalization.maxTurns, 1);
 
-    const resumed = await executor.execute(
-      "foreground-exhaust-resume",
-      { action: "resume", id: runId, message: "Repair the remaining criterion and finish." },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const resumed = await executor.execute({
+      toolCallId: "foreground-exhaust-resume",
+      params: {
+        action: "resume",
+        id: runId,
+        message: "Repair the remaining criterion and finish.",
+      },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(resumed.isError, undefined);
     const revivedId = resumed.details.asyncId;
     assert.ok(revivedId !== undefined && revivedId.length > 0, "expected revived async id");
@@ -1995,19 +2014,19 @@ describe("intercom result delivery cutover", () => {
       );
       const { executor } = await makeExecutor();
 
-      const result = await executor.execute(
-        "resume-override-stored",
-        {
+      const result = await executor.execute({
+        toolCallId: "resume-override-stored",
+        params: {
           action: "resume",
           id: runId,
           agent: "worker",
           message: "Redo with new contract",
           acceptance: { criteria: ["Override resume contract"] },
         },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
 
       assert.equal(result.isError, undefined);
       const revivedId = result.details.asyncId;
@@ -2102,13 +2121,13 @@ describe("intercom result delivery cutover", () => {
       );
       const { executor } = await makeExecutor();
 
-      const result = await executor.execute(
-        "resume-malformed-acceptance",
-        { action: "resume", id: runId, agent: "worker", message: "Continue the work" },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const result = await executor.execute({
+        toolCallId: "resume-malformed-acceptance",
+        params: { action: "resume", id: runId, agent: "worker", message: "Continue the work" },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
 
       assert.equal(result.isError, undefined);
       const revivedId = result.details.asyncId;
@@ -2150,11 +2169,13 @@ describe("intercom result delivery cutover", () => {
       agents: [makeAgent("a", { systemPrompt: "Intercom orchestration channel:" })],
     });
     let detachEmitted = false;
-    const original = await executor.execute(
-      "foreground-detached-original",
-      { agent: "a", task: "ask supervisor" },
-      new AbortController().signal,
-      (update: ReadonlyInput<{ details?: { progress?: Array<{ currentTool?: string }> } }>) => {
+    const original = await executor.execute({
+      toolCallId: "foreground-detached-original",
+      params: { agent: "a", task: "ask supervisor" },
+      signal: new AbortController().signal,
+      onUpdate: (
+        update: ReadonlyInput<{ details?: { progress?: Array<{ currentTool?: string }> } }>,
+      ) => {
         if (detachEmitted) {
           return;
         }
@@ -2167,19 +2188,19 @@ describe("intercom result delivery cutover", () => {
         detachEmitted = true;
         bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "single-detached" });
       },
-      makeMinimalCtx(tempDir),
-    );
+      ctx: makeMinimalCtx(tempDir),
+    });
     assert.equal(detachEmitted, true);
     const runId = original.details.wait?.runId;
     assert.ok(runId !== undefined && runId.length > 0, "expected foreground run id");
 
-    const resumed = await executor.execute(
-      "foreground-detached-resume",
-      { action: "resume", id: runId, message: "Follow up" },
-      new AbortController().signal,
-      undefined,
-      makeMinimalCtx(tempDir),
-    );
+    const resumed = await executor.execute({
+      toolCallId: "foreground-detached-resume",
+      params: { action: "resume", id: runId, message: "Follow up" },
+      signal: new AbortController().signal,
+      onUpdate: undefined,
+      ctx: makeMinimalCtx(tempDir),
+    });
 
     assert.equal(resumed.isError, undefined);
     assert.match(textAt(resumed.content), /Nudge delivered to live subagent/);
@@ -2224,13 +2245,13 @@ describe("intercom result delivery cutover", () => {
         children: [{ agent: "a", index: 0, status: "completed" }],
       });
 
-      const result = await executor.execute(
-        "resume-exact-invalid-foreground",
-        { action: "resume", id: base, message: "Follow up" },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const result = await executor.execute({
+        toolCallId: "resume-exact-invalid-foreground",
+        params: { action: "resume", id: base, message: "Follow up" },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
 
       assert.equal(result.isError, true);
       assert.match(
@@ -2279,13 +2300,13 @@ describe("intercom result delivery cutover", () => {
         children: [{ agent: "a", index: 0, status: "completed", sessionFile: foregroundSession }],
       });
 
-      const result = await executor.execute(
-        "resume-exact-invalid-async",
-        { action: "resume", id: base, message: "Follow up" },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const result = await executor.execute({
+        toolCallId: "resume-exact-invalid-async",
+        params: { action: "resume", id: base, message: "Follow up" },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
 
       assert.equal(result.isError, true);
       assert.match(
@@ -2344,13 +2365,13 @@ describe("intercom result delivery cutover", () => {
         children: [{ agent: "a", index: 0, status: "completed", sessionFile: foregroundSession }],
       });
 
-      const result = await executor.execute(
-        "ambiguous-async-prefix-resume",
-        { action: "resume", id: base, message: "Follow up" },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const result = await executor.execute({
+        toolCallId: "ambiguous-async-prefix-resume",
+        params: { action: "resume", id: base, message: "Follow up" },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
 
       assert.equal(result.isError, true);
       assert.match(textAt(result.content), /Ambiguous subagent run id prefix/);
@@ -2400,13 +2421,13 @@ describe("intercom result delivery cutover", () => {
         children: [{ agent: "a", index: 0, status: "completed", sessionFile: foregroundSession }],
       });
 
-      const result = await executor.execute(
-        "ambiguous-resume",
-        { action: "resume", id: base, message: "Follow up" },
-        new AbortController().signal,
-        undefined,
-        makeMinimalCtx(tempDir),
-      );
+      const result = await executor.execute({
+        toolCallId: "ambiguous-resume",
+        params: { action: "resume", id: base, message: "Follow up" },
+        signal: new AbortController().signal,
+        onUpdate: undefined,
+        ctx: makeMinimalCtx(tempDir),
+      });
 
       assert.equal(result.isError, true);
       assert.match(textAt(result.content), /ambiguous between foreground run/);
