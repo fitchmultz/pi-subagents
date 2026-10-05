@@ -64,6 +64,10 @@ export class AgentViewController {
   private readonly controls: AgentControls;
   readonly picker: PickerController;
   readonly conversation: ConversationController;
+  /** Parent runtime notifications trigger an observation refresh, not a UI port operation. */
+  refresh(): Promise<void> {
+    return this.browser.refresh();
+  }
   private reportFailure(error: unknown): void {
     if (this.live()) {
       this.session.ctx?.ui.notify(`Agents: ${errorText(error)}`, "error");

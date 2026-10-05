@@ -68,6 +68,7 @@ import {
   numberValue,
 } from "../support/assertions.ts";
 import { importSelectedNative } from "../../src/shared/native-import.ts";
+import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 
 const root = fs.mkdtempSync(
   path.join(process.env.PI_AGENT_VIEW_EVIDENCE_DIR ?? os.tmpdir(), "agent-interaction-"),
@@ -96,6 +97,7 @@ assert.equal(
 const { SessionManager } = await import("@earendil-works/pi-coding-agent");
 const { AgentViewController, AgentConversation } = await import("../../src/tui/agent-view.ts");
 const { historyItems, withFinalResult } = await import("../../src/tui/agent-history.ts");
+const { displayEntry } = await import("../../src/tui/history-record.ts");
 const { getSingleResultOutput } = await import("../../src/shared/utils.ts");
 const { runHistoryIndex, closeRunHistory } = await import("../../src/runs/shared/history-index.ts");
 const { restoreOwnedRuns, ownedRunView, OWNED_RUN_ENTRY } =
@@ -747,6 +749,176 @@ async function fixture(
   await refreshFixture(result);
   return result;
 }
+
+test("selected native records retain max thinking, diagnostic, deferred and nested tool metadata losslessly", async (t) => {
+  const f = await fixture(t),
+    manager = f.childSessions[0];
+  assertDefined(manager);
+  const nativeUsage = {
+    input: 11,
+    output: 7,
+    cacheRead: 3,
+    cacheWrite: 2,
+    totalTokens: 23,
+    cacheWrite1h: 2,
+    reasoning: 5,
+    cost: { input: 0.11, output: 0.07, cacheRead: 0.03, cacheWrite: 0.02, total: 0.23 },
+  };
+  const message: AssistantMessage = {
+    role: "assistant",
+    content: [
+      { type: "text", text: "Native metadata round-trip" },
+      {
+        type: "thinking",
+        thinking: "Retain signed reasoning",
+        thinkingSignature: "reasoning-signature",
+        redacted: false,
+      },
+      { type: "toolCall", id: "metadata-call", name: "inspect", arguments: { path: "login.ts" } },
+    ],
+    provider: "fixture",
+    model: "native-max",
+    api: "openai-responses",
+    usage: nativeUsage,
+    timestamp: Date.now(),
+    stopReason: "deferred",
+    thinkingLevel: "max",
+    providerThinkingLevel: "provider-max",
+    responseModel: "provider-response-model",
+    rawStopReason: "background",
+    endTurn: false,
+    diagnostics: [
+      {
+        type: "retry",
+        timestamp: 123,
+        error: { message: "Retry once", code: 429 },
+        details: { attempt: 2 },
+      },
+      { type: "resume", timestamp: 124 },
+    ],
+    deferred: {
+      provider: "fixture",
+      modelId: "native-max",
+      api: "openai-responses",
+      id: "deferred-token",
+      data: { cursor: [1, "next"] },
+    },
+  };
+  const result: ToolResultMessage = {
+    role: "toolResult",
+    toolCallId: "metadata-call",
+    toolName: "inspect",
+    content: [{ type: "text", text: "Metadata retained" }],
+    timestamp: Date.now(),
+    isError: false,
+    usage: nativeUsage,
+    nestedCalls: {
+      calls: [
+        {
+          id: "nested-1",
+          name: "read",
+          arguments: { path: "login.ts" },
+          status: "ok",
+          durationMs: 12,
+        },
+        { id: "nested-2", name: "list", argumentsBytes: 4096, status: "unfinished" },
+      ],
+      complete: false,
+    },
+  };
+  const assistantId = manager.appendMessage(message);
+  manager.appendMessage(result);
+
+  await refreshFixture(f);
+  const assistantCard = requiredTask(f).history.find((item) => item.id === `${assistantId}:0`),
+    toolCard = requiredTask(f).history.find((item) => item.call?.id === "metadata-call");
+  assertDefined(assistantCard?.load);
+  assertDefined(toolCard?.load);
+  const fullAssistant = await assistantCard.load(),
+    fullTool = await toolCard.load();
+  assert.deepEqual(
+    fullAssistant.assistant,
+    message,
+    "complete native assistant fields and property absence survive indexed JSON publication",
+  );
+  assert.deepEqual(
+    fullTool.result,
+    result,
+    "usage, nested arguments and deliberate omitted fields survive selected record loading",
+  );
+  assert.equal(Object.hasOwn(fullAssistant.assistant ?? {}, "responseId"), false);
+  assert.equal(Object.hasOwn(fullTool.result ?? {}, "details"), false);
+  const transient = SessionManager.inMemory(f.cwd),
+    transientMessage: AssistantMessage = {
+      ...message,
+      responseId: undefined,
+      diagnostics: undefined,
+      deferred: {
+        provider: "fixture",
+        modelId: "native-max",
+        api: "openai-responses",
+        id: "token",
+        data: undefined,
+      },
+    };
+  transient.appendMessage(transientMessage);
+  const transientEntry = transient.getEntries().find((entry) => entry.type === "message");
+  const observed = displayEntry(transientEntry, "full");
+  assert.equal(observed?.type, "message");
+  if (observed?.type !== "message") {
+    throw new Error("Expected a complete transient native message");
+  }
+  assert.deepEqual(
+    observed.native,
+    transientMessage,
+    "native in-process optional keys preserve explicit undefined as well as absence",
+  );
+});
+
+test("indexed image previews stay visible while selected full records reject missing image bytes", async (t) => {
+  const f = await fixture(t),
+    manager = f.childSessions[0];
+  assertDefined(manager);
+  const resultId = manager.appendMessage({
+    role: "toolResult",
+    toolCallId: "image-preview",
+    toolName: "image",
+    content: [{ type: "image", mimeType: "image/png", data: "aW1hZ2U=" }],
+    isError: false,
+    timestamp: Date.now(),
+  });
+  const file = sessionFile(manager);
+  // Corrupt before the process can publish this appended record, so its reference digest
+  // describes the malformed data; rejection must come from full native validation.
+  const lines = fs
+    .readFileSync(file, "utf8")
+    .split("\n")
+    .map((line) => {
+      if (line.length === 0) {
+        return line;
+      }
+      const entry = record(parseJson(line));
+      if (entry.id !== resultId) {
+        return line;
+      }
+      const message = record(entry.message);
+      return JSON.stringify({
+        ...entry,
+        message: { ...message, content: [{ type: "image", mimeType: "image/png" }] },
+      });
+    });
+  fs.writeFileSync(file, lines.join("\n"));
+  await refreshFixture(f);
+  const card = requiredTask(f).history.find((item) => item.id === resultId);
+  assertDefined(card);
+  assertDefined(card.load);
+  assert.deepEqual(
+    card.result?.content,
+    [{ type: "image", data: "", mimeType: "image/png" }],
+    "actual published preview retains the image placeholder",
+  );
+  await assert.rejects(card.load(), /Selected native entry is unavailable; retry history\./);
+});
 
 for (const count of [20, 227]) {
   test(`Agents startup asynchronously pages ${count} owned runs and hydrates only selected details beside 8000 unrelated runs`, async (t) => {
@@ -5941,10 +6113,7 @@ async function refreshFixture(f: Fixture): Promise<void> {
             task.run.updatedAt,
           )
         : value.history;
-    task.history = history.items;
-    task.historyIds = history.entryIds;
-    task.page = value.page;
-    task.finalId = history.finalId;
+    f.controller.conversation.applyHistoryPage(task.key, history, value.page, value.page.count > 0);
   }
   if (f.tui.hasOverlay() && f.overlay instanceof AgentConversation) {
     f.overlay.refresh();
