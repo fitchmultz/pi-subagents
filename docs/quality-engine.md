@@ -111,7 +111,7 @@ This is an input-contract check, not proof of callback purity or runtime freezin
 
 ## Qualified readonly alias and intersection integrity
 
-`tsgolint-qualified-readonly.patch` fixes two additional origin/scope defects:
+`tsgolint-qualified-readonly.patch` fixes additional origin/scope defects:
 
 - The matcher selected an alias's name but its underlying generic interface's
   source file. It now checks both alias-name/origin and underlying-type-name/origin
@@ -124,6 +124,14 @@ This is an input-contract check, not proof of callback purity or runtime freezin
   intersection constituent independently. `Theme & { state: string[] }` therefore
   reports while `Theme & { readonly labels: readonly string[] }` retains native
   permission. The existing any-member matcher remains unchanged for other rules.
+- Conditional SDK types can erase an owned alias from the resolved type. The
+  readonly rule recovers a nongeneric alias from the actual parameter or property
+  annotation only when that annotation resolves to the analyzed type. It follows
+  import/re-export and alias chains, checking each declaration's real name and
+  origin with the qualified matcher. It does not grant name-only or generic
+  annotation permissions. Annotated unions and intersections check each part,
+  preserving mutable-attachment diagnostics even when the checker flattens an
+  approved native intersection alias.
 
 For a fixed alias such as `SubagentExecutionResult = AgentToolResult<ReadonlyDetails>`,
 qualify its actual declaration file, not the `AgentToolResult` SDK generic. Probe
@@ -131,5 +139,8 @@ import/re-export aliases, local shadows, foreign declarations with the same file
 or name, wrong existing paths, direct mutable generic payloads, and mutable versus
 readonly intersection attachments. A broad native generic allowance still accepts
 all its instantiations; it must not be used to bypass owned payload contracts.
-Neither this correction nor the configuration adds generic SDK-argument permission
-or changes general callback-result checks.
+The same isolation probes cover `RecordedToolResult = ToolResultMessage`, whose
+conditional SDK definition erases the alias, including nested readonly properties
+and reuse of its underlying type by an unapproved property. Approval must not leak
+between those properties. Neither this correction nor the configuration adds
+generic SDK-argument permission or changes general callback-result checks.

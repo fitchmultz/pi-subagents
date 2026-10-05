@@ -1,8 +1,23 @@
 diff --git a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
-index 1590568..1ad667d 100644
+index 1590568..777056f 100644
 --- a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
 +++ b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
-@@ -293,7 +293,19 @@ func isTypeReadonlyRecurser(
+@@ -258,7 +258,13 @@ func isTypeReadonlyObject(
+ 			continue
+ 		}
+ 
+-		if isTypeReadonlyRecurser(program, typeChecker, propertyType, opts, seenTypes) == readonlynessMutable {
++		var annotation *ast.Node
++		if property.ValueDeclaration != nil {
++			annotation = property.ValueDeclaration.Type()
++		} else if len(property.Declarations) == 1 {
++			annotation = property.Declarations[0].Type()
++		}
++		if isTypeReadonlyAnnotated(program, typeChecker, propertyType, annotation, opts, seenTypes) == readonlynessMutable {
+ 			return readonlynessMutable
+ 		}
+ 	}
+@@ -293,7 +299,19 @@ func isTypeReadonlyRecurser(
  ) readonlyness {
  	seenTypes[t] = struct{}{}
  
@@ -23,7 +38,7 @@ index 1590568..1ad667d 100644
  		return readonlynessReadonly
  	}
  
-@@ -309,33 +321,6 @@ func isTypeReadonlyRecurser(
+@@ -309,33 +327,6 @@ func isTypeReadonlyRecurser(
  		return readonlynessReadonly
  	}
  
@@ -57,6 +72,97 @@ index 1590568..1ad667d 100644
  	if !utils.IsObjectType(t) {
  		return readonlynessReadonly
  	}
+@@ -357,13 +348,80 @@ func isTypeReadonlyRecurser(
+ 	return readonlynessReadonly
+ }
+ 
++func isTypeReadonlyAnnotated(
++	program *compiler.Program,
++	typeChecker *checker.Checker,
++	t *checker.Type,
++	annotation *ast.Node,
++	opts readonlynessOptions,
++	seenTypes map[*checker.Type]struct{},
++) readonlyness {
++	visited := map[*ast.Node]struct{}{}
++	for annotation != nil && checker.Checker_getTypeFromTypeNode(typeChecker, annotation) == t {
++		annotation = ast.SkipTypeParentheses(annotation)
++		if _, seen := visited[annotation]; seen {
++			break
++		}
++		visited[annotation] = struct{}{}
++		if annotation.Kind == ast.KindTypeReference {
++			reference := annotation.AsTypeReferenceNode()
++			if reference.TypeArguments != nil {
++				break
++			}
++			symbol := typeChecker.GetSymbolAtLocation(reference.TypeName)
++			if symbol == nil {
++				break
++			}
++			if utils.IsSymbolFlagSet(symbol, ast.SymbolFlagsAlias) {
++				symbol = typeChecker.GetAliasedSymbol(symbol)
++			}
++			if symbol == nil || len(symbol.Declarations) != 1 ||
++				symbol.Declarations[0].Kind != ast.KindTypeAliasDeclaration ||
++				symbol.Declarations[0].AsTypeAliasDeclaration().TypeParameters != nil {
++				break
++			}
++			if utils.Some(opts.allow, func(specifier utils.TypeOrValueSpecifier) bool {
++				return specifier.From != utils.TypeOrValueSpecifierFromName &&
++					utils.SymbolMatchesSpecifierNameAndSource(symbol, symbol.Name, specifier, program)
++			}) {
++				return readonlynessReadonly
++			}
++			annotation = symbol.Declarations[0].Type()
++			continue
++		}
++		var parts []*ast.Node
++		if annotation.Kind == ast.KindIntersectionType {
++			parts = annotation.AsIntersectionTypeNode().Types.Nodes
++		} else if annotation.Kind == ast.KindUnionType {
++			parts = annotation.AsUnionTypeNode().Types.Nodes
++		}
++		if parts == nil {
++			break
++		}
++		_, alreadySeen := seenTypes[t]
++		seenTypes[t] = struct{}{}
++		if !alreadySeen {
++			defer delete(seenTypes, t)
++		}
++		for _, part := range parts {
++			partType := checker.Checker_getTypeFromTypeNode(typeChecker, part)
++			if isTypeReadonlyAnnotated(program, typeChecker, partType, part, opts, seenTypes) != readonlynessReadonly {
++				return readonlynessMutable
++			}
++		}
++		return readonlynessReadonly
++	}
++	return isTypeReadonlyRecurser(program, typeChecker, t, opts, seenTypes)
++}
++
+ func isTypeReadonly(
+ 	program *compiler.Program,
+ 	typeChecker *checker.Checker,
+ 	t *checker.Type,
++	annotation *ast.Node,
+ 	opts readonlynessOptions,
+ ) bool {
+-	return isTypeReadonlyRecurser(program, typeChecker, t, opts, map[*checker.Type]struct{}{}) == readonlynessReadonly
++	return isTypeReadonlyAnnotated(program, typeChecker, t, annotation, opts, map[*checker.Type]struct{}{}) == readonlynessReadonly
+ }
+ 
+ func isLiteralOrTaggablePrimitiveLike(t *checker.Type) bool {
+@@ -461,7 +519,7 @@ var PreferReadonlyParameterTypesRule = rule.Rule{
+ 					continue
+ 				}
+ 
+-				isReadOnly := isTypeReadonly(ctx.Program, ctx.TypeChecker, t, readonlynessOptions{
++				isReadOnly := isTypeReadonly(ctx.Program, ctx.TypeChecker, t, actualParameter.Type(), readonlynessOptions{
+ 					allow:                  opts.Allow,
+ 					treatMethodsAsReadonly: opts.TreatMethodsAsReadonly,
+ 				})
 diff --git a/internal/utils/type_matches_specifier.go b/internal/utils/type_matches_specifier.go
 index cfcaaab..4255ef6 100644
 --- a/internal/utils/type_matches_specifier.go
