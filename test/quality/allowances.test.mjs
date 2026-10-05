@@ -174,12 +174,36 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
       "TransformStreamDefaultController",
     ];
     const names = [...groups.flatMap(([, members]) => members), ...webNames];
+    const isolatedNames = [
+      "AgentBeforeSettleEvent",
+      "SessionMessageEntry",
+      "UsageEntry",
+      "AgentMessage",
+    ];
+    const foreignDeclarations = isolatedNames
+      .map((name) => `export interface ${name} { values: string[]; }`)
+      .join("\n");
+    put(dir, "foreign-sdk.ts", foreignDeclarations);
+    put(
+      dir,
+      "node_modules/quality-foreign-sdk/package.json",
+      '{"name":"quality-foreign-sdk","types":"index.d.ts"}',
+    );
+    put(dir, "node_modules/quality-foreign-sdk/index.d.ts", foreignDeclarations);
     const imports = groups.map(
       ([pkg, members]) => `import type {${members.join(",")}} from "${pkg}";`,
     );
     imports.push(
       'import type {KeybindingsManager as CodingKeybindingsManager} from "@earendil-works/pi-coding-agent";',
     );
+    for (const [source, prefix] of [
+      ["./foreign-sdk.js", "Foreign"],
+      ["quality-foreign-sdk", "Packaged"],
+    ]) {
+      imports.push(
+        `import type {${isolatedNames.map((name) => `${name} as ${prefix}${name}`).join(",")}} from "${source}";`,
+      );
+    }
     const parameterTypes = {
       Model: "Model<'anthropic-messages'>",
       ChildProcessByStdio: "ChildProcessByStdio<null, Readable, Readable>",
@@ -216,6 +240,14 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
       (name) =>
         `{ interface ${name} { values: string[]; } function negative(value: ${name}) { return value; } }`,
     );
+    for (const prefix of ["Foreign", "Packaged"]) {
+      negatives.push(
+        ...isolatedNames.map(
+          (name) =>
+            `export function negative${prefix}${name}(value: ${prefix}${name}) { return value; }`,
+        ),
+      );
+    }
     put(
       dir,
       "main.ts",
@@ -258,6 +290,12 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
     const source = project.getSourceFile(resolve(dir, "main.ts"));
     const checker = project.getTypeChecker();
     for (const statement of source.statements.filter(ts.isImportDeclaration)) {
+      if (
+        statement.moduleSpecifier.text === "./foreign-sdk.js" ||
+        statement.moduleSpecifier.text === "quality-foreign-sdk"
+      ) {
+        continue;
+      }
       for (const binding of statement.importClause.namedBindings.elements) {
         const symbol = checker.getAliasedSymbol(checker.getSymbolAtLocation(binding.name));
         assert.ok(
