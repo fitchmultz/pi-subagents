@@ -1,4 +1,5 @@
-import type { AgentConfig } from "../agents/agents.ts";
+import type { AgentConfig } from "./types/config.ts";
+import type { ReadonlyInput } from "./types/inputs.ts";
 import {
   type ChainStep,
   type SequentialStep,
@@ -12,9 +13,9 @@ import { wrapForkTask } from "./types.ts";
 export type SubagentExecutionContext = "fresh" | "fork";
 
 interface ForkableSessionManager {
-  getSessionFile(): string | undefined;
-  getLeafId(): string | null;
-  getSessionDir(): string;
+  readonly getSessionFile: () => string | undefined;
+  readonly getLeafId: () => string | null;
+  readonly getSessionDir: () => string;
 }
 
 export interface SubagentParamsLikeForContext {
@@ -38,39 +39,37 @@ export function resolveAgentContext(
   if (explicitContext !== undefined) {
     return resolveSubagentContext(explicitContext);
   }
-  if (!agentName) {
+  if (agentName === undefined || agentName === "") {
     return "fresh";
   }
   const agent = agents.find((entry) => entry.name === agentName);
   return agent?.defaultContext === "fork" ? "fork" : "fresh";
 }
 
+function chainAgentTargets(step: ReadonlyInput<ChainStep>): InvocationAgentTarget[] {
+  if (isParallelStep(step)) {
+    return step.parallel.map((task) => ({ agent: task.agent, model: task.model }));
+  }
+  const task = isDynamicParallelStep(step) ? step.parallel : step;
+  return [{ agent: task.agent, model: task.model }];
+}
+
 function collectInvocationAgentTargets(
-  params: SubagentParamsLikeForContext,
+  params: ReadonlyInput<SubagentParamsLikeForContext>,
 ): InvocationAgentTarget[] {
-  if (params.tasks?.length) {
+  if (params.tasks !== undefined && params.tasks.length > 0) {
     return params.tasks.map((task) => ({ agent: task.agent, model: task.model }));
   }
-  if (params.chain?.length) {
-    const targets: InvocationAgentTarget[] = [];
-    for (const step of params.chain) {
-      if (isParallelStep(step)) {
-        for (const task of step.parallel) {
-          targets.push({ agent: task.agent, model: task.model });
-        }
-      } else if (isDynamicParallelStep(step)) {
-        targets.push({ agent: step.parallel.agent, model: step.parallel.model });
-      } else {
-        targets.push({ agent: step.agent, model: step.model });
-      }
-    }
-    return targets;
+  if (params.chain !== undefined && params.chain.length > 0) {
+    return params.chain.flatMap(chainAgentTargets);
   }
-  return params.agent ? [{ agent: params.agent, model: params.model }] : [];
+  return params.agent !== undefined && params.agent !== ""
+    ? [{ agent: params.agent, model: params.model }]
+    : [];
 }
 
 export function validateForkContextModelPolicy(
-  params: SubagentParamsLikeForContext,
+  params: ReadonlyInput<SubagentParamsLikeForContext>,
   agents: readonly AgentConfig[],
   resolveModel?: (model: string) => string | undefined,
 ): string | undefined {
@@ -80,12 +79,14 @@ export function validateForkContextModelPolicy(
       continue;
     }
     const anthropicModel = (
-      target.model ? [target.model] : [agent.model, ...(agent.fallbackModels ?? [])]
+      target.model !== undefined && target.model !== ""
+        ? [target.model]
+        : [agent.model, ...(agent.fallbackModels ?? [])]
     )
       .filter((model): model is string => Boolean(model?.trim()))
       .map((model) => resolveModel?.(model) ?? model)
       .find((model) => model.trim().toLowerCase().startsWith("anthropic/"));
-    if (anthropicModel) {
+    if (anthropicModel !== undefined && anthropicModel !== "") {
       return `Fork context cannot be used with anthropic/* models. Agent '${target.agent}' has effective model candidate '${anthropicModel}'. Use context: "fresh" or a non-Anthropic model; this restriction cannot be overridden.`;
     }
   }
@@ -104,28 +105,13 @@ export function invocationUsesForkContext(
 }
 
 export function buildFlatAgentNameResolver(
-  params: SubagentParamsLikeForContext,
+  params: ReadonlyInput<SubagentParamsLikeForContext>,
 ): (index: number) => string | undefined {
-  if (params.agent && !params.tasks?.length && !params.chain?.length) {
-    return () => params.agent;
+  if ((params.tasks?.length ?? 0) > 0 || (params.chain?.length ?? 0) > 0) {
+    const names = collectInvocationAgentTargets(params).map((target) => target.agent);
+    return (index) => names[index];
   }
-  if (params.tasks?.length) {
-    return (index) => params.tasks![index]?.agent;
-  }
-  if (params.chain?.length) {
-    const flatAgents: string[] = [];
-    for (const step of params.chain) {
-      if (isParallelStep(step)) {
-        for (const task of step.parallel) {
-          flatAgents.push(task.agent);
-        }
-        continue;
-      }
-      flatAgents.push(...getStepAgents(step));
-    }
-    return (index) => flatAgents[index];
-  }
-  return () => undefined;
+  return () => (params.agent === "" ? undefined : params.agent);
 }
 
 export function wrapTaskForAgentContext(
@@ -140,10 +126,10 @@ export function wrapTaskForAgentContext(
 }
 
 export function wrapChainTasksForAgentContext(
-  chain: ChainStep[],
+  chain: readonly ReadonlyInput<ChainStep>[],
   explicitContext: unknown,
   agents: readonly AgentConfig[],
-): ChainStep[] {
+): ReadonlyInput<ChainStep>[] {
   return chain.map((step, stepIndex) => {
     if (isParallelStep(step)) {
       return {
@@ -173,7 +159,7 @@ export function wrapChainTasksForAgentContext(
         },
       };
     }
-    const sequential = step as SequentialStep;
+    const sequential: ReadonlyInput<SequentialStep> = step;
     const agentName = getStepAgents(step)[0];
     return {
       ...sequential,
@@ -191,14 +177,17 @@ export function createPerAgentForkContextResolver(
   sessionManager: ForkableSessionManager,
   resolveContextForIndex: (index?: number) => SubagentExecutionContext,
   options: {
-    resolveContextForAgentIndex?: (
+    readonly resolveContextForAgentIndex?: (
       agentName: string | undefined,
       index?: number,
     ) => SubagentExecutionContext;
   } = {},
 ): {
-  sessionFileForIndex(index?: number): string | undefined;
-  sessionFileForAgentIndex(agentName: string | undefined, index?: number): string | undefined;
+  readonly sessionFileForIndex: (index?: number) => string | undefined;
+  readonly sessionFileForAgentIndex: (
+    agentName: string | undefined,
+    index?: number,
+  ) => string | undefined;
 } {
   let forkResolver: ReturnType<typeof createForkContextResolver> | undefined;
   const sessionFileForContext = (

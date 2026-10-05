@@ -1,6 +1,6 @@
 interface FileCoalescer {
-  schedule(file: string, delayMs?: number): boolean;
-  clear(): void;
+  readonly schedule: (file: string, delayMs?: number) => boolean;
+  readonly clear: () => void;
 }
 
 export function createFileCoalescer(

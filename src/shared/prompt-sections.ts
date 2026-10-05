@@ -5,6 +5,8 @@ export function setPromptSection(
   name: string,
   content: string,
 ): void {
+  // Pi owns this mutable prompt-building options object. This SDK hook updates
+  // sections and its legacy exact override in place; callers observe the same object.
   options.sections[name] = content;
   // Pi projects an earlier exact override instead of sections. Preserve its content;
   // this compatibility path replaces the leading prompt and cannot preserve its cache prefix.

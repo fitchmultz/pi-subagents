@@ -1,9 +1,22 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { hasExecutionCwdOwner } from "../runs/shared/child-execution-cwd.ts";
+import type { ReadonlyInput } from "./types/inputs.ts";
 
+function validateDirectoryReply(
+  result: { readonly cwd?: string; readonly error?: string } | undefined,
+): void {
+  if (result?.error !== undefined && result.error !== "") {
+    throw new Error(result.error);
+  }
+  if (result && (result.cwd === undefined || result.cwd === "")) {
+    throw new Error("Working-directory owner did not return an execution directory.");
+  }
+}
 /** Capture the active directory owner once per invocation, before asynchronous preparation. */
 export function resolveExecutionCwd(
-  pi: Pick<ExtensionAPI, "events"> & Partial<Pick<ExtensionAPI, "getAllTools" | "getCommands">>,
+  pi: ReadonlyInput<
+    Pick<ExtensionAPI, "events"> & Partial<Pick<ExtensionAPI, "getAllTools" | "getCommands">>
+  >,
   ctx: ExtensionContext,
 ): string {
   const request: {
@@ -11,12 +24,7 @@ export function resolveExecutionCwd(
     result?: { cwd?: string; error?: string };
   } = { sessionManager: ctx.sessionManager };
   pi.events.emit("pi-change-working-dir:resolve-execution-cwd", request);
-  if (request.result?.error) {
-    throw new Error(request.result.error);
-  }
-  if (request.result && !request.result.cwd) {
-    throw new Error("Working-directory owner did not return an execution directory.");
-  }
+  validateDirectoryReply(request.result);
   if (
     !request.result &&
     pi.getAllTools &&

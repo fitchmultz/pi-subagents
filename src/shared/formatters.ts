@@ -4,26 +4,32 @@
 
 import type { Usage } from "./types.ts";
 import { splitKnownThinkingSuffix, THINKING_LEVELS } from "./model-info.ts";
+import type { ReadonlyDeep } from "type-fest";
 
 /**
  * Format token count with k suffix for large numbers
  */
 export function formatTokens(n: number): string {
-  return n < 1000
-    ? String(n)
-    : n < 10000
-      ? `${(n / 1000).toFixed(1)}k`
-      : `${Math.round(n / 1000)}k`;
+  if (n < 1000) {
+    return String(n);
+  }
+  return n < 10000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`;
 }
 
 export function formatModelThinking(model?: string, thinking?: string): string {
-  const parsed = model ? splitKnownThinkingSuffix(model) : undefined;
+  const parsed = model !== undefined && model !== "" ? splitKnownThinkingSuffix(model) : undefined;
   const displayModel = parsed?.baseModel ?? model;
   const explicitThinking = THINKING_LEVELS.find((level) => level === thinking?.trim());
-  const displayThinking = parsed?.thinkingSuffix
-    ? parsed.thinkingSuffix.slice(1)
-    : explicitThinking;
-  return [displayModel, displayThinking ? `thinking ${displayThinking}` : undefined]
+  const displayThinking =
+    parsed?.thinkingSuffix !== undefined && parsed.thinkingSuffix !== ""
+      ? parsed.thinkingSuffix.slice(1)
+      : explicitThinking;
+  return [
+    displayModel,
+    displayThinking !== undefined && displayThinking !== ""
+      ? `thinking ${displayThinking}`
+      : undefined,
+  ]
     .filter(Boolean)
     .join(" · ");
 }
@@ -31,27 +37,27 @@ export function formatModelThinking(model?: string, thinking?: string): string {
 /**
  * Format usage statistics into a compact string
  */
-export function formatUsage(u: Usage, model?: string): string {
+export function formatUsage(u: ReadonlyDeep<Usage>, model?: string): string {
   const parts: string[] = [];
-  if (u.turns) {
+  if (u.turns !== 0) {
     parts.push(`${u.turns} turn${u.turns > 1 ? "s" : ""}`);
   }
-  if (u.input) {
+  if (u.input !== 0) {
     parts.push(`in:${formatTokens(u.input)}`);
   }
-  if (u.output) {
+  if (u.output !== 0) {
     parts.push(`out:${formatTokens(u.output)}`);
   }
-  if (u.cacheRead) {
+  if (u.cacheRead !== 0) {
     parts.push(`R${formatTokens(u.cacheRead)}`);
   }
-  if (u.cacheWrite) {
+  if (u.cacheWrite !== 0) {
     parts.push(`W${formatTokens(u.cacheWrite)}`);
   }
-  if (u.cost) {
+  if (u.cost !== 0) {
     parts.push(`$${u.cost.toFixed(4)}`);
   }
-  if (model) {
+  if (model !== undefined && model !== "") {
     parts.push(model);
   }
   return parts.join(" ");
@@ -75,7 +81,7 @@ export function formatDuration(ms: number): string {
  */
 export function formatToolCall(
   name: string,
-  args: Record<string, unknown>,
+  args: Readonly<Record<string, unknown>>,
   expanded = false,
 ): string {
   switch (name) {
@@ -87,12 +93,12 @@ export function formatToolCall(
     case "read":
     case "write":
     case "edit": {
-      const target =
-        typeof args.path === "string"
-          ? args.path
-          : typeof args.file_path === "string"
-            ? args.file_path
-            : "";
+      let target = "";
+      if (typeof args.path === "string") {
+        target = args.path;
+      } else if (typeof args.file_path === "string") {
+        target = args.file_path;
+      }
       return `${name} ${shortenPath(target)}`;
     }
     default: {
@@ -108,7 +114,7 @@ export function formatToolCall(
  */
 export function shortenPath(p: string): string {
   const home = process.env.HOME;
-  if (home && p.startsWith(home)) {
+  if (home !== undefined && home !== "" && p.startsWith(home)) {
     return `~${p.slice(home.length)}`;
   }
   return p;

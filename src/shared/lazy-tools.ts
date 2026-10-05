@@ -21,9 +21,13 @@ export function activateTools(pi: ExtensionAPI, names: readonly string[]): void 
   const added = names.filter(
     (name) =>
       !active.includes(name) &&
-      available.some((tool) => tool.name === name && !("namespace" in tool && tool.namespace)),
+      available.some(
+        (tool) =>
+          tool.name === name &&
+          !("namespace" in tool && typeof tool.namespace === "string" && tool.namespace !== ""),
+      ),
   );
-  if (added.length) {
+  if (added.length > 0) {
     pi.setActiveTools([...active, ...new Set(added)]);
   }
 }
@@ -37,7 +41,13 @@ export function restoreLazyTools(
 ): void {
   const available = pi.getAllTools();
   // A tool-only allowlist must remain usable without its discovery entry.
-  if (!available.some((tool) => tool.name === loader && !("namespace" in tool && tool.namespace))) {
+  if (
+    !available.some(
+      (tool) =>
+        tool.name === loader &&
+        !("namespace" in tool && typeof tool.namespace === "string" && tool.namespace !== ""),
+    )
+  ) {
     activateTools(pi, names);
     return;
   }
@@ -57,11 +67,19 @@ export function restoreLazyTools(
   if (!declared) {
     return;
   }
-  const selected = declared?.toolsAdded ?? [];
+  const selected = declared.toolsAdded ?? [];
   const restored = names.filter(
     (name) =>
-      selected.some((tool) => tool.name === name && !("namespace" in tool && tool.namespace)) &&
-      available.some((tool) => tool.name === name && !("namespace" in tool && tool.namespace)),
+      selected.some(
+        (tool) =>
+          tool.name === name &&
+          !("namespace" in tool && typeof tool.namespace === "string" && tool.namespace !== ""),
+      ) &&
+      available.some(
+        (tool) =>
+          tool.name === name &&
+          !("namespace" in tool && typeof tool.namespace === "string" && tool.namespace !== ""),
+      ),
   );
   activateTools(pi, restored);
 }

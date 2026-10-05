@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { isSafeNestedPathId } from "../runs/shared/nested-path.ts";
 import { ASYNC_DIR, RESULTS_DIR, TEMP_ROOT_DIR } from "./types.ts";
+import { hasErrorCode, isRecord } from "./unknown.ts";
 import {
   listRunQuestions,
   LEGACY_QUESTIONS_DIR,
@@ -40,7 +41,7 @@ export function ensureSafeTempPath(candidate: string): void {
         throw new Error(`Unsafe symlink in pi-subagents temp path: ${current}`);
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      if (hasErrorCode(error, "ENOENT")) {
         return;
       }
       throw error;
@@ -53,11 +54,9 @@ export function ensureSafeTempPath(candidate: string): void {
 async function readJsonObject(file: string): Promise<Record<string, unknown> | undefined> {
   try {
     const parsed: unknown = JSON.parse(await fs.promises.readFile(file, "utf-8"));
-    return parsed !== null && typeof parsed === "object"
-      ? (parsed as Record<string, unknown>)
-      : undefined;
+    return isRecord(parsed) ? parsed : undefined;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
+    if (hasErrorCode(error, "ENOENT") || error instanceof SyntaxError) {
       return undefined;
     }
     throw error;
@@ -83,13 +82,19 @@ async function removeOldEntries(
   for (const entry of entries) {
     const entryPath = path.join(root, entry.name);
     try {
+      // Sequential retention bounds filesystem work and observes each entry before deletion.
+      // oxlint-disable-next-line no-await-in-loop
       const stat = await fs.promises.lstat(entryPath);
       if (now - stat.mtimeMs <= MAX_RUN_AGE_MS) {
         continue;
       }
+      // Finish the entry's activity decision before deleting it or considering another entry.
+      // oxlint-disable-next-line no-await-in-loop
       if (keepActive && entry.isDirectory() && (await keepActive(entryPath))) {
         continue;
       }
+      // Only remove entries whose preceding activity check completed; keep I/O bounded.
+      // oxlint-disable-next-line no-await-in-loop
       await fs.promises.rm(entryPath, { recursive: entry.isDirectory(), force: true });
     } catch {
       // Startup retention cleanup is best effort; entries that fail closed are skipped.
@@ -105,11 +110,13 @@ async function removeOldEntries(
 async function nestedRouteActive(routeRoot: string, now: number): Promise<boolean> {
   for (const name of ["events", "controls"]) {
     try {
+      // Inspect the two writer directories in order, short-circuiting on live activity.
+      // oxlint-disable-next-line no-await-in-loop
       if (now - (await fs.promises.stat(path.join(routeRoot, name))).mtimeMs <= MAX_RUN_AGE_MS) {
         return true;
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      if (!hasErrorCode(error, "ENOENT")) {
         throw error;
       }
     }
@@ -144,6 +151,8 @@ export async function cleanupOldRunStorage(now = Date.now()): Promise<void> {
     ],
   ] as const) {
     ensureSafeTempPath(dir);
+    // Finish one storage root's retention scan before opening another.
+    // oxlint-disable-next-line no-await-in-loop
     await removeOldEntries(dir, now, keepActive);
   }
 }

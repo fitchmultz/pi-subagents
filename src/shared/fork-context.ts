@@ -1,17 +1,18 @@
 import * as fs from "node:fs";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { requestChildExecutionCwd } from "../runs/shared/child-execution-cwd.ts";
+import { errorMessage } from "./unknown.ts";
 
 type SubagentExecutionContext = "fresh" | "fork";
 
 interface ForkableSessionManager {
-  getSessionFile(): string | undefined;
-  getLeafId(): string | null;
-  getSessionDir(): string;
+  readonly getSessionFile: () => string | undefined;
+  readonly getLeafId: () => string | null;
+  readonly getSessionDir: () => string;
 }
 
 interface ForkContextResolver {
-  sessionFileForIndex(index?: number): string | undefined;
+  readonly sessionFileForIndex: (index?: number) => string | undefined;
 }
 
 export function resolveSubagentContext(value: unknown): SubagentExecutionContext {
@@ -24,17 +25,17 @@ export function createForkContextResolver(
 ): ForkContextResolver {
   if (resolveSubagentContext(requestedContext) !== "fork") {
     return {
-      sessionFileForIndex: () => undefined,
+      sessionFileForIndex: (): undefined => undefined,
     };
   }
 
   const parentSessionFile = sessionManager.getSessionFile();
-  if (!parentSessionFile) {
+  if (parentSessionFile === undefined || parentSessionFile === "") {
     throw new Error("Forked subagent context requires a persisted parent session.");
   }
 
   const leafId = sessionManager.getLeafId();
-  if (!leafId) {
+  if (leafId === null || leafId === "") {
     throw new Error("Forked subagent context requires a current leaf to fork from.");
   }
 
@@ -44,7 +45,7 @@ export function createForkContextResolver(
   return {
     sessionFileForIndex(index = 0): string | undefined {
       const cached = cachedSessionFiles.get(index);
-      if (cached) {
+      if (cached !== undefined && cached !== "") {
         return cached;
       }
       try {
@@ -57,7 +58,7 @@ export function createForkContextResolver(
           parentSessionFile,
           sessionDir,
         ).createBranchedSession(leafId);
-        if (!sessionFile) {
+        if (sessionFile === undefined || sessionFile === "") {
           throw new Error("Session manager did not return a forked session file.");
         }
         if (!fs.existsSync(sessionFile)) {
@@ -69,8 +70,9 @@ export function createForkContextResolver(
         cachedSessionFiles.set(index, sessionFile);
         return sessionFile;
       } catch (error) {
-        const cause = error instanceof Error ? error : new Error(String(error));
-        throw new Error(`Failed to create forked subagent session: ${cause.message}`, { cause });
+        throw new Error(`Failed to create forked subagent session: ${errorMessage(error)}`, {
+          cause: error,
+        });
       }
     },
   };
