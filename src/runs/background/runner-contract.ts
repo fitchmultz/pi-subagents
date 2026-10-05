@@ -1,3 +1,4 @@
+import type { ReadonlyDeep } from "type-fest";
 import type {
   ArtifactPaths,
   AsyncResultChild,
@@ -36,7 +37,10 @@ export interface SingleStepContext {
   readonly nestedRoute?: NestedRouteInfo;
   readonly projectTrust?: ChildProjectTrustPolicy;
   readonly onAttemptStart?: (attempt: Readonly<{ model?: string; thinking?: string }>) => void;
-  readonly onChildEvent?: (event: ChildEvent, mutation?: MutationToolResult) => void;
+  readonly onChildEvent?: (
+    event: ReadonlyDeep<ChildEvent>,
+    mutation?: ReadonlyDeep<MutationToolResult>,
+  ) => void;
 }
 
 export interface StepResult extends AsyncResultChild {

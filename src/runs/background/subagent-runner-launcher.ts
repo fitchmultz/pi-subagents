@@ -15,50 +15,58 @@ function run(
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [runnerPath, configPath], {
       stdio: ["ignore", "inherit", "pipe"],
-      env: piPackageRoot
-        ? { ...process.env, PI_PACKAGE_DIR: process.env.PI_PACKAGE_DIR ?? piPackageRoot }
-        : process.env,
+      env:
+        piPackageRoot !== undefined && piPackageRoot.length > 0
+          ? { ...process.env, PI_PACKAGE_DIR: process.env.PI_PACKAGE_DIR ?? piPackageRoot }
+          : process.env,
     });
     let stderr = "";
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stderr.on("data", (chunk: unknown) => {
+      if (!Buffer.isBuffer(chunk)) {
+        return;
+      }
       process.stderr.write(chunk);
       stderr = `${stderr}${chunk.toString()}`.slice(-MAX_STDERR_LENGTH);
     });
     child.once("error", (error) => {
-      const stderr = error.stack ?? error.message;
-      process.stderr.write(`${stderr}\n`);
-      resolve({ code: 1, stderr });
+      const failure = error.stack ?? error.message;
+      process.stderr.write(`${failure}\n`);
+      resolve({ code: 1, stderr: failure });
     });
     child.once("close", (code) => resolve({ code: code ?? 1, stderr }));
   });
 }
 
-const [runnerPath, configPath] = process.argv.slice(2);
-if (!runnerPath || !configPath) {
+const runnerPath = process.argv.at(2);
+const configPath = process.argv.at(3);
+if (runnerPath === undefined || configPath === undefined) {
   throw new Error("Usage: subagent-runner-launcher <runner> <config>");
 }
 
 let statusPath: string | undefined;
 let piPackageRoot: string | undefined;
 try {
-  const config = JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
-    asyncDir?: unknown;
-    piPackageRoot?: unknown;
-  };
-  if (typeof config.piPackageRoot === "string") {
-    piPackageRoot = config.piPackageRoot;
+  const config: unknown = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  if (typeof config === "object" && config !== null) {
+    if ("piPackageRoot" in config && typeof config.piPackageRoot === "string") {
+      piPackageRoot = config.piPackageRoot;
+    }
+    if ("asyncDir" in config && typeof config.asyncDir === "string") {
+      statusPath = path.join(config.asyncDir, "status.json");
+    }
   }
-  if (typeof config.asyncDir === "string") {
-    statusPath = path.join(config.asyncDir, "status.json");
-  }
-} catch {}
+} catch {
+  // The runner owns reporting malformed launch files; launcher discovery is best effort.
+}
 
 // ponytail: bridge short in-place extension updates; use shared update locking if longer gaps appear.
 const deadline = Date.now() + RETRY_WINDOW_MS;
 let announcedRetry = false;
 while (true) {
+  // Retrying before startup must finish before inspecting the next process outcome.
+  // oxlint-disable-next-line no-await-in-loop
   const result = await run(runnerPath, configPath, piPackageRoot);
-  const failedBeforeStartup = !statusPath || !fs.existsSync(statusPath);
+  const failedBeforeStartup = statusPath === undefined || !fs.existsSync(statusPath);
   if (
     result.code === 0 ||
     !failedBeforeStartup ||
@@ -74,5 +82,7 @@ while (true) {
     );
     announcedRetry = true;
   }
+  // Back off between dependency-update retries instead of launching concurrent runners.
+  // oxlint-disable-next-line no-await-in-loop
   await delay(RETRY_DELAY_MS);
 }
