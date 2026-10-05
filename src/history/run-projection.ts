@@ -2,7 +2,7 @@ import { ownedRunView } from "../runs/shared/run-records.ts";
 import { acceptanceHumanAction } from "../runs/shared/acceptance-evaluation.ts";
 import { getRunMetadataDir, listRunQuestions } from "../runs/shared/supervisor-questions.ts";
 import type { HistoryRunRow, OwnedRun, ReadonlyForegroundResumeRun } from "./types.ts";
-import type { SubagentState } from "../shared/types.ts";
+import type { OwnedRunReadState } from "../runs/shared/owned-run-read-state.ts";
 import { safeText } from "./text.ts";
 
 type Child = HistoryRunRow["children"][number];
@@ -157,25 +157,7 @@ export function projectRun(
   runs: Readonly<ReadonlyMap<string, OwnedRun>>,
   foreground: Readonly<ReadonlyMap<string, ReadonlyForegroundResumeRun>>,
 ): HistoryRunRow {
-  const state: SubagentState = {
-    baseCwd: run.cwd,
-    currentSessionId: ownerSessionId,
-    ownedRuns: runs,
-    foregroundRuns: foreground,
-    asyncJobs: new Map(),
-    cleanupTimers: new Map(),
-    lastUiContext: null,
-    poller: null,
-    completionSeen: new Map(),
-    watcher: null,
-    watcherRestartTimer: null,
-    resultFileCoalescer: {
-      schedule: () => false,
-      clear() {
-        /* Read-only browse projection never schedules canonical writes. */
-      },
-    },
-  };
+  const state: OwnedRunReadState = { ownedRuns: runs, foregroundRuns: foreground };
   const questions = listRunQuestions(getRunMetadataDir(run.runId)).filter(
     (question) =>
       question.ownerSessionId === ownerSessionId &&

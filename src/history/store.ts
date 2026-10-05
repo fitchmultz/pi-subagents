@@ -51,10 +51,18 @@ export class HistoryStore {
     const { db, file } = openGeneration(agentDir, owner);
     this.db = db;
     this.file = file;
-    this.generation = text(this.require("SELECT value FROM meta WHERE key='generation'"), "value");
-    this.db.exec(
-      "CREATE TEMP TABLE pending_text(field TEXT, position INTEGER, end_position INTEGER, text TEXT)",
-    );
+    try {
+      this.generation = text(
+        this.require("SELECT value FROM meta WHERE key='generation'"),
+        "value",
+      );
+      this.db.exec(
+        "CREATE TEMP TABLE pending_text(field TEXT, position INTEGER, end_position INTEGER, text TEXT)",
+      );
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
   require(sql: string, ...params: readonly IndexInput[]): Row {
     const row = this.get(sql, ...params);

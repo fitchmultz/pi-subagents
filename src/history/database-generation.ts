@@ -6,11 +6,12 @@ import { historyDirectory, openHistoryDatabase } from "./database.ts";
 import { createHistorySchema } from "./schema.ts";
 import { hash } from "./text.ts";
 import { HistoryIndexError } from "./types.ts";
-import { parseObject, errorCode, errorMessage } from "./values.ts";
+import { object, errorCode, errorMessage } from "./values.ts";
 
 function manifestFile(manifest: string): string | undefined {
   try {
-    const saved = parseObject(fs.readFileSync(manifest, "utf8"));
+    const input: unknown = JSON.parse(fs.readFileSync(manifest, "utf8"));
+    const saved = object(input);
     if (typeof saved.file === "string" && /^[a-f0-9-]+\.sqlite$/.test(saved.file)) {
       return saved.file;
     }
@@ -56,24 +57,29 @@ export function openGeneration(
   const manifest = path.join(directory, `${hash(owner)}.json`);
   let name = manifestFile(manifest);
   let db = name === undefined ? undefined : existingGeneration(path.join(directory, name));
-  if (!db) {
-    name = `${randomUUID()}.sqlite`;
-    db = openHistoryDatabase(path.join(directory, name));
-    createHistorySchema(db);
-    const temporary = `${manifest}.${process.pid}.${randomUUID()}`;
-    fs.writeFileSync(temporary, JSON.stringify({ file: name }), { mode: 0o600 });
-    fs.renameSync(temporary, manifest);
-  }
-  if (name === undefined) {
-    db.close();
-    throw new HistoryIndexError("CORRUPT", "Missing index generation name.");
-  }
-  const file = path.join(directory, name);
-  fs.chmodSync(file, 0o600);
-  for (const suffix of ["-wal", "-shm"]) {
-    if (fs.existsSync(file + suffix)) {
-      fs.chmodSync(file + suffix, 0o600);
+  try {
+    if (!db) {
+      name = `${randomUUID()}.sqlite`;
+      db = openHistoryDatabase(path.join(directory, name));
+      createHistorySchema(db);
+      const temporary = `${manifest}.${process.pid}.${randomUUID()}`;
+      fs.writeFileSync(temporary, JSON.stringify({ file: name }), { mode: 0o600 });
+      fs.renameSync(temporary, manifest);
     }
+    if (name === undefined) {
+      throw new HistoryIndexError("CORRUPT", "Missing index generation name.");
+    }
+    const file = path.join(directory, name);
+    fs.chmodSync(file, 0o600);
+    for (const suffix of ["-wal", "-shm"]) {
+      if (fs.existsSync(file + suffix)) {
+        fs.chmodSync(file + suffix, 0o600);
+      }
+    }
+    return { db, file };
+  } catch (error) {
+    // Ownership transfers to HistoryStore only after schema, manifest and permissions succeed.
+    db?.close();
+    throw error;
   }
-  return { db, file };
 }

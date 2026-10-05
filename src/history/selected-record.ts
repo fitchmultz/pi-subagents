@@ -34,7 +34,7 @@ function readBody(
   fd: number,
   row: EntryRow,
   full: boolean,
-): { readonly value: Readonly<Record<string, unknown>>; readonly digest: string } {
+): { readonly finish: () => Readonly<Record<string, unknown>>; readonly digest: string } {
   const digest = createHash("sha256");
   const parser = new JsonProjection(previewProjection, undefined, undefined, previewLimits);
   const bytes = Buffer.allocUnsafe(64 * 1024);
@@ -57,18 +57,20 @@ function readBody(
     }
     position += count;
   }
-  let value: Readonly<Record<string, unknown>>;
-  if (full) {
-    value = parseObject(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(body)));
-  } else {
-    parser.write(decoder.decode());
-    const projected = parser.finish();
-    if (!isObject(projected)) {
-      throw new HistoryIndexError("SOURCE_CHANGED", "Selected record is not an object.");
-    }
-    value = projected;
-  }
-  return { value, digest: digest.digest("hex") };
+  return {
+    digest: digest.digest("hex"),
+    finish: () => {
+      if (full) {
+        return parseObject(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(body)));
+      }
+      parser.write(decoder.decode());
+      const projected = parser.finish();
+      if (!isObject(projected)) {
+        throw new HistoryIndexError("SOURCE_CHANGED", "Selected record is not an object.");
+      }
+      return projected;
+    },
+  };
 }
 function validateSnapshot(
   fd: number,
@@ -116,7 +118,8 @@ export function validateRecord(
     }
     const body = readBody(fd, row, full);
     validateSnapshot(fd, source, row, { before: stat, digest: body.digest });
-    return body.value;
+    // Physical validation wins over full JSON/UTF-8 decode errors if the file changed during reading.
+    return body.finish();
   } catch (error) {
     if (errorCode(error) === "ENOENT") {
       throw new HistoryIndexError("SOURCE_CHANGED", "Selected conversation is missing.");
