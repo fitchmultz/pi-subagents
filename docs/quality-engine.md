@@ -114,9 +114,10 @@ This is an input-contract check, not proof of callback purity or runtime freezin
 `tsgolint-qualified-readonly.patch` fixes two additional origin/scope defects:
 
 - The matcher selected an alias's name but its underlying generic interface's
-  source file. It now uses the alias symbol's declarations when the alias supplied
-  the matched name, so an exact file-qualified, non-generic native wrapper can
-  pass without granting permission to every instantiation of the SDK generic.
+  source file. It now checks both alias-name/origin and underlying-type-name/origin
+  pairs independently using the existing symbol matcher. Exact file-qualified
+  native wrappers and aliases of approved native declarations therefore work
+  without mixing names and origins or adding a broad SDK-generic allowance.
 - Native approval previously short-circuited an entire intersection when any part
   was approved. The readonly rule now accepts an exact whole-type declaration
   match, including approved SDK intersection aliases, but otherwise checks every

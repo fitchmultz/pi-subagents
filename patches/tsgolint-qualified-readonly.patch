@@ -58,24 +58,87 @@ index 1590568..1ad667d 100644
  		return readonlynessReadonly
  	}
 diff --git a/internal/utils/type_matches_specifier.go b/internal/utils/type_matches_specifier.go
-index cfcaaab..99edac7 100644
+index cfcaaab..4255ef6 100644
 --- a/internal/utils/type_matches_specifier.go
 +++ b/internal/utils/type_matches_specifier.go
-@@ -385,11 +385,8 @@ func typeMatchesSpecifier(
- 	}
+@@ -143,29 +143,6 @@ func (s TypeOrValueSpecifier) MarshalJSON() ([]byte, error) {
+ 	return json.Marshal(output)
+ }
  
- 	symbol := checker.Type_symbol(t)
+-func typeMatchesStringSpecifier(
+-	t *checker.Type,
+-	names []string,
+-) bool {
+-	alias := checker.Type_alias(t)
+-	var symbol *ast.Symbol
+-	if alias == nil {
+-		symbol = checker.Type_symbol(t)
+-	} else {
+-		symbol = alias.Symbol()
+-	}
+-
+-	if symbol != nil && slices.Contains(names, symbol.Name) {
+-		return true
+-	}
+-
+-	if IsIntrinsicType(t) && slices.Contains(names, t.AsIntrinsicType().IntrinsicName()) {
+-		return true
+-	}
+-
+-	return false
+-}
+-
+ func typeDeclaredInFile(
+ 	relativePath string,
+ 	declarationFiles []*ast.SourceFile,
+@@ -380,37 +357,19 @@ func typeMatchesSpecifier(
+ 	specifier TypeOrValueSpecifier,
+ 	program *compiler.Program,
+ ) bool {
+-	if !typeMatchesStringSpecifier(t, specifier.Name) {
+-		return false
+-	}
+-
+-	symbol := checker.Type_symbol(t)
 -	if symbol == nil {
 -		alias := checker.Type_alias(t)
 -		if alias != nil {
 -			symbol = alias.Symbol()
--		}
 +	if alias := checker.Type_alias(t); alias != nil {
-+		symbol = alias.Symbol()
++		if symbol := alias.Symbol(); symbol != nil &&
++			SymbolMatchesSpecifierNameAndSource(symbol, symbol.Name, specifier, program) {
++			return true
+ 		}
  	}
- 	var declarations []*ast.Node
- 	if symbol != nil {
-@@ -519,21 +516,25 @@ func ConvertTypeOrValueSpecifier(spec any) (TypeOrValueSpecifier, bool) {
+-	var declarations []*ast.Node
+-	if symbol != nil {
+-		declarations = symbol.Declarations
+-	}
+-	declarationFiles := Map(declarations, func(d *ast.Node) *ast.SourceFile {
+-		return ast.GetSourceFileOfNode(d)
+-	})
+-
+-	switch specifier.From {
+-	case TypeOrValueSpecifierFromName:
++	if symbol := checker.Type_symbol(t); symbol != nil &&
++		SymbolMatchesSpecifierNameAndSource(symbol, symbol.Name, specifier, program) {
+ 		return true
+-	case TypeOrValueSpecifierFromFile:
+-		return typeDeclaredInFile(specifier.Path, declarationFiles, program)
+-	case TypeOrValueSpecifierFromLib:
+-		return typeDeclaredInLib(declarationFiles, program)
+-	case TypeOrValueSpecifierFromPackage:
+-		return typeDeclaredInPackageDeclarationFile(specifier.Package, declarations, declarationFiles, program)
+-	default:
+-		panic(fmt.Sprintf("unknown type specifier from: %v", specifier.From))
+ 	}
++	return IsIntrinsicType(t) &&
++		slices.Contains(specifier.Name, t.AsIntrinsicType().IntrinsicName()) &&
++		(specifier.From == TypeOrValueSpecifierFromName || specifier.From == TypeOrValueSpecifierFromLib)
+ }
+ 
+ // SymbolMatchesSpecifierNameAndSource reports whether a symbol with a known
+@@ -519,21 +478,25 @@ func ConvertTypeOrValueSpecifier(spec any) (TypeOrValueSpecifier, bool) {
  	return result, true
  }
  
@@ -111,7 +174,7 @@ index cfcaaab..99edac7 100644
  		return true
  	}
  
-@@ -541,7 +542,7 @@ func TypeMatchesSomeSpecifier(
+@@ -541,7 +504,7 @@ func TypeMatchesSomeSpecifier(
  		if typePart == t {
  			continue
  		}
