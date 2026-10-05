@@ -2253,14 +2253,35 @@ test("same-parent restore retains drafts/pin and a replaced session ignores late
 	assert.equal(f.sent.length, 0, "no stale breadcrumb");
 });
 
+async function indexedRunsWhenReady(index, deadline: number) {
+	let notify = () => {};
+	const unsubscribe = index.onChanged(() => notify());
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const expired = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(() => reject(new Error("Indexed fixture did not settle within the refresh budget")), Math.max(0, deadline - Date.now()));
+		timer.unref();
+	});
+	try {
+		for (;;) {
+			const changed = new Promise<void>((resolve) => { notify = resolve; });
+			const runs = await Promise.race([index.listRuns({ limit: 100 }), expired]);
+			if (runs.freshness.pending === 0) return runs;
+			await Promise.race([changed, expired]);
+		}
+	} finally {
+		unsubscribe(); clearTimeout(timer);
+	}
+}
+
 async function indexedReady(f): Promise<void> {
 	await f.ready;
 	const index = await runHistoryIndex(f.state);
 	await index.setOwner({ ownerSessionId: f.parent.getSessionId(), ownerSessionFile: f.parent.getSessionFile(), runs: [...f.state.ownedRuns.values()], foregroundRuns: [...f.state.foregroundRuns.values()] });
+	const deadline = Date.now() + 120_000;
 	try { await index.refresh(); }
 	catch (error) {
 		assert.equal(error.code, "DEGRADED", "only honest absent native sources are expected in restored/unstarted fixtures");
-		const runs = await index.listRuns({ limit: 100 });
+		const runs = await indexedRunsWhenReady(index, deadline);
 		assert.equal(runs.freshness.pending, 0);
 		let missing = 0;
 		for (const run of runs.rows) for (const child of run.children) {

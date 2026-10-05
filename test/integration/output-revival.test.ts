@@ -173,6 +173,7 @@ describe("saved output choices", () => {
 			continuations.push(first);
 			runIds.add(first.details.asyncId!);
 			await waitFor(() => mockPi.callCount() === 2, "the continuation must start");
+			await waitFor(() => Boolean(readQuestionContract(first.details.asyncId!, 0)?.pid), "the continuation must publish its process contract");
 			const liveContract = contractBytes(first.details.asyncId!);
 			const second = await executor.execute("resume-dir-again", { action: "resume", dir: original.details.asyncDir, message: "Second follow-up", model: "mock/not-a-live-mutation:high", async: true }, undefined, undefined, ctx);
 			assert.deepEqual(contractBytes(first.details.asyncId!), liveContract, "live guidance must not mutate launch policy");
