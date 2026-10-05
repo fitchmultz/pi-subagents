@@ -116,7 +116,11 @@ export class IntercomClient extends EventEmitter {
     return this.isConnected() && this._topicsSupported;
   }
   isConnected(): boolean {
-    return this._sessionId !== null && !this.disconnecting && this.connection?.isActive() === true;
+    return (
+      (this._sessionId ?? "").length > 0 &&
+      !this.disconnecting &&
+      this.connection?.isActive() === true
+    );
   }
 
   private requireActiveSocket(): net.Socket {
@@ -124,7 +128,7 @@ export class IntercomClient extends EventEmitter {
       throw new Error("Client disconnecting");
     }
     const connection = this.connection;
-    if (!connection || this._sessionId === null) {
+    if (!connection || (this._sessionId ?? "").length === 0) {
       throw new Error("Not connected");
     }
     if (!connection.isActive()) {
@@ -460,7 +464,7 @@ export class IntercomClient extends EventEmitter {
     const socket = this.connection?.socket;
     if (
       !socket ||
-      this._sessionId === null ||
+      (this._sessionId ?? "").length === 0 ||
       socket.destroyed ||
       socket.writableEnded ||
       !socket.writable
