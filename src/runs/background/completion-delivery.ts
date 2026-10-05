@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   RESULTS_DIR,
   SUBAGENT_ASYNC_COMPLETE_EVENT,
@@ -8,6 +8,7 @@ import {
 } from "../../shared/types.ts";
 import type { ReadonlyInput } from "../../shared/types/inputs.ts";
 import { finalizedChildUsage, type registerParentUsage } from "../shared/parent-usage.ts";
+import type { ParentReceipt } from "../shared/parent-receipts.ts";
 import { ownedRunView, rememberOwnedRun, repairOwnedRunAccounting } from "../shared/run-records.ts";
 import registerSubagentNotify from "./notify.ts";
 import { createResultWatcher } from "./result-watcher.ts";
@@ -144,7 +145,7 @@ class CompletionDelivery {
   private recordPublished(
     runId: string,
     key: string,
-    receipt: SessionEntry,
+    receipt: ParentReceipt,
     accounting: boolean,
   ): void {
     this.queued.delete(key);
@@ -153,11 +154,15 @@ class CompletionDelivery {
     try {
       const run = this.state.ownedRuns?.get(runId);
       if (run) {
+        const publishedAt =
+          receipt.timestamp === undefined ? undefined : Date.parse(receipt.timestamp);
         rememberOwnedRun(this.state, {
           ...run,
           completion: { id: key, state: "journaled", entryId: receipt.id },
           delivery: {
-            notifiedAt: Date.parse(receipt.timestamp),
+            // Legacy receipts without a valid timestamp use the publication observation time.
+            notifiedAt:
+              publishedAt !== undefined && Number.isFinite(publishedAt) ? publishedAt : Date.now(),
             intercomDelivered:
               receipt.type === "custom_message" && receipt.customType === "intercom_message",
             completionId: key,

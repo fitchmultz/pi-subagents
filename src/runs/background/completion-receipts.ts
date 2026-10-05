@@ -4,12 +4,12 @@ import type {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { SessionEntryCursor } from "../../shared/session-entries.ts";
-import { createParentReceiptReader } from "../shared/parent-receipts.ts";
+import { createParentReceiptReader, type ParentReceipt } from "../shared/parent-receipts.ts";
 import type { SubagentState, OwnedRun } from "../../shared/types.ts";
 import type { ReadonlyInput } from "../../shared/types/inputs.ts";
 import { hasText, isRecord, stringField } from "./async-value.ts";
 
-type ReceiptEntry = SessionEntry;
+type ReceiptEntry = ParentReceipt;
 type SavedReceipts = Readonly<ReadonlyMap<string, ReceiptEntry>>;
 interface ReceiptState {
   readonly lastUiContext: SubagentState["lastUiContext"];
@@ -48,10 +48,7 @@ interface ReceiptSnapshot extends ReceiptSnapshotKey {
 }
 
 function entryDetails(entry: ReceiptEntry): unknown {
-  if (entry.type === "message" && entry.message.role === "toolResult") {
-    return entry.message.details;
-  }
-  return entry.type === "custom_message" ? entry.details : undefined;
+  return entry.type === "message" ? entry.message.details : entry.details;
 }
 function waitIdentity(value: unknown): WaitReceipt | undefined {
   if (
@@ -250,8 +247,16 @@ export class CompletionReceipts {
       (key.startsWith("completion:legacy:") && legacyOwner(completion, this.state.currentSessionId))
     );
   }
-  private matches(entry: ReceiptEntry, runId: string, key: string): boolean {
-    const data = identity(entry);
+  private matches(entry: SessionEntry, runId: string, key: string): boolean {
+    let receipt: ParentReceipt;
+    if (entry.type === "custom_message") {
+      receipt = entry;
+    } else if (entry.type === "message" && entry.message.role === "toolResult") {
+      receipt = { type: "message", id: entry.id, message: entry.message };
+    } else {
+      return false;
+    }
+    const data = identity(receipt);
     if (this.consumedIdentity(data.wait, runId)) {
       return true;
     }
