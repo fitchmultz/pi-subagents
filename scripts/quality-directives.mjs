@@ -192,7 +192,11 @@ function schemaValue(node) {
 }
 
 function optionalUnsubscribe(union) {
-  if (!ts.isUnionTypeNode(union) || union.types.length !== 2) {
+  if (
+    !ts.isUnionTypeNode(union) ||
+    union.types.length !== 2 ||
+    !union.types.some((node) => node.kind === ts.SyntaxKind.VoidKeyword)
+  ) {
     return false;
   }
   return union.types.some((node) => {

@@ -7,6 +7,7 @@ import {
   uncheckedRules,
   root,
   installedRules,
+  maintainedFiles,
 } from "../../scripts/quality-scope.mjs";
 import { suppressionProblems } from "../../scripts/quality-policy.mjs";
 import { config, fixture, lint, put, remove, compiler, engine } from "./probe-support.mjs";
@@ -146,5 +147,107 @@ await test("compiler errors remain an independent failure gate", () => {
     assert.match(result.stdout, /main.ts\(1,14\): error TS2322/);
   } finally {
     remove(dir);
+  }
+});
+
+await test("actual CLI discovery covers the entire maintained code inventory", () => {
+  const result = spawnSync(resolve(root, "node_modules/.bin/oxlint"), ["--debug=files", "."], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(result.stdout.trim().split("\n").sort(), maintainedFiles().sort());
+});
+
+await test("approved checker directives stay confined to their actual boundary contracts", () => {
+  const cases = [
+    [
+      "unicorn/no-thenable",
+      "src/extension/schemas.ts",
+      "const schema = {\n$then$\n};",
+      [
+        ['then: { type: "string" },', 0],
+        ["then: Type.String(),", 0],
+        ['"then": false,', 0],
+        ["then: () => 1,", 1],
+        ["then: ordinaryFunction,", 1],
+      ],
+    ],
+    [
+      "typescript/no-invalid-void-type",
+      "src/slash/slash-bridge.ts",
+      "$then$",
+      [
+        ["type Subscription = void | (() => void);", 0],
+        ["type Subscription = (() => void) | void;", 0],
+        ["type Subscription = string | (() => void);", 1],
+        ["type Subscription = void | (() => number);", 1],
+        ["type Subscription = void | ((event: string) => void);", 1],
+        ["type Subscription = void | (() => void) | number;", 1],
+      ],
+    ],
+    [
+      "typescript/no-unsafe-assignment",
+      "src/shared/native-typebox.ts",
+      "$then$",
+      [
+        [
+          'const typebox: typeof import("typebox") = await import(pathToFileURL(nativePath).href);',
+          0,
+        ],
+        [
+          'const compile: typeof import("typebox/compile") = await import(new URL(nativePath).href);',
+          0,
+        ],
+        ['const value: typeof import("typebox/value") = await import(nativeUrl);', 0],
+        ['const typebox: Pick<typeof import("typebox"), "Type"> = await import(nativeUrl);', 0],
+        ["const typebox: typeof NativeTypebox = await import(nativeUrl);", 0],
+        ['const typebox: typeof import("other-package") = await import(nativeUrl);', 1],
+        ['const ordinary: typeof import("typebox") = await import(nativeUrl);', 1],
+        ['let typebox: typeof import("typebox") = await import(nativeUrl);', 1],
+        ["const typebox = await import(nativeUrl);", 1],
+        ['const typebox: typeof import("typebox") = await import("typebox");', 1],
+        ['const typebox: typeof import("typebox") = await import(arbitraryUrl);', 1],
+        ['const typebox: typeof import("typebox") = load(nativeUrl);', 1],
+        ['const typebox: typeof import("typebox") = arbitraryValue;', 1],
+      ],
+    ],
+    [
+      "typescript/prefer-readonly-parameter-types",
+      "src/main.ts",
+      "function invoke<T>(\n$then$\n): T { return operation(); }",
+      [
+        ["operation: () => T,", 0],
+        ["operation: (() => T) & { state: string[] },", 1],
+        ["operation: () => string[],", 1],
+        ["operation: { execute: () => T },", 1],
+      ],
+    ],
+  ];
+  const prefix = [
+    'import type * as NativeTypebox from "typebox";',
+    "const nativeUrl = pathToFileURL(nativePath).href;",
+    "const arbitraryUrl = ordinaryFunction();",
+  ].join("\n");
+  for (const [rule, file, template, variants] of cases) {
+    for (const [statement, count] of variants) {
+      const directive = [
+        "// This site retains the reviewed native boundary and original API contract.",
+        `// oxlint-disable-next-line ${rule}`,
+        statement,
+      ].join("\n");
+      const source = `${prefix}\n${template.replace("$then$", directive)}`;
+      assert.equal(suppressionProblems(source, file).length, count, `${rule}: ${statement}`);
+      if (count === 0 && rule !== "typescript/prefer-readonly-parameter-types") {
+        assert.equal(
+          suppressionProblems(source, "src/ordinary.ts").length,
+          1,
+          `${rule}: ordinary source must not inherit a boundary exception`,
+        );
+      }
+    }
   }
 });
