@@ -268,7 +268,7 @@ test("native session disposal settles an already registered wait without stoppin
   } finally {
     controller.abort();
     await pending;
-    t.mock.timers.reset();
+    t.mock.reset();
   }
 });
 

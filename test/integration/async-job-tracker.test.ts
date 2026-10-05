@@ -238,13 +238,16 @@ describe("async job tracker", () => {
         cwd: "/repo",
         task: "Receipt overrides sidecar disagreement",
         startedAt: 1,
-        review: { decision: "accepted" },
+        review: { decision: "accepted", reviewedAt: 1 },
         children: [],
       });
       const slashId = seed("slash-receipt", other, other);
       selected.push(slashId);
       manager.appendCustomMessageEntry(SLASH_RESULT_TYPE, "Saved slash receipt", false, {
-        result: { details: { mode: "single", asyncId: slashId, results: [] } },
+        result: {
+          content: [{ type: "text", text: "Saved slash receipt" }],
+          details: { mode: "single", asyncId: slashId, results: [] },
+        },
       });
       const canonical = selected[0];
       fs.mkdirSync(path.join(ASYNC_DIR, canonical), { recursive: true });
