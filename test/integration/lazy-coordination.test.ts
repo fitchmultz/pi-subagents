@@ -40,17 +40,25 @@ const broker = spawn(process.execPath, [path.join(repo, "src/pi-intercom/broker/
   stdio: ["ignore", "pipe", "pipe"],
 });
 let brokerLog = "";
-broker.stdout.on("data", (data) => {
+broker.stdout.setEncoding("utf8");
+broker.stderr.setEncoding("utf8");
+broker.stdout.on("data", (data: unknown) => {
+  assert.ok(typeof data === "string");
   brokerLog += data;
 });
-broker.stderr.on("data", (data) => {
+broker.stderr.on("data", (data: unknown) => {
+  assert.ok(typeof data === "string");
   brokerLog += data;
 });
 const peer = new IntercomClient();
 async function until(check: () => boolean | Promise<boolean>) {
   const deadline = Date.now() + 5000;
+  // Observe each broker/session transition before retrying; overlapping probes hide readiness failures.
+  // oxlint-disable-next-line no-await-in-loop
   while (!(await check())) {
     assert.ok(Date.now() < deadline, "timed out waiting for broker/session delivery");
+    // The next readiness probe must wait for this polling interval.
+    // oxlint-disable-next-line no-await-in-loop
     await sleep(10);
   }
 }
@@ -71,10 +79,10 @@ after(async () => {
 async function fixture(
   t: TestContext,
   options: {
-    tools?: string[];
-    excludeTools?: string[];
-    seed?: (manager: InstanceType<typeof SessionManager>) => void;
-    child?: boolean;
+    readonly tools?: readonly string[];
+    readonly excludeTools?: readonly string[];
+    readonly seed?: (manager: SessionManager) => void;
+    readonly child?: boolean;
   } = {},
 ) {
   const agentDir = mkdtempSync(path.join(root, "session-"));
@@ -92,7 +100,7 @@ async function fixture(
     compaction: { enabled: false, keepRecentTokens: 1 },
     retry: { enabled: false },
   });
-  let api: ExtensionAPI;
+  let api: ExtensionAPI | undefined;
   const errors: unknown[] = [];
   const loader = new DefaultResourceLoader({
     cwd: repo,
@@ -138,14 +146,16 @@ async function fixture(
     PI_SUBAGENT_CHILD_AGENT: "worker",
     PI_SUBAGENT_CHILD_INDEX: "0",
   };
-  if (options.child) {
+  if (options.child === true) {
     Object.assign(process.env, childEnv);
   }
   try {
     await loader.reload();
   } finally {
-    if (options.child) {
-      for (const key of Object.keys(childEnv)) delete process.env[key];
+    if (options.child === true) {
+      for (const key of Object.keys(childEnv)) {
+        delete process.env[key];
+      }
     }
   }
   assert.deepEqual(loader.getExtensions().errors, []);
@@ -157,8 +167,8 @@ async function fixture(
     settingsManager,
     model: faux.getModel(),
     noTools: "builtin" as const,
-    tools: options.tools,
-    excludeTools: options.excludeTools,
+    tools: options.tools === undefined ? undefined : [...options.tools],
+    excludeTools: options.excludeTools === undefined ? undefined : [...options.excludeTools],
   };
   let { session } = await createAgentSession({ ...sessionOptions, sessionManager: manager });
   t.after(async () => {
@@ -167,15 +177,20 @@ async function fixture(
     session.dispose();
     assert.deepEqual(errors, []);
   });
-  await session.bindExtensions({ mode: "print", onError: (error) => errors.push(error) });
+  await session.bindExtensions({
+    mode: "print",
+    onError: (error) => {
+      errors.push(error);
+    },
+  });
   await until(async () => (await peer.listSessions()).some((item) => item.name === name));
   const active = () => session.getActiveToolNames();
   const call = async (toolName: string, args = {}) => {
-    const tool = session.agent.state.tools.find((tool) => tool.name === toolName);
+    const tool = session.agent.state.tools.find((candidate) => candidate.name === toolName);
     assert.ok(tool, `${toolName} must be executable`);
     return await tool.execute(`fixture-${toolName}`, args, new AbortController().signal);
   };
-  const prompt = async (check?: (names: string[]) => void) => {
+  const prompt = async (check?: (names: readonly string[]) => void) => {
     faux.setResponses([
       (context) => {
         check?.(getCurrentTools(context.messages).map((tool) => tool.name));
@@ -185,7 +200,14 @@ async function fixture(
     await session.prompt("Check available tools.");
   };
   const newSession = async () => {
-    const services = { cwd: repo, agentDir, resourceLoader: loader, modelRuntime, settingsManager };
+    const services = {
+      cwd: repo,
+      agentDir,
+      resourceLoader: loader,
+      modelRuntime,
+      settingsManager,
+      diagnostics: [],
+    };
     const runtime = new AgentSessionRuntime(
       session,
       services,
@@ -200,12 +222,30 @@ async function fixture(
     );
     runtime.setRebindSession(async (next) => {
       session = next;
-      await next.bindExtensions({ mode: "print", onError: (error) => errors.push(error) });
+      await next.bindExtensions({
+        mode: "print",
+        onError: (error) => {
+          errors.push(error);
+        },
+      });
     });
     await runtime.newSession();
     return session.sessionManager.getSessionId();
   };
-  return { session, manager, faux, name, active, call, prompt, newSession, api: () => api! };
+  return {
+    session,
+    manager,
+    faux,
+    name,
+    active,
+    call,
+    prompt,
+    newSession,
+    api: () => {
+      assert.ok(api, "extension factory must have loaded");
+      return api;
+    },
+  };
 }
 
 const heavy = ["agent_runs", "subagent", "intercom"];
@@ -227,7 +267,8 @@ test("fresh native requests stay lean despite presence; discovery enables comple
       assert.ok(!names.includes(name));
     }
   });
-  const leanLeaf = f.manager.getLeafId()!;
+  const leanLeaf = f.manager.getLeafId();
+  assert.ok(leanLeaf !== null, "lean prompt must create a persisted native leaf");
   f.faux.setResponses([
     () =>
       fauxAssistantMessage(
@@ -240,21 +281,24 @@ test("fresh native requests stay lean despite presence; discovery enables comple
         assert.ok(tools.some((tool) => tool.name === name));
       }
       assert.ok(!tools.some((tool) => tool.name === "subagent"));
-      assert.ok(
-        Object.keys(
-          tools.find((tool) => tool.name === "agent_runs")!.parameters.properties!,
-        ).includes("questionId"),
-      );
-      assert.ok(
-        Object.keys(
-          tools.find((tool) => tool.name === "intercom")!.parameters.properties!,
-        ).includes("attachments"),
-      );
+      const runTool = tools.find((tool) => tool.name === "agent_runs");
+      const intercomTool = tools.find((tool) => tool.name === "intercom");
+      assert.ok(runTool);
+      assert.ok(intercomTool);
+      assert.ok("properties" in runTool.parameters);
+      assert.ok("properties" in intercomTool.parameters);
+      const runProperties: unknown = runTool.parameters.properties;
+      const intercomProperties: unknown = intercomTool.parameters.properties;
+      assert.ok(typeof runProperties === "object" && runProperties !== null);
+      assert.ok(typeof intercomProperties === "object" && intercomProperties !== null);
+      assert.ok(Object.keys(runProperties).includes("questionId"));
+      assert.ok(Object.keys(intercomProperties).includes("attachments"));
       return fauxAssistantMessage("enabled");
     },
   ]);
   await f.session.prompt("Load controls and peer coordination.");
-  const loadedLeaf = f.manager.getLeafId()!;
+  const loadedLeaf = f.manager.getLeafId();
+  assert.ok(loadedLeaf !== null, "loaded prompt must create a persisted native leaf");
   await f.session.reload();
   assert.ok(f.active().includes("agent_runs"));
   assert.ok(f.active().includes("intercom"));
@@ -302,20 +346,20 @@ test("native session replacement cannot carry another owner's actionable state",
   });
 });
 
-test("late registration preserves lazy policy and unrelated exact tool identities", async (t) => {
-  for (const tools of [
-    undefined,
-    [
-      "delegate",
-      "agent_runs",
-      "subagent",
-      "intercom",
-      "load_subagent",
-      "load_intercom",
-      "late",
-      "unrelated",
-    ],
-  ]) {
+for (const tools of [
+  undefined,
+  [
+    "delegate",
+    "agent_runs",
+    "subagent",
+    "intercom",
+    "load_subagent",
+    "load_intercom",
+    "late",
+    "unrelated",
+  ],
+]) {
+  test(`late registration preserves lazy policy and unrelated exact tool identities (${tools === undefined ? "default" : "explicit"} policy)`, async (t) => {
     const f = await fixture(t, { tools });
     await f.prompt();
     f.api().registerTool({
@@ -338,19 +382,17 @@ test("late registration preserves lazy policy and unrelated exact tool identitie
     if ("getActiveToolReferences" in f.session && tools === undefined) {
       f.api().registerTool({
         name: "agent_runs",
-        namespace: "foreign",
+        namespace: { name: "foreign", description: "Unrelated tool namespace" },
         label: "Foreign",
         description: "Unrelated namespaced tool",
         parameters: Type.Object({}),
         async execute() {
           return { content: [], details: {} };
         },
-      } as never);
-      const foreign = f.session
-        .getAllTools()
-        .find((tool) => "namespace" in tool && tool.namespace === "foreign")!;
-      assert.ok(foreign && "id" in foreign);
-      const id = (foreign as { id: string }).id;
+      });
+      const foreign = f.session.getAllTools().find((tool) => tool.namespace?.name === "foreign");
+      assert.ok(foreign && "id" in foreign && typeof foreign.id === "string");
+      const id = foreign.id;
       assert.ok(f.active().includes(id));
       f.session.setActiveToolsByName(f.active().filter((name) => !heavy.includes(name)));
       await f.call("load_subagent", { advanced: false });
@@ -362,14 +404,17 @@ test("late registration preserves lazy policy and unrelated exact tool identitie
     }
     assert.ok(f.active().includes("agent_runs"));
     assert.ok(f.active().includes("intercom"));
-  }
-});
+  });
+}
 
-test("explicit policies without loaders stay usable, while discovery and inbound never revive denied controls", async (t) => {
-  for (const name of heavy) {
+for (const name of heavy) {
+  test(`explicit ${name} policy without loaders stays usable`, async (t) => {
     const f = await fixture(t, { tools: [name] });
     assert.deepEqual(f.active(), [name]);
-  }
+  });
+}
+
+test("explicit policies without loaders stay usable, while discovery and inbound never revive denied controls", async (t) => {
   const f = await fixture(t, { excludeTools: heavy });
   await assert.rejects(() => f.call("load_intercom"), /excluded/);
   await assert.rejects(() => f.call("load_subagent", { advanced: false }), /excluded/);
@@ -382,8 +427,8 @@ test("explicit policies without loaders stay usable, while discovery and inbound
   }
 });
 
-test("owned actionable restoration enables controls, not reviewed inert history or inherited ownership", async (t) => {
-  for (const kind of ["unreviewed", "reviewed", "foreign", "question", "question-only"] as const) {
+for (const kind of ["unreviewed", "reviewed", "foreign", "question", "question-only"] as const) {
+  test(`owned actionable restoration enables controls, not reviewed inert history or inherited ownership (${kind})`, async (t) => {
     const f = await fixture(t, {
       seed(manager) {
         const runId = `restore-${kind}-${manager.getSessionId()}`;
@@ -442,8 +487,8 @@ test("owned actionable restoration enables controls, not reviewed inert history 
       kind,
     );
     assert.ok(!f.active().includes("subagent"));
-  }
-});
+  });
+}
 
 test("broker presence/passive and synthetic notices stay lean; peer asks activate before delivery and survive consumed-message reload", async (t) => {
   const f = await fixture(t);
@@ -453,7 +498,8 @@ test("broker presence/passive and synthetic notices stay lean; peer asks activat
       .getEntries()
       .some(
         (entry) =>
-          entry.type === "custom_message" && String(entry.content).includes("Passive breadcrumb"),
+          entry.type === "custom_message" &&
+          JSON.stringify(entry.content).includes("Passive breadcrumb"),
       ),
   );
   assert.ok(!f.active().includes("intercom"));
@@ -503,8 +549,8 @@ test("broker presence/passive and synthetic notices stay lean; peer asks activat
   assert.ok(!f.active().includes("intercom"), "a saved reply retires the recovery need");
 });
 
-test("recovery does not resurrect consumed asks retired by disconnect, error feedback, or durable supervisor answers", async (t) => {
-  for (const resolution of ["disconnect", "error", "answer", "saved-answer"] as const) {
+for (const resolution of ["disconnect", "error", "answer", "saved-answer"] as const) {
+  test(`recovery does not resurrect consumed asks retired by ${resolution}`, async (t) => {
     const f = await fixture(t);
     const sender = new IntercomClient();
     t.after(() => sender.disconnect());
@@ -566,8 +612,8 @@ test("recovery does not resurrect consumed asks retired by disconnect, error fee
       !f.active().includes("intercom"),
       `${resolution} must retire the reply obligation across reload`,
     );
-  }
-});
+  });
+}
 
 test("owned human-origin messages reach chat without loading peer controls", async (t) => {
   const f = await fixture(t, { child: true });

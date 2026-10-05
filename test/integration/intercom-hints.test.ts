@@ -1,42 +1,65 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { test, type TestContext } from "node:test";
+import {
+  initTheme,
+  type ExtensionUIContext,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import {
   getKeybindings,
   setKeybindings,
-  KeybindingsManager,
-  TUI_KEYBINDINGS,
   Text,
   TuiAltScreen,
   stripTerminalSequences,
   visibleWidth,
+  type Component,
+  type OverlayHandle,
+  type KeyId,
 } from "@earendil-works/pi-tui";
 import { SessionListOverlay } from "../../src/pi-intercom/ui/session-list.ts";
 import { ComposeOverlay } from "../../src/pi-intercom/ui/compose.ts";
+import type { SendResult } from "../../src/pi-intercom/types.ts";
+import type { IntercomClient } from "../../src/pi-intercom/broker/client.ts";
+type SendOptions = Parameters<IntercomClient["send"]>[1];
 import { IntercomTopics } from "../../src/pi-intercom/topics.ts";
 import { createTestTerminal } from "../support/terminal.ts";
+import { makeExtensionContext } from "../support/helpers.ts";
+import { createNativeSessionFixture } from "../support/native-session.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import type { ReadonlyInput } from "../../src/shared/types/inputs.ts";
 
+const { KeybindingsManager } =
+  await import("../../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js");
 initTheme("dark", false);
-const { theme } = await import(
-  new URL(
-    "./modes/interactive/theme/theme.js",
-    import.meta.resolve("@earendil-works/pi-coding-agent"),
-  ).href
-);
-const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+const { theme: nativeTheme } =
+  await import("../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js");
+const turn = () =>
+  new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
 const current = { id: "self", name: "Parent", cwd: "/fixture", model: "fixture" };
-const peers = ["First", "Second"].map((name) => ({ ...current, id: name.toLowerCase(), name }));
+const first = { ...current, id: "first", name: "First" };
+const second = { ...current, id: "second", name: "Second" };
+const peers = [first, second];
 
-function nativeUi(t, columns = 100, rows = 32, bindings = {}) {
+function nativeUi(
+  t: TestContext,
+  columns = 100,
+  rows = 32,
+  bindings: Readonly<Record<string, KeyId>> = {},
+) {
   const terminal = createTestTerminal(columns, rows);
   const tui = new TuiAltScreen(terminal);
   const previous = getKeybindings(),
-    keys = new KeybindingsManager(TUI_KEYBINDINGS, bindings);
+    keys = new KeybindingsManager(bindings);
   setKeybindings(keys);
   tui.addChild(new Text("Unchanged parent", 0, 0));
-  let component, handle;
-  const results = [];
+  let component: (Component & { readonly dispose?: () => void }) | undefined;
+  let handle: OverlayHandle | undefined;
+  const results: unknown[] = [];
   tui.start();
   t.after(() => {
     handle?.hide();
@@ -44,32 +67,48 @@ function nativeUi(t, columns = 100, rows = 32, bindings = {}) {
     tui.stop();
     setKeybindings(previous);
   });
+  const custom: ExtensionUIContext["custom"] = (factory, options) =>
+    new Promise((resolve, reject) => {
+      const mount = (view: Component & { readonly dispose?: () => void }) => {
+        component = view;
+        const overlayOptions =
+          typeof options?.overlayOptions === "function"
+            ? options.overlayOptions()
+            : options?.overlayOptions;
+        handle = tui.showOverlay(view, overlayOptions ?? { width: "96%", margin: 1 });
+        options?.onHandle?.(handle);
+        tui.renderNow();
+      };
+      const view = factory(tui, nativeTheme, keys, (value) => {
+        results.push(value);
+        handle?.hide();
+        component?.dispose?.();
+        resolve(value);
+      });
+      if (view instanceof Promise) {
+        view.then(mount).catch(reject);
+      } else {
+        mount(view);
+      }
+    });
   const f = {
     tui,
     terminal,
     keys,
     results,
-    custom(factory, options?) {
-      return new Promise((resolve) => {
-        component = factory(tui, theme, keys, (value) => {
-          results.push(value);
-          handle?.hide();
-          component.dispose?.();
-          resolve(value);
-        });
-        handle = tui.showOverlay(component, options?.overlayOptions ?? { width: "96%", margin: 1 });
-        tui.renderNow();
-      });
-    },
+    custom,
     get component() {
+      assert.ok(component, "overlay must be mounted");
       return component;
     },
     get bounds() {
-      return handle.getBounds();
+      const bounds = handle?.getBounds();
+      assert.ok(bounds, "native overlay must have published its bounds");
+      return bounds;
     },
     lines() {
       tui.renderNow();
-      return component.render(f.bounds.width).map(stripTerminalSequences);
+      return f.component.render(f.bounds.width).map(stripTerminalSequences);
     },
     point(text: string) {
       const lines = f.lines(),
@@ -102,7 +141,13 @@ for (const remapped of [false, true]) {
       remapped ? { "tui.select.confirm": "ctrl+g", "tui.select.cancel": "ctrl+e" } : {},
     );
     const opening = f.custom(
-      (tui, theme, keys, done) => new SessionListOverlay(tui, theme, keys, current, peers, done),
+      (tui, theme, keys, done) =>
+        new SessionListOverlay(tui, theme, {
+          keybindings: keys,
+          currentSession: current,
+          sessions: peers,
+          done,
+        }),
     );
     f.terminal.input("\x1b[B");
     f.tui.renderNow();
@@ -112,7 +157,13 @@ for (const remapped of [false, true]) {
     await opening;
     assert.equal(f.tui.hasOverlay(), false);
     const rowOpening = f.custom(
-      (tui, theme, keys, done) => new SessionListOverlay(tui, theme, keys, current, peers, done),
+      (tui, theme, keys, done) =>
+        new SessionListOverlay(tui, theme, {
+          keybindings: keys,
+          currentSession: current,
+          sessions: peers,
+          done,
+        }),
     );
     await f.click("Second (");
     assert.deepEqual(
@@ -122,7 +173,13 @@ for (const remapped of [false, true]) {
     );
     await rowOpening;
     const empty = f.custom(
-      (tui, theme, keys, done) => new SessionListOverlay(tui, theme, keys, current, [], done),
+      (tui, theme, keys, done) =>
+        new SessionListOverlay(tui, theme, {
+          keybindings: keys,
+          currentSession: current,
+          sessions: [],
+          done,
+        }),
     );
     await f.click("Close");
     assert.equal(f.tui.hasOverlay(), false);
@@ -139,19 +196,23 @@ for (const remapped of [false, true]) {
       32,
       remapped ? { "tui.select.confirm": "ctrl+g", "tui.select.cancel": "ctrl+e" } : {},
     );
-    const sent = [];
-    let release;
-    const client = {
-      send: async (to, options) => {
+    const sent: Array<ReadonlyInput<SendOptions> & { to: string }> = [];
+    const delivery = Promise.withResolvers<SendResult>();
+    const client: Pick<IntercomClient, "send"> = {
+      send: async (to: string, options: ReadonlyInput<SendOptions>) => {
         sent.push({ to, ...options });
-        return new Promise((resolve) => {
-          release = () => resolve({ id: "receipt", accepted: true, delivered: true });
-        });
+        return delivery.promise;
       },
     };
     const opening = f.custom(
       (tui, theme, keys, done) =>
-        new ComposeOverlay(tui, theme, keys, peers[0], peers[0].name, client, done),
+        new ComposeOverlay(tui, theme, {
+          keybindings: keys,
+          target: first,
+          targetLabel: first.name,
+          client,
+          done,
+        }),
     );
     f.terminal.input("\x1b[200~\tLine 1\r\nLine 2\x1b[201~");
     f.tui.renderNow();
@@ -177,28 +238,35 @@ for (const remapped of [false, true]) {
       "in-flight clicks and keys cannot duplicate a send or change its mode",
     );
     assert.match(f.lines().join("\n"), /Sending/);
-    release();
+    delivery.resolve({ id: "receipt", accepted: true, delivered: true });
     await opening;
     assert.deepEqual(f.results, [
       { sent: true, messageId: "receipt", text: "\tLine 1\nLine 2", expectsReply: true },
     ]);
+    assert.ok(typeof f.component.handleInput === "function", "compose overlay handles input");
     f.component.handleInput("late input");
     assert.equal(sent.length, 1);
   });
 }
 
 test("clickable Intercom hints: Close cancels, clipped controls stay inert, and a paste cannot become an action", async (t) => {
-  const f = nativeUi(t),
-    sent = [];
-  const client = {
-    send: async (...args) => {
+  const f = nativeUi(t);
+  const sent: Array<readonly [string, ReadonlyInput<SendOptions>]> = [];
+  const client: Pick<IntercomClient, "send"> = {
+    send: async (...args: readonly [string, ReadonlyInput<SendOptions>]) => {
       sent.push(args);
-      return { id: "unused", accepted: true };
+      return { id: "unused", accepted: true, delivered: true };
     },
   };
   const opening = f.custom(
     (tui, theme, keys, done) =>
-      new ComposeOverlay(tui, theme, keys, peers[0], peers[0].name, client, done),
+      new ComposeOverlay(tui, theme, {
+        keybindings: keys,
+        target: first,
+        targetLabel: first.name,
+        client,
+        done,
+      }),
   );
   const close = f.point("Close"),
     tab = f.point("Tab: Request-reply mode");
@@ -233,19 +301,25 @@ test("clickable Intercom hints: Close cancels, clipped controls stay inert, and 
 });
 
 test("clickable Intercom hints: configured Alt submit and retry preserve the draft after a rejected send", async (t) => {
-  const f = nativeUi(t, 100, 32, { "tui.select.confirm": "alt+enter" }),
-    sent = [];
-  const client = {
-    send: async (to, options) => {
+  const f = nativeUi(t, 100, 32, { "tui.select.confirm": "alt+enter" });
+  const sent: Array<ReadonlyInput<SendOptions> & { to: string }> = [];
+  const client: Pick<IntercomClient, "send"> = {
+    send: async (to: string, options: ReadonlyInput<SendOptions>) => {
       sent.push({ to, ...options });
       return sent.length === 1
-        ? { accepted: false, reason: "Peer unavailable" }
-        : { id: "retry", accepted: true };
+        ? { id: "rejected", accepted: false, delivered: false, reason: "Peer unavailable" }
+        : { id: "retry", accepted: true, delivered: true };
     },
   };
   const opening = f.custom(
     (tui, theme, keys, done) =>
-      new ComposeOverlay(tui, theme, keys, peers[0], peers[0].name, client, done),
+      new ComposeOverlay(tui, theme, {
+        keybindings: keys,
+        target: first,
+        targetLabel: first.name,
+        client,
+        done,
+      }),
   );
   f.terminal.input("Keep the exact draft");
   f.terminal.input("\x1b[13;3u");
@@ -268,16 +342,20 @@ test("clickable Intercom hints: configured Alt submit and retry preserve the dra
 });
 
 test("clickable Intercom hints: topic arrows, page controls and Back use the native viewport", async (t) => {
-  const f = nativeUi(t, 64, 18),
-    entries = [];
-  const ctx = {
-    mode: "json",
-    sessionManager: { getSessionId: () => "self", getEntries: () => entries },
-  };
-  const topics = new IntercomTopics(
-    { appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }) },
-    () => ctx,
-  );
+  const f = nativeUi(t, 64, 18);
+  const agentDir = mkdtempSync(path.join(tmpdir(), "intercom-hints-"));
+  const manager = SessionManager.inMemory("/fixture", { id: "self" });
+  const fixture = await createNativeSessionFixture({
+    cwd: "/fixture",
+    agentDir,
+    sessionManager: manager,
+  });
+  t.after(async () => {
+    await fixture.dispose();
+    rmSync(agentDir, { recursive: true, force: true });
+  });
+  const ctx = makeExtensionContext("/fixture", { sessionManager: manager });
+  const topics = new IntercomTopics(fixture.pi, () => ctx);
   topics.start(ctx);
   for (let i = 0; i < 12; i++) {
     topics.publish(
@@ -291,7 +369,7 @@ test("clickable Intercom hints: topic arrows, page controls and Back use the nat
       current,
     );
   }
-  const opening = topics.open({ ...ctx, ui: { custom: f.custom } });
+  const opening = topics.open({ ...ctx, ui: { ...ctx.ui, custom: f.custom } });
   const start = f.lines().join("\n");
   await f.click("↓");
   const down = f.lines().join("\n");
