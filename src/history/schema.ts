@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
+export const HISTORY_SCHEMA_VERSION = 5;
+
 /** One schema version owns the row, FTS and cursor publication contracts together. */
 export function createHistorySchema(db: DatabaseSync): void {
   db.exec(`
@@ -27,6 +29,6 @@ export function createHistorySchema(db: DatabaseSync): void {
     CREATE TABLE documents(id INTEGER PRIMARY KEY,entry_rowid INTEGER NOT NULL REFERENCES entries(rowid) ON DELETE CASCADE,field TEXT NOT NULL,text_start INTEGER NOT NULL,text_end INTEGER NOT NULL,preview TEXT NOT NULL);
     CREATE INDEX documents_entry ON documents(entry_rowid);
     CREATE VIRTUAL TABLE corpus USING fts5(text,content='',contentless_delete=1,tokenize='unicode61');
-    PRAGMA user_version=5;
+    PRAGMA user_version=${HISTORY_SCHEMA_VERSION};
   `);
 }

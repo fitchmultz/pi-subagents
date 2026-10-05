@@ -144,7 +144,7 @@ export class QueryScope {
   boundary(
     source: SourceRow,
     input: Pick<HistoryPageInput, "terminalEntryId" | "endedAt">,
-    alias = "",
+    alias: "" | "e" = "",
   ): Boundary {
     const column = alias.length > 0 ? `${alias}.` : "";
     const clauses = [`${column}source_id=?`, `${column}generation=?`, `${column}published=1`];

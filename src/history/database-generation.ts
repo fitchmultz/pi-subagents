@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { historyDirectory, openHistoryDatabase } from "./database.ts";
-import { createHistorySchema } from "./schema.ts";
+import { createHistorySchema, HISTORY_SCHEMA_VERSION } from "./schema.ts";
 import { hash } from "./text.ts";
 import { HistoryIndexError } from "./types.ts";
 import { object, errorCode, errorMessage } from "./values.ts";
@@ -35,7 +35,7 @@ function existingGeneration(file: string): DatabaseSync | undefined {
       throw new HistoryIndexError("CORRUPT", "Invalid index generation.");
     }
     db = openHistoryDatabase(file);
-    if (db.prepare("PRAGMA user_version").get()?.user_version !== 5) {
+    if (db.prepare("PRAGMA user_version").get()?.user_version !== HISTORY_SCHEMA_VERSION) {
       throw new HistoryIndexError("CORRUPT", "Invalid index schema.");
     }
     db.prepare("SELECT value FROM meta WHERE key='generation'").get();
