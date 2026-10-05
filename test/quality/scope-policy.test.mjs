@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
+import { chmodSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   uncheckedJavaScript,
@@ -96,11 +97,11 @@ await test("effective checkJs, inherited settings, ts-check and test role stay d
       ),
     );
     const rootCompiler = compiler(dir);
-    assert.equal(rootCompiler.status, 2);
+    assert.equal(rootCompiler.status, 1, rootCompiler.stdout + rootCompiler.stderr);
     assert.match(rootCompiler.stdout, /opt-in.js.*TS7006/);
     assert.doesNotMatch(rootCompiler.stdout, /unchecked.js.*error TS/);
     const inheritedCompiler = compiler(dir, "checked/tsconfig.json");
-    assert.equal(inheritedCompiler.status, 2);
+    assert.equal(inheritedCompiler.status, 1, inheritedCompiler.stdout + inheritedCompiler.stderr);
     assert.match(inheritedCompiler.stdout, /checked.test.js.*TS7006/);
     const metadata = installedRules().filter((rule) => rule.type_aware);
     assert.ok(metadata.length > 0);
@@ -143,7 +144,7 @@ await test("compiler errors remain an independent failure gate", () => {
     put(dir, "main.ts", "export const value: string = 1;");
     assert.deepEqual(lint(dir, ["no-debugger"]), []);
     const result = compiler(dir);
-    assert.equal(result.status, 2);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.match(result.stdout, /main.ts\(1,14\): error TS2322/);
   } finally {
     remove(dir);
@@ -160,6 +161,31 @@ await test("actual CLI discovery covers the entire maintained code inventory", (
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(result.stderr, "");
   assert.deepEqual(result.stdout.trim().split("\n").sort(), maintainedFiles().sort());
+});
+
+await test("canonical compiler command cannot select the API alias through npm's shared shim", () => {
+  const dir = fixture();
+  try {
+    const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+    put(
+      dir,
+      "package.json",
+      JSON.stringify({ type: "module", scripts: { typecheck: manifest.scripts.typecheck } }),
+    );
+    put(dir, "main.ts", "export const value: string = 1;");
+    put(dir, "node_modules/.bin/tsc", "#!/bin/sh\necho 'Wrong compiler shim selected'\nexit 0\n");
+    chmodSync(resolve(dir, "node_modules/.bin/tsc"), 0o755);
+    const result = spawnSync("npm", ["run", "typecheck"], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /main.ts\(1,14\): error TS2322/);
+    assert.doesNotMatch(result.stdout, /Wrong compiler shim selected/);
+  } finally {
+    remove(dir);
+  }
 });
 
 await test("approved checker directives stay confined to their actual boundary contracts", () => {

@@ -105,9 +105,9 @@ export function lint(directory, ruleNames, files = ["main.ts"], changes = {}) {
 }
 
 export function compiler(directory, file = "tsconfig.json") {
-  return spawnSync(resolve(root, "node_modules/.bin/tsc"), ["--noEmit", "--project", file], {
-    cwd: directory,
-    encoding: "utf8",
-    timeout: 30_000,
-  });
+  return spawnSync(
+    process.execPath,
+    [resolve(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--project", file],
+    { cwd: directory, encoding: "utf8", timeout: 30_000 },
+  );
 }

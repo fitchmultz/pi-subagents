@@ -1,12 +1,12 @@
 // Real mutation owners authorized by the policy, not readonly permission for their readers.
 export const mutationBoundaries = [
-  {
-    file: "test/integration/pi-intercom-runtime.test.ts",
+  ...["pi-intercom-runtime", "pi-intercom-native-replay"].map((suite) => ({
+    file: `test/integration/${suite}.test.ts`,
     parameters: [],
     types: [{ from: "file", path: "./src/pi-intercom/broker/client.ts", name: ["IntercomClient"] }],
     contract:
       "Native broker lifecycle tests own the actual RPC connection and subscription handle, not arbitrary client-shaped data.",
-  },
+  })),
   ...[
     ["task-store", ["AgentTask", "AgentVisit"]],
     ["view-session", ["AgentVisit"]],

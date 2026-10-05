@@ -16,8 +16,8 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
   )) {
     console.log(`Compiler leaf: ${path}`);
     const result = spawnSync(
-      resolve(root, "node_modules/.bin/tsc"),
-      ["--noEmit", "--project", path],
+      process.execPath,
+      [resolve(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--project", path],
       {
         cwd: root,
         stdio: "inherit",

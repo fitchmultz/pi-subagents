@@ -105,7 +105,9 @@ administration, not a replacement for these executable checks.
 ## Engines, formatting and generation
 
 Pinned Oxlint/Oxfmt and TypeScript 7 are npm-owned. The separate pinned TypeScript 6 API alias supplies
-AST/config APIs absent from TypeScript 7; it is not the compiler gate. The native engine recipe, upstream
+AST/config APIs absent from TypeScript 7; it is not the compiler gate. Compiler scripts and probes call
+`node_modules/typescript/bin/tsc` explicitly: the API alias also advertises `tsc`, so the shared npm bin
+shim cannot identify the intended compiler reliably after every install. The native engine recipe, upstream
 pins, patches, cache hashes, supported platforms and clean-install evidence are in
 [quality-engine.md](quality-engine.md). Never hand-edit installed dependencies. The installer rebuilds
 when any patch hash changes and all invocation surfaces use that same cache.

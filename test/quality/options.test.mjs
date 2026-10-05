@@ -162,7 +162,7 @@ await test("raw readonly containers permit method reassignment; readonly method 
       'export function mutate(value: Readonly<ReadonlyMap<string,string>>): void { value.get = () => "replacement"; }',
     );
     const result = compiler(dir);
-    assert.equal(result.status, 2);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.match(result.stdout, /TS2540/);
   } finally {
     remove(dir);
