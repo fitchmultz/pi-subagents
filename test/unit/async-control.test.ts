@@ -13,8 +13,8 @@ test("commands issued before a durable owner's first status cannot overwrite eac
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-control-startup-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(path.join(dir, "launch.json"), JSON.stringify({ runtimeVersion: 2 }));
-  writeAsyncControlRequest(dir, "run", "extend", undefined, 500);
-  writeAsyncControlRequest(dir, "run", "extend", undefined, 800);
+  writeAsyncControlRequest(dir, "run", "extend", { extendMs: 500 });
+  writeAsyncControlRequest(dir, "run", "extend", { extendMs: 800 });
   assert.equal(fs.existsSync(path.join(dir, "control-request.json")), false);
   assert.deepEqual(
     readAsyncControlRequests(dir, "run")
@@ -37,11 +37,11 @@ test("durable controls retain each request and validate deadline extensions", (t
       controlRequestFiles: true,
     }),
   );
-  writeAsyncControlRequest(dir, "run", "interrupt", 1);
-  writeAsyncControlRequest(dir, "run", "extend", undefined, 500);
-  writeAsyncControlRequest(dir, "run", "extend", undefined, 800);
+  writeAsyncControlRequest(dir, "run", "interrupt", { index: 1 });
+  writeAsyncControlRequest(dir, "run", "extend", { extendMs: 500 });
+  writeAsyncControlRequest(dir, "run", "extend", { extendMs: 800 });
   assert.throws(
-    () => writeAsyncControlRequest(dir, "run", "extend", undefined, -1),
+    () => writeAsyncControlRequest(dir, "run", "extend", { extendMs: -1 }),
     /positive integer/,
   );
   fs.writeFileSync(

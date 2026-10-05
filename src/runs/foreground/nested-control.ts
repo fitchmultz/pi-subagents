@@ -189,7 +189,7 @@ interface LiveResumeInput {
   readonly message: string;
   readonly index?: number;
   readonly acceptanceOverrideSupplied: boolean;
-  readonly pi: ExtensionAPI;
+  readonly pi: ReadonlyInput<Pick<ExtensionAPI, "events">>;
   readonly childSafe: boolean;
 }
 function liveResult(message: string, override: boolean): SubagentExecutionResult {

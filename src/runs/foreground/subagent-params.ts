@@ -344,7 +344,7 @@ export type ExecutorReadDeps = Readonly<Omit<ExecutorDeps, "state">> & {
   readonly state: ReadonlySubagentState;
 };
 export interface ExecutorDeps {
-  readonly pi: ExtensionAPI;
+  readonly pi: ReadonlyInput<Pick<ExtensionAPI, "events" | "getSessionName">>;
   readonly state: SubagentState;
   readonly config: ExtensionConfig;
   readonly asyncByDefault: boolean;

@@ -116,22 +116,56 @@ class RunWait {
       return;
     }
     this.finished = true;
-    this.release();
-    if (this.timer !== undefined) {
-      clearInterval(this.timer);
-    }
-    this.unsubscribe?.();
-    this.input.signal?.removeEventListener("abort", this.abort);
+    const cleanupError = this.cleanup();
     try {
-      this.pending.resolve(this.result(outcome));
-    } catch (error) {
       this.pending.resolve(
-        this.result({
-          status: "unavailable",
-          text: `Wait could not read ${this.target.runId}: ${errorMessage(error)}`,
-        }),
+        this.result(
+          cleanupError === undefined
+            ? outcome
+            : {
+                status: "unavailable",
+                text: `${outcome.text}\nWait cleanup failed: ${cleanupError}`,
+              },
+        ),
       );
+    } catch (error) {
+      const result = unavailableWait(
+        `Wait could not read ${this.target.runId}: ${errorMessage(error)}`,
+      );
+      this.pending.resolve({
+        ...result,
+        details: {
+          ...result.details,
+          wait: { runId: this.target.runId, index: this.input.index, status: "unavailable" },
+        },
+      });
     }
+  }
+
+  private cleanup(): string | undefined {
+    let failure: string | undefined;
+    for (const release of [
+      this.release,
+      () => {
+        if (this.timer !== undefined) {
+          clearInterval(this.timer);
+          this.timer = undefined;
+        }
+      },
+      () => {
+        this.unsubscribe?.();
+      },
+      () => {
+        this.input.signal?.removeEventListener("abort", this.abort);
+      },
+    ]) {
+      try {
+        release();
+      } catch (error) {
+        failure ??= errorMessage(error);
+      }
+    }
+    return failure;
   }
 
   private result(outcome: WaitOutcome): SubagentExecutionResult {
