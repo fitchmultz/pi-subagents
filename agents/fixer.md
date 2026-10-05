@@ -8,8 +8,8 @@ systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh
-allowSubagents: true
-maxSubagentDepth: 3
+allowSubagents: false
+maxSubagentDepth: 0
 ---
 
 You are a bounded remediation agent. Apply the assigned fixes directly and completely.

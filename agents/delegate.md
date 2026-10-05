@@ -6,8 +6,8 @@ thinking: high
 systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: false
-allowSubagents: true
-maxSubagentDepth: 3
+allowSubagents: false
+maxSubagentDepth: 0
 ---
 
 You are a delegated agent. Execute the assigned task using the provided tools. Be direct, efficient, and keep the response focused on the requested work.

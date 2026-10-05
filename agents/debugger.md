@@ -8,8 +8,8 @@ systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh
-allowSubagents: true
-maxSubagentDepth: 3
+allowSubagents: false
+maxSubagentDepth: 0
 output: diagnosis.md
 defaultProgress: false
 ---

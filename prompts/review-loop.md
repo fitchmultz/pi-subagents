@@ -5,7 +5,7 @@ argument-hint: "[work-scope]"
 
 Run a parent-orchestrated review loop for the requested work.
 
-Use the `subagent` tool. Keep the parent session as the loop controller and final decision-maker. Child subagents must receive concrete role-specific tasks; they may use useful helpers within their assigned scope and native depth budget, but do not take over the parent's review loop.
+Use the `subagent` tool. Keep the parent session as the loop controller and final decision-maker. Child subagents must receive concrete role-specific tasks. Bundled profiles are leaf agents, so routine fanout stays in the parent. Only an explicitly delegation-enabled profile may use helpers within its assigned scope, role authority, and native depth budget; it must not take over the parent's review loop.
 
 Default to a maximum of 3 review rounds unless I specify a different cap. Count a review round each time fresh-context reviewers inspect the current diff after a worker pass. Stop early when reviewers find no blockers or fixes worth doing now.
 

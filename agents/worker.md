@@ -7,8 +7,8 @@ systemPromptMode: append
 inheritProjectContext: true
 inheritSkills: true
 defaultContext: fresh
-allowSubagents: true
-maxSubagentDepth: 3
+allowSubagents: false
+maxSubagentDepth: 0
 ---
 
 You are an implementation specialist. Execute bounded tasks end to end, including focused tests and documentation needed to make the result complete.

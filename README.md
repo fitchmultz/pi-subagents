@@ -346,7 +346,7 @@ The extension ships with builtin agents you can use immediately.
 | `oracle` | A forked second opinion that protects the current decision contract. |
 | `delegate` | Lightweight generic delegation that stays close to the parent session. |
 
-Use the role that fits the task. Keep writers isolated and launch independent reviewers separately. Bundled profiles allow useful helpers with `allowSubagents: true` and `maxSubagentDepth: 3`; each helper retains its assignment's authority and role boundaries, including read-only constraints. The original parent owns integration and final delivery. The stock installation limit remains `1`; configure `maxSubagentDepth: 3` in the native [configuration](#maxsubagentdepth) to enable worker → helper → helper delegation. A stricter inherited limit still wins.
+Use the role that fits the task. Keep writers isolated and launch independent reviewers separately. Every bundled profile sets `allowSubagents: false` and `maxSubagentDepth: 0`, so routine fanout stays in the parent. Custom profiles may explicitly enable useful helpers within their assigned task, subject to the [depth limit](#recursion-guard) and role authority, including read-only constraints. The original parent owns integration and final delivery; do not enable nested delegation or raise its budget without user authorization.
 
 ## Changing a builtin agent's model
 
@@ -386,7 +386,7 @@ Background runs are the default and keep working independently of the parent's v
 
 An incomplete active Pi goal does not require foreground execution. If child evidence gates the next step, end the current turn and continue the goal after automatic completion delivery; do not advance past the missing evidence.
 
-All children share the task-labelled Agents strip. A waiting tool returns the saved result; other background runs send completion notifications. Parallel groups show per-agent progress. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. Bundled profiles permit useful nested helpers when the installation depth limit allows them.
+All children share the task-labelled Agents strip. A waiting tool returns the saved result; other background runs send completion notifications. Parallel groups show per-agent progress. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. Nested delegation remains disabled in bundled profiles.
 
 You can also ask naturally:
 
@@ -716,7 +716,7 @@ Important fields:
 |-------|-------|
 | `package` | Optional package identifier. A file with `name: scout` and `package: code-analysis` registers as `code-analysis.scout`; serialization keeps `name` and `package` separate. |
 | `tools` | Tool allowlist, including extension tools. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. Omit it to keep Pi's normal configured tool surface. |
-| `allowSubagents` | Child-safe nested delegation. Enabled in bundled profiles and still bounded by `maxSubagentDepth`. |
+| `allowSubagents` | Opt-in child-safe nested delegation. Disabled in bundled profiles and still bounded by `maxSubagentDepth`. |
 | `extensions` | Omitted means normal extensions; empty means no extensions; comma-separated values allowlist specific extensions. |
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. |
 | `fallbackModels` | Ordered backup models for provider/model failures such as quota, usage limit, auth, timeout, or unavailable model. The shared driver first retries the same model once for recoverable transport failures such as WebSocket/stream/socket timeouts or SIGTERM-style provider exits, then falls back when appropriate. Ordinary task failures do not trigger retry or fallback. |
@@ -731,7 +731,7 @@ Important fields:
 | `defaultProgress` | Maintain `progress.md`. |
 | `completionGuard` | Opt in with `true` to require an observed successful mutating tool result. Disabled by default; task wording never determines success. An explicit `acceptance` contract takes precedence and can allow valid no-op outcomes. |
 | `interactive` | Parsed for compatibility but not enforced in v1. |
-| `maxSubagentDepth` | Custom profiles default to `0`; bundled profiles use `3`, subject to the inherited installation limit. |
+| `maxSubagentDepth` | Defaults to `0`; raise it explicitly for an agent allowed to delegate, subject to the inherited global limit. |
 | `maxExecutionTimeMs` | Stops each child attempt after the given number of milliseconds, with a fresh budget for each self-review turn. |
 | `maxTokens` | Bounds the child's assistant input plus output tokens per attempt, including separate self-review attempts. It is not a cumulative workflow or nested-usage budget. Enforcement is best-effort because usage arrives after model events. |
 
@@ -1249,12 +1249,12 @@ Controls project-trust flags for non-interactive child `pi` processes. Child run
 ### `maxSubagentDepth`
 
 ```json
-{ "maxSubagentDepth": 3 }
+{ "maxSubagentDepth": 1 }
 ```
 
 Controls nested delegation when no inherited `PI_SUBAGENT_MAX_DEPTH` is already in effect. The default is `1`, which allows the main session to launch subagents and blocks those children from delegating again. Per-agent `maxSubagentDepth` can tighten the limit for that agent’s child runs, but cannot relax an inherited stricter limit.
 
-Custom agent profiles default `maxSubagentDepth` to `0`; bundled profiles use `3`. A first-level child runs at depth `1`. Both the profile and installation limits must be at least `2` for that child to delegate; `3` also lets its helper delegate one further level. Limits cap absolute depth, not additional levels per agent.
+Agent profiles separately default `maxSubagentDepth` to `0`. A first-level child runs at depth `1`, so nested orchestration requires both the installation and that orchestrator profile to set `maxSubagentDepth` to at least `2`.
 
 ### Agent resource limits
 
@@ -1443,7 +1443,7 @@ This is disabled by default. Session data may contain source code, paths, enviro
 
 ## Recursion guard
 
-The stock installation depth guard allows one level—main session → subagent. Bundled profiles allow useful helper delegation with a profile depth of `3`. Configure the installation limit to `3` to allow root → assigned child → helper → helper, while preserving the native guard and the original parent's integration and delivery responsibility. Custom leaf profiles and explicit stricter inherited limits remain supported.
+Nested child delegation is disabled by default. The default depth guard allows one level—main session → subagent. If the user explicitly authorizes nested helpers, enable delegation in the chosen custom profile and set both its profile and installation depth limits to the authorized budget (at least `2` for a first-level child to delegate). This does not change bundled leaf-profile defaults or the original parent's responsibility for integration and delivery.
 
 Configure the limit with:
 
@@ -1452,7 +1452,7 @@ Configure the limit with:
 3. `maxSubagentDepth` in agent frontmatter, which can only tighten the inherited limit
 
 ```bash
-export PI_SUBAGENT_MAX_DEPTH=3
+export PI_SUBAGENT_MAX_DEPTH=1
 ```
 
 `PI_SUBAGENT_DEPTH` is internal and propagated automatically. Do not set it manually; invalid values block nested subagents instead of resetting to zero.
