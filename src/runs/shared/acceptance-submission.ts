@@ -93,10 +93,16 @@ export function reportAuditOutput(submission: {
     : submission.output;
 }
 
+function toolResultSucceeded(result: { readonly isError: unknown }): boolean {
+  return result.isError === false;
+}
+
 function successfulStructuredIds(messages: readonly Message[]): Set<string> {
   return new Set(
     messages.flatMap((message) =>
-      message.role === "toolResult" && message.toolName === "structured_output" && !message.isError
+      message.role === "toolResult" &&
+      message.toolName === "structured_output" &&
+      toolResultSucceeded(message)
         ? [message.toolCallId]
         : [],
     ),
@@ -144,7 +150,11 @@ function latestSubmissionError(
   const result = messages
     .slice(index + 1)
     .findLast((message) => message.role === "toolResult" && message.toolCallId === call.id);
-  if (result?.role !== "toolResult" || result.toolName !== "structured_output" || result.isError) {
+  if (
+    result?.role !== "toolResult" ||
+    result.toolName !== "structured_output" ||
+    !toolResultSucceeded(result)
+  ) {
     return "the latest structured_output call has no matching successful result.";
   }
   return undefined;
