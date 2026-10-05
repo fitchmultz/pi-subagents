@@ -44,7 +44,7 @@ function groups(jobs: readonly Job[]): JobGroups {
   };
 }
 function queuedItem(jobs: readonly Job[], expanded: boolean): WidgetItem {
-  const first = jobs[0];
+  const first = jobs.at(0);
   return jobs.length === 1 && !expanded && first
     ? { kind: "job", job: first }
     : { kind: "queued", count: jobs.length };
@@ -125,27 +125,28 @@ function header(input: JobGroups, theme: Theme, hint: string): string {
   const color = active ? "accent" : "dim";
   return `${theme.fg(color, glyph)} ${theme.fg(color, "Async agents")} ${theme.fg("dim", "· background")}${hint}`;
 }
+function expansionHint(running: number, theme: Theme, expanded: boolean): string {
+  return running > 0 && !expanded ? ` ${theme.fg("dim", "·")} ${theme.fg("accent", "Ctrl+O")}` : "";
+}
+
 export function buildWidgetLines(
   jobs: readonly Job[],
   theme: Theme,
   width = getTermWidth(),
   expanded = false,
 ): string[] {
-  if (jobs.length === 0) {
+  const first = jobs.at(0);
+  if (first === undefined) {
     return [];
   }
-  const first = jobs[0];
-  if (jobs.length === 1 && expanded && first) {
+  if (jobs.length === 1 && expanded) {
     return buildSingleWidgetLines(first, theme, width);
   }
   const input = groups(jobs),
     items = selectItems(input, expanded).map((item) => itemLines(item, theme, width, expanded));
-  const hint =
-    input.running.length > 0 && !expanded
-      ? ` ${theme.fg("dim", "·")} ${theme.fg("accent", "Ctrl+O")}`
-      : "";
+  const hint = expansionHint(input.running.length, theme, expanded);
   if (items.length === 1 && !expanded) {
-    return [truncLine(`${items[0]?.[0] ?? ""}${hint}`, width)];
+    return [truncLine(`${items.at(0)?.at(0) ?? ""}${hint}`, width)];
   }
   return [truncLine(header(input, theme, hint), width), ...treeLines(items, theme, width)];
 }

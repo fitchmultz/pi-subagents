@@ -1,4 +1,4 @@
-import { nonemptyText } from "./text-values.ts";
+import { hasText, nonemptyText } from "./text-values.ts";
 import { Container, Spacer, Text, type Component } from "@earendil-works/pi-tui";
 import { formatDuration, formatTokens, shortenPath } from "../shared/formatters.ts";
 import { getSingleResultOutput } from "../shared/utils.ts";
@@ -14,6 +14,7 @@ import {
   totalProgress,
   workflowFacts,
   type DetailsInput,
+  type ResultInput,
 } from "./result-facts.ts";
 import { liveContent, profileContent, resultContent } from "./expanded-content.ts";
 import {
@@ -21,6 +22,7 @@ import {
   isDoneResult,
   resultRowLabel,
   renderEntries,
+  workflowGraphHasStatus,
   type ChainRenderEntry,
   type MultiProgressLabel,
 } from "./workflow-labels.ts";
@@ -36,21 +38,10 @@ function chainVisualization(d: DetailsInput, theme: Theme, running: boolean): st
   if ((d.chainAgents?.length ?? 0) === 0) {
     return;
   }
+  const emptyWarning = d.intercomDelivery?.delivered !== true;
   return d.chainAgents
     ?.map((agent, i) => {
-      const result = d.results[i];
-      let status = "pending";
-      if (result) {
-        const complete = isDoneResult(result);
-        status = expandedResultStatus(
-          result,
-          false,
-          d.intercomDelivery?.delivered !== true && complete,
-        );
-        if (status === "done" && !complete) {
-          status = "pending";
-        }
-      }
+      let status = chainResultStatus(d.results.at(i), emptyWarning);
       if (status === "pending" && i === (d.currentStepIndex ?? d.results.length) && running) {
         status = "running";
       }
@@ -59,26 +50,39 @@ function chainVisualization(d: DetailsInput, theme: Theme, running: boolean): st
     })
     .join(theme.fg("dim", " → "));
 }
+function chainResultStatus(result: ResultInput | undefined, emptyWarning: boolean): string {
+  if (result === undefined) {
+    return "pending";
+  }
+  const complete = isDoneResult(result),
+    status = expandedResultStatus(result, false, emptyWarning && complete);
+  return status === "done" && !complete ? "pending" : status;
+}
+
+function hasFailedResult(results: DetailsInput["results"]): boolean {
+  return results.some(
+    (r) =>
+      (r.exitCode !== 0 || r.timedOut === true) &&
+      r.interrupted !== true &&
+      r.detached !== true &&
+      r.progress?.status !== "running",
+  );
+}
+function hasEmptySuccess(results: DetailsInput["results"]): boolean {
+  return results.some(
+    (r) =>
+      r.exitCode === 0 &&
+      r.progress?.status !== "running" &&
+      hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
+  );
+}
 function multiIcon(d: DetailsInput, theme: Theme, isError: boolean): string {
   const facts = workflowFacts(d, isError);
   if (facts.running) {
     return theme.fg("warning", "running");
   }
-  const failure =
-    isError ||
-    d.results.some(
-      (r) =>
-        (r.exitCode !== 0 || r.timedOut === true) &&
-        r.interrupted !== true &&
-        r.detached !== true &&
-        r.progress?.status !== "running",
-    );
-  if (
-    failure ||
-    (facts.failed &&
-      d.workflowGraph?.nodes.some((n) => n.status === "failed" || n.status === "timed-out") ===
-        true)
-  ) {
+  const failure = isError || hasFailedResult(d.results);
+  if (failure || (facts.failed && workflowGraphHasStatus(d, ["failed", "timed-out"]))) {
     return theme.fg("error", "failed");
   }
   if (facts.blocked) {
@@ -87,14 +91,10 @@ function multiIcon(d: DetailsInput, theme: Theme, isError: boolean): string {
   if (facts.paused) {
     return theme.fg("warning", "paused");
   }
-  const empty =
-    d.intercomDelivery?.delivered !== true &&
-    d.results.some(
-      (r) =>
-        r.exitCode === 0 &&
-        r.progress?.status !== "running" &&
-        hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
-    );
+  return successIcon(d.results, d.intercomDelivery?.delivered === true, theme);
+}
+function successIcon(results: DetailsInput["results"], delivered: boolean, theme: Theme): string {
+  const empty = !delivered && hasEmptySuccess(results);
   return theme.fg(empty ? "warning" : "success", empty ? "warning" : "ok");
 }
 function placeholder(
@@ -129,7 +129,7 @@ function resultRow(
   label: MultiProgressLabel,
 ): Container {
   const c = new Container(),
-    r = d.results[entry.resultIndex];
+    r = d.results.at(entry.resultIndex);
   if (!r) {
     const pending = label.hasParallelInChain
       ? resultRowLabel(d, label, entry.resultIndex, entry.rowNumber)
@@ -143,28 +143,54 @@ function resultRow(
     running = progress?.status === "running";
   const number = typeof progress?.index === "number" ? progress.index + 1 : entry.resultIndex + 1;
   const status = expandedResultStatus(r, running, d.intercomDelivery?.delivered !== true);
+  c.addChild(
+    resultHeading(r, theme, {
+      progress,
+      status,
+      label: resultRowLabel(d, label, entry.resultIndex, number),
+    }),
+  );
+  c.addChild(resultBody(r, theme, progress));
+  c.addChild(new Spacer(1));
+  return c;
+}
+function resultHeading(
+  r: ResultInput,
+  theme: Theme,
+  row: {
+    readonly progress: ReturnType<typeof resultProgress>;
+    readonly status: string;
+    readonly label: string;
+  },
+): Text {
+  const progress = row.progress,
+    running = progress?.status === "running";
   const stats = progress
     ? ` | ${progress.toolCount} tools, ${formatDuration(progress.durationMs)}`
     : "";
   const name = running ? theme.bold(theme.fg("warning", r.agent)) : theme.bold(r.agent);
-  c.addChild(
-    new Text(
-      `${theme.fg(statusColor(status), status)} ${resultRowLabel(d, label, entry.resultIndex, number)}: ${name}${modelThinkingBadge(theme, r.model)}${stats}`,
-      0,
-      0,
-    ),
+  return new Text(
+    `${theme.fg(statusColor(row.status), row.status)} ${row.label}: ${name}${modelThinkingBadge(theme, r.model)}${stats}`,
+    0,
+    0,
   );
+}
+function resultBody(
+  r: ResultInput,
+  theme: Theme,
+  progress: ReturnType<typeof resultProgress>,
+): Container {
+  const c = new Container();
   c.addChild(new Text(theme.fg("dim", `    task: ${r.task}`), 0, 0));
   const target = extractOutputTarget(r.task);
   if (target !== undefined) {
     c.addChild(new Text(theme.fg("dim", `    output: ${target}`), 0, 0));
   }
   c.addChild(profileContent(r, theme, "    "));
-  if (running && progress) {
-    if ((progress.skills?.length ?? 0) > 0) {
-      c.addChild(
-        new Text(theme.fg("accent", `    skills: ${progress.skills?.join(", ") ?? ""}`), 0, 0),
-      );
+  if (progress?.status === "running") {
+    const skills = progress.skills ?? [];
+    if (skills.length > 0) {
+      c.addChild(new Text(theme.fg("accent", `    skills: ${skills.join(", ")}`), 0, 0));
     }
     c.addChild(liveContent(progress, theme, "    ", r.artifactPaths?.outputPath));
   } else {
@@ -181,13 +207,25 @@ function resultRow(
       resultContent(
         r,
         theme,
-        nonemptyText(r.truncation?.text) || getSingleResultOutput(r),
+        nonemptyText(r.truncation?.text) ?? getSingleResultOutput(r),
         "      ",
       ),
     );
   }
-  c.addChild(new Spacer(1));
   return c;
+}
+function multiHeading(d: DetailsInput, theme: Theme, headerLabel: string, isError: boolean): Text {
+  const total = totalProgress(d) ?? { toolCount: 0, tokens: 0, durationMs: 0 };
+  const stats =
+    total.toolCount !== 0 || total.tokens !== 0
+      ? ` | ${total.toolCount} tools, ${formatTokens(total.tokens)} tok, ${formatDuration(total.durationMs)}`
+      : "";
+  const badge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
+  return new Text(
+    `${multiIcon(d, theme, isError)} ${theme.fg("toolTitle", theme.bold(d.mode))}${badge} · ${headerLabel}${stats}`,
+    0,
+    0,
+  );
 }
 export function renderMultiExpanded(
   d: DetailsInput,
@@ -201,27 +239,15 @@ export function renderMultiExpanded(
     ...builtLabel,
     showActiveGroupOnly: builtLabel.showActiveGroupOnly && facts.running,
   };
-  const total = totalProgress(d) ?? { toolCount: 0, tokens: 0, durationMs: 0 };
-  const stats =
-    total.toolCount !== 0 || total.tokens !== 0
-      ? ` | ${total.toolCount} tools, ${formatTokens(total.tokens)} tok, ${formatDuration(total.durationMs)}`
-      : "";
-  const badge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
-  c.addChild(
-    new Text(
-      `${multiIcon(d, theme, options.isError)} ${theme.fg("toolTitle", theme.bold(d.mode))}${badge} · ${label.headerLabel}${stats}`,
-      0,
-      0,
-    ),
-  );
+  c.addChild(multiHeading(d, theme, label.headerLabel, options.isError));
   if (options.showRun && d.runId !== undefined) {
     c.addChild(new Text(theme.fg("dim", `Run: ${d.runId}`), 0, 0));
   }
   const chain = label.hasParallelInChain ? undefined : chainVisualization(d, theme, facts.running);
-  if (chain !== undefined && chain.length > 0) {
+  if (hasText(chain)) {
     c.addChild(new Text(`  ${chain}`, 0, 0));
   }
-  if (options.receipt !== undefined && options.receipt.length > 0) {
+  if (hasText(options.receipt)) {
     c.addChild(new Text(options.receipt, 0, 0));
   }
   c.addChild(new Spacer(1));

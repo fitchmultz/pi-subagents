@@ -60,7 +60,7 @@ export function resultProgress(
   d: DetailsInput,
   index: number,
 ): ProgressInput | ResultInput["progressSummary"] {
-  const r = d.results[index];
+  const r = d.results.at(index);
   if (!r) {
     return;
   }

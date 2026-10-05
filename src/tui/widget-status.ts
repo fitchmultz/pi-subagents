@@ -62,17 +62,18 @@ export function formatWidgetAgents(agents: ReadonlyInput<string[]>): string {
 }
 
 export function widgetJobName(job: ReadonlyInput<AsyncJobState>): string {
+  const agents = job.agents ?? [];
   if (job.mode === "parallel") {
     return "parallel";
   }
   if (job.mode === "chain") {
     return "chain";
   }
-  if (job.mode === "single" && job.agents?.length === 1) {
-    return job.agents[0];
+  if (job.mode === "single" && agents.length === 1) {
+    return agents[0] ?? "subagent";
   }
-  if ((job.agents?.length ?? 0) > 0) {
-    return formatWidgetAgents(job.agents ?? []);
+  if (agents.length > 0) {
+    return formatWidgetAgents(agents);
   }
   return job.mode ?? "subagent";
 }
@@ -256,11 +257,19 @@ function jobStepStat(job: ReadonlyInput<AsyncJobState>): string {
   if (job.currentStep === undefined) {
     return total > 1 ? `steps ${total}` : "";
   }
-  if (job.mode !== "chain" || (job.parallelGroups?.length ?? 0) === 0) {
-    return `step ${job.currentStep + 1}/${total}`;
+  return currentStepStat(job, job.currentStep, total);
+}
+function currentStepStat(
+  job: Pick<ReadonlyInput<AsyncJobState>, "parallelGroups" | "mode" | "chainStepCount">,
+  current: number,
+  total: number,
+): string {
+  const parallelGroups = job.parallelGroups ?? [];
+  if (job.mode !== "chain" || parallelGroups.length === 0) {
+    return `step ${current + 1}/${total}`;
   }
   const chainTotal = job.chainStepCount ?? total;
-  return `step ${flatToLogicalStepIndex(job.currentStep, chainTotal, job.parallelGroups ?? []) + 1}/${chainTotal}`;
+  return `step ${flatToLogicalStepIndex(current, chainTotal, parallelGroups) + 1}/${chainTotal}`;
 }
 export function widgetStats(job: ReadonlyInput<AsyncJobState>, theme: Theme): string {
   const parts = [jobStepStat(job)];
@@ -283,7 +292,7 @@ export function widgetStepStats(
   return statJoin(theme, [
     step.turnCount !== undefined ? `${step.turnCount} turns` : "",
     step.toolCount !== undefined ? formatToolUseStat(step.toolCount) : "",
-    step.tokens?.total ? formatTokenStat(step.tokens.total) : "",
+    (step.tokens?.total ?? 0) !== 0 ? formatTokenStat(step.tokens?.total ?? 0) : "",
     step.durationMs !== undefined ? formatDuration(step.durationMs) : "",
   ]);
 }

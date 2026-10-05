@@ -1,3 +1,4 @@
+import { nonemptyText } from "./text-values.ts";
 import type {
   AsyncParallelGroupStatus,
   Details,
@@ -5,9 +6,15 @@ import type {
   WorkflowGraphNode,
   WorkflowNodeStatus,
 } from "../shared/types.ts";
-import { formatAgentRunningLabel } from "../shared/status-format.ts";
+import {
+  isDoneResult,
+  parallelStatuses,
+  groupStatus,
+  outcomeLabel,
+  spanCompleted,
+} from "./workflow-outcomes.ts";
+export { isDoneResult } from "./workflow-outcomes.ts";
 type DetailsInput = ReadonlyInput<Details>;
-type Result = DetailsInput["results"][number];
 type ChainDetails = Pick<DetailsInput, "chainAgents" | "workflowGraph">;
 type LabelDetails = Pick<
   DetailsInput,
@@ -120,22 +127,7 @@ export function buildAsyncChainStepSpans(
   }
   return spans;
 }
-function pausedResult(result: Result | undefined): boolean {
-  return result?.interrupted === true || result?.detached === true;
-}
-function blockedResult(result: Result | undefined): boolean {
-  return result?.acceptance?.status === "blocked";
-}
-export function isDoneResult(result: Result): boolean {
-  if (pausedResult(result) || result.timedOut === true || blockedResult(result)) {
-    return false;
-  }
-  const status = result.progress?.status;
-  if (status === "completed") {
-    return true;
-  }
-  return status !== "running" && status !== "pending" && result.exitCode === 0;
-}
+
 export function workflowGraphHasStatus(
   details: Pick<DetailsInput, "workflowGraph">,
   statuses: readonly WorkflowNodeStatus[],
@@ -196,145 +188,22 @@ export function buildChainRenderEntries(
   }
   const entries: ChainRenderEntry[] = [];
   for (const span of buildChainStepSpans(details)) {
-    const missing = span.isParallel ? span.count === 0 : details.results[span.start] === undefined;
+    const missing = span.isParallel
+      ? span.count === 0
+      : details.results.at(span.start) === undefined;
     if (missing) {
       entries.push(placeholder(span, details));
       continue;
     }
     for (let index = span.start; index < span.start + span.count; index++) {
       const agentName =
-        details.results[index]?.agent ??
+        details.results.at(index)?.agent ??
         details.chainAgents?.[span.stepIndex] ??
         `step-${span.stepIndex + 1}`;
       entries.push({ kind: "result", resultIndex: index, rowNumber: index + 1, agentName });
     }
   }
   return entries;
-}
-function resultStatus(result: Result): WorkflowNodeStatus {
-  if (result.progress) {
-    return result.progress.status;
-  }
-  if (result.timedOut === true) {
-    return "timed-out";
-  }
-  if (pausedResult(result)) {
-    return "detached";
-  }
-  if (result.exitCode !== 0) {
-    return "failed";
-  }
-  return blockedResult(result) ? "blocked" : "completed";
-}
-function progressForResult(
-  details: LabelDetails,
-  result: Result,
-  index: number,
-): DetailsInput["progress"] extends readonly (infer P)[] | undefined ? P | undefined : never {
-  return (
-    details.progress?.find((progress) => progress.index === index) ??
-    details.progress?.find(
-      (progress) => progress.agent === result.agent && progress.status === "running",
-    )
-  );
-}
-function parallelStatuses(details: LabelDetails, total: number): WorkflowNodeStatus[] {
-  const statuses = Array.from({ length: total }, (): WorkflowNodeStatus => "pending");
-  for (const progress of details.progress ?? []) {
-    if (progress.index >= 0 && progress.index < total) {
-      statuses[progress.index] = progress.status;
-    }
-  }
-  for (const [position, result] of details.results.entries()) {
-    const index =
-      result.progress?.index ?? progressForResult(details, result, position)?.index ?? position;
-    if (index >= 0 && index < total) {
-      statuses[index] = resultStatus(result);
-    }
-  }
-  return statuses;
-}
-function stoppedGroupStatus(
-  status: WorkflowNodeStatus | undefined,
-  result: Result | undefined,
-): WorkflowNodeStatus | undefined {
-  if (status === "failed" || status === "timed-out" || result?.timedOut === true) {
-    return "failed";
-  }
-  if (status === "paused" || status === "detached" || pausedResult(result)) {
-    return "paused";
-  }
-  return;
-}
-function groupStatus(details: LabelDetails, index: number): WorkflowNodeStatus {
-  const progress = details.progress?.find((entry) => entry.index === index);
-  const result = details.results.find(
-    (entry, position) => (entry.progress?.index ?? position) === index,
-  );
-  const status = progress?.status ?? result?.progress?.status;
-  if (status === "running") {
-    return "running";
-  }
-  const stopped = stoppedGroupStatus(status, result);
-  if (stopped !== undefined) {
-    return stopped;
-  }
-  if (result && result.exitCode !== 0) {
-    return "failed";
-  }
-  if (status === "blocked" || blockedResult(result)) {
-    return "blocked";
-  }
-  return status === "completed" || (result && isDoneResult(result)) ? "completed" : "pending";
-}
-function outcomeLabel(
-  statuses: readonly WorkflowNodeStatus[],
-  total: number,
-  running: boolean,
-  blockedFirst = false,
-): string {
-  const count = (states: readonly WorkflowNodeStatus[]) =>
-    statuses.filter((status) => states.includes(status)).length;
-  const parts = [`${count(["completed"])}/${total} succeeded`];
-  const blocked = count(["blocked"]),
-    failed = count(["failed", "timed-out"]),
-    paused = count(["paused", "detached"]);
-  if (blockedFirst && blocked > 0) {
-    parts.push(`${blocked} need human action`);
-  }
-  if (running) {
-    parts.unshift(formatAgentRunningLabel(count(["running"])));
-  }
-  if (failed > 0) {
-    parts.push(`${failed} failed`);
-  }
-  if (paused > 0) {
-    parts.push(`${paused} paused`);
-  }
-  if (!blockedFirst && blocked > 0) {
-    parts.push(`${blocked} need human action`);
-  }
-  return parts.join(" · ");
-}
-function spanCompleted(details: LabelDetails, span: ChainStepSpan): boolean {
-  if (span.status !== undefined && span.status !== "completed") {
-    return false;
-  }
-  if (span.count === 0) {
-    return span.status === "completed";
-  }
-  for (let index = span.start; index < span.start + span.count; index++) {
-    const progress = details.progress?.find((entry) => entry.index === index);
-    const result =
-      details.results.find((entry) => entry.progress?.index === index) ?? details.results[index];
-    if (["running", "pending", "failed"].includes(progress?.status ?? "")) {
-      return false;
-    }
-    if (!result || !isDoneResult(result)) {
-      return false;
-    }
-  }
-  return true;
 }
 type LabelBase = Omit<MultiProgressLabel, "headerLabel" | "totalCount">;
 function labelBase(details: LabelDetails, spans: readonly ChainStepSpan[]): LabelBase {
@@ -355,7 +224,7 @@ function activeGroupLabel(
   running: boolean,
 ): MultiProgressLabel {
   const current = details.currentStepIndex ?? 0,
-    span = spans[current],
+    span = spans.at(current),
     count = span?.count ?? 1,
     start = span?.start ?? 0;
   const total = details.totalSteps ?? details.chainAgents?.length ?? 1;
@@ -408,17 +277,16 @@ export function buildMultiProgressLabel(
     : chainLabel(details, spans, base, running);
 }
 function fallbackName(
-  details: DetailsInput,
+  details: Pick<DetailsInput, "results" | "chainAgents">,
   index: number,
-  row: number,
   direct: boolean,
   fallback: string,
 ): string {
-  const result = details.results[index];
+  const agent = details.results.at(index)?.agent;
   if (direct) {
-    return result?.agent || `${fallback}-${row}`;
+    return nonemptyText(agent) ?? fallback;
   }
-  return details.chainAgents?.[index] || result?.agent || `${fallback}-${row}`;
+  return nonemptyText(details.chainAgents?.at(index)) ?? nonemptyText(agent) ?? fallback;
 }
 export function renderEntries(
   details: DetailsInput,
@@ -429,9 +297,10 @@ export function renderEntries(
   if (chain) {
     return chain;
   }
-  const direct = label.hasParallelInChain || (details.chainAgents?.length ?? 0) === 0;
+  const chainCount = details.chainAgents?.length ?? 0;
+  const direct = label.hasParallelInChain || chainCount === 0;
   const start = label.showActiveGroupOnly ? label.groupStartIndex : 0;
-  let end = direct ? details.results.length : (details.chainAgents?.length ?? 0);
+  let end = direct ? details.results.length : chainCount;
   if (label.showActiveGroupOnly) {
     end = label.groupEndIndex;
   }
@@ -442,7 +311,7 @@ export function renderEntries(
       kind: "result",
       resultIndex: index,
       rowNumber: row,
-      agentName: fallbackName(details, index, row, direct, fallback),
+      agentName: fallbackName(details, index, direct, `${fallback}-${row}`),
     };
   });
 }

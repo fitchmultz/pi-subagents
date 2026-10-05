@@ -9,7 +9,10 @@ import { workflowFacts, type DetailsInput } from "./result-facts.ts";
 import { hasText } from "./text-values.ts";
 export { widgetRenderKey } from "./widget-status.ts";
 export { buildWidgetLines, renderWidget } from "./widget.ts";
-type Result = ReadonlyInput<SubagentExecutionResult>;
+// Native rendering can receive text-only failures before application details exist.
+type Result = ReadonlyInput<Pick<SubagentExecutionResult, "content" | "isError">> & {
+  readonly details?: DetailsInput;
+};
 function asyncReceipt(
   d: DetailsInput | undefined,
   text: string,
@@ -46,7 +49,7 @@ function compactText(text: string, prefix: string, theme: Theme): Component {
 }
 function textResult(result: Result, expanded: boolean, theme: Theme, isError: boolean): Component {
   const d = result.details,
-    first = result.content[0],
+    first = result.content.at(0),
     text = first?.type === "text" ? first.text : "(no output)";
   const prefix = d?.context === "fork" ? `${theme.fg("warning", "[fork]")} ` : "";
   if (expanded) {
@@ -74,7 +77,7 @@ function expandedResult(
           .join("\n")
       : undefined;
   const settings = { isError, showRun, receipt },
-    first = d.results[0];
+    first = d.results.at(0);
   if (singleResult(d) && first) {
     return renderSingleExpanded(d, first, theme, settings);
   }
@@ -94,7 +97,7 @@ export function renderSubagentResult(
   if (options.expanded) {
     return expandedResult(result, d, theme, isError);
   }
-  const first = d.results[0];
+  const first = d.results.at(0);
   return singleResult(d) && first
     ? renderSingleCompact(d, first, theme, isError)
     : renderMultiCompact(d, theme, isError);

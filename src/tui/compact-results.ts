@@ -78,7 +78,7 @@ function singleHeadline(
   const progress = r.progress ?? r.progressSummary;
   const running = !isError && r.progress?.status === "running";
   const badge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
-  const turns = (r.usage?.turns ?? 0) > 0 ? `⟳ ${r.usage?.turns ?? 0}` : "";
+  const turns = r.usage.turns > 0 ? `⟳ ${r.usage.turns}` : "";
   const stats = statJoin(theme, [turns, formatProgressStats(theme, progress)]);
   const glyph = isError
     ? theme.fg("error", "✗")
@@ -216,7 +216,7 @@ function compactRow(
   label: MultiProgressLabel,
 ): { component: Component; live: boolean } {
   const c = new Container(),
-    r = d.results[entry.resultIndex];
+    r = d.results.at(entry.resultIndex);
   if (!r) {
     const pending = label.hasParallelInChain
       ? resultRowLabel(d, label, entry.resultIndex, entry.rowNumber)
@@ -225,23 +225,48 @@ function compactRow(
     return { component: c, live: false };
   }
   const progress = resultProgress(d, entry.resultIndex),
-    running = progress?.status === "running",
-    pending = progress?.status === "pending";
+    running = progress?.status === "running";
   const output =
     nonemptyText(getSingleResultOutput(r)) ??
     (d.intercomDelivery?.delivered === true ? d.intercomDelivery.summary : "");
   const number = progress?.index === undefined ? entry.resultIndex + 1 : progress.index + 1;
+  const step = resultRowLabel(d, label, entry.resultIndex, number);
+  c.addChild(compactRowHeading(r, theme, output, { progress, step, agentName: entry.agentName }));
+  c.addChild(compactRowActivity(r, theme, output, progress));
+  c.addChild(rowPaths(r, theme));
+  return { component: c, live: running };
+}
+
+function compactRowHeading(
+  r: ResultInput,
+  theme: Theme,
+  output: string,
+  row: {
+    readonly progress: ReturnType<typeof resultProgress>;
+    readonly step: string;
+    readonly agentName: string;
+  },
+): Component {
+  const progress = row.progress,
+    running = progress?.status === "running",
+    pending = progress?.status === "pending";
   const stats = formatProgressStats(theme, progress),
     glyph = pending
       ? theme.fg("dim", "◦")
       : resultGlyph(r, output, theme, { running, seed: progressRunningSeed(progress) });
-  const step = resultRowLabel(d, label, entry.resultIndex, number);
-  c.addChild(
-    new TruncatedText(
-      `  ${glyph} ${step}: ${themeBold(theme, entry.agentName)}${modelStat(theme, r.model)}${hasText(stats) ? ` ${theme.fg("dim", "·")} ${stats}` : ""}${pending ? ` ${theme.fg("dim", "· pending")}` : ""}`,
-    ),
+  return new TruncatedText(
+    `  ${glyph} ${row.step}: ${themeBold(theme, row.agentName)}${modelStat(theme, r.model)}${hasText(stats) ? ` ${theme.fg("dim", "·")} ${stats}` : ""}${pending ? ` ${theme.fg("dim", "· pending")}` : ""}`,
   );
-  if (running && progress) {
+}
+
+function compactRowActivity(
+  r: ResultInput,
+  theme: Theme,
+  output: string,
+  progress: ReturnType<typeof resultProgress>,
+): Container {
+  const c = new Container();
+  if (progress?.status === "running") {
     c.addChild(
       new Text(
         truncLine(
@@ -252,15 +277,14 @@ function compactRow(
         0,
       ),
     );
-  } else if (!pending && needsOutcome(r, output)) {
+  } else if (progress?.status !== "pending" && needsOutcome(r, output)) {
     c.addChild(
       new TruncatedText(
         theme.fg(r.exitCode !== 0 ? "error" : "dim", `    ⎿  ${resultStatusLine(r, output)}`),
       ),
     );
   }
-  c.addChild(rowPaths(r, theme));
-  return { component: c, live: running };
+  return c;
 }
 function multiFooter(
   d: DetailsInput,

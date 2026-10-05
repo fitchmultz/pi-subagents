@@ -19,6 +19,9 @@ export function getTermWidth(): number {
 }
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+// Recognize terminal SGR control sequences so truncation retains active styling.
+// oxlint-disable-next-line no-control-regex
+const sgr = /^\u001b\[[0-9;]*m/;
 
 /**
  * Truncate a line to maxWidth, preserving ANSI styling through the ellipsis.
@@ -41,7 +44,7 @@ export function truncLine(text: string, maxWidth: number): string {
   let i = 0;
 
   while (i < text.length) {
-    const ansiMatch = text.slice(i).match(/^\x1b\[[0-9;]*m/);
+    const ansiMatch = text.slice(i).match(sgr);
     if (ansiMatch) {
       const code = ansiMatch[0];
       result += code;
@@ -56,7 +59,7 @@ export function truncLine(text: string, maxWidth: number): string {
     }
 
     let end = i;
-    while (end < text.length && !text.slice(end).match(/^\x1b\[[0-9;]*m/)) {
+    while (end < text.length && !sgr.test(text.slice(end))) {
       end++;
     }
 
@@ -175,7 +178,7 @@ export function snapshotNowForProgress(
     Pick<AgentProgress, "currentToolStartedAt" | "durationMs" | "lastActivityAt">
   >,
 ): number | undefined {
-  if (progress.currentToolStartedAt !== undefined && progress.durationMs !== undefined) {
+  if (progress.currentToolStartedAt !== undefined) {
     return progress.currentToolStartedAt + progress.durationMs;
   }
   return progress.lastActivityAt;
@@ -193,11 +196,7 @@ export function formatCurrentToolLine(
     return undefined;
   }
   const maxToolArgsLen = Math.max(50, availableWidth - 20);
-  const toolArgsPreview = hasText(progress.currentToolArgs)
-    ? expanded || progress.currentToolArgs.length <= maxToolArgsLen
-      ? progress.currentToolArgs
-      : `${progress.currentToolArgs.slice(0, maxToolArgsLen)}...`
-    : "";
+  const toolArgsPreview = toolArgsText(progress.currentToolArgs, maxToolArgsLen, expanded);
   const durationSuffix =
     progress.currentToolStartedAt !== undefined && snapshotNow !== undefined
       ? ` | ${formatDuration(Math.max(0, snapshotNow - progress.currentToolStartedAt))}`
@@ -205,6 +204,13 @@ export function formatCurrentToolLine(
   return hasText(toolArgsPreview)
     ? `${progress.currentTool}: ${toolArgsPreview}${durationSuffix}`
     : `${progress.currentTool}${durationSuffix}`;
+}
+
+function toolArgsText(args: string | undefined, limit: number, expanded: boolean): string {
+  if (!hasText(args)) {
+    return "";
+  }
+  return expanded || args.length <= limit ? args : `${args.slice(0, limit)}...`;
 }
 
 export function buildLiveStatusLine(
@@ -288,10 +294,10 @@ function formatAcceptanceStatus(
   return `acceptance: ${acceptance.status}${finalization}`;
 }
 
-export function resultStatusLine(
+function stoppedStatusLine(
   result: ReadonlyInput<Details["results"][number]>,
   output: string,
-): string {
+): string | undefined {
   if (result.detached === true) {
     return hasText(result.detachedReason) ? `Detached: ${result.detachedReason}` : "Detached";
   }
@@ -302,10 +308,22 @@ export function resultStatusLine(
     return "Paused";
   }
   if (result.exitCode !== 0) {
-    return `Error: ${result.error ?? (nonemptyText(firstOutputLine(output)) || `exit ${result.exitCode}`)}`;
+    return `Error: ${result.error ?? nonemptyText(firstOutputLine(output)) ?? `exit ${result.exitCode}`}`;
+  }
+  return;
+}
+
+export function resultStatusLine(
+  result: ReadonlyInput<Details["results"][number]>,
+  output: string,
+): string {
+  const stopped = stoppedStatusLine(result, output);
+  if (stopped !== undefined) {
+    return stopped;
   }
   if (result.acceptance?.status === "blocked") {
-    return `Needs your action · acceptance incomplete · ${acceptanceHumanAction(result.acceptance)?.split("\n")[0]}`;
+    const action = acceptanceHumanAction(result.acceptance)?.split("\n").at(0) ?? "";
+    return `Needs your action · acceptance incomplete · ${action}`;
   }
   const acceptance = formatAcceptanceStatus(result);
   if (hasText(acceptance)) {
@@ -328,6 +346,20 @@ export function resultGlyph(
   if (running) {
     return theme.fg("accent", runningGlyph(seed));
   }
+  const stopped = stoppedGlyph(result, theme);
+  if (stopped !== undefined) {
+    return stopped;
+  }
+  if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) {
+    return theme.fg("warning", "✓");
+  }
+  return theme.fg("success", "✓");
+}
+
+function stoppedGlyph(
+  result: ReadonlyInput<Details["results"][number]>,
+  theme: Theme,
+): string | undefined {
   if (result.detached === true) {
     return theme.fg("warning", "■");
   }
@@ -343,10 +375,7 @@ export function resultGlyph(
   if (result.acceptance?.status === "blocked") {
     return theme.fg("warning", "■");
   }
-  if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) {
-    return theme.fg("warning", "✓");
-  }
-  return theme.fg("success", "✓");
+  return;
 }
 
 export function compactCurrentActivity(

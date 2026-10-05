@@ -48,7 +48,7 @@ function widgetChainDetails(job: Job, theme: Theme, width: number): string[] {
       );
       continue;
     }
-    const step = group[0];
+    const step = group.at(0);
     if (!step) {
       lines.push(`  ${theme.fg("dim", `◦ Step ${span.stepIndex + 1}/${total}: pending`)}`);
       continue;
@@ -88,11 +88,7 @@ export function widgetParallelAgentDetails(
   if (steps.length === 0 || (job.mode !== "parallel" && job.mode !== "chain")) {
     return [];
   }
-  if (
-    job.mode === "chain" &&
-    job.activeParallelGroup !== true &&
-    (job.parallelGroups?.length ?? 0) > 0
-  ) {
+  if (hasLogicalChainGroups(job)) {
     return widgetChainDetails(job, theme, width);
   }
   const total = job.stepsTotal ?? steps.length,
@@ -101,6 +97,16 @@ export function widgetParallelAgentDetails(
     parallelStepLines(job, theme, step, { title, index: index + 1, total, width }),
   );
 }
+function hasLogicalChainGroups(
+  job: Pick<Job, "mode" | "activeParallelGroup" | "parallelGroups">,
+): boolean {
+  return (
+    job.mode === "chain" &&
+    job.activeParallelGroup !== true &&
+    (job.parallelGroups?.length ?? 0) > 0
+  );
+}
+
 function recentToolLines(step: Step, theme: Theme, width: number): string[] {
   const max = Math.max(40, width - 30);
   return (step.recentTools ?? []).slice(-3).map((tool) => {
@@ -176,11 +182,7 @@ function foregroundStyleWidgetDetails(job: Job, theme: Theme, width: number): st
       }).map((line) => `  ${line}`),
     ];
   }
-  if (
-    job.mode === "chain" &&
-    job.activeParallelGroup !== true &&
-    (job.parallelGroups?.length ?? 0) > 0
-  ) {
+  if (hasLogicalChainGroups(job)) {
     return widgetChainDetails(job, theme, width);
   }
   const total = job.stepsTotal ?? steps.length,

@@ -7,6 +7,7 @@ import {
   buildLiveStatusLine,
   formatCurrentToolLine,
   snapshotNowForProgress,
+  getTermWidth,
   type Theme,
 } from "./display.ts";
 import type { ResultInput } from "./result-facts.ts";
@@ -18,7 +19,7 @@ export function liveContent(
   artifact?: string,
 ): Container {
   const c = new Container(),
-    width = (process.stdout.columns ?? 120) - 4;
+    width = getTermWidth() - 4;
   const now = snapshotNowForProgress(progress);
   const tool = formatCurrentToolLine(progress, width, true, now),
     live = buildLiveStatusLine(progress, now);
@@ -44,12 +45,23 @@ export function liveContent(
       ),
     );
   }
-  const toolIndent = indent.length === 0 ? "" : "      ";
+  c.addChild(recentContent(progress, theme, indent));
+  return c;
+}
+
+function recentContent(
+  progress: Pick<NonNullable<ResultInput["progressSummary"]>, "recentTools" | "recentOutput">,
+  theme: Theme,
+  indent: string,
+): Container {
+  const c = new Container(),
+    toolIndent = indent.length === 0 ? "" : "      ",
+    outputIndent = indent.length === 0 ? "  " : "      ";
   for (const t of progress.recentTools?.slice(-3) ?? []) {
     c.addChild(new Text(theme.fg("dim", `${toolIndent}${t.tool}: ${t.args}`), 0, 0));
   }
   for (const line of (progress.recentOutput ?? []).slice(-5)) {
-    c.addChild(new Text(theme.fg("dim", `${indent.length === 0 ? "  " : "      "}${line}`), 0, 0));
+    c.addChild(new Text(theme.fg("dim", `${outputIndent}${line}`), 0, 0));
   }
   return c;
 }
@@ -78,21 +90,21 @@ export function resultContent(
 }
 
 export function profileContent(r: ResultInput, theme: Theme, indent = ""): Container {
-  const c = new Container();
+  const c = new Container(),
+    skills = r.skills ?? [],
+    attempts = r.attemptedModels ?? [];
   const label = (word: string) => (indent.length === 0 ? word : word.toLowerCase());
-  if ((r.skills?.length ?? 0) > 0) {
+  if (skills.length > 0) {
     c.addChild(
-      new Text(theme.fg("dim", `${indent}${label("Skills")}: ${r.skills?.join(", ") ?? ""}`), 0, 0),
+      new Text(theme.fg("dim", `${indent}${label("Skills")}: ${skills.join(", ")}`), 0, 0),
     );
   }
   if (r.skillsWarning !== undefined && r.skillsWarning.length > 0) {
     c.addChild(new Text(theme.fg("warning", `${indent}Warning: ${r.skillsWarning}`), 0, 0));
   }
-  if ((r.attemptedModels?.length ?? 0) > 1) {
+  if (attempts.length > 1) {
     const title = indent.length === 0 ? "Fallbacks" : "model attempts";
-    c.addChild(
-      new Text(theme.fg("dim", `${indent}${title}: ${r.attemptedModels?.join(" → ") ?? ""}`), 0, 0),
-    );
+    c.addChild(new Text(theme.fg("dim", `${indent}${title}: ${attempts.join(" → ")}`), 0, 0));
   }
   return c;
 }
