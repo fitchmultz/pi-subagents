@@ -61,8 +61,8 @@ export class RunnerParallelGroup {
     group: ParallelStepGroup,
     position: GroupPosition,
     hooks: Readonly<{
-      failed: (results: StepResult[], warning?: string) => void;
-      completed: (outcome: ParallelCompletion) => void;
+      failed: (results: readonly ReadonlyDeep<StepResult>[], warning?: string) => void;
+      completed: (outcome: ReadonlyDeep<ParallelCompletion>) => void;
     }>,
   ): Promise<boolean> {
     const setup = await this.setup(group, position);
@@ -238,7 +238,7 @@ export class RunnerParallelGroup {
   private executeTasks(
     group: ParallelStepGroup,
     position: GroupPosition,
-    worktrees: WorktreeSetup | undefined,
+    worktrees: ReadonlyDeep<WorktreeSetup> | undefined,
   ): Promise<AsyncParallelStepResult[]> {
     return runParallelTasks<RunnerSubagentStep, AsyncParallelStepResult>({
       tasks: group.parallel,

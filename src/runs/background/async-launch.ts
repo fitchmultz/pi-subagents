@@ -108,8 +108,8 @@ interface LaunchPlan {
 
 export function createRunnerLaunch(
   params: LaunchOptions,
-  owner: AsyncOwnerPreparation,
-  plan: LaunchPlan,
+  owner: ReadonlyDeep<AsyncOwnerPreparation>,
+  plan: ReadonlyDeep<LaunchPlan>,
 ): SubagentRunConfig {
   const { inheritedRoute, nestedAddress, id } = owner;
   return {
@@ -215,16 +215,20 @@ export interface AsyncRunOverview {
 }
 
 function announceNestedStart(
-  owner: AsyncOwnerPreparation,
+  owner: ReadonlyDeep<AsyncOwnerPreparation>,
   cfg: ReadonlyDeep<SubagentRunConfig>,
   pid: number,
-  overview: AsyncRunOverview,
+  overview: ReadonlyDeep<AsyncRunOverview>,
 ): void {
   const { inheritedRoute, nestedAddress } = owner;
   if (!inheritedRoute || !nestedAddress) {
     return;
   }
   const now = Date.now();
+  const target = cfg.childIntercomTargets?.at(0) ?? undefined;
+  const agents = overview.agents ?? (overview.agent === undefined ? [] : [overview.agent]);
+  const mode = cfg.resultMode ?? "single";
+  const chainStepCount = overview.chainStepCount ?? 1;
   try {
     writeNestedEvent(inheritedRoute, {
       type: "subagent.nested.started",
@@ -240,14 +244,14 @@ function announceNestedStart(
         asyncDir: cfg.asyncDir,
         pid,
         ownerIntercomTarget: process.env.PI_SUBAGENT_INTERCOM_SESSION_NAME,
-        leafIntercomTarget: cfg.childIntercomTargets?.at(0) ?? undefined,
-        intercomTarget: cfg.childIntercomTargets?.at(0) ?? undefined,
+        leafIntercomTarget: target,
+        intercomTarget: target,
         ownerState: "live",
-        mode: cfg.resultMode ?? "single",
+        mode,
         state: "running",
         agent: overview.agent,
-        agents: overview.agents ?? (overview.agent === undefined ? [] : [overview.agent]),
-        chainStepCount: overview.chainStepCount ?? 1,
+        agents,
+        chainStepCount,
         parallelGroups: overview.parallelGroups,
         startedAt: now,
         lastUpdate: now,
@@ -260,24 +264,25 @@ function announceNestedStart(
 
 export function launchAsyncRun(
   pi: AsyncExecutionContext["pi"],
-  owner: AsyncOwnerPreparation,
+  owner: ReadonlyDeep<AsyncOwnerPreparation>,
   cfg: ReadonlyDeep<SubagentRunConfig>,
-  overview: AsyncRunOverview,
+  overview: ReadonlyDeep<AsyncRunOverview>,
 ): AsyncExecutionResult {
   const mode = cfg.resultMode ?? "single";
+  const label = mode === "single" ? "run" : mode;
   let launched: RunnerLaunchResult;
   try {
     launched = spawnRunner(cfg);
   } catch (error) {
     return formatAsyncStartError(
       mode,
-      `Failed to start async ${mode} '${cfg.id}': ${launchErrorMessage(error)}`,
+      `Failed to start async ${label} '${cfg.id}': ${launchErrorMessage(error)}`,
     );
   }
   if (launched.error !== undefined) {
     return formatAsyncStartError(
       mode,
-      `Failed to start async ${mode} '${cfg.id}': ${launched.error}`,
+      `Failed to start async ${label} '${cfg.id}': ${launched.error}`,
     );
   }
   announceNestedStart(owner, cfg, launched.pid, overview);

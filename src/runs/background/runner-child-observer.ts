@@ -121,14 +121,7 @@ export class RunnerChildObserver {
     const step = this.statusPayload.steps[flatIndex];
     switch (event.type) {
       case "tool_execution_start":
-        if (event.toolName !== undefined && event.toolName.length > 0) {
-          step.toolCount = (step.toolCount ?? 0) + 1;
-          step.currentTool = event.toolName;
-          step.currentToolArgs = extractToolArgsPreview(event.args ?? {});
-          step.currentToolStartedAt = now;
-          step.currentPath = resolveCurrentPath(event.toolName, event.args);
-          this.statusPayload.toolCount = (this.statusPayload.toolCount ?? 0) + 1;
-        }
+        this.recordToolStart(flatIndex, event, now);
         return;
       case "tool_execution_end":
         if (step.currentTool !== undefined && step.currentTool.length > 0) {
@@ -148,6 +141,19 @@ export class RunnerChildObserver {
       default:
         return;
     }
+  }
+
+  private recordToolStart(flatIndex: number, event: ReadonlyDeep<ChildEvent>, now: number): void {
+    if (event.toolName === undefined || event.toolName.length === 0) {
+      return;
+    }
+    const step = this.statusPayload.steps[flatIndex];
+    step.toolCount = (step.toolCount ?? 0) + 1;
+    step.currentTool = event.toolName;
+    step.currentToolArgs = extractToolArgsPreview(event.args ?? {});
+    step.currentToolStartedAt = now;
+    step.currentPath = resolveCurrentPath(event.toolName, event.args);
+    this.statusPayload.toolCount = (this.statusPayload.toolCount ?? 0) + 1;
   }
 
   private recordCompletedMessage(

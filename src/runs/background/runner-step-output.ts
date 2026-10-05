@@ -1,19 +1,18 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ReadonlyDeep } from "type-fest";
-import type { AcceptanceLedger } from "../../shared/types.ts";
+import type { AcceptanceLedger, RunnerSubagentStep } from "../../shared/types.ts";
 import {
   cleanupSingleOutputFile,
   finalizeSingleOutput,
   formatConsumedOutputReference,
   formatSavedOutputReference,
-  resolveSingleOutput,
+  type resolveSingleOutput,
 } from "../shared/single-output.ts";
 import {
   formatUnconfirmedFinalizationOutput,
-  resolveExecutionOutcome,
+  type resolveExecutionOutcome,
 } from "../shared/acceptance.ts";
-import type { RunnerSubagentStep } from "../../shared/types.ts";
 import type { RunSingleStepResult, SingleStepContext } from "./runner-contract.ts";
 
 interface OutputState {

@@ -21,7 +21,7 @@ import {
 } from "./runner-status.ts";
 import { runSingleStep } from "./runner-step.ts";
 
-export type AsyncParallelStepResult = RunSingleStepResult & { skipped?: boolean };
+export type AsyncParallelStepResult = ReadonlyDeep<RunSingleStepResult & { skipped?: boolean }>;
 
 export interface ChildRunInput {
   readonly task: RunnerSubagentStep;
@@ -36,7 +36,7 @@ export interface ChildRunInput {
   readonly resetTiming?: boolean;
   readonly trackSession?: boolean;
   readonly notifyCompletionGuard?: boolean;
-  readonly beforeFinish?: (result: RunSingleStepResult) => void;
+  readonly beforeFinish?: (result: ReadonlyDeep<RunSingleStepResult>) => void;
 }
 
 /** Executes one scheduled child; shared workflow policy still owns scheduling and admission. */
@@ -142,7 +142,7 @@ export class RunnerChildExecutor {
 
   private finish(
     input: ReadonlyDeep<ChildRunInput>,
-    result: RunSingleStepResult,
+    result: ReadonlyDeep<RunSingleStepResult>,
     startedAt: number,
   ): void {
     const endedAt = finishRunnerStep(this.monitor.statusPayload, result, {

@@ -111,7 +111,7 @@ export class RunnerWorkflow {
   }
 
   private recordCompletion(
-    completion: ReturnType<typeof completeWorkflowStep>,
+    completion: ReadonlyDeep<ReturnType<typeof completeWorkflowStep>>,
     results: readonly AsyncParallelStepResult[],
   ): void {
     this.results.push(
@@ -191,7 +191,7 @@ export class RunnerWorkflow {
   private executeDynamic(
     step: DynamicRunnerGroup,
     stepIndex: number,
-    plan: DynamicPlan,
+    plan: ReadonlyDeep<DynamicPlan>,
   ): Promise<AsyncParallelStepResult[]> {
     const start = this.flatIndex;
     const sessionDir = this.config.sessionDir;

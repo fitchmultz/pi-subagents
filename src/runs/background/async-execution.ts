@@ -125,13 +125,23 @@ function chainOverview(
   };
 }
 
+function isAsyncStartFailure(
+  error: unknown,
+): error is ChainOutputValidationError | AsyncStartValidationError | UnavailableSubagentSkillError {
+  return (
+    error instanceof ChainOutputValidationError ||
+    error instanceof AsyncStartValidationError ||
+    error instanceof UnavailableSubagentSkillError
+  );
+}
+
 /** Validates and plans the workflow before transferring ownership to a detached runner. */
 export function executeAsyncChain(id: string, params: AsyncChainParams): AsyncExecutionResult {
   const mode = params.resultMode ?? "chain";
   try {
     validateChain(params);
   } catch (error) {
-    if (error instanceof ChainOutputValidationError || error instanceof AsyncStartValidationError) {
+    if (isAsyncStartFailure(error)) {
       return formatAsyncStartError(mode, error.message);
     }
     throw error;
@@ -160,10 +170,7 @@ export function executeAsyncChain(id: string, params: AsyncChainParams): AsyncEx
       templates: resolveChainTemplates(params.chain),
     }).build();
   } catch (error) {
-    if (
-      error instanceof UnavailableSubagentSkillError ||
-      error instanceof AsyncStartValidationError
-    ) {
+    if (isAsyncStartFailure(error)) {
       return formatAsyncStartError(mode, error.message);
     }
     throw error;
@@ -200,10 +207,7 @@ export function executeAsyncSingle(id: string, params: AsyncSingleParams): Async
   try {
     step = planAsyncSingle(id, params, { cwd, asyncDir: owner.asyncDir });
   } catch (error) {
-    if (
-      error instanceof UnavailableSubagentSkillError ||
-      error instanceof AsyncStartValidationError
-    ) {
+    if (isAsyncStartFailure(error)) {
       return formatAsyncStartError("single", error.message);
     }
     throw error;

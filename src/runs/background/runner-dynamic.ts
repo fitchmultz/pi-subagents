@@ -4,11 +4,12 @@ import type {
   ChainOutputMap,
   WorkflowGraphNode,
   WorkflowGraphSnapshot,
+  DynamicRunnerGroup,
+  RunnerSubagentStep,
 } from "../../shared/types.ts";
 import { namespaceParallelOutput } from "../../shared/settings.ts";
 import { injectSingleOutputInstruction, findDuplicateOutputPath } from "../shared/single-output.ts";
 import { materializeDynamicParallelStep } from "../shared/dynamic-fanout.ts";
-import type { DynamicRunnerGroup, RunnerSubagentStep } from "../../shared/types.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
   pendingRunnerStep,
@@ -76,7 +77,7 @@ export function prepareDynamicGroup(
 }
 
 export function dynamicStatusSteps(
-  plan: DynamicPlan,
+  plan: ReadonlyDeep<DynamicPlan>,
   step: DynamicRunnerGroup,
 ): RunnerStatusStep[] {
   return plan.tasks.map((task) => ({
@@ -119,7 +120,7 @@ export function reindexChildTargets(
 /** This boundary owns replacing the placeholder and reindexing the mutable live status. */
 export function expandDynamicStatus(
   statusPayload: RunnerStatusPayload,
-  plan: DynamicPlan,
+  plan: ReadonlyDeep<DynamicPlan>,
   step: DynamicRunnerGroup,
   position: ExpansionPosition,
 ): number {
@@ -139,7 +140,7 @@ export function expandDynamicStatus(
 
 export function expandDynamicGraph(
   graph: ReadonlyDeep<WorkflowGraphSnapshot>,
-  plan: DynamicPlan,
+  plan: ReadonlyDeep<DynamicPlan>,
   step: DynamicRunnerGroup,
   position: ExpansionPosition,
 ): WorkflowGraphSnapshot {
@@ -177,8 +178,8 @@ export function expandDynamicGraph(
   return {
     ...graph,
     nodes: nodes.map((node) =>
-      node.id === `step-${position.stepIndex}` ? { ...node, children } : node,
+      node.id === `step-${position.stepIndex}` ? Object.assign({}, node, { children }) : node,
     ),
-    phases: graph.phases.map((phase) => ({ ...phase, nodeIds: [...phase.nodeIds] })),
+    phases: graph.phases.map((phase) => Object.assign({}, phase, { nodeIds: [...phase.nodeIds] })),
   };
 }

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import type { ReadonlyDeep } from "type-fest";
 import { appendJsonl } from "../../shared/artifacts.ts";
 import { readChildProcessIdentity } from "../../shared/post-exit-stdio-guard.ts";
 import { extractToolArgsPreview } from "../../shared/utils.ts";
@@ -87,7 +88,7 @@ class ChildAudit {
     );
   }
 
-  record(event: ChildEvent, result: ChildAttemptResult): void {
+  record(event: ReadonlyDeep<ChildEvent>, result: ReadonlyDeep<ChildAttemptResult>): void {
     if (TRANSIENT_CHILD_EVENT_TYPES.has(event.type ?? "")) {
       return;
     }
@@ -137,7 +138,7 @@ class ChildAudit {
     });
   }
 
-  finalized(result: ChildAttemptResult): void {
+  finalized(result: ReadonlyDeep<ChildAttemptResult>): void {
     this.append({
       type: "subagent.child.finalized",
       agentProcessExit: result.agentProcessExit,

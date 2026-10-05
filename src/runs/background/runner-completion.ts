@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ReadonlyDeep } from "type-fest";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
@@ -10,16 +9,18 @@ import {
   DEFAULT_MAX_OUTPUT,
   truncateOutput,
 } from "../../shared/types.ts";
-import { appendWorktreeSummary } from "../shared/worktree.ts";
-import { findLatestSessionFile } from "../../shared/utils.ts";
-import { acceptanceHumanAction } from "../shared/acceptance.ts";
 import { saveAsyncRunResult } from "../shared/supervisor-questions.ts";
 import { flattenSteps } from "../shared/parallel-utils.ts";
-import { exportSessionHtml, createShareLink, writeRunLog } from "./runner-reporting.ts";
+import { shareRunnerSession, writeRunLog } from "./runner-reporting.ts";
 import type { SubagentRunConfig, StepResult } from "./runner-contract.ts";
 import type { RunnerMonitor } from "./runner-monitor.ts";
 import type { RunnerLifecycle } from "./runner-lifecycle.ts";
 import { markStepPaused } from "./runner-status.ts";
+import {
+  completionSummary,
+  terminalSummary,
+  truncateStepResult,
+} from "./runner-completion-summary.ts";
 
 export interface CompletionEvidence {
   readonly results: readonly StepResult[];
@@ -31,261 +32,243 @@ export interface CompletionEvidence {
   readonly workflowComplete: boolean;
 }
 
-export async function completeRunner(
-  config: ReadonlyDeep<SubagentRunConfig>,
-  evidence: CompletionEvidence,
-  monitor: RunnerMonitor,
-  lifecycle: RunnerLifecycle,
-): Promise<void> {
-  const {
-    results,
-    outputs,
-    worktreeSummaries,
-    setupCleanupWarning,
-    overallStartTime,
-    latestSessionFile,
-    workflowComplete,
-  } = evidence;
-  const { id, resultPath, cwd, taskIndex, totalTasks, maxOutput, artifactsDir, asyncDir } = config;
-  const shareEnabled = config.share === true;
-  const flatSteps = flattenSteps(config.steps);
-  const statusPayload = monitor.statusPayload;
-  const writeStatusPayload = monitor.writeStatusPayload;
-  const eventsPath = path.join(asyncDir, "events.jsonl");
-  const logPath = path.join(asyncDir, `subagent-log-${id}.md`);
-  const resultMode = config.resultMode ?? statusPayload.mode;
-  const childText = (result: StepResult) =>
-    result.error && !result.output.includes(result.error)
-      ? `${result.error}\n${result.output}`.trim()
-      : result.output;
-  let summary =
-    resultMode === "single" && results.length === 1
-      ? childText(results[0])
-      : results.map((result) => `${result.agent}:\n${childText(result)}`).join("\n\n");
-  if (statusPayload.error && !summary.includes(statusPayload.error)) {
-    summary = `${statusPayload.error}\n\n${summary}`.trim();
-  }
-  if (statusPayload.timedOut) {
-    summary = [
-      `${resultMode === "parallel" ? "Parallel run" : resultMode === "chain" ? "Chain" : "Run"} timed out.`,
-      summary,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-  }
-  if (worktreeSummaries.length > 0) {
-    summary = appendWorktreeSummary(summary, worktreeSummaries.join("\n\n"));
-  }
-  const fullSummary = summary;
-  let truncated = false;
+class RunnerCompletion {
+  private readonly config: ReadonlyDeep<SubagentRunConfig>;
+  private readonly evidence: ReadonlyDeep<CompletionEvidence>;
+  private readonly monitor: RunnerMonitor;
+  private readonly lifecycle: RunnerLifecycle;
+  private readonly eventsPath: string;
+  private readonly outputLimits;
+  private readonly resultMode;
+  private readonly fullSummary: string;
+  private readonly summary: string;
+  private readonly truncated: boolean;
 
-  const outputLimits = { ...DEFAULT_MAX_OUTPUT, ...maxOutput };
-  const lastArtifactPath = results[results.length - 1]?.artifactPaths?.outputPath;
-  const referenceOnly =
-    resultMode === "single" &&
-    results.length === 1 &&
-    results[0]?.outputMode === "file-only" &&
-    results[0].exitCode === 0 &&
-    results[0].outputReference;
-  const truncResult = referenceOnly
-    ? { text: summary, truncated: false }
-    : truncateOutput(summary, outputLimits, lastArtifactPath);
-  if (truncResult.truncated) {
-    summary = truncResult.text;
-    truncated = true;
+  constructor(
+    config: ReadonlyDeep<SubagentRunConfig>,
+    evidence: ReadonlyDeep<CompletionEvidence>,
+    monitor: RunnerMonitor,
+    lifecycle: RunnerLifecycle,
+  ) {
+    this.config = config;
+    this.evidence = evidence;
+    this.monitor = monitor;
+    this.lifecycle = lifecycle;
+    this.eventsPath = path.join(config.asyncDir, "events.jsonl");
+    this.outputLimits = { ...DEFAULT_MAX_OUTPUT, ...config.maxOutput };
+    this.resultMode = config.resultMode ?? monitor.statusPayload.mode;
+    this.fullSummary = completionSummary({
+      mode: this.resultMode,
+      results: evidence.results,
+      error: monitor.statusPayload.error,
+      timedOut: monitor.statusPayload.timedOut,
+      worktreeSummaries: evidence.worktreeSummaries,
+    });
+    const onlyResult = evidence.results.at(0);
+    const referenceOnly =
+      this.resultMode === "single" &&
+      evidence.results.length === 1 &&
+      onlyResult?.outputMode === "file-only" &&
+      onlyResult.exitCode === 0 &&
+      onlyResult.outputReference !== undefined;
+    const output = referenceOnly
+      ? { text: this.fullSummary, truncated: false }
+      : truncateOutput(
+          this.fullSummary,
+          this.outputLimits,
+          evidence.results.at(-1)?.artifactPaths?.outputPath,
+        );
+    this.summary = output.text;
+    this.truncated = output.truncated;
   }
 
-  const agentName =
-    flatSteps.length === 1
-      ? flatSteps[0].agent
-      : resultMode === "parallel"
-        ? `parallel:${flatSteps.map((s) => s.agent).join("+")}`
-        : `chain:${flatSteps.map((s) => s.agent).join("->")}`;
-  let sessionFile: string | undefined;
-  let shareUrl: string | undefined;
-  let gistUrl: string | undefined;
-  let shareError: string | undefined;
-
-  if (shareEnabled) {
-    sessionFile = config.sessionDir
-      ? (findLatestSessionFile(config.sessionDir) ?? undefined)
-      : undefined;
-    if (!sessionFile && latestSessionFile) {
-      sessionFile = latestSessionFile;
+  private pausePendingSteps(endedAt: number): void {
+    if (!this.lifecycle.interrupted) {
+      return;
     }
-    if (sessionFile) {
-      try {
-        const exportDir = config.sessionDir ?? path.dirname(sessionFile);
-        fs.mkdirSync(exportDir, { recursive: true });
-        const htmlPath = await exportSessionHtml(sessionFile, exportDir, config.piPackageRoot);
-        const share = createShareLink(htmlPath);
-        if ("error" in share) {
-          shareError = share.error;
-        } else {
-          shareUrl = share.shareUrl;
-          gistUrl = share.gistUrl;
-        }
-      } catch (err) {
-        shareError = String(err);
-      }
-    } else {
-      shareError = "Session file not found.";
-    }
-  }
-
-  lifecycle.dispose();
-  const effectiveSessionFile = sessionFile ?? latestSessionFile ?? undefined;
-  const runEndedAt = Date.now();
-  if (lifecycle.interrupted) {
-    for (let index = 0; index < statusPayload.steps.length; index++) {
-      const step = statusPayload.steps[index];
+    this.monitor.statusPayload.steps.forEach((step, stepIndex) => {
       if (step.status !== "pending") {
-        continue;
+        return;
       }
-      markStepPaused(step, runEndedAt);
+      markStepPaused(step, endedAt);
       appendJsonl(
-        eventsPath,
+        this.eventsPath,
         JSON.stringify({
           type: "subagent.step.paused",
-          ts: runEndedAt,
-          runId: id,
-          stepIndex: index,
+          ts: endedAt,
+          runId: this.config.id,
+          stepIndex,
           agent: step.agent,
           interrupted: true,
           durationMs: 0,
         }),
       );
-    }
+    });
   }
-  const hasFailedSteps = statusPayload.steps.some((step) => step.status === "failed");
-  const hasPausedSteps = statusPayload.steps.some((step) => step.status === "paused");
-  const finalRunState: AsyncStatus["state"] =
-    hasFailedSteps || statusPayload.error || lifecycle.cancellation.signal.aborted
-      ? "failed"
-      : statusPayload.steps.some((step) => step.status === "blocked")
-        ? "blocked"
-        : lifecycle.interrupted || hasPausedSteps
-          ? "paused"
-          : workflowComplete
-            ? "complete"
-            : "failed";
-  statusPayload.state = finalRunState;
-  statusPayload.activityState = undefined;
-  statusPayload.currentTool = undefined;
-  statusPayload.currentToolStartedAt = undefined;
-  statusPayload.currentPath = undefined;
-  statusPayload.endedAt = runEndedAt;
-  statusPayload.lastUpdate = runEndedAt;
-  statusPayload.sessionFile = effectiveSessionFile;
-  statusPayload.shareUrl = shareUrl;
-  statusPayload.gistUrl = gistUrl;
-  statusPayload.shareError = shareError;
-  if (statusPayload.state === "failed" && !statusPayload.error) {
-    const failedStep = statusPayload.steps.find((s) => s.status === "failed");
-    if (failedStep?.agent) {
-      statusPayload.error = `Step failed: ${failedStep.agent}`;
-    } else if (lifecycle.cancellation.signal.aborted) {
-      statusPayload.error = "Subagent cancelled.";
-    }
-  }
-  writeStatusPayload();
-  appendJsonl(
-    eventsPath,
-    JSON.stringify({
-      type: "subagent.run.completed",
-      ts: runEndedAt,
-      runId: id,
-      status: statusPayload.state,
-      durationMs: runEndedAt - overallStartTime,
-    }),
-  );
-  writeRunLog(logPath, {
-    id,
-    mode: statusPayload.mode,
-    cwd,
-    startedAt: overallStartTime,
-    endedAt: runEndedAt,
-    steps: statusPayload.steps.map((step) => ({
-      agent: step.agent,
-      status: step.status,
-      durationMs: step.durationMs,
-    })),
-    summary: fullSummary,
-    truncated: false,
-    artifactsDir,
-    sessionFile: effectiveSessionFile,
-    shareUrl,
-    shareError,
-  });
 
-  try {
-    const resultData: AsyncResultFile = {
-      id,
-      runtimeVersion: config.runtimeVersion,
-      maxOutput: outputLimits,
-      error: statusPayload.error,
-      timedOut: statusPayload.timedOut,
-      agent: agentName,
-      mode: resultMode,
-      success: finalRunState === "complete",
-      state: finalRunState,
-      summary:
-        finalRunState === "blocked"
-          ? `Needs your action — acceptance incomplete.\n${results
-              .map((result) => acceptanceHumanAction(result.acceptance))
-              .filter(Boolean)
-              .join("\n")}`
-          : finalRunState === "paused"
-            ? `Paused after interrupt. Waiting for explicit next action.${setupCleanupWarning ? `\n\n${setupCleanupWarning}` : ""}`
-            : summary,
-      results: results.map((r) => {
-        const referenceOnly = r.outputMode === "file-only" && r.exitCode === 0 && r.outputReference;
-        const childOutput = referenceOnly
-          ? { text: referenceOnly.message, truncated: false }
-          : truncateOutput(r.output, outputLimits, r.artifactPaths?.outputPath);
-        return {
-          ...r,
-          output: childOutput.text,
-          finalOutput: referenceOnly
-            ? referenceOnly.message
-            : r.finalOutput === undefined
-              ? undefined
-              : truncateOutput(r.finalOutput, outputLimits, r.artifactPaths?.outputPath).text,
-          initialOutput:
-            r.initialOutput === undefined
-              ? undefined
-              : truncateOutput(r.initialOutput, outputLimits, r.artifactPaths?.outputPath).text,
-          truncated: r.truncated || childOutput.truncated || undefined,
-        };
+  private finalRunState(): AsyncStatus["state"] {
+    const status = this.monitor.statusPayload;
+    if (
+      status.steps.some((step) => step.status === "failed") ||
+      (status.error !== undefined && status.error.length > 0) ||
+      this.lifecycle.cancellation.signal.aborted
+    ) {
+      return "failed";
+    }
+    if (status.steps.some((step) => step.status === "blocked")) {
+      return "blocked";
+    }
+    if (this.lifecycle.interrupted || status.steps.some((step) => step.status === "paused")) {
+      return "paused";
+    }
+    return this.evidence.workflowComplete ? "complete" : "failed";
+  }
+
+  private updateFailure(): void {
+    const status = this.monitor.statusPayload;
+    if (status.state !== "failed" || (status.error !== undefined && status.error.length > 0)) {
+      return;
+    }
+    const failedStep = status.steps.find((step) => step.status === "failed");
+    if (failedStep !== undefined && failedStep.agent.length > 0) {
+      status.error = `Step failed: ${failedStep.agent}`;
+    } else if (this.lifecycle.cancellation.signal.aborted) {
+      status.error = "Subagent cancelled.";
+    }
+  }
+
+  private publishStatus(
+    endedAt: number,
+    share: ReadonlyDeep<Awaited<ReturnType<typeof shareRunnerSession>>>,
+  ): void {
+    const status = this.monitor.statusPayload;
+    status.state = this.finalRunState();
+    status.activityState = undefined;
+    status.currentTool = undefined;
+    status.currentToolStartedAt = undefined;
+    status.currentPath = undefined;
+    status.endedAt = endedAt;
+    status.lastUpdate = endedAt;
+    status.sessionFile = share.sessionFile;
+    status.shareUrl = share.shareUrl;
+    status.gistUrl = share.gistUrl;
+    status.shareError = share.shareError;
+    this.updateFailure();
+    this.monitor.writeStatusPayload();
+    appendJsonl(
+      this.eventsPath,
+      JSON.stringify({
+        type: "subagent.run.completed",
+        ts: endedAt,
+        runId: this.config.id,
+        status: status.state,
+        durationMs: endedAt - this.evidence.overallStartTime,
       }),
-      outputs,
-      workflowGraph: statusPayload.workflowGraph,
-      exitCode: statusPayload.timedOut ? 124 : finalRunState === "failed" ? 1 : 0,
-      timestamp: runEndedAt,
-      durationMs: runEndedAt - overallStartTime,
-      truncated,
-      artifactsDir,
-      cwd,
-      asyncDir,
+    );
+    writeRunLog(path.join(this.config.asyncDir, `subagent-log-${this.config.id}.md`), {
+      id: this.config.id,
+      mode: status.mode,
+      cwd: this.config.cwd,
+      startedAt: this.evidence.overallStartTime,
+      endedAt,
+      steps: status.steps.map((step) => ({
+        agent: step.agent,
+        status: step.status,
+        durationMs: step.durationMs,
+      })),
+      summary: this.fullSummary,
+      truncated: false,
+      artifactsDir: this.config.artifactsDir,
+      sessionFile: share.sessionFile,
+      shareUrl: share.shareUrl,
+      shareError: share.shareError,
+    });
+  }
+
+  private agentName(): string {
+    const steps = flattenSteps(this.config.steps);
+    const first = steps.at(0);
+    if (steps.length === 1 && first !== undefined) {
+      return first.agent;
+    }
+    const names = steps.map((step) => step.agent);
+    return this.resultMode === "parallel"
+      ? `parallel:${names.join("+")}`
+      : `chain:${names.join("->")}`;
+  }
+
+  private writeResult(
+    endedAt: number,
+    share: ReadonlyDeep<Awaited<ReturnType<typeof shareRunnerSession>>>,
+  ): void {
+    const status = this.monitor.statusPayload;
+    const { config, evidence } = this;
+    const exitCode = status.state === "failed" ? 1 : 0;
+    const resultData: AsyncResultFile = {
+      id: config.id,
+      runtimeVersion: config.runtimeVersion,
+      maxOutput: this.outputLimits,
+      error: status.error,
+      timedOut: status.timedOut,
+      agent: this.agentName(),
+      mode: this.resultMode,
+      success: status.state === "complete",
+      state: status.state,
+      summary: terminalSummary({
+        state: status.state,
+        results: evidence.results,
+        summary: this.summary,
+        setupCleanupWarning: evidence.setupCleanupWarning,
+      }),
+      results: evidence.results.map((result) => truncateStepResult(result, this.outputLimits)),
+      outputs: evidence.outputs,
+      workflowGraph: status.workflowGraph,
+      exitCode: status.timedOut === true ? 124 : exitCode,
+      timestamp: endedAt,
+      durationMs: endedAt - evidence.overallStartTime,
+      truncated: this.truncated,
+      artifactsDir: config.artifactsDir,
+      cwd: config.cwd,
+      asyncDir: config.asyncDir,
       sessionId: config.sessionId ?? undefined,
-      sessionFile: effectiveSessionFile,
+      sessionFile: share.sessionFile,
       intercomTarget: config.controlIntercomTarget,
-      shareUrl,
-      gistUrl,
-      shareError,
-      ...(taskIndex !== undefined && { taskIndex }),
-      ...(totalTasks !== undefined && { totalTasks }),
+      shareUrl: share.shareUrl,
+      gistUrl: share.gistUrl,
+      shareError: share.shareError,
+      ...(config.taskIndex !== undefined && { taskIndex: config.taskIndex }),
+      ...(config.totalTasks !== undefined && { totalTasks: config.totalTasks }),
     };
-    const saved = saveAsyncRunResult(id, resultData);
+    const saved = saveAsyncRunResult(config.id, resultData);
     resultData.completionId = saved.completionId;
     resultData.recordVersion = 3;
     if (
       config.runtimeVersion !== 2 ||
-      path.resolve(resultPath) !== path.resolve(asyncDir, "result.json")
+      path.resolve(config.resultPath) !== path.resolve(config.asyncDir, "result.json")
     ) {
-      writeAtomicJson(resultPath, resultData);
+      writeAtomicJson(config.resultPath, resultData);
     }
-  } catch (err) {
-    console.error(`Failed to write result file ${resultPath}:`, err);
   }
+
+  async complete(): Promise<void> {
+    const share = await shareRunnerSession(this.config, this.evidence.latestSessionFile);
+    this.lifecycle.dispose();
+    const endedAt = Date.now();
+    this.pausePendingSteps(endedAt);
+    this.publishStatus(endedAt, share);
+    try {
+      this.writeResult(endedAt, share);
+    } catch (error) {
+      console.error(`Failed to write result file ${this.config.resultPath}:`, error);
+    }
+  }
+}
+
+export async function completeRunner(
+  config: ReadonlyDeep<SubagentRunConfig>,
+  evidence: ReadonlyDeep<CompletionEvidence>,
+  monitor: RunnerMonitor,
+  lifecycle: RunnerLifecycle,
+): Promise<void> {
+  await new RunnerCompletion(config, evidence, monitor, lifecycle).complete();
 }

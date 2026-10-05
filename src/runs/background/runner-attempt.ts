@@ -10,8 +10,11 @@ import {
 } from "./runner-attempt-output.ts";
 import { runPiStreaming } from "./runner-streaming.ts";
 import { captureSingleOutputSnapshot } from "../shared/single-output.ts";
-import type { ToolCallSummary, Usage } from "../../shared/types.ts";
-import type { RunnerSubagentStep as SubagentStep } from "../../shared/types.ts";
+import type {
+  ToolCallSummary,
+  Usage,
+  RunnerSubagentStep as SubagentStep,
+} from "../../shared/types.ts";
 import { cleanupTempDir } from "../shared/pi-args.ts";
 import { isClaudeCodeModel } from "../shared/claude-code.ts";
 import type { createStructuredOutputRuntime } from "../shared/structured-output.ts";
@@ -55,6 +58,28 @@ function nativeSegmentError(
   return formatProcessExitFailure({ agent, exitCode, durationMs: segment.durationMs });
 }
 
+function nativeSegmentState(
+  segment: ReadonlyDeep<NativeAttemptSegment>,
+  error: string | undefined,
+) {
+  const {
+    exitCode = 0,
+    interrupted,
+    timedOut,
+    resourceLimitExceeded,
+    terminalFailure,
+  } = segment.execution ?? {};
+  const submissionError = segment.event.submission.error;
+  return {
+    exitCode: error !== undefined && error.length > 0 && exitCode === 0 ? 1 : exitCode,
+    interrupted,
+    timedOut,
+    resourceLimitExceeded,
+    terminalFailure:
+      (submissionError !== undefined && submissionError.length > 0) || terminalFailure,
+  };
+}
+
 export class RunnerAttempt {
   nativeExecution: ReadonlyDeep<ChildAttemptResult> | undefined;
   nativeSegments: readonly ReadonlyDeep<NativeAttemptSegment>[] = [];
@@ -82,19 +107,10 @@ export class RunnerAttempt {
       throw new Error("Native segment requires a finalized execution.");
     }
     const error = nativeSegmentError(segment, this.step.agent);
-    const state = segment.execution;
-    const exitCode = state?.exitCode ?? 0;
     return {
       ...nativeExecution,
-      exitCode: error !== undefined && error.length > 0 && exitCode === 0 ? 1 : exitCode,
+      ...nativeSegmentState(segment, error),
       error,
-      interrupted: state?.interrupted,
-      timedOut: state?.timedOut,
-      resourceLimitExceeded: state?.resourceLimitExceeded,
-      terminalFailure:
-        (segment.event.submission.error !== undefined &&
-          segment.event.submission.error.length > 0) ||
-        state?.terminalFailure,
       messages: segment.messages,
       usage: segment.usage,
       durationMs: segment.durationMs,

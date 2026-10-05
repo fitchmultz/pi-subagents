@@ -1,8 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ReadonlyDeep } from "type-fest";
-import type { ModelAttempt } from "../../shared/types.ts";
-import type { RunnerSubagentStep } from "../../shared/types.ts";
+import type { ModelAttempt, RunnerSubagentStep } from "../../shared/types.ts";
 import type { StructuredOutputRuntime } from "../shared/structured-output.ts";
 import { isClaudeCodeModel } from "../shared/claude-code.ts";
 import { cleanupTempDir } from "../shared/pi-args.ts";
@@ -48,14 +47,14 @@ export class RunnerFinalization {
   private readonly step: RunnerSubagentStep;
   private readonly runner: RunnerAttempt;
   private readonly initial: StepAttempt;
-  private readonly context: FinalizationContext;
+  private readonly context: ReadonlyDeep<FinalizationContext>;
   private readonly nativeReport: boolean;
 
   constructor(
     step: RunnerSubagentStep,
     runner: RunnerAttempt,
     initial: StepAttempt,
-    context: FinalizationContext,
+    context: ReadonlyDeep<FinalizationContext>,
   ) {
     this.step = step;
     this.runner = runner;

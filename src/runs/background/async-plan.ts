@@ -17,33 +17,35 @@ import {
   type AvailableModelInfo,
 } from "../shared/model-fallback.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
-import type {
-  AcceptanceInput,
-  ChainStep,
-  ChildProjectTrustPolicy,
-  Details,
-  JsonSchemaObject,
-  MaxOutputConfig,
-  NestedRouteInfo,
-  ResolvedControlConfig,
-  SavedLaunchConfig,
-  SubagentRunMode,
-  RunnerSubagentStep,
+import {
+  type AcceptanceInput,
+  type ChainStep,
+  type ChildProjectTrustPolicy,
+  type Details,
+  type JsonSchemaObject,
+  type MaxOutputConfig,
+  type NestedRouteInfo,
+  type ResolvedControlConfig,
+  type SavedLaunchConfig,
+  type SubagentRunMode,
+  type RunnerSubagentStep,
+  DEFAULT_MAX_OUTPUT,
 } from "../../shared/types.ts";
-import { DEFAULT_MAX_OUTPUT } from "../../shared/types.ts";
 
 export function usesAgentDefaultOutput(output: string | boolean | undefined): boolean {
   return output === undefined || output === true || output === "true";
 }
 
-export function materializeAsyncDefaultOutput(params: {
-  output: string | false | undefined;
-  artifactsDir: string | undefined;
-  asyncDir: string;
-  runId: string;
-  agent: string;
-  index?: number | string;
-}): string | false | undefined {
+export function materializeAsyncDefaultOutput(
+  params: Readonly<{
+    output: string | false | undefined;
+    artifactsDir: string | undefined;
+    asyncDir: string;
+    runId: string;
+    agent: string;
+    index?: number | string;
+  }>,
+): string | false | undefined {
   return materializeAgentDefaultOutputPath({
     output: params.output,
     artifactsDir: params.artifactsDir ?? params.asyncDir,
@@ -53,15 +55,17 @@ export function materializeAsyncDefaultOutput(params: {
   });
 }
 
-export function resolveAsyncOutput(params: {
-  requestedOutput: string | boolean | undefined;
-  agentDefaultOutput: string | false | undefined;
-  artifactsDir: string | undefined;
-  asyncDir: string;
-  runId: string;
-  agent: string;
-  index?: number | string;
-}): string | false | undefined {
+export function resolveAsyncOutput(
+  params: Readonly<{
+    requestedOutput: string | boolean | undefined;
+    agentDefaultOutput: string | false | undefined;
+    artifactsDir: string | undefined;
+    asyncDir: string;
+    runId: string;
+    agent: string;
+    index?: number | string;
+  }>,
+): string | false | undefined {
   const effectiveOutput = usesAgentDefaultOutput(params.requestedOutput)
     ? normalizeSingleOutputOverride(true, params.agentDefaultOutput)
     : normalizeSingleOutputOverride(params.requestedOutput, params.agentDefaultOutput);
@@ -153,6 +157,27 @@ export type AsyncSingleParams = ReadonlyDeep<Omit<AsyncSingleOptions, "ctx">> & 
   readonly ctx: Readonly<AsyncExecutionContext>;
 };
 
+function outputFilename(
+  step: ReadonlyDeep<RunnerSubagentStep>,
+  agent: ReadonlyDeep<AgentConfig>,
+  explicit: string | undefined,
+): string | undefined {
+  if (explicit !== undefined && explicit.length > 0) {
+    return explicit;
+  }
+  if (
+    step.outputPathFromAgentDefault !== true ||
+    step.outputPath === undefined ||
+    step.outputPath.length === 0
+  ) {
+    return;
+  }
+  if (typeof agent.output !== "string" || path.isAbsolute(agent.output)) {
+    return;
+  }
+  return path.basename(agent.output);
+}
+
 export function withSavedLaunch(
   step: RunnerSubagentStep,
   agent: ReadonlyDeep<AgentConfig>,
@@ -175,14 +200,7 @@ export function withSavedLaunch(
       context: agent.defaultContext ?? "fresh",
       output: step.outputPath ?? false,
       outputMode: step.outputMode ?? "inline",
-      ...(generatedOutputFilename
-        ? { generatedOutputFilename }
-        : step.outputPathFromAgentDefault &&
-            step.outputPath &&
-            typeof agent.output === "string" &&
-            !path.isAbsolute(agent.output)
-          ? { generatedOutputFilename: path.basename(agent.output) }
-          : {}),
+      generatedOutputFilename: outputFilename(step, agent, generatedOutputFilename),
       outputSchema: step.structuredOutputSchema,
       effectiveAcceptance: step.effectiveAcceptance,
       maxOutput: { ...DEFAULT_MAX_OUTPUT, ...params.maxOutput },

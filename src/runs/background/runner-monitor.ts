@@ -7,12 +7,11 @@ import {
   reindexChildTargets,
   type DynamicPlan,
 } from "./runner-dynamic.ts";
-import type { DynamicRunnerGroup } from "../../shared/types.ts";
+import type { DynamicRunnerGroup, AcceptanceLedger, ActivityState } from "../../shared/types.ts";
 import * as path from "node:path";
 import type { ReadonlyDeep } from "type-fest";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl } from "../../shared/artifacts.ts";
-import type { AcceptanceLedger, ActivityState } from "../../shared/types.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../shared/pi-args.ts";
 import {
   DEFAULT_CONTROL_CONFIG,
@@ -108,7 +107,7 @@ export class RunnerMonitor {
   }
 
   expandChildren(
-    plan: DynamicPlan,
+    plan: ReadonlyDeep<DynamicPlan>,
     step: DynamicRunnerGroup,
     position: Readonly<{ stepIndex: number; flatIndex: number }>,
   ): void {
@@ -142,7 +141,7 @@ export class RunnerMonitor {
           parentRunId: this.config.nestedSelf.parentRunId,
           parentStepIndex: this.config.nestedSelf.parentStepIndex,
           depth: this.config.nestedSelf.depth,
-          path: this.config.nestedSelf.path,
+          path: this.config.nestedSelf.path?.map((entry) => Object.assign({}, entry)),
           mode: this.statusPayload.mode,
           ts: Date.now(),
         }),
@@ -199,12 +198,11 @@ export class RunnerMonitor {
       ...graph,
       nodes: graph.nodes.map((node) =>
         node.id === `step-${stepIndex}`
-          ? {
-              ...node,
+          ? Object.assign({}, node, {
               status,
               error,
               acceptanceStatus: acceptance?.status ?? node.acceptanceStatus,
-            }
+            })
           : node,
       ),
     };
@@ -354,6 +352,20 @@ export class RunnerMonitor {
     return true;
   }
 
+  private syncRunAttention(): boolean {
+    const nextRunState = this.statusPayload.steps.some(
+      (step) => step.activityState === "needs_attention",
+    )
+      ? "needs_attention"
+      : undefined;
+    if (nextRunState === this.currentActivityState) {
+      return false;
+    }
+    this.currentActivityState = nextRunState;
+    this.statusPayload.activityState = nextRunState;
+    return true;
+  }
+
   updateRunnerActivityState(now: number): boolean {
     if (!this.controlConfig.enabled) {
       return false;
@@ -377,16 +389,7 @@ export class RunnerMonitor {
       this.statusPayload.lastActivityAt = runLastActivityAt;
       changed = true;
     }
-    const nextRunState = this.statusPayload.steps.some(
-      (step) => step.activityState === "needs_attention",
-    )
-      ? "needs_attention"
-      : undefined;
-    if (nextRunState !== this.currentActivityState) {
-      this.currentActivityState = nextRunState;
-      this.statusPayload.activityState = nextRunState;
-      changed = true;
-    }
+    changed = this.syncRunAttention() || changed;
     this.statusPayload.lastUpdate = now;
     if (changed) {
       this.writeStatusPayload();

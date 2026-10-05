@@ -1,9 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ReadonlyDeep } from "type-fest";
-import type { ArtifactPaths } from "../../shared/types.ts";
+import type { ArtifactPaths, RunnerSubagentStep } from "../../shared/types.ts";
 import { getArtifactPaths } from "../../shared/artifacts.ts";
-import type { RunnerSubagentStep } from "../../shared/types.ts";
 import {
   createStructuredOutputRuntime,
   type StructuredOutputRuntime,

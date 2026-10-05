@@ -74,7 +74,7 @@ export class RunnerLifecycle {
     }
     const expire = (): void => {
       this.status.timedOut = true;
-      this.status.error = `Timed out after ${timeoutAt - (this.status.startedAt ?? timeoutAt)}ms.`;
+      this.status.error = `Timed out after ${timeoutAt - this.status.startedAt}ms.`;
       this.cancellation.abort(new DOMException(this.status.error, "TimeoutError"));
       this.monitor.writeStatusPayload();
     };

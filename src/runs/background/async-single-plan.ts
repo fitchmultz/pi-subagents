@@ -1,5 +1,9 @@
 import * as path from "node:path";
-import type { AgentConfig, RunnerSubagentStep } from "../../shared/types.ts";
+import {
+  type AgentConfig,
+  type RunnerSubagentStep,
+  resolveChildMaxSubagentDepth,
+} from "../../shared/types.ts";
 import type { ReadonlyDeep } from "type-fest";
 import { buildChainInstructions, writeInitialProgressFile } from "../../shared/settings.ts";
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
@@ -10,7 +14,6 @@ import {
 } from "../shared/single-output.ts";
 import { resolveEffectiveAcceptance } from "../shared/acceptance.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
-import { resolveChildMaxSubagentDepth } from "../../shared/types.ts";
 import {
   agentRuntimeFields,
   usesAgentDefaultOutput,
@@ -36,19 +39,40 @@ function singleSkills(
       skills: params.savedLaunch.skills,
     };
   }
-  const names = params.skills === false ? [] : (params.skills ?? agent.skills ?? []);
+  const names = skillNames(params.skills, agent.skills);
   const { resolved, missing } = resolveSkillsWithFallback(names, cwd, params.ctx.cwd, {
     projectTrusted: params.ctx.projectTrusted ?? true,
   });
   if (missing.includes("pi-subagents")) {
     throw new UnavailableSubagentSkillError(UNAVAILABLE_SUBAGENT_SKILL_ERROR);
   }
-  let prompt = agent.systemPrompt?.trim() ?? "";
+  let prompt = agent.systemPrompt.trim();
   if (resolved.length > 0) {
     const injection = buildSkillInjection(resolved);
     prompt = prompt.length > 0 ? `${prompt}\n\n${injection}` : injection;
   }
   return { launchAgent, prompt, skills: resolved.map((skill) => skill.name) };
+}
+
+function skillNames(
+  explicit: readonly string[] | false | undefined,
+  defaults: readonly string[] | undefined,
+): readonly string[] {
+  return explicit === false ? [] : (explicit ?? defaults ?? []);
+}
+
+function defaultOutputMarker(
+  output: string | false | undefined,
+  outputPath: string | undefined,
+  usesDefault: boolean,
+): true | undefined {
+  if (!usesDefault || outputPath === undefined || outputPath.length === 0) {
+    return;
+  }
+  if (typeof output !== "string" || path.isAbsolute(output)) {
+    return;
+  }
+  return true;
 }
 
 function singleOutput(
@@ -87,16 +111,11 @@ function singleOutput(
   }
   const usesDefault =
     usesAgentDefaultOutput(params.output) || params.outputFromAgentDefault === true;
-  const outputFromDefault =
-    usesDefault &&
-    outputPath !== undefined &&
-    outputPath.length > 0 &&
-    typeof defaultOutput === "string" &&
-    !path.isAbsolute(defaultOutput);
+  const outputFromDefault = defaultOutputMarker(defaultOutput, outputPath, usesDefault);
   return {
     task: injectSingleOutputInstruction(task, outputPath),
     outputPath,
-    ...(outputFromDefault ? { outputFromDefault: true } : {}),
+    ...(outputFromDefault === true ? { outputFromDefault: true } : {}),
   };
 }
 

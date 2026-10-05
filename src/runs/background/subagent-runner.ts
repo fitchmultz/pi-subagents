@@ -60,7 +60,7 @@ function launchConfig(text: string, file?: string): void {
   runSubagent(config).catch(runnerError);
 }
 
-const configArg = process.argv[2];
+const configArg = process.argv.at(2);
 if (configArg !== undefined && configArg.length > 0) {
   try {
     launchConfig(fs.readFileSync(configArg, "utf-8"), configArg);

@@ -1,17 +1,17 @@
 import * as path from "node:path";
 import type { ReadonlyDeep } from "type-fest";
-import type {
-  AgentConfig,
-  ChainStep,
-  SequentialStep,
-  ParallelStep,
-  ParallelTaskItem,
-  DynamicParallelStep,
-  ResolvedStepBehavior,
-  StepOverrides,
-  RunnerStep,
-  RunnerSubagentStep,
-  SubagentRunMode,
+import {
+  type AgentConfig,
+  type SequentialStep,
+  type ParallelStep,
+  type ParallelTaskItem,
+  type DynamicParallelStep,
+  type ResolvedStepBehavior,
+  type StepOverrides,
+  type RunnerStep,
+  type RunnerSubagentStep,
+  type SubagentRunMode,
+  resolveChildMaxSubagentDepth,
 } from "../../shared/types.ts";
 import {
   buildChainInstructions,
@@ -37,7 +37,6 @@ import {
 import { resolveExpectedWorktreeAgentCwd } from "../shared/worktree.ts";
 import { resolveEffectiveAcceptance } from "../shared/acceptance.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
-import { resolveChildMaxSubagentDepth } from "../../shared/types.ts";
 import {
   agentRuntimeFields,
   usesAgentDefaultOutput,
@@ -136,7 +135,7 @@ export class AsyncChainPlanner {
     if (missing.includes("pi-subagents")) {
       throw new UnavailableSubagentSkillError(UNAVAILABLE_SUBAGENT_SKILL_ERROR);
     }
-    let prompt = agent.systemPrompt?.trim() ?? "";
+    let prompt = agent.systemPrompt.trim();
     if (resolved.length > 0) {
       const injection = buildSkillInjection(resolved);
       prompt = prompt.length > 0 ? `${prompt}\n\n${injection}` : injection;
@@ -195,12 +194,7 @@ export class AsyncChainPlanner {
     const instructionCwd =
       options.behaviorCwd ??
       (this.workspace.resultMode === "chain" ? this.workspace.chainDir : cwd);
-    const behavior = suppressProgressForReadOnlyTask(
-      options.behavior ??
-        resolveStepBehavior(agent, stepOverrides(step), this.params.chainSkills ?? []),
-      step.task,
-      this.workspace.originalTask,
-    );
+    const behavior = this.behaviorForStep(agent, step, options.behavior);
     const launchAgent = behavior.skills === false ? { ...agent, inheritSkills: false } : agent;
     const usesDefault = usesAgentDefaultOutput(step.output) || step.outputFromAgentDefault === true;
     const output =
@@ -240,11 +234,7 @@ export class AsyncChainPlanner {
         outputPath: instructions.outputPath,
         output: behavior.output,
         outputMode: behavior.outputMode,
-        ...(usesDefault &&
-        instructions.outputPath !== undefined &&
-        instructions.outputPath.length > 0 &&
-        typeof agent.output === "string" &&
-        !path.isAbsolute(agent.output)
+        ...(this.defaultOutputMarker(agent, instructions.outputPath, usesDefault)
           ? { outputPathFromAgentDefault: true }
           : {}),
         sessionFile: options.sessionFile,
@@ -265,6 +255,32 @@ export class AsyncChainPlanner {
       },
       launchAgent,
       this.params,
+    );
+  }
+
+  private defaultOutputMarker(
+    agent: ReadonlyDeep<AgentConfig>,
+    outputPath: string | undefined,
+    usesDefault: boolean,
+  ): boolean {
+    return (
+      usesDefault &&
+      outputPath !== undefined &&
+      outputPath.length > 0 &&
+      typeof agent.output === "string" &&
+      !path.isAbsolute(agent.output)
+    );
+  }
+
+  private behaviorForStep(
+    agent: ReadonlyDeep<AgentConfig>,
+    step: SequentialStep,
+    override: ResolvedStepBehavior | undefined,
+  ): ResolvedStepBehavior {
+    return suppressProgressForReadOnlyTask(
+      override ?? resolveStepBehavior(agent, stepOverrides(step), this.params.chainSkills ?? []),
+      step.task,
+      this.workspace.originalTask,
     );
   }
 
@@ -351,22 +367,7 @@ export class AsyncChainPlanner {
         /* Setup will report unusable worktrees; instructions fall back to the launch cwd. */
       }
     }
-    const precreated =
-      input.progressPrecreated ||
-      (this.workspace.resultMode !== "chain" &&
-        input.behavior?.progress === true &&
-        group.worktree !== true);
-    if (precreated && !input.progressPrecreated) {
-      const progressCwd = resolveChildCwd(cwd, task.cwd);
-      try {
-        writeInitialProgressFile(progressCwd);
-      } catch (error) {
-        throw new AsyncStartValidationError(
-          `Failed to initialize progress in '${progressCwd}': ${launchErrorMessage(error)}`,
-          { cause: error },
-        );
-      }
-    }
+    const precreated = this.initializeTaskProgress(group, task, input);
     return this.sequential(
       { ...task, task: input.template, cwd: resolveChildCwd(cwd, task.cwd) },
       {
@@ -376,6 +377,33 @@ export class AsyncChainPlanner {
         behavior: input.behavior,
       },
     );
+  }
+
+  private initializeTaskProgress(
+    group: ParallelStep,
+    task: ParallelTaskItem,
+    input: Readonly<{ progressPrecreated: boolean; behavior?: ResolvedStepBehavior }>,
+  ): boolean {
+    const precreated =
+      input.progressPrecreated ||
+      (this.workspace.resultMode !== "chain" &&
+        input.behavior?.progress === true &&
+        group.worktree !== true);
+    if (precreated && !input.progressPrecreated) {
+      const progressCwd = resolveChildCwd(
+        resolveChildCwd(this.workspace.runnerCwd, group.cwd),
+        task.cwd,
+      );
+      try {
+        writeInitialProgressFile(progressCwd);
+      } catch (error) {
+        throw new AsyncStartValidationError(
+          `Failed to initialize progress in '${progressCwd}': ${launchErrorMessage(error)}`,
+          { cause: error },
+        );
+      }
+    }
+    return precreated;
   }
 
   private dynamicGroup(group: DynamicParallelStep, stepIndex: number): RunnerStep {

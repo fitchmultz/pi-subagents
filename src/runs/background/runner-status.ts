@@ -1,9 +1,13 @@
 import * as path from "node:path";
 import type { ReadonlyDeep } from "type-fest";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
-import type { RunnerSubagentStep } from "../../shared/types.ts";
+import type {
+  RunnerSubagentStep,
+  AsyncStatus,
+  ModelAttempt,
+  TokenUsage,
+} from "../../shared/types.ts";
 import type { RunSingleStepResult } from "./runner-contract.ts";
-import type { AsyncStatus, ModelAttempt, TokenUsage } from "../../shared/types.ts";
 
 export function pendingRunnerStep(task: ReadonlyDeep<RunnerSubagentStep>): RunnerStatusStep {
   return {

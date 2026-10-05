@@ -7,19 +7,21 @@ import {
   resolveCompletionPolicy,
 } from "../shared/completion-guard.ts";
 import { readStructuredOutput, type StructuredOutputRuntime } from "../shared/structured-output.ts";
-import { captureSingleOutputSnapshot, resolveSingleOutput } from "../shared/single-output.ts";
+import { type captureSingleOutputSnapshot, resolveSingleOutput } from "../shared/single-output.ts";
 import {
   readFinalizationReport,
   resolveFinalizationOutput,
   stripAcceptanceReport,
 } from "../shared/acceptance.ts";
 
-export type StepAttempt = ReadonlyDeep<ChildAttemptResult> & {
-  readonly completionGuardTriggered?: boolean;
-  readonly structuredOutput?: unknown;
-  readonly reportSubmission?: ReturnType<typeof readFinalizationReport>;
-  readonly resolvedOutput: ReturnType<typeof resolveSingleOutput>;
-};
+export type StepAttempt = ReadonlyDeep<
+  ChildAttemptResult & {
+    readonly completionGuardTriggered?: boolean;
+    readonly structuredOutput?: unknown;
+    readonly reportSubmission?: ReturnType<typeof readFinalizationReport>;
+    readonly resolvedOutput: ReturnType<typeof resolveSingleOutput>;
+  }
+>;
 
 export interface AttemptReview {
   readonly turn: number;
@@ -74,8 +76,8 @@ function hiddenFailure(
     return;
   }
   return error.details !== undefined && error.details.length > 0
-    ? `${error.errorType} failed (exit ${error.exitCode ?? 1}): ${error.details}`
-    : `${error.errorType} failed with exit code ${error.exitCode ?? 1}`;
+    ? `${error.errorType ?? "Subagent"} failed (exit ${error.exitCode ?? 1}): ${error.details}`
+    : `${error.errorType ?? "Subagent"} failed with exit code ${error.exitCode ?? 1}`;
 }
 
 function completionGuard(
@@ -126,61 +128,132 @@ export function interpretAttemptOutput(
   run: ReadonlyDeep<ChildAttemptResult>,
   context: ReadonlyDeep<OutputContext>,
 ): StepAttempt {
-  const reportSubmission = context.review?.reportRuntime
-    ? readFinalizationReport(run.messages, context.review.reportRuntime, {
-        structuredResult: context.structuredResult,
-      })
-    : undefined;
-  const noError = run.error === undefined || run.error.length === 0;
-  const noReportOutput = reportSubmission === undefined || reportSubmission.output.length === 0;
-  const hiddenError =
-    run.exitCode === 0 && noError && noReportOutput ? detectSubagentError(run.messages) : undefined;
-  const successful =
-    run.exitCode === 0 && noError && hiddenError?.hasError !== true && run.interrupted !== true;
-  const structured =
-    successful && context.review === undefined && context.structuredRuntime
-      ? readStructuredOutput(context.structuredRuntime)
-      : undefined;
+  const { reportSubmission, hiddenError, structured, successful } = analyzeAttempt(run, context);
   const guardTriggered = successful && completionGuard(step, run, context.review);
-  let error = guardTriggered
-    ? "Subagent completed without making edits required by completionGuard: true.\nUse an acceptance contract when a valid no-op is allowed."
-    : (structured?.error ?? hiddenFailure(hiddenError) ?? processFailure(step, run));
-  let exitCode = failureExitCode(run.exitCode, {
+  const error = attemptError(step, run, {
+    guardTriggered,
+    structuredError: structured?.error,
+    hiddenError,
+  });
+  const exitCode = failureExitCode(run.exitCode, {
     guardTriggered,
     structuredError: structured?.error,
     hiddenError,
     error,
   });
-  const finalOutput = reportSubmission?.output ?? run.finalOutput;
-  const fullOutput = context.review
-    ? resolveFinalizationOutput(finalOutput, context.review.previousOutput)
-    : stripAcceptanceReport(finalOutput);
+  const { finalOutput, fullOutput } = attemptText(run, reportSubmission, context.review);
   const resolvedOutput = resolveAttemptOutput(step, fullOutput, {
     context,
     run,
     exitCode,
     reportSubmission,
   });
-  if (resolvedOutput.saveError !== undefined && resolvedOutput.saveError.length > 0) {
-    exitCode = 1;
-    error = `Failed to save output file '${step.outputPath ?? ""}': ${resolvedOutput.saveError}`;
-  }
+  const state = outputState(step, resolvedOutput, error, exitCode);
   return {
     ...run,
-    exitCode,
-    error,
+    ...state,
     model: context.model ?? run.model,
     structuredOutput: structured?.value,
     reportSubmission,
     finalOutput,
     resolvedOutput,
     completionGuardTriggered: guardTriggered,
-    terminalFailure:
-      guardTriggered ||
-      (structured?.error !== undefined && structured.error.length > 0) ||
-      hiddenError?.hasError === true ||
-      (resolvedOutput.saveError !== undefined && resolvedOutput.saveError.length > 0),
+    terminalFailure: terminalFailure(
+      guardTriggered,
+      structured?.error,
+      hiddenError,
+      resolvedOutput.saveError,
+    ),
   };
+}
+
+function attemptError(
+  step: ReadonlyDeep<RunnerSubagentStep>,
+  run: ReadonlyDeep<ChildAttemptResult>,
+  input: ReadonlyDeep<{
+    guardTriggered: boolean;
+    structuredError?: string;
+    hiddenError?: ReturnType<typeof detectSubagentError>;
+  }>,
+): string | undefined {
+  if (input.guardTriggered) {
+    return "Subagent completed without making edits required by completionGuard: true.\nUse an acceptance contract when a valid no-op is allowed.";
+  }
+  return input.structuredError ?? hiddenFailure(input.hiddenError) ?? processFailure(step, run);
+}
+
+function attemptText(
+  run: ReadonlyDeep<ChildAttemptResult>,
+  report: ReadonlyDeep<ReturnType<typeof readFinalizationReport>> | undefined,
+  review: ReadonlyDeep<AttemptReview> | undefined,
+) {
+  const finalOutput = report?.output ?? run.finalOutput;
+  const fullOutput =
+    review === undefined
+      ? stripAcceptanceReport(finalOutput)
+      : resolveFinalizationOutput(finalOutput, review.previousOutput);
+  return { finalOutput, fullOutput };
+}
+
+function hiddenAttemptFailure(
+  run: ReadonlyDeep<ChildAttemptResult>,
+  report: ReadonlyDeep<ReturnType<typeof readFinalizationReport>> | undefined,
+) {
+  return successfulProcess(run) && (report === undefined || report.output.length === 0)
+    ? detectSubagentError(run.messages)
+    : undefined;
+}
+
+function analyzeAttempt(
+  run: ReadonlyDeep<ChildAttemptResult>,
+  context: ReadonlyDeep<OutputContext>,
+) {
+  const reportSubmission = context.review?.reportRuntime
+    ? readFinalizationReport(run.messages, context.review.reportRuntime, {
+        structuredResult: context.structuredResult,
+      })
+    : undefined;
+  const hiddenError = hiddenAttemptFailure(run, reportSubmission);
+  const successful =
+    successfulProcess(run) && hiddenError?.hasError !== true && run.interrupted !== true;
+  const structured =
+    successful && context.review === undefined && context.structuredRuntime
+      ? readStructuredOutput(context.structuredRuntime)
+      : undefined;
+  return { reportSubmission, hiddenError, structured, successful };
+}
+
+function successfulProcess(run: ReadonlyDeep<ChildAttemptResult>): boolean {
+  return run.exitCode === 0 && (run.error === undefined || run.error.length === 0);
+}
+
+function terminalFailure(
+  guard: boolean,
+  structuredError: string | undefined,
+  hiddenError: ReturnType<typeof detectSubagentError> | undefined,
+  saveError: string | undefined,
+): boolean {
+  return (
+    guard ||
+    (structuredError !== undefined && structuredError.length > 0) ||
+    hiddenError?.hasError === true ||
+    (saveError !== undefined && saveError.length > 0)
+  );
+}
+
+function outputState(
+  step: ReadonlyDeep<RunnerSubagentStep>,
+  resolvedOutput: ReadonlyDeep<ReturnType<typeof resolveSingleOutput>>,
+  error: string | undefined,
+  exitCode: number,
+) {
+  if (resolvedOutput.saveError !== undefined && resolvedOutput.saveError.length > 0) {
+    return {
+      exitCode: 1,
+      error: `Failed to save output file '${step.outputPath ?? ""}': ${resolvedOutput.saveError}`,
+    };
+  }
+  return { error, exitCode };
 }
 
 function failureExitCode(
