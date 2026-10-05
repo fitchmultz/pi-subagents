@@ -99,6 +99,34 @@ function probeBoundary(boundary) {
       `export function outside(${parameter}: {value:number}) {${parameter}.value=1;}`,
     );
     assert.equal(lint(dir, [mutationRule], ["outsider.ts"], mutationChanges).length, 1);
+    if (boundary.argumentPresence !== undefined) {
+      const undefinedRule = "unicorn/no-useless-undefined";
+      const presenceChanges = {
+        overrides: [
+          { files: selected.files, rules: { [undefinedRule]: selected.rules[undefinedRule] } },
+        ],
+      };
+      put(
+        dir,
+        boundary.file,
+        `function positional(value: unknown) { console.log(value); }\npositional(undefined);\nexport const gratuitous = () => undefined;\n`,
+      );
+      assert.deepEqual(
+        lint(dir, [undefinedRule], [boundary.file], presenceChanges).map((entry) => entry.line),
+        [3],
+        "Required positional undefined passes while the unrelated arrow return stays checked",
+      );
+      put(
+        dir,
+        "outsider.ts",
+        `function positional(value: unknown) { console.log(value); }\npositional(undefined);\n`,
+      );
+      assert.deepEqual(
+        lint(dir, [undefinedRule], ["outsider.ts"], presenceChanges).map((entry) => entry.line),
+        [2],
+        "Argument allowance does not leak outside its owning file",
+      );
+    }
   } finally {
     remove(dir);
   }

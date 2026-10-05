@@ -4671,6 +4671,2072 @@
       }
     },
     {
+      "files": ["src/runs/background/runner-status.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": ["step", "statusPayload"]
+          }
+        ],
+        "typescript/prefer-readonly-parameter-types": [
+          "error",
+          {
+            "checkParameterProperties": true,
+            "ignoreInferredTypes": true,
+            "treatMethodsAsReadonly": false,
+            "allow": [
+              {
+                "from": "lib",
+                "name": [
+                  "Promise",
+                  "PromiseLike",
+                  "Generator",
+                  "Request",
+                  "RequestInit",
+                  "RequestInfo",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "HeadersInit",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortController",
+                  "AbortSignal",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-coding-agent",
+                "name": [
+                  "ExtensionAPI",
+                  "ExtensionContext",
+                  "Theme",
+                  "SessionManager",
+                  "AgentSession",
+                  "ExtensionUIContext",
+                  "ReadonlySessionManager",
+                  "DefaultPackageManager",
+                  "SettingsManager",
+                  "SessionEntry",
+                  "ModelRegistry",
+                  "KeybindingsManager",
+                  "ExtensionToolContext",
+                  "BeforeAgentStartEvent",
+                  "AgentBeforeSettleEvent",
+                  "SessionMessageEntry",
+                  "UsageEntry",
+                  "EventBusController",
+                  "ScopedModel"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-agent-core",
+                "name": ["AgentMessage"]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-tui",
+                "name": [
+                  "TUI",
+                  "KeybindingsManager",
+                  "Component",
+                  "Editor",
+                  "ScrollView",
+                  "Container",
+                  "SelectList",
+                  "Input"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-ai",
+                "name": [
+                  "Message",
+                  "Model",
+                  "AssistantMessage",
+                  "Usage",
+                  "TextContent",
+                  "ThinkingContent",
+                  "ImageContent",
+                  "ToolCall",
+                  "SystemMessage",
+                  "UserMessage"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "node",
+                "name": [
+                  "Socket",
+                  "Buffer",
+                  "ChildProcess",
+                  "ChildProcessByStdio",
+                  "SpawnOptions",
+                  "FSWatcher",
+                  "Stats",
+                  "StringDecoder",
+                  "Readable",
+                  "Request",
+                  "RequestInit",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "AbortController",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController",
+                  "Hash",
+                  "DatabaseSync",
+                  "StatementSync",
+                  "BigIntStats",
+                  "TestContext",
+                  "Timeout",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortSignal"
+                ]
+              },
+              {
+                "from": "file",
+                "path": "./src/shared/types/details.ts",
+                "name": ["SubagentExecutionResult"]
+              },
+              {
+                "from": "file",
+                "path": "./test/support/ui.ts",
+                "name": ["NativeCustomMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-display.ts",
+                "name": ["RecordedToolResult"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-record.ts",
+                "name": ["HistoryNativeMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-status.ts",
+                "name": ["RunnerStatusStep"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-status.ts",
+                "name": ["RunnerStatusPayload"]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/runs/background/runner-child-observer.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": []
+          }
+        ],
+        "typescript/prefer-readonly-parameter-types": [
+          "error",
+          {
+            "checkParameterProperties": true,
+            "ignoreInferredTypes": true,
+            "treatMethodsAsReadonly": false,
+            "allow": [
+              {
+                "from": "lib",
+                "name": [
+                  "Promise",
+                  "PromiseLike",
+                  "Generator",
+                  "Request",
+                  "RequestInit",
+                  "RequestInfo",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "HeadersInit",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortController",
+                  "AbortSignal",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-coding-agent",
+                "name": [
+                  "ExtensionAPI",
+                  "ExtensionContext",
+                  "Theme",
+                  "SessionManager",
+                  "AgentSession",
+                  "ExtensionUIContext",
+                  "ReadonlySessionManager",
+                  "DefaultPackageManager",
+                  "SettingsManager",
+                  "SessionEntry",
+                  "ModelRegistry",
+                  "KeybindingsManager",
+                  "ExtensionToolContext",
+                  "BeforeAgentStartEvent",
+                  "AgentBeforeSettleEvent",
+                  "SessionMessageEntry",
+                  "UsageEntry",
+                  "EventBusController",
+                  "ScopedModel"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-agent-core",
+                "name": ["AgentMessage"]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-tui",
+                "name": [
+                  "TUI",
+                  "KeybindingsManager",
+                  "Component",
+                  "Editor",
+                  "ScrollView",
+                  "Container",
+                  "SelectList",
+                  "Input"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-ai",
+                "name": [
+                  "Message",
+                  "Model",
+                  "AssistantMessage",
+                  "Usage",
+                  "TextContent",
+                  "ThinkingContent",
+                  "ImageContent",
+                  "ToolCall",
+                  "SystemMessage",
+                  "UserMessage"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "node",
+                "name": [
+                  "Socket",
+                  "Buffer",
+                  "ChildProcess",
+                  "ChildProcessByStdio",
+                  "SpawnOptions",
+                  "FSWatcher",
+                  "Stats",
+                  "StringDecoder",
+                  "Readable",
+                  "Request",
+                  "RequestInit",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "AbortController",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController",
+                  "Hash",
+                  "DatabaseSync",
+                  "StatementSync",
+                  "BigIntStats",
+                  "TestContext",
+                  "Timeout",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortSignal"
+                ]
+              },
+              {
+                "from": "file",
+                "path": "./src/shared/types/details.ts",
+                "name": ["SubagentExecutionResult"]
+              },
+              {
+                "from": "file",
+                "path": "./test/support/ui.ts",
+                "name": ["NativeCustomMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-display.ts",
+                "name": ["RecordedToolResult"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-record.ts",
+                "name": ["HistoryNativeMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-status.ts",
+                "name": ["RunnerStatusPayload"]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/runs/background/runner-monitor.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": []
+          }
+        ],
+        "typescript/prefer-readonly-parameter-types": [
+          "error",
+          {
+            "checkParameterProperties": true,
+            "ignoreInferredTypes": true,
+            "treatMethodsAsReadonly": false,
+            "allow": [
+              {
+                "from": "lib",
+                "name": [
+                  "Promise",
+                  "PromiseLike",
+                  "Generator",
+                  "Request",
+                  "RequestInit",
+                  "RequestInfo",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "HeadersInit",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortController",
+                  "AbortSignal",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-coding-agent",
+                "name": [
+                  "ExtensionAPI",
+                  "ExtensionContext",
+                  "Theme",
+                  "SessionManager",
+                  "AgentSession",
+                  "ExtensionUIContext",
+                  "ReadonlySessionManager",
+                  "DefaultPackageManager",
+                  "SettingsManager",
+                  "SessionEntry",
+                  "ModelRegistry",
+                  "KeybindingsManager",
+                  "ExtensionToolContext",
+                  "BeforeAgentStartEvent",
+                  "AgentBeforeSettleEvent",
+                  "SessionMessageEntry",
+                  "UsageEntry",
+                  "EventBusController",
+                  "ScopedModel"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-agent-core",
+                "name": ["AgentMessage"]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-tui",
+                "name": [
+                  "TUI",
+                  "KeybindingsManager",
+                  "Component",
+                  "Editor",
+                  "ScrollView",
+                  "Container",
+                  "SelectList",
+                  "Input"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-ai",
+                "name": [
+                  "Message",
+                  "Model",
+                  "AssistantMessage",
+                  "Usage",
+                  "TextContent",
+                  "ThinkingContent",
+                  "ImageContent",
+                  "ToolCall",
+                  "SystemMessage",
+                  "UserMessage"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "node",
+                "name": [
+                  "Socket",
+                  "Buffer",
+                  "ChildProcess",
+                  "ChildProcessByStdio",
+                  "SpawnOptions",
+                  "FSWatcher",
+                  "Stats",
+                  "StringDecoder",
+                  "Readable",
+                  "Request",
+                  "RequestInit",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "AbortController",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController",
+                  "Hash",
+                  "DatabaseSync",
+                  "StatementSync",
+                  "BigIntStats",
+                  "TestContext",
+                  "Timeout",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortSignal"
+                ]
+              },
+              {
+                "from": "file",
+                "path": "./src/shared/types/details.ts",
+                "name": ["SubagentExecutionResult"]
+              },
+              {
+                "from": "file",
+                "path": "./test/support/ui.ts",
+                "name": ["NativeCustomMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-display.ts",
+                "name": ["RecordedToolResult"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-record.ts",
+                "name": ["HistoryNativeMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-status.ts",
+                "name": ["RunnerStatusPayload"]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/runs/background/runner-dynamic.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": ["statusPayload"]
+          }
+        ],
+        "typescript/prefer-readonly-parameter-types": [
+          "error",
+          {
+            "checkParameterProperties": true,
+            "ignoreInferredTypes": true,
+            "treatMethodsAsReadonly": false,
+            "allow": [
+              {
+                "from": "lib",
+                "name": [
+                  "Promise",
+                  "PromiseLike",
+                  "Generator",
+                  "Request",
+                  "RequestInit",
+                  "RequestInfo",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "HeadersInit",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortController",
+                  "AbortSignal",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-coding-agent",
+                "name": [
+                  "ExtensionAPI",
+                  "ExtensionContext",
+                  "Theme",
+                  "SessionManager",
+                  "AgentSession",
+                  "ExtensionUIContext",
+                  "ReadonlySessionManager",
+                  "DefaultPackageManager",
+                  "SettingsManager",
+                  "SessionEntry",
+                  "ModelRegistry",
+                  "KeybindingsManager",
+                  "ExtensionToolContext",
+                  "BeforeAgentStartEvent",
+                  "AgentBeforeSettleEvent",
+                  "SessionMessageEntry",
+                  "UsageEntry",
+                  "EventBusController",
+                  "ScopedModel"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-agent-core",
+                "name": ["AgentMessage"]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-tui",
+                "name": [
+                  "TUI",
+                  "KeybindingsManager",
+                  "Component",
+                  "Editor",
+                  "ScrollView",
+                  "Container",
+                  "SelectList",
+                  "Input"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-ai",
+                "name": [
+                  "Message",
+                  "Model",
+                  "AssistantMessage",
+                  "Usage",
+                  "TextContent",
+                  "ThinkingContent",
+                  "ImageContent",
+                  "ToolCall",
+                  "SystemMessage",
+                  "UserMessage"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "node",
+                "name": [
+                  "Socket",
+                  "Buffer",
+                  "ChildProcess",
+                  "ChildProcessByStdio",
+                  "SpawnOptions",
+                  "FSWatcher",
+                  "Stats",
+                  "StringDecoder",
+                  "Readable",
+                  "Request",
+                  "RequestInit",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "AbortController",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController",
+                  "Hash",
+                  "DatabaseSync",
+                  "StatementSync",
+                  "BigIntStats",
+                  "TestContext",
+                  "Timeout",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortSignal"
+                ]
+              },
+              {
+                "from": "file",
+                "path": "./src/shared/types/details.ts",
+                "name": ["SubagentExecutionResult"]
+              },
+              {
+                "from": "file",
+                "path": "./test/support/ui.ts",
+                "name": ["NativeCustomMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-display.ts",
+                "name": ["RecordedToolResult"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-record.ts",
+                "name": ["HistoryNativeMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-status.ts",
+                "name": ["RunnerStatusPayload"]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/runs/background/runner-lifecycle.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": []
+          }
+        ],
+        "typescript/prefer-readonly-parameter-types": [
+          "error",
+          {
+            "checkParameterProperties": true,
+            "ignoreInferredTypes": true,
+            "treatMethodsAsReadonly": false,
+            "allow": [
+              {
+                "from": "lib",
+                "name": [
+                  "Promise",
+                  "PromiseLike",
+                  "Generator",
+                  "Request",
+                  "RequestInit",
+                  "RequestInfo",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "HeadersInit",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortController",
+                  "AbortSignal",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-coding-agent",
+                "name": [
+                  "ExtensionAPI",
+                  "ExtensionContext",
+                  "Theme",
+                  "SessionManager",
+                  "AgentSession",
+                  "ExtensionUIContext",
+                  "ReadonlySessionManager",
+                  "DefaultPackageManager",
+                  "SettingsManager",
+                  "SessionEntry",
+                  "ModelRegistry",
+                  "KeybindingsManager",
+                  "ExtensionToolContext",
+                  "BeforeAgentStartEvent",
+                  "AgentBeforeSettleEvent",
+                  "SessionMessageEntry",
+                  "UsageEntry",
+                  "EventBusController",
+                  "ScopedModel"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-agent-core",
+                "name": ["AgentMessage"]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-tui",
+                "name": [
+                  "TUI",
+                  "KeybindingsManager",
+                  "Component",
+                  "Editor",
+                  "ScrollView",
+                  "Container",
+                  "SelectList",
+                  "Input"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-ai",
+                "name": [
+                  "Message",
+                  "Model",
+                  "AssistantMessage",
+                  "Usage",
+                  "TextContent",
+                  "ThinkingContent",
+                  "ImageContent",
+                  "ToolCall",
+                  "SystemMessage",
+                  "UserMessage"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "node",
+                "name": [
+                  "Socket",
+                  "Buffer",
+                  "ChildProcess",
+                  "ChildProcessByStdio",
+                  "SpawnOptions",
+                  "FSWatcher",
+                  "Stats",
+                  "StringDecoder",
+                  "Readable",
+                  "Request",
+                  "RequestInit",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "AbortController",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController",
+                  "Hash",
+                  "DatabaseSync",
+                  "StatementSync",
+                  "BigIntStats",
+                  "TestContext",
+                  "Timeout",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortSignal"
+                ]
+              },
+              {
+                "from": "file",
+                "path": "./src/shared/types/details.ts",
+                "name": ["SubagentExecutionResult"]
+              },
+              {
+                "from": "file",
+                "path": "./test/support/ui.ts",
+                "name": ["NativeCustomMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-display.ts",
+                "name": ["RecordedToolResult"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-record.ts",
+                "name": ["HistoryNativeMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-status.ts",
+                "name": ["RunnerStatusPayload"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-monitor.ts",
+                "name": ["RunnerMonitor"]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/runs/background/runner-child-executor.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": []
+          }
+        ],
+        "typescript/prefer-readonly-parameter-types": [
+          "error",
+          {
+            "checkParameterProperties": true,
+            "ignoreInferredTypes": true,
+            "treatMethodsAsReadonly": false,
+            "allow": [
+              {
+                "from": "lib",
+                "name": [
+                  "Promise",
+                  "PromiseLike",
+                  "Generator",
+                  "Request",
+                  "RequestInit",
+                  "RequestInfo",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "HeadersInit",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortController",
+                  "AbortSignal",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-coding-agent",
+                "name": [
+                  "ExtensionAPI",
+                  "ExtensionContext",
+                  "Theme",
+                  "SessionManager",
+                  "AgentSession",
+                  "ExtensionUIContext",
+                  "ReadonlySessionManager",
+                  "DefaultPackageManager",
+                  "SettingsManager",
+                  "SessionEntry",
+                  "ModelRegistry",
+                  "KeybindingsManager",
+                  "ExtensionToolContext",
+                  "BeforeAgentStartEvent",
+                  "AgentBeforeSettleEvent",
+                  "SessionMessageEntry",
+                  "UsageEntry",
+                  "EventBusController",
+                  "ScopedModel"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-agent-core",
+                "name": ["AgentMessage"]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-tui",
+                "name": [
+                  "TUI",
+                  "KeybindingsManager",
+                  "Component",
+                  "Editor",
+                  "ScrollView",
+                  "Container",
+                  "SelectList",
+                  "Input"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-ai",
+                "name": [
+                  "Message",
+                  "Model",
+                  "AssistantMessage",
+                  "Usage",
+                  "TextContent",
+                  "ThinkingContent",
+                  "ImageContent",
+                  "ToolCall",
+                  "SystemMessage",
+                  "UserMessage"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "node",
+                "name": [
+                  "Socket",
+                  "Buffer",
+                  "ChildProcess",
+                  "ChildProcessByStdio",
+                  "SpawnOptions",
+                  "FSWatcher",
+                  "Stats",
+                  "StringDecoder",
+                  "Readable",
+                  "Request",
+                  "RequestInit",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "AbortController",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController",
+                  "Hash",
+                  "DatabaseSync",
+                  "StatementSync",
+                  "BigIntStats",
+                  "TestContext",
+                  "Timeout",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortSignal"
+                ]
+              },
+              {
+                "from": "file",
+                "path": "./src/shared/types/details.ts",
+                "name": ["SubagentExecutionResult"]
+              },
+              {
+                "from": "file",
+                "path": "./test/support/ui.ts",
+                "name": ["NativeCustomMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-display.ts",
+                "name": ["RecordedToolResult"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-record.ts",
+                "name": ["HistoryNativeMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-monitor.ts",
+                "name": ["RunnerMonitor"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-lifecycle.ts",
+                "name": ["RunnerLifecycle"]
+              }
+            ]
+          }
+        ],
+        "unicorn/no-useless-undefined": [
+          "error",
+          {
+            "checkArguments": false
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/runs/background/runner-finalization.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": []
+          }
+        ],
+        "typescript/prefer-readonly-parameter-types": [
+          "error",
+          {
+            "checkParameterProperties": true,
+            "ignoreInferredTypes": true,
+            "treatMethodsAsReadonly": false,
+            "allow": [
+              {
+                "from": "lib",
+                "name": [
+                  "Promise",
+                  "PromiseLike",
+                  "Generator",
+                  "Request",
+                  "RequestInit",
+                  "RequestInfo",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "HeadersInit",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortController",
+                  "AbortSignal",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-coding-agent",
+                "name": [
+                  "ExtensionAPI",
+                  "ExtensionContext",
+                  "Theme",
+                  "SessionManager",
+                  "AgentSession",
+                  "ExtensionUIContext",
+                  "ReadonlySessionManager",
+                  "DefaultPackageManager",
+                  "SettingsManager",
+                  "SessionEntry",
+                  "ModelRegistry",
+                  "KeybindingsManager",
+                  "ExtensionToolContext",
+                  "BeforeAgentStartEvent",
+                  "AgentBeforeSettleEvent",
+                  "SessionMessageEntry",
+                  "UsageEntry",
+                  "EventBusController",
+                  "ScopedModel"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-agent-core",
+                "name": ["AgentMessage"]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-tui",
+                "name": [
+                  "TUI",
+                  "KeybindingsManager",
+                  "Component",
+                  "Editor",
+                  "ScrollView",
+                  "Container",
+                  "SelectList",
+                  "Input"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-ai",
+                "name": [
+                  "Message",
+                  "Model",
+                  "AssistantMessage",
+                  "Usage",
+                  "TextContent",
+                  "ThinkingContent",
+                  "ImageContent",
+                  "ToolCall",
+                  "SystemMessage",
+                  "UserMessage"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "node",
+                "name": [
+                  "Socket",
+                  "Buffer",
+                  "ChildProcess",
+                  "ChildProcessByStdio",
+                  "SpawnOptions",
+                  "FSWatcher",
+                  "Stats",
+                  "StringDecoder",
+                  "Readable",
+                  "Request",
+                  "RequestInit",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "AbortController",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController",
+                  "Hash",
+                  "DatabaseSync",
+                  "StatementSync",
+                  "BigIntStats",
+                  "TestContext",
+                  "Timeout",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortSignal"
+                ]
+              },
+              {
+                "from": "file",
+                "path": "./src/shared/types/details.ts",
+                "name": ["SubagentExecutionResult"]
+              },
+              {
+                "from": "file",
+                "path": "./test/support/ui.ts",
+                "name": ["NativeCustomMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-display.ts",
+                "name": ["RecordedToolResult"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-record.ts",
+                "name": ["HistoryNativeMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-attempt.ts",
+                "name": ["RunnerAttempt"]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/runs/background/runner-parallel.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": []
+          }
+        ],
+        "typescript/prefer-readonly-parameter-types": [
+          "error",
+          {
+            "checkParameterProperties": true,
+            "ignoreInferredTypes": true,
+            "treatMethodsAsReadonly": false,
+            "allow": [
+              {
+                "from": "lib",
+                "name": [
+                  "Promise",
+                  "PromiseLike",
+                  "Generator",
+                  "Request",
+                  "RequestInit",
+                  "RequestInfo",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "HeadersInit",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortController",
+                  "AbortSignal",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-coding-agent",
+                "name": [
+                  "ExtensionAPI",
+                  "ExtensionContext",
+                  "Theme",
+                  "SessionManager",
+                  "AgentSession",
+                  "ExtensionUIContext",
+                  "ReadonlySessionManager",
+                  "DefaultPackageManager",
+                  "SettingsManager",
+                  "SessionEntry",
+                  "ModelRegistry",
+                  "KeybindingsManager",
+                  "ExtensionToolContext",
+                  "BeforeAgentStartEvent",
+                  "AgentBeforeSettleEvent",
+                  "SessionMessageEntry",
+                  "UsageEntry",
+                  "EventBusController",
+                  "ScopedModel"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-agent-core",
+                "name": ["AgentMessage"]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-tui",
+                "name": [
+                  "TUI",
+                  "KeybindingsManager",
+                  "Component",
+                  "Editor",
+                  "ScrollView",
+                  "Container",
+                  "SelectList",
+                  "Input"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-ai",
+                "name": [
+                  "Message",
+                  "Model",
+                  "AssistantMessage",
+                  "Usage",
+                  "TextContent",
+                  "ThinkingContent",
+                  "ImageContent",
+                  "ToolCall",
+                  "SystemMessage",
+                  "UserMessage"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "node",
+                "name": [
+                  "Socket",
+                  "Buffer",
+                  "ChildProcess",
+                  "ChildProcessByStdio",
+                  "SpawnOptions",
+                  "FSWatcher",
+                  "Stats",
+                  "StringDecoder",
+                  "Readable",
+                  "Request",
+                  "RequestInit",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "AbortController",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController",
+                  "Hash",
+                  "DatabaseSync",
+                  "StatementSync",
+                  "BigIntStats",
+                  "TestContext",
+                  "Timeout",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortSignal"
+                ]
+              },
+              {
+                "from": "file",
+                "path": "./src/shared/types/details.ts",
+                "name": ["SubagentExecutionResult"]
+              },
+              {
+                "from": "file",
+                "path": "./test/support/ui.ts",
+                "name": ["NativeCustomMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-display.ts",
+                "name": ["RecordedToolResult"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-record.ts",
+                "name": ["HistoryNativeMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-monitor.ts",
+                "name": ["RunnerMonitor"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-lifecycle.ts",
+                "name": ["RunnerLifecycle"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-child-executor.ts",
+                "name": ["RunnerChildExecutor"]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/runs/background/runner-workflow.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": []
+          }
+        ],
+        "typescript/prefer-readonly-parameter-types": [
+          "error",
+          {
+            "checkParameterProperties": true,
+            "ignoreInferredTypes": true,
+            "treatMethodsAsReadonly": false,
+            "allow": [
+              {
+                "from": "lib",
+                "name": [
+                  "Promise",
+                  "PromiseLike",
+                  "Generator",
+                  "Request",
+                  "RequestInit",
+                  "RequestInfo",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "HeadersInit",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortController",
+                  "AbortSignal",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-coding-agent",
+                "name": [
+                  "ExtensionAPI",
+                  "ExtensionContext",
+                  "Theme",
+                  "SessionManager",
+                  "AgentSession",
+                  "ExtensionUIContext",
+                  "ReadonlySessionManager",
+                  "DefaultPackageManager",
+                  "SettingsManager",
+                  "SessionEntry",
+                  "ModelRegistry",
+                  "KeybindingsManager",
+                  "ExtensionToolContext",
+                  "BeforeAgentStartEvent",
+                  "AgentBeforeSettleEvent",
+                  "SessionMessageEntry",
+                  "UsageEntry",
+                  "EventBusController",
+                  "ScopedModel"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-agent-core",
+                "name": ["AgentMessage"]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-tui",
+                "name": [
+                  "TUI",
+                  "KeybindingsManager",
+                  "Component",
+                  "Editor",
+                  "ScrollView",
+                  "Container",
+                  "SelectList",
+                  "Input"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-ai",
+                "name": [
+                  "Message",
+                  "Model",
+                  "AssistantMessage",
+                  "Usage",
+                  "TextContent",
+                  "ThinkingContent",
+                  "ImageContent",
+                  "ToolCall",
+                  "SystemMessage",
+                  "UserMessage"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "node",
+                "name": [
+                  "Socket",
+                  "Buffer",
+                  "ChildProcess",
+                  "ChildProcessByStdio",
+                  "SpawnOptions",
+                  "FSWatcher",
+                  "Stats",
+                  "StringDecoder",
+                  "Readable",
+                  "Request",
+                  "RequestInit",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "AbortController",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController",
+                  "Hash",
+                  "DatabaseSync",
+                  "StatementSync",
+                  "BigIntStats",
+                  "TestContext",
+                  "Timeout",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortSignal"
+                ]
+              },
+              {
+                "from": "file",
+                "path": "./src/shared/types/details.ts",
+                "name": ["SubagentExecutionResult"]
+              },
+              {
+                "from": "file",
+                "path": "./test/support/ui.ts",
+                "name": ["NativeCustomMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-display.ts",
+                "name": ["RecordedToolResult"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-record.ts",
+                "name": ["HistoryNativeMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-monitor.ts",
+                "name": ["RunnerMonitor"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-lifecycle.ts",
+                "name": ["RunnerLifecycle"]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/runs/background/runner-completion.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": []
+          }
+        ],
+        "typescript/prefer-readonly-parameter-types": [
+          "error",
+          {
+            "checkParameterProperties": true,
+            "ignoreInferredTypes": true,
+            "treatMethodsAsReadonly": false,
+            "allow": [
+              {
+                "from": "lib",
+                "name": [
+                  "Promise",
+                  "PromiseLike",
+                  "Generator",
+                  "Request",
+                  "RequestInit",
+                  "RequestInfo",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "HeadersInit",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortController",
+                  "AbortSignal",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-coding-agent",
+                "name": [
+                  "ExtensionAPI",
+                  "ExtensionContext",
+                  "Theme",
+                  "SessionManager",
+                  "AgentSession",
+                  "ExtensionUIContext",
+                  "ReadonlySessionManager",
+                  "DefaultPackageManager",
+                  "SettingsManager",
+                  "SessionEntry",
+                  "ModelRegistry",
+                  "KeybindingsManager",
+                  "ExtensionToolContext",
+                  "BeforeAgentStartEvent",
+                  "AgentBeforeSettleEvent",
+                  "SessionMessageEntry",
+                  "UsageEntry",
+                  "EventBusController",
+                  "ScopedModel"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-agent-core",
+                "name": ["AgentMessage"]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-tui",
+                "name": [
+                  "TUI",
+                  "KeybindingsManager",
+                  "Component",
+                  "Editor",
+                  "ScrollView",
+                  "Container",
+                  "SelectList",
+                  "Input"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-ai",
+                "name": [
+                  "Message",
+                  "Model",
+                  "AssistantMessage",
+                  "Usage",
+                  "TextContent",
+                  "ThinkingContent",
+                  "ImageContent",
+                  "ToolCall",
+                  "SystemMessage",
+                  "UserMessage"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "node",
+                "name": [
+                  "Socket",
+                  "Buffer",
+                  "ChildProcess",
+                  "ChildProcessByStdio",
+                  "SpawnOptions",
+                  "FSWatcher",
+                  "Stats",
+                  "StringDecoder",
+                  "Readable",
+                  "Request",
+                  "RequestInit",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "AbortController",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController",
+                  "Hash",
+                  "DatabaseSync",
+                  "StatementSync",
+                  "BigIntStats",
+                  "TestContext",
+                  "Timeout",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortSignal"
+                ]
+              },
+              {
+                "from": "file",
+                "path": "./src/shared/types/details.ts",
+                "name": ["SubagentExecutionResult"]
+              },
+              {
+                "from": "file",
+                "path": "./test/support/ui.ts",
+                "name": ["NativeCustomMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-display.ts",
+                "name": ["RecordedToolResult"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-record.ts",
+                "name": ["HistoryNativeMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-monitor.ts",
+                "name": ["RunnerMonitor"]
+              },
+              {
+                "from": "file",
+                "path": "./src/runs/background/runner-lifecycle.ts",
+                "name": ["RunnerLifecycle"]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/runs/background/runner-step-output.ts"],
+      "rules": {
+        "no-param-reassign": [
+          "error",
+          {
+            "props": true,
+            "ignorePropertyModificationsFor": []
+          }
+        ],
+        "typescript/prefer-readonly-parameter-types": [
+          "error",
+          {
+            "checkParameterProperties": true,
+            "ignoreInferredTypes": true,
+            "treatMethodsAsReadonly": false,
+            "allow": [
+              {
+                "from": "lib",
+                "name": [
+                  "Promise",
+                  "PromiseLike",
+                  "Generator",
+                  "Request",
+                  "RequestInit",
+                  "RequestInfo",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "HeadersInit",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortController",
+                  "AbortSignal",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-coding-agent",
+                "name": [
+                  "ExtensionAPI",
+                  "ExtensionContext",
+                  "Theme",
+                  "SessionManager",
+                  "AgentSession",
+                  "ExtensionUIContext",
+                  "ReadonlySessionManager",
+                  "DefaultPackageManager",
+                  "SettingsManager",
+                  "SessionEntry",
+                  "ModelRegistry",
+                  "KeybindingsManager",
+                  "ExtensionToolContext",
+                  "BeforeAgentStartEvent",
+                  "AgentBeforeSettleEvent",
+                  "SessionMessageEntry",
+                  "UsageEntry",
+                  "EventBusController",
+                  "ScopedModel"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-agent-core",
+                "name": ["AgentMessage"]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-tui",
+                "name": [
+                  "TUI",
+                  "KeybindingsManager",
+                  "Component",
+                  "Editor",
+                  "ScrollView",
+                  "Container",
+                  "SelectList",
+                  "Input"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "@earendil-works/pi-ai",
+                "name": [
+                  "Message",
+                  "Model",
+                  "AssistantMessage",
+                  "Usage",
+                  "TextContent",
+                  "ThinkingContent",
+                  "ImageContent",
+                  "ToolCall",
+                  "SystemMessage",
+                  "UserMessage"
+                ]
+              },
+              {
+                "from": "package",
+                "package": "node",
+                "name": [
+                  "Socket",
+                  "Buffer",
+                  "ChildProcess",
+                  "ChildProcessByStdio",
+                  "SpawnOptions",
+                  "FSWatcher",
+                  "Stats",
+                  "StringDecoder",
+                  "Readable",
+                  "Request",
+                  "RequestInit",
+                  "Response",
+                  "ResponseInit",
+                  "Headers",
+                  "AbortController",
+                  "Blob",
+                  "File",
+                  "FormData",
+                  "ReadableStream",
+                  "ReadableStreamDefaultReader",
+                  "ReadableStreamBYOBReader",
+                  "ReadableStreamDefaultController",
+                  "ReadableByteStreamController",
+                  "ReadableStreamBYOBRequest",
+                  "WritableStream",
+                  "WritableStreamDefaultWriter",
+                  "WritableStreamDefaultController",
+                  "TransformStream",
+                  "TransformStreamDefaultController",
+                  "Hash",
+                  "DatabaseSync",
+                  "StatementSync",
+                  "BigIntStats",
+                  "TestContext",
+                  "Timeout",
+                  "URL",
+                  "URLSearchParams",
+                  "AbortSignal"
+                ]
+              },
+              {
+                "from": "file",
+                "path": "./src/shared/types/details.ts",
+                "name": ["SubagentExecutionResult"]
+              },
+              {
+                "from": "file",
+                "path": "./test/support/ui.ts",
+                "name": ["NativeCustomMessage"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-display.ts",
+                "name": ["RecordedToolResult"]
+              },
+              {
+                "from": "file",
+                "path": "./src/tui/history-record.ts",
+                "name": ["HistoryNativeMessage"]
+              }
+            ]
+          }
+        ],
+        "unicorn/no-useless-undefined": [
+          "error",
+          {
+            "checkArguments": false
+          }
+        ]
+      }
+    },
+    {
       "files": ["src/runs/shared/worktree-preservation.ts"],
       "rules": {
         "no-param-reassign": [

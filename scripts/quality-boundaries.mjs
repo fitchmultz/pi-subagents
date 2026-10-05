@@ -96,6 +96,46 @@ export const mutationBoundaries = [
     ],
     contract: "The status owner advances its step status across the runner lifecycle.",
   },
+  ...[
+    ["runner-status", ["RunnerStatusStep", "RunnerStatusPayload"], ["step", "statusPayload"]],
+    ["runner-child-observer", ["RunnerStatusPayload"], []],
+    ["runner-monitor", ["RunnerStatusPayload"], []],
+    ["runner-dynamic", ["RunnerStatusPayload"], ["statusPayload"]],
+    ["runner-lifecycle", ["RunnerStatusPayload", "RunnerMonitor"], []],
+    ["runner-child-executor", ["RunnerMonitor", "RunnerLifecycle"], []],
+    ["runner-finalization", ["RunnerAttempt"], []],
+    ["runner-parallel", ["RunnerMonitor", "RunnerLifecycle", "RunnerChildExecutor"], []],
+    ["runner-workflow", ["RunnerMonitor", "RunnerLifecycle"], []],
+    ["runner-completion", ["RunnerMonitor", "RunnerLifecycle"], []],
+  ].map(([owner, names, parameters]) => ({
+    file: `src/runs/background/${owner}.ts`,
+    parameters,
+    types: names.map((name) => {
+      const origins = {
+        RunnerStatusStep: "runner-status",
+        RunnerStatusPayload: "runner-status",
+        RunnerMonitor: "runner-monitor",
+        RunnerLifecycle: "runner-lifecycle",
+        RunnerChildExecutor: "runner-child-executor",
+        RunnerAttempt: "runner-attempt",
+      };
+      return { from: "file", path: `./src/runs/background/${origins[name]}.ts`, name: [name] };
+    }),
+    contract:
+      "This detached execution phase commands the actual runner lifecycle or live status owner; workflow inputs, results and observation data remain readonly.",
+    argumentPresence:
+      owner === "runner-child-executor"
+        ? "register(index, undefined) clears the active child interrupt callback."
+        : undefined,
+  })),
+  {
+    file: "src/runs/background/runner-step-output.ts",
+    parameters: [],
+    types: [],
+    contract: "The step output boundary retains the cleanup API's required positional baseline.",
+    argumentPresence:
+      "cleanupSingleOutputFile requires its third baseline argument, including undefined.",
+  },
   {
     file: "src/runs/shared/worktree-preservation.ts",
     parameters: ["setup"],
@@ -220,6 +260,9 @@ export function boundaryOverrides(config) {
         "error",
         { ...readonly, allow: [...readonly.allow, ...boundary.types] },
       ],
+      ...(boundary.argumentPresence === undefined
+        ? {}
+        : { "unicorn/no-useless-undefined": ["error", { checkArguments: false }] }),
     },
   }));
 }

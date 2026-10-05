@@ -62,6 +62,14 @@ export function scopedOverrides(config, directory = root) {
     const rules = { ...override.rules };
     delete rules["no-param-reassign"];
     delete rules["typescript/prefer-readonly-parameter-types"];
+    if (
+      mutationBoundaries.some(
+        (boundary) =>
+          boundary.file === override.files[0] && boundary.argumentPresence !== undefined,
+      )
+    ) {
+      delete rules["unicorn/no-useless-undefined"];
+    }
     return Object.keys(rules).length === 0 ? [] : [{ ...override, rules }];
   });
   return [
