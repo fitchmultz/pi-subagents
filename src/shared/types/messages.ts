@@ -64,4 +64,34 @@ export type ObservedMessage =
   | (ObservedMessageMetadata & {
       readonly role: "user" | "system";
       readonly content: string | readonly ObservedContent[];
+    })
+  | (ObservedMessageMetadata & {
+      readonly role: "custom";
+      readonly customType: string;
+      readonly content: string | readonly ObservedContent[];
+      readonly display?: boolean;
+      readonly details?: unknown;
+    })
+  | (ObservedMessageMetadata & {
+      readonly role: "bashExecution";
+      readonly command: string;
+      readonly output: string;
+      readonly exitCode?: number;
+      readonly cancelled?: boolean;
+      readonly truncated?: boolean;
+      readonly fullOutputPath?: string;
+      readonly excludeFromContext?: boolean;
+      readonly content?: never;
+    })
+  | (ObservedMessageMetadata & {
+      readonly role: "branchSummary";
+      readonly summary: string;
+      readonly fromId: string | null;
+      readonly content?: never;
+    })
+  | (ObservedMessageMetadata & {
+      readonly role: "compactionSummary";
+      readonly summary: string;
+      readonly tokensBefore: number;
+      readonly content?: never;
     });
