@@ -18,11 +18,15 @@
     "noUnusedLocals": true
   },
   "include": [
-    "src/**/*.ts",
-    "test/**/*.ts",
-    "test/**/*.mjs",
-    "test/**/*.cjs",
-    "scripts/**/*.mjs",
-    ".github/scripts/**/*.mjs"
-  ]
+    "**/*.ts",
+    "**/*.tsx",
+    "**/*.mts",
+    "**/*.cts",
+    "**/*.js",
+    "**/*.jsx",
+    "**/*.mjs",
+    "**/*.cjs",
+    ".github/**/*.mjs"
+  ],
+  "exclude": ["node_modules", "dist", "dist.staging*"]
 }

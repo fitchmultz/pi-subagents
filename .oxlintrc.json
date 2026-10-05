@@ -1,6 +1,10 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["eslint", "typescript", "unicorn", "oxc", "import", "promise", "node"],
+  "ignorePatterns": ["dist/**", "dist.staging*/**"],
+  "env": {
+    "node": true
+  },
   "categories": {
     "correctness": "error",
     "suspicious": "error",
@@ -134,7 +138,13 @@
         "checkThenables": true,
         "ignoreIIFE": false,
         "ignoreVoid": false,
-        "allowForKnownSafeCalls": [],
+        "allowForKnownSafeCalls": [
+          {
+            "from": "file",
+            "path": "./node_modules/@types/node/test.d.ts",
+            "name": ["test", "suite"]
+          }
+        ],
         "allowForKnownSafePromises": []
       }
     ],
@@ -227,6 +237,71 @@
               "WritableStreamDefaultController",
               "TransformStream",
               "TransformStreamDefaultController"
+            ]
+          },
+          {
+            "from": "package",
+            "package": "@earendil-works/pi-coding-agent",
+            "name": [
+              "ExtensionAPI",
+              "ExtensionContext",
+              "Theme",
+              "SessionManager",
+              "AgentSession",
+              "DefaultPackageManager",
+              "SettingsManager",
+              "SessionEntry",
+              "ModelRegistry"
+            ]
+          },
+          {
+            "from": "package",
+            "package": "@earendil-works/pi-tui",
+            "name": [
+              "TUI",
+              "KeybindingsManager",
+              "Component",
+              "Editor",
+              "ScrollView",
+              "Container",
+              "SelectList",
+              "Input"
+            ]
+          },
+          {
+            "from": "package",
+            "package": "@earendil-works/pi-ai",
+            "name": [
+              "Message",
+              "AssistantMessage",
+              "Usage",
+              "TextContent",
+              "ThinkingContent",
+              "ImageContent",
+              "ToolCall",
+              "SystemMessage",
+              "UserMessage"
+            ]
+          },
+          {
+            "from": "package",
+            "package": "node",
+            "name": [
+              "Socket",
+              "Buffer",
+              "ChildProcess",
+              "FSWatcher",
+              "Stats",
+              "StringDecoder",
+              "Hash",
+              "DatabaseSync",
+              "StatementSync",
+              "BigIntStats",
+              "TestContext",
+              "Timeout",
+              "URL",
+              "URLSearchParams",
+              "AbortSignal"
             ]
           }
         ]
@@ -339,9 +414,17 @@
         "**/*.test.{js,jsx,ts,tsx,mjs,cjs,mts,cts}",
         "**/*.spec.{js,jsx,ts,tsx,mjs,cjs,mts,cts}",
         "**/__tests__/**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}",
-        "**/*.test-d.ts"
+        "**/*.test-d.ts",
+        "test/support/**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}",
+        "test/fixtures/**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"
       ],
       "rules": {
+        "import/no-unassigned-import": [
+          "error",
+          {
+            "allow": ["../support/isolated-home.ts", "./isolated-home.ts"]
+          }
+        ],
         "typescript/no-unnecessary-condition": [
           "error",
           {
@@ -400,7 +483,49 @@
       }
     },
     {
-      "files": ["**/*.{js,jsx,mjs,cjs}"],
+      "files": [
+        ".github/scripts/ci-host.mjs",
+        "scripts/build.mjs",
+        "scripts/check-compat.mjs",
+        "scripts/compat-host.mjs",
+        "scripts/local-install-smoke.mjs",
+        "scripts/native-package-smoke.mjs",
+        "scripts/package-smoke.mjs",
+        "scripts/prepare.mjs",
+        "scripts/quality-lint.mjs",
+        "scripts/quality-policy.mjs",
+        "scripts/quality-scope.mjs",
+        "scripts/real-pi-smoke.mjs",
+        "scripts/run-tests.mjs",
+        "scripts/setup-quality-engine.mjs",
+        "test/fixtures/build-fs-fault-preload.mjs",
+        "test/fixtures/build-tsc-stub.cjs",
+        "test/fixtures/history-watch-hint.mjs",
+        "test/fixtures/hold-runner-polls.mjs",
+        "test/fixtures/hold-runner-startup.mjs",
+        "test/fixtures/native-acceptance-cli-extension.mjs",
+        "test/fixtures/native-acceptance-report.mjs",
+        "test/fixtures/native-async-child.mjs",
+        "test/fixtures/native-async-parent.mjs",
+        "test/fixtures/native-child-attempt.mjs",
+        "test/fixtures/native-cwd-delegation.mjs",
+        "test/fixtures/native-feedback-child.mjs",
+        "test/fixtures/native-legacy-completion.mjs",
+        "test/fixtures/native-ownership-cli.mjs",
+        "test/fixtures/native-prompt-sections.mjs",
+        "test/fixtures/native-result-routing.mjs",
+        "test/fixtures/native-run-ownership.mjs",
+        "test/fixtures/native-tool-results.mjs",
+        "test/fixtures/owned-run-wait-liveness.mjs",
+        "test/fixtures/pi-intercom-native-resume.mjs",
+        "test/fixtures/real-pi-smoke-cli.mjs",
+        "test/fixtures/runner-clock.mjs",
+        "test/quality/allowances.test.mjs",
+        "test/quality/probe-support.mjs",
+        "test/quality/rules.test.mjs",
+        "test/quality/scope-policy.test.mjs",
+        "test/support/mock-pi-script.mjs"
+      ],
       "rules": {
         "typescript/await-thenable": "off",
         "typescript/consistent-return": "off",
@@ -461,7 +586,9 @@
         "typescript/strict-void-return": "off",
         "typescript/switch-exhaustiveness-check": "off",
         "typescript/unbound-method": "off",
-        "typescript/use-unknown-in-catch-callback-variable": "off"
+        "typescript/use-unknown-in-catch-callback-variable": "off",
+        "typescript/explicit-module-boundary-types": "off",
+        "typescript/consistent-type-imports": "off"
       }
     }
   ]
