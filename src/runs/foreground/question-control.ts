@@ -19,11 +19,9 @@ import {
   releaseQuestionRevival,
   saveQuestionAnswer,
 } from "../shared/supervisor-questions.ts";
-import {
-  liveLaunchOverrideNotice,
-  nestedResolutionScopeForExecutor,
-  reviveSavedSubagent,
-} from "./foreground-control.ts";
+import { liveLaunchOverrideNotice } from "./foreground-control.ts";
+import { nestedResolutionScopeForExecutor } from "./execution-routing.ts";
+import { reviveSavedSubagent } from "./saved-revival.ts";
 import type { ExecutorDeps, SubagentParamsLike } from "./subagent-params.ts";
 
 function questionResult(

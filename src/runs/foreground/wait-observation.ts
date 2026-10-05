@@ -17,7 +17,7 @@ import type {
 } from "../../shared/types.ts";
 import { resolveSubagentRunId } from "../background/run-id-resolver.ts";
 import { resolveNestedAsyncDir } from "../shared/nested-events.ts";
-import { nestedResolutionScopeForExecutor } from "./foreground-control.ts";
+import { nestedResolutionScopeForExecutor } from "./execution-routing.ts";
 import type { ExecutorReadDeps } from "./subagent-params.ts";
 
 /** Small projections deliberately consume unknown JSON, not asserted persisted contracts. */
