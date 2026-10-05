@@ -1,8 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
   AssistantMessage,
-  JsonObject,
-  JsonValue,
   ToolCall,
   ToolResultMessage,
   TextContent,
@@ -10,6 +8,13 @@ import type {
 } from "@earendil-works/pi-ai";
 import { Type, Check } from "../shared/native-typebox.ts";
 import { isRecord } from "./history-text.ts";
+import { isJson, isJsonObject } from "./history-json.ts";
+import {
+  assistantMetadata,
+  nativeUsage,
+  nativeNestedCalls,
+  usageSchema,
+} from "./history-metadata.ts";
 
 /** A native message handle, not an indexed partial observation. */
 export type HistoryNativeMessage = AgentMessage;
@@ -54,30 +59,13 @@ const image = Type.Object({
   data: Type.String(),
   mimeType: Type.String(),
 });
-const cost = Type.Object({
-  input: Type.Number(),
-  output: Type.Number(),
-  cacheRead: Type.Number(),
-  cacheWrite: Type.Number(),
-  total: Type.Number(),
-});
-const usage = Type.Object({
-  input: Type.Number(),
-  output: Type.Number(),
-  cacheRead: Type.Number(),
-  cacheWrite: Type.Number(),
-  totalTokens: Type.Number(),
-  cost,
-  cacheWrite1h: Type.Optional(Type.Number()),
-  reasoning: Type.Optional(Type.Number()),
-});
 const assistantFields = Type.Object({
   role: Type.Literal("assistant"),
   api: Type.String(),
   provider: Type.String(),
   model: Type.String(),
   timestamp: Type.Number(),
-  usage,
+  usage: usageSchema,
   stopReason: Type.Union(
     ["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"].map((value) =>
       Type.Literal(value),
@@ -86,21 +74,6 @@ const assistantFields = Type.Object({
   errorMessage: Type.Optional(Type.String()),
 });
 
-function isJson(value: unknown): value is JsonValue {
-  if (value === null || typeof value === "string" || typeof value === "boolean") {
-    return true;
-  }
-  if (typeof value === "number") {
-    return Number.isFinite(value);
-  }
-  if (Array.isArray(value)) {
-    return value.every((part: unknown) => isJson(part));
-  }
-  return isJsonObject(value);
-}
-function isJsonObject(value: unknown): value is JsonObject {
-  return isRecord(value) && Object.values(value).every(isJson);
-}
 export function toolCall(value: unknown): ToolCall | undefined {
   if (
     !isRecord(value) ||
@@ -122,8 +95,9 @@ export function toolCall(value: unknown): ToolCall | undefined {
   };
 }
 function assistant(value: Readonly<Record<string, unknown>>): AssistantMessage | undefined {
-  const rawContent = value.content;
-  if (!Check(assistantFields, value) || !Array.isArray(rawContent)) {
+  const rawContent = value.content,
+    metadata = assistantMetadata(value);
+  if (!metadata || !Check(assistantFields, value) || !Array.isArray(rawContent)) {
     return;
   }
   const content: AssistantMessage["content"] = [];
@@ -145,6 +119,7 @@ function assistant(value: Readonly<Record<string, unknown>>): AssistantMessage |
     return;
   }
   return {
+    ...metadata,
     role: "assistant",
     api: value.api,
     provider: value.provider,
@@ -166,6 +141,16 @@ function isStopReason(value: string): value is AssistantMessage["stopReason"] {
     value === "aborted" ||
     value === "deferred"
   );
+}
+function toolMetadata(
+  value: Readonly<Record<string, unknown>>,
+): Pick<ToolResultMessage, "usage" | "nestedCalls"> | undefined {
+  const usage = nativeUsage(value.usage),
+    nestedCalls = nativeNestedCalls(value.nestedCalls);
+  if ((value.usage !== undefined && !usage) || (value.nestedCalls !== undefined && !nestedCalls)) {
+    return;
+  }
+  return { usage, nestedCalls };
 }
 const toolResultFields = Type.Object({
   toolCallId: Type.String(),
@@ -198,6 +183,10 @@ function toolResultContent(value: unknown): ToolResultMessage["content"] | undef
 function toolResult(value: Readonly<Record<string, unknown>>): ToolResultMessage | undefined {
   const content = toolResultContent(value.content),
     details = value.details;
+  const metadata = toolMetadata(value);
+  if (!metadata) {
+    return;
+  }
   if (!Check(toolResultFields, value)) {
     return;
   }
@@ -205,6 +194,7 @@ function toolResult(value: Readonly<Record<string, unknown>>): ToolResultMessage
     return;
   }
   return {
+    ...metadata,
     role: "toolResult",
     toolCallId: value.toolCallId,
     toolName: value.toolName,
