@@ -12,13 +12,13 @@ if (mode === "--help" || mode === "-h") {
   if (mode !== undefined && mode !== "--check") {
     throw new Error(`Unknown argument: ${mode}`);
   }
-  const inputs = ["src/shared/types/async.ts", "src/shared/types/owned-runs.ts"].map((file) => path.join(root, file));
+  const inputs = ["src/shared/types/async.ts", "src/shared/types/owned-runs.ts", "src/shared/types/questions.ts"].map((file) => path.join(root, file));
   const program = TJS.getProgramFromFiles(inputs, { strictNullChecks: true, skipLibCheck: true }, root);
   const generator = TJS.buildGenerator(program, { required: true, aliasRef: true, defaultNumberType: "number" });
   if (generator === null) {
     throw new Error("Canonical run types could not be compiled for schema generation.");
   }
-  const names = ["AsyncStatus", "AsyncResultFile", "ForegroundResumeRun", "OwnedRun"];
+  const names = ["AsyncStatus", "AsyncResultFile", "ForegroundResumeRun", "OwnedRun", "AsyncStartedEvent", "ControlEvent", "SupervisorRunContract", "SupervisorQuestion", "QuestionAnswer", "QuestionDelivery", "SupervisorQuestionView"];
   for (const name of names) {
     const schema = generator.getSchemaForSymbol(name);
     const target = path.join(root, "src/runs/background/schemas", `${name}.json`);

@@ -1,0 +1,106 @@
+{
+  "type": "object",
+  "properties": {
+    "type": {
+      "$ref": "#/definitions/ControlEventType"
+    },
+    "from": {
+      "$ref": "#/definitions/ActivityState"
+    },
+    "to": {
+      "$ref": "#/definitions/ActivityState_1"
+    },
+    "ts": {
+      "type": "number"
+    },
+    "agent": {
+      "type": "string"
+    },
+    "index": {
+      "type": "number"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "reason": {
+      "enum": [
+        "completion_guard",
+        "idle",
+        "tool_failures"
+      ],
+      "type": "string"
+    },
+    "turns": {
+      "type": "number"
+    },
+    "tokens": {
+      "type": "number"
+    },
+    "toolCount": {
+      "type": "number"
+    },
+    "currentTool": {
+      "type": "string"
+    },
+    "currentToolDurationMs": {
+      "type": "number"
+    },
+    "currentPath": {
+      "type": "string"
+    },
+    "elapsedMs": {
+      "type": "number"
+    },
+    "recentFailureSummary": {
+      "type": "string"
+    },
+    "supervisorQuestion": {
+      "type": "object",
+      "properties": {
+        "questionId": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "answer_pending",
+            "awaiting_input"
+          ],
+          "type": "string"
+        },
+        "answer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "questionId",
+        "state"
+      ]
+    }
+  },
+  "required": [
+    "agent",
+    "message",
+    "runId",
+    "to",
+    "ts",
+    "type"
+  ],
+  "definitions": {
+    "ControlEventType": {
+      "type": "string",
+      "const": "needs_attention"
+    },
+    "ActivityState": {
+      "const": "needs_attention",
+      "type": "string"
+    },
+    "ActivityState_1": {
+      "type": "string",
+      "const": "needs_attention"
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

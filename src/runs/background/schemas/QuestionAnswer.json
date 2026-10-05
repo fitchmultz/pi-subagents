@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    },
+    "answeredAt": {
+      "type": "number"
+    },
+    "origin": {
+      "const": "human",
+      "type": "string"
+    }
+  },
+  "required": [
+    "answeredAt",
+    "message"
+  ],
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

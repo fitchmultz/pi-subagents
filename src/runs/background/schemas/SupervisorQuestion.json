@@ -1,0 +1,2541 @@
+{
+  "type": "object",
+  "properties": {
+    "questionId": {
+      "type": "string"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "ownerSessionId": {
+      "type": "string"
+    },
+    "ownerTarget": {
+      "type": "string"
+    },
+    "agent": {
+      "type": "string"
+    },
+    "index": {
+      "type": "number"
+    },
+    "childSessionId": {
+      "type": "string"
+    },
+    "childTarget": {
+      "type": "string"
+    },
+    "sessionFile": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "pid": {
+      "type": "number"
+    },
+    "createdAt": {
+      "type": "number"
+    },
+    "reason": {
+      "enum": [
+        "interview_request",
+        "need_decision"
+      ],
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "interview": {},
+    "legacySource": {
+      "type": "string"
+    },
+    "recordVersion": {
+      "const": 3,
+      "type": "number"
+    },
+    "nativeSessionId": {
+      "type": "string"
+    },
+    "terminalLeafId": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "terminalEntryId": {
+      "type": "string"
+    },
+    "attemptBaseline": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "baselineSource": {
+      "const": "native-migration",
+      "type": "string"
+    },
+    "effectiveConfiguration": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "modelRecordedAt": {
+          "type": "number"
+        }
+      }
+    },
+    "accounting": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "complete",
+            "incomplete"
+          ],
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "auditPath": {
+      "type": "string"
+    },
+    "task": {
+      "type": "string"
+    },
+    "label": {
+      "type": "string"
+    },
+    "result": {
+      "$ref": "#/definitions/ReadonlySingleResult"
+    },
+    "effectiveAcceptance": {
+      "$ref": "#/definitions/ResolvedAcceptanceConfig_1"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "const": false,
+          "type": "boolean"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "outputMode": {
+      "$ref": "#/definitions/OutputMode"
+    },
+    "outputSchema": {
+      "$ref": "#/definitions/JsonSchemaObject"
+    },
+    "launch": {
+      "$ref": "#/definitions/SavedLaunchConfig"
+    },
+    "modelSelection": {
+      "$ref": "#/definitions/Pick",
+      "description": "Retained independently of progress after detachment."
+    },
+    "processIdentity": {
+      "type": "string"
+    },
+    "updatedAt": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "agent",
+    "childSessionId",
+    "childTarget",
+    "createdAt",
+    "cwd",
+    "index",
+    "message",
+    "ownerSessionId",
+    "ownerTarget",
+    "pid",
+    "questionId",
+    "reason",
+    "runId",
+    "sessionFile"
+  ],
+  "definitions": {
+    "ReadonlySingleResult": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "accounting": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_1",
+          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+        },
+        "nativeSessionId": {
+          "type": "string"
+        },
+        "terminalLeafId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "terminalEntryId": {
+          "type": "string"
+        },
+        "auditPath": {
+          "type": "string"
+        },
+        "fullOutputPath": {
+          "type": "string"
+        },
+        "initialOutputPath": {
+          "type": "string"
+        },
+        "auditSaveError": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "agentProcessExit": {
+          "$ref": "#/definitions/AgentProcessExit"
+        },
+        "task": {
+          "type": "string"
+        },
+        "exitCode": {
+          "type": "number"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "detachedReason": {
+          "type": "string"
+        },
+        "interrupted": {
+          "type": "boolean"
+        },
+        "timedOut": {
+          "type": "boolean"
+        },
+        "resourceLimitExceeded": {
+          "$ref": "#/definitions/ResourceLimitExceeded"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_4",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_11",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_12",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              }
+            ]
+          }
+        },
+        "usage": {
+          "$ref": "#/definitions/Usage"
+        },
+        "model": {
+          "type": "string"
+        },
+        "attemptedModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "modelAttempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CModelAttempt%3E"
+          }
+        },
+        "controlEvents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CControlEvent%3E"
+          }
+        },
+        "error": {
+          "type": "string"
+        },
+        "sessionFile": {
+          "type": "string"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skillsWarning": {
+          "type": "string"
+        },
+        "progress": {
+          "$ref": "#/definitions/AgentProgress"
+        },
+        "progressSummary": {
+          "$ref": "#/definitions/ProgressSummary"
+        },
+        "toolCalls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CToolCallSummary%3E"
+          }
+        },
+        "artifactPaths": {
+          "$ref": "#/definitions/ArtifactPaths"
+        },
+        "truncation": {
+          "$ref": "#/definitions/TruncationResult"
+        },
+        "finalOutput": {
+          "type": "string"
+        },
+        "initialOutput": {
+          "type": "string"
+        },
+        "outputMode": {
+          "$ref": "#/definitions/OutputMode"
+        },
+        "savedOutputPath": {
+          "type": "string"
+        },
+        "outputReference": {
+          "$ref": "#/definitions/SavedOutputReference"
+        },
+        "outputSaveError": {
+          "type": "string"
+        },
+        "outputCleanup": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_21",
+          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+        },
+        "structuredOutput": {},
+        "structuredOutputPath": {
+          "type": "string"
+        },
+        "structuredOutputSchemaPath": {
+          "type": "string"
+        },
+        "acceptance": {
+          "$ref": "#/definitions/AcceptanceLedger"
+        }
+      },
+      "required": [
+        "agent",
+        "exitCode",
+        "task",
+        "usage"
+      ]
+    },
+    "__type_1": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "complete",
+            "incomplete"
+          ],
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "_ReadonlyObjectDeep_1": {
+      "$ref": "#/definitions/__type_1"
+    },
+    "AgentProcessExit": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_2",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type_2": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "number"
+        },
+        "code": {
+          "type": [
+            "null",
+            "number"
+          ]
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "enum": [
+                "SIGABRT",
+                "SIGALRM",
+                "SIGBREAK",
+                "SIGBUS",
+                "SIGCHLD",
+                "SIGCONT",
+                "SIGFPE",
+                "SIGHUP",
+                "SIGILL",
+                "SIGINFO",
+                "SIGINT",
+                "SIGIO",
+                "SIGIOT",
+                "SIGKILL",
+                "SIGLOST",
+                "SIGPIPE",
+                "SIGPOLL",
+                "SIGPROF",
+                "SIGPWR",
+                "SIGQUIT",
+                "SIGSEGV",
+                "SIGSTKFLT",
+                "SIGSTOP",
+                "SIGSYS",
+                "SIGTERM",
+                "SIGTRAP",
+                "SIGTSTP",
+                "SIGTTIN",
+                "SIGTTOU",
+                "SIGUNUSED",
+                "SIGURG",
+                "SIGUSR1",
+                "SIGUSR2",
+                "SIGVTALRM",
+                "SIGWINCH",
+                "SIGXCPU",
+                "SIGXFSZ"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "at": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "at",
+        "code",
+        "signal"
+      ]
+    },
+    "_ReadonlyObjectDeep_2": {
+      "$ref": "#/definitions/__type_2"
+    },
+    "ResourceLimitExceeded": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_3",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type_3": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "maxExecutionTimeMs",
+            "maxTokens"
+          ],
+          "type": "string"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "observed": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "limit",
+        "message"
+      ]
+    },
+    "_ReadonlyObjectDeep_3": {
+      "$ref": "#/definitions/__type_3"
+    },
+    "__type_4": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "role": {
+          "type": "string",
+          "const": "assistant"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_5",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_6",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_7",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_8",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              }
+            ]
+          }
+        },
+        "api": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "responseModel": {
+          "type": "string"
+        },
+        "responseId": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/definitions/ObservedUsage"
+        },
+        "stopReason": {
+          "type": "string"
+        },
+        "errorMessage": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "role"
+      ]
+    },
+    "__type_5": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "text"
+        },
+        "text": {
+          "type": "string"
+        },
+        "textSignature": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "type"
+      ]
+    },
+    "_ReadonlyObjectDeep_5": {
+      "$ref": "#/definitions/__type_5"
+    },
+    "__type_6": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "thinking"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "thinkingSignature": {
+          "type": "string"
+        },
+        "redacted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "thinking",
+        "type"
+      ]
+    },
+    "_ReadonlyObjectDeep_6": {
+      "$ref": "#/definitions/__type_6"
+    },
+    "__type_7": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "image"
+        },
+        "data": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "mimeType",
+        "type"
+      ]
+    },
+    "_ReadonlyObjectDeep_7": {
+      "$ref": "#/definitions/__type_7"
+    },
+    "__type_8": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "toolCall"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "arguments": {
+          "$ref": "#/definitions/Readonly"
+        },
+        "thoughtSignature": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "arguments",
+        "id",
+        "name",
+        "type"
+      ]
+    },
+    "__type_9": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object"
+    },
+    "Readonly": {
+      "$ref": "#/definitions/__type_9"
+    },
+    "_ReadonlyObjectDeep_8": {
+      "$ref": "#/definitions/__type_8"
+    },
+    "ObservedUsage": {
+      "description": "Observations from native journals and external runners are not necessarily complete SDK messages.",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_9"
+    },
+    "__type_10": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number"
+        },
+        "output": {
+          "type": "number"
+        },
+        "cacheRead": {
+          "type": "number"
+        },
+        "cacheWrite": {
+          "type": "number"
+        },
+        "cacheWrite1h": {
+          "type": "number"
+        },
+        "reasoning": {
+          "type": "number"
+        },
+        "totalTokens": {
+          "type": "number"
+        },
+        "cost": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_10",
+          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+        }
+      }
+    },
+    "__type_11": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number"
+        },
+        "output": {
+          "type": "number"
+        },
+        "cacheRead": {
+          "type": "number"
+        },
+        "cacheWrite": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      }
+    },
+    "_ReadonlyObjectDeep_10": {
+      "$ref": "#/definitions/__type_11"
+    },
+    "_ReadonlyObjectDeep_9": {
+      "$ref": "#/definitions/__type_10"
+    },
+    "_ReadonlyObjectDeep_4": {
+      "$ref": "#/definitions/__type_4"
+    },
+    "__type_12": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "role": {
+          "type": "string",
+          "const": "toolResult"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_5",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_6",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_7",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_8",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              }
+            ]
+          }
+        },
+        "toolCallId": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": "string"
+        },
+        "isError": {
+          "type": "boolean"
+        },
+        "observedExitCode": {
+          "type": "number"
+        },
+        "usage": {
+          "$ref": "#/definitions/ObservedUsage"
+        },
+        "details": {}
+      },
+      "required": [
+        "content",
+        "role",
+        "toolCallId",
+        "toolName"
+      ]
+    },
+    "_ReadonlyObjectDeep_11": {
+      "$ref": "#/definitions/__type_12"
+    },
+    "__type_13": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "role": {
+          "enum": [
+            "system",
+            "user"
+          ],
+          "type": "string"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/_ReadonlyObjectDeep_5",
+                    "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+                  },
+                  {
+                    "$ref": "#/definitions/_ReadonlyObjectDeep_6",
+                    "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+                  },
+                  {
+                    "$ref": "#/definitions/_ReadonlyObjectDeep_7",
+                    "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+                  },
+                  {
+                    "$ref": "#/definitions/_ReadonlyObjectDeep_8",
+                    "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+                  }
+                ]
+              }
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "content",
+        "role"
+      ]
+    },
+    "_ReadonlyObjectDeep_12": {
+      "$ref": "#/definitions/__type_13"
+    },
+    "__type_14": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "contributions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CUsageContribution%3E"
+          }
+        },
+        "input": {
+          "type": "number"
+        },
+        "output": {
+          "type": "number"
+        },
+        "cacheRead": {
+          "type": "number"
+        },
+        "cacheWrite": {
+          "type": "number"
+        },
+        "cost": {
+          "type": "number"
+        },
+        "turns": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "cacheRead",
+        "cacheWrite",
+        "cost",
+        "input",
+        "output",
+        "turns"
+      ]
+    },
+    "_ReadonlyObjectDeep<UsageContribution>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "provider": {
+          "description": "Native tool and summary usage may not carry model attribution.",
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/definitions/ObservedUsage_1"
+        }
+      },
+      "required": [
+        "id",
+        "usage"
+      ]
+    },
+    "ObservedUsage_1": {
+      "$ref": "#/definitions/__type_10"
+    },
+    "Usage": {
+      "$ref": "#/definitions/__type_14"
+    },
+    "_ReadonlyObjectDeep<ModelAttempt>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "accounting": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_13",
+          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+        },
+        "model": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "exitCode": {
+          "type": [
+            "null",
+            "number"
+          ]
+        },
+        "error": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/definitions/Usage_1"
+        }
+      },
+      "required": [
+        "model",
+        "success"
+      ]
+    },
+    "__type_15": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "complete",
+            "incomplete"
+          ],
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "_ReadonlyObjectDeep_13": {
+      "$ref": "#/definitions/__type_15"
+    },
+    "Usage_1": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_14",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "_ReadonlyObjectDeep_14": {
+      "$ref": "#/definitions/__type_14"
+    },
+    "_ReadonlyObjectDeep<ControlEvent>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/ControlEventType"
+        },
+        "from": {
+          "$ref": "#/definitions/ActivityState"
+        },
+        "to": {
+          "$ref": "#/definitions/ActivityState_1"
+        },
+        "ts": {
+          "type": "number"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "index": {
+          "type": "number"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "completion_guard",
+            "idle",
+            "tool_failures"
+          ],
+          "type": "string"
+        },
+        "turns": {
+          "type": "number"
+        },
+        "tokens": {
+          "type": "number"
+        },
+        "toolCount": {
+          "type": "number"
+        },
+        "currentTool": {
+          "type": "string"
+        },
+        "currentToolDurationMs": {
+          "type": "number"
+        },
+        "currentPath": {
+          "type": "string"
+        },
+        "elapsedMs": {
+          "type": "number"
+        },
+        "recentFailureSummary": {
+          "type": "string"
+        },
+        "supervisorQuestion": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep_15",
+          "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+        }
+      },
+      "required": [
+        "agent",
+        "message",
+        "runId",
+        "to",
+        "ts",
+        "type"
+      ]
+    },
+    "ControlEventType": {
+      "type": "string",
+      "const": "needs_attention"
+    },
+    "ActivityState": {
+      "const": "needs_attention",
+      "type": "string"
+    },
+    "ActivityState_1": {
+      "type": "string",
+      "const": "needs_attention"
+    },
+    "__type_16": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "questionId": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "answer_pending",
+            "awaiting_input"
+          ],
+          "type": "string"
+        },
+        "answer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "questionId",
+        "state"
+      ]
+    },
+    "_ReadonlyObjectDeep_15": {
+      "$ref": "#/definitions/__type_16"
+    },
+    "AgentProgress": {
+      "description": "Live progress owner: streaming and tool events update fields and bounded buffers in place.",
+      "$ref": "#/definitions/_ReadonlyObjectDeep_16"
+    },
+    "__type_17": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "number"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "blocked",
+            "complete",
+            "completed",
+            "detached",
+            "failed",
+            "paused",
+            "pending",
+            "running",
+            "timed-out"
+          ],
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "modelStartedAt": {
+          "description": "Display boundary: earlier native history belongs to a previous attempt.",
+          "type": "number"
+        },
+        "activityState": {
+          "$ref": "#/definitions/ActivityState"
+        },
+        "task": {
+          "type": "string"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lastActivityAt": {
+          "type": "number"
+        },
+        "currentTool": {
+          "type": "string"
+        },
+        "currentToolArgs": {
+          "type": "string"
+        },
+        "currentToolStartedAt": {
+          "type": "number"
+        },
+        "currentPath": {
+          "type": "string"
+        },
+        "streamingText": {
+          "type": "string"
+        },
+        "recentTools": {
+          "$ref": "#/definitions/Array"
+        },
+        "recentOutput": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "toolCount": {
+          "type": "number"
+        },
+        "turnCount": {
+          "type": "number"
+        },
+        "tokens": {
+          "type": "number"
+        },
+        "durationMs": {
+          "type": "number"
+        },
+        "error": {
+          "type": "string"
+        },
+        "failedTool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent",
+        "durationMs",
+        "index",
+        "recentOutput",
+        "recentTools",
+        "status",
+        "task",
+        "tokens",
+        "toolCount"
+      ]
+    },
+    "ReadonlyArray": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/_ReadonlyObjectDeep%3C%7Btool%3Astring%3Bargs%3Astring%3BendMs%3Anumber%3B%7D%3E"
+      }
+    },
+    "_ReadonlyObjectDeep<{tool:string;args:string;endMs:number;}>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "args": {
+          "type": "string"
+        },
+        "endMs": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "args",
+        "endMs",
+        "tool"
+      ]
+    },
+    "Array": {
+      "$ref": "#/definitions/ReadonlyArray"
+    },
+    "_ReadonlyObjectDeep_16": {
+      "$ref": "#/definitions/__type_17"
+    },
+    "ProgressSummary": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_17",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type_18": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "toolCount": {
+          "type": "number"
+        },
+        "tokens": {
+          "type": "number"
+        },
+        "durationMs": {
+          "type": "number"
+        },
+        "index": {
+          "type": "number"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "blocked",
+            "complete",
+            "completed",
+            "detached",
+            "failed",
+            "paused",
+            "pending",
+            "running",
+            "timed-out"
+          ],
+          "type": "string"
+        },
+        "activityState": {
+          "$ref": "#/definitions/ActivityState"
+        },
+        "task": {
+          "type": "string"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lastActivityAt": {
+          "type": "number"
+        },
+        "currentTool": {
+          "type": "string"
+        },
+        "currentToolArgs": {
+          "type": "string"
+        },
+        "currentToolStartedAt": {
+          "type": "number"
+        },
+        "currentPath": {
+          "type": "string"
+        },
+        "recentTools": {
+          "$ref": "#/definitions/Array_1"
+        },
+        "recentOutput": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "turnCount": {
+          "type": "number"
+        },
+        "error": {
+          "type": "string"
+        },
+        "failedTool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "durationMs",
+        "tokens",
+        "toolCount"
+      ]
+    },
+    "Array_1": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/_ReadonlyObjectDeep%3C_ReadonlyObjectDeep%3C%7Btool%3Astring%3Bargs%3Astring%3BendMs%3Anumber%3B%7D%3E%3E"
+      }
+    },
+    "_ReadonlyObjectDeep<_ReadonlyObjectDeep<{tool:string;args:string;endMs:number;}>>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "args": {
+          "type": "string"
+        },
+        "endMs": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "args",
+        "endMs",
+        "tool"
+      ]
+    },
+    "_ReadonlyObjectDeep_17": {
+      "$ref": "#/definitions/__type_18"
+    },
+    "_ReadonlyObjectDeep<ToolCallSummary>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "expandedText": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expandedText",
+        "text"
+      ]
+    },
+    "ArtifactPaths": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_18",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type_19": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "inputPath": {
+          "type": "string"
+        },
+        "outputPath": {
+          "type": "string"
+        },
+        "metadataPath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "inputPath",
+        "metadataPath",
+        "outputPath"
+      ]
+    },
+    "_ReadonlyObjectDeep_18": {
+      "$ref": "#/definitions/__type_19"
+    },
+    "TruncationResult": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_19",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type_20": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "originalBytes": {
+          "type": "number"
+        },
+        "originalLines": {
+          "type": "number"
+        },
+        "artifactPath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "truncated"
+      ]
+    },
+    "_ReadonlyObjectDeep_19": {
+      "$ref": "#/definitions/__type_20"
+    },
+    "OutputMode": {
+      "enum": [
+        "file-only",
+        "inline"
+      ],
+      "type": "string"
+    },
+    "SavedOutputReference": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_20",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type_21": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "number"
+        },
+        "lines": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bytes",
+        "lines",
+        "message",
+        "path"
+      ]
+    },
+    "_ReadonlyObjectDeep_20": {
+      "$ref": "#/definitions/__type_21"
+    },
+    "__type_22": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "action": {
+          "enum": [
+            "already-missing",
+            "deleted",
+            "skipped"
+          ],
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "path"
+      ]
+    },
+    "_ReadonlyObjectDeep_21": {
+      "$ref": "#/definitions/__type_22"
+    },
+    "AcceptanceLedger": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_22",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type_23": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/AcceptanceLedgerStatus"
+        },
+        "explicit": {
+          "type": "boolean"
+        },
+        "effectiveAcceptance": {
+          "$ref": "#/definitions/ResolvedAcceptanceConfig"
+        },
+        "inferredReason": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CResolvedAcceptanceGate%3E"
+          }
+        },
+        "childReport": {
+          "$ref": "#/definitions/AcceptanceReport"
+        },
+        "childReportParseError": {
+          "type": "string"
+        },
+        "initialChildReport": {
+          "$ref": "#/definitions/AcceptanceReport"
+        },
+        "initialChildReportParseError": {
+          "type": "string"
+        },
+        "unconfirmedOutput": {
+          "description": "Prior full report retained as audit evidence, never as current acceptance.",
+          "type": "string"
+        },
+        "runtimeChecks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CAcceptanceRuntimeCheck%3E"
+          }
+        },
+        "verifyRuns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CAcceptanceVerifyResult%3E"
+          }
+        },
+        "finalization": {
+          "$ref": "#/definitions/AcceptanceFinalizationLedger"
+        }
+      },
+      "required": [
+        "criteria",
+        "effectiveAcceptance",
+        "explicit",
+        "inferredReason",
+        "runtimeChecks",
+        "status",
+        "verifyRuns"
+      ]
+    },
+    "AcceptanceLedgerStatus": {
+      "enum": [
+        "accepted",
+        "attested",
+        "blocked",
+        "checked",
+        "claimed",
+        "not-required",
+        "rejected",
+        "verified"
+      ],
+      "type": "string"
+    },
+    "__type_24": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "level": {
+          "$ref": "#/definitions/AcceptanceProvenanceLevel"
+        },
+        "explicit": {
+          "type": "boolean"
+        },
+        "inferredReason": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CResolvedAcceptanceGate%3E"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AcceptanceEvidenceKind"
+          }
+        },
+        "verify": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CAcceptanceVerifyCommand%3E"
+          }
+        },
+        "stopRules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "finalization": {
+          "$ref": "#/definitions/_ReadonlyObjectDeep%3C%7Breadonlymode%3A%22none%22%7C%22self-review-loop%22%3BreadonlymaxTurns%3Anumber%3B%7D%3E"
+        }
+      },
+      "required": [
+        "criteria",
+        "evidence",
+        "explicit",
+        "finalization",
+        "inferredReason",
+        "level",
+        "stopRules",
+        "verify"
+      ]
+    },
+    "AcceptanceProvenanceLevel": {
+      "description": "Acceptance configuration and recorded evidence, independent of execution and verification code.",
+      "enum": [
+        "attested",
+        "checked",
+        "none",
+        "verified"
+      ],
+      "type": "string"
+    },
+    "_ReadonlyObjectDeep<ResolvedAcceptanceGate>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "must": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AcceptanceEvidenceKind"
+          }
+        },
+        "severity": {
+          "enum": [
+            "recommended",
+            "required"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "evidence",
+        "id",
+        "must",
+        "severity"
+      ]
+    },
+    "AcceptanceEvidenceKind": {
+      "enum": [
+        "changed-files",
+        "commands-run",
+        "diff-summary",
+        "manual-notes",
+        "no-staged-files",
+        "residual-risks",
+        "review-findings",
+        "tests-added",
+        "validation-output"
+      ],
+      "type": "string"
+    },
+    "_ReadonlyObjectDeep<AcceptanceVerifyCommand>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "timeoutMs": {
+          "type": "number"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "env": {
+          "$ref": "#/definitions/Readonly_1"
+        },
+        "allowFailure": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "command",
+        "id"
+      ]
+    },
+    "Readonly_1": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_23",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type_25": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object"
+    },
+    "_ReadonlyObjectDeep_23": {
+      "$ref": "#/definitions/__type_25"
+    },
+    "_ReadonlyObjectDeep<{readonlymode:\"none\"|\"self-review-loop\";readonlymaxTurns:number;}>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": [
+            "none",
+            "self-review-loop"
+          ],
+          "type": "string"
+        },
+        "maxTurns": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "maxTurns",
+        "mode"
+      ]
+    },
+    "ResolvedAcceptanceConfig": {
+      "$ref": "#/definitions/__type_24"
+    },
+    "AcceptanceReport": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_24",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type_26": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "criteriaSatisfied": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3C%7Breadonlyid%3F%3Astring%7Cundefined%3Breadonlystatus%3A%22satisfied%22%7C%22not-satisfied%22%7C%22not-applicable%22%7C%22blocked%22%3Breadonlyevidence%3Astring%3BreadonlyhumanAction%3F%3Astring%7Cundefined%3B%7D%3E"
+          }
+        },
+        "changedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "testsAddedOrUpdated": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "commandsRun": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3C%7Breadonlycommand%3Astring%3Breadonlyresult%3A%22passed%22%7C%22failed%22%7C%22not-run%22%3Breadonlysummary%3Astring%3B%7D%3E"
+          }
+        },
+        "validationOutput": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "residualRisks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "noStagedFiles": {
+          "type": "boolean"
+        },
+        "diffSummary": {
+          "type": "string"
+        },
+        "reviewFindings": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/_ReadonlyObjectDeep_25",
+                "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "manualNotes": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "_ReadonlyObjectDeep<{readonlyid?:string|undefined;readonlystatus:\"satisfied\"|\"not-satisfied\"|\"not-applicable\"|\"blocked\";readonlyevidence:string;readonlyhumanAction?:string|undefined;}>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "blocked",
+            "not-applicable",
+            "not-satisfied",
+            "satisfied"
+          ],
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "humanAction": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "evidence",
+        "status"
+      ]
+    },
+    "_ReadonlyObjectDeep<{readonlycommand:string;readonlyresult:\"passed\"|\"failed\"|\"not-run\";readonlysummary:string;}>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "result": {
+          "enum": [
+            "failed",
+            "not-run",
+            "passed"
+          ],
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "command",
+        "result",
+        "summary"
+      ]
+    },
+    "_ReadonlyObjectDeep_25": {
+      "$ref": "#/definitions/__type_9"
+    },
+    "_ReadonlyObjectDeep_24": {
+      "$ref": "#/definitions/__type_26"
+    },
+    "_ReadonlyObjectDeep<AcceptanceRuntimeCheck>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/AcceptanceRuntimeCheckStatus"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "message",
+        "status"
+      ]
+    },
+    "AcceptanceRuntimeCheckStatus": {
+      "enum": [
+        "blocked",
+        "failed",
+        "not-applicable",
+        "passed"
+      ],
+      "type": "string"
+    },
+    "_ReadonlyObjectDeep<AcceptanceVerifyResult>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "exitCode": {
+          "type": [
+            "null",
+            "number"
+          ]
+        },
+        "status": {
+          "enum": [
+            "allowed-failure",
+            "failed",
+            "passed",
+            "timed-out"
+          ],
+          "type": "string"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "durationMs": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "command",
+        "durationMs",
+        "exitCode",
+        "id",
+        "status"
+      ]
+    },
+    "AcceptanceFinalizationLedger": {
+      "$ref": "#/definitions/_ReadonlyObjectDeep_26",
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`."
+    },
+    "__type_27": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "const": "self-review-loop"
+        },
+        "status": {
+          "enum": [
+            "blocked",
+            "completed",
+            "failed",
+            "not-run"
+          ],
+          "type": "string"
+        },
+        "maxTurns": {
+          "type": "number"
+        },
+        "turns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CAcceptanceFinalizationTurn%3E"
+          }
+        }
+      },
+      "required": [
+        "maxTurns",
+        "mode",
+        "status",
+        "turns"
+      ]
+    },
+    "_ReadonlyObjectDeep<AcceptanceFinalizationTurn>": {
+      "description": "Same as `ReadonlyDeep`, but accepts only `object`s as inputs. Internal helper for `ReadonlyDeep`.",
+      "type": "object",
+      "properties": {
+        "turn": {
+          "type": "number"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/AcceptanceLedgerStatus"
+        },
+        "rawOutput": {
+          "type": "string"
+        },
+        "unconfirmedOutput": {
+          "type": "string"
+        },
+        "report": {
+          "$ref": "#/definitions/AcceptanceReport"
+        },
+        "parseError": {
+          "type": "string"
+        },
+        "runtimeChecks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CAcceptanceRuntimeCheck%3E"
+          }
+        },
+        "verifyRuns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/_ReadonlyObjectDeep%3CAcceptanceVerifyResult%3E"
+          }
+        },
+        "failureMessage": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt",
+        "runtimeChecks",
+        "status",
+        "turn",
+        "verifyRuns"
+      ]
+    },
+    "_ReadonlyObjectDeep_26": {
+      "$ref": "#/definitions/__type_27"
+    },
+    "_ReadonlyObjectDeep_22": {
+      "$ref": "#/definitions/__type_23"
+    },
+    "_ReadonlyObjectDeep": {
+      "$ref": "#/definitions/__type"
+    },
+    "ResolvedAcceptanceConfig_1": {
+      "$ref": "#/definitions/ResolvedAcceptanceConfig_2"
+    },
+    "ResolvedAcceptanceConfig_2": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "$ref": "#/definitions/AcceptanceProvenanceLevel"
+        },
+        "explicit": {
+          "type": "boolean"
+        },
+        "inferredReason": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ResolvedAcceptanceGate"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AcceptanceEvidenceKind"
+          }
+        },
+        "verify": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AcceptanceVerifyCommand"
+          }
+        },
+        "stopRules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "finalization": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "enum": [
+                "none",
+                "self-review-loop"
+              ],
+              "type": "string"
+            },
+            "maxTurns": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "maxTurns",
+            "mode"
+          ]
+        }
+      },
+      "required": [
+        "criteria",
+        "evidence",
+        "explicit",
+        "finalization",
+        "inferredReason",
+        "level",
+        "stopRules",
+        "verify"
+      ]
+    },
+    "ResolvedAcceptanceGate": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "must": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AcceptanceEvidenceKind"
+          }
+        },
+        "severity": {
+          "enum": [
+            "recommended",
+            "required"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "evidence",
+        "id",
+        "must",
+        "severity"
+      ]
+    },
+    "AcceptanceVerifyCommand": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "timeoutMs": {
+          "type": "number"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "env": {
+          "$ref": "#/definitions/Readonly_2"
+        },
+        "allowFailure": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "command",
+        "id"
+      ]
+    },
+    "Readonly_2": {
+      "$ref": "#/definitions/Record%3Cstring%2Cstring%3E"
+    },
+    "Record<string,string>": {
+      "type": "object"
+    },
+    "JsonSchemaObject": {
+      "$ref": "#/definitions/Record%3Cstring%2Cunknown%3E"
+    },
+    "Record<string,unknown>": {
+      "type": "object"
+    },
+    "SavedLaunchConfig": {
+      "description": "Persisted launch snapshot. Resume consumers must not modify the original launch.",
+      "$ref": "#/definitions/SavedLaunchConfig_1"
+    },
+    "SavedLaunchConfig_1": {
+      "description": "Persisted launch snapshot. Resume consumers must not modify the original launch.",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "$ref": "#/definitions/AgentConfig"
+        },
+        "model": {
+          "type": "string"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "modelRecordedAt": {
+          "description": "Timestamp of the native model entry captured with this frozen launch.",
+          "type": "number"
+        },
+        "modelCandidates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "artifacts": {
+          "type": "boolean"
+        },
+        "artifactsDir": {
+          "type": "string"
+        },
+        "share": {
+          "type": "boolean"
+        },
+        "systemPrompt": {
+          "type": "string"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "context": {
+          "enum": [
+            "fork",
+            "fresh"
+          ],
+          "type": "string"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "const": false,
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "generatedOutputFilename": {
+          "description": "Proven generated output filename; absent on legacy snapshots.",
+          "type": "string"
+        },
+        "outputMode": {
+          "$ref": "#/definitions/OutputMode_1"
+        },
+        "outputSchema": {
+          "$ref": "#/definitions/JsonSchemaObject"
+        },
+        "effectiveAcceptance": {
+          "$ref": "#/definitions/ResolvedAcceptanceConfig_1"
+        },
+        "maxOutput": {
+          "$ref": "#/definitions/MaxOutputConfig"
+        },
+        "maxSubagentDepth": {
+          "type": "number"
+        },
+        "maxExecutionTimeMs": {
+          "type": "number"
+        },
+        "maxTokens": {
+          "type": "number"
+        },
+        "controlConfig": {
+          "$ref": "#/definitions/ResolvedControlConfig"
+        },
+        "projectTrust": {
+          "$ref": "#/definitions/ChildProjectTrustPolicy"
+        },
+        "projectTrusted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "agent",
+        "artifacts",
+        "context",
+        "cwd",
+        "modelCandidates",
+        "output",
+        "outputMode",
+        "share",
+        "skills",
+        "systemPrompt"
+      ]
+    },
+    "AgentConfig": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "localName": {
+          "type": "string"
+        },
+        "packageName": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mcpDirectTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowSubagents": {
+          "type": "boolean"
+        },
+        "model": {
+          "type": "string"
+        },
+        "fallbackModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "systemPromptMode": {
+          "$ref": "#/definitions/SystemPromptMode"
+        },
+        "inheritProjectContext": {
+          "type": "boolean"
+        },
+        "inheritSkills": {
+          "type": "boolean"
+        },
+        "defaultContext": {
+          "$ref": "#/definitions/AgentDefaultContext"
+        },
+        "systemPrompt": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/AgentSource"
+        },
+        "filePath": {
+          "type": "string"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "output": {
+          "type": "string"
+        },
+        "defaultReads": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "defaultProgress": {
+          "type": "boolean"
+        },
+        "interactive": {
+          "type": "boolean"
+        },
+        "maxSubagentDepth": {
+          "type": "number"
+        },
+        "maxExecutionTimeMs": {
+          "type": "number"
+        },
+        "maxTokens": {
+          "type": "number"
+        },
+        "completionGuard": {
+          "type": "boolean"
+        },
+        "disabled": {
+          "type": "boolean"
+        },
+        "extraFields": {
+          "$ref": "#/definitions/Readonly_2"
+        }
+      },
+      "required": [
+        "description",
+        "filePath",
+        "inheritProjectContext",
+        "inheritSkills",
+        "name",
+        "source",
+        "systemPrompt",
+        "systemPromptMode"
+      ]
+    },
+    "SystemPromptMode": {
+      "enum": [
+        "append",
+        "replace"
+      ],
+      "type": "string"
+    },
+    "AgentDefaultContext": {
+      "enum": [
+        "fork",
+        "fresh"
+      ],
+      "type": "string"
+    },
+    "AgentSource": {
+      "enum": [
+        "builtin",
+        "package",
+        "project",
+        "user"
+      ],
+      "type": "string"
+    },
+    "OutputMode_1": {
+      "enum": [
+        "file-only",
+        "inline"
+      ],
+      "type": "string"
+    },
+    "MaxOutputConfig": {
+      "$ref": "#/definitions/MaxOutputConfig_1"
+    },
+    "MaxOutputConfig_1": {
+      "type": "object",
+      "properties": {
+        "bytes": {
+          "type": "number"
+        },
+        "lines": {
+          "type": "number"
+        }
+      }
+    },
+    "ResolvedControlConfig": {
+      "$ref": "#/definitions/ResolvedControlConfig_1"
+    },
+    "ResolvedControlConfig_1": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "needsAttentionAfterMs": {
+          "type": "number"
+        },
+        "failedToolAttemptsBeforeAttention": {
+          "type": "number"
+        },
+        "notifyOn": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "const": "needs_attention"
+          }
+        },
+        "notifyChannels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ControlNotificationChannel"
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "failedToolAttemptsBeforeAttention",
+        "needsAttentionAfterMs",
+        "notifyChannels",
+        "notifyOn"
+      ]
+    },
+    "ControlNotificationChannel": {
+      "enum": [
+        "async",
+        "event",
+        "intercom"
+      ],
+      "type": "string"
+    },
+    "ChildProjectTrustPolicy": {
+      "enum": [
+        "approve",
+        "inherit",
+        "no-approve"
+      ],
+      "type": "string"
+    },
+    "Pick": {
+      "$ref": "#/definitions/Pick_1"
+    },
+    "__type_28": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "modelStartedAt": {
+          "description": "Display boundary: earlier native history belongs to a previous attempt.",
+          "type": "number"
+        }
+      }
+    },
+    "Pick_1": {
+      "$ref": "#/definitions/__type_28"
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
