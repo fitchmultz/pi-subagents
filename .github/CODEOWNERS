@@ -1,5 +1,7 @@
 # Enforcement changes need the repository owner's review.
 /.oxlintrc.json @fitchmultz
+**/.oxlintrc.* @fitchmultz
+**/oxlint.config.* @fitchmultz
 /.oxfmtrc.json @fitchmultz
 /.gitattributes @fitchmultz
 /tsconfig*.json @fitchmultz

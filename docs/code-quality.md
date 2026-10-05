@@ -47,6 +47,11 @@ engine. Run `quality:setup` before starting the editor language server; reload i
 The canonical TypeScript command remains `npm run typecheck`; `typecheck:leaves` additionally checks
 maintained nested projects using their effective settings.
 
+The root `.oxlintrc.json` is the only approved lint configuration. Policy rejects alternative root
+and nested auto-discovery names supported by the pinned CLI (`.oxlintrc.json[c]`,
+`oxlint.config.ts`, `oxlint.config.mts`), including ignored configurations beside maintained source.
+This prevents silent rule weakening in both CLI and editor discovery; CODEOWNERS covers these paths.
+
 ## Production and test contracts
 
 Production limits are modified complexity 10, depth 3, parameters 4, statements 40, function lines 80
@@ -68,6 +73,10 @@ native base allowance list (Oxlint replaces rule option arrays). These permissio
 pure readers: use readonly views instead. Owner-specific parameter-property permissions name actual
 parameters; other parameters and ordinary mutable data remain checked. Change the registry, not copied
 JSON blocks. Policy verifies regeneration and probes origin, file and parameter isolation.
+Every boundary file and file-qualified readonly origin must exist, and every allowed name must
+identify an actual class, interface or type-alias declaration in that origin. The CLI keeper also
+copies and exercises the real runner declaration; synthetic isolation shapes alone do not prove that
+an owner path is correct.
 
 Only fixed **nongeneric** native result/message aliases can receive local file-qualified permissions;
 mutable application type arguments are not waived through broad generic SDK names. Framework-owned

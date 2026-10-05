@@ -184,11 +184,43 @@ function schemaValue(node) {
     return true;
   }
   return (
-    ts.isCallExpression(node) &&
-    ts.isPropertyAccessExpression(node.expression) &&
-    ts.isIdentifier(node.expression.expression) &&
-    node.expression.expression.text === "Type"
+    schemaFactory(node) ||
+    (ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === "Type")
   );
+}
+
+function schemaFactory(node) {
+  if (
+    !ts.isCallExpression(node) ||
+    !ts.isIdentifier(node.expression) ||
+    node.expression.text !== "requiredObject" ||
+    !node.arguments.every(ts.isStringLiteral)
+  ) {
+    return false;
+  }
+  for (let parent = node.parent; parent !== undefined; parent = parent.parent) {
+    if (ts.isFunctionLike(parent)) {
+      return false;
+    }
+  }
+  return node
+    .getSourceFile()
+    .statements.filter(ts.isImportDeclaration)
+    .some(
+      (statement) =>
+        ts.isStringLiteral(statement.moduleSpecifier) &&
+        statement.moduleSpecifier.text === "./schema-overrides.ts" &&
+        statement.importClause?.namedBindings !== undefined &&
+        ts.isNamedImports(statement.importClause.namedBindings) &&
+        statement.importClause.namedBindings.elements.some(
+          (binding) =>
+            binding.name.text === "requiredObject" &&
+            (binding.propertyName?.text ?? binding.name.text) === "requiredObject",
+        ),
+    );
 }
 
 function optionalUnsubscribe(union) {

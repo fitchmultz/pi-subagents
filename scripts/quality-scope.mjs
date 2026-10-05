@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript-api";
@@ -50,12 +50,13 @@ export function typeProjects(directory = root) {
 }
 
 export function scopedOverrides(config, directory = root) {
-  const ownerFiles = new Set([
-    ...mutationBoundaries.map((boundary) => boundary.file),
-    "src/shared/native-usage.ts",
-    "test/support/native-execution-cwd-owner.ts",
-  ]);
+  const ownerFiles = new Set(mutationBoundaries.map((boundary) => boundary.file));
   const overrides = config.overrides.slice(0, -1).flatMap((override) => {
+    if (
+      override.files.every((file) => !/[*?{]/u.test(file) && !existsSync(resolve(directory, file)))
+    ) {
+      return [];
+    }
     if (override.files.length !== 1 || !ownerFiles.has(override.files[0])) {
       return [override];
     }
@@ -138,6 +139,7 @@ export function uncheckedRules() {
 }
 
 export function checkScope(directory = root) {
+  checkBoundaryDeclarations(directory);
   const project = projectScope(directory);
   if (project.options.strict !== true || project.options.noImplicitReturns !== true) {
     throw new Error("Compiler policy requires strict and noImplicitReturns");
@@ -159,6 +161,58 @@ export function checkScope(directory = root) {
   }
   const actual = config.overrides.at(-1);
   return { maintained: maintainedFiles(directory).length, unchecked: actual.files.length };
+}
+
+function checkBoundaryDeclarations(directory) {
+  const names = new Map();
+  for (const boundary of mutationBoundaries) {
+    if (!existsSync(resolve(directory, boundary.file))) {
+      throw new Error(`Mutation boundary does not exist: ${boundary.file}`);
+    }
+    for (const type of boundary.types.filter((entry) => entry.from === "file")) {
+      checkDeclaredType(directory, type, names);
+    }
+  }
+  const config = JSON.parse(readFileSync(resolve(directory, ".oxlintrc.json"), "utf8"));
+  for (const type of config.rules["typescript/prefer-readonly-parameter-types"][1].allow.filter(
+    (entry) => entry.from === "file",
+  )) {
+    checkDeclaredType(directory, type, names);
+  }
+}
+
+function checkDeclaredType(directory, type, names) {
+  const path = resolve(directory, type.path);
+  if (!names.has(path)) {
+    if (!existsSync(path)) {
+      throw new Error(`Qualified readonly origin does not exist: ${type.path}`);
+    }
+    const source = ts.createSourceFile(
+      path,
+      readFileSync(path, "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const declarations = new Set();
+    function visit(node) {
+      if (
+        (ts.isClassDeclaration(node) ||
+          ts.isInterfaceDeclaration(node) ||
+          ts.isTypeAliasDeclaration(node)) &&
+        node.name !== undefined
+      ) {
+        declarations.add(node.name.text);
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+    names.set(path, declarations);
+  }
+  for (const name of [type.name].flat()) {
+    if (!names.get(path).has(name)) {
+      throw new Error(`Qualified readonly declaration does not exist: ${type.path}#${name}`);
+    }
+  }
 }
 
 function checkLeafProjects(directory) {

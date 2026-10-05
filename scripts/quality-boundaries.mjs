@@ -88,14 +88,6 @@ export const mutationBoundaries = [
     types: [{ from: "file", path: "./src/shared/types/usage.ts", name: ["UsageAccumulator"] }],
     contract: "addUsage mutates the owning usage accumulator rather than replacing its identity.",
   },
-  {
-    file: "src/runs/shared/runner-status.ts",
-    parameters: ["step"],
-    types: [
-      { from: "file", path: "./src/runs/shared/runner-status.ts", name: ["RunnerStatusStep"] },
-    ],
-    contract: "The status owner advances its step status across the runner lifecycle.",
-  },
   ...[
     ["runner-status", ["RunnerStatusStep", "RunnerStatusPayload"], ["step", "statusPayload"]],
     ["runner-child-observer", ["RunnerStatusPayload"], []],
@@ -244,6 +236,70 @@ export const mutationBoundaries = [
     types: [],
     contract:
       "The native resolve-execution-cwd listener synchronously writes its directory response to the caller's request.result before launch.",
+  },
+  ...["foreground-control", "question-continuation", "saved-revival"].map((owner) => ({
+    file: `src/runs/foreground/${owner}.ts`,
+    parameters: [],
+    types: [
+      { from: "file", path: "./src/runs/foreground/saved-revival.ts", name: ["RevivalInput"] },
+    ],
+    contract:
+      "Continuation and revival command the actual session-owned launch and durable receipt state.",
+  })),
+  ...["invocation-execution", "management-actions", "subagent-executor"].map((owner) => ({
+    file: `src/runs/foreground/${owner}.ts`,
+    parameters: [],
+    types: [
+      { from: "file", path: "./src/runs/foreground/subagent-params.ts", name: ["ExecutorDeps"] },
+    ],
+    contract:
+      "The foreground launch/control gateway commands actual executor session state; readonly readers use ExecutorReadDeps.",
+  })),
+  ...["run-interrupt", "saved-revival"].map((owner) => ({
+    file: `src/runs/foreground/${owner}.ts`,
+    parameters: [],
+    types: [{ from: "file", path: "./src/shared/types/state.ts", name: ["SubagentState"] }],
+    contract:
+      "Stop and revival persist actual tracked job or run records through the focused state owner.",
+  })),
+  ...["agent-browser", "indexed-history"].map((owner) => ({
+    file: `src/tui/${owner}.ts`,
+    parameters: [],
+    types: [{ from: "file", path: "./src/shared/types/history.ts", name: ["HistoryIndexHandle"] }],
+    contract:
+      "The native history capability owns worker requests, refresh and subscriptions; TUI gateways retain stale-result guards and dispose subscriptions.",
+  })),
+  {
+    file: "src/tui/view-connections.ts",
+    parameters: [],
+    types: [
+      { from: "file", path: "./src/tui/task-store.ts", name: ["AgentTaskStore"] },
+      { from: "file", path: "./src/tui/agent-browser.ts", name: ["AgentBrowser"] },
+      { from: "file", path: "./src/tui/agent-controls.ts", name: ["AgentControls"] },
+    ],
+    contract:
+      "The native connection owner binds live task/cache, browsing and control handles; data and ports retain readonly inputs.",
+  },
+  {
+    file: "test/fixtures/native-legacy-completion.mjs",
+    parameters: ["pi"],
+    types: [],
+    contract:
+      "The native SDK factory instruments sendMessage on its actual Pi instance; receipt and delivery behavior remain SDK-owned.",
+  },
+  {
+    file: "test/fixtures/native-tool-results.mjs",
+    parameters: ["receipt"],
+    types: [],
+    contract:
+      "The native observation fixture fills its caller-owned receipt from actual SDK publications and rendered tool results.",
+  },
+  {
+    file: "test/integration/doctor-executor.test.ts",
+    parameters: ["request"],
+    types: [],
+    contract:
+      "The native resolve-execution-cwd callback synchronously writes request.result before the doctor launches its subprocess.",
   },
 ];
 

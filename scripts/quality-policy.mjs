@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript-api";
 import { approvedScopedDirective } from "./quality-directives.mjs";
@@ -106,6 +106,7 @@ function genericCallback(source, line) {
 }
 
 function checkConfiguration(directory) {
+  checkConfigurationOrigins(directory);
   const config = JSON.parse(readFileSync(resolve(directory, ".oxlintrc.json"), "utf8"));
   for (const key of ["typeAware", "typeCheck", "denyWarnings"]) {
     if (config.options[key] !== true) {
@@ -130,6 +131,33 @@ function checkConfiguration(directory) {
     JSON.stringify(config.ignorePatterns ?? []) !== JSON.stringify(["dist/**", "dist.staging*/**"])
   ) {
     throw new Error("Only build-owned output may be excluded from lint");
+  }
+}
+
+function checkConfigurationOrigins(directory) {
+  const folders = new Set([directory]);
+  for (const file of maintainedFiles(directory)) {
+    let folder = dirname(resolve(directory, file));
+    while (folder !== directory && !folders.has(folder)) {
+      folders.add(folder);
+      folder = dirname(folder);
+    }
+  }
+  // These are the auto-discovered names in the pinned Oxlint 1.87 native implementation.
+  for (const folder of folders) {
+    for (const name of [
+      ".oxlintrc.json",
+      ".oxlintrc.jsonc",
+      "oxlint.config.ts",
+      "oxlint.config.mts",
+    ]) {
+      if (folder === directory && name === ".oxlintrc.json") {
+        continue;
+      }
+      if (existsSync(resolve(folder, name))) {
+        throw new Error(`Unapproved Oxlint configuration: ${resolve(folder, name)}`);
+      }
+    }
   }
 }
 
@@ -199,8 +227,8 @@ function checkReadonlyPolicy(readonly) {
 }
 
 export function checkPolicy(directory = root) {
-  checkScope(directory);
   checkConfiguration(directory);
+  checkScope(directory);
   const problems = maintainedFiles(directory).flatMap((file) =>
     suppressionProblems(readFileSync(resolve(directory, file), "utf8"), file),
   );
