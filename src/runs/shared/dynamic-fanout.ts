@@ -1,4 +1,4 @@
-import { isRecord, isUnknownArray, recordAt } from "../../shared/unknown.ts";
+import { isRecord, isUnknownArray, recordAt, type UnknownRecord } from "../../shared/unknown.ts";
 import type { DynamicParallelStep, ParallelTaskItem } from "../../shared/types/workflow.ts";
 import type {
   ReadonlyInput,
@@ -121,7 +121,11 @@ export function isSafeOutputName(name: string): boolean {
   return SAFE_OUTPUT_NAME_PATTERN.test(name);
 }
 
-function assertOnlyKeys(value: unknown, allowed: readonly string[], label: string): void {
+function validateObjectKeys(
+  value: unknown,
+  allowed: readonly string[],
+  label: string,
+): UnknownRecord {
   if (!isRecord(value)) {
     throw new DynamicFanoutError(`${label} must be an object.`);
   }
@@ -130,6 +134,7 @@ function assertOnlyKeys(value: unknown, allowed: readonly string[], label: strin
       throw new DynamicFanoutError(`${label} does not support field '${key}'.`);
     }
   }
+  return value;
 }
 
 const VALID_ITEM_REF_PATTERN = new RegExp(ITEM_REF_PATTERN.source);
@@ -184,102 +189,121 @@ export function hasDynamicFanoutFields(step: unknown): boolean {
   );
 }
 
-function validateItemLimit(value: number | undefined, label: string): void {
-  if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    throw new DynamicFanoutError(`${label} must be a string.`);
+  }
+  return value;
+}
+
+function validateItemLimit(value: unknown, label: string): void {
+  if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value < 0)) {
     throw new DynamicFanoutError(`${label} must be an integer >= 0.`);
   }
 }
 
-function validateExpansion(
-  step: ReadonlyInput<DynamicParallelStep>,
-  prefix: string,
-  config: DynamicFanoutConfig,
-): void {
-  if (!recordAt(step, "expand") || !recordAt(step.expand, "from")) {
+function validateExpandFrom(from: UnknownRecord, prefix: string): void {
+  validateObjectKeys(from, DYNAMIC_EXPAND_FROM_KEYS, `${prefix} expand.from`);
+  const output = requireString(from.output, `${prefix} expand.from.output`);
+  if (!isSafeOutputName(output)) {
+    throw new DynamicFanoutError(`${prefix} has invalid expand.from.output '${output}'.`);
+  }
+  assertJsonPointer(
+    requireString(from.path, `${prefix} expand.from.path`),
+    `${prefix} expand.from.path`,
+  );
+}
+
+function validateExpansion(expand: unknown, prefix: string, config: DynamicFanoutConfig): string {
+  const from = recordAt(expand, "from");
+  if (!isRecord(expand) || !from) {
     throw new DynamicFanoutError(`${prefix} requires expand.from.`);
   }
-  assertOnlyKeys(step.expand, DYNAMIC_EXPAND_KEYS, `${prefix} expand`);
-  assertOnlyKeys(step.expand.from, DYNAMIC_EXPAND_FROM_KEYS, `${prefix} expand.from`);
-  if (!isSafeOutputName(step.expand.from.output)) {
-    throw new DynamicFanoutError(
-      `${prefix} has invalid expand.from.output '${step.expand.from.output}'.`,
-    );
+  validateObjectKeys(expand, DYNAMIC_EXPAND_KEYS, `${prefix} expand`);
+  validateExpandFrom(from, prefix);
+  if (expand.key !== undefined) {
+    assertJsonPointer(requireString(expand.key, `${prefix} expand.key`), `${prefix} expand.key`);
   }
-  assertJsonPointer(step.expand.from.path, `${prefix} expand.from.path`);
-  if (step.expand.key !== undefined) {
-    assertJsonPointer(step.expand.key, `${prefix} expand.key`);
-  }
-  const itemName = step.expand.item ?? "item";
+  const itemName = requireString(expand.item ?? "item", `${prefix} expand.item`);
   if (!ITEM_NAME_PATTERN.test(itemName)) {
     throw new DynamicFanoutError(`${prefix} has invalid expand.item '${itemName}'.`);
   }
-  if (step.expand.maxItems === undefined && config.maxItems === undefined) {
+  if (expand.maxItems === undefined && config.maxItems === undefined) {
     throw new DynamicFanoutError(
       `${prefix} requires expand.maxItems or config.chain.dynamicFanout.maxItems.`,
     );
   }
-  validateItemLimit(step.expand.maxItems, `${prefix} expand.maxItems`);
+  validateItemLimit(expand.maxItems, `${prefix} expand.maxItems`);
   validateItemLimit(config.maxItems, "config.chain.dynamicFanout.maxItems");
+  return itemName;
 }
 
 function validateParallelTemplate(
-  step: ReadonlyInput<DynamicParallelStep>,
+  parallel: unknown,
   prefix: string,
-  config: DynamicFanoutConfig,
+  itemName: string,
+  runnerFields: boolean,
 ): void {
-  if (!recordAt(step, "parallel")) {
+  if (!isRecord(parallel)) {
     throw new DynamicFanoutError(
       `${prefix} requires a single parallel template object and cannot mix dynamic expand/collect with static parallel arrays.`,
     );
   }
-  assertOnlyKeys(
-    step.parallel,
-    config.allowRunnerFields === true ? RUNNER_DYNAMIC_PARALLEL_KEYS : DYNAMIC_PARALLEL_KEYS,
+  validateObjectKeys(
+    parallel,
+    runnerFields ? RUNNER_DYNAMIC_PARALLEL_KEYS : DYNAMIC_PARALLEL_KEYS,
     `${prefix} parallel`,
   );
-  if ("expand" in step.parallel) {
+  if ("expand" in parallel) {
     throw new DynamicFanoutError(`${prefix} does not support nested dynamic fanout.`);
   }
-  if (step.parallel.agent.length === 0) {
+  if (typeof parallel.agent !== "string" || parallel.agent.length === 0) {
     throw new DynamicFanoutError(`${prefix} parallel.agent is required.`);
   }
-  const itemName = step.expand.item ?? "item";
-  for (const [label, template] of [
-    ["parallel.task", step.parallel.task],
-    ["parallel.label", step.parallel.label],
+  for (const [label, value] of [
+    ["parallel.task", parallel.task],
+    ["parallel.label", parallel.label],
   ] as const) {
-    if (template !== undefined && template.length > 0) {
+    if (value === undefined) {
+      continue;
+    }
+    const template = requireString(value, `${prefix} ${label}`);
+    if (template.length > 0) {
       assertNoUnresolvedItemReferences(template, itemName, `${prefix} ${label}`);
     }
   }
 }
 
-function validateCollection(step: ReadonlyInput<DynamicParallelStep>, prefix: string): void {
-  if (!recordAt(step, "collect") || !isSafeOutputName(step.collect.as)) {
+function validateCollection(collect: unknown, prefix: string): void {
+  if (!isRecord(collect) || typeof collect.as !== "string" || !isSafeOutputName(collect.as)) {
     throw new DynamicFanoutError(`${prefix} requires collect.as with a safe output name.`);
   }
-  assertOnlyKeys(step.collect, DYNAMIC_COLLECT_KEYS, `${prefix} collect`);
+  validateObjectKeys(collect, DYNAMIC_COLLECT_KEYS, `${prefix} collect`);
 }
 
+/** Validates dynamic vocabulary and expansion semantics, not the entire child execution schema. */
 export function validateDynamicStepShape(
-  step: ReadonlyInput<DynamicParallelStep>,
+  step: unknown,
   stepIndex: number,
   config: DynamicFanoutConfig = {},
 ): void {
   const prefix = `Dynamic chain step ${stepIndex + 1}`;
-  if (Object.hasOwn(step, "acceptance") || Object.hasOwn(step, "effectiveAcceptance")) {
+  if (
+    isRecord(step) &&
+    (Object.hasOwn(step, "acceptance") || Object.hasOwn(step, "effectiveAcceptance"))
+  ) {
     throw new DynamicFanoutError(
       `Dynamic fanout step ${stepIndex + 1} does not support group-level acceptance; set acceptance on the child template instead.`,
     );
   }
-  assertOnlyKeys(
+  const record = validateObjectKeys(
     step,
     config.allowRunnerFields === true ? RUNNER_DYNAMIC_STEP_KEYS : DYNAMIC_STEP_KEYS,
     prefix,
   );
-  validateExpansion(step, prefix, config);
-  validateParallelTemplate(step, prefix, config);
-  validateCollection(step, prefix);
+  const itemName = validateExpansion(record.expand, prefix, config);
+  validateParallelTemplate(record.parallel, prefix, itemName, config.allowRunnerFields === true);
+  validateCollection(record.collect, prefix);
 }
 
 export function resolveDynamicFanoutItems(
