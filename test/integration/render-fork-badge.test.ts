@@ -1,4 +1,3 @@
-import { assertDefined } from "../support/assertions.ts";
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -34,9 +33,7 @@ function withTerminalWidth<T>(columns: number, fn: () => T): T {
 
 describe("renderSubagentResult fork indicator", () => {
   it("shows [fork] when details are empty but context is fork", () => {
-    const defined1900_0 = renderSubagentResult;
-    assertDefined(defined1900_0);
-    const widget = defined1900_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "Async: reviewer [abc123]" }],
         details: { mode: "single", context: "fork", results: [] },
@@ -50,9 +47,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("shows [fork] on single-result header", () => {
-    const defined2289_0 = renderSubagentResult;
-    assertDefined(defined2289_0);
-    const widget = defined2289_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "done" }],
         details: {
@@ -78,9 +73,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("uses compacted tool-call summaries when messages were stripped", () => {
-    const defined2914_0 = renderSubagentResult;
-    assertDefined(defined2914_0);
-    const widget = defined2914_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "done" }],
         details: {
@@ -167,9 +160,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("uses glyph-first compact rendering for completed subagents", () => {
-    const defined5283_0 = renderSubagentResult;
-    assertDefined(defined5283_0);
-    const widget = defined5283_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "done" }],
         details: {
@@ -201,9 +192,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("shows finalization turn counts in acceptance status", () => {
-    const defined6222_0 = renderSubagentResult;
-    assertDefined(defined6222_0);
-    const widget = defined6222_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "done" }],
         details: {
@@ -261,9 +250,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("keeps failure reasons visible in compact rendering", () => {
-    const defined7423_0 = renderSubagentResult;
-    assertDefined(defined7423_0);
-    const widget = defined7423_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "failed" }],
         details: {
@@ -291,9 +278,7 @@ describe("renderSubagentResult fork indicator", () => {
 
   it("shows live detail hints for running subagents", () => {
     const now = Date.now();
-    const defined8108_0 = renderSubagentResult;
-    assertDefined(defined8108_0);
-    const widget = defined8108_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "(running...)" }],
         details: {
@@ -372,13 +357,9 @@ describe("renderSubagentResult fork indicator", () => {
         ],
       },
     };
-    const defined10409_0 = renderSubagentResult;
-    assertDefined(defined10409_0);
-    const first = defined10409_0(result, { expanded: false }, theme).render(120);
+    const first = renderSubagentResult(result, { expanded: false }, theme).render(120);
     t.mock.timers.tick(120);
-    const defined10527_0 = renderSubagentResult;
-    assertDefined(defined10527_0);
-    const second = defined10527_0(result, { expanded: false }, theme).render(120);
+    const second = renderSubagentResult(result, { expanded: false }, theme).render(120);
 
     assert.deepEqual(second, first);
   });
@@ -422,9 +403,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("keeps paused multi-result runs visible in the compact headline", () => {
-    const defined11840_0 = renderSubagentResult;
-    assertDefined(defined11840_0);
-    const widget = defined11840_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "paused" }],
         details: {
@@ -452,9 +431,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("keeps empty-output warnings visible in compact multi-result rendering", () => {
-    const defined12548_0 = renderSubagentResult;
-    assertDefined(defined12548_0);
-    const widget = defined12548_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "done" }],
         details: {
@@ -481,9 +458,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("keeps pending placeholder steps pending in compact rendering", () => {
-    const defined13253_0 = renderSubagentResult;
-    assertDefined(defined13253_0);
-    const widget = defined13253_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "running" }],
         details: {
@@ -544,9 +519,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("uses running/done wording and agent fractions for live parallel rendering", () => {
-    const defined15026_0 = renderSubagentResult;
-    assertDefined(defined15026_0);
-    const widget = defined15026_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "(running...)" }],
         details: {
@@ -599,9 +572,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("shows mixed done/running counters for top-level parallel mode", () => {
-    const defined16496_0 = renderSubagentResult;
-    assertDefined(defined16496_0);
-    const widget = defined16496_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "(running...)" }],
         details: {
@@ -680,9 +651,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("labels active chain parallel groups with chain step and agent fractions", () => {
-    const defined18624_0 = renderSubagentResult;
-    assertDefined(defined18624_0);
-    const widget = defined18624_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "running" }],
         details: {
@@ -766,9 +735,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("shows only the active parallel group for mixed chains after a serial step", () => {
-    const defined21006_0 = renderSubagentResult;
-    assertDefined(defined21006_0);
-    const widget = defined21006_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "running" }],
         details: {
@@ -928,9 +895,7 @@ describe("renderSubagentResult fork indicator", () => {
         durationMs: 1,
       },
     ];
-    const defined25197_0 = renderSubagentResult;
-    assertDefined(defined25197_0);
-    const widget = defined25197_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "done" }],
         details: {
@@ -962,9 +927,7 @@ describe("renderSubagentResult fork indicator", () => {
   });
 
   it("keeps serial chain wording for non-parallel steps", () => {
-    const defined26187_0 = renderSubagentResult;
-    assertDefined(defined26187_0);
-    const widget = defined26187_0(
+    const widget = renderSubagentResult(
       {
         content: [{ type: "text", text: "running" }],
         details: {
