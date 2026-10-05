@@ -15,7 +15,8 @@ import { ChildStreamObserver } from "./child-stream-observer.ts";
 import { ChildEventObserver } from "./child-event-observer.ts";
 import { accountNativeChild } from "./child-native-accounting.ts";
 import { childExecutionOutcome } from "./child-execution-outcome.ts";
-import { errorText, nonempty } from "./child-json.ts";
+import { errorMessage as errorText } from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 import type { ChildAttemptOptions, ChildAttemptResult } from "./child-attempt-types.ts";
 export { buildChildInvocation } from "./child-invocation.ts";
 export type {

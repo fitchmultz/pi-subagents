@@ -1,5 +1,5 @@
 import { nativeProjection, type Projection } from "../../shared/journal-reader.ts";
-import { isObject } from "./child-json.ts";
+import { isRecord as isObject } from "../../shared/unknown.ts";
 
 type JsonPath = readonly (string | number)[];
 export function projectedMessage(root: unknown): Readonly<Record<string, unknown>> | undefined {

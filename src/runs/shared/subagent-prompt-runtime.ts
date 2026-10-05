@@ -12,7 +12,7 @@ import {
 import { registerChildStructuredTool } from "./child-structured-tool.ts";
 import { ChildNativeObservation } from "./child-native-observation.ts";
 import { stripParentOnlySubagentMessages } from "./child-context-filter.ts";
-import { nonempty } from "./child-json.ts";
+import { nonempty } from "./child-presence.ts";
 
 const SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV = "PI_SUBAGENT_INHERIT_PROJECT_CONTEXT";
 const SUBAGENT_INHERIT_SKILLS_ENV = "PI_SUBAGENT_INHERIT_SKILLS";

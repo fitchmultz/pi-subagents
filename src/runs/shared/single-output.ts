@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { OutputMode, SavedOutputReference } from "../../shared/types.ts";
-import { errorCode, errorText, nonempty } from "./child-json.ts";
+import { hasErrorCode, errorMessage as errorText } from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 
 export interface SingleOutputSnapshot {
   readonly exists: boolean;
@@ -263,8 +264,7 @@ export function resolveSingleOutput(
       return { fullOutput: fs.readFileSync(outputPath, "utf-8"), savedPath: outputPath };
     }
   } catch (error) {
-    const code = errorCode(error);
-    if (code !== "ENOENT" && code !== "ENOTDIR") {
+    if (!hasErrorCode(error, "ENOENT") && !hasErrorCode(error, "ENOTDIR")) {
       return {
         fullOutput: fallbackOutput,
         saveError: `Failed to read changed output file: ${errorText(error)}`,
@@ -349,8 +349,7 @@ export function cleanupSingleOutputFile(
     fs.unlinkSync(outputPath);
     return { path: absolutePath, action: "deleted" };
   } catch (error) {
-    const code = errorCode(error);
-    if (code === "ENOENT" || code === "ENOTDIR") {
+    if (hasErrorCode(error, "ENOENT") || hasErrorCode(error, "ENOTDIR")) {
       return { path: absolutePath, action: "already-missing" };
     }
     return {

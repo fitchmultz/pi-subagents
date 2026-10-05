@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Compile } from "../../shared/native-typebox.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
-import { errorText } from "./child-json.ts";
+import { errorMessage as errorText } from "../../shared/unknown.ts";
 
 export const STRUCTURED_OUTPUT_SCHEMA_ENV = "PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA";
 export const STRUCTURED_OUTPUT_CAPTURE_ENV = "PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE";

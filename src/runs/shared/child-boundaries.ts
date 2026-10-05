@@ -15,7 +15,8 @@ import {
 import { parseNativeFinalizationEvent } from "./native-finalization-schema.ts";
 import { readFinalizationReport } from "./acceptance.ts";
 import { addUsage } from "./native-usage.ts";
-import { errorCode, nonempty } from "./child-json.ts";
+import { hasErrorCode } from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 
 interface BoundaryOptions {
   readonly config?: ReadonlyInput<NativeFinalizationConfig>;
@@ -104,7 +105,7 @@ export class ChildBoundaries {
         { policy: "live", start: this.cursor },
       );
     } catch (error) {
-      if (error !== this.pending && errorCode(error) !== "ENOENT") {
+      if (error !== this.pending && !hasErrorCode(error, "ENOENT")) {
         throw error;
       }
     }

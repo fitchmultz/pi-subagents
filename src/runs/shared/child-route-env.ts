@@ -1,7 +1,7 @@
 import { encodeNestedPathEnv, parseNestedPathEnv } from "./nested-path.ts";
 import type { ReadonlyInput } from "../../shared/types.ts";
 import type { BuildPiArgsInput } from "./pi-launch-input.ts";
-import { nonempty } from "./child-json.ts";
+import { nonempty } from "./child-presence.ts";
 import {
   STRUCTURED_OUTPUT_CAPTURE_ENV,
   STRUCTURED_OUTPUT_SCHEMA_ENV,

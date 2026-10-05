@@ -3,7 +3,8 @@ import * as path from "node:path";
 import type { ReadonlyInput } from "../../shared/types.ts";
 import type { BuildPiArgsInput, BuildPiArgsResult } from "./pi-launch-input.ts";
 import { prepareChildExecutionCwd } from "./child-execution-cwd.ts";
-import { errorCode, isObject, nonempty } from "./child-json.ts";
+import { hasErrorCode, isRecord as isObject } from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 
 const SESSION_CWD_PRELOAD_URL = new URL(
   `session-cwd-preload${import.meta.url.endsWith(".ts") ? ".ts" : ".js"}`,
@@ -16,7 +17,7 @@ function readSessionHeaderLine(file: string): string | undefined {
   try {
     fd = fs.openSync(file, "r");
   } catch (error) {
-    if (errorCode(error) === "ENOENT" && !fs.lstatSync(file, { throwIfNoEntry: false })) {
+    if (hasErrorCode(error, "ENOENT") && !fs.lstatSync(file, { throwIfNoEntry: false })) {
       return;
     }
     throw error;

@@ -2,7 +2,7 @@ import type { ReadonlyInput } from "../../shared/types.ts";
 import type { ChildAttemptOptions, ChildAttemptResult } from "./child-attempt-types.ts";
 import { readFinalizationReport } from "./acceptance.ts";
 import { readStructuredOutput } from "./structured-output.ts";
-import { nonempty } from "./child-json.ts";
+import { nonempty } from "./child-presence.ts";
 
 interface OutcomeInput {
   readonly result: ReadonlyInput<ChildAttemptResult>;

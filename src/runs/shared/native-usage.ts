@@ -8,7 +8,8 @@ import type {
   UsageContribution,
 } from "../../shared/types.ts";
 import { scanJournal, nativeProjection } from "../../shared/journal-reader.ts";
-import { errorCode, isObject, nonempty } from "./child-json.ts";
+import { hasErrorCode, isRecord as isObject } from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 import {
   observedUsage,
   optionalNumber,
@@ -60,7 +61,7 @@ export function snapshotNativeBaseline(
         { requireNewline: true },
       );
     } catch (error) {
-      if (errorCode(error) !== "ENOENT") {
+      if (!hasErrorCode(error, "ENOENT")) {
         throw error;
       }
     }
@@ -73,6 +74,8 @@ export function snapshotNativeUsage(file: string | undefined): Set<string> {
 }
 
 function validateObservedCounters(value: ObservedUsage): void {
+  // This exported reducer may receive external observations; static types are not wire validation.
+  observedUsage(value);
   for (const [key, counter] of Object.entries(value)) {
     if (typeof counter === "number" && (!Number.isFinite(counter) || counter < 0)) {
       throw new Error(`Invalid native usage counter: ${key}`);
@@ -382,7 +385,7 @@ export function readNativeUsage(
       { requireNewline: true },
     );
   } catch (error) {
-    if (errorCode(error) === "ENOENT") {
+    if (hasErrorCode(error, "ENOENT")) {
       return;
     }
     if (error !== boundaryReached) {

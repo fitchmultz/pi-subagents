@@ -11,7 +11,7 @@ import {
   type ClaudeCodeInvocation,
 } from "./claude-code.ts";
 import { nativeFinalizationLaunch, type NativeFinalizationConfig } from "./native-finalization.ts";
-import { nonempty } from "./child-json.ts";
+import { nonempty } from "./child-presence.ts";
 
 type ChildInvocationInput = ReadonlyInput<
   Omit<BuildPiArgsInput, "baseArgs"> & { readonly nativeFinalization?: NativeFinalizationConfig }

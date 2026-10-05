@@ -1,6 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { errorCode, errorText, isObject, nonempty } from "./child-json.ts";
+import {
+  hasErrorCode,
+  errorMessage as errorText,
+  isRecord as isObject,
+} from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const RESOLVE_CWD = "pi-change-working-dir:resolve-execution-cwd";
@@ -34,7 +39,7 @@ function readIntent(sessionFile: string): CwdIntent | undefined {
   try {
     raw = fs.readFileSync(intentPath(sessionFile), "utf8");
   } catch (error) {
-    if (errorCode(error) === "ENOENT") {
+    if (hasErrorCode(error, "ENOENT")) {
       return undefined;
     }
     throw error;

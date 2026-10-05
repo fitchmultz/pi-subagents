@@ -3,7 +3,8 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import type { ChildObservation } from "./child-attempt-types.ts";
-import { errorText, nonempty } from "./child-json.ts";
+import { errorMessage as errorText } from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 
 export interface AuditResult {
   readonly auditPath?: string;

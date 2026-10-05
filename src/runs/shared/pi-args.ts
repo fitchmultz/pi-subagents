@@ -10,8 +10,8 @@ import {
 } from "./child-route-env.ts";
 export * from "./child-route-env.ts";
 import type { BuildPiArgsInput, BuildPiArgsResult } from "./pi-launch-input.ts";
-import { isUnknownArray } from "../../shared/unknown.ts";
-import { isObject, nonempty } from "./child-json.ts";
+import { isUnknownArray, isRecord as isObject } from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
 import { piSessionLaunch } from "./pi-session-launch.ts";
 import type { ChildProjectTrustPolicy, ReadonlyInput } from "../../shared/types.ts";

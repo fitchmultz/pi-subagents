@@ -3,7 +3,8 @@ import { NativeJournal } from "../../shared/journal-reader.ts";
 import type { ChildAttemptResult, ChildObservation } from "./child-attempt-types.ts";
 import { readNativeUsage, nativeUsageCollector, type NativeUsageMetadata } from "./native-usage.ts";
 import { sumAttemptUsage } from "./model-fallback.ts";
-import { errorText, nonempty } from "./child-json.ts";
+import { errorMessage as errorText } from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 import { optionalString } from "./child-message-validation.ts";
 
 interface AccountingInput {

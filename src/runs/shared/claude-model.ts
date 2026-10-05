@@ -1,5 +1,5 @@
 import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
-import { nonempty } from "./child-json.ts";
+import { nonempty } from "./child-presence.ts";
 
 const PREFIX = "claude-code/";
 export type ClaudeFamily = "fable" | "opus" | "sonnet" | "haiku";

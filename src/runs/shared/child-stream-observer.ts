@@ -10,7 +10,7 @@ import {
   projectedMessage,
   projectedPart,
 } from "./child-stream-projection.ts";
-import { isObject } from "./child-json.ts";
+import { isRecord as isObject } from "../../shared/unknown.ts";
 import type { NativeUsageMetadata } from "./native-usage.ts";
 
 type SpoolAccess = ReadonlyInput<

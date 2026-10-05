@@ -15,7 +15,7 @@ export {
 } from "./claude-session.ts";
 import type { ClaudeCodeInvocation, ClaudeCodeResultEvent } from "./claude-types.ts";
 export type { ClaudeCodeInvocation, ClaudeCodeResultEvent } from "./claude-types.ts";
-import { nonempty } from "./child-json.ts";
+import { nonempty } from "./child-presence.ts";
 
 interface ClaudeInvocationInput {
   readonly model: string;

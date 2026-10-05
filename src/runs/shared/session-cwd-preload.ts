@@ -2,7 +2,8 @@ import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { importSelectedNative } from "../../shared/native-import.ts";
-import { isObject, nonempty } from "./child-json.ts";
+import { isRecord as isObject } from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 import { optionalString, requiredString } from "./child-message-validation.ts";
 
 // Node loads this before Pi selects its session and creates cwd-bound services.

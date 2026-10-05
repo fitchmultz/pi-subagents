@@ -7,7 +7,8 @@ import {
   type Projection,
 } from "../../shared/journal-reader.ts";
 import type { ObservedUsage } from "../../shared/types.ts";
-import { isObject, nonempty } from "./child-json.ts";
+import { isRecord as isObject } from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 import { observedUsage, optionalString, requiredString } from "./child-message-validation.ts";
 
 export type ParentReceipt =

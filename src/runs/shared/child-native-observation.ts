@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { SessionEntryCursor } from "../../shared/session-entries.ts";
-import { nonempty } from "./child-json.ts";
+import { nonempty } from "./child-presence.ts";
 
 function entryObservation(entry: SessionEntry): Readonly<Record<string, unknown>> {
   const message = entry.type === "message" ? entry.message : undefined;

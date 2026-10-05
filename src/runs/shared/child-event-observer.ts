@@ -41,7 +41,8 @@ import {
   optionalString,
   requiredString,
 } from "./child-message-validation.ts";
-import { errorText, isObject, nonempty } from "./child-json.ts";
+import { errorMessage as errorText, isRecord as isObject } from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 import {
   createMutationCompletionTracker,
   resolveCurrentPath,

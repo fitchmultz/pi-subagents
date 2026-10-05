@@ -36,7 +36,7 @@ import {
   type NativeFinalizationConfig,
   type NativeFinalizationEvent,
 } from "./native-finalization-types.ts";
-import { nonempty } from "./child-json.ts";
+import { nonempty } from "./child-presence.ts";
 export {
   FINALIZATION_EVENT,
   type NativeFinalizationConfig,

@@ -3,7 +3,8 @@ import * as path from "node:path";
 import type { ObservedMessage } from "../../shared/types.ts";
 import { scanJournal } from "../../shared/journal-reader.ts";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
-import { errorCode, isObject, nonempty } from "./child-json.ts";
+import { hasErrorCode, isRecord as isObject } from "../../shared/unknown.ts";
+import { nonempty } from "./child-presence.ts";
 import { isClaudeFamily, isClaudeContext, type ClaudeCodeModelSpec } from "./claude-model.ts";
 import type { ClaudeCodeResultEvent } from "./claude-types.ts";
 
@@ -51,7 +52,7 @@ export function readClaudeCodeSessionMetadata(
     const value: unknown = JSON.parse(fs.readFileSync(`${sessionFile}.metadata.json`, "utf8"));
     return validateMetadata(value);
   } catch (error) {
-    if (errorCode(error) !== "ENOENT") {
+    if (!hasErrorCode(error, "ENOENT")) {
       throw error;
     }
   }

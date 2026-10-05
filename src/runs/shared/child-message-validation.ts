@@ -3,7 +3,7 @@ import type {
   ObservedMessage,
   ObservedUsage,
 } from "../../shared/types/messages.ts";
-import { isObject } from "./child-json.ts";
+import { isRecord as isObject } from "../../shared/unknown.ts";
 
 export function optionalString(value: unknown, label: string): string | undefined {
   if (value === undefined) {

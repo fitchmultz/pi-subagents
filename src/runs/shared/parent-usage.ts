@@ -15,7 +15,7 @@ import type {
 } from "../../shared/types.ts";
 import { SessionEntryCursor } from "../../shared/session-entries.ts";
 import { createParentReceiptReader, type ParentReceipt } from "./parent-receipts.ts";
-import { isObject } from "./child-json.ts";
+import { isRecord as isObject } from "../../shared/unknown.ts";
 import { observedUsage, optionalString, requiredString } from "./child-message-validation.ts";
 import { validateNativeUsage } from "./native-usage.ts";
 
