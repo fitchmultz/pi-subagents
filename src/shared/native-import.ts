@@ -1,6 +1,8 @@
 import { registerHooks } from "node:module";
 
-/** Resolve only this importing adapter's literal SDK import to the selected host. */
+/** Resolve only this native Node importer's literal SDK import to the selected host. */
+// ponytail: Jiti rewrites callback imports and loses their originating parent URL.
+// Jiti adapters must use the approved declaration-typed selected URL import boundary.
 export async function importSelectedNative<T>(
   parentURL: string,
   specifier: string,
