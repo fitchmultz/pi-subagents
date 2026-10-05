@@ -261,6 +261,7 @@
               "AgentBeforeSettleEvent",
               "SessionMessageEntry",
               "UsageEntry",
+              "EventBus",
               "EventBusController",
               "ScopedModel"
             ]
@@ -653,6 +654,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -837,6 +839,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -1021,6 +1024,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -1215,6 +1219,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -1404,6 +1409,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -1598,6 +1604,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -1787,6 +1794,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -1976,6 +1984,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -2160,6 +2169,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -2344,6 +2354,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -2528,6 +2539,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -2712,6 +2724,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -2896,6 +2909,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -3080,6 +3094,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -3264,6 +3279,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -3448,6 +3464,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -3632,6 +3649,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -3816,6 +3834,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -4000,6 +4019,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -4184,6 +4204,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -4373,6 +4394,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -4557,6 +4579,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -6807,6 +6830,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -6991,6 +7015,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -7175,6 +7200,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -7359,6 +7385,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -7542,6 +7569,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -7726,6 +7754,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -7910,6 +7939,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -8094,6 +8124,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -8278,6 +8309,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -8462,6 +8494,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -8646,6 +8679,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -8830,6 +8864,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -9014,6 +9049,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
@@ -9193,6 +9229,7 @@
                   "AgentBeforeSettleEvent",
                   "SessionMessageEntry",
                   "UsageEntry",
+                  "EventBus",
                   "EventBusController",
                   "ScopedModel"
                 ]
