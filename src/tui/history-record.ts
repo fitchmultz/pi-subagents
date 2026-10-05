@@ -74,14 +74,17 @@ const assistantFields = Type.Object({
   errorMessage: Type.Optional(Type.String()),
 });
 
+type RecordMode = "preview" | "full";
+const toolCallFields = Type.Object({
+  type: Type.Literal("toolCall"),
+  id: Type.String(),
+  name: Type.String(),
+  arguments: Type.Unknown(),
+  thoughtSignature: Type.Optional(Type.String()),
+  namespace: Type.Optional(Type.String()),
+});
 export function toolCall(value: unknown): ToolCall | undefined {
-  if (
-    !isRecord(value) ||
-    value.type !== "toolCall" ||
-    typeof value.id !== "string" ||
-    typeof value.name !== "string" ||
-    !isJsonObject(value.arguments)
-  ) {
+  if (!Check(toolCallFields, value) || !isJsonObject(value.arguments)) {
     return;
   }
   return {
@@ -89,9 +92,8 @@ export function toolCall(value: unknown): ToolCall | undefined {
     id: value.id,
     name: value.name,
     arguments: { ...value.arguments },
-    thoughtSignature:
-      typeof value.thoughtSignature === "string" ? value.thoughtSignature : undefined,
-    namespace: typeof value.namespace === "string" ? value.namespace : undefined,
+    ...("thoughtSignature" in value ? { thoughtSignature: value.thoughtSignature } : {}),
+    ...("namespace" in value ? { namespace: value.namespace } : {}),
   };
 }
 function assistant(value: Readonly<Record<string, unknown>>): AssistantMessage | undefined {
@@ -128,7 +130,7 @@ function assistant(value: Readonly<Record<string, unknown>>): AssistantMessage |
     usage: { ...value.usage, cost: { ...value.usage.cost } },
     stopReason,
     content,
-    errorMessage: value.errorMessage,
+    ...("errorMessage" in value ? { errorMessage: value.errorMessage } : {}),
   };
 }
 function isStopReason(value: string): value is AssistantMessage["stopReason"] {
@@ -150,7 +152,10 @@ function toolMetadata(
   if ((value.usage !== undefined && !usage) || (value.nestedCalls !== undefined && !nestedCalls)) {
     return;
   }
-  return { usage, nestedCalls };
+  return {
+    ...("usage" in value ? { usage } : {}),
+    ...("nestedCalls" in value ? { nestedCalls } : {}),
+  };
 }
 const toolResultFields = Type.Object({
   toolCallId: Type.String(),
@@ -158,7 +163,10 @@ const toolResultFields = Type.Object({
   isError: Type.Boolean(),
   timestamp: Type.Number(),
 });
-function toolResultContent(value: unknown): ToolResultMessage["content"] | undefined {
+function toolResultContent(
+  value: unknown,
+  mode: RecordMode,
+): ToolResultMessage["content"] | undefined {
   if (!Array.isArray(value)) {
     return;
   }
@@ -167,12 +175,13 @@ function toolResultContent(value: unknown): ToolResultMessage["content"] | undef
     if (Check(text, part) || Check(image, part)) {
       content.push({ ...part });
     } else if (
+      mode === "preview" &&
       isRecord(part) &&
       part.type === "image" &&
       part.data === undefined &&
       typeof part.mimeType === "string"
     ) {
-      // Indexed previews intentionally omit image bytes. This display-only adapter tells native cards an image exists; it is never persisted or treated as a validated full record.
+      // Indexed previews omit image bytes; only preview cards may use this display adapter.
       content.push({ type: "image", data: "", mimeType: part.mimeType });
     } else {
       return;
@@ -180,8 +189,11 @@ function toolResultContent(value: unknown): ToolResultMessage["content"] | undef
   }
   return content;
 }
-function toolResult(value: Readonly<Record<string, unknown>>): ToolResultMessage | undefined {
-  const content = toolResultContent(value.content),
+function toolResult(
+  value: Readonly<Record<string, unknown>>,
+  mode: RecordMode,
+): ToolResultMessage | undefined {
+  const content = toolResultContent(value.content, mode),
     details = value.details;
   const metadata = toolMetadata(value);
   if (!metadata) {
@@ -201,7 +213,7 @@ function toolResult(value: Readonly<Record<string, unknown>>): ToolResultMessage
     isError: value.isError,
     timestamp: value.timestamp,
     content,
-    details,
+    ...("details" in value ? { details } : {}),
   };
 }
 function assistantPreview(
@@ -248,19 +260,27 @@ function bashMessage(
 }
 function observedMessage(
   value: unknown,
-): Extract<DisplayEntry, { type: "message" }>["message"] | undefined {
+  mode: RecordMode,
+): Pick<Extract<DisplayEntry, { type: "message" }>, "message" | "native"> | undefined {
   if (!isRecord(value)) {
     return;
   }
   switch (value.role) {
-    case "assistant":
-      return assistant(value) ?? assistantPreview(value);
-    case "toolResult":
-      return toolResult(value);
+    case "assistant": {
+      const native = assistant(value);
+      const message = native ?? (mode === "preview" ? assistantPreview(value) : undefined);
+      return message ? { message, ...(native ? { native } : {}) } : undefined;
+    }
+    case "toolResult": {
+      const message = toolResult(value, mode);
+      return message ? { message } : undefined;
+    }
     case "user":
-      return { role: "user", content: value.content };
-    case "bashExecution":
-      return bashMessage(value);
+      return { message: { role: "user", content: value.content } };
+    case "bashExecution": {
+      const message = bashMessage(value);
+      return message ? { message } : undefined;
+    }
     default:
       return;
   }
@@ -268,22 +288,19 @@ function observedMessage(
 function messageEntry(
   value: Readonly<Record<string, unknown>>,
   base: { readonly id: string; readonly timestamp: string },
+  mode: RecordMode,
 ): DisplayEntry | undefined {
-  const message = observedMessage(value.message);
-  const native =
-    isRecord(value.message) && value.message.role === "assistant"
-      ? assistant(value.message)
-      : undefined;
-  return message ? { ...base, type: "message", message, native } : undefined;
+  const observed = observedMessage(value.message, mode);
+  return observed ? { ...base, type: "message", ...observed } : undefined;
 }
 /** Validate only display facts; an indexed observation is never invented owner/session metadata. */
-export function displayEntry(value: unknown): DisplayEntry | undefined {
+export function displayEntry(value: unknown, mode: RecordMode): DisplayEntry | undefined {
   if (!isRecord(value) || typeof value.id !== "string" || typeof value.timestamp !== "string") {
     return;
   }
   const base = { id: value.id, timestamp: value.timestamp };
   if (value.type === "message") {
-    return messageEntry(value, base);
+    return messageEntry(value, base, mode);
   }
   if (value.type === "custom_message" && typeof value.customType === "string") {
     return {

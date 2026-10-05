@@ -29,7 +29,7 @@ export interface ConversationController {
   readonly shortcut: KeyId;
   readonly pinned?: string;
   readonly availableHeight: (tui: TUI) => number;
-  readonly task: (key: string) => AgentTask | undefined;
+  readonly task: (key: string) => Readonly<AgentTask> | undefined;
   readonly visit: (key: string) => AgentVisit;
   readonly changed: () => void;
   readonly historyPage: (
@@ -38,7 +38,13 @@ export interface ConversationController {
     anchor?: string | null,
   ) => Promise<HistorySelection | undefined>;
   readonly savedResult: (key: string, id: string) => Promise<AgentHistoryItem>;
-  readonly applyMetadata: (task: AgentTask, page: HistoryPage) => void;
+  readonly applyHistoryPage: (
+    key: string,
+    history: AgentHistory,
+    page: HistoryPage,
+    sourceSeen: boolean,
+  ) => void;
+  readonly setHistoryLoading: (key: string, loading: boolean) => void;
   readonly send: (key: string, text: string, continueExplicitly?: boolean) => Promise<void>;
   readonly stop: (key: string) => Promise<void>;
   readonly changes: (key: string) => Promise<AgentHistoryItem | undefined>;

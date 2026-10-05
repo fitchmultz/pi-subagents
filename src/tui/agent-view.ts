@@ -1,7 +1,8 @@
 import { hasText, errorText } from "./text-values.ts";
 import { isRecord } from "./history-text.ts";
 import { directionRenderer, type DirectionDetails } from "./direction-message.ts";
-import { restoredView } from "./view-persistence.ts";
+import { pickerPort, conversationPort } from "./view-connections.ts";
+import type { PickerController, ConversationController } from "./view-ports.ts";
 import { AgentControls } from "./agent-controls.ts";
 import { AgentBrowser } from "./agent-browser.ts";
 import { ViewSession } from "./view-session.ts";
@@ -11,15 +12,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { Container, Component, OverlayOptions, TUI } from "@earendil-works/pi-tui";
 import { loadConfig as loadIntercomConfig } from "../pi-intercom/config.ts";
 import { isTuiContext } from "../shared/ui-mode.ts";
-import {
-  WIDGET_KEY,
-  type SubagentState,
-  type HistoryPage,
-  type HistoryPageInput,
-  type HistoryRunPage,
-} from "../shared/types.ts";
-import type { AgentHistoryItem } from "./agent-history.ts";
-import type { AgentTask, AgentVisit, ExecuteControl } from "./view-model.ts";
+import { WIDGET_KEY, type SubagentState } from "../shared/types.ts";
+import type { ExecuteControl } from "./view-model.ts";
 import { AgentConversation } from "./agent-conversation.ts";
 import { AgentPicker } from "./agent-picker.ts";
 
@@ -66,72 +60,10 @@ export class AgentViewController {
   private readonly state: SubagentState;
   private readonly store: AgentTaskStore;
   private readonly session: ViewSession;
-  private readonly browser: AgentBrowser;
+  readonly browser: AgentBrowser;
   private readonly controls: AgentControls;
-  get tasks(): readonly AgentTask[] {
-    return this.store.tasks;
-  }
-  get pinned(): string | undefined {
-    return this.store.pinned;
-  }
-  get listPage(): HistoryRunPage | undefined {
-    return this.browser.listPage;
-  }
-  get listLoading(): boolean {
-    return this.browser.listLoading;
-  }
-  get listError(): string | undefined {
-    return this.browser.listError;
-  }
-  get listFilter(): string {
-    return this.browser.listFilter;
-  }
-  get listPending(): boolean {
-    return this.browser.listPending;
-  }
-  visit(key: string): AgentVisit {
-    return this.store.visit(key);
-  }
-  task(key: string): AgentTask | undefined {
-    return this.store.task(key);
-  }
-  applyMetadata(task: AgentTask, page: HistoryPage): void {
-    this.store.applyMetadata(task, page);
-  }
-  refresh(browse = false): Promise<void> {
-    return this.browser.refresh(browse);
-  }
-  filterTasks(text: string): void {
-    this.browser.filterTasks(text);
-  }
-  pageTasks(direction: "earlier" | "later"): void {
-    this.browser.pageTasks(direction);
-  }
-  retry(key?: string): Promise<void> {
-    return this.browser.retry(key);
-  }
-  historyPage(
-    key: string,
-    paging: Pick<HistoryPageInput, "before" | "after" | "cursor"> = {},
-    anchor?: string | null,
-  ): ReturnType<AgentBrowser["historyPage"]> {
-    return this.browser.historyPage(key, paging, anchor);
-  }
-  savedResult(key: string, id: string): Promise<AgentHistoryItem> {
-    return this.browser.savedResult(key, id);
-  }
-  send(key: string, text: string, continueExplicitly = false): Promise<void> {
-    return this.controls.send(key, text, continueExplicitly);
-  }
-  stop(key: string): Promise<void> {
-    return this.controls.stop(key);
-  }
-  changes(key: string): Promise<AgentHistoryItem | undefined> {
-    return this.controls.changes(key);
-  }
-  isBusy(key: string): boolean {
-    return this.controls.isBusy(key);
-  }
+  readonly picker: PickerController;
+  readonly conversation: ConversationController;
   private reportFailure(error: unknown): void {
     if (this.live()) {
       this.session.ctx?.ui.notify(`Agents: ${errorText(error)}`, "error");
@@ -155,6 +87,16 @@ export class AgentViewController {
       refreshSelected: (key) => this.refreshSelected(key),
       syncDraft: () => this.overlay?.syncDraft(),
     });
+    const layout = {
+      shortcut: this.shortcut,
+      availableHeight: (tui: TUI) => this.availableHeight(tui),
+    };
+    this.picker = pickerPort(this.store, this.browser, layout);
+    this.conversation = conversationPort(this.store, this.browser, this.controls, {
+      ...layout,
+      changed: () => this.changed(),
+      pin: (key) => this.pin(key),
+    });
     pi.registerCommand("agents", {
       description: "View, message, answer, stop, or continue your agents",
       handler: async (_args, ctx) => this.open(undefined, ctx),
@@ -173,11 +115,7 @@ export class AgentViewController {
       if (entry.type !== "custom" || entry.customType !== VIEW_ENTRY) {
         continue;
       }
-      const restored = restoredView(entry.data, ownerSessionId);
-      if (restored) {
-        this.store.visits = restored.visits;
-        this.store.pinned = restored.pinned;
-      }
+      this.store.restore(entry.data, ownerSessionId);
     }
     this.unsubscribe = this.pi.events.on("subagent:open-agents", (request) => {
       if (!isOpenRequest(request)) {
@@ -210,11 +148,11 @@ export class AgentViewController {
       this.widget = dock.component;
       return dock.component;
     });
-    this.defer(this.refresh());
+    this.defer(this.browser.refresh());
     this.timer = setInterval(() => {
       if (this.shouldRefresh()) {
         this.render?.();
-        this.defer(this.refresh());
+        this.defer(this.browser.refresh());
       }
     }, 500);
     this.timer.unref();
@@ -364,9 +302,14 @@ export class AgentViewController {
         }
         this.closeOverlay = (next) => done(next);
         this.overlay =
-          hasText(selected) && this.task(selected)
-            ? new AgentConversation(tui, theme, { controller: this, key: selected, done, keys })
-            : new AgentPicker(tui, theme, this, done);
+          hasText(selected) && this.store.task(selected)
+            ? new AgentConversation(tui, theme, {
+                controller: this.conversation,
+                key: selected,
+                done,
+                keys,
+              })
+            : new AgentPicker(tui, theme, this.picker, done);
         return this.overlay;
       },
       { overlay: true, overlayOptions },
@@ -377,7 +320,7 @@ export class AgentViewController {
     this.store.releaseSelected();
     this.closeOverlay = undefined;
     this.save();
-    this.defer(this.refresh());
+    this.defer(this.browser.refresh());
   }
   private routeOverlay(result: string | undefined): { readonly selected?: string } | undefined {
     if (result === "peers") {
@@ -401,7 +344,7 @@ export class AgentViewController {
       return;
     }
     if (!this.browser.listPage) {
-      await this.refresh(true);
+      await this.browser.refresh(true);
     }
     if (!this.live(generation)) {
       return;
@@ -437,10 +380,6 @@ export class AgentViewController {
     this.overlay = undefined;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
-    this.browser.listPage = undefined;
-    this.browser.listError = undefined;
-    this.browser.listLoading = false;
-    this.store.selectedKey = undefined;
 
     if (this.timer) {
       clearInterval(this.timer);
@@ -452,14 +391,8 @@ export class AgentViewController {
     this.saveTimer = undefined;
     this.render = undefined;
     this.widget = undefined;
-    this.session.ctx = undefined;
-    this.session.ownerSessionId = undefined;
-    this.store.tasks = [];
-    this.store.dockTasks = [];
-    this.store.taskKeys.clear();
-    this.store.visits.clear();
     this.controls.dispose();
-    this.store.pinned = undefined;
+    this.store.reset();
     this.lastSaved = "";
   }
 }

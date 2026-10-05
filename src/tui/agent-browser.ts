@@ -176,7 +176,7 @@ export class AgentBrowser {
     this.appliedListRequest = snapshot.request;
     this.listError = undefined;
     this.store.browsePage(page.rows);
-    this.store.dockTasks = dock.rows.flatMap((row) => this.store.fromView(row));
+    this.store.dockPage(dock.rows);
   }
   private shouldObserve(task: Readonly<AgentTask>): boolean {
     const visit = this.store.visits.get(task.key);
@@ -216,11 +216,7 @@ export class AgentBrowser {
       if (!this.active(snapshot)) {
         return;
       }
-      for (const observed of [...this.store.tasks, ...this.store.dockTasks].filter(
-        (candidate) => candidate.key === task.key,
-      )) {
-        this.store.applyMetadata(observed, page);
-      }
+      this.store.applyMetadata(task.key, page);
     } catch (error) {
       if (this.active(snapshot)) {
         this.store.metadataUnavailable(
@@ -248,9 +244,7 @@ export class AgentBrowser {
     this.filter = text.slice(0, 256);
     this.offset = 0;
     this.listRequest++;
-    this.store.tasks = this.store.tasks.filter(
-      (task) => task.key === this.store.selectedKey || task.key === this.store.pinned,
-    );
+    this.store.retainSelected();
     this.wake();
   }
   pageTasks(direction: "earlier" | "later"): void {

@@ -91,7 +91,7 @@ async function fullItem(
       endedAt: input.endedAt,
       signal: input.signal,
     });
-    const observed = record && displayEntry({ ...record, id });
+    const observed = record && displayEntry({ ...record, id }, "full");
     if (!observed) {
       throw new Error("Selected native entry is unavailable; retry history.");
     }
@@ -119,7 +119,7 @@ export async function indexedHistory(
   const entries = await pairedEntries(index, input, page);
   const observed = [...entries.values()]
     .sort((a, b) => a.sequence - b.sequence)
-    .flatMap((entry) => displayEntry(entry.entry) ?? []);
+    .flatMap((entry) => displayEntry(entry.entry, "preview") ?? []);
   const history = displayHistory(observed),
     visible = new Set(page.entries.map((entry) => entry.id));
   const items = history.items

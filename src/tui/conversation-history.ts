@@ -51,10 +51,7 @@ export class ConversationHistory {
     const request = ++this.pageRequest;
     this.loadingPage = true;
     this.pageError = undefined;
-    const task = this.controller.task(this.key);
-    if (task) {
-      task.historyLoading = true;
-    }
+    this.controller.setHistoryLoading(this.key, true);
     this.latestPage =
       paging.before === undefined && paging.after === undefined && paging.cursor === undefined;
     this.tui.requestRender();
@@ -74,10 +71,7 @@ export class ConversationHistory {
       return;
     }
     this.loadingPage = false;
-    const current = this.controller.task(this.key);
-    if (current) {
-      current.historyLoading = false;
-    }
+    this.controller.setHistoryLoading(this.key, false);
     this.tui.requestRender();
   }
   private async resolvePage(
@@ -172,22 +166,13 @@ export class ConversationHistory {
     if (!task) {
       return;
     }
-    task.history = history.items.map((item) =>
+    const items = history.items.map((item) =>
       item.id === `result:${task.run.runId}`
         ? { ...item, load: () => this.controller.savedResult(this.key, item.id) }
         : item,
     );
-    task.historyIds = history.entryIds;
-    task.finalId = history.finalId;
-    task.page = result.page;
     this.seenSource ||= result.page.count > 0;
-    task.unavailable =
-      !this.seenSource &&
-      task.child.state === "live" &&
-      ["missing", "pending", "indexing", "unlinked"].includes(result.page.sourceState)
-        ? undefined
-        : history.unavailable;
-    this.controller.applyMetadata(task, result.page);
+    this.controller.applyHistoryPage(this.key, { ...history, items }, result.page, this.seenSource);
     this.source.clearCards();
   }
 

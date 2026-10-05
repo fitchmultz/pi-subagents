@@ -302,7 +302,7 @@ interface Fixture {
   readonly complete: () => Promise<void>;
 }
 function requiredTask(f: Fixture, key = f.key) {
-  const value = f.controller.task(key);
+  const value = f.controller.conversation.task(key);
   assertDefined(value);
   return value;
 }
@@ -635,7 +635,7 @@ async function fixture(
   const refreshes = new Set<Promise<void>>();
   const refreshErrors: unknown[] = [];
   function refreshView(force = false): void {
-    const pending = controller.refresh(force).catch((error: unknown) => {
+    const pending = controller.browser.refresh(force).catch((error: unknown) => {
       refreshErrors.push(error);
     });
     refreshes.add(pending);
@@ -662,7 +662,7 @@ async function fixture(
   const ready = (async () => {
     const index = await runHistoryIndex(state);
     await index.refresh();
-    await controller.refresh();
+    await controller.browser.refresh();
   })();
   await ready;
   const result = {
@@ -871,10 +871,10 @@ for (const count of [20, 227]) {
     assert.equal(reads().length, 0, "startup never opens a native source on the UI thread");
     assert.deepEqual(rootListings(), [], "known run questions never enumerate global roots");
     assert.deepEqual(formatted(), [], "closed-panel startup does not format raw tool details");
-    assert.equal(f.controller.tasks.length, Math.min(count, 50));
+    assert.equal(f.controller.picker.tasks.length, Math.min(count, 50));
     parse.mock.resetCalls();
-    await f.controller.refresh();
-    await f.controller.refresh(true);
+    await f.controller.browser.refresh();
+    await f.controller.browser.refresh(true);
     assert.equal(reads().length, 0, "unchanged live/forced observations stay off-thread");
     assert.equal(
       parse.mock.callCount(),
@@ -888,10 +888,10 @@ for (const count of [20, 227]) {
       0,
       "an inert completed dock never requests full parent redraws",
     );
-    const opening = f.controller.open(f.controller.tasks[0].key);
+    const opening = f.controller.open(f.controller.picker.tasks[0].key);
     await historyReady(f);
     plain(f.overlay);
-    for (const item of f.controller.tasks[0].history) {
+    for (const item of f.controller.picker.tasks[0].history) {
       displayedItems.add(item);
     }
     plain(f.overlay);
@@ -907,7 +907,7 @@ for (const count of [20, 227]) {
       "opening one conversation does not read historical bodies on the UI thread",
     );
     assert.equal(formatted().length, 0, "ordinary pages do not materialize raw tool details");
-    const tool = f.controller.tasks[0].history.find((item) => item.kind === "tool");
+    const tool = f.controller.picker.tasks[0].history.find((item) => item.kind === "tool");
     assertDefined(tool);
     assertDefined(tool.load);
     assert.match(stringValue((await tool.load()).details), /historyProbe/);
@@ -917,7 +917,9 @@ for (const count of [20, 227]) {
       "explicitly selected details hydrate only their native records",
     );
     assert.equal(
-      f.controller.tasks.every((task) => task.child.task?.startsWith("Full assignment") === true),
+      f.controller.picker.tasks.every(
+        (task) => task.child.task?.startsWith("Full assignment") === true,
+      ),
       true,
     );
     f.interactiveOverlay.handleInput("\x1b");
@@ -971,10 +973,10 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
   }
   f.controller.start(f.ctx);
   await indexedReady(f);
-  for (const task of f.controller.tasks) {
-    f.controller.visit(task.key).draft = "Retain my draft";
+  for (const task of f.controller.picker.tasks) {
+    f.controller.conversation.visit(task.key).draft = "Retain my draft";
   }
-  await f.controller.refresh();
+  await f.controller.browser.refresh();
   const index = await runHistoryIndex(f.state),
     calls: string[] = [],
     historyPage = index.historyPage.bind(index);
@@ -990,8 +992,8 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
   );
   const check = async (expected: readonly string[]) => {
     calls.length = 0;
-    await f.controller.refresh();
-    await f.controller.refresh();
+    await f.controller.browser.refresh();
+    await f.controller.browser.refresh();
     assert.deepEqual(
       [...new Set(calls)].sort((a, b) => a.localeCompare(b)),
       [...expected].sort((a, b) => a.localeCompare(b)),
@@ -1004,9 +1006,9 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
   await check([runs[0].runId]);
   const terminal = requiredTask(f, `${runs[1].runId}:0`);
   const unread = terminal.unread;
-  f.controller.pin(terminal.key);
+  f.controller.conversation.pin(terminal.key);
   await check([runs[0].runId, runs[1].runId]);
-  const outbox = f.controller.visit(`${runs[2].runId}:0`).outbox;
+  const outbox = f.controller.conversation.visit(`${runs[2].runId}:0`).outbox;
   outbox.push({
     id: "awaited-human-receipt",
     runId: runs[2].runId,
@@ -1023,7 +1025,9 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
     "skipped observations retain unread state",
   );
   assert.ok(
-    f.controller.tasks.every((task) => f.controller.visit(task.key).draft === "Retain my draft"),
+    f.controller.picker.tasks.every(
+      (task) => f.controller.conversation.visit(task.key).draft === "Retain my draft",
+    ),
   );
   calls.length = 0;
   const changed = runs[3];
@@ -1043,22 +1047,22 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
     ],
   });
   await index.refresh(changed.runId);
-  await f.controller.refresh();
+  await f.controller.browser.refresh();
   await index.refresh();
   assert.equal(
     (await index.listRuns({ limit: 100 })).freshness.state,
     "current",
     "Observe publication before asserting unchanged terminal rows stop polling",
   );
-  await f.controller.refresh();
+  await f.controller.browser.refresh();
   await until(async () => {
-    const task = f.controller.task(`${changed.runId}:0`);
+    const task = f.controller.conversation.task(`${changed.runId}:0`);
     const published =
       task?.metadataAt === changed.startedAt + 1000 &&
       task.run.updatedAt === changed.startedAt + 1000 &&
       task.child.result?.finalOutput === "Updated saved report";
     if (!published) {
-      await f.controller.refresh();
+      await f.controller.browser.refresh();
     }
     return published;
   }, "changed terminal metadata is published in the controller before unchanged polling");
@@ -1079,7 +1083,7 @@ test("Agents metadata queries follow relevant state, not all visited terminal ro
     message: "A question remains observable beside terminal rows",
   });
   await index.refresh(questionRun.runId);
-  await f.controller.refresh();
+  await f.controller.browser.refresh();
   await check([runs[0].runId, runs[1].runId, runs[2].runId, questionRun.runId]);
   const opening = f.controller.open(`${runs[4].runId}:0`);
   await historyReady(f);
@@ -1169,8 +1173,8 @@ test("selected Agents controls refresh their own authority without touching unre
       messageId: delivery.messageId,
     });
   });
-  f.controller.visit(f.key).draft = "Keep my selected draft";
-  await f.controller.send(f.key, "Keep my selected draft");
+  f.controller.conversation.visit(f.key).draft = "Keep my selected draft";
+  await f.controller.conversation.send(f.key, "Keep my selected draft");
   assert.equal(deliveries.length, 1);
   assert.equal(deliveries[0].human.index, 0);
   assert.deepEqual(
@@ -1178,7 +1182,7 @@ test("selected Agents controls refresh their own authority without touching unre
     [],
     "send and its completion refresh are isolated to the selected run",
   );
-  await f.controller.stop(f.key);
+  await f.controller.conversation.stop(f.key);
   assert.equal(record(f.calls.at(-1)).index, 0);
   assert.deepEqual(accesses(), [], "Stop must not hydrate unrelated completed records");
   saveAsyncRunResult(f.run.runId, {
@@ -1197,13 +1201,13 @@ test("selected Agents controls refresh their own authority without touching unre
       },
     ],
   });
-  await f.controller.send(f.key, "Another direction");
+  await f.controller.conversation.send(f.key, "Another direction");
   assert.equal(
     deliveries.length,
     1,
     "selected authority is rechecked before sending to a child that completed meanwhile",
   );
-  assert.equal(f.controller.visit(f.key).draft, "Keep my selected draft");
+  assert.equal(f.controller.conversation.visit(f.key).draft, "Keep my selected draft");
   assert.deepEqual(accesses(), []);
   f.interactiveOverlay.handleInput("\x1b");
   await opening;
@@ -1290,7 +1294,7 @@ test("Agents predecessor and live continuation retain task identity and publishe
   f.controller.start(f.ctx);
   await refreshFixture(f);
   assert.equal(reads(), 0, "the UI never reads the shared continuation journal");
-  assert.equal(f.controller.tasks.length, 1);
+  assert.equal(f.controller.picker.tasks.length, 1);
   assert.equal(requiredTask(f).run.runId, runId);
   assert.equal(requiredTask(f).child.state, "live");
   assert.ok(requiredTask(f).historyIds.includes(`${published}:0`));
@@ -1298,15 +1302,15 @@ test("Agents predecessor and live continuation retain task identity and publishe
     !requiredTask(f).historyIds.includes("unpublished:0"),
     "sealed metadata must not leak into the live continuation",
   );
-  f.controller.visit(f.key).draft = "Keep my continuation draft";
+  f.controller.conversation.visit(f.key).draft = "Keep my continuation draft";
   for (let pass = 0; pass < 3; pass++) {
     t.mock.timers.tick(500);
     // Each forced refresh observes the same continuation before the next clock advance.
     // oxlint-disable-next-line no-await-in-loop
-    await f.controller.refresh(true);
+    await f.controller.browser.refresh(true);
     assert.equal(reads(), 0, "unchanged predecessor/live refreshes remain off-thread");
   }
-  assert.equal(f.controller.visit(f.key).draft, "Keep my continuation draft");
+  assert.equal(f.controller.conversation.visit(f.key).draft, "Keep my continuation draft");
   assert.equal(fs.readFileSync(file, "utf8"), original);
   assert.equal(f.calls.length, 0);
   assert.equal(f.sent.length, 0);
@@ -1340,7 +1344,7 @@ test("Agents predecessor and live continuation retain task identity and publishe
   }
   const get = t.mock.method(f.state.ownedRuns, "get");
   await refreshFixture(f);
-  assert.equal(f.controller.tasks.length, 1);
+  assert.equal(f.controller.picker.tasks.length, 1);
   assert.equal(
     requiredTask(f).run.runId,
     latest.runId,
@@ -1350,7 +1354,7 @@ test("Agents predecessor and live continuation retain task identity and publishe
     get.mock.callCount() <= 5 * f.state.ownedRuns.size,
     `continuation identity resolution must be linear, observed ${get.mock.callCount()} run lookups`,
   );
-  assert.equal(f.controller.visit(f.key).draft, "Keep my continuation draft");
+  assert.equal(f.controller.conversation.visit(f.key).draft, "Keep my continuation draft");
 });
 
 test("history reading IDs and delivery facts never need raw tool serialization", () => {
@@ -1973,7 +1977,7 @@ for (const [columns, rows] of [
       "openrouter/vendor/very-long-model-namespace/long-model-name-with-full-identity-ENDROUTE:high";
     Object.assign(f.status.steps[0], { model, modelStartedAt: Date.now() + 1 });
     saveRunStatus(f.run.runId, f.status);
-    f.controller.visit(f.key).readThrough = null;
+    f.controller.conversation.visit(f.key).readThrough = null;
     await refreshFixture(f);
     f.terminal.resize(columns, rows);
     const opening = f.controller.open(f.key);
@@ -2100,7 +2104,7 @@ for (const [background, nativeReply] of [
     });
     await until(() => mock.callCount() === 1, "primary attempt starts");
     await refreshFixture(f);
-    const task = f.controller.tasks[0];
+    const task = f.controller.picker.tasks[0];
     const runId = task.run.runId;
     trackedLaunch.runId = runId;
     assert.match(plain(f.strip, 160), /selected: requested\/vendor\/primary · thinking high/);
@@ -2216,7 +2220,7 @@ for (const [background, nativeReply] of [
       ],
     });
     await refreshFixture(f);
-    assert.equal(f.controller.tasks.length, 1);
+    assert.equal(f.controller.picker.tasks.length, 1);
     assert.equal(requiredTask(f, task.key).run.runId, successorId);
     assert.equal(
       requiredTask(f, task.key).model.summary,
@@ -2400,7 +2404,7 @@ test("clickable Agents hints: Esc Back closes the native conversation and preser
   await turn();
   assert.equal(f.tui.hasOverlay(), false, "clicking Back must close the same view as Escape");
   await opening;
-  assert.equal(f.controller.visit(f.key).draft, "Keep this child draft");
+  assert.equal(f.controller.conversation.visit(f.key).draft, "Keep this child draft");
   assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
   assert.equal(f.mainEditor.focused, true);
   assert.equal(f.calls.length, 0);
@@ -2455,12 +2459,15 @@ for (const [columns, rows] of [
       "native selected details are ready before Reply",
     );
     await clickHint(f, compact ? `${altLabel}+R` : "Reply");
-    await until(() => Boolean(f.controller.visit(f.key).quote), "full contextual reply loaded");
+    await until(
+      () => Boolean(f.controller.conversation.visit(f.key).quote),
+      "full contextual reply loaded",
+    );
     assert.equal(f.conversation.editor.focused, true);
-    assert.equal(f.controller.visit(f.key).quote?.text, "I found the relevant code.");
+    assert.equal(f.controller.conversation.visit(f.key).quote?.text, "I found the relevant code.");
     assert.equal(f.conversation.editor.getText(), "Unsent child draft");
     await clickHint(f, `${altLabel}+Q`);
-    assert.equal(f.controller.visit(f.key).quote, undefined);
+    assert.equal(f.controller.conversation.visit(f.key).quote, undefined);
     await clickHint(f, compact ? "F2" : "Actions");
     assert.match(plain(f.overlay, f.overlayBounds.width), /Reply/);
     await clickHint(f, compact ? "Esc" : "Back to conversation");
@@ -2496,9 +2503,9 @@ for (const [columns, rows] of [
     f.terminal.input("Review");
     await until(
       () =>
-        !f.controller.listLoading &&
-        f.controller.tasks.length === 1 &&
-        f.controller.tasks[0].child.index === 1,
+        !f.controller.picker.listLoading &&
+        f.controller.picker.tasks.length === 1 &&
+        f.controller.picker.tasks[0].child.index === 1,
       "global picker filter loaded",
     );
     f.tui.renderNow();
@@ -2531,11 +2538,11 @@ test("clickable Agents hints: latest leaves a scrolled reading position only on 
   f.terminal.input("Keep my draft");
   f.terminal.input("\x1b[5~");
   f.tui.renderNow();
-  const anchor = structuredClone(f.controller.visit(f.key).anchor);
+  const anchor = structuredClone(f.controller.conversation.visit(f.key).anchor);
   assistant(manager, "New activity arrived");
   await refreshFixture(f);
   f.tui.renderNow();
-  assert.deepEqual(f.controller.visit(f.key).anchor, anchor);
+  assert.deepEqual(f.controller.conversation.visit(f.key).anchor, anchor);
   await clickHint(f, "Actions");
   assert.ok(
     !plain(f.overlay, f.overlayBounds.width).includes(`${altLabel}+L`),
@@ -2647,7 +2654,7 @@ for (const columns of [100, 24]) {
     await refreshFixture(f);
     f.tui.renderNow();
     assert.equal(f.conversation.editor.getText(), "");
-    assert.equal(f.controller.visit(f.key).outbox.length, 0);
+    assert.equal(f.controller.conversation.visit(f.key).outbox.length, 0);
     await clickHint(f, "Esc");
     await opening;
     assert.equal(f.calls.length, 0);
@@ -2775,7 +2782,10 @@ test("clickable Agents hints: native Option labels preserve Alt bindings and cli
   const draft = "Literal Alt+R stays in my draft";
   f.terminal.input(draft);
   f.terminal.input("\x1br");
-  await until(() => Boolean(f.controller.visit(f.key).quote), "full quoted context loaded");
+  await until(
+    () => Boolean(f.controller.conversation.visit(f.key).quote),
+    "full quoted context loaded",
+  );
   f.tui.renderNow();
   assert.ok(plain(f.overlay, f.overlayBounds.width).includes(`Quote · ${altLabel}+Q remove`));
   f.terminal.input("\t");
@@ -2793,7 +2803,7 @@ test("clickable Agents hints: native Option labels preserve Alt bindings and cli
   f.tui.renderNow();
   await clickHint(f, `${altLabel}+Q`);
   assert.equal(
-    f.controller.visit(f.key).quote,
+    f.controller.conversation.visit(f.key).quote,
     undefined,
     "the longer native label remains clickable after clipping",
   );
@@ -2816,7 +2826,7 @@ test("clickable Agents hints: Back unwinds details and its menu without losing r
   f.terminal.input("Unsent draft");
   f.terminal.input("\x1b[5~");
   f.tui.renderNow();
-  const anchor = f.controller.visit(f.key).anchor?.id;
+  const anchor = f.controller.conversation.visit(f.key).anchor?.id;
   assertDefined(anchor);
   await clickHint(f, "Read/write");
   await clickHint(f, "Enter Details");
@@ -2825,7 +2835,7 @@ test("clickable Agents hints: Back unwinds details and its menu without losing r
   assert.ok(plain(f.overlay, f.overlayBounds.width).includes("› details"));
   assert.equal(f.conversation.editor.focused, false);
   await clickHint(f, "Esc Back");
-  assert.equal(f.controller.visit(f.key).anchor?.id, anchor);
+  assert.equal(f.controller.conversation.visit(f.key).anchor?.id, anchor);
   assert.equal(f.conversation.editor.getText(), "Unsent draft");
   assert.equal(f.conversation.editor.focused, true);
   const word = "Historical",
@@ -2912,12 +2922,15 @@ test("clickable Agents hints: quoted shell tabs keep native text and remove-cont
   f.tui.renderNow();
   f.terminal.input("\x1br");
   f.terminal.input("Unsent draft");
-  await until(() => Boolean(f.controller.visit(f.key).quote), "full quoted shell context loaded");
+  await until(
+    () => Boolean(f.controller.conversation.visit(f.key).quote),
+    "full quoted shell context loaded",
+  );
   f.tui.renderNow();
-  assert.equal(f.controller.visit(f.key).quote?.title.includes("printf\tquote"), true);
+  assert.equal(f.controller.conversation.visit(f.key).quote?.title.includes("printf\tquote"), true);
   assert.match(plain(f.overlay, f.overlayBounds.width), /Shell: printf   quote/);
   await clickHint(f, `${altLabel}+Q remove`);
-  assert.equal(f.controller.visit(f.key).quote, undefined);
+  assert.equal(f.controller.conversation.visit(f.key).quote, undefined);
   assert.equal(f.conversation.editor.getText(), "Unsent draft");
   await clickHint(f, "Esc Back");
   await opening;
@@ -2993,17 +3006,17 @@ test("clickable Agents hints: ordinary activity stays literal and cannot jump to
   f.tui.renderNow();
   await refreshFixture(f);
   f.tui.renderNow();
-  await f.controller.refresh();
+  await f.controller.browser.refresh();
   f.tui.renderNow();
   assert.equal(requiredTask(f).unread, false);
-  const anchor = structuredClone(f.controller.visit(f.key).anchor);
+  const anchor = structuredClone(f.controller.conversation.visit(f.key).anchor);
   await clickHint(f, "latest");
   assert.equal(
     f.conversation.scroll.isFollowingEnd,
     false,
     "clicking ordinary activity cannot activate Latest",
   );
-  assert.deepEqual(f.controller.visit(f.key).anchor, anchor);
+  assert.deepEqual(f.controller.conversation.visit(f.key).anchor, anchor);
   assert.equal(f.conversation.editor.getText(), "Keep my draft");
   await clickHint(f, "Esc Back");
   await opening;
@@ -3084,7 +3097,7 @@ test("clickable Agents hints: a returned notice cannot declare a Continue action
     assert.equal(f.calls.length, 1, "returned data must not start a continuation");
     assert.equal(f.calls[0].action, "interrupt");
     assert.equal(f.sent.length, 0);
-    assert.equal(f.controller.visit(f.key).outbox.length, 0);
+    assert.equal(f.controller.conversation.visit(f.key).outbox.length, 0);
     assert.equal(f.conversation.editor.getText(), "Keep my draft");
     // The active native overlay must close before the next reload observation.
     // oxlint-disable-next-line no-await-in-loop
@@ -3105,7 +3118,7 @@ test("live multiple-child picker and fullscreen task click target the exact chil
   await turn();
   assert.ok(f.overlay instanceof AgentConversation);
   assert.equal(f.conversation.key, `${f.run.runId}:1`);
-  await f.controller.stop(f.conversation.key);
+  await f.controller.conversation.stop(f.conversation.key);
   assert.deepEqual(f.interrupts, [0, 1]);
   f.interactiveOverlay.handleInput("\x1b");
   await opening;
@@ -3168,20 +3181,20 @@ test("full native history, tool details and contextual reply survive streaming a
   const view = f.conversation;
   await historyReady(f);
   view.render(90);
-  const readThrough = f.controller.visit(f.key).readThrough;
+  const readThrough = f.controller.conversation.visit(f.key).readThrough;
   view.handleInput("\x1b[5~");
   view.render(90);
   assert.equal(
-    f.controller.visit(f.key).readThrough,
+    f.controller.conversation.visit(f.key).readThrough,
     readThrough,
     "reading backwards cannot regress the unread boundary",
   );
-  const anchor = f.controller.visit(f.key).anchor;
+  const anchor = f.controller.conversation.visit(f.key).anchor;
   assistant(manager, "New streamed response\n".repeat(20));
   await refreshFixture(f);
   view.render(90);
   assert.deepEqual(
-    f.controller.visit(f.key).anchor,
+    f.controller.conversation.visit(f.key).anchor,
     anchor,
     "append must not pull a scrolled reader to the bottom",
   );
@@ -3197,8 +3210,14 @@ test("full native history, tool details and contextual reply survive streaming a
   assert.equal(f.calls.length, 0);
   view.handleInput("\x1br");
   view.render(90);
-  assert.match(stringValue(record(f.controller.visit(f.key).quote).text), /FULL-DETAIL-END/);
-  assert.match(stringValue(record(f.controller.visit(f.key).quote).text), /-before\n\+after/);
+  assert.match(
+    stringValue(record(f.controller.conversation.visit(f.key).quote).text),
+    /FULL-DETAIL-END/,
+  );
+  assert.match(
+    stringValue(record(f.controller.conversation.visit(f.key).quote).text),
+    /-before\n\+after/,
+  );
   view.handleInput("Keep this API");
   const observed: LiveDelivery[] = [];
   f.pi.events.on("subagent:live-intercom", (payload) => {
@@ -3238,9 +3257,9 @@ test("full native history, tool details and contextual reply survive streaming a
   });
   await refreshFixture(f);
   assert.equal(view.editor.getExpandedText(), "");
-  assert.equal(f.controller.visit(f.key).outbox.length, 0);
+  assert.equal(f.controller.conversation.visit(f.key).outbox.length, 0);
   assert.equal(
-    f.controller.visit(f.key).notice,
+    f.controller.conversation.visit(f.key).notice,
     undefined,
     "the native receipt clears the obsolete already-waiting notice",
   );
@@ -3291,11 +3310,11 @@ test("native Agents earlier/later pages and Latest retain access to exact select
   assistant(manager, "Continuation appended after selection, before detail input");
   f.terminal.input("\x1br");
   await until(
-    () => Boolean(f.controller.visit(f.key).quote),
+    () => Boolean(f.controller.conversation.visit(f.key).quote),
     "full selected contextual reply loaded",
   );
   assert.equal(
-    stringValue(record(f.controller.visit(f.key).quote).text),
+    stringValue(record(f.controller.conversation.visit(f.key).quote).text),
     full,
     "direct Reply quotes the full selected body, not its bounded preview",
   );
@@ -3323,7 +3342,7 @@ test("native Agents earlier/later pages and Latest retain access to exact select
   f.terminal.input("\t");
   f.terminal.input("\x1b[H");
   f.tui.renderNow();
-  assert.equal(f.controller.visit(f.key).anchor?.id, "assignment");
+  assert.equal(f.controller.conversation.visit(f.key).anchor?.id, "assignment");
   f.terminal.input("\x1b");
   await opening;
   const reopen = f.controller.open(f.key);
@@ -3340,14 +3359,14 @@ test("native Agents earlier/later pages and Latest retain access to exact select
     100,
     "Later on the latest page cannot replace it with a forward-past-end page",
   );
-  const original = f.controller.historyPage.bind(f.controller);
+  const original = f.controller.conversation.historyPage.bind(f.controller.conversation);
   let held = false,
     release!: () => void;
   const delayed = new Promise<void>((resolve) => {
     release = resolve;
   });
   t.mock.method(
-    f.controller,
+    f.controller.conversation,
     "historyPage",
     async (
       key: string,
@@ -3425,7 +3444,7 @@ for (const loss of ["missing", "replacement", "truncation"]) {
     f.terminal.input("\x1br");
     f.tui.renderNow();
     assert.equal(
-      f.controller.visit(f.key).quote,
+      f.controller.conversation.visit(f.key).quote,
       undefined,
       "Reply cannot quote an unavailable-details notice as saved evidence",
     );
@@ -3530,7 +3549,7 @@ for (const nativeAnswer of [false, true]) {
     );
     view.handleInput("\x1br");
     assert.match(
-      stringValue(record(f.controller.visit(f.key).quote).text),
+      stringValue(record(f.controller.conversation.visit(f.key).quote).text),
       /ACCEPTANCE-DETAIL-END/,
       "replying to the submission retains its actual recorded data",
     );
@@ -3562,14 +3581,14 @@ for (const nativeAnswer of [false, true]) {
     assert.equal(f.calls.length, 0);
     f.interactiveOverlay.handleInput("\x1b");
     await reopen;
-    const savedResult = f.controller.savedResult.bind(f.controller);
+    const savedResult = f.controller.conversation.savedResult.bind(f.controller.conversation);
     let reportHeld = false,
       releaseReport!: () => void;
     const reportBarrier = new Promise<void>((resolve) => {
       releaseReport = resolve;
     });
     t.mock.method(
-      f.controller,
+      f.controller.conversation,
       "savedResult",
       async (...args: ReadonlyDeep<Parameters<typeof savedResult>>) => {
         const loadedReport = await savedResult(...args);
@@ -3581,8 +3600,8 @@ for (const nativeAnswer of [false, true]) {
     t.after(() => releaseReport());
     const reopenLatest = f.controller.open();
     await until(() => reportHeld, "real worker's selected canonical result returned");
-    await f.controller.refresh();
-    await f.controller.refresh();
+    await f.controller.browser.refresh();
+    await f.controller.browser.refresh();
     releaseReport();
     await historyReady(f);
     assert.equal(
@@ -3593,7 +3612,7 @@ for (const nativeAnswer of [false, true]) {
     f.interactiveOverlay.handleInput("\x1b");
     await reopenLatest;
     if (earlierAnswer !== undefined && earlierAnswer !== "") {
-      f.controller.visit(f.key).anchor = { id: `${earlierAnswer}:0`, line: 0 };
+      f.controller.conversation.visit(f.key).anchor = { id: `${earlierAnswer}:0`, line: 0 };
       const reopenEarlier = f.controller.open();
       await historyReady(f);
       const olderPage = f.conversation.scroll.render(118).map(stripTerminalSequences).join("\n");
@@ -3677,7 +3696,7 @@ test("native grouped tools retain recorded diffs, full context and old result-en
     assistant(manager, `Later history ${index}`);
   }
   await refreshFixture(f);
-  const visit = f.controller.visit(f.key);
+  const visit = f.controller.conversation.visit(f.key);
   visit.readThrough = stringValue(record(requiredTask(f).history.at(-1)).id);
   visit.anchor = { id: resultId, line: 0 };
   const opening = f.controller.open(),
@@ -3788,9 +3807,13 @@ test("paired tool details show recorded diff on physical lines before raw metada
   assert.match(full, /"rewrite"/);
   assert.match(full, /RECORDED-WARNING/);
   view.handleInput("\x1br");
-  assert.ok(stringValue(record(f.controller.visit(f.key).quote).text).startsWith(`${diff}\n\n`));
+  assert.ok(
+    stringValue(record(f.controller.conversation.visit(f.key).quote).text).startsWith(
+      `${diff}\n\n`,
+    ),
+  );
   assert.match(
-    stringValue(record(f.controller.visit(f.key).quote).text),
+    stringValue(record(f.controller.conversation.visit(f.key).quote).text),
     /"rewrite"[\s\S]*RECORDED-WARNING/,
   );
   assert.equal(fs.readFileSync(file, "utf8"), current);
@@ -3854,7 +3877,7 @@ test("a newly paired custom-tool result stays unread and supports native expansi
   assert.match(collapsed.join("\n"), /Checks completed/);
   assert.doesNotMatch(collapsed.join("\n"), /RAW-ARGUMENT|RAW-RESULT|FINAL-TOOL-LINE/);
   assert.equal(
-    f.controller.visit(f.key).readThrough,
+    f.controller.conversation.visit(f.key).readThrough,
     resultId,
     "reading the paired card acknowledges the original result ID",
   );
@@ -3891,7 +3914,7 @@ test("a newly paired custom-tool result stays unread and supports native expansi
   assert.match(details, /FINAL-TOOL-LINE/);
   view.handleInput("\x1br");
   assert.match(
-    stringValue(record(f.controller.visit(f.key).quote).text),
+    stringValue(record(f.controller.conversation.visit(f.key).quote).text),
     /RAW-ARGUMENT[\s\S]*RAW-RESULT/,
   );
   assert.equal(f.calls.length, 0);
@@ -3922,7 +3945,7 @@ test("twenty-task picker is framed, width-aware and searchable by the full assig
   assert.match(wide.join("\n"), /worker/);
   picker.handleInput("Distinctive assignment needle");
   await until(
-    () => !f.controller.listLoading && f.controller.listPage?.total === 1,
+    () => !f.controller.picker.listLoading && f.controller.picker.listPage?.total === 1,
     "full assignment filter loaded",
   );
   const filtered = plain(picker, 140);
@@ -3955,7 +3978,7 @@ test("twenty-task picker is framed, width-aware and searchable by the full assig
   f.interactiveOverlay.handleInput("\x05");
   f.interactiveOverlay.handleInput("\x15");
   await until(
-    () => !f.controller.listPending && f.controller.tasks.length === 20,
+    () => !f.controller.picker.listPending && f.controller.picker.tasks.length === 20,
     "clearing the visible retained filter restores other agents",
   );
   assert.match(plain(f.overlay, 140), /Review behavior 18/);
@@ -3984,7 +4007,7 @@ for (const mode of ["regular", "fullscreen"] as const) {
       await held;
       return original(...args);
     });
-    const refresh = f.controller.refresh();
+    const refresh = f.controller.browser.refresh();
     await requested;
     try {
       for (const width of [110, 56, 24]) {
@@ -4055,7 +4078,7 @@ test("active Agents rows distinguish running, queued and needs-action work, then
     },
   });
   saveQuestionContract(f.run.runId, 3, { result });
-  f.controller.visit(`${f.run.runId}:3`).readThrough = null;
+  f.controller.conversation.visit(`${f.run.runId}:3`).readThrough = null;
   await refreshFixture(f);
   const raw = f.strip.render(90),
     rows = raw.map(stripTerminalSequences);
@@ -4091,7 +4114,7 @@ test("active Agents rows distinguish running, queued and needs-action work, then
     "needs-action indicator and text stay steady across the pulse",
   );
   const messageId = randomUUID(),
-    visit = f.controller.visit(f.key);
+    visit = f.controller.conversation.visit(f.key);
   visit.lastSentId = messageId;
   visit.readThrough = f.childSessions[0].appendCustomMessageEntry(
     "subagent-human-message",
@@ -4110,8 +4133,8 @@ test("active Agents rows distinguish running, queued and needs-action work, then
     /replied/,
     "an actual child response retains its existing distinction from other unread activity",
   );
-  f.controller.pin(f.key);
-  f.controller.visit(f.key).draft = "Retained private draft";
+  f.controller.conversation.pin(f.key);
+  f.controller.conversation.visit(f.key).draft = "Retained private draft";
   await f.complete();
   assert.equal(
     plain(f.strip),
@@ -4121,8 +4144,8 @@ test("active Agents rows distinguish running, queued and needs-action work, then
   f.controller.start(f.ctx);
   await refreshFixture(f);
   assert.equal(plain(f.strip), "");
-  assert.equal(f.controller.pinned, f.key);
-  assert.equal(f.controller.visit(f.key).draft, "Retained private draft");
+  assert.equal(f.controller.conversation.pinned, f.key);
+  assert.equal(f.controller.conversation.visit(f.key).draft, "Retained private draft");
   assert.equal(
     requiredTask(f, `${f.run.runId}:3`).unread,
     true,
@@ -4207,7 +4230,7 @@ for (const [children, columns, rows] of [
     f.terminal.input("!");
     f.tui.renderNow();
     assert.equal(
-      f.controller.visit(f.key).draft,
+      f.controller.conversation.visit(f.key).draft,
       draft.replace("DRAFT-FIVE", "!DRAFT-FIVE"),
       "native mouse placement follows the clipped editor offset",
     );
@@ -4222,12 +4245,15 @@ for (const [children, columns, rows] of [
     );
     f.terminal.input("\x1b[5~");
     f.tui.renderNow();
-    const anchor = f.controller.visit(f.key).anchor;
+    const anchor = f.controller.conversation.visit(f.key).anchor;
     f.terminal.click(x, y);
     await turn();
     assert.equal(f.tui.hasOverlay(), false);
-    assert.equal(f.controller.visit(f.key).draft, draft.replace("DRAFT-FIVE", "!DRAFT-FIVE"));
-    assert.deepEqual(f.controller.visit(f.key).anchor, anchor);
+    assert.equal(
+      f.controller.conversation.visit(f.key).draft,
+      draft.replace("DRAFT-FIVE", "!DRAFT-FIVE"),
+    );
+    assert.deepEqual(f.controller.conversation.visit(f.key).anchor, anchor);
     assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
     f.tui.renderNow();
     f.terminal.click(x, y + 1);
@@ -4267,7 +4293,10 @@ test("short native conversation keeps reply, pending-send notice, draft and acti
   });
   f.terminal.input(draft);
   f.terminal.input("\x1br");
-  await until(() => Boolean(f.controller.visit(f.key).quote), "full quoted context loaded");
+  await until(
+    () => Boolean(f.controller.conversation.visit(f.key).quote),
+    "full quoted context loaded",
+  );
   f.tui.renderNow();
   f.terminal.input("\r");
   await turn();
@@ -4275,14 +4304,14 @@ test("short native conversation keeps reply, pending-send notice, draft and acti
   await turn();
   f.terminal.input("\x1bp");
   f.tui.renderNow();
-  const visit = f.controller.visit(f.key),
+  const visit = f.controller.conversation.visit(f.key),
     quote = structuredClone(visit.quote),
     notice = visit.notice;
   assert.equal(deliveries.length, 1, "duplicate Enter cannot resend the accepted message");
   assert.equal(deliveries[0].human.index, 0);
   assert.equal(quote?.text, "I found the relevant code.");
   assert.match(stringValue(notice), /already waiting/);
-  assert.equal(f.controller.pinned, f.key);
+  assert.equal(f.controller.conversation.pinned, f.key);
   const frame = () => {
     f.tui.renderNow();
     const bounds = f.overlayBounds,
@@ -4412,7 +4441,7 @@ test("configured Agents shortcut registration, hint and native overlay closing u
   f.terminal.input("\x1b[107;6u");
   await turn();
   assert.equal(f.tui.hasOverlay(), false);
-  assert.equal(f.controller.visit(f.key).draft, "Saved draft");
+  assert.equal(f.controller.conversation.visit(f.key).draft, "Saved draft");
   assert.equal(f.calls.length, 0);
   assert.equal(f.mainEditor.getText(), "Unsent parent draft\nDo not replace this");
 });
@@ -4454,7 +4483,7 @@ for (const surface of ["widget", "picker"]) {
     }));
     saveRunStatus(f.run.runId, f.status);
     for (const child of f.run.children) {
-      f.controller.visit(`${f.run.runId}:${child.index}`).readThrough = null;
+      f.controller.conversation.visit(`${f.run.runId}:${child.index}`).readThrough = null;
     }
     await refreshFixture(f);
     f.tui.start();
@@ -4494,7 +4523,7 @@ for (const surface of ["widget", "picker"]) {
       assert.match(rows[0], /2 running/);
     }
     const messageId = randomUUID(),
-      visit = f.controller.visit(f.key);
+      visit = f.controller.conversation.visit(f.key);
     visit.lastSentId = messageId;
     visit.readThrough = f.childSessions[0].appendCustomMessageEntry(
       "subagent-human-message",
@@ -4555,7 +4584,7 @@ test("native delivery clears an obsolete saved duplicate notice after reload, no
     // Recreate each saved notice on the same controller before observing its native receipt.
     // oxlint-disable-next-line no-await-in-loop
     await refreshFixture(f);
-    assert.equal(f.controller.visit(f.key).notice, expected);
+    assert.equal(f.controller.conversation.visit(f.key).notice, expected);
   }
 });
 
@@ -4582,7 +4611,10 @@ test("completion during compose keeps the draft, and viewing a finished child ne
     0,
     "legacy configuration is explicitly unavailable, not silently guessed",
   );
-  assert.match(stringValue(f.controller.visit(f.key).notice), /older run has no saved profile/);
+  assert.match(
+    stringValue(f.controller.conversation.visit(f.key).notice),
+    /older run has no saved profile/,
+  );
   f.interactiveOverlay.handleInput("\x1b");
   await reopening;
 });
@@ -4613,11 +4645,12 @@ test("a first foreground launch updates the strip without a manual open", async 
     mock.uninstall();
   });
   await until(
-    () => mock.callCount() === 1 && f.controller.tasks[0]?.child.activity?.status === "running",
+    () =>
+      mock.callCount() === 1 && f.controller.picker.tasks[0]?.child.activity?.status === "running",
     "the real child starts and the strip observes it without a manual refresh",
   );
   assert.match(plain(f.strip), /1 running[\s\S]*● Fresh foreground/);
-  assert.equal(f.controller.tasks[0]?.child.state, "live");
+  assert.equal(f.controller.picker.tasks[0]?.child.state, "live");
   assert.equal(f.tui.hasOverlay(), false);
   fs.writeFileSync(release, "released");
   const result = await pending;
@@ -4726,7 +4759,7 @@ test("new async chain preserves its launch identity, draft and pin through first
     "native launcher is held before status persistence",
   );
   await refreshFixture(f);
-  const task = f.controller.tasks.find((candidate) => candidate.run.runId === runId);
+  const task = f.controller.picker.tasks.find((candidate) => candidate.run.runId === runId);
   assertDefined(task);
   const initial = {
     key: task.key,
@@ -4758,16 +4791,16 @@ test("new async chain preserves its launch identity, draft and pin through first
   assert.equal(initial.label, "Fix login");
   assert.equal(initial.task, "Fix login with original assignment");
   assert.deepEqual(
-    f.controller.tasks.map((candidate) => candidate.key),
+    f.controller.picker.tasks.map((candidate) => candidate.key),
     [initial.key],
     "first status must not strand an early draft on an unavailable duplicate",
   );
-  assert.equal(f.controller.pinned, initial.key);
-  assert.equal(f.controller.visit(initial.key).draft, draft);
+  assert.equal(f.controller.conversation.pinned, initial.key);
+  assert.equal(f.controller.conversation.visit(initial.key).draft, draft);
   assert.equal(f.conversation.editor.getText(), draft);
   assert.match(plain(f.overlay), /Agents › Fix login/);
   assert.doesNotMatch(plain(f.overlay), /Assignment unavailable/);
-  await f.controller.send(initial.key, f.conversation.editor.getText());
+  await f.controller.conversation.send(initial.key, f.conversation.editor.getText());
   assert.equal(deliveries.length, 1);
   assert.equal(deliveries[0].to, `subagent-worker-${runId}-1`);
   assert.equal(deliveries[0].human.runId, runId);
@@ -4802,7 +4835,7 @@ test("the first native streaming response is readable before its final assistant
   });
   const deadline = Date.now() + 10_000;
   while (
-    !f.controller.tasks.some(
+    !f.controller.picker.tasks.some(
       (task) => task.child.activity?.streamingText?.includes("First live text") === true,
     )
   ) {
@@ -4811,7 +4844,7 @@ test("the first native streaming response is readable before its final assistant
     // oxlint-disable-next-line no-await-in-loop
     await delay(10);
   }
-  const task = f.controller.tasks[0];
+  const task = f.controller.picker.tasks[0];
   if (fs.existsSync(stringValue(task.child.sessionFile))) {
     const entries = SessionManager.open(stringValue(task.child.sessionFile)).getEntries();
     assert.equal(
@@ -4874,7 +4907,7 @@ test("the first native streaming response is readable before its final assistant
     "",
     "completed unread history and a saved pin do not keep the active area visible",
   );
-  assert.equal(f.controller.pinned, task.key);
+  assert.equal(f.controller.conversation.pinned, task.key);
   const reopen = f.controller.open(task.key);
   await historyReady(f);
   assert.match(
@@ -4891,7 +4924,7 @@ test("the first native streaming response is readable before its final assistant
   );
   await refreshFixture(f);
   assert.match(
-    stringValue(f.controller.tasks[0].unavailable),
+    stringValue(f.controller.picker.tasks[0].unavailable),
     /Saved conversation unavailable/,
     "a missing completed history remains an honest error",
   );
@@ -4929,7 +4962,7 @@ test("explicit Continue uses the saved launch and follows the active successor w
   assert.equal(f.calls.length, 0);
   assert.equal(view.editor.getText(), "Continue after my check");
   view.handleInput("\x1bc");
-  await until(() => !f.controller.isBusy(f.key), "explicit continuation receipt");
+  await until(() => !f.controller.conversation.isBusy(f.key), "explicit continuation receipt");
   const successor = requiredTask(f);
   assert.notEqual(successor.run.runId, f.run.runId);
   t.after(async () => {
@@ -5021,9 +5054,9 @@ test("answering in the view releases the real native durable question with human
   });
   await until(() => {
     f.refreshView(true);
-    return Boolean(f.controller.tasks[0]?.question);
+    return Boolean(f.controller.picker.tasks[0]?.question);
   }, "real native durable question");
-  const task = f.controller.tasks[0],
+  const task = f.controller.picker.tasks[0],
     question = task.question;
   assertDefined(question);
   const opening = f.controller.open(task.key),
@@ -5032,7 +5065,7 @@ test("answering in the view releases the real native durable question with human
   assert.match(plain(view), /Which synthetic path/);
   view.handleInput("Use the first path");
   view.handleInput("\r");
-  await until(() => !f.controller.isBusy(task.key), "durable answer saved");
+  await until(() => !f.controller.conversation.isBusy(task.key), "durable answer saved");
   assert.equal(readQuestionState(question).answer?.origin, "human");
   assert.equal(readQuestionState(question).answer?.message, "Use the first path");
   assert.equal(f.calls[0].action, "answer");
@@ -5093,7 +5126,7 @@ test("foreground chain parallel updates retain both live children's unfinished t
   });
   await until(() => seen.size === 2, "both native children streamed before message_end");
   await refreshFixture(f);
-  const observation = f.controller.tasks.map((task) => ({
+  const observation = f.controller.picker.tasks.map((task) => ({
     index: task.child.index,
     state: task.child.state,
     text: task.child.activity?.streamingText,
@@ -5163,7 +5196,7 @@ for (const background of [false, true]) {
       "first native child holds the queue",
     );
     await refreshFixture(f);
-    const task = f.controller.tasks.find((candidate) => candidate.child.index === 1);
+    const task = f.controller.picker.tasks.find((candidate) => candidate.child.index === 1);
     assertDefined(task);
     assert.equal(task.child.state, "live");
     assert.equal(task.child.activity?.status, "pending");
@@ -5332,7 +5365,7 @@ for (const background of [false, true]) {
     });
     await until(() => mock.callCount() === 1, "discovery starts before materialization");
     await refreshFixture(f);
-    const later = f.controller.tasks.find((task) => task.label === "Finalize");
+    const later = f.controller.picker.tasks.find((task) => task.label === "Finalize");
     assertDefined(later);
     const runId = later.run.runId;
     trackedLaunch.runId = runId;
@@ -5354,15 +5387,15 @@ for (const background of [false, true]) {
     fs.writeFileSync(discover, "released");
     await until(() => mock.callCount() === 3, "both materialized reviewers start");
     await refreshFixture(f);
-    await f.controller.send(later.key, view.editor.getText());
-    await f.controller.stop(later.key);
+    await f.controller.conversation.send(later.key, view.editor.getText());
+    await f.controller.conversation.stop(later.key);
     t.diagnostic(
       JSON.stringify({
         phase: "expanded",
         background,
         key: later.key,
-        task: f.controller.task(later.key)?.child.task,
-        labels: f.controller.tasks.map((task) => task.label),
+        task: f.controller.conversation.task(later.key)?.child.task,
+        labels: f.controller.picker.tasks.map((task) => task.label),
         deliveries: deliveries.map((payload) => payload.to),
         controls: f.calls,
       }),
@@ -5376,13 +5409,15 @@ for (const background of [false, true]) {
     assert.equal(requiredTask(f, later.key).child.activity?.status, "pending");
     assert.match(plain(view), /Agents › Finalize/);
     assert.deepEqual(
-      f.controller.tasks
+      f.controller.picker.tasks
         .filter((task) => task.child.agent === "reviewer")
         .map((task) => task.label)
         .sort((a, b) => a.localeCompare(b)),
       ["Review alpha", "Review beta"],
     );
-    for (const reviewer of f.controller.tasks.filter((task) => task.child.agent === "reviewer")) {
+    for (const reviewer of f.controller.picker.tasks.filter(
+      (task) => task.child.agent === "reviewer",
+    )) {
       assert.equal(reviewer.model.summary, "selected: reviews/model");
     }
     assert.doesNotMatch(
@@ -5395,8 +5430,11 @@ for (const background of [false, true]) {
     restoreOwnedRuns(f.state, f.ctx);
     f.controller.start(f.ctx);
     await refreshFixture(f);
-    assert.equal(f.controller.pinned, later.key);
-    assert.equal(f.controller.visit(later.key).draft, "Directions intended only for Finalize");
+    assert.equal(f.controller.conversation.pinned, later.key);
+    assert.equal(
+      f.controller.conversation.visit(later.key).draft,
+      "Directions intended only for Finalize",
+    );
     fs.writeFileSync(reviews, "released");
     await until(() => mock.callCount() === 4, "original final assignment starts normally");
     await refreshFixture(f);
@@ -5408,12 +5446,15 @@ for (const background of [false, true]) {
       "selected: final/model",
       "model metadata follows the workflow node after its child index changes",
     );
-    await f.controller.send(later.key, f.controller.visit(later.key).draft);
+    await f.controller.conversation.send(
+      later.key,
+      f.controller.conversation.visit(later.key).draft,
+    );
     assert.equal(deliveries.length, 1);
     assert.equal(deliveries[0].human.index, active.child.index);
     assert.equal(deliveries[0].human.runId, runId);
     assert.equal(deliveries[0].to, `subagent-worker-${runId}-${active.child.index + 1}`);
-    await f.controller.stop(later.key);
+    await f.controller.conversation.stop(later.key);
     assert.deepEqual(f.calls, [{ action: "interrupt", id: runId, index: active.child.index }]);
     await pending;
     if (background) {
@@ -5426,8 +5467,11 @@ for (const background of [false, true]) {
     f.controller.start(f.ctx);
     await refreshFixture(f);
     assert.equal(requiredTask(f, later.key).child.state, "paused");
-    assert.equal(f.controller.visit(later.key).draft, "Directions intended only for Finalize");
-    assert.equal(f.controller.pinned, later.key);
+    assert.equal(
+      f.controller.conversation.visit(later.key).draft,
+      "Directions intended only for Finalize",
+    );
+    assert.equal(f.controller.conversation.pinned, later.key);
     assert.deepEqual(
       ownedRunView(requiredOwnedRun(f, runId), f.state).children.map((child) => [
         child.label,
@@ -5540,7 +5584,7 @@ for (const identity of ["graph", "session", "missing"]) {
     restoreOwnedRuns(f.state, f.ctx);
     f.controller.start(f.ctx);
     await refreshFixture(f);
-    const later = f.controller.tasks.find(
+    const later = f.controller.picker.tasks.find(
       (task) => task.run.runId === id && task.child.index === 2,
     );
     assertDefined(later);
@@ -5590,8 +5634,11 @@ for (const identity of ["graph", "session", "missing"]) {
     }
     save();
     await refreshFixture(f);
-    await f.controller.send(later.key, f.controller.visit(later.key).draft);
-    await f.controller.stop(later.key);
+    await f.controller.conversation.send(
+      later.key,
+      f.controller.conversation.visit(later.key).draft,
+    );
+    await f.controller.conversation.stop(later.key);
     assert.equal(
       deliveries.length,
       0,
@@ -5602,8 +5649,8 @@ for (const identity of ["graph", "session", "missing"]) {
       0,
       "an uncertain or pending assignment must not address Stop to a reviewer",
     );
-    assert.equal(f.controller.pinned, later.key);
-    assert.equal(f.controller.visit(later.key).draft, "Only Finalize should see this");
+    assert.equal(f.controller.conversation.pinned, later.key);
+    assert.equal(f.controller.conversation.visit(later.key).draft, "Only Finalize should see this");
     if (identity !== "missing") {
       assert.equal(requiredTask(f, later.key).label, "Finalize");
       assert.equal(requiredTask(f, later.key).child.activity?.status, "pending");
@@ -5617,14 +5664,17 @@ for (const identity of ["graph", "session", "missing"]) {
       });
       save();
       await refreshFixture(f);
-      await f.controller.send(later.key, f.controller.visit(later.key).draft);
+      await f.controller.conversation.send(
+        later.key,
+        f.controller.conversation.visit(later.key).draft,
+      );
       assert.equal(deliveries.length, 1);
       assert.equal(deliveries[0].to, `subagent-worker-${id}-4`);
       assert.equal(deliveries[0].human.index, 3);
-      await f.controller.stop(later.key);
+      await f.controller.conversation.stop(later.key);
       assert.equal(f.calls[0].index, 3);
       assert.match(
-        stringValue(f.controller.visit(later.key).notice),
+        stringValue(f.controller.conversation.visit(later.key).notice),
         /older runner/,
         "the old runner still truthfully refuses unsupported selected Stop",
       );
@@ -5644,7 +5694,11 @@ for (const identity of ["graph", "session", "missing"]) {
       );
       assert.equal(f.conversation.editor.getText(), "Only Finalize should see this");
       assert.match(plain(f.overlay), /assignment.*unavailable/i);
-      await f.controller.send(later.key, f.controller.visit(later.key).draft, true);
+      await f.controller.conversation.send(
+        later.key,
+        f.controller.conversation.visit(later.key).draft,
+        true,
+      );
       assert.equal(deliveries.length, 0);
       assert.equal(f.calls.length, 0);
       f.interactiveOverlay.handleInput("\x1b");
@@ -5674,17 +5728,17 @@ test("native history reflow preserves the same reading message and draft across 
   view.handleInput("\x1b[5~");
   view.handleInput("\x1b[5~");
   view.render(99);
-  const anchor = stringValue(record(f.controller.visit(f.key).anchor).id);
+  const anchor = stringValue(record(f.controller.conversation.visit(f.key).anchor).id);
   f.terminal.resize(64, 24);
   view.render(64);
   assert.equal(
-    stringValue(record(f.controller.visit(f.key).anchor).id),
+    stringValue(record(f.controller.conversation.visit(f.key).anchor).id),
     anchor,
     "narrow reflow must not jump to an earlier message",
   );
   f.terminal.resize(99, 34);
   view.render(99);
-  assert.equal(stringValue(record(f.controller.visit(f.key).anchor).id), anchor);
+  assert.equal(stringValue(record(f.controller.conversation.visit(f.key).anchor).id), anchor);
   assert.equal(view.editor.getText(), "Unsent while reading");
   view.handleInput("\x1b");
   await opening;
@@ -5715,10 +5769,10 @@ test("reopen starts at the first real unread reply rather than already-read hist
   const opening = f.controller.open();
   await historyReady(f);
   f.overlay.render(90);
-  const highWater = f.controller.visit(f.key).readThrough;
+  const highWater = f.controller.conversation.visit(f.key).readThrough;
   f.interactiveOverlay.handleInput("\x1b[5~");
   f.overlay.render(90);
-  assert.equal(f.controller.visit(f.key).readThrough, highWater);
+  assert.equal(f.controller.conversation.visit(f.key).readThrough, highWater);
   f.interactiveOverlay.handleInput("\x1b");
   await opening;
   const first = assistant(f.childSessions[0], "FIRST UNREAD REPLY");
@@ -5727,14 +5781,14 @@ test("reopen starts at the first real unread reply rather than already-read hist
   const reopen = f.controller.open();
   await historyReady(f);
   assert.match(plain(f.overlay), /FIRST UNREAD REPLY/);
-  assert.equal(f.controller.visit(f.key).anchor?.id, `${first}:0`);
+  assert.equal(f.controller.conversation.visit(f.key).anchor?.id, `${first}:0`);
   f.interactiveOverlay.handleInput("\x1b");
   await reopen;
-  f.controller.pin(f.key);
+  f.controller.conversation.pin(f.key);
   await f.complete();
   assert.equal(plain(f.strip), "", "finished agents and pins do not keep the live widget visible");
   assert.equal(
-    f.controller.pinned,
+    f.controller.conversation.pinned,
     f.key,
     "the explicit pin is retained for reopening, not deleted",
   );
@@ -5749,13 +5803,13 @@ test("same-parent restore retains drafts/pin and a replaced session ignores late
   await opening;
   f.controller.start(f.ctx);
   await refreshFixture(f);
-  assert.equal(f.controller.visit(f.key).draft, "Preserved draft");
-  assert.equal(f.controller.pinned, f.key);
+  assert.equal(f.controller.conversation.visit(f.key).draft, "Preserved draft");
+  assert.equal(f.controller.conversation.pinned, f.key);
   const captured: { delivery?: LiveDelivery } = {};
   f.pi.events.on("subagent:live-intercom", (payload) => {
     captured.delivery = liveDelivery(payload);
   });
-  const pending = f.controller.send(f.key, "Preserved draft");
+  const pending = f.controller.conversation.send(f.key, "Preserved draft");
   const delivery = captured.delivery;
   assertDefined(delivery);
   const fork = SessionManager.forkFrom(sessionFile(f.parent), f.cwd, path.join(f.cwd, "fork"));
@@ -5770,8 +5824,8 @@ test("same-parent restore retains drafts/pin and a replaced session ignores late
     delivered: true,
   });
   await pending;
-  assert.equal(f.controller.tasks.length, 0, "fork does not adopt parent agents");
-  assert.equal(f.controller.pinned, undefined);
+  assert.equal(f.controller.picker.tasks.length, 0, "fork does not adopt parent agents");
+  assert.equal(f.controller.conversation.pinned, undefined);
   assert.equal(
     fork.getEntries().length,
     entries,
@@ -5862,19 +5916,19 @@ async function indexedReady(f: Fixture): Promise<void> {
     }
     assert.ok(missing > 0, "DEGRADED requires an independently verified missing source");
   }
-  await f.controller.refresh();
-  await f.controller.refresh();
+  await f.controller.browser.refresh();
+  await f.controller.browser.refresh();
 }
 
 async function refreshFixture(f: Fixture): Promise<void> {
   await indexedReady(f);
-  for (const task of f.controller.tasks) {
+  for (const task of f.controller.picker.tasks) {
     if (task.child.missingSession === true && task.child.state !== "live") {
       continue;
     }
     // Populate each selected page before moving to the next view's native identity.
     // oxlint-disable-next-line no-await-in-loop
-    const value = await f.controller.historyPage(task.key);
+    const value = await f.controller.conversation.historyPage(task.key);
     if (!value) {
       continue;
     }
@@ -5900,7 +5954,7 @@ async function refreshFixture(f: Fixture): Promise<void> {
 
 async function historyReady(f: Fixture): Promise<void> {
   await until(() => {
-    const task = f.controller.task(f.conversation.key);
+    const task = f.controller.conversation.task(f.conversation.key);
     return Boolean(
       task &&
       (task.page ||
@@ -5984,15 +6038,15 @@ test("indexed Agents startup, ticks, global filter and pagination never hydrate 
   f.controller.start(f.ctx);
   const index = await runHistoryIndex(f.state);
   await index.refresh();
-  await f.controller.refresh();
-  assert.equal(f.controller.listPage?.total, 125);
-  assert.equal(f.controller.tasks.length, 50);
+  await f.controller.browser.refresh();
+  assert.equal(f.controller.picker.listPage?.total, 125);
+  assert.equal(f.controller.picker.tasks.length, 50);
   assert.ok(
-    f.controller.tasks.every((task) => task.history.length === 0),
+    f.controller.picker.tasks.every((task) => task.history.length === 0),
     "closed startup retains no native history cards",
   );
-  await f.controller.refresh();
-  await f.controller.refresh(true);
+  await f.controller.browser.refresh();
+  await f.controller.browser.refresh(true);
   assert.deepEqual(
     accesses(),
     [],
@@ -6002,22 +6056,26 @@ test("indexed Agents startup, ticks, global filter and pagination never hydrate 
   assert.match(plain(f.overlay), /page 1/);
   f.interactiveOverlay.handleInput("\x1b[6~");
   await until(
-    () => f.controller.listPage?.offset === 50 && !f.controller.listLoading,
+    () => f.controller.picker.listPage?.offset === 50 && !f.controller.picker.listLoading,
     "second run page",
   );
-  assert.equal(f.controller.tasks.length, 50);
+  assert.equal(f.controller.picker.tasks.length, 50);
   f.interactiveOverlay.handleInput("\x1b[6~");
   await until(
-    () => f.controller.listPage?.offset === 100 && !f.controller.listLoading,
+    () => f.controller.picker.listPage?.offset === 100 && !f.controller.picker.listLoading,
     "third run page",
   );
-  assert.equal(f.controller.tasks.length, 25, "tasks after the first 100 remain discoverable");
+  assert.equal(
+    f.controller.picker.tasks.length,
+    25,
+    "tasks after the first 100 remain discoverable",
+  );
   f.interactiveOverlay.handleInput("unique needle");
   await until(
-    () => f.controller.listPage?.total === 1 && !f.controller.listLoading,
+    () => f.controller.picker.listPage?.total === 1 && !f.controller.picker.listLoading,
     "filter applies to all owned tasks, not just loaded rows",
   );
-  assert.equal(f.controller.tasks[0].run.runId, "indexed-ui-003");
+  assert.equal(f.controller.picker.tasks[0].run.runId, "indexed-ui-003");
   assert.deepEqual(accesses(), []);
   f.interactiveOverlay.handleInput("\x1b");
   await opening;
@@ -6185,16 +6243,16 @@ for (const retry of ["F5", "run list"] as const) {
     });
 
     f.controller.start(f.ctx);
-    await f.controller.refresh();
+    await f.controller.browser.refresh();
     assert.match(
-      stringValue(f.controller.listError),
+      stringValue(f.controller.picker.listError),
       /History directory must not be a symbolic link/,
     );
     for (let update = 0; update < 3; update++) {
       f.state.onRunsChanged?.();
       // Repeated background observations must settle before checking retry suppression.
       // oxlint-disable-next-line no-await-in-loop
-      await f.controller.refresh();
+      await f.controller.browser.refresh();
     }
     assert.equal(
       starts.mock.callCount(),
@@ -6223,12 +6281,12 @@ for (const retry of ["F5", "run list"] as const) {
       });
       assert.notEqual(result.isError, true);
       assert.equal(result.details.runList?.total, 1);
-      await f.controller.refresh();
+      await f.controller.browser.refresh();
     }
     await until(
       () =>
-        (f.controller.listError === undefined || f.controller.listError === "") &&
-        f.controller.listPage?.total === 1,
+        (f.controller.picker.listError === undefined || f.controller.picker.listError === "") &&
+        f.controller.picker.listPage?.total === 1,
       "explicit retry restores history",
     );
     assert.equal(starts.mock.callCount(), 2);

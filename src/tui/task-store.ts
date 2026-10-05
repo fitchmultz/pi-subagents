@@ -1,6 +1,8 @@
 import { hasText, errorText } from "./text-values.ts";
 import { listOwnedRunQuestions } from "../runs/shared/supervisor-questions.ts";
 import { ownedRunView } from "../runs/shared/run-records.ts";
+import { restoredView } from "./view-persistence.ts";
+import type { AgentHistory } from "./history-display.ts";
 import type {
   SubagentState,
   OwnedRun,
@@ -57,10 +59,16 @@ function authorityUnavailable(task: Readonly<AgentTask>, reason: string): AgentT
     unavailable: reason,
   };
 }
-/** Drafts/outbox and the current task observation cache have one mutable owner. */
+/** Owns task-cache writes; composer and controls share visits through visit(). */
 export class AgentTaskStore {
-  tasks: AgentTask[] = [];
-  dockTasks: AgentTask[] = [];
+  private currentTasks: AgentTask[] = [];
+  private currentDockTasks: AgentTask[] = [];
+  get tasks(): readonly Readonly<AgentTask>[] {
+    return this.currentTasks;
+  }
+  get dockTasks(): readonly Readonly<AgentTask>[] {
+    return this.currentDockTasks;
+  }
   readonly taskKeys = new Map<string, string>();
   visits = new Map<string, AgentVisit>();
   selectedKey?: string;
@@ -79,8 +87,59 @@ export class AgentTaskStore {
     }
     return visit;
   }
-  task(key: string): AgentTask | undefined {
+  task(key: string): Readonly<AgentTask> | undefined {
     return this.tasks.find((task) => task.key === key);
+  }
+  reset(): void {
+    this.currentTasks = [];
+    this.currentDockTasks = [];
+    this.taskKeys.clear();
+    this.visits.clear();
+    this.selectedKey = undefined;
+    this.pinned = undefined;
+  }
+  restore(value: unknown, ownerSessionId: string): void {
+    const saved = restoredView(value, ownerSessionId);
+    if (saved) {
+      this.visits = saved.visits;
+      this.pinned = saved.pinned;
+    }
+  }
+  dockPage(rows: readonly HistoryRunRow[]): void {
+    this.currentDockTasks = rows.flatMap((row) => this.fromView(row));
+  }
+  retainSelected(): void {
+    this.currentTasks = this.currentTasks.filter(
+      (task) => task.key === this.selectedKey || task.key === this.pinned,
+    );
+  }
+  setHistoryLoading(key: string, loading: boolean): void {
+    const task = this.currentTasks.find((candidate) => candidate.key === key);
+    if (task) {
+      task.historyLoading = loading;
+    }
+  }
+  applyHistoryPage(
+    key: string,
+    history: AgentHistory,
+    page: HistoryPage,
+    sourceSeen: boolean,
+  ): void {
+    const task = this.currentTasks.find((candidate) => candidate.key === key);
+    if (!task) {
+      return;
+    }
+    task.history = history.items;
+    task.historyIds = history.entryIds;
+    task.finalId = history.finalId;
+    task.page = page;
+    task.unavailable =
+      !sourceSeen &&
+      task.child.state === "live" &&
+      ["missing", "pending", "indexing", "unlinked"].includes(page.sourceState)
+        ? undefined
+        : history.unavailable;
+    this.applyTaskMetadata(task, page);
   }
   private taskKey(run: OwnedRun, child: Identity): string {
     const path = new Set<string>();
@@ -207,10 +266,10 @@ export class AgentTaskStore {
       }
       const retained = this.task(key);
       if (retained && !tasks.has(key)) {
-        tasks.set(key, retained);
+        tasks.set(key, { ...retained });
       }
     }
-    this.tasks = [...tasks.values()];
+    this.currentTasks = [...tasks.values()];
   }
   historyInput(task: Readonly<AgentTask>): HistoryPageInput {
     const visit = this.visits.get(task.key),
@@ -235,7 +294,14 @@ export class AgentTaskStore {
       endedAt: hasText(terminal) ? undefined : task.run.updatedAt,
     };
   }
-  applyMetadata(task: AgentTask, page: HistoryPage): void {
+  applyMetadata(key: string, page: HistoryPage): void {
+    for (const task of [...this.currentTasks, ...this.currentDockTasks]) {
+      if (task.key === key) {
+        this.applyTaskMetadata(task, page);
+      }
+    }
+  }
+  private applyTaskMetadata(task: AgentTask, page: HistoryPage): void {
     const visit = this.visits.get(task.key),
       delivered = new Map(page.deliveredMessages);
     if (page.freshness.state !== "catching-up") {
@@ -271,7 +337,7 @@ export class AgentTaskStore {
     visit.outbox = visit.outbox.filter((sent) => !delivered.has(sent.id));
   }
   metadataUnavailable(key: string, reason: string): void {
-    for (const task of [...this.tasks, ...this.dockTasks]) {
+    for (const task of [...this.currentTasks, ...this.currentDockTasks]) {
       if (task.key === key) {
         task.unavailable ??= reason;
       }
@@ -307,7 +373,7 @@ export class AgentTaskStore {
   }
   private missingAuthority(
     key: string,
-    current: AgentTask | undefined,
+    current: Readonly<AgentTask> | undefined,
     rootView: OwnedRunView | undefined,
   ): AgentTask | undefined {
     if (current) {
@@ -316,18 +382,18 @@ export class AgentTaskStore {
     return rootView && this.visits.has(key) ? this.unavailableTask(key, rootView) : undefined;
   }
   private replaceTask(task: AgentTask): void {
-    const position = this.tasks.findIndex((candidate) => candidate.key === task.key);
+    const position = this.currentTasks.findIndex((candidate) => candidate.key === task.key);
     if (position < 0) {
-      this.tasks.push(task);
+      this.currentTasks.push(task);
     } else {
-      this.tasks[position] = task;
+      this.currentTasks[position] = task;
     }
-    this.dockTasks = this.dockTasks.map((candidate) =>
+    this.currentDockTasks = this.currentDockTasks.map((candidate) =>
       candidate.key === task.key ? task : candidate,
     );
   }
   releaseSelected(): void {
-    for (const task of [...this.tasks, ...this.dockTasks]) {
+    for (const task of [...this.currentTasks, ...this.currentDockTasks]) {
       if (task.key === this.selectedKey) {
         task.history = [];
         task.historyIds = [];

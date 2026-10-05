@@ -6,6 +6,7 @@ import type {
   Usage,
 } from "@earendil-works/pi-ai";
 import { Type, Check } from "../shared/native-typebox.ts";
+import { THINKING_LEVELS } from "../shared/model-info.ts";
 import { isJson, isJsonObject } from "./history-json.ts";
 const cost = Type.Object({
   input: Type.Number(),
@@ -40,11 +41,11 @@ function nestedCall(value: unknown): NestedToolCallRecord | undefined {
   if (!Check(nestedCallFields, value)) {
     return;
   }
-  const args = value.arguments;
+  const { arguments: args, ...fields } = value;
   if (args !== undefined && !isJsonObject(args)) {
     return;
   }
-  return { ...value, arguments: args };
+  return { ...fields, ...("arguments" in value ? { arguments: args } : {}) };
 }
 const nestedCallsFields = Type.Object({
   calls: Type.Array(Type.Unknown()),
@@ -77,11 +78,11 @@ function deferred(value: unknown): DeferredHandle | undefined {
   if (!Check(deferredFields, value)) {
     return;
   }
-  const data = value.data;
+  const { data, ...fields } = value;
   if (data !== undefined && !isJson(data)) {
     return;
   }
-  return { ...value, data };
+  return { ...fields, ...("data" in value ? { data } : {}) };
 }
 const diagnosticFields = Type.Object({
   type: Type.String(),
@@ -101,11 +102,11 @@ function diagnostic(value: unknown): Diagnostic | undefined {
   if (!Check(diagnosticFields, value)) {
     return;
   }
-  const details = value.details;
+  const { details, ...fields } = value;
   if (details !== undefined && !isJsonObject(details)) {
     return;
   }
-  return { ...value, details };
+  return { ...fields, ...("details" in value ? { details } : {}) };
 }
 function diagnostics(value: unknown): Diagnostic[] | undefined {
   if (!Array.isArray(value)) {
@@ -125,16 +126,7 @@ const metadataFields = Type.Object({
   responseModel: Type.Optional(Type.String()),
   responseId: Type.Optional(Type.String()),
   providerThinkingLevel: Type.Optional(Type.String()),
-  thinkingLevel: Type.Optional(
-    Type.Union([
-      Type.Literal("off"),
-      Type.Literal("minimal"),
-      Type.Literal("low"),
-      Type.Literal("medium"),
-      Type.Literal("high"),
-      Type.Literal("xhigh"),
-    ]),
-  ),
+  thinkingLevel: Type.Optional(Type.Union(THINKING_LEVELS.map((level) => Type.Literal(level)))),
   rawStopReason: Type.Optional(Type.String()),
   endTurn: Type.Optional(Type.Boolean()),
 });
@@ -149,26 +141,37 @@ type Metadata = Pick<
   | "deferred"
   | "diagnostics"
 >;
+function scalarMetadata(value: unknown): Omit<Metadata, "deferred" | "diagnostics"> | undefined {
+  if (!Check(metadataFields, value)) {
+    return;
+  }
+  return {
+    ...("responseModel" in value ? { responseModel: value.responseModel } : {}),
+    ...("responseId" in value ? { responseId: value.responseId } : {}),
+    ...("providerThinkingLevel" in value
+      ? { providerThinkingLevel: value.providerThinkingLevel }
+      : {}),
+    ...("thinkingLevel" in value ? { thinkingLevel: value.thinkingLevel } : {}),
+    ...("rawStopReason" in value ? { rawStopReason: value.rawStopReason } : {}),
+    ...("endTurn" in value ? { endTurn: value.endTurn } : {}),
+  };
+}
 export function assistantMetadata(value: Readonly<Record<string, unknown>>): Metadata | undefined {
   const pending = value.deferred,
     notes = value.diagnostics;
   const deferredValue = pending === undefined ? undefined : deferred(pending),
     diagnosticValues = notes === undefined ? undefined : diagnostics(notes);
+  const scalars = scalarMetadata(value);
   if (
     (pending !== undefined && deferredValue === undefined) ||
     (notes !== undefined && diagnosticValues === undefined) ||
-    !Check(metadataFields, value)
+    !scalars
   ) {
     return;
   }
   return {
-    responseModel: value.responseModel,
-    responseId: value.responseId,
-    providerThinkingLevel: value.providerThinkingLevel,
-    thinkingLevel: value.thinkingLevel,
-    rawStopReason: value.rawStopReason,
-    endTurn: value.endTurn,
-    deferred: deferredValue,
-    diagnostics: diagnosticValues,
+    ...scalars,
+    ...("deferred" in value ? { deferred: deferredValue } : {}),
+    ...("diagnostics" in value ? { diagnostics: diagnosticValues } : {}),
   };
 }
