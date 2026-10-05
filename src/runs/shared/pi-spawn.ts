@@ -5,48 +5,59 @@ import { fileURLToPath } from "node:url";
 export const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 
 export function findPiPackageRootFromEntry(entryPoint: string): string | undefined {
-	let dir = path.dirname(entryPoint);
-	while (dir !== path.dirname(dir)) {
-		const packageJsonPath = path.join(dir, "package.json");
-		if (fs.existsSync(packageJsonPath)) {
-			const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as { name?: unknown };
-			if (pkg.name === PI_CODING_AGENT_PACKAGE) return dir;
-		}
-		dir = path.dirname(dir);
-	}
-	return undefined;
+  let dir = path.dirname(entryPoint);
+  while (dir !== path.dirname(dir)) {
+    const packageJsonPath = path.join(dir, "package.json");
+    if (fs.existsSync(packageJsonPath)) {
+      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as { name?: unknown };
+      if (pkg.name === PI_CODING_AGENT_PACKAGE) {
+        return dir;
+      }
+    }
+    dir = path.dirname(dir);
+  }
+  return undefined;
 }
 
 export function resolveInstalledPiPackageRoot(): string | undefined {
-	try {
-		return findPiPackageRootFromEntry(fileURLToPath(import.meta.resolve(PI_CODING_AGENT_PACKAGE)));
-	} catch {
-		for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
-			try {
-				const root = findPiPackageRootFromEntry(fs.realpathSync(path.join(dir, "pi")));
-				if (root) return root;
-			} catch { /* PATH entries can disappear or be wrappers rather than Pi. */ }
-		}
-		return undefined;
-	}
+  try {
+    return findPiPackageRootFromEntry(fileURLToPath(import.meta.resolve(PI_CODING_AGENT_PACKAGE)));
+  } catch {
+    for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+      try {
+        const root = findPiPackageRootFromEntry(fs.realpathSync(path.join(dir, "pi")));
+        if (root) {
+          return root;
+        }
+      } catch {
+        /* PATH entries can disappear or be wrappers rather than Pi. */
+      }
+    }
+    return undefined;
+  }
 }
 
 export function resolvePiPackageRoot(): string | undefined {
-	try {
-		const entry = process.argv[1];
-		return entry ? findPiPackageRootFromEntry(fs.realpathSync(entry)) : undefined;
-	} catch {
-		// process.argv[1] probing is best-effort; callers can fall back to PATH/package resolution.
-		return undefined;
-	}
+  try {
+    const entry = process.argv[1];
+    return entry ? findPiPackageRootFromEntry(fs.realpathSync(entry)) : undefined;
+  } catch {
+    // process.argv[1] probing is best-effort; callers can fall back to PATH/package resolution.
+    return undefined;
+  }
 }
 
 export function requirePiPackageRoot(): string {
-	const root = process.env.PI_PACKAGE_DIR || resolvePiPackageRoot() || resolveInstalledPiPackageRoot();
-	if (!root) throw new Error("Could not locate Pi runtime APIs; Pi must be installed and available on PATH.");
-	return root;
+  const root =
+    process.env.PI_PACKAGE_DIR || resolvePiPackageRoot() || resolveInstalledPiPackageRoot();
+  if (!root) {
+    throw new Error(
+      "Could not locate Pi runtime APIs; Pi must be installed and available on PATH.",
+    );
+  }
+  return root;
 }
 
 export function getPiSpawnCommand(args: string[]): { command: string; args: string[] } {
-	return { command: "pi", args };
+  return { command: "pi", args };
 }

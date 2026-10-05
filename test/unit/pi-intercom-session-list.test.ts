@@ -5,7 +5,12 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { SessionListOverlay } from "../../src/pi-intercom/ui/session-list.ts";
 import type { SessionInfo } from "../../src/pi-intercom/types.ts";
 
-const current: SessionInfo = { id: "current-session", name: "controller", cwd: "/repo", model: "model-a" };
+const current: SessionInfo = {
+  id: "current-session",
+  name: "controller",
+  cwd: "/repo",
+  model: "model-a",
+};
 const sessions: SessionInfo[] = Array.from({ length: 12 }, (_, index) => ({
   id: `worker-session-${index}`,
   name: `worker-${index}`,
@@ -15,11 +20,13 @@ const sessions: SessionInfo[] = Array.from({ length: 12 }, (_, index) => ({
 const theme = { fg: (_name: string, text: string) => text, bold: (text: string) => text };
 const keybindings = {
   matches: (data: string, action: string) => action === "tui.select.cancel" && data === "\x1b",
-  getKeys: (action: string) => action === "tui.select.confirm" ? ["Enter"] : ["Escape"],
+  getKeys: (action: string) => (action === "tui.select.confirm" ? ["Enter"] : ["Escape"]),
 };
 
 function assertWidth(lines: string[], width: number): void {
-  for (const line of lines) assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}: ${line}`);
+  for (const line of lines) {
+    assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}: ${line}`);
+  }
 }
 
 test("session list delegates selection, scrolling, and truncation to SelectList", () => {
@@ -30,14 +37,21 @@ test("session list delegates selection, scrolling, and truncation to SelectList"
     keybindings as never,
     current,
     sessions,
-    (result) => { selected = result; },
+    (result) => {
+      selected = result;
+    },
   );
 
   const normal = overlay.render(88);
-  assert.match(normal.join("\n"), /Current Session[\s\S]*controller[\s\S]*Other Sessions[\s\S]*worker-0[\s\S]*model-0/);
+  assert.match(
+    normal.join("\n"),
+    /Current Session[\s\S]*controller[\s\S]*Other Sessions[\s\S]*worker-0[\s\S]*model-0/,
+  );
   assertWidth(normal, 88);
 
-  for (let index = 0; index < 9; index++) overlay.handleInput("\x1b[B");
+  for (let index = 0; index < 9; index++) {
+    overlay.handleInput("\x1b[B");
+  }
   const paged = overlay.render(50);
   assert.match(paged.join("\n"), /\(10\/12\)/);
   assert.match(paged.join("\n"), /worker-9/);
@@ -75,7 +89,9 @@ test("empty session list keeps chrome and cancel behavior", () => {
     keybindings as never,
     current,
     [],
-    () => { cancelled = true; },
+    () => {
+      cancelled = true;
+    },
   );
 
   const lines = overlay.render(32);

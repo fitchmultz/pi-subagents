@@ -4,7 +4,10 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { encodeNestedPathEnv, parseNestedPathEnv, type NestedPathEntry } from "./nested-path.ts";
 import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist.ts";
-import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
+import {
+  STRUCTURED_OUTPUT_CAPTURE_ENV,
+  STRUCTURED_OUTPUT_SCHEMA_ENV,
+} from "./structured-output.ts";
 import { splitKnownThinkingSuffix } from "../../shared/model-info.ts";
 import { prepareChildExecutionCwd } from "./child-execution-cwd.ts";
 import type { ChildProjectTrustPolicy, JsonSchemaObject } from "../../shared/types.ts";
@@ -14,9 +17,19 @@ import { loadConfig } from "../../extension/config.ts";
 const TASK_ARG_LIMIT_BYTES = 900;
 // Resolve sibling extensions in both layouts: TypeScript sources (tests, jiti) and compiled dist output.
 const MODULE_EXTENSION = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
-const SESSION_CWD_PRELOAD_URL = new URL(`session-cwd-preload${MODULE_EXTENSION}`, import.meta.url).href;
-const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), `subagent-prompt-runtime${MODULE_EXTENSION}`);
-const FANOUT_CHILD_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "extension", `fanout-child${MODULE_EXTENSION}`);
+const SESSION_CWD_PRELOAD_URL = new URL(`session-cwd-preload${MODULE_EXTENSION}`, import.meta.url)
+  .href;
+const PROMPT_RUNTIME_EXTENSION_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  `subagent-prompt-runtime${MODULE_EXTENSION}`,
+);
+const FANOUT_CHILD_EXTENSION_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "extension",
+  `fanout-child${MODULE_EXTENSION}`,
+);
 export const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 export const SUBAGENT_ORCHESTRATOR_TARGET_ENV = "PI_SUBAGENT_ORCHESTRATOR_TARGET";
 export const SUBAGENT_RUN_ID_ENV = "PI_SUBAGENT_RUN_ID";
@@ -35,316 +48,431 @@ export const SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV = "PI_SUBAGENT_PARENT_CAPABILI
 export const SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV = "PI_SUBAGENT_INHERITED_EXTENSIONS_JSON";
 
 interface BuildPiArgsInput {
-	baseArgs: string[];
-	task: string;
-	sessionEnabled: boolean;
-	sessionDir?: string;
-	sessionFile?: string;
-	model?: string;
-	thinking?: string;
-	systemPromptMode?: "append" | "replace";
-	inheritProjectContext: boolean;
-	inheritSkills: boolean;
-	tools?: string[];
-	allowSubagents?: boolean;
-	extensions?: string[];
-	systemPrompt?: string | null;
-	mcpDirectTools?: string[];
-	/** Actual child spawn cwd; a new --session file inherits this directory natively. */
-	cwd?: string;
-	intercomSessionName?: string;
-	orchestratorIntercomTarget?: string;
-	rootSessionId?: string;
-	runId?: string;
-	childAgentName?: string;
-	childIndex?: number;
-	parentEventSink?: string;
-	parentControlInbox?: string;
-	parentRootRunId?: string;
-	parentRunId?: string;
-	parentChildIndex?: number;
-	parentDepth?: number;
-	parentPath?: NestedPathEntry[];
-	parentCapabilityToken?: string;
-	structuredOutput?: {
-		schema: JsonSchemaObject;
-		schemaPath: string;
-		outputPath: string;
-	};
-	projectTrust?: ChildProjectTrustPolicy;
+  baseArgs: string[];
+  task: string;
+  sessionEnabled: boolean;
+  sessionDir?: string;
+  sessionFile?: string;
+  model?: string;
+  thinking?: string;
+  systemPromptMode?: "append" | "replace";
+  inheritProjectContext: boolean;
+  inheritSkills: boolean;
+  tools?: string[];
+  allowSubagents?: boolean;
+  extensions?: string[];
+  systemPrompt?: string | null;
+  mcpDirectTools?: string[];
+  /** Actual child spawn cwd; a new --session file inherits this directory natively. */
+  cwd?: string;
+  intercomSessionName?: string;
+  orchestratorIntercomTarget?: string;
+  rootSessionId?: string;
+  runId?: string;
+  childAgentName?: string;
+  childIndex?: number;
+  parentEventSink?: string;
+  parentControlInbox?: string;
+  parentRootRunId?: string;
+  parentRunId?: string;
+  parentChildIndex?: number;
+  parentDepth?: number;
+  parentPath?: NestedPathEntry[];
+  parentCapabilityToken?: string;
+  structuredOutput?: {
+    schema: JsonSchemaObject;
+    schemaPath: string;
+    outputPath: string;
+  };
+  projectTrust?: ChildProjectTrustPolicy;
 }
 
 interface BuildPiArgsResult {
-	args: string[];
-	env: Record<string, string | undefined>;
-	tempDir?: string;
+  args: string[];
+  env: Record<string, string | undefined>;
+  tempDir?: string;
 }
 
-export function applyThinkingSuffix(model: string | undefined, thinking: string | undefined): string | undefined {
-	if (!model || !thinking) return model;
-	if (splitKnownThinkingSuffix(model).thinkingSuffix) return model;
-	return `${model}:${thinking}`;
+export function applyThinkingSuffix(
+  model: string | undefined,
+  thinking: string | undefined,
+): string | undefined {
+  if (!model || !thinking) {
+    return model;
+  }
+  if (splitKnownThinkingSuffix(model).thinkingSuffix) {
+    return model;
+  }
+  return `${model}:${thinking}`;
 }
 
 export function normalizeChildProjectTrustPolicy(input: unknown): ChildProjectTrustPolicy {
-	if (input === "approve" || input === "no-approve" || input === "inherit") return input;
-	if (typeof input === "object" && input !== null && "childRuns" in input) {
-		return normalizeChildProjectTrustPolicy((input as { childRuns?: unknown }).childRuns);
-	}
-	return input === undefined ? "inherit" : "no-approve";
+  if (input === "approve" || input === "no-approve" || input === "inherit") {
+    return input;
+  }
+  if (typeof input === "object" && input !== null && "childRuns" in input) {
+    return normalizeChildProjectTrustPolicy((input as { childRuns?: unknown }).childRuns);
+  }
+  return input === undefined ? "inherit" : "no-approve";
 }
 
-export function resolveConfiguredChildProjectTrustPolicy(input: unknown, argv: string[] = process.argv): ChildProjectTrustPolicy {
-	const inherited = findInheritedProjectTrustFlag(argv);
-	const explicitInherit = input === "inherit" || (typeof input === "object" && input !== null && (input as { childRuns?: unknown }).childRuns === "inherit");
-	if (explicitInherit) return inherited ?? "inherit";
-	if (inherited === "no-approve") return "no-approve";
-	if (input === undefined || (typeof input === "object" && input !== null && !("childRuns" in input))) return "approve";
-	const normalized = normalizeChildProjectTrustPolicy(input);
-	return normalized === "inherit" ? "approve" : normalized;
+export function resolveConfiguredChildProjectTrustPolicy(
+  input: unknown,
+  argv: string[] = process.argv,
+): ChildProjectTrustPolicy {
+  const inherited = findInheritedProjectTrustFlag(argv);
+  const explicitInherit =
+    input === "inherit" ||
+    (typeof input === "object" &&
+      input !== null &&
+      (input as { childRuns?: unknown }).childRuns === "inherit");
+  if (explicitInherit) {
+    return inherited ?? "inherit";
+  }
+  if (inherited === "no-approve") {
+    return "no-approve";
+  }
+  if (
+    input === undefined ||
+    (typeof input === "object" && input !== null && !("childRuns" in input))
+  ) {
+    return "approve";
+  }
+  const normalized = normalizeChildProjectTrustPolicy(input);
+  return normalized === "inherit" ? "approve" : normalized;
 }
 
 function findInheritedProjectTrustFlag(argv: string[]): "approve" | "no-approve" | undefined {
-	let inherited: "approve" | "no-approve" | undefined;
-	for (const arg of argv) {
-		if (arg === "--approve" || arg === "-a") inherited = "approve";
-		if (arg === "--no-approve" || arg === "-na") inherited = "no-approve";
-	}
-	return inherited;
+  let inherited: "approve" | "no-approve" | undefined;
+  for (const arg of argv) {
+    if (arg === "--approve" || arg === "-a") {
+      inherited = "approve";
+    }
+    if (arg === "--no-approve" || arg === "-na") {
+      inherited = "no-approve";
+    }
+  }
+  return inherited;
 }
 
-export function resolveChildProjectTrustArgs(policy: ChildProjectTrustPolicy = "inherit", argv: string[] = process.argv): string[] {
-	const inherited = findInheritedProjectTrustFlag(argv);
-	if (policy === "approve") return inherited === "no-approve" ? ["--no-approve"] : ["--approve"];
-	if (policy === "no-approve") return ["--no-approve"];
+export function resolveChildProjectTrustArgs(
+  policy: ChildProjectTrustPolicy = "inherit",
+  argv: string[] = process.argv,
+): string[] {
+  const inherited = findInheritedProjectTrustFlag(argv);
+  if (policy === "approve") {
+    return inherited === "no-approve" ? ["--no-approve"] : ["--approve"];
+  }
+  if (policy === "no-approve") {
+    return ["--no-approve"];
+  }
 
-	return inherited === "approve" ? ["--approve"] : inherited === "no-approve" ? ["--no-approve"] : [];
+  return inherited === "approve"
+    ? ["--approve"]
+    : inherited === "no-approve"
+      ? ["--no-approve"]
+      : [];
 }
 
 function inheritedRuntimeExtensionPaths(env: NodeJS.ProcessEnv = process.env): string[] {
-	const raw = env[SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV]?.trim();
-	if (!raw) return [];
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		if (!Array.isArray(parsed)) return [];
-		return parsed.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
-	} catch {
-		return [];
-	}
+  const raw = env[SUBAGENT_INHERITED_EXTENSIONS_JSON_ENV]?.trim();
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter(
+      (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
+    );
+  } catch {
+    return [];
+  }
 }
 
 // Read only through the header, not the potentially large transcript. Decode after
 // joining chunks so a UTF-8 character split across reads is preserved.
 function readSessionHeaderLine(file: string): string | undefined {
-	let fd: number;
-	try {
-		fd = fs.openSync(file, "r");
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT" && !fs.lstatSync(file, { throwIfNoEntry: false })) return undefined;
-		throw error;
-	}
-	try {
-		const chunks: Buffer[] = [];
-		const buffer = Buffer.alloc(4096);
-		while (true) {
-			const length = fs.readSync(fd, buffer, 0, buffer.length, null);
-			if (!length) break;
-			const chunk = buffer.subarray(0, length);
-			const newline = chunk.indexOf(10);
-			chunks.push(Buffer.from(newline < 0 ? chunk : chunk.subarray(0, newline)));
-			if (newline >= 0) break;
-		}
-		return Buffer.concat(chunks).toString("utf8");
-	} finally {
-		fs.closeSync(fd);
-	}
+  let fd: number;
+  try {
+    fd = fs.openSync(file, "r");
+  } catch (error) {
+    if (
+      (error as NodeJS.ErrnoException).code === "ENOENT" &&
+      !fs.lstatSync(file, { throwIfNoEntry: false })
+    ) {
+      return undefined;
+    }
+    throw error;
+  }
+  try {
+    const chunks: Buffer[] = [];
+    const buffer = Buffer.alloc(4096);
+    while (true) {
+      const length = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (!length) {
+        break;
+      }
+      const chunk = buffer.subarray(0, length);
+      const newline = chunk.indexOf(10);
+      chunks.push(Buffer.from(newline < 0 ? chunk : chunk.subarray(0, newline)));
+      if (newline >= 0) {
+        break;
+      }
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
-	const args = [...input.baseArgs];
-	const env: Record<string, string | undefined> = {};
-	args.push(...resolveChildProjectTrustArgs(input.projectTrust));
+  const args = [...input.baseArgs];
+  const env: Record<string, string | undefined> = {};
+  args.push(...resolveChildProjectTrustArgs(input.projectTrust));
 
-	if (input.sessionFile) {
-		prepareChildExecutionCwd(input.sessionFile, input.cwd);
-		fs.mkdirSync(path.dirname(input.sessionFile), { recursive: true });
-		args.push("--session", input.sessionFile);
-		if (input.cwd) {
-			let needsOverride = true;
-			try {
-				const line = readSessionHeaderLine(input.sessionFile);
-				if (line === undefined) {
-					// Preassigned new sessions (including acceptance) inherit the actual spawn cwd.
-					needsOverride = false;
-				} else {
-					const header: unknown = JSON.parse(line);
-					if (header && typeof header === "object" && "type" in header && header.type === "session"
-						&& "cwd" in header && typeof header.cwd === "string" && path.isAbsolute(header.cwd)) {
-						needsOverride = fs.realpathSync.native(header.cwd) !== fs.realpathSync.native(input.cwd);
-					}
-				}
-			} catch { /* Unknown headers or unavailable directories still need the native override. */ }
-			// Pi's SDK supports cwdOverride; its CLI has no --session-cwd flag.
-			// Keep normal resumes untouched and supply only a needed override before startup.
-			if (needsOverride) {
-				env.PI_SUBAGENT_SESSION_CWD = JSON.stringify({
-					sessionFile: path.resolve(input.cwd, input.sessionFile), cwd: input.cwd, nodeOptions: process.env.NODE_OPTIONS,
-				});
-				env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} --import=${SESSION_CWD_PRELOAD_URL}`.trim();
-			}
-		}
-	} else {
-		if (!input.sessionEnabled) {
-			args.push("--no-session");
-		}
-		if (input.sessionDir) {
-			fs.mkdirSync(input.sessionDir, { recursive: true });
-			args.push("--session-dir", input.sessionDir);
-		}
-	}
+  if (input.sessionFile) {
+    prepareChildExecutionCwd(input.sessionFile, input.cwd);
+    fs.mkdirSync(path.dirname(input.sessionFile), { recursive: true });
+    args.push("--session", input.sessionFile);
+    if (input.cwd) {
+      let needsOverride = true;
+      try {
+        const line = readSessionHeaderLine(input.sessionFile);
+        if (line === undefined) {
+          // Preassigned new sessions (including acceptance) inherit the actual spawn cwd.
+          needsOverride = false;
+        } else {
+          const header: unknown = JSON.parse(line);
+          if (
+            header &&
+            typeof header === "object" &&
+            "type" in header &&
+            header.type === "session" &&
+            "cwd" in header &&
+            typeof header.cwd === "string" &&
+            path.isAbsolute(header.cwd)
+          ) {
+            needsOverride =
+              fs.realpathSync.native(header.cwd) !== fs.realpathSync.native(input.cwd);
+          }
+        }
+      } catch {
+        /* Unknown headers or unavailable directories still need the native override. */
+      }
+      // Pi's SDK supports cwdOverride; its CLI has no --session-cwd flag.
+      // Keep normal resumes untouched and supply only a needed override before startup.
+      if (needsOverride) {
+        env.PI_SUBAGENT_SESSION_CWD = JSON.stringify({
+          sessionFile: path.resolve(input.cwd, input.sessionFile),
+          cwd: input.cwd,
+          nodeOptions: process.env.NODE_OPTIONS,
+        });
+        env.NODE_OPTIONS =
+          `${process.env.NODE_OPTIONS ?? ""} --import=${SESSION_CWD_PRELOAD_URL}`.trim();
+      }
+    }
+  } else {
+    if (!input.sessionEnabled) {
+      args.push("--no-session");
+    }
+    if (input.sessionDir) {
+      fs.mkdirSync(input.sessionDir, { recursive: true });
+      args.push("--session-dir", input.sessionDir);
+    }
+  }
 
-	const modelArg = applyThinkingSuffix(input.model, input.thinking);
-	if (modelArg) {
-		args.push("--model", modelArg);
-	}
+  const modelArg = applyThinkingSuffix(input.model, input.thinking);
+  if (modelArg) {
+    args.push("--model", modelArg);
+  }
 
-	const declaredBuiltinTools = input.tools?.filter((tool) => !(tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) ?? [];
-	const fanoutAuthorized = input.allowSubagents === true || declaredBuiltinTools.includes("subagent");
-	const compactChildTools = fanoutAuthorized && loadConfig().compactChildTools !== false;
-	// Preserve an explicit advanced-tool policy, but never inherit it into another profile.
-	env[SUBAGENT_EAGER_TOOL_ENV] = declaredBuiltinTools.includes("subagent") ? "1" : undefined;
-	const toolExtensionPaths: string[] = [];
-	if (input.tools?.length) {
-		const builtinTools = [...declaredBuiltinTools];
-		if (fanoutAuthorized && declaredBuiltinTools.length > 0) {
-			for (const tool of compactChildTools ? ["subagent", "delegate", "agent_runs", "load_subagent"] : ["subagent"]) {
-				if (!builtinTools.includes(tool)) builtinTools.push(tool);
-			}
-		}
-		if (input.structuredOutput && builtinTools.length > 0 && !builtinTools.includes("structured_output")) builtinTools.push("structured_output");
-		for (const tool of input.tools) {
-			if (!declaredBuiltinTools.includes(tool) && (tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) {
-				toolExtensionPaths.push(tool);
-			}
-		}
-		if (builtinTools.length > 0) {
-			if (input.mcpDirectTools?.length) {
-				builtinTools.push(...resolveMcpDirectToolNames(input.mcpDirectTools, input.cwd));
-			}
-			args.push("--tools", builtinTools.join(","));
-		}
-	}
+  const declaredBuiltinTools =
+    input.tools?.filter(
+      (tool) => !(tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js")),
+    ) ?? [];
+  const fanoutAuthorized =
+    input.allowSubagents === true || declaredBuiltinTools.includes("subagent");
+  const compactChildTools = fanoutAuthorized && loadConfig().compactChildTools !== false;
+  // Preserve an explicit advanced-tool policy, but never inherit it into another profile.
+  env[SUBAGENT_EAGER_TOOL_ENV] = declaredBuiltinTools.includes("subagent") ? "1" : undefined;
+  const toolExtensionPaths: string[] = [];
+  if (input.tools?.length) {
+    const builtinTools = [...declaredBuiltinTools];
+    if (fanoutAuthorized && declaredBuiltinTools.length > 0) {
+      for (const tool of compactChildTools
+        ? ["subagent", "delegate", "agent_runs", "load_subagent"]
+        : ["subagent"]) {
+        if (!builtinTools.includes(tool)) {
+          builtinTools.push(tool);
+        }
+      }
+    }
+    if (
+      input.structuredOutput &&
+      builtinTools.length > 0 &&
+      !builtinTools.includes("structured_output")
+    ) {
+      builtinTools.push("structured_output");
+    }
+    for (const tool of input.tools) {
+      if (
+        !declaredBuiltinTools.includes(tool) &&
+        (tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))
+      ) {
+        toolExtensionPaths.push(tool);
+      }
+    }
+    if (builtinTools.length > 0) {
+      if (input.mcpDirectTools?.length) {
+        builtinTools.push(...resolveMcpDirectToolNames(input.mcpDirectTools, input.cwd));
+      }
+      args.push("--tools", builtinTools.join(","));
+    }
+  }
 
-	const runtimeExtensions = fanoutAuthorized
-		? [PROMPT_RUNTIME_EXTENSION_PATH, FANOUT_CHILD_EXTENSION_PATH, ...inheritedRuntimeExtensionPaths()]
-		: [PROMPT_RUNTIME_EXTENSION_PATH, ...inheritedRuntimeExtensionPaths()];
-	if (input.extensions !== undefined) {
-		args.push("--no-extensions");
-		for (const extPath of [...new Set([...runtimeExtensions, ...toolExtensionPaths, ...input.extensions])]) {
-			args.push("--extension", extPath);
-		}
-	} else {
-		for (const extPath of [...new Set([...runtimeExtensions, ...toolExtensionPaths])]) {
-			args.push("--extension", extPath);
-		}
-	}
+  const runtimeExtensions = fanoutAuthorized
+    ? [
+        PROMPT_RUNTIME_EXTENSION_PATH,
+        FANOUT_CHILD_EXTENSION_PATH,
+        ...inheritedRuntimeExtensionPaths(),
+      ]
+    : [PROMPT_RUNTIME_EXTENSION_PATH, ...inheritedRuntimeExtensionPaths()];
+  if (input.extensions !== undefined) {
+    args.push("--no-extensions");
+    for (const extPath of [
+      ...new Set([...runtimeExtensions, ...toolExtensionPaths, ...input.extensions]),
+    ]) {
+      args.push("--extension", extPath);
+    }
+  } else {
+    for (const extPath of [...new Set([...runtimeExtensions, ...toolExtensionPaths])]) {
+      args.push("--extension", extPath);
+    }
+  }
 
-	if (!input.inheritSkills) {
-		args.push("--no-skills");
-	}
-	if (!input.inheritProjectContext) {
-		args.push("--no-context-files");
-	}
+  if (!input.inheritSkills) {
+    args.push("--no-skills");
+  }
+  if (!input.inheritProjectContext) {
+    args.push("--no-context-files");
+  }
 
-	let tempDir: string | undefined;
-	if (input.systemPrompt !== undefined && input.systemPrompt !== null) {
-		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
-		const promptPath = path.join(tempDir, "system.md");
-		fs.writeFileSync(promptPath, input.systemPrompt, { mode: 0o600 });
-		args.push(input.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptPath);
-	}
+  let tempDir: string | undefined;
+  if (input.systemPrompt !== undefined && input.systemPrompt !== null) {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
+    const promptPath = path.join(tempDir, "system.md");
+    fs.writeFileSync(promptPath, input.systemPrompt, { mode: 0o600 });
+    args.push(
+      input.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt",
+      promptPath,
+    );
+  }
 
-	const taskArg = `Task: ${input.task}`;
-	if (Buffer.byteLength(taskArg) > TASK_ARG_LIMIT_BYTES) {
-		if (!tempDir) {
-			tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
-		}
-		const taskFilePath = path.join(tempDir, "task.md");
-		fs.writeFileSync(taskFilePath, taskArg, { mode: 0o600 });
-		args.push(`@${taskFilePath}`);
-	} else {
-		args.push(taskArg);
-	}
+  const taskArg = `Task: ${input.task}`;
+  if (Buffer.byteLength(taskArg) > TASK_ARG_LIMIT_BYTES) {
+    if (!tempDir) {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
+    }
+    const taskFilePath = path.join(tempDir, "task.md");
+    fs.writeFileSync(taskFilePath, taskArg, { mode: 0o600 });
+    args.push(`@${taskFilePath}`);
+  } else {
+    args.push(taskArg);
+  }
 
-	env[SUBAGENT_CHILD_ENV] = "1";
-	env.PI_SUBAGENT_ROOT_SESSION_ID = input.rootSessionId ?? (process.env[SUBAGENT_CHILD_ENV] === "1" ? process.env.PI_SUBAGENT_ROOT_SESSION_ID : undefined);
-	env[SUBAGENT_FANOUT_CHILD_ENV] = fanoutAuthorized ? "1" : "0";
-	const inheritedNestedRoute = Boolean(process.env[SUBAGENT_PARENT_EVENT_SINK_ENV] && process.env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV] && process.env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV]);
-	const parentRunId = input.parentRunId ?? input.runId ?? (inheritedNestedRoute ? process.env[SUBAGENT_RUN_ID_ENV] : undefined) ?? process.env[SUBAGENT_PARENT_RUN_ID_ENV] ?? "";
-	const parentChildIndex = input.parentChildIndex !== undefined
-		? String(input.parentChildIndex)
-		: input.childIndex !== undefined
-			? String(input.childIndex)
-			: process.env[SUBAGENT_PARENT_CHILD_INDEX_ENV] ?? "";
-	const inheritedDepth = Number(process.env[SUBAGENT_PARENT_DEPTH_ENV]);
-	const parentDepth = input.parentDepth ?? (inheritedNestedRoute && Number.isFinite(inheritedDepth) ? inheritedDepth + 1 : 1);
-	const parentPath = input.parentPath ?? [
-		...parseNestedPathEnv(process.env[SUBAGENT_PARENT_PATH_ENV]),
-		...(parentRunId ? [{
-			runId: parentRunId,
-			...(parentChildIndex && /^\d+$/.test(parentChildIndex) ? { stepIndex: Number(parentChildIndex) } : {}),
-			...(input.childAgentName ? { agent: input.childAgentName } : {}),
-		}] : []),
-	];
-	env[SUBAGENT_PARENT_EVENT_SINK_ENV] = fanoutAuthorized
-		? input.parentEventSink ?? process.env[SUBAGENT_PARENT_EVENT_SINK_ENV] ?? ""
-		: "";
-	env[SUBAGENT_PARENT_CONTROL_INBOX_ENV] = fanoutAuthorized
-		? input.parentControlInbox ?? process.env[SUBAGENT_PARENT_CONTROL_INBOX_ENV] ?? ""
-		: "";
-	env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV] = fanoutAuthorized
-		? input.parentRootRunId ?? process.env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV] ?? input.runId ?? ""
-		: "";
-	env[SUBAGENT_PARENT_RUN_ID_ENV] = fanoutAuthorized ? parentRunId : "";
-	env[SUBAGENT_PARENT_CHILD_INDEX_ENV] = fanoutAuthorized ? parentChildIndex : "";
-	env[SUBAGENT_PARENT_DEPTH_ENV] = fanoutAuthorized ? String(parentDepth) : "";
-	env[SUBAGENT_PARENT_PATH_ENV] = fanoutAuthorized ? encodeNestedPathEnv(parentPath) : "";
-	env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV] = fanoutAuthorized
-		? input.parentCapabilityToken ?? process.env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV] ?? ""
-		: "";
-	env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = input.inheritProjectContext ? "1" : "0";
-	env.PI_SUBAGENT_INHERIT_SKILLS = input.inheritSkills ? "1" : "0";
-	if (input.intercomSessionName) {
-		env.PI_SUBAGENT_INTERCOM_SESSION_NAME = input.intercomSessionName;
-	}
-	if (input.orchestratorIntercomTarget) {
-		env[SUBAGENT_ORCHESTRATOR_TARGET_ENV] = input.orchestratorIntercomTarget;
-	}
-	if (input.runId) {
-		env[SUBAGENT_RUN_ID_ENV] = input.runId;
-	}
-	if (input.childAgentName) {
-		env[SUBAGENT_CHILD_AGENT_ENV] = input.childAgentName;
-	}
-	if (input.childIndex !== undefined) {
-		env[SUBAGENT_CHILD_INDEX_ENV] = String(input.childIndex);
-	}
-	if (input.mcpDirectTools?.length) {
-		env.MCP_DIRECT_TOOLS = input.mcpDirectTools.join(",");
-	}
-	// A nested helper must never submit into its parent's capture.
-	env[STRUCTURED_OUTPUT_CAPTURE_ENV] = input.structuredOutput?.outputPath ?? "";
-	env[STRUCTURED_OUTPUT_SCHEMA_ENV] = input.structuredOutput?.schemaPath ?? "";
+  env[SUBAGENT_CHILD_ENV] = "1";
+  env.PI_SUBAGENT_ROOT_SESSION_ID =
+    input.rootSessionId ??
+    (process.env[SUBAGENT_CHILD_ENV] === "1" ? process.env.PI_SUBAGENT_ROOT_SESSION_ID : undefined);
+  env[SUBAGENT_FANOUT_CHILD_ENV] = fanoutAuthorized ? "1" : "0";
+  const inheritedNestedRoute = Boolean(
+    process.env[SUBAGENT_PARENT_EVENT_SINK_ENV] &&
+    process.env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV] &&
+    process.env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV],
+  );
+  const parentRunId =
+    input.parentRunId ??
+    input.runId ??
+    (inheritedNestedRoute ? process.env[SUBAGENT_RUN_ID_ENV] : undefined) ??
+    process.env[SUBAGENT_PARENT_RUN_ID_ENV] ??
+    "";
+  const parentChildIndex =
+    input.parentChildIndex !== undefined
+      ? String(input.parentChildIndex)
+      : input.childIndex !== undefined
+        ? String(input.childIndex)
+        : (process.env[SUBAGENT_PARENT_CHILD_INDEX_ENV] ?? "");
+  const inheritedDepth = Number(process.env[SUBAGENT_PARENT_DEPTH_ENV]);
+  const parentDepth =
+    input.parentDepth ??
+    (inheritedNestedRoute && Number.isFinite(inheritedDepth) ? inheritedDepth + 1 : 1);
+  const parentPath = input.parentPath ?? [
+    ...parseNestedPathEnv(process.env[SUBAGENT_PARENT_PATH_ENV]),
+    ...(parentRunId
+      ? [
+          {
+            runId: parentRunId,
+            ...(parentChildIndex && /^\d+$/.test(parentChildIndex)
+              ? { stepIndex: Number(parentChildIndex) }
+              : {}),
+            ...(input.childAgentName ? { agent: input.childAgentName } : {}),
+          },
+        ]
+      : []),
+  ];
+  env[SUBAGENT_PARENT_EVENT_SINK_ENV] = fanoutAuthorized
+    ? (input.parentEventSink ?? process.env[SUBAGENT_PARENT_EVENT_SINK_ENV] ?? "")
+    : "";
+  env[SUBAGENT_PARENT_CONTROL_INBOX_ENV] = fanoutAuthorized
+    ? (input.parentControlInbox ?? process.env[SUBAGENT_PARENT_CONTROL_INBOX_ENV] ?? "")
+    : "";
+  env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV] = fanoutAuthorized
+    ? (input.parentRootRunId ?? process.env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV] ?? input.runId ?? "")
+    : "";
+  env[SUBAGENT_PARENT_RUN_ID_ENV] = fanoutAuthorized ? parentRunId : "";
+  env[SUBAGENT_PARENT_CHILD_INDEX_ENV] = fanoutAuthorized ? parentChildIndex : "";
+  env[SUBAGENT_PARENT_DEPTH_ENV] = fanoutAuthorized ? String(parentDepth) : "";
+  env[SUBAGENT_PARENT_PATH_ENV] = fanoutAuthorized ? encodeNestedPathEnv(parentPath) : "";
+  env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV] = fanoutAuthorized
+    ? (input.parentCapabilityToken ?? process.env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV] ?? "")
+    : "";
+  env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = input.inheritProjectContext ? "1" : "0";
+  env.PI_SUBAGENT_INHERIT_SKILLS = input.inheritSkills ? "1" : "0";
+  if (input.intercomSessionName) {
+    env.PI_SUBAGENT_INTERCOM_SESSION_NAME = input.intercomSessionName;
+  }
+  if (input.orchestratorIntercomTarget) {
+    env[SUBAGENT_ORCHESTRATOR_TARGET_ENV] = input.orchestratorIntercomTarget;
+  }
+  if (input.runId) {
+    env[SUBAGENT_RUN_ID_ENV] = input.runId;
+  }
+  if (input.childAgentName) {
+    env[SUBAGENT_CHILD_AGENT_ENV] = input.childAgentName;
+  }
+  if (input.childIndex !== undefined) {
+    env[SUBAGENT_CHILD_INDEX_ENV] = String(input.childIndex);
+  }
+  if (input.mcpDirectTools?.length) {
+    env.MCP_DIRECT_TOOLS = input.mcpDirectTools.join(",");
+  }
+  // A nested helper must never submit into its parent's capture.
+  env[STRUCTURED_OUTPUT_CAPTURE_ENV] = input.structuredOutput?.outputPath ?? "";
+  env[STRUCTURED_OUTPUT_SCHEMA_ENV] = input.structuredOutput?.schemaPath ?? "";
 
-	return { args, env, tempDir };
+  return { args, env, tempDir };
 }
 
-
 export function cleanupTempDir(tempDir: string | null | undefined): void {
-	if (!tempDir) return;
-	try {
-		fs.rmSync(tempDir, { recursive: true, force: true });
-	} catch {
-		// Temp cleanup is best effort.
-	}
+  if (!tempDir) {
+    return;
+  }
+  try {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } catch {
+    // Temp cleanup is best effort.
+  }
 }

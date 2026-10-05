@@ -67,6 +67,7 @@ The `--llm` mode copies local `auth.json` and `models.json` into the isolated Pi
 Pi-intercom automatically gives ordinary agents a bounded presence hint when another connected session is working in the same Git repository, including separate worktrees. The hint is a constant count-free string; agents load `load_intercom({})` if needed, then use `intercom({ action: "list" })` before changing shared state or coordinating known overlapping work. Routine standalone read-only tasks do not need a peer check. No message is sent automatically. This guidance applies on official Pi and the fork; broker presence, delivery, approvals, and child recovery are unchanged. Both the tool and `/intercom` overlay default to that repository/worktree scope. Use `intercom({ action: "list", scope: "all" })` or `/intercom all` only when intentionally discovering sessions in other projects. Managed `pi-subagents` children keep their dedicated supervisor channel instead of receiving the peer hint. Project matching is an advisory presence signal, not an authorization boundary. Add project instructions only when you want a stricter mandatory coordination policy.
 
 A session becomes intercom-connected when all of these are true:
+
 - the bundled intercom extension is enabled through `pi config`
 - the session has been restarted after the extension was installed or updated
 - the local broker is running or can be auto-started
@@ -91,11 +92,24 @@ With `pi-subagents`, **Option+Shift+M** (**Alt+Shift+M**) opens your task-labell
 Subscribe explicitly to an exact topic; there are no automatic subscriptions or wildcard broadcasts. Topics span connected local sessions, so use a project/resource-specific name unless cross-project coordination is intended. Publications are self-contained latest state, not deltas. Each sender has one current record per topic; older queued versions cannot replace a newer record. Same-session subscriptions, publications and received records use native session entries. Late subscribers read current published state without replaying earlier interruptions.
 
 ```typescript
-intercom({ action: "subscribe", topic: "browser/shared-profile/tab-4", awaitRelease: true })
-intercom({ action: "publish", topic: "browser/shared-profile/tab-4", resource: "tab-4", ownership: "held", message: "Reviewing the sign-in flow; keep this tab open." })
-intercom({ action: "topics", topic: "browser/shared-profile/tab-4" })
-intercom({ action: "publish", topic: "browser/shared-profile/tab-4", event: "release", resource: "tab-4", ownership: "released", message: "Sign-in check complete; this tab is available." })
-intercom({ action: "unsubscribe", topic: "browser/shared-profile/tab-4" })
+intercom({ action: "subscribe", topic: "browser/shared-profile/tab-4", awaitRelease: true });
+intercom({
+  action: "publish",
+  topic: "browser/shared-profile/tab-4",
+  resource: "tab-4",
+  ownership: "held",
+  message: "Reviewing the sign-in flow; keep this tab open.",
+});
+intercom({ action: "topics", topic: "browser/shared-profile/tab-4" });
+intercom({
+  action: "publish",
+  topic: "browser/shared-profile/tab-4",
+  event: "release",
+  resource: "tab-4",
+  ownership: "released",
+  message: "Sign-in check complete; this tab is available.",
+});
+intercom({ action: "unsubscribe", topic: "browser/shared-profile/tab-4" });
 ```
 
 Routine `event: "update"` publications replace quiet inspectable state; they do not become passive conversation messages or wake a model. Inspect current records and declared resource ownership in **`/intercom topics`** or `intercom({ action: "topics" })`; topic state does not appear in the footer. Ownership is advisory, not an exclusive lock; disconnect means **unavailable/disconnected**, never an implied release.
@@ -110,9 +124,9 @@ The agent can list sessions and send messages using the `intercom` tool. Tool ca
 
 ```typescript
 // Enable the peer tool if it is not already available
-load_intercom({})
+load_intercom({});
 // List connected sessions in this repository and its worktrees
-intercom({ action: "list" })
+intercom({ action: "list" });
 // → **Current session:**
 // → • executor (20d43841) — ~/projects/api (claude-sonnet-4) [self, idle, state:idle, accepts_asks:true, pending_asks:0, last_intercom_activity:none]
 // →   ↳ self target unavailable; choose a peer from Other sessions; use pending/reply for inbound asks
@@ -121,14 +135,18 @@ intercom({ action: "list" })
 // →   ↳ send defaults to steer; ask only if sender must stay alive for a required reply (default sends without waiting when peer is busy); queue only for intentional delay; passive discouraged
 
 // Intentionally discover sessions in other projects
-intercom({ action: "list", scope: "all" })
+intercom({ action: "list", scope: "all" });
 
 // Send live guidance without blocking this long-lived session; send defaults to steer
-intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null. Send the finding back." })
+intercom({
+  action: "send",
+  to: "research",
+  message: "Check if UserService.validate() handles null. Send the finding back.",
+});
 // → Message sent to research. This session can end its turn or continue independent work.
 
 // Check connection status and the same live recipient guidance
-intercom({ action: "status" })
+intercom({ action: "status" });
 // → Connected: Yes, Session ID: abc123, Active sessions: 3
 // → Current session and other-session rows follow.
 
@@ -137,13 +155,15 @@ intercom({
   action: "send",
   to: "worker",
   message: "Here's the fix:",
-  attachments: [{
-    type: "snippet",
-    name: "auth.ts",
-    language: "typescript",
-    content: "function validate(user: User) { ... }"
-  }]
-})
+  attachments: [
+    {
+      type: "snippet",
+      name: "auth.ts",
+      language: "typescript",
+      content: "function validate(user: User) { ... }",
+    },
+  ],
+});
 ```
 
 ### Receiving Messages
@@ -189,7 +209,7 @@ Open two terminals and start pi in each. Name them so they can find each other:
 Verify they see each other from either session:
 
 ```typescript
-intercom({ action: "list" })
+intercom({ action: "list" });
 // → • worker — ~/projects/api (claude-sonnet-4) [idle]
 ```
 
@@ -198,55 +218,62 @@ intercom({ action: "list" })
 Long-lived Pi sessions normally coordinate without blocking each other. The sender uses `send`, which steers by default, and ends its turn or continues independent work. The recipient sees the message at its next tool boundary, incorporates relevant context, continues the active task, and sends any answer back with steer. A steer supplements the task unless it explicitly says to replace it.
 
 **Planner delegates work:**
+
 ```typescript
 intercom({
   action: "send",
   to: "worker",
   delivery: "steer",
-  message: "Task-3: Add retry logic to API client. Key files: src/api/client.ts, src/api/types.ts."
-})
+  message: "Task-3: Add retry logic to API client. Key files: src/api/client.ts, src/api/types.ts.",
+});
 ```
 
 **Worker steers a live discovery without holding its process open:**
+
 ```typescript
 intercom({
   action: "send",
   to: "planner",
   delivery: "steer",
-  message: "Blocked: should retry apply only to idempotent endpoints? Send the decision back with steer."
-})
+  message:
+    "Blocked: should retry apply only to idempotent endpoints? Send the decision back with steer.",
+});
 // Worker ends its turn instead of polling or waiting.
 ```
 
 **Planner answers while preserving the worker's active task:**
+
 ```typescript
 intercom({
   action: "send",
   to: "worker",
   delivery: "steer",
-  message: "Apply retries only to GET/PUT/DELETE. Max 3, exponential backoff from 100ms. Continue the current task."
-})
+  message:
+    "Apply retries only to GET/PUT/DELETE. Max 3, exponential backoff from 100ms. Continue the current task.",
+});
 ```
 
 **Worker reports completion:**
+
 ```typescript
 intercom({
   action: "send",
   to: "planner",
   delivery: "steer",
-  message: "Task-3 done. Added RetryPolicy, applied it to GET/PUT/DELETE, surfaced NetworkError, and passed 4 tests."
-})
+  message:
+    "Task-3 done. Added RetryPolicy, applied it to GET/PUT/DELETE, surfaced NetworkError, and passed 4 tests.",
+});
 ```
 
 ### Communication Patterns
 
-| Pattern | Action | Why |
-|---------|--------|-----|
-| **Task Delegation** | `send` + steer | Wakes an idle worker or reaches a busy worker at the next tool boundary without blocking the planner. |
-| **Guidance / Answer** | `send` + steer | Makes relevant context available during active work. |
-| **Clarification / Blocker** | `send` + steer | Long-lived peers can end their turn and wake when the answer arrives. |
-| **Intentional Deferral** | `send` + queue | The recipient should not incorporate the note until after active work. |
-| **Ephemeral Blocking Wait** | `ask` + steer | Keeps a short-lived process alive only when it cannot safely continue without the reply. |
+| Pattern                     | Action         | Why                                                                                                   |
+| --------------------------- | -------------- | ----------------------------------------------------------------------------------------------------- |
+| **Task Delegation**         | `send` + steer | Wakes an idle worker or reaches a busy worker at the next tool boundary without blocking the planner. |
+| **Guidance / Answer**       | `send` + steer | Makes relevant context available during active work.                                                  |
+| **Clarification / Blocker** | `send` + steer | Long-lived peers can end their turn and wake when the answer arrives.                                 |
+| **Intentional Deferral**    | `send` + queue | The recipient should not incorporate the note until after active work.                                |
+| **Ephemeral Blocking Wait** | `ask` + steer  | Keeps a short-lived process alive only when it cannot safely continue without the reply.              |
 
 ### Blocking Ask Exception
 
@@ -281,11 +308,11 @@ When both bundled extension entries are enabled, parent sessions can use `agent_
 
 ### Three Reasons
 
-| Reason | Behavior | Use When |
-|--------|----------|----------|
-| `need_decision` | Persists the question, steers the supervisor, and waits without the ordinary ask timeout | The ephemeral child cannot safely continue without one decision, approval, or product/API/scope clarification |
-| `interview_request` | Persists structured questions and waits without the ordinary ask timeout | The ephemeral child cannot safely continue until it receives multiple structured answers |
-| `progress_update` | Non-blocking steer at the next tool boundary | A discovery or change the supervisor needs while working |
+| Reason              | Behavior                                                                                 | Use When                                                                                                      |
+| ------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `need_decision`     | Persists the question, steers the supervisor, and waits without the ordinary ask timeout | The ephemeral child cannot safely continue without one decision, approval, or product/API/scope clarification |
+| `interview_request` | Persists structured questions and waits without the ordinary ask timeout                 | The ephemeral child cannot safely continue until it receives multiple structured answers                      |
+| `progress_update`   | Non-blocking steer at the next tool boundary                                             | A discovery or change the supervisor needs while working                                                      |
 
 Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally through `pi-subagents`.
 
@@ -298,9 +325,14 @@ Durable output lives in `pi-subagents` result details and artifact/output paths 
 `need_decision` and `interview_request` save the question before notification. Supervisor or broker disconnection does not end the wait. Resume the same saved supervisor session and use:
 
 ```typescript
-agent_runs({ action: "questions" })
-agent_runs({ action: "answer", id: "<run-id>", questionId: "<question-id>", message: "Use the stable API." })
-agent_runs({ action: "stop", id: "<run-id>" })
+agent_runs({ action: "questions" });
+agent_runs({
+  action: "answer",
+  id: "<run-id>",
+  questionId: "<question-id>",
+  message: "Use the stable API.",
+});
+agent_runs({ action: "stop", id: "<run-id>" });
 ```
 
 The full `subagent` tool also accepts `questions` and `answer`; its stop action is `interrupt`. Questions expose `awaiting_input`, `answer_pending`, `answered`, or `cancelled` independently of run completion. Ownership follows the saved supervisor session, not its cwd or display name. The live intercom reply path saves the same answer. Saving an answer or cancelling through run controls also clears the matching live intercom pending ask; a nudge does not resolve a question.
@@ -314,8 +346,9 @@ Questions, saved launch contracts, and canonical version-2 run status/results li
 ```typescript
 contact_supervisor({
   reason: "need_decision",
-  message: "The auth service returns 403 instead of 401 for expired tokens. Should I treat 403 as a re-auth trigger or a hard failure?"
-})
+  message:
+    "The auth service returns 403 instead of 401 for expired tokens. Should I treat 403 as a re-auth trigger or a hard failure?",
+});
 // → Reply from supervisor: Treat 403 as re-auth trigger. Update the token refresh logic.
 ```
 
@@ -328,11 +361,16 @@ contact_supervisor({
   interview: {
     title: "API migration choices",
     questions: [
-      { id: "api", type: "single", question: "Which API should I target?", options: ["Stable API", "Experimental API"] },
-      { id: "constraints", type: "text", question: "What constraints should I preserve?" }
-    ]
-  }
-})
+      {
+        id: "api",
+        type: "single",
+        question: "Which API should I target?",
+        options: ["Stable API", "Experimental API"],
+      },
+      { id: "constraints", type: "text", question: "What constraints should I preserve?" },
+    ],
+  },
+});
 // → Reply from supervisor: { "responses": [{ "id": "api", "value": "Stable API" }, ...] }
 ```
 
@@ -341,8 +379,9 @@ contact_supervisor({
 ```typescript
 contact_supervisor({
   reason: "progress_update",
-  message: "Discovered the bug is in the retry wrapper, not the API client. Fixing the wrapper will also close issue #42."
-})
+  message:
+    "Discovered the bug is in the retry wrapper, not the API client. Fixing the wrapper will also close issue #42.",
+});
 // → Progress update accepted for supervisor planner. Queued for the next tool boundary; broker acceptance does not confirm the supervisor has read or acted on it.
 ```
 
@@ -384,28 +423,28 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 
 ### intercom
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `action` | string | `"list"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
-| `scope` | string | Optional for list/status: `"project"` (default) shows this Git repository and its worktrees; `"all"` includes sessions in other projects. |
-| `to` | string | Target session name or ID (for send/ask, or to disambiguate reply) |
-| `message` | string | Message text (for send/ask/reply) |
-| `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
-| `replyTo` | string | Optional message ID for threading or replying to an `ask` |
-| `delivery` | string | Optional: omitted `send` defaults to `"steer"`, which injects after the current tool call; `"queue"` intentionally waits behind active work, and `"passive"` does not wake the recipient model (`send` only). |
-| `queueMode` | string | Optional with queued delivery: `"stack"` keeps all messages, `"replace"` keeps only the latest undelivered message for the same `threadId` after a short coalescing window. |
-| `threadId` | string | Required for `queueMode:"replace"`; stable topic key for replacement. |
-| `passive` | boolean | Legacy `send`-only alias for `delivery:"passive"`. Discouraged for agent-to-agent messages. |
+| Parameter     | Type    | Description                                                                                                                                                                                                   |
+| ------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `action`      | string  | `"list"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"`                                                                                                                                            |
+| `scope`       | string  | Optional for list/status: `"project"` (default) shows this Git repository and its worktrees; `"all"` includes sessions in other projects.                                                                     |
+| `to`          | string  | Target session name or ID (for send/ask, or to disambiguate reply)                                                                                                                                            |
+| `message`     | string  | Message text (for send/ask/reply)                                                                                                                                                                             |
+| `attachments` | array   | Optional `file`, `snippet`, or `context` attachments                                                                                                                                                          |
+| `replyTo`     | string  | Optional message ID for threading or replying to an `ask`                                                                                                                                                     |
+| `delivery`    | string  | Optional: omitted `send` defaults to `"steer"`, which injects after the current tool call; `"queue"` intentionally waits behind active work, and `"passive"` does not wake the recipient model (`send` only). |
+| `queueMode`   | string  | Optional with queued delivery: `"stack"` keeps all messages, `"replace"` keeps only the latest undelivered message for the same `threadId` after a short coalescing window.                                   |
+| `threadId`    | string  | Required for `queueMode:"replace"`; stable topic key for replacement.                                                                                                                                         |
+| `passive`     | boolean | Legacy `send`-only alias for `delivery:"passive"`. Discouraged for agent-to-agent messages.                                                                                                                   |
 
 ### contact_supervisor
 
 Only registered in sessions where `pi-subagents` supplied the required child bridge metadata. Contacts the supervisor session that delegated the current task.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `reason` | string | `"need_decision"` (blocking), `"interview_request"` (blocking structured questions), or `"progress_update"` (non-blocking) |
-| `message` | string | The decision request, optional interview note, or progress update |
-| `interview` | object | Required for `interview_request`: `{ title?, description?, questions: [...] }` |
+| Parameter   | Type   | Description                                                                                                                |
+| ----------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `reason`    | string | `"need_decision"` (blocking), `"interview_request"` (blocking structured questions), or `"progress_update"` (non-blocking) |
+| `message`   | string | The decision request, optional interview note, or progress update                                                          |
+| `interview` | object | Required for `interview_request`: `{ title?, description?, questions: [...] }`                                             |
 
 **`need_decision`** — Use only when the ephemeral child cannot safely continue without one decision, approval, or product/API/scope clarification. It sends a formatted steered ask to the supervisor and keeps the child alive until the reply arrives, without the ordinary intercom ask timeout. The reply comes back as the tool result. Includes run metadata in the message so the supervisor knows which subagent is asking.
 
@@ -429,13 +468,13 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 ## Keyboard Shortcuts
 
-| Key | Action |
-|-----|--------|
+| Key                                        | Action                                                                                   |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------- |
 | Option+Shift+M (Alt+Shift+M), configurable | Toggle owned agent conversations; open peer messaging when the agent view is unavailable |
-| ↑/↓ | Navigate session list |
-| Tab | Toggle Send / Request Reply mode in the compose overlay |
-| Enter | Select session / Send or ask |
-| Escape | Cancel / Close overlay |
+| ↑/↓                                        | Navigate session list                                                                    |
+| Tab                                        | Toggle Send / Request Reply mode in the compose overlay                                  |
+| Enter                                      | Select session / Send or ask                                                             |
+| Escape                                     | Cancel / Close overlay                                                                   |
 
 ## Config
 
@@ -453,17 +492,17 @@ Create `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/config.json`:
 }
 ```
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `shortcut` | `"alt+shift+m"` | Native Pi key identifier for the Agents/Intercom shortcut, for example `"ctrl+shift+k"`. The Agents entrance hint uses the same setting. |
-| `brokerCommand` | current Node executable | Command used to start the local broker process when you override the default |
-| `brokerArgs` | `[]` | Arguments passed to `brokerCommand` before the broker script path. The built-in default runs the bundled TypeScript broker directly with Node. |
-| `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
-| `replyHint` | true | Include reply instructions in incoming asks |
-| `askTimeoutMs` | `120000` | Reply wait timeout for ordinary peer `ask`; durable supervisor questions do not expire |
-| `sendTimeoutMs` | `8000` | Broker delivery-ack timeout for sends/asks |
-| `listTimeoutMs` | `5000` | Session-list response timeout |
-| `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
+| Setting         | Default                 | Description                                                                                                                                    |
+| --------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shortcut`      | `"alt+shift+m"`         | Native Pi key identifier for the Agents/Intercom shortcut, for example `"ctrl+shift+k"`. The Agents entrance hint uses the same setting.       |
+| `brokerCommand` | current Node executable | Command used to start the local broker process when you override the default                                                                   |
+| `brokerArgs`    | `[]`                    | Arguments passed to `brokerCommand` before the broker script path. The built-in default runs the bundled TypeScript broker directly with Node. |
+| `confirmSend`   | false                   | Show a confirmation dialog before non-reply sends from an interactive session with UI                                                          |
+| `replyHint`     | true                    | Include reply instructions in incoming asks                                                                                                    |
+| `askTimeoutMs`  | `120000`                | Reply wait timeout for ordinary peer `ask`; durable supervisor questions do not expire                                                         |
+| `sendTimeoutMs` | `8000`                  | Broker delivery-ack timeout for sends/asks                                                                                                     |
+| `listTimeoutMs` | `5000`                  | Session-list response timeout                                                                                                                  |
+| `status`        | —                       | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching`                                 |
 
 The default shortcut requires a terminal that reports combined modifiers through Kitty keyboard protocol or xterm modifyOtherKeys. Pi negotiates these automatically on supported terminals. `/agents` is also available. Restart Pi after changing the shortcut.
 
@@ -513,6 +552,7 @@ Messages use length-prefixed JSON over a local Unix socket transport (4-byte len
 Startup restoration and inbound batches join during shutdown while their old native owner remains valid. Work that outlives a replaced owner (reconnects, overlays, and relays) no-ops rather than using stale APIs. Completion handoffs retain accepted acknowledgements before listeners stop; failed shutdown deliveries remain eligible on reopen without requesting a new turn after ingress closes. Undelivered receiver messages remain in native session metadata, bound to the exact saved session UUID. Native message entries are the delivery receipt, including messages that have left the active context after compaction. Each body is checkpointed once; later handoff metadata stores only the message ID and state.
 
 Runtime files:
+
 - Unix domain socket — private short temp path `pi-intercom-<hash>/broker.sock` on macOS/Linux, keyed by user ID and `PI_CODING_AGENT_DIR` or `~/.pi/agent`
 - `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/broker.pid` — Broker process ID on the first line (backward-readable). On Linux, new brokers add native boot ID, PID namespace, reader time namespace and process start ticks on a second `linux-v1` line.
 - `${PI_CODING_AGENT_DIR:-~/.pi/agent}/intercom/config.json` — User configuration
@@ -529,13 +569,13 @@ Runtime files:
 
 ## pi-intercom vs pi-messenger
 
-| Aspect | pi-intercom | pi-messenger |
-|--------|-------------|--------------|
-| **Model** | Direct 1:1 messaging | Shared chat room |
+| Aspect          | pi-intercom                 | pi-messenger                  |
+| --------------- | --------------------------- | ----------------------------- |
+| **Model**       | Direct 1:1 messaging        | Shared chat room              |
 | **Primary use** | User orchestrating sessions | Autonomous agent coordination |
-| **Discovery** | Broker-based (real-time) | File-based registry |
-| **Messages** | Private, session-to-session | Broadcast to all agents |
-| **Persistence** | In Pi session history | Shared coordination files |
+| **Discovery**   | Broker-based (real-time)    | File-based registry           |
+| **Messages**    | Private, session-to-session | Broadcast to all agents       |
+| **Persistence** | In Pi session history       | Shared coordination files     |
 
 Use pi-messenger for multi-agent swarms working on a shared task. Use pi-intercom when you want to manually coordinate your own sessions or have one agent reach out to another specific session.
 

@@ -9,28 +9,24 @@ import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../../src/runs/sh
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 function parentToolEnv(): NodeJS.ProcessEnv {
-	const env = { ...process.env };
-	delete env[SUBAGENT_CHILD_ENV];
-	delete env[SUBAGENT_FANOUT_CHILD_ENV];
-	env.PI_CODING_AGENT_DIR = path.join(os.tmpdir(), `pi-subagent-index-probe-${process.pid}`);
-	return env;
+  const env = { ...process.env };
+  delete env[SUBAGENT_CHILD_ENV];
+  delete env[SUBAGENT_FANOUT_CHILD_ENV];
+  env.PI_CODING_AGENT_DIR = path.join(os.tmpdir(), `pi-subagent-index-probe-${process.pid}`);
+  return env;
 }
 
 function runProbe(script: string, options: { env?: NodeJS.ProcessEnv } = {}): void {
-	execFileSync(
-		process.execPath,
-		[
-			"--input-type=module",
-			"--eval",
-			String.raw`${script}`,
-		],
-		{ cwd: projectRoot, stdio: "pipe", ...options },
-	);
+  execFileSync(process.execPath, ["--input-type=module", "--eval", String.raw`${script}`], {
+    cwd: projectRoot,
+    stdio: "pipe",
+    ...options,
+  });
 }
 
 describe("subagent extension child mode", () => {
-	it("loads the full subagent tool on demand without losing guidance or output state", () => {
-		const script = String.raw`
+  it("loads the full subagent tool on demand without losing guidance or output state", () => {
+    const script = String.raw`
 			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
 			const events = { on() { return () => {}; }, emit() {} };
 			const registeredTools = new Map();
@@ -120,11 +116,11 @@ describe("subagent extension child mode", () => {
 			if (!expanded) throw new Error("tool output expansion was not preserved");
 		`;
 
-		runProbe(script, { env: parentToolEnv() });
-	});
+    runProbe(script, { env: parentToolEnv() });
+  });
 
-	it("normalizes registered delegate acceptance before worktree wrapping and preserves advanced input", () => {
-		const script = String.raw`
+  it("normalizes registered delegate acceptance before worktree wrapping and preserves advanced input", () => {
+    const script = String.raw`
 			const assert = (await import("node:assert/strict")).default;
 			const { Compile } = await import("typebox/compile");
 			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
@@ -174,11 +170,13 @@ describe("subagent extension child mode", () => {
 				for (const shutdown of handlers.get("session_shutdown") ?? []) await shutdown();
 			}
 		`;
-		runProbe(script, { env: { ...parentToolEnv(), PI_SUBAGENT_DEPTH: "0", PI_SUBAGENT_MAX_DEPTH: "1" } });
-	});
+    runProbe(script, {
+      env: { ...parentToolEnv(), PI_SUBAGENT_DEPTH: "0", PI_SUBAGENT_MAX_DEPTH: "1" },
+    });
+  });
 
-	it("renders the effective async default and foreground escapes", () => {
-		const script = String.raw`
+  it("renders the effective async default and foreground escapes", () => {
+    const script = String.raw`
 			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
 			const events = { on() { return () => {}; }, emit() {} };
 			const registeredTools = new Map();
@@ -212,11 +210,11 @@ describe("subagent extension child mode", () => {
 			if (clarifyChain.includes("[async]")) throw new Error("unexpected clarify async badge: " + clarifyChain);
 		`;
 
-		runProbe(script, { env: parentToolEnv() });
-	});
+    runProbe(script, { env: parentToolEnv() });
+  });
 
-	it("returns before registering anything for non-fanout children", () => {
-		const script = String.raw`
+  it("returns before registering anything for non-fanout children", () => {
+    const script = String.raw`
 			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
 			const { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } = await import("./src/runs/shared/pi-args.ts");
 			process.env[SUBAGENT_CHILD_ENV] = "1";
@@ -236,11 +234,11 @@ describe("subagent extension child mode", () => {
 			}
 		`;
 
-		runProbe(script);
-	});
+    runProbe(script);
+  });
 
-	it("returns before registering anything for fanout children", () => {
-		const script = String.raw`
+  it("returns before registering anything for fanout children", () => {
+    const script = String.raw`
 			const { default: registerSubagentExtension } = await import("./src/extension/index.ts");
 			const { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } = await import("./src/runs/shared/pi-args.ts");
 			process.env[SUBAGENT_CHILD_ENV] = "1";
@@ -260,11 +258,11 @@ describe("subagent extension child mode", () => {
 			}
 		`;
 
-		runProbe(script);
-	});
+    runProbe(script);
+  });
 
-	it("lets fanout children call read-only list but blocks mutating management actions", () => {
-		const script = String.raw`
+  it("lets fanout children call read-only list but blocks mutating management actions", () => {
+    const script = String.raw`
 			const { default: registerFanoutChildSubagentExtension } = await import("./src/extension/fanout-child.ts");
 			const { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } = await import("./src/runs/shared/pi-args.ts");
 			process.env[SUBAGENT_CHILD_ENV] = "1";
@@ -295,6 +293,6 @@ describe("subagent extension child mode", () => {
 			if (!text.includes("not available from child-safe subagent fanout mode")) throw new Error("unexpected create error: " + text);
 		`;
 
-		runProbe(script, { env: parentToolEnv() });
-	});
+    runProbe(script, { env: parentToolEnv() });
+  });
 });

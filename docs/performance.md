@@ -56,16 +56,16 @@ The Agents dock polls while live work, questions, selected/pinned conversations 
 
 The earlier 0.43.1 fixes removed repeated completed-history projections, continuation recursion, native observation matching, nested polling, and result/receipt polling. Their same-host recheck on fork `76dfe3d1` (Node 24.21.0) remains useful historical evidence; it is not a measurement of the new SQLite browse implementation:
 
-| Synthetic operation | Before 0.43.1 | 0.43.1 |
-| --- | --- | --- |
-| 100 completed 2,000-entry histories, five refreshes | 1,000,000 timestamp parses; 1,005 ms | 0 timestamp parses; 1.6 ms |
-| 1,000 continuations, one visible task | 500,500 identity resolutions | 1,000 |
-| 10,000 delivered/billed runs, three polls | 30,003 existence checks | 3 directory checks |
-| 40 unchanged foreign files, three polls | 120 decodes | 40 initial decodes |
-| 20,000 parent entries, ten owner checks | 400,020 visits, 20 scans | 40,002 visits, two startup scans |
-| 1,500 retained nested events, unchanged poll | 500 event rereads and one registry rewrite | Neither |
-| Nested projection in one job poll | Three registry reads | One |
-| Ten 100-card history windows | 1,001 cached components | 101, including the assignment |
+| Synthetic operation                                 | Before 0.43.1                              | 0.43.1                           |
+| --------------------------------------------------- | ------------------------------------------ | -------------------------------- |
+| 100 completed 2,000-entry histories, five refreshes | 1,000,000 timestamp parses; 1,005 ms       | 0 timestamp parses; 1.6 ms       |
+| 1,000 continuations, one visible task               | 500,500 identity resolutions               | 1,000                            |
+| 10,000 delivered/billed runs, three polls           | 30,003 existence checks                    | 3 directory checks               |
+| 40 unchanged foreign files, three polls             | 120 decodes                                | 40 initial decodes               |
+| 20,000 parent entries, ten owner checks             | 400,020 visits, 20 scans                   | 40,002 visits, two startup scans |
+| 1,500 retained nested events, unchanged poll        | 500 event rereads and one registry rewrite | Neither                          |
+| Nested projection in one job poll                   | Three registry reads                       | One                              |
+| Ten 100-card history windows                        | 1,001 cached components                    | 101, including the assignment    |
 
 Cold factory startup did not measurably change in that comparison: five isolated offline CLI launches ranged from 410–605 ms before and 411–437 ms after. The minimum difference was below run-to-run variation.
 
@@ -104,11 +104,11 @@ For a hypothetical constant **500,000 cached tokens per request**:
 
 If "97% hit" means cached tokens divided by cached plus uncached input tokens, the corresponding uncached input is `4.26 billion × 0.03 / 0.97 = 131.75 million`, or about `15,463.92` per request. A request-based hit percentage would not support that calculation.
 
-| Hypothetical steady workload | Cache-read tokens |
-| --- | ---: |
-| One 500k-prefix session, one request/10 seconds for 24 hours | 4.32 billion |
-| Parent plus eight 500k-prefix children, one request/30 seconds each for 8 hours | 4.32 billion |
-| Eight 50k-prefix fresh children, one request/30 seconds each for 8 hours | 384 million |
+| Hypothetical steady workload                                                    | Cache-read tokens |
+| ------------------------------------------------------------------------------- | ----------------: |
+| One 500k-prefix session, one request/10 seconds for 24 hours                    |      4.32 billion |
+| Parent plus eight 500k-prefix children, one request/30 seconds each for 8 hours |      4.32 billion |
+| Eight 50k-prefix fresh children, one request/30 seconds each for 8 hours        |       384 million |
 
 These assumptions include sustained activity and a full cache hit on that prefix; they are not measured workloads, throughput guarantees or pricing estimates. Token counts alone cannot establish dollars, double billing, a spawn loop, or which sessions made the requests.
 

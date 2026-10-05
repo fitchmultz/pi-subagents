@@ -25,6 +25,7 @@ These are examples, not fixed defaults:
    Check for unnecessary complexity, duplicate structure, single-use wrappers, brittle abstractions, confusing names, verbosity, and cleanup that is clearly worth doing.
 
 Choose or adapt angles when the work calls for it:
+
 - TypeScript-heavy changes: include type safety, source-of-truth types, casts, and error-boundary discipline.
 - UI-heavy changes: include UX, accessibility, copy, and visual quality.
 - Security-sensitive changes: include unsafe input/output handling, auth boundaries, privacy, and data exposure.
@@ -36,6 +37,7 @@ Prefer three strong reviewers over many vague reviewers.
 Give every reviewer a specific task prompt naming its angle. Ask reviewers to return concise, evidence-backed findings with file/line references and suggested fixes. The response should be review feedback, not a context summary. Reviewers must not edit files unless I explicitly ask for a writer pass.
 
 While reviewers run, do your own narrow inspection if useful. After they return, synthesize the feedback into:
+
 - fixes worth doing now
 - optional improvements
 - feedback to ignore or defer, with a short reason

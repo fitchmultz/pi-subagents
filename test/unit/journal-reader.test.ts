@@ -7,126 +7,257 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { syncBuiltinESMExports } from "node:module";
 import { test } from "node:test";
-import { JournalFrames, JsonProjection, NativeJournal, readOutputPage } from "../../src/shared/journal-reader.ts";
+import {
+  JournalFrames,
+  JsonProjection,
+  NativeJournal,
+  readOutputPage,
+} from "../../src/shared/journal-reader.ts";
 import { readNativeUsage, snapshotNativeBaseline } from "../../src/runs/shared/native-usage.ts";
 
-
-const usage = { input: 3, output: 5, cacheRead: 7, cacheWrite: 11, totalTokens: 26,
-	cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 7, total: 13 } };
+const usage = {
+  input: 3,
+  output: 5,
+  cacheRead: 7,
+  cacheWrite: 11,
+  totalTokens: 26,
+  cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 7, total: 13 },
+};
 function temporary(t: { after(fn: () => void): void }) {
-	const root = fs.mkdtempSync(path.join(tmpdir(), "pi-subagents-journal-"));
-	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-	return root;
+  const root = fs.mkdtempSync(path.join(tmpdir(), "pi-subagents-journal-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
 }
 
 test("JSONL cursors commit complete validated records across one-byte Unicode chunks and keep torn tails", () => {
-	const values: unknown[] = [], frames = new JournalFrames(() => true, ({ value }) => values.push(value), "live");
-	const complete = Buffer.from('{"id":"🦄","ignored":{"text":"\\uD83E\\uDD84"}}\r\n');
-	for (const byte of complete) frames.write(Buffer.from([byte]));
-	frames.write(Buffer.from('{"id":"later"'));
-	assert.equal(frames.finish(), complete.length);
-	assert.deepEqual(values, [{ id: "🦄", ignored: { text: "🦄" } }]);
-	frames.write(Buffer.from('}\n'));
-	assert.equal(frames.finish(), complete.length + Buffer.byteLength('{"id":"later"}\n'));
-	assert.deepEqual(values[1], { id: "later" });
-	const skipped = new JournalFrames((path) => !path.length || path[0] === "id", () => assert.fail("malformed skipped data cannot commit"));
-	skipped.write(Buffer.from('{"id":"x","ignored":{"bad":truX}}'));
-	assert.throws(() => skipped.finish(), SyntaxError);
+  const values: unknown[] = [],
+    frames = new JournalFrames(
+      () => true,
+      ({ value }) => values.push(value),
+      "live",
+    );
+  const complete = Buffer.from('{"id":"🦄","ignored":{"text":"\\uD83E\\uDD84"}}\r\n');
+  for (const byte of complete) {
+    frames.write(Buffer.from([byte]));
+  }
+  frames.write(Buffer.from('{"id":"later"'));
+  assert.equal(frames.finish(), complete.length);
+  assert.deepEqual(values, [{ id: "🦄", ignored: { text: "🦄" } }]);
+  frames.write(Buffer.from("}\n"));
+  assert.equal(frames.finish(), complete.length + Buffer.byteLength('{"id":"later"}\n'));
+  assert.deepEqual(values[1], { id: "later" });
+  const skipped = new JournalFrames(
+    (path) => !path.length || path[0] === "id",
+    () => assert.fail("malformed skipped data cannot commit"),
+  );
+  skipped.write(Buffer.from('{"id":"x","ignored":{"bad":truX}}'));
+  assert.throws(() => skipped.finish(), SyntaxError);
 });
 
 test("sealed inspection accepts a valid unterminated record without repair; strict accounting rejects malformed required records", (t) => {
-	const root = temporary(t), file = path.join(root, "native.jsonl");
-	const original = '{"type":"session","id":"child","version":3}\n{"type":"model_change","id":"m","parentId":null,"provider":"p","modelId":"m"}';
-	fs.writeFileSync(file, original);
-	const read = fs.readSync;
-	let bytesRead = 0;
-	t.mock.method(fs, "readSync", function(...args) { const count = read.apply(this, args); bytesRead += count; return count; });
-	syncBuiltinESMExports();
-	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-	assert.equal(new NativeJournal(file).configuration().model, "p/m");
-	assert.equal(bytesRead, Buffer.byteLength(original), "plain inspection does not pay for opt-in history prefix hashing");
-	assert.equal(fs.readFileSync(file, "utf8"), original);
-	assert.equal(new NativeJournal(file, "live").records.length, 1);
-	fs.appendFileSync(file, '\n{"type":"custom","id":"broken","data":[1,]}\n');
-	assert.throws(() => readNativeUsage(file, new Set()), SyntaxError);
+  const root = temporary(t),
+    file = path.join(root, "native.jsonl");
+  const original =
+    '{"type":"session","id":"child","version":3}\n{"type":"model_change","id":"m","parentId":null,"provider":"p","modelId":"m"}';
+  fs.writeFileSync(file, original);
+  const read = fs.readSync;
+  let bytesRead = 0;
+  t.mock.method(fs, "readSync", function (...args) {
+    const count = read.apply(this, args);
+    bytesRead += count;
+    return count;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  assert.equal(new NativeJournal(file).configuration().model, "p/m");
+  assert.equal(
+    bytesRead,
+    Buffer.byteLength(original),
+    "plain inspection does not pay for opt-in history prefix hashing",
+  );
+  assert.equal(fs.readFileSync(file, "utf8"), original);
+  assert.equal(new NativeJournal(file, "live").records.length, 1);
+  fs.appendFileSync(file, '\n{"type":"custom","id":"broken","data":[1,]}\n');
+  assert.throws(() => readNativeUsage(file, new Set()), SyntaxError);
 });
 
 test("sealed inspection and LF-published native bodies never weaken strict accounting or inherited baselines", (t) => {
-	const file = path.join(temporary(t), "native.jsonl"), text = "Complete selected body ".repeat(400) + "FULL-END";
-	const original = '{"type":"session","id":"child","version":3}\nnot JSON\n'
-		+ JSON.stringify({ type: "message", id: "terminal", parentId: null, message: { role: "assistant", provider: "fixture", model: "faux", timestamp: 7, stopReason: "stop", usage, content: [{ type: "text", text }] } });
-	fs.writeFileSync(file, original);
-	const sealed = new NativeJournal(file), unpublished = new NativeJournal(file, "inspect", true);
-	assert.equal(sealed.body(sealed.byId.get("terminal")!).message.content[0].text, text);
-	assert.equal(unpublished.byId.has("terminal"), false);
-	assert.equal(unpublished.configuration().model, undefined);
-	assert.equal(fs.readFileSync(file, "utf8"), original);
-	fs.appendFileSync(file, "\n");
-	const published = new NativeJournal(file, "inspect", true);
-	assert.equal(published.configuration().model, "fixture/faux");
-	assert.equal(published.body(published.byId.get("terminal")!).message.content[0].text, text);
-	assert.throws(() => readNativeUsage(file, new Set()), SyntaxError, "inspection tolerance cannot weaken required accounting");
-	fs.writeFileSync(file, original.replace("not JSON\n", ""));
-	assert.throws(() => snapshotNativeBaseline(file), SyntaxError, "an unpublished entry cannot become an inherited attempt baseline");
-	assert.throws(() => readNativeUsage(file, new Set(), [], { terminalEntryId: "terminal" }), SyntaxError);
-	fs.appendFileSync(file, "\n");
-	assert.deepEqual([...snapshotNativeBaseline(file).ids], ["child", "terminal"]);
-	assert.equal(readNativeUsage(file, new Set(), [], { terminalEntryId: "terminal" })![0]!.input, 3);
+  const file = path.join(temporary(t), "native.jsonl"),
+    text = "Complete selected body ".repeat(400) + "FULL-END";
+  const original =
+    '{"type":"session","id":"child","version":3}\nnot JSON\n' +
+    JSON.stringify({
+      type: "message",
+      id: "terminal",
+      parentId: null,
+      message: {
+        role: "assistant",
+        provider: "fixture",
+        model: "faux",
+        timestamp: 7,
+        stopReason: "stop",
+        usage,
+        content: [{ type: "text", text }],
+      },
+    });
+  fs.writeFileSync(file, original);
+  const sealed = new NativeJournal(file),
+    unpublished = new NativeJournal(file, "inspect", true);
+  assert.equal(sealed.body(sealed.byId.get("terminal")!).message.content[0].text, text);
+  assert.equal(unpublished.byId.has("terminal"), false);
+  assert.equal(unpublished.configuration().model, undefined);
+  assert.equal(fs.readFileSync(file, "utf8"), original);
+  fs.appendFileSync(file, "\n");
+  const published = new NativeJournal(file, "inspect", true);
+  assert.equal(published.configuration().model, "fixture/faux");
+  assert.equal(published.body(published.byId.get("terminal")!).message.content[0].text, text);
+  assert.throws(
+    () => readNativeUsage(file, new Set()),
+    SyntaxError,
+    "inspection tolerance cannot weaken required accounting",
+  );
+  fs.writeFileSync(file, original.replace("not JSON\n", ""));
+  assert.throws(
+    () => snapshotNativeBaseline(file),
+    SyntaxError,
+    "an unpublished entry cannot become an inherited attempt baseline",
+  );
+  assert.throws(
+    () => readNativeUsage(file, new Set(), [], { terminalEntryId: "terminal" }),
+    SyntaxError,
+  );
+  fs.appendFileSync(file, "\n");
+  assert.deepEqual([...snapshotNativeBaseline(file).ids], ["child", "terminal"]);
+  assert.equal(readNativeUsage(file, new Set(), [], { terminalEntryId: "terminal" })![0]!.input, 3);
 });
 
 test("strict/live JSONL reject non-object roots and invalid UTF-8 inside skipped payloads without committing their cursors", () => {
-	const invalid = Buffer.concat([Buffer.from('{"ignored":"'), Buffer.from([0xc3, 0x28]), Buffer.from('"}\n')]);
-	for (const policy of ["strict", "live"] as const) for (const bytes of [invalid, Buffer.from("[]\n"), Buffer.from("null\n"), Buffer.from('"scalar"\n')]) {
-		const records: unknown[] = [], reader = new JournalFrames((path) => !path.length, ({ value }) => records.push(value), policy);
-		reader.write(Buffer.from('{"id":"committed"}\n'));
-		assert.throws(() => reader.write(bytes), SyntaxError);
-		assert.deepEqual(records, [{}], "only the prior selected object was committed");
-	}
+  const invalid = Buffer.concat([
+    Buffer.from('{"ignored":"'),
+    Buffer.from([0xc3, 0x28]),
+    Buffer.from('"}\n'),
+  ]);
+  for (const policy of ["strict", "live"] as const) {
+    for (const bytes of [
+      invalid,
+      Buffer.from("[]\n"),
+      Buffer.from("null\n"),
+      Buffer.from('"scalar"\n'),
+    ]) {
+      const records: unknown[] = [],
+        reader = new JournalFrames(
+          (path) => !path.length,
+          ({ value }) => records.push(value),
+          policy,
+        );
+      reader.write(Buffer.from('{"id":"committed"}\n'));
+      assert.throws(() => reader.write(bytes), SyntaxError);
+      assert.deepEqual(records, [{}], "only the prior selected object was committed");
+    }
+  }
 });
 
 test("output pages preserve Unicode at byte boundaries and do not read the preceding output", (t) => {
-	const file = path.join(temporary(t), "output");
-	fs.writeFileSync(file, "prefix\n🦄日本語\nend");
-	const read = fs.readSync;
-	const reads: Array<{ length: number; position: number | bigint | null }> = [];
-	t.mock.method(fs, "readSync", function(fd, buffer, offset, length, position) {
-		reads.push({ length, position });
-		return read.call(this, fd, buffer, offset, length, position);
-	});
-	syncBuiltinESMExports();
-	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-	const first = readOutputPage(file, { offset: 7, length: 5 });
-	assert.equal(first.text, "🦄");
-	const next = readOutputPage(file, { offset: first.nextOffset, length: 9 });
-	assert.equal(next.text, "日本語");
-	assert.equal(readOutputPage(file, { length: 4 }).text, "\nend");
-	assert.deepEqual(reads, [
-		{ length: 5, position: 7 },
-		{ length: 9, position: 11 },
-		{ length: 4, position: 20 },
-	], "each page reads only its requested byte range, never the prefix");
+  const file = path.join(temporary(t), "output");
+  fs.writeFileSync(file, "prefix\n🦄日本語\nend");
+  const read = fs.readSync;
+  const reads: Array<{ length: number; position: number | bigint | null }> = [];
+  t.mock.method(fs, "readSync", function (fd, buffer, offset, length, position) {
+    reads.push({ length, position });
+    return read.call(this, fd, buffer, offset, length, position);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const first = readOutputPage(file, { offset: 7, length: 5 });
+  assert.equal(first.text, "🦄");
+  const next = readOutputPage(file, { offset: first.nextOffset, length: 9 });
+  assert.equal(next.text, "日本語");
+  assert.equal(readOutputPage(file, { length: 4 }).text, "\nend");
+  assert.deepEqual(
+    reads,
+    [
+      { length: 5, position: 7 },
+      { length: 9, position: 11 },
+      { length: 4, position: 20 },
+    ],
+    "each page reads only its requested byte range, never the prefix",
+  );
 });
 
-test("a valid ignored individual value larger than Node's string ceiling preserves billing, configuration, baselines and source bytes under a 96 MiB heap", { timeout: 180_000 }, (t) => {
-	const root = temporary(t), file = path.join(root, "native.jsonl"), fd = fs.openSync(file, "wx"), hash = createHash("sha256");
-	const write = (value: string | Buffer) => { fs.writeSync(fd, value); hash.update(value); };
-	const timestamp = "2026-01-01T00:00:00Z";
-	write(JSON.stringify({ type: "session", version: 3, id: "child", cwd: root, timestamp }) + "\n");
-	write(JSON.stringify({ type: "message", id: "inherited", parentId: null, timestamp, message: { role: "assistant", provider: "p", model: "old", content: [], usage } }) + "\n");
-	write('{"type":"custom","id":"noise","parentId":"inherited","data":{"ignored":"');
-	const block = Buffer.alloc(64 * 1024, 120);
-	for (let index = 0; index < 8193; index++) write(block);
-	write('"}}\n');
-	for (const [id, parentId, role] of [["paid", "noise", "assistant"], ["abandoned", "inherited", "toolResult"], ["terminal", "paid", "assistant"]]) {
-		write(JSON.stringify({ type: "message", id, parentId, timestamp, message: { role, provider: "p", model: "selected", responseModel: "actual", toolCallId: "tool", toolName: "child", isError: false, usage,
-			content: [{ type: "text", text: id === "terminal" ? "Final 🦄 answer" : id }] } }) + "\n");
-	}
-	fs.closeSync(fd);
-	const checksum = hash.digest("hex");
-	const nativeModule = new URL("../../src/runs/shared/native-usage.ts", import.meta.url).href;
-	const journalModule = new URL("../../src/shared/journal-reader.ts", import.meta.url).href;
-	const historyModule = new URL("../../src/history/index.ts", import.meta.url).href;
-	const check = spawnSync(process.execPath, ["--max-old-space-size=96", "--input-type=module", "-e", `
+test(
+  "a valid ignored individual value larger than Node's string ceiling preserves billing, configuration, baselines and source bytes under a 96 MiB heap",
+  { timeout: 180_000 },
+  (t) => {
+    const root = temporary(t),
+      file = path.join(root, "native.jsonl"),
+      fd = fs.openSync(file, "wx"),
+      hash = createHash("sha256");
+    const write = (value: string | Buffer) => {
+      fs.writeSync(fd, value);
+      hash.update(value);
+    };
+    const timestamp = "2026-01-01T00:00:00Z";
+    write(
+      JSON.stringify({ type: "session", version: 3, id: "child", cwd: root, timestamp }) + "\n",
+    );
+    write(
+      JSON.stringify({
+        type: "message",
+        id: "inherited",
+        parentId: null,
+        timestamp,
+        message: { role: "assistant", provider: "p", model: "old", content: [], usage },
+      }) + "\n",
+    );
+    write('{"type":"custom","id":"noise","parentId":"inherited","data":{"ignored":"');
+    const block = Buffer.alloc(64 * 1024, 120);
+    for (let index = 0; index < 8193; index++) {
+      write(block);
+    }
+    write('"}}\n');
+    for (const [id, parentId, role] of [
+      ["paid", "noise", "assistant"],
+      ["abandoned", "inherited", "toolResult"],
+      ["terminal", "paid", "assistant"],
+    ]) {
+      write(
+        JSON.stringify({
+          type: "message",
+          id,
+          parentId,
+          timestamp,
+          message: {
+            role,
+            provider: "p",
+            model: "selected",
+            responseModel: "actual",
+            toolCallId: "tool",
+            toolName: "child",
+            isError: false,
+            usage,
+            content: [{ type: "text", text: id === "terminal" ? "Final 🦄 answer" : id }],
+          },
+        }) + "\n",
+      );
+    }
+    fs.closeSync(fd);
+    const checksum = hash.digest("hex");
+    const nativeModule = new URL("../../src/runs/shared/native-usage.ts", import.meta.url).href;
+    const journalModule = new URL("../../src/shared/journal-reader.ts", import.meta.url).href;
+    const historyModule = new URL("../../src/history/index.ts", import.meta.url).href;
+    const check = spawnSync(
+      process.execPath,
+      [
+        "--max-old-space-size=96",
+        "--input-type=module",
+        "-e",
+        `
 		import assert from 'node:assert/strict'; import {createHash} from 'node:crypto'; import {createReadStream} from 'node:fs';
 		import {snapshotNativeUsage,readNativeUsage} from ${JSON.stringify(nativeModule)};
 		import {NativeJournal} from ${JSON.stringify(journalModule)}; import {SubagentHistoryIndex} from ${JSON.stringify(historyModule)};
@@ -147,12 +278,39 @@ test("a valid ignored individual value larger than Node's string ceiling preserv
 		} finally { await history.close(); }
 		const hash=createHash('sha256'); for await(const bytes of createReadStream(file)) hash.update(bytes);
 		assert.equal(hash.digest('hex'),process.argv[2]); console.log('bounded native storage: exact counters/IDs/configuration/history, source unchanged, heap limit 96 MiB');
-	` , file, checksum, root], { encoding: "utf8", timeout: 170_000, maxBuffer: 64 * 1024, env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=96" } });
-	assert.equal(check.status, 0, check.stderr);
-	t.diagnostic(check.stdout.trim());
-	// A successor may append paid work to the same journal. The predecessor's
-	// physical terminal entry, rather than a wall-clock cutoff, stays authoritative.
-	fs.appendFileSync(file, JSON.stringify({ type: "usage", id: "successor", parentId: "terminal", usage, provider: "later", model: "later" }) + "\nnot JSON\n");
-	assert.equal(readNativeUsage(file, new Set(["child", "inherited"]), [], { terminalEntryId: "terminal" })![0]!.input, 9);
-	assert.throws(() => readNativeUsage(file, new Set()), SyntaxError);
-});
+	`,
+        file,
+        checksum,
+        root,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 170_000,
+        maxBuffer: 64 * 1024,
+        env: { ...process.env, NODE_OPTIONS: "--max-old-space-size=96" },
+      },
+    );
+    assert.equal(check.status, 0, check.stderr);
+    t.diagnostic(check.stdout.trim());
+    // A successor may append paid work to the same journal. The predecessor's
+    // physical terminal entry, rather than a wall-clock cutoff, stays authoritative.
+    fs.appendFileSync(
+      file,
+      JSON.stringify({
+        type: "usage",
+        id: "successor",
+        parentId: "terminal",
+        usage,
+        provider: "later",
+        model: "later",
+      }) + "\nnot JSON\n",
+    );
+    assert.equal(
+      readNativeUsage(file, new Set(["child", "inherited"]), [], {
+        terminalEntryId: "terminal",
+      })![0]!.input,
+      9,
+    );
+    assert.throws(() => readNativeUsage(file, new Set()), SyntaxError);
+  },
+);

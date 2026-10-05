@@ -3,8 +3,21 @@ import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.ts";
 import { getBrokerSocketPath, getLegacyBrokerSocketPath, isOwnedBrokerSocket } from "./paths.ts";
-import { compactTopicMessage, normalizeMessage, normalizeSessionInfo } from "../types.ts";
-import type { SessionInfo, Message, Attachment, MessageDelivery, QueueMode, HumanMessageOrigin, TopicUpdate, TopicChange, SessionSnapshot, SendResult } from "../types.ts";
+import {
+  compactTopicMessage,
+  normalizeMessage,
+  normalizeSessionInfo,
+  type SessionInfo,
+  type Message,
+  type Attachment,
+  type MessageDelivery,
+  type QueueMode,
+  type HumanMessageOrigin,
+  type TopicUpdate,
+  type TopicChange,
+  type SessionSnapshot,
+  type SendResult,
+} from "../types.ts";
 export type { SendResult } from "../types.ts";
 
 /** Default delivery-ack timeout for `send` (broker acknowledges quickly). */
@@ -55,7 +68,10 @@ function connectSocket(socketPath: string, timeoutMs = 500): Promise<net.Socket>
     const onError = (error: Error) => finish(error);
     socket.once("connect", onConnect);
     socket.once("error", onError);
-    const timeout = setTimeout(() => finish(new Error(`Connection timeout: ${socketPath}`)), timeoutMs);
+    const timeout = setTimeout(
+      () => finish(new Error(`Connection timeout: ${socketPath}`)),
+      timeoutMs,
+    );
     timeout.unref?.();
   });
 }
@@ -66,7 +82,9 @@ async function connectBrokerSocket(): Promise<net.Socket> {
   const candidates = [preferred, ...(legacy !== preferred ? [legacy] : [])];
   let lastError: Error | undefined;
   for (const candidate of candidates) {
-    if (!isOwnedBrokerSocket(candidate)) continue;
+    if (!isOwnedBrokerSocket(candidate)) {
+      continue;
+    }
     try {
       return await connectSocket(candidate);
     } catch (error) {
@@ -80,8 +98,19 @@ export class IntercomClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _topicsSupported = false;
-  private pendingSends = new Map<string, { resolve: (r: SendResult) => void; reject: (e: Error) => void }>();
-  private pendingLists = new Map<string, { resolve: (snapshot: SessionSnapshot) => void; reject: (e: Error) => void; sessions: Map<string, SessionInfo>; receipts: SessionSnapshot["receipts"] }>();
+  private pendingSends = new Map<
+    string,
+    { resolve: (r: SendResult) => void; reject: (e: Error) => void }
+  >();
+  private pendingLists = new Map<
+    string,
+    {
+      resolve: (snapshot: SessionSnapshot) => void;
+      reject: (e: Error) => void;
+      sessions: Map<string, SessionInfo>;
+      receipts: SessionSnapshot["receipts"];
+    }
+  >();
   private connecting = false;
   private disconnecting = false;
   private disconnectError: Error | null = null;
@@ -109,10 +138,19 @@ export class IntercomClient extends EventEmitter {
     return this._sessionId;
   }
 
-  get supportsTopics(): boolean { return this.isConnected() && this._topicsSupported; }
+  get supportsTopics(): boolean {
+    return this.isConnected() && this._topicsSupported;
+  }
   isConnected(): boolean {
     const socket = this.socket;
-    return Boolean(socket && this._sessionId && !this.disconnecting && !socket.destroyed && !socket.writableEnded && socket.writable);
+    return Boolean(
+      socket &&
+      this._sessionId &&
+      !this.disconnecting &&
+      !socket.destroyed &&
+      !socket.writableEnded &&
+      socket.writable,
+    );
   }
 
   private requireActiveSocket(): net.Socket {
@@ -211,7 +249,9 @@ export class IntercomClient extends EventEmitter {
       };
 
       const onReaderError = (error: Error) => {
-        const protocolError = new Error(`Intercom protocol error: ${error.message}`, { cause: error });
+        const protocolError = new Error(`Intercom protocol error: ${error.message}`, {
+          cause: error,
+        });
         if (!connectionEstablished) {
           onError(protocolError);
           return;
@@ -245,7 +285,12 @@ export class IntercomClient extends EventEmitter {
       this.once("_registered", onRegistered);
 
       try {
-        writeMessage(socket, { type: "register", session: identity, requestedId, topicFrames: true });
+        writeMessage(socket, {
+          type: "register",
+          session: identity,
+          requestedId,
+          topicFrames: true,
+        });
       } catch (error) {
         cleanupConnectionAttempt();
         cleanupSocketListeners();
@@ -257,13 +302,22 @@ export class IntercomClient extends EventEmitter {
       }
     });
     if (this.supportsTopics) {
-      for (const topic of topics ?? []) await this.updateTopics({ action: "restore", topic });
-      for (const subscription of subscriptions ?? []) await this.updateTopics({ action: "restore", subscription });
+      for (const topic of topics ?? []) {
+        await this.updateTopics({ action: "restore", topic });
+      }
+      for (const subscription of subscriptions ?? []) {
+        await this.updateTopics({ action: "restore", subscription });
+      }
     }
   }
 
   private handleBrokerMessage(msg: unknown): void {
-    if (typeof msg !== "object" || msg === null || !("type" in msg) || typeof msg.type !== "string") {
+    if (
+      typeof msg !== "object" ||
+      msg === null ||
+      !("type" in msg) ||
+      typeof msg.type !== "string"
+    ) {
       throw new Error("Invalid broker message");
     }
 
@@ -284,33 +338,67 @@ export class IntercomClient extends EventEmitter {
         }
 
         this._sessionId = brokerMessage.sessionId;
-        this._topicsSupported = brokerMessage.topicsSupported === true && brokerMessage.topicFrames === true;
+        this._topicsSupported =
+          brokerMessage.topicsSupported === true && brokerMessage.topicFrames === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
 
       case "sessions": {
         const { requestId, sessions, receipts, more, error } = brokerMessage;
-        if (typeof requestId !== "string" || !Array.isArray(sessions) || (more !== undefined && typeof more !== "boolean")) throw new Error("Invalid sessions message");
+        if (
+          typeof requestId !== "string" ||
+          !Array.isArray(sessions) ||
+          (more !== undefined && typeof more !== "boolean")
+        ) {
+          throw new Error("Invalid sessions message");
+        }
         const pending = this.pendingLists.get(requestId);
-        if (!pending) return;
+        if (!pending) {
+          return;
+        }
         if (typeof error === "string") {
           this.pendingLists.delete(requestId);
           pending.reject(new Error(error));
           break;
         }
         for (const row of sessions) {
-          if (!row || typeof row.id !== "string" || (row.topics !== undefined && !Array.isArray(row.topics)) || (row.subscriptions !== undefined && !Array.isArray(row.subscriptions))) throw new Error("Invalid session snapshot row");
+          if (
+            !row ||
+            typeof row.id !== "string" ||
+            (row.topics !== undefined && !Array.isArray(row.topics)) ||
+            (row.subscriptions !== undefined && !Array.isArray(row.subscriptions))
+          ) {
+            throw new Error("Invalid session snapshot row");
+          }
           const previous = pending.sessions.get(row.id);
-          const info = normalizeSessionInfo({ ...previous, ...row,
+          const info = normalizeSessionInfo({
+            ...previous,
+            ...row,
             ...(row.topics ? { topics: [...(previous?.topics ?? []), ...row.topics] } : {}),
-            ...(row.subscriptions ? { subscriptions: [...(previous?.subscriptions ?? []), ...row.subscriptions] } : {}),
+            ...(row.subscriptions
+              ? { subscriptions: [...(previous?.subscriptions ?? []), ...row.subscriptions] }
+              : {}),
           });
-          if (!info) throw new Error("Invalid session snapshot");
+          if (!info) {
+            throw new Error("Invalid session snapshot");
+          }
           pending.sessions.set(info.id, info);
         }
         if (receipts !== undefined) {
-          if (!Array.isArray(receipts) || receipts.some((receipt) => !receipt || typeof receipt.to !== "string" || typeof receipt.id !== "string" || typeof receipt.accepted !== "boolean" || typeof receipt.delivered !== "boolean")) throw new Error("Invalid topic delivery receipts");
+          if (
+            !Array.isArray(receipts) ||
+            receipts.some(
+              (receipt) =>
+                !receipt ||
+                typeof receipt.to !== "string" ||
+                typeof receipt.id !== "string" ||
+                typeof receipt.accepted !== "boolean" ||
+                typeof receipt.delivered !== "boolean",
+            )
+          ) {
+            throw new Error("Invalid topic delivery receipts");
+          }
           pending.receipts.push(...receipts);
         }
         if (more !== true) {
@@ -444,12 +532,20 @@ export class IntercomClient extends EventEmitter {
     return this.requestSessions().then((snapshot) => snapshot.sessions);
   }
 
-  updateTopics(change: TopicChange, onAccepted?: (snapshot: SessionSnapshot) => void): Promise<SessionSnapshot> {
-    if (!this.supportsTopics) return Promise.reject(new Error("This broker does not support topic snapshots."));
+  updateTopics(
+    change: TopicChange,
+    onAccepted?: (snapshot: SessionSnapshot) => void,
+  ): Promise<SessionSnapshot> {
+    if (!this.supportsTopics) {
+      return Promise.reject(new Error("This broker does not support topic snapshots."));
+    }
     return this.requestSessions(change, onAccepted);
   }
 
-  private requestSessions(change?: TopicChange, onAccepted?: (snapshot: SessionSnapshot) => void): Promise<SessionSnapshot> {
+  private requestSessions(
+    change?: TopicChange,
+    onAccepted?: (snapshot: SessionSnapshot) => void,
+  ): Promise<SessionSnapshot> {
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
@@ -465,7 +561,9 @@ export class IntercomClient extends EventEmitter {
           // Commit confirmed subscriptions before handling a following message in the same read.
           onAccepted?.(snapshot);
           resolve(snapshot);
-        } catch (error) { reject(toError(error)); }
+        } catch (error) {
+          reject(toError(error));
+        }
       };
       const wrappedReject = (error: Error) => {
         clearTimeout(timeout);
@@ -478,9 +576,19 @@ export class IntercomClient extends EventEmitter {
         }
       }, this.listTimeoutMs);
       timeout.unref?.();
-      this.pendingLists.set(requestId, { resolve: wrappedResolve, reject: wrappedReject, sessions: new Map(), receipts: [] });
+      this.pendingLists.set(requestId, {
+        resolve: wrappedResolve,
+        reject: wrappedReject,
+        sessions: new Map(),
+        receipts: [],
+      });
       try {
-        writeMessage(socket, { type: "list", requestId, stream: true, ...(change ? { change } : {}) });
+        writeMessage(socket, {
+          type: "list",
+          requestId,
+          stream: true,
+          ...(change ? { change } : {}),
+        });
       } catch (error) {
         clearTimeout(timeout);
         this.pendingLists.delete(requestId);
@@ -505,7 +613,13 @@ export class IntercomClient extends EventEmitter {
       expectsReply: options.expectsReply,
       ...(options.human ? { human: options.human } : {}),
       ...(options.topic ? { topic: options.topic } : {}),
-      delivery: options.delivery ?? (options.passive === true ? "passive" : options.expectsReply === true ? undefined : "steer"),
+      delivery:
+        options.delivery ??
+        (options.passive === true
+          ? "passive"
+          : options.expectsReply === true
+            ? undefined
+            : "steer"),
       queueMode: options.queueMode,
       threadId: options.threadId,
       passive: options.passive,
@@ -534,7 +648,11 @@ export class IntercomClient extends EventEmitter {
       this.pendingSends.set(messageId, { resolve: wrappedResolve, reject: wrappedReject });
 
       try {
-        writeMessage(socket, { type: "send", to, message: this._topicsSupported ? compactTopicMessage(message) : message });
+        writeMessage(socket, {
+          type: "send",
+          to,
+          message: this._topicsSupported ? compactTopicMessage(message) : message,
+        });
       } catch (error) {
         clearTimeout(timeout);
         this.pendingSends.delete(messageId);
@@ -543,13 +661,28 @@ export class IntercomClient extends EventEmitter {
     });
   }
 
-  updatePresence(updates: { name?: string; status?: string; model?: string; pendingAsks?: number; acceptsAsks?: boolean; lastIntercomActivity?: number; subscriptions?: SessionInfo["subscriptions"]; topics?: TopicUpdate[] }): void {
+  updatePresence(updates: {
+    name?: string;
+    status?: string;
+    model?: string;
+    pendingAsks?: number;
+    acceptsAsks?: boolean;
+    lastIntercomActivity?: number;
+    subscriptions?: SessionInfo["subscriptions"];
+    topics?: TopicUpdate[];
+  }): void {
     if (this.disconnecting) {
       return;
     }
 
     const socket = this.socket;
-    if (!socket || !this._sessionId || socket.destroyed || socket.writableEnded || !socket.writable) {
+    if (
+      !socket ||
+      !this._sessionId ||
+      socket.destroyed ||
+      socket.writableEnded ||
+      !socket.writable
+    ) {
       return;
     }
 

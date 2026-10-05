@@ -35,18 +35,25 @@ function resolveGitCommonDirectory(cwd: string): Promise<string | undefined> {
   delete env.GIT_COMMON_DIR;
   delete env.GIT_WORK_TREE;
   return new Promise((resolve) => {
-    execFile("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], {
-      cwd: path.dirname(process.execPath),
-      encoding: "utf8",
-      env,
-      maxBuffer: 4096,
-      timeout: 500,
-    }, (error, stdout) => {
-      const gitDirectory = error ? "" : stdout.trim();
-      resolve(gitDirectory && !/[\0\r\n]/.test(gitDirectory)
-        ? normalizedPath(path.resolve(cwd, gitDirectory))
-        : undefined);
-    });
+    execFile(
+      "git",
+      ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+      {
+        cwd: path.dirname(process.execPath),
+        encoding: "utf8",
+        env,
+        maxBuffer: 4096,
+        timeout: 500,
+      },
+      (error, stdout) => {
+        const gitDirectory = error ? "" : stdout.trim();
+        resolve(
+          gitDirectory && !/[\0\r\n]/.test(gitDirectory)
+            ? normalizedPath(path.resolve(cwd, gitDirectory))
+            : undefined,
+        );
+      },
+    );
   });
 }
 
@@ -57,12 +64,17 @@ export async function resolveSessionProjectId(cwd: string): Promise<string> {
 }
 
 function normalizedNames(sessions: TargetIdentity[]): Set<string> {
-  return new Set(sessions
-    .map((session) => session.name?.trim().toLowerCase())
-    .filter((name): name is string => Boolean(name)));
+  return new Set(
+    sessions
+      .map((session) => session.name?.trim().toLowerCase())
+      .filter((name): name is string => Boolean(name)),
+  );
 }
 
-export function formatSessionTarget(session: TargetIdentity, allSessions: TargetIdentity[] = [session]): string {
+export function formatSessionTarget(
+  session: TargetIdentity,
+  allSessions: TargetIdentity[] = [session],
+): string {
   const ids = allSessions.map((candidate) => candidate.id.toLowerCase());
   const names = normalizedNames(allSessions);
   const id = session.id.toLowerCase();
@@ -78,23 +90,33 @@ export function formatSessionTarget(session: TargetIdentity, allSessions: Target
   return session.id;
 }
 
-export function formatTargetOptions(sessions: TargetIdentity[], allSessions: TargetIdentity[] = sessions): string {
+export function formatTargetOptions(
+  sessions: TargetIdentity[],
+  allSessions: TargetIdentity[] = sessions,
+): string {
   return sessions
-    .map((session) => `${session.name || shortSessionId(session.id)} → ${formatSessionTarget(session, allSessions)}`)
+    .map(
+      (session) =>
+        `${session.name || shortSessionId(session.id)} → ${formatSessionTarget(session, allSessions)}`,
+    )
     .join(", ");
 }
 
-export function targetDisplayName(session: TargetIdentity, allSessions: TargetIdentity[] = [session]): string {
+export function targetDisplayName(
+  session: TargetIdentity,
+  allSessions: TargetIdentity[] = [session],
+): string {
   if (!session.name?.trim()) {
     return session.id;
   }
 
   const lowerName = session.name.trim().toLowerCase();
-  const duplicateName = allSessions.some((candidate) =>
-    candidate.id !== session.id && candidate.name?.trim().toLowerCase() === lowerName
+  const duplicateName = allSessions.some(
+    (candidate) =>
+      candidate.id !== session.id && candidate.name?.trim().toLowerCase() === lowerName,
   );
-  const nameConflictsWithOtherIdPrefix = allSessions.some((candidate) =>
-    candidate.id !== session.id && candidate.id.toLowerCase().startsWith(lowerName)
+  const nameConflictsWithOtherIdPrefix = allSessions.some(
+    (candidate) => candidate.id !== session.id && candidate.id.toLowerCase().startsWith(lowerName),
   );
 
   return duplicateName || nameConflictsWithOtherIdPrefix
@@ -109,24 +131,38 @@ export function targetDisplayName(session: TargetIdentity, allSessions: TargetId
 // expensive on large sessions. Live details belong behind intercom list.
 export const PEER_AWARENESS_HINT = `Other Pi sessions may be connected to this project. Use load_intercom({}) if needed, then intercom({ action: "list" }) before changing shared state or coordinating known overlapping work. Routine standalone read-only tasks do not need a peer check. Coordinate only when work overlaps; use subagent controls for managed child runs.`;
 
-export function filterProjectSessions<T extends ProjectSessionIdentity>(sessions: T[], currentSessionId: string): T[] {
+export function filterProjectSessions<T extends ProjectSessionIdentity>(
+  sessions: T[],
+  currentSessionId: string,
+): T[] {
   const current = sessions.find((session) => session.id === currentSessionId);
-  if (!current) return [];
+  if (!current) {
+    return [];
+  }
 
-  return sessions.filter((session) =>
-    session.id === currentSessionId
-    || session.cwd === current.cwd
-    || Boolean(current.projectId && session.projectId && session.projectId === current.projectId)
+  return sessions.filter(
+    (session) =>
+      session.id === currentSessionId ||
+      session.cwd === current.cwd ||
+      Boolean(current.projectId && session.projectId && session.projectId === current.projectId),
   );
 }
 
-export function formatPeerAwarenessHint<T extends ProjectSessionIdentity>(sessions: T[], currentSessionId: string): string | undefined {
-  return filterProjectSessions(sessions, currentSessionId).some((session) => session.id !== currentSessionId)
+export function formatPeerAwarenessHint<T extends ProjectSessionIdentity>(
+  sessions: T[],
+  currentSessionId: string,
+): string | undefined {
+  return filterProjectSessions(sessions, currentSessionId).some(
+    (session) => session.id !== currentSessionId,
+  )
     ? PEER_AWARENESS_HINT
     : undefined;
 }
 
-export function resolveSessionTarget<T extends TargetIdentity>(sessions: T[], rawTarget: string): TargetResolution<T> {
+export function resolveSessionTarget<T extends TargetIdentity>(
+  sessions: T[],
+  rawTarget: string,
+): TargetResolution<T> {
   const target = rawTarget.trim();
   const lowerTarget = target.toLowerCase();
 
@@ -138,10 +174,18 @@ export function resolveSessionTarget<T extends TargetIdentity>(sessions: T[], ra
     return { status: "ambiguous", matches: exactIdMatches };
   }
 
-  const nameMatches = sessions.filter((session) => session.name?.trim().toLowerCase() === lowerTarget);
-  const allPrefixMatches = sessions.filter((session) => session.id.toLowerCase().startsWith(lowerTarget));
+  const nameMatches = sessions.filter(
+    (session) => session.name?.trim().toLowerCase() === lowerTarget,
+  );
+  const allPrefixMatches = sessions.filter((session) =>
+    session.id.toLowerCase().startsWith(lowerTarget),
+  );
   const prefixMatches = target.length >= MIN_SESSION_TARGET_PREFIX_LENGTH ? allPrefixMatches : [];
-  if (target.length > 0 && target.length < MIN_SESSION_TARGET_PREFIX_LENGTH && allPrefixMatches.length > 0) {
+  if (
+    target.length > 0 &&
+    target.length < MIN_SESSION_TARGET_PREFIX_LENGTH &&
+    allPrefixMatches.length > 0
+  ) {
     if (nameMatches.length > 0) {
       const matchesById = new Map<string, T>();
       for (const session of [...nameMatches, ...allPrefixMatches]) {
@@ -153,7 +197,11 @@ export function resolveSessionTarget<T extends TargetIdentity>(sessions: T[], ra
       }
       return { status: "ambiguous", matches };
     }
-    return { status: "prefix_too_short", matches: allPrefixMatches, minLength: MIN_SESSION_TARGET_PREFIX_LENGTH };
+    return {
+      status: "prefix_too_short",
+      matches: allPrefixMatches,
+      minLength: MIN_SESSION_TARGET_PREFIX_LENGTH,
+    };
   }
 
   const matchesById = new Map<string, T>();

@@ -17,131 +17,158 @@ const originalUserProfile = process.env.USERPROFILE;
 const originalPiCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 before(() => {
-	fs.mkdirSync(cwdDir, { recursive: true });
-	fs.mkdirSync(fakeHomeDir, { recursive: true });
-	process.env.HOME = fakeHomeDir;
-	process.env.USERPROFILE = fakeHomeDir;
-	process.env.PI_CODING_AGENT_DIR = fakeAgentDir;
-	const skillsDir = path.join(cwdDir, ".agents", "skills");
-	const userSkillsDir = path.join(fakeHomeDir, ".agents", "skills");
-	fs.mkdirSync(skillsDir, { recursive: true });
-	fs.mkdirSync(userSkillsDir, { recursive: true });
-	fs.writeFileSync(path.join(skillsDir, "test-skill-1.md"), "---\nname: test-skill-1\ndescription: test desc\n---\nSkill content");
-	fs.writeFileSync(path.join(userSkillsDir, "test-skill-2.md"), "---\nname: test-skill-2\ndescription: test desc\n---\nSkill content");
+  fs.mkdirSync(cwdDir, { recursive: true });
+  fs.mkdirSync(fakeHomeDir, { recursive: true });
+  process.env.HOME = fakeHomeDir;
+  process.env.USERPROFILE = fakeHomeDir;
+  process.env.PI_CODING_AGENT_DIR = fakeAgentDir;
+  const skillsDir = path.join(cwdDir, ".agents", "skills");
+  const userSkillsDir = path.join(fakeHomeDir, ".agents", "skills");
+  fs.mkdirSync(skillsDir, { recursive: true });
+  fs.mkdirSync(userSkillsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(skillsDir, "test-skill-1.md"),
+    "---\nname: test-skill-1\ndescription: test desc\n---\nSkill content",
+  );
+  fs.writeFileSync(
+    path.join(userSkillsDir, "test-skill-2.md"),
+    "---\nname: test-skill-2\ndescription: test desc\n---\nSkill content",
+  );
 });
 
 after(() => {
-	if (originalHome === undefined) delete process.env.HOME;
-	else process.env.HOME = originalHome;
-	if (originalUserProfile === undefined) delete process.env.USERPROFILE;
-	else process.env.USERPROFILE = originalUserProfile;
-	if (originalPiCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-	else process.env.PI_CODING_AGENT_DIR = originalPiCodingAgentDir;
-	fs.rmSync(tmpDir, { recursive: true, force: true });
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
+  if (originalUserProfile === undefined) {
+    delete process.env.USERPROFILE;
+  } else {
+    process.env.USERPROFILE = originalUserProfile;
+  }
+  if (originalPiCodingAgentDir === undefined) {
+    delete process.env.PI_CODING_AGENT_DIR;
+  } else {
+    process.env.PI_CODING_AGENT_DIR = originalPiCodingAgentDir;
+  }
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 describe("Path resolution for .agents and ~/.agents", () => {
-	test("should resolve skills in .agents/skills", () => {
-		const skillsDir = path.join(cwdDir, ".agents", "skills");
-		const resolved = resolveSkillPath("test-skill-1", cwdDir);
-		assert.ok(resolved);
-		assert.strictEqual(resolved?.path, path.join(skillsDir, "test-skill-1.md"));
-	});
+  test("should resolve skills in .agents/skills", () => {
+    const skillsDir = path.join(cwdDir, ".agents", "skills");
+    const resolved = resolveSkillPath("test-skill-1", cwdDir);
+    assert.ok(resolved);
+    assert.strictEqual(resolved?.path, path.join(skillsDir, "test-skill-1.md"));
+  });
 
-	test("should resolve skills in ~/.agents/skills", () => {
-		const userSkillsDir = path.join(fakeHomeDir, ".agents", "skills");
-		const resolved = resolveSkillPath("test-skill-2", cwdDir);
-		assert.ok(resolved);
-		assert.strictEqual(resolved?.path, path.join(userSkillsDir, "test-skill-2.md"));
-	});
+  test("should resolve skills in ~/.agents/skills", () => {
+    const userSkillsDir = path.join(fakeHomeDir, ".agents", "skills");
+    const resolved = resolveSkillPath("test-skill-2", cwdDir);
+    assert.ok(resolved);
+    assert.strictEqual(resolved?.path, path.join(userSkillsDir, "test-skill-2.md"));
+  });
 
-	test("should resolve project agents from both .agents and .pi/agents", () => {
-		const legacyDir = path.join(cwdDir, ".agents");
-		const agentsDir = path.join(cwdDir, ".pi", "agents");
-		fs.mkdirSync(path.join(cwdDir, ".agents", "skills"), { recursive: true });
-		fs.mkdirSync(legacyDir, { recursive: true });
-		fs.mkdirSync(agentsDir, { recursive: true });
-		fs.writeFileSync(
-			path.join(legacyDir, "test-agent-legacy.md"),
-			"---\nname: test-agent-legacy\ndescription: Legacy agent\n---\nLegacy content"
-		);
-		fs.writeFileSync(
-			path.join(agentsDir, "test-agent-1.md"),
-			"---\nname: test-agent-1\ndescription: Test agent\n---\nAgent content"
-		);
+  test("should resolve project agents from both .agents and .pi/agents", () => {
+    const legacyDir = path.join(cwdDir, ".agents");
+    const agentsDir = path.join(cwdDir, ".pi", "agents");
+    fs.mkdirSync(path.join(cwdDir, ".agents", "skills"), { recursive: true });
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(legacyDir, "test-agent-legacy.md"),
+      "---\nname: test-agent-legacy\ndescription: Legacy agent\n---\nLegacy content",
+    );
+    fs.writeFileSync(
+      path.join(agentsDir, "test-agent-1.md"),
+      "---\nname: test-agent-1\ndescription: Test agent\n---\nAgent content",
+    );
 
-		const result = discoverAgents(cwdDir, "project");
-		const legacyAgent = result.agents.find((a) => a.name === "test-agent-legacy");
-		const agent = result.agents.find((a) => a.name === "test-agent-1");
-		assert.ok(legacyAgent);
-		assert.strictEqual(legacyAgent?.filePath, path.join(legacyDir, "test-agent-legacy.md"));
-		assert.ok(agent);
-		assert.strictEqual(agent?.filePath, path.join(agentsDir, "test-agent-1.md"));
-	});
+    const result = discoverAgents(cwdDir, "project");
+    const legacyAgent = result.agents.find((a) => a.name === "test-agent-legacy");
+    const agent = result.agents.find((a) => a.name === "test-agent-1");
+    assert.ok(legacyAgent);
+    assert.strictEqual(legacyAgent?.filePath, path.join(legacyDir, "test-agent-legacy.md"));
+    assert.ok(agent);
+    assert.strictEqual(agent?.filePath, path.join(agentsDir, "test-agent-1.md"));
+  });
 
-	test("should resolve agents in ~/.agents", () => {
-		const userAgentsDir = path.join(fakeHomeDir, ".agents");
-		fs.mkdirSync(userAgentsDir, { recursive: true });
-		fs.writeFileSync(
-			path.join(userAgentsDir, "test-agent-2.md"),
-			"---\nname: test-agent-2\ndescription: Test agent\n---\nAgent content"
-		);
+  test("should resolve agents in ~/.agents", () => {
+    const userAgentsDir = path.join(fakeHomeDir, ".agents");
+    fs.mkdirSync(userAgentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(userAgentsDir, "test-agent-2.md"),
+      "---\nname: test-agent-2\ndescription: Test agent\n---\nAgent content",
+    );
 
-		const result = discoverAgents(cwdDir, "user");
-		const agent = result.agents.find((a) => a.name === "test-agent-2");
-		assert.ok(agent);
-		assert.strictEqual(agent?.filePath, path.join(userAgentsDir, "test-agent-2.md"));
-	});
+    const result = discoverAgents(cwdDir, "user");
+    const agent = result.agents.find((a) => a.name === "test-agent-2");
+    assert.ok(agent);
+    assert.strictEqual(agent?.filePath, path.join(userAgentsDir, "test-agent-2.md"));
+  });
 
-	test("should ignore AGENTS.md in ~/.agents", () => {
-		const instructionsPath = path.join(fakeHomeDir, ".agents", "AGENTS.md");
-		fs.writeFileSync(instructionsPath, "# User instructions\n");
+  test("should ignore AGENTS.md in ~/.agents", () => {
+    const instructionsPath = path.join(fakeHomeDir, ".agents", "AGENTS.md");
+    fs.writeFileSync(instructionsPath, "# User instructions\n");
 
-		const result = discoverAgentsAll(cwdDir, {}, "user");
-		assert.equal(result.agentDiagnostics.some((diagnostic) => diagnostic.filePath === instructionsPath), false);
-	});
+    const result = discoverAgentsAll(cwdDir, {}, "user");
+    assert.equal(
+      result.agentDiagnostics.some((diagnostic) => diagnostic.filePath === instructionsPath),
+      false,
+    );
+  });
 
-	test("should not treat ~/.agents as a project agent directory", () => {
-		const nestedCwd = path.join(fakeHomeDir, "repo", "subdir");
-		const userAgentsDir = path.join(fakeHomeDir, ".agents");
-		fs.mkdirSync(nestedCwd, { recursive: true });
-		fs.mkdirSync(userAgentsDir, { recursive: true });
-		fs.writeFileSync(
-			path.join(userAgentsDir, "home-agent.md"),
-			"---\nname: home-agent\ndescription: Home agent\n---\nHome content"
-		);
+  test("should not treat ~/.agents as a project agent directory", () => {
+    const nestedCwd = path.join(fakeHomeDir, "repo", "subdir");
+    const userAgentsDir = path.join(fakeHomeDir, ".agents");
+    fs.mkdirSync(nestedCwd, { recursive: true });
+    fs.mkdirSync(userAgentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(userAgentsDir, "home-agent.md"),
+      "---\nname: home-agent\ndescription: Home agent\n---\nHome content",
+    );
 
-		const projectResult = discoverAgents(nestedCwd, "project");
-		assert.equal(projectResult.agents.some((a) => a.name === "home-agent"), false);
-		const userResult = discoverAgents(nestedCwd, "user");
-		assert.ok(userResult.agents.find((a) => a.name === "home-agent"));
-	});
+    const projectResult = discoverAgents(nestedCwd, "project");
+    assert.equal(
+      projectResult.agents.some((a) => a.name === "home-agent"),
+      false,
+    );
+    const userResult = discoverAgents(nestedCwd, "user");
+    assert.ok(userResult.agents.find((a) => a.name === "home-agent"));
+  });
 
-	test("should read ~/.pi agents and chains as project resources only when cwd is home", () => {
-		const nestedCwd = path.join(fakeHomeDir, "repo", "subdir");
-		const homePiDir = path.join(fakeHomeDir, ".pi");
-		fs.mkdirSync(nestedCwd, { recursive: true });
-		fs.mkdirSync(path.join(homePiDir, "agents"), { recursive: true });
-		fs.mkdirSync(path.join(homePiDir, "chains"), { recursive: true });
-		fs.writeFileSync(
-			path.join(homePiDir, "agents", "home-pi-agent.md"),
-			"---\nname: home-pi-agent\ndescription: Home Pi agent\n---\nHome content"
-		);
-		fs.writeFileSync(
-			path.join(homePiDir, "chains", "home-pi-chain.chain.md"),
-			"---\nname: home-pi-chain\ndescription: Home Pi chain\n---\n\n## worker\n\nDo the work"
-		);
-		try {
-			const nested = discoverAgentsAll(nestedCwd, {}, "project");
-			assert.equal(nested.project.some((a) => a.name === "home-pi-agent"), false);
-			assert.equal(nested.chains.some((c) => c.name === "home-pi-chain"), false);
-			assert.equal(nested.projectDir, null);
+  test("should read ~/.pi agents and chains as project resources only when cwd is home", () => {
+    const nestedCwd = path.join(fakeHomeDir, "repo", "subdir");
+    const homePiDir = path.join(fakeHomeDir, ".pi");
+    fs.mkdirSync(nestedCwd, { recursive: true });
+    fs.mkdirSync(path.join(homePiDir, "agents"), { recursive: true });
+    fs.mkdirSync(path.join(homePiDir, "chains"), { recursive: true });
+    fs.writeFileSync(
+      path.join(homePiDir, "agents", "home-pi-agent.md"),
+      "---\nname: home-pi-agent\ndescription: Home Pi agent\n---\nHome content",
+    );
+    fs.writeFileSync(
+      path.join(homePiDir, "chains", "home-pi-chain.chain.md"),
+      "---\nname: home-pi-chain\ndescription: Home Pi chain\n---\n\n## worker\n\nDo the work",
+    );
+    try {
+      const nested = discoverAgentsAll(nestedCwd, {}, "project");
+      assert.equal(
+        nested.project.some((a) => a.name === "home-pi-agent"),
+        false,
+      );
+      assert.equal(
+        nested.chains.some((c) => c.name === "home-pi-chain"),
+        false,
+      );
+      assert.equal(nested.projectDir, null);
 
-			const atHome = discoverAgentsAll(fakeHomeDir, {}, "project");
-			assert.ok(atHome.project.some((a) => a.name === "home-pi-agent"));
-			assert.ok(atHome.chains.some((c) => c.name === "home-pi-chain"));
-		} finally {
-			fs.rmSync(homePiDir, { recursive: true, force: true });
-		}
-	});
+      const atHome = discoverAgentsAll(fakeHomeDir, {}, "project");
+      assert.ok(atHome.project.some((a) => a.name === "home-pi-agent"));
+      assert.ok(atHome.chains.some((c) => c.name === "home-pi-chain"));
+    } finally {
+      fs.rmSync(homePiDir, { recursive: true, force: true });
+    }
+  });
 });

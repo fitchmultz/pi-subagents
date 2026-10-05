@@ -1,5 +1,9 @@
-import type { Component } from "@earendil-works/pi-tui";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+  type Component,
+  truncateToWidth,
+  visibleWidth,
+  wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import { keyText, type Theme } from "@earendil-works/pi-coding-agent";
 import type { SessionInfo, Message } from "../types.ts";
 
@@ -13,7 +17,14 @@ export class InlineMessageComponent implements Component {
   private cachedWidth?: number;
   private cachedLines?: string[];
 
-  constructor(from: SessionInfo, message: Message, theme: Theme, replyCommand?: string, bodyText?: string, expanded = true) {
+  constructor(
+    from: SessionInfo,
+    message: Message,
+    theme: Theme,
+    replyCommand?: string,
+    bodyText?: string,
+    expanded = true,
+  ) {
     this.from = from;
     this.message = message;
     this.theme = theme;
@@ -28,13 +39,17 @@ export class InlineMessageComponent implements Component {
   }
 
   render(width: number): string[] {
-    if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+    if (this.cachedLines && this.cachedWidth === width) {
+      return this.cachedLines;
+    }
 
     const lines: string[] = [];
     const borderChar = "─";
     if (width < 3) {
       this.cachedWidth = width;
-      this.cachedLines = [truncateToWidth(`From ${this.from.name || this.from.id.slice(0, 8)}`, width)];
+      this.cachedLines = [
+        truncateToWidth(`From ${this.from.name || this.from.id.slice(0, 8)}`, width),
+      ];
       return this.cachedLines;
     }
     const bodyWidth = Math.max(1, width - 2);
@@ -47,8 +62,12 @@ export class InlineMessageComponent implements Component {
 
     const body = this.bodyText || this.message.content.text;
     // Grouped subagent results start with run, mode, status and child counts after the title.
-    const contentLines = this.expanded ? wrapTextWithAnsi(body, bodyWidth) : body.split("\n").slice(2, 6);
-    if (!this.expanded) contentLines.push(this.theme.fg("dim", `${keyText("app.tools.expand")} full response`));
+    const contentLines = this.expanded
+      ? wrapTextWithAnsi(body, bodyWidth)
+      : body.split("\n").slice(2, 6);
+    if (!this.expanded) {
+      contentLines.push(this.theme.fg("dim", `${keyText("app.tools.expand")} full response`));
+    }
     for (const line of contentLines) {
       const text = truncateToWidth(line, bodyWidth, "");
       const padding = Math.max(0, bodyWidth - visibleWidth(text));
@@ -57,7 +76,10 @@ export class InlineMessageComponent implements Component {
 
     if (this.replyCommand) {
       lines.push(this.theme.fg("accent", `│${" ".repeat(bodyWidth)}│`));
-      const replyLines = wrapTextWithAnsi(this.theme.fg("dim", ` ↩ To reply: ${this.replyCommand}`), bodyWidth);
+      const replyLines = wrapTextWithAnsi(
+        this.theme.fg("dim", ` ↩ To reply: ${this.replyCommand}`),
+        bodyWidth,
+      );
       for (const line of replyLines) {
         const text = truncateToWidth(line, bodyWidth, "");
         const padding = Math.max(0, bodyWidth - visibleWidth(text));

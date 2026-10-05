@@ -12,821 +12,1183 @@ process.env.PI_SUBAGENT_TEMP_ROOT = path.join(suiteRoot, "pi-subagents-runtime")
 const { inspectSubagentStatus } = await import("../../src/runs/background/run-status.ts");
 const { ownedRunList } = await import("../../src/runs/shared/run-records.ts");
 const { closeRunHistory } = await import("../../src/runs/shared/history-index.ts");
-const { createNestedRoute, writeNestedEvent } = await import("../../src/runs/shared/nested-events.ts");
+const { createNestedRoute, writeNestedEvent } =
+  await import("../../src/runs/shared/nested-events.ts");
 const { TEMP_ROOT_DIR } = await import("../../src/shared/types.ts");
 after(() => rmrf(suiteRoot));
 
 function errno(code: string): NodeJS.ErrnoException {
-	const error = new Error(code) as NodeJS.ErrnoException;
-	error.code = code;
-	return error;
+  const error = new Error(code) as NodeJS.ErrnoException;
+  error.code = code;
+  return error;
 }
 
 function rmrf(target: string): void {
-	fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 }
 
 function textContent(result: ReturnType<typeof inspectSubagentStatus>): string {
-	const first = result.content[0];
-	return first?.type === "text" ? first.text : "";
+  const first = result.content[0];
+  return first?.type === "text" ? first.text : "";
 }
 
 function statusState(baseCwd: string, currentSessionId: string): SubagentState {
-	return {
-		baseCwd,
-		currentSessionId,
-		asyncJobs: new Map(),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear() {} },
-	};
+  return {
+    baseCwd,
+    currentSessionId,
+    asyncJobs: new Map(),
+    cleanupTimers: new Map(),
+    lastUiContext: null,
+    poller: null,
+    completionSeen: new Map(),
+    watcher: null,
+    watcherRestartTimer: null,
+    resultFileCoalescer: { schedule: () => false, clear() {} },
+  };
 }
 
 describe("async run status inspection", () => {
-	it("keeps out-of-range owned-run pages empty without inverted display ranges", async (t) => {
-		const state = statusState("/repo", "parent");
-		state.ownedRuns = new Map([["owned-empty-page", { runId: "owned-empty-page", ownerSessionId: "parent", source: "foreground", mode: "single", cwd: "/repo", task: "Saved work", startedAt: 100, rootRunId: "owned-empty-page", children: [] }]]);
-		t.after(() => closeRunHistory(state));
-		const result = await ownedRunList(state, { offset: 20, limit: 20 });
-		assert.deepEqual(result.details.runs, []);
-		assert.equal(result.details.runList?.total, 1);
-		assert.equal(result.details.runList?.offset, 20);
-		assert.equal(result.details.runList?.limit, 20);
-		assert.equal(result.details.runList?.freshness.authoritative, false);
-		assert.match(textContent(result), /Owned runs: 1 \(showing none; attention order\)/);
-	});
+  it("keeps out-of-range owned-run pages empty without inverted display ranges", async (t) => {
+    const state = statusState("/repo", "parent");
+    state.ownedRuns = new Map([
+      [
+        "owned-empty-page",
+        {
+          runId: "owned-empty-page",
+          ownerSessionId: "parent",
+          source: "foreground",
+          mode: "single",
+          cwd: "/repo",
+          task: "Saved work",
+          startedAt: 100,
+          rootRunId: "owned-empty-page",
+          children: [],
+        },
+      ],
+    ]);
+    t.after(() => closeRunHistory(state));
+    const result = await ownedRunList(state, { offset: 20, limit: 20 });
+    assert.deepEqual(result.details.runs, []);
+    assert.equal(result.details.runList?.total, 1);
+    assert.equal(result.details.runList?.offset, 20);
+    assert.equal(result.details.runList?.limit, 20);
+    assert.equal(result.details.runList?.freshness.authoritative, false);
+    assert.match(textContent(result), /Owned runs: 1 \(showing none; attention order\)/);
+  });
 
-	it("omits the completion reminder when no async runs are active", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-empty-"));
-		try {
-			const result = inspectSubagentStatus({}, { asyncDirRoot: path.join(root, "runs"), resultsDir: path.join(root, "results") });
-			assert.match(textContent(result), /No async runs/);
-			assert.doesNotMatch(textContent(result), /polling status/);
-		} finally {
-			rmrf(root);
-		}
-	});
+  it("omits the completion reminder when no async runs are active", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-empty-"));
+    try {
+      const result = inspectSubagentStatus(
+        {},
+        { asyncDirRoot: path.join(root, "runs"), resultsDir: path.join(root, "results") },
+      );
+      assert.match(textContent(result), /No async runs/);
+      assert.doesNotMatch(textContent(result), /polling status/);
+    } finally {
+      rmrf(root);
+    }
+  });
 
-	it("only tells the originating session to wait for completion", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-session-scope-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			for (const run of [
-				{ runId: "run-current", sessionId: "session-current", cwd: root },
-				{ runId: "run-foreign", sessionId: "session-foreign", cwd: root },
-				{ runId: "run-legacy-current", cwd: root },
-				{ runId: "run-legacy-foreign", cwd: path.join(root, "foreign") },
-			]) {
-				const asyncDir = path.join(asyncRoot, run.runId);
-				fs.mkdirSync(asyncDir, { recursive: true });
-				fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-					...run,
-					mode: "single",
-					state: "running",
-					pid: 12345,
-					startedAt: 100,
-					lastUpdate: 100,
-					steps: [{ agent: "reviewer", status: "running", startedAt: 100 }],
-				}, null, 2), "utf-8");
-			}
-			const state = statusState(root, "session-current");
+  it("only tells the originating session to wait for completion", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-session-scope-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      for (const run of [
+        { runId: "run-current", sessionId: "session-current", cwd: root },
+        { runId: "run-foreign", sessionId: "session-foreign", cwd: root },
+        { runId: "run-legacy-current", cwd: root },
+        { runId: "run-legacy-foreign", cwd: path.join(root, "foreign") },
+      ]) {
+        const asyncDir = path.join(asyncRoot, run.runId);
+        fs.mkdirSync(asyncDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(asyncDir, "status.json"),
+          JSON.stringify(
+            {
+              ...run,
+              mode: "single",
+              state: "running",
+              pid: 12345,
+              startedAt: 100,
+              lastUpdate: 100,
+              steps: [{ agent: "reviewer", status: "running", startedAt: 100 }],
+            },
+            null,
+            2,
+          ),
+          "utf-8",
+        );
+      }
+      const state = statusState(root, "session-current");
 
-			const active = textContent(inspectSubagentStatus({}, { asyncDirRoot: asyncRoot, resultsDir, state, kill: () => true, now: () => 200 }));
-			assert.match(active, /run-current/);
-			assert.doesNotMatch(active, /run-legacy-current/, "same cwd alone does not establish parent ownership");
-			assert.doesNotMatch(active, /run-foreign/);
-			assert.doesNotMatch(active, /run-legacy-foreign/);
-			assert.match(active, /polling status again/);
+      const active = textContent(
+        inspectSubagentStatus(
+          {},
+          { asyncDirRoot: asyncRoot, resultsDir, state, kill: () => true, now: () => 200 },
+        ),
+      );
+      assert.match(active, /run-current/);
+      assert.doesNotMatch(
+        active,
+        /run-legacy-current/,
+        "same cwd alone does not establish parent ownership",
+      );
+      assert.doesNotMatch(active, /run-foreign/);
+      assert.doesNotMatch(active, /run-legacy-foreign/);
+      assert.match(active, /polling status again/);
 
-			for (const runId of ["run-foreign", "run-legacy-foreign"]) {
-				const foreign = textContent(inspectSubagentStatus({ id: runId }, { asyncDirRoot: asyncRoot, resultsDir, state, kill: () => true, now: () => 200 }));
-				assert.match(foreign, /State: running/);
-				assert.doesNotMatch(foreign, /polling status/);
-			}
-		} finally {
-			rmrf(root);
-		}
-	});
+      for (const runId of ["run-foreign", "run-legacy-foreign"]) {
+        const foreign = textContent(
+          inspectSubagentStatus(
+            { id: runId },
+            { asyncDirRoot: asyncRoot, resultsDir, state, kill: () => true, now: () => 200 },
+          ),
+        );
+        assert.match(foreign, /State: running/);
+        assert.doesNotMatch(foreign, /polling status/);
+      }
+    } finally {
+      rmrf(root);
+    }
+  });
 
-	it("rediscovers this parent's completed runs across working directories without adopting another session's work", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-recent-"));
-		try {
-			const asyncDirRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			const sessionFile = path.join(root, "child.jsonl");
-			fs.writeFileSync(sessionFile, "");
-			for (const run of [
-				{ runId: "owned-complete", sessionId: "parent", cwd: path.join(root, "worktree-a"), state: "complete" },
-				{ runId: "owned-failed", sessionId: "parent", cwd: path.join(root, "worktree-b"), state: "failed" },
-				{ runId: "foreign-complete", sessionId: "someone-else", cwd: root, state: "complete" },
-				{ runId: "unknown-owner", state: "complete" },
-			]) {
-				const asyncDir = path.join(asyncDirRoot, run.runId);
-				fs.mkdirSync(asyncDir, { recursive: true });
-				fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ ...run, mode: "single", startedAt: 100, lastUpdate: 200, outputFile: "output-0.log", steps: [{ agent: "worker", status: run.state, sessionFile }] }));
-				fs.writeFileSync(path.join(asyncDir, "output-0.log"), `${run.runId} outcome evidence`);
-			}
-			const state = statusState(root, "parent");
-			const result = inspectSubagentStatus({}, { asyncDirRoot, resultsDir, state });
-			assert.match(textContent(result), /owned-complete/);
-			assert.match(textContent(result), /owned-failed/);
-			assert.doesNotMatch(textContent(result), /foreign-complete|unknown-owner|polling status/);
-			assert.match(textContent(result), /action: "inspect", id: "owned-complete"/);
-			assert.match(textContent(result), /output-0.log/);
-			assert.deepEqual(result.details.managementControls?.map((control) => control.state), ["failed", "completed"]);
-			assert.ok(result.details.managementControls?.every((control) => control.capabilities.includes("resume")));
-			assert.equal(state.asyncJobs.size, 0, "discovery does not start tracking or automatically deliver completed runs");
-			const exact = inspectSubagentStatus({ id: "foreign-complete" }, { asyncDirRoot, resultsDir, state });
-			assert.match(textContent(exact), /foreign-complete outcome evidence/);
-			assert.doesNotMatch(textContent(exact), /polling status/);
-		} finally {
-			rmrf(root);
-		}
-	});
+  it("rediscovers this parent's completed runs across working directories without adopting another session's work", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-recent-"));
+    try {
+      const asyncDirRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      const sessionFile = path.join(root, "child.jsonl");
+      fs.writeFileSync(sessionFile, "");
+      for (const run of [
+        {
+          runId: "owned-complete",
+          sessionId: "parent",
+          cwd: path.join(root, "worktree-a"),
+          state: "complete",
+        },
+        {
+          runId: "owned-failed",
+          sessionId: "parent",
+          cwd: path.join(root, "worktree-b"),
+          state: "failed",
+        },
+        { runId: "foreign-complete", sessionId: "someone-else", cwd: root, state: "complete" },
+        { runId: "unknown-owner", state: "complete" },
+      ]) {
+        const asyncDir = path.join(asyncDirRoot, run.runId);
+        fs.mkdirSync(asyncDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(asyncDir, "status.json"),
+          JSON.stringify({
+            ...run,
+            mode: "single",
+            startedAt: 100,
+            lastUpdate: 200,
+            outputFile: "output-0.log",
+            steps: [{ agent: "worker", status: run.state, sessionFile }],
+          }),
+        );
+        fs.writeFileSync(path.join(asyncDir, "output-0.log"), `${run.runId} outcome evidence`);
+      }
+      const state = statusState(root, "parent");
+      const result = inspectSubagentStatus({}, { asyncDirRoot, resultsDir, state });
+      assert.match(textContent(result), /owned-complete/);
+      assert.match(textContent(result), /owned-failed/);
+      assert.doesNotMatch(textContent(result), /foreign-complete|unknown-owner|polling status/);
+      assert.match(textContent(result), /action: "inspect", id: "owned-complete"/);
+      assert.match(textContent(result), /output-0.log/);
+      assert.deepEqual(
+        result.details.managementControls?.map((control) => control.state),
+        ["failed", "completed"],
+      );
+      assert.ok(
+        result.details.managementControls?.every((control) =>
+          control.capabilities.includes("resume"),
+        ),
+      );
+      assert.equal(
+        state.asyncJobs.size,
+        0,
+        "discovery does not start tracking or automatically deliver completed runs",
+      );
+      const exact = inspectSubagentStatus(
+        { id: "foreign-complete" },
+        { asyncDirRoot, resultsDir, state },
+      );
+      assert.match(textContent(exact), /foreign-complete outcome evidence/);
+      assert.doesNotMatch(textContent(exact), /polling status/);
+    } finally {
+      rmrf(root);
+    }
+  });
 
-	it("repairs stale running status and reports diagnosis plus result path", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-stale-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			const asyncDir = path.join(asyncRoot, "run-stale");
-			fs.mkdirSync(asyncDir, { recursive: true });
-			const sessionFile = path.join(root, "session.jsonl");
-			fs.writeFileSync(sessionFile, "", "utf-8");
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId: "run-stale",
-				mode: "single",
-				state: "running",
-				pid: 12345,
-				startedAt: 100,
-				lastUpdate: 100,
-				currentStep: 0,
-				sessionFile,
-				steps: [{ agent: "scout", status: "running", startedAt: 100, sessionFile }],
-			}, null, 2), "utf-8");
+  it("repairs stale running status and reports diagnosis plus result path", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-stale-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      const asyncDir = path.join(asyncRoot, "run-stale");
+      fs.mkdirSync(asyncDir, { recursive: true });
+      const sessionFile = path.join(root, "session.jsonl");
+      fs.writeFileSync(sessionFile, "", "utf-8");
+      fs.writeFileSync(
+        path.join(asyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "run-stale",
+            mode: "single",
+            state: "running",
+            pid: 12345,
+            startedAt: 100,
+            lastUpdate: 100,
+            currentStep: 0,
+            sessionFile,
+            steps: [{ agent: "scout", status: "running", startedAt: 100, sessionFile }],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
 
-			const result = inspectSubagentStatus({ id: "run-stale" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir,
-				kill: () => { throw errno("ESRCH"); },
-				now: () => 200,
-			});
+      const result = inspectSubagentStatus(
+        { id: "run-stale" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir,
+          kill: () => {
+            throw errno("ESRCH");
+          },
+          now: () => 200,
+        },
+      );
 
-			const text = textContent(result);
-			assert.equal(result.isError, undefined);
-			assert.match(text, /State: failed/);
-			assert.match(text, /Diagnosis: Async runner process 12345 exited or disappeared/);
-			assert.match(text, new RegExp(`Result: ${path.join(resultsDir, "run-stale.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-			assert.match(text, /Step 1: scout failed, error: Async runner process 12345 exited or disappeared/);
-			assert.match(text, /Continue: agent_runs\(\{ action: "continue", id: "run-stale", message: "\.\.\." \}\)/);
-			const resultJson = JSON.parse(fs.readFileSync(path.join(resultsDir, "run-stale.json"), "utf-8"));
-			assert.equal(resultJson.success, false);
-			assert.equal(resultJson.results[0].sessionFile, sessionFile);
-		} finally {
-			rmrf(root);
-		}
-	});
+      const text = textContent(result);
+      assert.equal(result.isError, undefined);
+      assert.match(text, /State: failed/);
+      assert.match(text, /Diagnosis: Async runner process 12345 exited or disappeared/);
+      assert.match(
+        text,
+        new RegExp(
+          `Result: ${path.join(resultsDir, "run-stale.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+        ),
+      );
+      assert.match(
+        text,
+        /Step 1: scout failed, error: Async runner process 12345 exited or disappeared/,
+      );
+      assert.match(
+        text,
+        /Continue: agent_runs\(\{ action: "continue", id: "run-stale", message: "\.\.\." \}\)/,
+      );
+      const resultJson = JSON.parse(
+        fs.readFileSync(path.join(resultsDir, "run-stale.json"), "utf-8"),
+      );
+      assert.equal(resultJson.success, false);
+      assert.equal(resultJson.results[0].sessionFile, sessionFile);
+    } finally {
+      rmrf(root);
+    }
+  });
 
-	it("shows parallel mode and aggregate progress for top-level async parallel runs", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-parallel-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const asyncDir = path.join(asyncRoot, "run-parallel");
-			fs.mkdirSync(asyncDir, { recursive: true });
-			const runOutputPath = path.join(asyncDir, "combined-output.log");
-			const firstStepOutputPath = path.join(asyncDir, "output-0.log");
-			const secondStepOutputPath = path.join(asyncDir, "output-1.log");
-			fs.writeFileSync(firstStepOutputPath, "reviewer one", "utf-8");
-			fs.writeFileSync(secondStepOutputPath, "reviewer two", "utf-8");
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId: "run-parallel",
-				mode: "parallel",
-				state: "running",
-				pid: 12345,
-				startedAt: 100,
-				lastUpdate: 100,
-				currentStep: 0,
-				outputFile: runOutputPath,
-				chainStepCount: 1,
-				parallelGroups: [{ start: 0, count: 3, stepIndex: 0 }],
-				steps: [
-					{ agent: "reviewer", status: "running", startedAt: 100, model: "openai-codex/gpt-5.5:high" },
-					{ agent: "reviewer", status: "running", startedAt: 100, model: "anthropic/claude-haiku-4-5", thinking: "low" },
-					{ agent: "reviewer", status: "pending" },
-				],
-			}, null, 2), "utf-8");
+  it("shows parallel mode and aggregate progress for top-level async parallel runs", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-parallel-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const asyncDir = path.join(asyncRoot, "run-parallel");
+      fs.mkdirSync(asyncDir, { recursive: true });
+      const runOutputPath = path.join(asyncDir, "combined-output.log");
+      const firstStepOutputPath = path.join(asyncDir, "output-0.log");
+      const secondStepOutputPath = path.join(asyncDir, "output-1.log");
+      fs.writeFileSync(firstStepOutputPath, "reviewer one", "utf-8");
+      fs.writeFileSync(secondStepOutputPath, "reviewer two", "utf-8");
+      fs.writeFileSync(
+        path.join(asyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "run-parallel",
+            mode: "parallel",
+            state: "running",
+            pid: 12345,
+            startedAt: 100,
+            lastUpdate: 100,
+            currentStep: 0,
+            outputFile: runOutputPath,
+            chainStepCount: 1,
+            parallelGroups: [{ start: 0, count: 3, stepIndex: 0 }],
+            steps: [
+              {
+                agent: "reviewer",
+                status: "running",
+                startedAt: 100,
+                model: "openai-codex/gpt-5.5:high",
+              },
+              {
+                agent: "reviewer",
+                status: "running",
+                startedAt: 100,
+                model: "anthropic/claude-haiku-4-5",
+                thinking: "low",
+              },
+              { agent: "reviewer", status: "pending" },
+            ],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
 
-			const result = inspectSubagentStatus({ id: "run-parallel" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir: path.join(root, "results"),
-				kill: () => true,
-				now: () => 200,
-			});
+      const result = inspectSubagentStatus(
+        { id: "run-parallel" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir: path.join(root, "results"),
+          kill: () => true,
+          now: () => 200,
+        },
+      );
 
-			const text = textContent(result);
-			assert.match(text, /Mode: parallel/);
-			assert.match(text, /Progress: 2 agents running · 0\/3 succeeded/);
-			assert.match(text, new RegExp(`Output: ${runOutputPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-			assert.match(text, /Agent 1\/3: reviewer running \(openai-codex\/gpt-5\.5 · thinking high\)/);
-			assert.match(text, /Agent 2\/3: reviewer running \(anthropic\/claude-haiku-4-5 · thinking low\)/);
-			assert.match(text, /Agent 3\/3: reviewer pending/);
-			assert.match(text, new RegExp(`  Output: ${firstStepOutputPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-			assert.match(text, new RegExp(`  Output: ${secondStepOutputPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-			assert.match(text, /end your turn instead of polling status again/);
-			assert.doesNotMatch(text, /Step 1: reviewer/);
-		} finally {
-			rmrf(root);
-		}
-	});
+      const text = textContent(result);
+      assert.match(text, /Mode: parallel/);
+      assert.match(text, /Progress: 2 agents running · 0\/3 succeeded/);
+      assert.match(
+        text,
+        new RegExp(`Output: ${runOutputPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+      );
+      assert.match(text, /Agent 1\/3: reviewer running \(openai-codex\/gpt-5\.5 · thinking high\)/);
+      assert.match(
+        text,
+        /Agent 2\/3: reviewer running \(anthropic\/claude-haiku-4-5 · thinking low\)/,
+      );
+      assert.match(text, /Agent 3\/3: reviewer pending/);
+      assert.match(
+        text,
+        new RegExp(`  Output: ${firstStepOutputPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+      );
+      assert.match(
+        text,
+        new RegExp(`  Output: ${secondStepOutputPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+      );
+      assert.match(text, /end your turn instead of polling status again/);
+      assert.doesNotMatch(text, /Step 1: reviewer/);
+    } finally {
+      rmrf(root);
+    }
+  });
 
-	it("shows a bounded output excerpt for completed async status", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-output-excerpt-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const asyncDir = path.join(asyncRoot, "run-complete");
-			fs.mkdirSync(asyncDir, { recursive: true });
-			const outputPath = path.join(asyncDir, "output-0.log");
-			fs.writeFileSync(outputPath, `${Array.from({ length: 20 }, (_, index) => `prefix line ${index}`).join("\n")}\nfinal child result\nwith detail`, "utf-8");
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId: "run-complete",
-				mode: "single",
-				state: "complete",
-				startedAt: 100,
-				lastUpdate: 200,
-				outputFile: outputPath,
-				steps: [{ agent: "delegate", status: "complete" }],
-			}, null, 2), "utf-8");
+  it("shows a bounded output excerpt for completed async status", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-output-excerpt-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const asyncDir = path.join(asyncRoot, "run-complete");
+      fs.mkdirSync(asyncDir, { recursive: true });
+      const outputPath = path.join(asyncDir, "output-0.log");
+      fs.writeFileSync(
+        outputPath,
+        `${Array.from({ length: 20 }, (_, index) => `prefix line ${index}`).join("\n")}\nfinal child result\nwith detail`,
+        "utf-8",
+      );
+      fs.writeFileSync(
+        path.join(asyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "run-complete",
+            mode: "single",
+            state: "complete",
+            startedAt: 100,
+            lastUpdate: 200,
+            outputFile: outputPath,
+            steps: [{ agent: "delegate", status: "complete" }],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
 
-			const result = inspectSubagentStatus({ id: "run-complete" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir: path.join(root, "results"),
-			});
+      const result = inspectSubagentStatus(
+        { id: "run-complete" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir: path.join(root, "results"),
+        },
+      );
 
-			const text = textContent(result);
-			assert.equal(result.isError, undefined);
-			assert.match(text, /Output: .*output-0\.log/);
-			assert.match(text, /Output excerpt \(tail, truncated\):/);
-			assert.doesNotMatch(text, /prefix line 0/);
-			assert.match(text, /  final child result/);
-			assert.match(text, /  with detail/);
-			assert.doesNotMatch(text, /polling status/);
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
-	});
+      const text = textContent(result);
+      assert.equal(result.isError, undefined);
+      assert.match(text, /Output: .*output-0\.log/);
+      assert.match(text, /Output excerpt \(tail, truncated\):/);
+      assert.doesNotMatch(text, /prefix line 0/);
+      assert.match(text, /  final child result/);
+      assert.match(text, /  with detail/);
+      assert.doesNotMatch(text, /polling status/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 
-	it("shows acceptance finalization turn counts in detailed async status", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-acceptance-finalization-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const asyncDir = path.join(asyncRoot, "run-acceptance");
-			fs.mkdirSync(asyncDir, { recursive: true });
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId: "run-acceptance",
-				mode: "single",
-				state: "failed",
-				startedAt: 100,
-				lastUpdate: 200,
-				steps: [{
-					agent: "worker",
-					status: "failed",
-					acceptance: {
-						status: "rejected",
-						finalization: {
-							mode: "self-review-loop",
-							status: "failed",
-							maxTurns: 2,
-							turns: [
-								{ turn: 1, status: "rejected", prompt: "", rawOutput: "", runtimeChecks: [], verifyRuns: [] },
-								{ turn: 2, status: "rejected", prompt: "", rawOutput: "", runtimeChecks: [], verifyRuns: [] },
-							],
-						},
-					},
-				}],
-			}, null, 2), "utf-8");
+  it("shows acceptance finalization turn counts in detailed async status", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-acceptance-finalization-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const asyncDir = path.join(asyncRoot, "run-acceptance");
+      fs.mkdirSync(asyncDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(asyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "run-acceptance",
+            mode: "single",
+            state: "failed",
+            startedAt: 100,
+            lastUpdate: 200,
+            steps: [
+              {
+                agent: "worker",
+                status: "failed",
+                acceptance: {
+                  status: "rejected",
+                  finalization: {
+                    mode: "self-review-loop",
+                    status: "failed",
+                    maxTurns: 2,
+                    turns: [
+                      {
+                        turn: 1,
+                        status: "rejected",
+                        prompt: "",
+                        rawOutput: "",
+                        runtimeChecks: [],
+                        verifyRuns: [],
+                      },
+                      {
+                        turn: 2,
+                        status: "rejected",
+                        prompt: "",
+                        rawOutput: "",
+                        runtimeChecks: [],
+                        verifyRuns: [],
+                      },
+                    ],
+                  },
+                },
+              },
+            ],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
 
-			const result = inspectSubagentStatus({ id: "run-acceptance" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir: path.join(root, "results"),
-			});
+      const result = inspectSubagentStatus(
+        { id: "run-acceptance" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir: path.join(root, "results"),
+        },
+      );
 
-			const text = textContent(result);
-			assert.equal(result.isError, undefined);
-			assert.match(text, /Step 1: worker failed, acceptance: rejected, finalization: failed after 2\/2 turns/);
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
-	});
+      const text = textContent(result);
+      assert.equal(result.isError, undefined);
+      assert.match(
+        text,
+        /Step 1: worker failed, acceptance: rejected, finalization: failed after 2\/2 turns/,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 
-	it("shows nested runs under owning steps with exact status hints", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-nested-root-"));
-		const route = createNestedRoute("run-nested-root");
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const asyncDir = path.join(asyncRoot, "run-nested-root");
-			fs.mkdirSync(asyncDir, { recursive: true });
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId: "run-nested-root",
-				mode: "single",
-				state: "running",
-				pid: 12345,
-				startedAt: 100,
-				lastUpdate: 100,
-				steps: [{ agent: "orchestrator", status: "running", startedAt: 100 }],
-			}, null, 2), "utf-8");
-			writeNestedEvent(route, {
-				type: "subagent.nested.updated",
-				ts: 150,
-				parentRunId: "run-nested-root",
-				parentStepIndex: 0,
-				child: {
-					id: "nested-status-child",
-					parentRunId: "run-nested-root",
-					parentStepIndex: 0,
-					depth: 1,
-					path: [{ runId: "run-nested-root", stepIndex: 0, agent: "orchestrator" }],
-					state: "running",
-					agent: "reviewer",
-					currentTool: "read",
-					lastUpdate: 150,
-				},
-			});
+  it("shows nested runs under owning steps with exact status hints", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-nested-root-"));
+    const route = createNestedRoute("run-nested-root");
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const asyncDir = path.join(asyncRoot, "run-nested-root");
+      fs.mkdirSync(asyncDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(asyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "run-nested-root",
+            mode: "single",
+            state: "running",
+            pid: 12345,
+            startedAt: 100,
+            lastUpdate: 100,
+            steps: [{ agent: "orchestrator", status: "running", startedAt: 100 }],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
+      writeNestedEvent(route, {
+        type: "subagent.nested.updated",
+        ts: 150,
+        parentRunId: "run-nested-root",
+        parentStepIndex: 0,
+        child: {
+          id: "nested-status-child",
+          parentRunId: "run-nested-root",
+          parentStepIndex: 0,
+          depth: 1,
+          path: [{ runId: "run-nested-root", stepIndex: 0, agent: "orchestrator" }],
+          state: "running",
+          agent: "reviewer",
+          currentTool: "read",
+          lastUpdate: 150,
+        },
+      });
 
-			const result = inspectSubagentStatus({ id: "run-nested-root" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir: path.join(root, "results"),
-				kill: () => true,
-				now: () => 200,
-			});
+      const result = inspectSubagentStatus(
+        { id: "run-nested-root" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir: path.join(root, "results"),
+          kill: () => true,
+          now: () => 200,
+        },
+      );
 
-			const text = textContent(result);
-			assert.equal(result.isError, undefined);
-			assert.match(text, /Step 1: orchestrator running/);
-			assert.match(text, /↳ reviewer \[nested-status-child\] running \| tool read/);
-			assert.match(text, /Status: agent_runs\(\{ action: "inspect", id: "nested-status-child" \}\)/);
-		} finally {
-			rmrf(root);
-			rmrf(path.dirname(route.eventSink));
-		}
-	});
+      const text = textContent(result);
+      assert.equal(result.isError, undefined);
+      assert.match(text, /Step 1: orchestrator running/);
+      assert.match(text, /↳ reviewer \[nested-status-child\] running \| tool read/);
+      assert.match(
+        text,
+        /Status: agent_runs\(\{ action: "inspect", id: "nested-status-child" \}\)/,
+      );
+    } finally {
+      rmrf(root);
+      rmrf(path.dirname(route.eventSink));
+    }
+  });
 
-	it("repairs stale nested async descendants before rendering root status", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-stale-nested-"));
-		const route = createNestedRoute("run-stale-nested-root");
-		const nestedAsyncDir = path.join(TEMP_ROOT_DIR, "nested-subagent-runs", "run-stale-nested-root", "nested-stale");
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			const asyncDir = path.join(asyncRoot, "run-stale-nested-root");
-			fs.mkdirSync(asyncDir, { recursive: true });
-			fs.mkdirSync(nestedAsyncDir, { recursive: true });
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId: "run-stale-nested-root",
-				mode: "single",
-				state: "complete",
-				startedAt: 100,
-				lastUpdate: 300,
-				steps: [{ agent: "orchestrator", status: "complete", startedAt: 100 }],
-			}, null, 2), "utf-8");
-			fs.writeFileSync(path.join(nestedAsyncDir, "status.json"), JSON.stringify({
-				runId: "nested-stale",
-				mode: "single",
-				state: "running",
-				pid: 54321,
-				startedAt: 150,
-				lastUpdate: 150,
-				steps: [{ agent: "reviewer", status: "running", startedAt: 150 }],
-			}, null, 2), "utf-8");
-			writeNestedEvent(route, {
-				type: "subagent.nested.updated",
-				ts: 150,
-				parentRunId: "run-stale-nested-root",
-				parentStepIndex: 0,
-				child: {
-					id: "nested-stale",
-					parentRunId: "run-stale-nested-root",
-					parentStepIndex: 0,
-					depth: 1,
-					path: [{ runId: "run-stale-nested-root", stepIndex: 0 }],
-					asyncDir: nestedAsyncDir,
-					pid: 54321,
-					state: "running",
-					agent: "reviewer",
-					lastUpdate: 150,
-				},
-			});
+  it("repairs stale nested async descendants before rendering root status", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-stale-nested-"));
+    const route = createNestedRoute("run-stale-nested-root");
+    const nestedAsyncDir = path.join(
+      TEMP_ROOT_DIR,
+      "nested-subagent-runs",
+      "run-stale-nested-root",
+      "nested-stale",
+    );
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      const asyncDir = path.join(asyncRoot, "run-stale-nested-root");
+      fs.mkdirSync(asyncDir, { recursive: true });
+      fs.mkdirSync(nestedAsyncDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(asyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "run-stale-nested-root",
+            mode: "single",
+            state: "complete",
+            startedAt: 100,
+            lastUpdate: 300,
+            steps: [{ agent: "orchestrator", status: "complete", startedAt: 100 }],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
+      fs.writeFileSync(
+        path.join(nestedAsyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "nested-stale",
+            mode: "single",
+            state: "running",
+            pid: 54321,
+            startedAt: 150,
+            lastUpdate: 150,
+            steps: [{ agent: "reviewer", status: "running", startedAt: 150 }],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
+      writeNestedEvent(route, {
+        type: "subagent.nested.updated",
+        ts: 150,
+        parentRunId: "run-stale-nested-root",
+        parentStepIndex: 0,
+        child: {
+          id: "nested-stale",
+          parentRunId: "run-stale-nested-root",
+          parentStepIndex: 0,
+          depth: 1,
+          path: [{ runId: "run-stale-nested-root", stepIndex: 0 }],
+          asyncDir: nestedAsyncDir,
+          pid: 54321,
+          state: "running",
+          agent: "reviewer",
+          lastUpdate: 150,
+        },
+      });
 
-			const result = inspectSubagentStatus({ id: "run-stale-nested-root" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir,
-				kill: () => { throw errno("ESRCH"); },
-				now: () => 500,
-			});
+      const result = inspectSubagentStatus(
+        { id: "run-stale-nested-root" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir,
+          kill: () => {
+            throw errno("ESRCH");
+          },
+          now: () => 500,
+        },
+      );
 
-			const text = textContent(result);
-			assert.equal(result.isError, undefined);
-			assert.match(text, /↳ reviewer \[nested-stale\] failed/);
-			assert.match(text, /1\. reviewer failed \| error: Async runner process 54321 exited or disappeared/);
-			assert.ok(fs.existsSync(path.join(resultsDir, "nested", "run-stale-nested-root", "nested-stale.json")));
-		} finally {
-			rmrf(root);
-			rmrf(path.dirname(route.eventSink));
-			rmrf(nestedAsyncDir);
-		}
-	});
+      const text = textContent(result);
+      assert.equal(result.isError, undefined);
+      assert.match(text, /↳ reviewer \[nested-stale\] failed/);
+      assert.match(
+        text,
+        /1\. reviewer failed \| error: Async runner process 54321 exited or disappeared/,
+      );
+      assert.ok(
+        fs.existsSync(
+          path.join(resultsDir, "nested", "run-stale-nested-root", "nested-stale.json"),
+        ),
+      );
+    } finally {
+      rmrf(root);
+      rmrf(path.dirname(route.eventSink));
+      rmrf(nestedAsyncDir);
+    }
+  });
 
-	it("shows a warning when nested projection fails for detailed status", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-nested-warning-"));
-		const route = createNestedRoute("run-nested-warning");
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			const asyncDir = path.join(asyncRoot, "run-nested-warning");
-			fs.mkdirSync(asyncDir, { recursive: true });
-			fs.writeFileSync(path.join(path.dirname(route.eventSink), "registry.json"), "{", "utf-8");
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId: "run-nested-warning",
-				mode: "single",
-				state: "running",
-				pid: 12345,
-				startedAt: 100,
-				lastUpdate: 100,
-				steps: [{ agent: "orchestrator", status: "running", startedAt: 100 }],
-			}, null, 2), "utf-8");
+  it("shows a warning when nested projection fails for detailed status", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-nested-warning-"));
+    const route = createNestedRoute("run-nested-warning");
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      const asyncDir = path.join(asyncRoot, "run-nested-warning");
+      fs.mkdirSync(asyncDir, { recursive: true });
+      fs.writeFileSync(path.join(path.dirname(route.eventSink), "registry.json"), "{", "utf-8");
+      fs.writeFileSync(
+        path.join(asyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "run-nested-warning",
+            mode: "single",
+            state: "running",
+            pid: 12345,
+            startedAt: 100,
+            lastUpdate: 100,
+            steps: [{ agent: "orchestrator", status: "running", startedAt: 100 }],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
 
-			const result = inspectSubagentStatus({ id: "run-nested-warning" }, { asyncDirRoot: asyncRoot, resultsDir });
+      const result = inspectSubagentStatus(
+        { id: "run-nested-warning" },
+        { asyncDirRoot: asyncRoot, resultsDir },
+      );
 
-			assert.equal(result.isError, undefined);
-			assert.match(textContent(result), /Warning: Nested status unavailable:/);
-		} finally {
-			rmrf(root);
-			rmrf(path.dirname(route.eventSink));
-		}
-	});
+      assert.equal(result.isError, undefined);
+      assert.match(textContent(result), /Warning: Nested status unavailable:/);
+    } finally {
+      rmrf(root);
+      rmrf(path.dirname(route.eventSink));
+    }
+  });
 
-	it("shows a warning when nested projection fails for active status lists", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-nested-list-warning-"));
-		const route = createNestedRoute("run-nested-list-warning");
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			const asyncDir = path.join(asyncRoot, "run-nested-list-warning");
-			fs.mkdirSync(asyncDir, { recursive: true });
-			fs.writeFileSync(path.join(path.dirname(route.eventSink), "registry.json"), "{", "utf-8");
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId: "run-nested-list-warning",
-				mode: "single",
-				state: "running",
-				pid: 12345,
-				startedAt: 100,
-				lastUpdate: 100,
-				steps: [{ agent: "orchestrator", status: "running", startedAt: 100 }],
-			}, null, 2), "utf-8");
+  it("shows a warning when nested projection fails for active status lists", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-nested-list-warning-"));
+    const route = createNestedRoute("run-nested-list-warning");
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      const asyncDir = path.join(asyncRoot, "run-nested-list-warning");
+      fs.mkdirSync(asyncDir, { recursive: true });
+      fs.writeFileSync(path.join(path.dirname(route.eventSink), "registry.json"), "{", "utf-8");
+      fs.writeFileSync(
+        path.join(asyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "run-nested-list-warning",
+            mode: "single",
+            state: "running",
+            pid: 12345,
+            startedAt: 100,
+            lastUpdate: 100,
+            steps: [{ agent: "orchestrator", status: "running", startedAt: 100 }],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
 
-			const result = inspectSubagentStatus({}, { asyncDirRoot: asyncRoot, resultsDir, kill: () => true, now: () => 200 });
+      const result = inspectSubagentStatus(
+        {},
+        { asyncDirRoot: asyncRoot, resultsDir, kill: () => true, now: () => 200 },
+      );
 
-			assert.equal(result.isError, undefined);
-			assert.match(textContent(result), /Warning: Nested status unavailable:/);
-			assert.match(textContent(result), /end your turn instead of polling status again/);
-		} finally {
-			rmrf(root);
-			rmrf(path.dirname(route.eventSink));
-		}
-	});
+      assert.equal(result.isError, undefined);
+      assert.match(textContent(result), /Warning: Nested status unavailable:/);
+      assert.match(textContent(result), /end your turn instead of polling status again/);
+    } finally {
+      rmrf(root);
+      rmrf(path.dirname(route.eventSink));
+    }
+  });
 
-	it("resolves exact nested run ids from the nested registry", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-nested-exact-"));
-		const route = createNestedRoute("run-nested-exact-root");
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			const rootAsyncDir = path.join(asyncRoot, "run-nested-exact-root");
-			fs.mkdirSync(rootAsyncDir, { recursive: true });
-			fs.writeFileSync(path.join(rootAsyncDir, "status.json"), JSON.stringify({
-				runId: "run-nested-exact-root",
-				sessionId: "session-current",
-				mode: "single",
-				state: "running",
-				pid: 12345,
-				cwd: root,
-				startedAt: 100,
-				lastUpdate: 100,
-				steps: [{ agent: "orchestrator", status: "running", startedAt: 100 }],
-			}, null, 2), "utf-8");
-			writeNestedEvent(route, {
-				type: "subagent.nested.updated",
-				ts: 150,
-				parentRunId: "run-nested-exact-root",
-				parentStepIndex: 0,
-				child: {
-					id: "nested-exact-child",
-					parentRunId: "run-nested-exact-root",
-					parentStepIndex: 0,
-					depth: 1,
-					path: [{ runId: "run-nested-exact-root", stepIndex: 0, agent: "orchestrator" }],
-					state: "running",
-					mode: "single",
-					agent: "validator",
-					steps: [{ agent: "leaf", status: "running", currentTool: "grep" }],
-					lastUpdate: 150,
-				},
-			});
+  it("resolves exact nested run ids from the nested registry", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-nested-exact-"));
+    const route = createNestedRoute("run-nested-exact-root");
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      const rootAsyncDir = path.join(asyncRoot, "run-nested-exact-root");
+      fs.mkdirSync(rootAsyncDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(rootAsyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "run-nested-exact-root",
+            sessionId: "session-current",
+            mode: "single",
+            state: "running",
+            pid: 12345,
+            cwd: root,
+            startedAt: 100,
+            lastUpdate: 100,
+            steps: [{ agent: "orchestrator", status: "running", startedAt: 100 }],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
+      writeNestedEvent(route, {
+        type: "subagent.nested.updated",
+        ts: 150,
+        parentRunId: "run-nested-exact-root",
+        parentStepIndex: 0,
+        child: {
+          id: "nested-exact-child",
+          parentRunId: "run-nested-exact-root",
+          parentStepIndex: 0,
+          depth: 1,
+          path: [{ runId: "run-nested-exact-root", stepIndex: 0, agent: "orchestrator" }],
+          state: "running",
+          mode: "single",
+          agent: "validator",
+          steps: [{ agent: "leaf", status: "running", currentTool: "grep" }],
+          lastUpdate: 150,
+        },
+      });
 
-			const result = inspectSubagentStatus({ id: "nested-exact-child" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir,
-				state: statusState(root, "session-current"),
-				nested: { routes: [route] },
-			});
+      const result = inspectSubagentStatus(
+        { id: "nested-exact-child" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir,
+          state: statusState(root, "session-current"),
+          nested: { routes: [route] },
+        },
+      );
 
-			const text = textContent(result);
-			assert.equal(result.isError, undefined);
-			assert.match(text, /Nested run: nested-exact-child/);
-			assert.match(text, /Root: run-nested-exact-root/);
-			assert.match(text, /Agent: validator/);
-			assert.match(text, /1\. leaf running/);
-			assert.match(text, /Root status: agent_runs\(\{ action: "inspect", id: "run-nested-exact-root" \}\)/);
-			assert.match(text, /end your turn instead of polling status again/);
-			assert.match(text, /Interrupt: agent_runs\(\{ action: "stop", id: "nested-exact-child" \}\)/);
-			assert.match(text, /Resume: agent_runs\(\{ action: "continue", id: "nested-exact-child", message: "\.\.\." \}\)/);
+      const text = textContent(result);
+      assert.equal(result.isError, undefined);
+      assert.match(text, /Nested run: nested-exact-child/);
+      assert.match(text, /Root: run-nested-exact-root/);
+      assert.match(text, /Agent: validator/);
+      assert.match(text, /1\. leaf running/);
+      assert.match(
+        text,
+        /Root status: agent_runs\(\{ action: "inspect", id: "run-nested-exact-root" \}\)/,
+      );
+      assert.match(text, /end your turn instead of polling status again/);
+      assert.match(text, /Interrupt: agent_runs\(\{ action: "stop", id: "nested-exact-child" \}\)/);
+      assert.match(
+        text,
+        /Resume: agent_runs\(\{ action: "continue", id: "nested-exact-child", message: "\.\.\." \}\)/,
+      );
 
-			const foreign = inspectSubagentStatus({ id: "nested-exact-child" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir,
-				state: statusState(root, "session-foreign"),
-				nested: { routes: [route] },
-			});
-			assert.match(textContent(foreign), /Nested run: nested-exact-child/);
-			assert.doesNotMatch(textContent(foreign), /polling status/);
+      const foreign = inspectSubagentStatus(
+        { id: "nested-exact-child" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir,
+          state: statusState(root, "session-foreign"),
+          nested: { routes: [route] },
+        },
+      );
+      assert.match(textContent(foreign), /Nested run: nested-exact-child/);
+      assert.doesNotMatch(textContent(foreign), /polling status/);
 
-			writeNestedEvent(route, {
-				type: "subagent.nested.completed",
-				ts: 200,
-				parentRunId: "run-nested-exact-root",
-				parentStepIndex: 0,
-				child: {
-					id: "nested-exact-child",
-					parentRunId: "run-nested-exact-root",
-					parentStepIndex: 0,
-					depth: 1,
-					path: [{ runId: "run-nested-exact-root", stepIndex: 0, agent: "orchestrator" }],
-					state: "complete",
-					mode: "single",
-					agent: "validator",
-					steps: [{ agent: "leaf", status: "complete" }],
-					lastUpdate: 200,
-				},
-			});
-			const completed = inspectSubagentStatus({ id: "nested-exact-child" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir,
-				state: statusState(root, "session-current"),
-				nested: { routes: [route] },
-			});
-			assert.doesNotMatch(textContent(completed), /polling status/);
-		} finally {
-			rmrf(root);
-			rmrf(path.dirname(route.eventSink));
-		}
-	});
+      writeNestedEvent(route, {
+        type: "subagent.nested.completed",
+        ts: 200,
+        parentRunId: "run-nested-exact-root",
+        parentStepIndex: 0,
+        child: {
+          id: "nested-exact-child",
+          parentRunId: "run-nested-exact-root",
+          parentStepIndex: 0,
+          depth: 1,
+          path: [{ runId: "run-nested-exact-root", stepIndex: 0, agent: "orchestrator" }],
+          state: "complete",
+          mode: "single",
+          agent: "validator",
+          steps: [{ agent: "leaf", status: "complete" }],
+          lastUpdate: 200,
+        },
+      });
+      const completed = inspectSubagentStatus(
+        { id: "nested-exact-child" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir,
+          state: statusState(root, "session-current"),
+          nested: { routes: [route] },
+        },
+      );
+      assert.doesNotMatch(textContent(completed), /polling status/);
+    } finally {
+      rmrf(root);
+      rmrf(path.dirname(route.eventSink));
+    }
+  });
 
-	it("shows indexed revive guidance for completed multi-child async runs with child sessions", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-multi-resume-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const asyncDir = path.join(asyncRoot, "run-multi");
-			const firstSession = path.join(root, "a.jsonl");
-			const secondSession = path.join(root, "b.jsonl");
-			fs.mkdirSync(asyncDir, { recursive: true });
-			fs.writeFileSync(firstSession, "", "utf-8");
-			fs.writeFileSync(secondSession, "", "utf-8");
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId: "run-multi",
-				mode: "parallel",
-				state: "complete",
-				startedAt: 100,
-				lastUpdate: 200,
-				steps: [
-					{ agent: "a", status: "complete", sessionFile: firstSession },
-					{ agent: "b", status: "complete", sessionFile: secondSession },
-				],
-			}, null, 2), "utf-8");
+  it("shows indexed revive guidance for completed multi-child async runs with child sessions", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-multi-resume-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const asyncDir = path.join(asyncRoot, "run-multi");
+      const firstSession = path.join(root, "a.jsonl");
+      const secondSession = path.join(root, "b.jsonl");
+      fs.mkdirSync(asyncDir, { recursive: true });
+      fs.writeFileSync(firstSession, "", "utf-8");
+      fs.writeFileSync(secondSession, "", "utf-8");
+      fs.writeFileSync(
+        path.join(asyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "run-multi",
+            mode: "parallel",
+            state: "complete",
+            startedAt: 100,
+            lastUpdate: 200,
+            steps: [
+              { agent: "a", status: "complete", sessionFile: firstSession },
+              { agent: "b", status: "complete", sessionFile: secondSession },
+            ],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
 
-			const result = inspectSubagentStatus({ id: "run-multi" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir: path.join(root, "results"),
-			});
+      const result = inspectSubagentStatus(
+        { id: "run-multi" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir: path.join(root, "results"),
+        },
+      );
 
-			const text = textContent(result);
-			assert.match(text, /Continue child: agent_runs\(\{ action: "continue", id: "run-multi", index: 0, message: "\.\.\." \}\)/);
-			assert.doesNotMatch(text, /unsupported for multi-child/);
-		} finally {
-			rmrf(root);
-		}
-	});
+      const text = textContent(result);
+      assert.match(
+        text,
+        /Continue child: agent_runs\(\{ action: "continue", id: "run-multi", index: 0, message: "\.\.\." \}\)/,
+      );
+      assert.doesNotMatch(text, /unsupported for multi-child/);
+    } finally {
+      rmrf(root);
+    }
+  });
 
-	it("uses original child indexes when result metadata contains invalid children", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-original-index-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			const sessionFile = path.join(root, "b.jsonl");
-			fs.mkdirSync(resultsDir, { recursive: true });
-			fs.writeFileSync(sessionFile, "", "utf-8");
-			fs.writeFileSync(path.join(resultsDir, "run-result-index.json"), JSON.stringify({
-				id: "run-result-index",
-				success: false,
-				state: "failed",
-				results: [
-					{ output: "missing agent", sessionFile: path.join(root, "a.jsonl") },
-					{ agent: "b", success: false, sessionFile },
-				],
-			}, null, 2), "utf-8");
+  it("uses original child indexes when result metadata contains invalid children", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-original-index-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      const sessionFile = path.join(root, "b.jsonl");
+      fs.mkdirSync(resultsDir, { recursive: true });
+      fs.writeFileSync(sessionFile, "", "utf-8");
+      fs.writeFileSync(
+        path.join(resultsDir, "run-result-index.json"),
+        JSON.stringify(
+          {
+            id: "run-result-index",
+            success: false,
+            state: "failed",
+            results: [
+              { output: "missing agent", sessionFile: path.join(root, "a.jsonl") },
+              { agent: "b", success: false, sessionFile },
+            ],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
 
-			const result = inspectSubagentStatus({ id: "run-result-index" }, { asyncDirRoot: asyncRoot, resultsDir });
+      const result = inspectSubagentStatus(
+        { id: "run-result-index" },
+        { asyncDirRoot: asyncRoot, resultsDir },
+      );
 
-			const text = textContent(result);
-			assert.match(text, /Continue child: agent_runs\(\{ action: "continue", id: "run-result-index", index: 1, message: "\.\.\." \}\)/);
-		} finally {
-			rmrf(root);
-		}
-	});
+      const text = textContent(result);
+      assert.match(
+        text,
+        /Continue child: agent_runs\(\{ action: "continue", id: "run-result-index", index: 1, message: "\.\.\." \}\)/,
+      );
+    } finally {
+      rmrf(root);
+    }
+  });
 
-	it("labels chain parallel group children with logical step and agent numbers", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-chain-parallel-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const asyncDir = path.join(asyncRoot, "run-chain");
-			fs.mkdirSync(asyncDir, { recursive: true });
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId: "run-chain",
-				mode: "chain",
-				state: "running",
-				pid: 12345,
-				startedAt: 100,
-				lastUpdate: 100,
-				currentStep: 1,
-				chainStepCount: 3,
-				parallelGroups: [{ start: 1, count: 2, stepIndex: 1 }],
-				steps: [
-					{ agent: "scout", status: "complete", startedAt: 100 },
-					{ agent: "reviewer", status: "running", startedAt: 100 },
-					{ agent: "auditor", status: "pending" },
-					{ agent: "writer", status: "pending" },
-				],
-			}, null, 2), "utf-8");
+  it("labels chain parallel group children with logical step and agent numbers", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-chain-parallel-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const asyncDir = path.join(asyncRoot, "run-chain");
+      fs.mkdirSync(asyncDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(asyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "run-chain",
+            mode: "chain",
+            state: "running",
+            pid: 12345,
+            startedAt: 100,
+            lastUpdate: 100,
+            currentStep: 1,
+            chainStepCount: 3,
+            parallelGroups: [{ start: 1, count: 2, stepIndex: 1 }],
+            steps: [
+              { agent: "scout", status: "complete", startedAt: 100 },
+              { agent: "reviewer", status: "running", startedAt: 100 },
+              { agent: "auditor", status: "pending" },
+              { agent: "writer", status: "pending" },
+            ],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
 
-			const result = inspectSubagentStatus({ id: "run-chain" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir: path.join(root, "results"),
-				kill: () => true,
-				now: () => 200,
-			});
+      const result = inspectSubagentStatus(
+        { id: "run-chain" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir: path.join(root, "results"),
+          kill: () => true,
+          now: () => 200,
+        },
+      );
 
-			const text = textContent(result);
-			assert.match(text, /Step 1\/3: scout complete/);
-			assert.match(text, /Step 2\/3 Agent 1\/2: reviewer running/);
-			assert.match(text, /Step 2\/3 Agent 2\/2: auditor pending/);
-			assert.match(text, /Step 3\/3: writer pending/);
-		} finally {
-			rmrf(root);
-		}
-	});
+      const text = textContent(result);
+      assert.match(text, /Step 1\/3: scout complete/);
+      assert.match(text, /Step 2\/3 Agent 1\/2: reviewer running/);
+      assert.match(text, /Step 2\/3 Agent 2\/2: auditor pending/);
+      assert.match(text, /Step 3\/3: writer pending/);
+    } finally {
+      rmrf(root);
+    }
+  });
 
-	it("shows expected intercom target for still-running async steps", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-intercom-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const asyncDir = path.join(asyncRoot, "run-live");
-			fs.mkdirSync(asyncDir, { recursive: true });
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId: "run-live",
-				mode: "single",
-				state: "running",
-				pid: 12345,
-				startedAt: 100,
-				lastUpdate: 100,
-				steps: [{ agent: "scout", status: "running", startedAt: 100 }],
-			}, null, 2), "utf-8");
+  it("shows expected intercom target for still-running async steps", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-intercom-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const asyncDir = path.join(asyncRoot, "run-live");
+      fs.mkdirSync(asyncDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(asyncDir, "status.json"),
+        JSON.stringify(
+          {
+            runId: "run-live",
+            mode: "single",
+            state: "running",
+            pid: 12345,
+            startedAt: 100,
+            lastUpdate: 100,
+            steps: [{ agent: "scout", status: "running", startedAt: 100 }],
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
 
-			const result = inspectSubagentStatus({ id: "run-live" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir: path.join(root, "results"),
-				kill: () => true,
-				now: () => 200,
-			});
+      const result = inspectSubagentStatus(
+        { id: "run-live" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir: path.join(root, "results"),
+          kill: () => true,
+          now: () => 200,
+        },
+      );
 
-			const text = textContent(result);
-			assert.match(text, /Step 1: scout running/);
-			assert.match(text, /Intercom: unknown \(subagent-scout-run-live-1\)/);
-			assert.match(text, /Nudge \(preferred live coordination\): agent_runs\(\{ action: "nudge", id: "run-live", index: 0/);
-			assert.match(text, /Ask \(blocking wait only; parent must remain alive\): intercom\(\{ action: "ask", to: "subagent-scout-run-live-1", delivery: "steer"/);
-		} finally {
-			rmrf(root);
-		}
-	});
+      const text = textContent(result);
+      assert.match(text, /Step 1: scout running/);
+      assert.match(text, /Intercom: unknown \(subagent-scout-run-live-1\)/);
+      assert.match(
+        text,
+        /Nudge \(preferred live coordination\): agent_runs\(\{ action: "nudge", id: "run-live", index: 0/,
+      );
+      assert.match(
+        text,
+        /Ask \(blocking wait only; parent must remain alive\): intercom\(\{ action: "ask", to: "subagent-scout-run-live-1", delivery: "steer"/,
+      );
+    } finally {
+      rmrf(root);
+    }
+  });
 
-	it("rejects ambiguous async run id prefixes", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-ambiguous-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			fs.mkdirSync(path.join(asyncRoot, "run-aa"), { recursive: true });
-			fs.mkdirSync(path.join(asyncRoot, "run-ab"), { recursive: true });
+  it("rejects ambiguous async run id prefixes", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-ambiguous-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      fs.mkdirSync(path.join(asyncRoot, "run-aa"), { recursive: true });
+      fs.mkdirSync(path.join(asyncRoot, "run-ab"), { recursive: true });
 
-			const result = inspectSubagentStatus({ id: "run-a" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir: path.join(root, "results"),
-			});
+      const result = inspectSubagentStatus(
+        { id: "run-a" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir: path.join(root, "results"),
+        },
+      );
 
-			assert.equal(result.isError, true);
-			assert.match(textContent(result), /Ambiguous subagent run id prefix 'run-a' matched: async:run-aa, async:run-ab/);
-		} finally {
-			rmrf(root);
-		}
-	});
+      assert.equal(result.isError, true);
+      assert.match(
+        textContent(result),
+        /Ambiguous subagent run id prefix 'run-a' matched: async:run-aa, async:run-ab/,
+      );
+    } finally {
+      rmrf(root);
+    }
+  });
 
-	it("rejects path-like async run ids", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-paths-"));
-		try {
-			const result = inspectSubagentStatus({ id: "../run" }, {
-				asyncDirRoot: path.join(root, "runs"),
-				resultsDir: path.join(root, "results"),
-			});
+  it("rejects path-like async run ids", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-paths-"));
+    try {
+      const result = inspectSubagentStatus(
+        { id: "../run" },
+        {
+          asyncDirRoot: path.join(root, "runs"),
+          resultsDir: path.join(root, "results"),
+        },
+      );
 
-			assert.equal(result.isError, true);
-			assert.match(textContent(result), /id must be a non-empty safe id token/);
-		} finally {
-			rmrf(root);
-		}
-	});
+      assert.equal(result.isError, true);
+      assert.match(textContent(result), /id must be a non-empty safe id token/);
+    } finally {
+      rmrf(root);
+    }
+  });
 
-	it("does not advertise revive for result fallback with only a top-level session file", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-result-no-child-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			fs.mkdirSync(path.join(asyncRoot, "run-session-only"), { recursive: true });
-			fs.mkdirSync(resultsDir, { recursive: true });
-			const sessionFile = path.join(root, "session.jsonl");
-			fs.writeFileSync(sessionFile, "", "utf-8");
-			fs.writeFileSync(path.join(resultsDir, "run-session-only.json"), JSON.stringify({
-				id: "run-session-only",
-				success: false,
-				state: "failed",
-				sessionFile,
-				summary: "missing child metadata",
-			}, null, 2), "utf-8");
+  it("does not advertise revive for result fallback with only a top-level session file", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-result-no-child-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      fs.mkdirSync(path.join(asyncRoot, "run-session-only"), { recursive: true });
+      fs.mkdirSync(resultsDir, { recursive: true });
+      const sessionFile = path.join(root, "session.jsonl");
+      fs.writeFileSync(sessionFile, "", "utf-8");
+      fs.writeFileSync(
+        path.join(resultsDir, "run-session-only.json"),
+        JSON.stringify(
+          {
+            id: "run-session-only",
+            success: false,
+            state: "failed",
+            sessionFile,
+            summary: "missing child metadata",
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
 
-			const result = inspectSubagentStatus({ id: "run-session-only" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir,
-			});
+      const result = inspectSubagentStatus(
+        { id: "run-session-only" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir,
+        },
+      );
 
-			const text = textContent(result);
-			assert.equal(result.isError, undefined);
-			assert.match(text, /Resume: unavailable/);
-			assert.doesNotMatch(text, /Revive:/);
-		} finally {
-			rmrf(root);
-		}
-	});
+      const text = textContent(result);
+      assert.equal(result.isError, undefined);
+      assert.match(text, /Resume: unavailable/);
+      assert.doesNotMatch(text, /Revive:/);
+    } finally {
+      rmrf(root);
+    }
+  });
 
-	it("falls back to an existing result when async dir has no status file", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-result-fallback-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const resultsDir = path.join(root, "results");
-			fs.mkdirSync(path.join(asyncRoot, "run-result-only"), { recursive: true });
-			fs.mkdirSync(resultsDir, { recursive: true });
-			const sessionFile = path.join(root, "session.jsonl");
-			fs.writeFileSync(sessionFile, "", "utf-8");
-			fs.writeFileSync(path.join(resultsDir, "run-result-only.json"), JSON.stringify({
-				id: "run-result-only",
-				agent: "worker",
-				success: false,
-				state: "failed",
-				sessionFile,
-				summary: "result survived missing status",
-			}, null, 2), "utf-8");
+  it("falls back to an existing result when async dir has no status file", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-result-fallback-"));
+    try {
+      const asyncRoot = path.join(root, "runs");
+      const resultsDir = path.join(root, "results");
+      fs.mkdirSync(path.join(asyncRoot, "run-result-only"), { recursive: true });
+      fs.mkdirSync(resultsDir, { recursive: true });
+      const sessionFile = path.join(root, "session.jsonl");
+      fs.writeFileSync(sessionFile, "", "utf-8");
+      fs.writeFileSync(
+        path.join(resultsDir, "run-result-only.json"),
+        JSON.stringify(
+          {
+            id: "run-result-only",
+            agent: "worker",
+            success: false,
+            state: "failed",
+            sessionFile,
+            summary: "result survived missing status",
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
 
-			const result = inspectSubagentStatus({ id: "run-result-only" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir,
-			});
+      const result = inspectSubagentStatus(
+        { id: "run-result-only" },
+        {
+          asyncDirRoot: asyncRoot,
+          resultsDir,
+        },
+      );
 
-			const text = textContent(result);
-			assert.equal(result.isError, undefined);
-			assert.match(text, /State: failed/);
-			assert.match(text, /Result: /);
-			assert.match(text, /Continue: agent_runs\(\{ action: "continue", id: "run-result-only", message: "\.\.\." \}\)/);
-			assert.match(text, /result survived missing status/);
-		} finally {
-			rmrf(root);
-		}
-	});
+      const text = textContent(result);
+      assert.equal(result.isError, undefined);
+      assert.match(text, /State: failed/);
+      assert.match(text, /Result: /);
+      assert.match(
+        text,
+        /Continue: agent_runs\(\{ action: "continue", id: "run-result-only", message: "\.\.\." \}\)/,
+      );
+      assert.match(text, /result survived missing status/);
+    } finally {
+      rmrf(root);
+    }
+  });
 });

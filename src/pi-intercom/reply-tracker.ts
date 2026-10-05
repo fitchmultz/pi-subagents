@@ -18,7 +18,10 @@ function resolveBySenderTarget(contexts: IntercomContext[], to: string): Interco
 }
 
 function tooShortSenderTargetMessage(contexts: IntercomContext[], to: string): string | null {
-  const resolution = resolveSessionTarget(contexts.map((context) => context.from), to);
+  const resolution = resolveSessionTarget(
+    contexts.map((context) => context.from),
+    to,
+  );
   if (resolution.status !== "prefix_too_short") {
     return null;
   }
@@ -27,10 +30,16 @@ function tooShortSenderTargetMessage(contexts: IntercomContext[], to: string): s
   return `Pending ask target "${to}" is too short. Use one of: ${pendingSenderOptions(matches, contexts)}.`;
 }
 
-function pendingSenderOptions(contexts: IntercomContext[], allContexts: IntercomContext[] = contexts): string {
+function pendingSenderOptions(
+  contexts: IntercomContext[],
+  allContexts: IntercomContext[] = contexts,
+): string {
   const allSenders = allContexts.map((context) => context.from);
   return contexts
-    .map((context) => `${context.from.name || shortSessionId(context.from.id)}: to: ${JSON.stringify(formatSessionTarget(context.from, allSenders))} or replyTo: ${JSON.stringify(context.message.id)}`)
+    .map(
+      (context) =>
+        `${context.from.name || shortSessionId(context.from.id)}: to: ${JSON.stringify(formatSessionTarget(context.from, allSenders))} or replyTo: ${JSON.stringify(context.message.id)}`,
+    )
     .join(", ");
 }
 
@@ -49,7 +58,11 @@ export class ReplyTracker {
     this.askTimeoutMs = askTimeoutMs;
   }
 
-  recordIncomingMessage(from: SessionInfo, message: Message, receivedAt = Date.now()): IntercomContext {
+  recordIncomingMessage(
+    from: SessionInfo,
+    message: Message,
+    receivedAt = Date.now(),
+  ): IntercomContext {
     const context = { from, message, receivedAt };
     if (message.expectsReply) {
       this.pruneExpired(receivedAt);
@@ -59,8 +72,12 @@ export class ReplyTracker {
   }
 
   queueTurnContext(context: IntercomContext): void {
-    if (!context.message.expectsReply) return;
-    if (this.hasTurnContext(context.message.id)) return;
+    if (!context.message.expectsReply) {
+      return;
+    }
+    if (this.hasTurnContext(context.message.id)) {
+      return;
+    }
     this.pendingTurnContexts.push(context);
   }
 
@@ -93,7 +110,8 @@ export class ReplyTracker {
   }
 
   expireSender(sessionId: string): number {
-    const expires = (context: IntercomContext) => context.from.id === sessionId && !isDurableSupervisorQuestion(context.message);
+    const expires = (context: IntercomContext) =>
+      context.from.id === sessionId && !isDurableSupervisorQuestion(context.message);
     let expired = 0;
     for (const [messageId, context] of this.pendingAsks) {
       if (expires(context)) {
@@ -119,12 +137,20 @@ export class ReplyTracker {
     return expired;
   }
 
-  resolveReplyTarget(options: { to?: string; replyTo?: string }, now = Date.now()): IntercomContext {
+  resolveReplyTarget(
+    options: { to?: string; replyTo?: string },
+    now = Date.now(),
+  ): IntercomContext {
     this.pruneExpired(now);
 
     const pending = Array.from(this.pendingAsks.values());
     const contexts = this.currentTurnContext
-      ? [this.currentTurnContext, ...pending.filter((context) => context.message.id !== this.currentTurnContext?.message.id)]
+      ? [
+          this.currentTurnContext,
+          ...pending.filter(
+            (context) => context.message.id !== this.currentTurnContext?.message.id,
+          ),
+        ]
       : pending;
 
     if (options.replyTo) {
@@ -155,7 +181,9 @@ export class ReplyTracker {
         return matches[0]!;
       }
       if (matches.length > 1) {
-        throw new Error(`Multiple pending asks from \"${options.to}\" — use one of: ${pendingSenderOptions(matches, contexts)}.`);
+        throw new Error(
+          `Multiple pending asks from \"${options.to}\" — use one of: ${pendingSenderOptions(matches, contexts)}.`,
+        );
       }
       throw new Error(`No pending ask from \"${options.to}\"`);
     }
@@ -180,7 +208,12 @@ export class ReplyTracker {
   }
 
   get hasReplyContext(): boolean {
-    return this.pendingAsks.size > 0 || this.pendingTurnContexts.length > 0 || this.currentTurnContext !== null || this.activeAgentContext !== null;
+    return (
+      this.pendingAsks.size > 0 ||
+      this.pendingTurnContexts.length > 0 ||
+      this.currentTurnContext !== null ||
+      this.activeAgentContext !== null
+    );
   }
 
   listPending(now = Date.now()): IntercomContext[] {
@@ -189,23 +222,36 @@ export class ReplyTracker {
   }
 
   private hasTurnContext(messageId: string): boolean {
-    return this.pendingTurnContexts.some((context) => context.message.id === messageId)
-      || this.currentTurnContext?.message.id === messageId
-      || this.activeAgentContext?.message.id === messageId;
+    return (
+      this.pendingTurnContexts.some((context) => context.message.id === messageId) ||
+      this.currentTurnContext?.message.id === messageId ||
+      this.activeAgentContext?.message.id === messageId
+    );
   }
 
   private removeContext(messageId: string): void {
     this.pendingAsks.delete(messageId);
     for (let index = this.pendingTurnContexts.length - 1; index >= 0; index -= 1) {
-      if (this.pendingTurnContexts[index]?.message.id === messageId) this.pendingTurnContexts.splice(index, 1);
+      if (this.pendingTurnContexts[index]?.message.id === messageId) {
+        this.pendingTurnContexts.splice(index, 1);
+      }
     }
-    if (this.currentTurnContext?.message.id === messageId) this.currentTurnContext = null;
-    if (this.activeAgentContext?.message.id === messageId) this.activeAgentContext = null;
+    if (this.currentTurnContext?.message.id === messageId) {
+      this.currentTurnContext = null;
+    }
+    if (this.activeAgentContext?.message.id === messageId) {
+      this.activeAgentContext = null;
+    }
   }
 
   private pruneExpired(now: number): void {
     for (const [messageId, context] of this.pendingAsks) {
-      if (!isDurableSupervisorQuestion(context.message) && now - context.receivedAt > this.askTimeoutMs) this.removeContext(messageId);
+      if (
+        !isDurableSupervisorQuestion(context.message) &&
+        now - context.receivedAt > this.askTimeoutMs
+      ) {
+        this.removeContext(messageId);
+      }
     }
   }
 }

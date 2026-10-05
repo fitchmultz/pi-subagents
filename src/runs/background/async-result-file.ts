@@ -1,62 +1,97 @@
-import type { AsyncResultChild, AsyncResultFile, AsyncResultTerminalState } from "../../shared/types.ts";
+import type {
+  AsyncResultChild,
+  AsyncResultFile,
+  AsyncResultTerminalState,
+} from "../../shared/types.ts";
 import { ownerProjection, readJsonProjection } from "../../shared/journal-reader.ts";
 
 export function isDurableRun(value: object | null | undefined): boolean {
-	return Boolean(value && "runtimeVersion" in value && value.runtimeVersion === 2);
+  return Boolean(value && "runtimeVersion" in value && value.runtimeVersion === 2);
 }
 
 export type ParsedAsyncResultFile = Omit<AsyncResultFile, "results"> & {
-	results?: AsyncResultChild[];
-	terminalState: AsyncResultTerminalState;
+  results?: AsyncResultChild[];
+  terminalState: AsyncResultTerminalState;
 };
 
 function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isNotFoundError(error: unknown): boolean {
-	return typeof error === "object"
-		&& error !== null
-		&& "code" in error
-		&& (error as NodeJS.ErrnoException).code === "ENOENT";
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
 }
 
-export function deriveAsyncResultTerminalState(input: Pick<AsyncResultFile, "success" | "state" | "exitCode">): AsyncResultTerminalState {
-	if (input.success === true) return "complete";
-	if (input.success === false) return input.state === "blocked" ? "blocked" : input.state === "paused" ? "paused" : "failed";
-	if (input.state === "complete" || input.state === "failed" || input.state === "blocked" || input.state === "paused") return input.state;
-	if (input.exitCode === 0) return "paused";
-	return "failed";
+export function deriveAsyncResultTerminalState(
+  input: Pick<AsyncResultFile, "success" | "state" | "exitCode">,
+): AsyncResultTerminalState {
+  if (input.success === true) {
+    return "complete";
+  }
+  if (input.success === false) {
+    return input.state === "blocked" ? "blocked" : input.state === "paused" ? "paused" : "failed";
+  }
+  if (
+    input.state === "complete" ||
+    input.state === "failed" ||
+    input.state === "blocked" ||
+    input.state === "paused"
+  ) {
+    return input.state;
+  }
+  if (input.exitCode === 0) {
+    return "paused";
+  }
+  return "failed";
 }
 
 function normalizeResultChild(value: unknown, index: number, resultPath: string): AsyncResultChild {
-	if (!isRecord(value)) throw new Error(`Invalid async result file '${resultPath}': results[${index}] must be an object.`);
-	return value as AsyncResultChild;
+  if (!isRecord(value)) {
+    throw new Error(
+      `Invalid async result file '${resultPath}': results[${index}] must be an object.`,
+    );
+  }
+  return value as AsyncResultChild;
 }
 
 export function readAsyncResultFile(resultPath: string): ParsedAsyncResultFile {
-	let data: AsyncResultFile;
-	try {
-		data = readJsonProjection(resultPath, ownerProjection);
-	} catch (error) {
-		throw new Error(`Failed to read async result file '${resultPath}': ${getErrorMessage(error)}`, {
-			cause: error instanceof Error ? error : undefined,
-		});
-	}
-	if (!isRecord(data)) throw new Error(`Failed to parse async result file '${resultPath}': expected a JSON object.`);
-	if (data.results !== undefined && !Array.isArray(data.results)) throw new Error(`Invalid async result file '${resultPath}': results must be an array.`);
-	return { ...data, results: data.results?.map((child, index) => normalizeResultChild(child, index, resultPath)), terminalState: deriveAsyncResultTerminalState(data) };
+  let data: AsyncResultFile;
+  try {
+    data = readJsonProjection(resultPath, ownerProjection);
+  } catch (error) {
+    throw new Error(`Failed to read async result file '${resultPath}': ${getErrorMessage(error)}`, {
+      cause: error instanceof Error ? error : undefined,
+    });
+  }
+  if (!isRecord(data)) {
+    throw new Error(`Failed to parse async result file '${resultPath}': expected a JSON object.`);
+  }
+  if (data.results !== undefined && !Array.isArray(data.results)) {
+    throw new Error(`Invalid async result file '${resultPath}': results must be an array.`);
+  }
+  return {
+    ...data,
+    results: data.results?.map((child, index) => normalizeResultChild(child, index, resultPath)),
+    terminalState: deriveAsyncResultTerminalState(data),
+  };
 }
 
 export function readAsyncResultFileIfExists(resultPath: string): ParsedAsyncResultFile | undefined {
-	try {
-		return readAsyncResultFile(resultPath);
-	} catch (error) {
-		if (isNotFoundError(error instanceof Error ? error.cause : undefined)) return undefined;
-		throw error;
-	}
+  try {
+    return readAsyncResultFile(resultPath);
+  } catch (error) {
+    if (isNotFoundError(error instanceof Error ? error.cause : undefined)) {
+      return undefined;
+    }
+    throw error;
+  }
 }

@@ -19,7 +19,9 @@ export function validateIntercomMessageSize(msg: unknown): Error | null {
  */
 export function writeMessage(socket: Socket, msg: unknown): void {
   const tooLarge = validateIntercomMessageSize(msg);
-  if (tooLarge) throw tooLarge;
+  if (tooLarge) {
+    throw tooLarge;
+  }
   const json = JSON.stringify(msg);
   const payload = Buffer.from(json, "utf-8");
   const header = Buffer.alloc(4);
@@ -44,7 +46,9 @@ export function createMessageReader(
     while (buffer.length >= 4) {
       const length = buffer.readUInt32BE(0);
       if (length > MAX_FRAME_SIZE_BYTES) {
-        onError(new Error(`Intercom frame too large (${length} bytes; max ${MAX_FRAME_SIZE_BYTES})`));
+        onError(
+          new Error(`Intercom frame too large (${length} bytes; max ${MAX_FRAME_SIZE_BYTES})`),
+        );
         buffer = Buffer.alloc(0);
         return;
       }

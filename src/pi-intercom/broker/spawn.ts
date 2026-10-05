@@ -14,14 +14,16 @@ const BROKER_PID = join(INTERCOM_DIR, "broker.pid");
 const BROKER_SPAWN_LOCK = join(INTERCOM_DIR, "broker.spawn.lock");
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function usesLegacyTsxDefault(brokerCommand: string, brokerArgs: string[]): boolean {
-  return brokerCommand === "npx"
-    && brokerArgs.length === 2
-    && brokerArgs[0] === "--no-install"
-    && brokerArgs[1] === "tsx";
+  return (
+    brokerCommand === "npx" &&
+    brokerArgs.length === 2 &&
+    brokerArgs[0] === "--no-install" &&
+    brokerArgs[1] === "tsx"
+  );
 }
 
 export function getBrokerLaunchSpec(
@@ -60,7 +62,10 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: string[]): Promise<void> {
+export async function spawnBrokerIfNeeded(
+  brokerCommand: string,
+  brokerArgs: string[],
+): Promise<void> {
   await mkdir(INTERCOM_DIR, { recursive: true });
 
   if (await isBrokerRunning()) {
@@ -109,13 +114,16 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
 
       child.once("error", onError);
       child.once("exit", onExit);
-      waitForBroker().then(() => {
-        cleanup();
-        resolve();
-      }, (error) => {
-        cleanup();
-        reject(toError(error));
-      });
+      waitForBroker().then(
+        () => {
+          cleanup();
+          resolve();
+        },
+        (error) => {
+          cleanup();
+          reject(toError(error));
+        },
+      );
     });
   } finally {
     releaseSpawnLock();
@@ -127,7 +135,9 @@ export async function isBrokerRunning(): Promise<boolean> {
 }
 
 function readLivePid(): number | null {
-  if (!existsSync(BROKER_PID)) return null;
+  if (!existsSync(BROKER_PID)) {
+    return null;
+  }
   let raw: string;
   try {
     raw = readFileSync(BROKER_PID, "utf-8");
@@ -135,7 +145,9 @@ function readLivePid(): number | null {
     return null;
   }
   const pid = parseInt(raw.trim(), 10);
-  if (!Number.isFinite(pid) || pid <= 0) return null;
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return null;
+  }
   try {
     process.kill(pid, 0);
   } catch (error) {
@@ -145,17 +157,25 @@ function readLivePid(): number | null {
 }
 
 export async function stopUnhealthyBrokerBeforeSpawn(): Promise<void> {
-  if (await checkSocketConnectable()) return;
+  if (await checkSocketConnectable()) {
+    return;
+  }
   const pid = readLivePid();
-  if (pid === null) return;
-  throw new Error(`Intercom broker PID ${pid} may still own accepted work but its socket is unhealthy; refusing to spawn a second broker. Let the broker exit normally, then retry.`);
+  if (pid === null) {
+    return;
+  }
+  throw new Error(
+    `Intercom broker PID ${pid} may still own accepted work but its socket is unhealthy; refusing to spawn a second broker. Let the broker exit normally, then retry.`,
+  );
 }
 
 async function checkSocketConnectable(): Promise<boolean> {
   const preferred = getBrokerSocketPath();
-  if (isOwnedBrokerSocket(preferred) && await checkOneSocket(preferred)) return true;
+  if (isOwnedBrokerSocket(preferred) && (await checkOneSocket(preferred))) {
+    return true;
+  }
   const legacy = getLegacyBrokerSocketPath();
-  return legacy !== preferred && isOwnedBrokerSocket(legacy) && await checkOneSocket(legacy);
+  return legacy !== preferred && isOwnedBrokerSocket(legacy) && (await checkOneSocket(legacy));
 }
 
 function checkOneSocket(brokerSocket: string): Promise<boolean> {
@@ -207,7 +227,9 @@ function isSpawnLockStale(): boolean {
   }
 
   try {
-    const [pidLine = "", createdAtLine = "0"] = readFileSync(BROKER_SPAWN_LOCK, "utf-8").trim().split("\n");
+    const [pidLine = "", createdAtLine = "0"] = readFileSync(BROKER_SPAWN_LOCK, "utf-8")
+      .trim()
+      .split("\n");
     const pid = Number.parseInt(pidLine, 10);
     const createdAt = Number.parseInt(createdAtLine, 10);
     const ageMs = Date.now() - createdAt;

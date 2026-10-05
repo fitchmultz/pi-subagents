@@ -4,649 +4,1045 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { createSubagentExecutor, type SubagentParamsLike } from "../../src/runs/foreground/subagent-executor.ts";
-import { createSupervisorQuestion, getRunMetadataDir, questionProcessAlive, readQuestionContract } from "../../src/runs/shared/supervisor-questions.ts";
-import { ASYNC_DIR, RESULTS_DIR, getAsyncConfigPath, type AsyncResultFile, type ForegroundResumeRun, type SubagentExecutionResult } from "../../src/shared/types.ts";
+import {
+  createSubagentExecutor,
+  type SubagentParamsLike,
+} from "../../src/runs/foreground/subagent-executor.ts";
+import {
+  createSupervisorQuestion,
+  getRunMetadataDir,
+  questionProcessAlive,
+  readQuestionContract,
+} from "../../src/runs/shared/supervisor-questions.ts";
+import {
+  ASYNC_DIR,
+  RESULTS_DIR,
+  getAsyncConfigPath,
+  type AsyncResultFile,
+  type ForegroundResumeRun,
+  type SubagentExecutionResult,
+} from "../../src/shared/types.ts";
 import { readStatus } from "../../src/shared/utils.ts";
-import { createEventBus, createMockPi, createTempDir, makeAgent, makeMinimalCtx, removeTempDir, type MockPi } from "../support/helpers.ts";
+import {
+  createEventBus,
+  createMockPi,
+  createTempDir,
+  makeAgent,
+  makeMinimalCtx,
+  removeTempDir,
+  type MockPi,
+} from "../support/helpers.ts";
 
 async function waitFor(check: () => boolean, message: string): Promise<void> {
-	const deadline = Date.now() + 15_000;
-	while (!check()) {
-		assert.ok(Date.now() < deadline, message);
-		await delay(20);
-	}
+  const deadline = Date.now() + 15_000;
+  while (!check()) {
+    assert.ok(Date.now() < deadline, message);
+    await delay(20);
+  }
 }
 
 function savedLaunch(runId: string, index = 0) {
-	const launch = readQuestionContract(runId, index)?.launch;
-	assert.ok(launch, `missing saved launch for ${runId}:${index}`);
-	return launch;
+  const launch = readQuestionContract(runId, index)?.launch;
+  assert.ok(launch, `missing saved launch for ${runId}:${index}`);
+  return launch;
 }
 
 function contractBytes(runId: string, index = 0): Buffer {
-	return fs.readFileSync(path.join(getRunMetadataDir(runId), "contracts", `${index}.json`));
+  return fs.readFileSync(path.join(getRunMetadataDir(runId), "contracts", `${index}.json`));
 }
 
 const writer = { agent: "writer", task: "Write the report", outputMode: "file-only" as const };
 const producer = { agent: "producer", task: "Prepare inputs" };
-function launchRoutes(model?: string): Array<{ name: string; params: SubagentParamsLike; indices: number[]; structured?: boolean }> {
-	const task = { ...writer, ...(model ? { model } : {}) };
-	return [
-		{ name: "single", params: task, indices: [0] },
-		{ name: "parallel", params: { tasks: [task, task] }, indices: [0, 1] },
-		{ name: "sequential chain", params: { chain: [producer, task] }, indices: [1] },
-		{ name: "parallel chain", params: { chain: [{ parallel: [task, task] }] }, indices: [0, 1] },
-		{
-			name: "dynamic fanout",
-			params: { chain: [
-				{ ...producer, as: "inputs", outputSchema: { type: "object" } },
-				{ expand: { from: { output: "inputs", path: "/items" }, maxItems: 2 }, parallel: task, collect: { as: "reports" } },
-			] },
-			indices: [1, 2],
-			structured: true,
-		},
-	];
+function launchRoutes(
+  model?: string,
+): Array<{ name: string; params: SubagentParamsLike; indices: number[]; structured?: boolean }> {
+  const task = { ...writer, ...(model ? { model } : {}) };
+  return [
+    { name: "single", params: task, indices: [0] },
+    { name: "parallel", params: { tasks: [task, task] }, indices: [0, 1] },
+    { name: "sequential chain", params: { chain: [producer, task] }, indices: [1] },
+    { name: "parallel chain", params: { chain: [{ parallel: [task, task] }] }, indices: [0, 1] },
+    {
+      name: "dynamic fanout",
+      params: {
+        chain: [
+          { ...producer, as: "inputs", outputSchema: { type: "object" } },
+          {
+            expand: { from: { output: "inputs", path: "/items" }, maxItems: 2 },
+            parallel: task,
+            collect: { as: "reports" },
+          },
+        ],
+      },
+      indices: [1, 2],
+      structured: true,
+    },
+  ];
 }
 const routes = launchRoutes();
 
 describe("saved output choices", () => {
-	let mockPi: MockPi;
-	let tempDir: string;
-	let profile: ReturnType<typeof makeAgent>;
-	let ctx: ReturnType<typeof makeMinimalCtx>;
-	let executor: ReturnType<typeof createSubagentExecutor>;
-	let discoveries: number;
-	let runIds: Set<string>;
+  let mockPi: MockPi;
+  let tempDir: string;
+  let profile: ReturnType<typeof makeAgent>;
+  let ctx: ReturnType<typeof makeMinimalCtx>;
+  let executor: ReturnType<typeof createSubagentExecutor>;
+  let discoveries: number;
+  let runIds: Set<string>;
 
-	before(() => {
-		mockPi = createMockPi();
-		mockPi.install();
-	});
-	after(() => mockPi.uninstall());
+  before(() => {
+    mockPi = createMockPi();
+    mockPi.install();
+  });
+  after(() => mockPi.uninstall());
 
-	beforeEach(() => {
-		tempDir = createTempDir("pi-output-revival-");
-		profile = makeAgent("writer", { output: "reports/frozen.md" });
-		ctx = makeMinimalCtx(tempDir);
-		discoveries = 0;
-		runIds = new Set();
-		mockPi.reset();
-		executor = createExecutor();
-	});
+  beforeEach(() => {
+    tempDir = createTempDir("pi-output-revival-");
+    profile = makeAgent("writer", { output: "reports/frozen.md" });
+    ctx = makeMinimalCtx(tempDir);
+    discoveries = 0;
+    runIds = new Set();
+    mockPi.reset();
+    executor = createExecutor();
+  });
 
-	function createExecutor() {
-		return createSubagentExecutor({
-			pi: { events: createEventBus(), getSessionName: () => undefined },
-			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
-			config: {},
-			asyncByDefault: false,
-			tempArtifactsDir: path.join(tempDir, "artifacts"),
-			getSubagentSessionRoot: () => path.join(tempDir, "sessions"),
-			expandTilde: (value: string) => value,
-			discoverAgents: () => { discoveries++; return { agents: [profile, makeAgent("producer")] }; },
-		});
-	}
+  function createExecutor() {
+    return createSubagentExecutor({
+      pi: { events: createEventBus(), getSessionName: () => undefined },
+      state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map() },
+      config: {},
+      asyncByDefault: false,
+      tempArtifactsDir: path.join(tempDir, "artifacts"),
+      getSubagentSessionRoot: () => path.join(tempDir, "sessions"),
+      expandTilde: (value: string) => value,
+      discoverAgents: () => {
+        discoveries++;
+        return { agents: [profile, makeAgent("producer")] };
+      },
+    });
+  }
 
-	afterEach(() => {
-		for (const runId of runIds) {
-			removeTempDir(getRunMetadataDir(runId));
-			removeTempDir(path.join(ASYNC_DIR, runId));
-			fs.rmSync(path.join(RESULTS_DIR, `${runId}.json`), { force: true });
-			fs.rmSync(getAsyncConfigPath(runId), { force: true });
-		}
-		removeTempDir(tempDir);
-	});
+  afterEach(() => {
+    for (const runId of runIds) {
+      removeTempDir(getRunMetadataDir(runId));
+      removeTempDir(path.join(ASYNC_DIR, runId));
+      fs.rmSync(path.join(RESULTS_DIR, `${runId}.json`), { force: true });
+      fs.rmSync(getAsyncConfigPath(runId), { force: true });
+    }
+    removeTempDir(tempDir);
+  });
 
-	async function run(params: SubagentParamsLike): Promise<SubagentExecutionResult> {
-		const result = await executor.execute("output-revival", params, undefined, undefined, ctx);
-		assert.ok(!result.isError, result.content.map((part) => part.text).join("\n"));
-		const id = result.details.runId ?? result.details.asyncId;
-		assert.ok(id);
-		runIds.add(id);
-		if (result.details.asyncId) {
-			const resultPath = path.join(RESULTS_DIR, `${id}.json`);
-			await waitFor(() => fs.existsSync(resultPath), `missing async result for ${id}`);
-			const payload = JSON.parse(fs.readFileSync(resultPath, "utf8")) as AsyncResultFile;
-			assert.equal(payload.success, true, JSON.stringify(payload));
-			const pid = readStatus(result.details.asyncDir!)?.pid;
-			assert.ok(pid);
-			await waitFor(() => !questionProcessAlive({ pid }), `async runner ${pid} did not exit`);
-		}
-		return result;
-	}
+  async function run(params: SubagentParamsLike): Promise<SubagentExecutionResult> {
+    const result = await executor.execute("output-revival", params, undefined, undefined, ctx);
+    assert.ok(!result.isError, result.content.map((part) => part.text).join("\n"));
+    const id = result.details.runId ?? result.details.asyncId;
+    assert.ok(id);
+    runIds.add(id);
+    if (result.details.asyncId) {
+      const resultPath = path.join(RESULTS_DIR, `${id}.json`);
+      await waitFor(() => fs.existsSync(resultPath), `missing async result for ${id}`);
+      const payload = JSON.parse(fs.readFileSync(resultPath, "utf8")) as AsyncResultFile;
+      assert.equal(payload.success, true, JSON.stringify(payload));
+      const pid = readStatus(result.details.asyncDir!)?.pid;
+      assert.ok(pid);
+      await waitFor(() => !questionProcessAlive({ pid }), `async runner ${pid} did not exit`);
+    }
+    return result;
+  }
 
-	async function continueWithOwnOutput(runId: string, index = 0, overrides: SubagentParamsLike = {}) {
-		const previous = savedLaunch(runId, index);
-		assert.ok(typeof previous.output === "string");
-		const bytes = fs.existsSync(previous.output) ? fs.readFileSync(previous.output) : undefined;
-		const receipt = contractBytes(runId, index);
-		const resultPath = ["result.json", "foreground.json"].map((name) => path.join(getRunMetadataDir(runId), name)).find((file) => fs.existsSync(file));
-		assert.ok(resultPath);
-		const resultBytes = fs.readFileSync(resultPath);
-		const savedResult: AsyncResultFile | ForegroundResumeRun = JSON.parse(resultBytes.toString());
-		const artifactPath = "children" in savedResult ? savedResult.children.find((child) => child.index === index)?.artifactPath : savedResult.results?.[index]?.artifactPaths?.outputPath;
-		if (previous.artifacts) assert.ok(artifactPath, "expected predecessor output artifact");
-		const artifactBytes = artifactPath ? fs.readFileSync(artifactPath) : undefined;
-		const discoveryCount = discoveries;
-		profile.output = "changed-current-profile.md";
-		mockPi.onCall({ output: "Successor report — new bytes" });
-		const continued = await run({ action: "resume", id: runId, index, message: "Write a follow-up report", ...overrides });
-		const successorId = continued.details.asyncId!;
-		const successor = savedLaunch(successorId);
-		assert.ok(typeof successor.output === "string");
-		assert.notEqual(successor.output, previous.output, "continuation must not reuse the predecessor output path");
-		assert.ok(path.basename(successor.output).startsWith(`${successorId}_writer_0_`));
-		assert.ok(successor.output.endsWith("_frozen.md"), "use the frozen saved filename, not the current profile");
-		if (bytes) assert.deepEqual(fs.readFileSync(previous.output), bytes, "predecessor bytes must stay intact");
-		else assert.equal(fs.existsSync(previous.output), false, "do not recreate a consumed predecessor file");
-		assert.deepEqual(contractBytes(runId, index), receipt, "continuation must not rewrite its predecessor receipt");
-		assert.deepEqual(fs.readFileSync(resultPath), resultBytes, "predecessor result must stay intact");
-		if (artifactPath) assert.deepEqual(fs.readFileSync(artifactPath), artifactBytes, "predecessor artifact must stay intact");
-		assert.equal(discoveries, discoveryCount, "saved continuation must not rediscover the profile");
-		assert.equal(previous.generatedOutputFilename, "frozen.md");
-		assert.equal(successor.generatedOutputFilename, "frozen.md");
-		assert.equal(successor.agent.output, "reports/frozen.md");
-		assert.equal(successor.outputMode, overrides.outputMode ?? previous.outputMode);
-		if (successor.outputMode === "file-only") {
-			assert.equal(fs.readFileSync(successor.output, "utf8"), "Successor report — new bytes");
-			const payload = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, `${successorId}.json`), "utf8")) as AsyncResultFile;
-			assert.match(payload.results![0]!.output!, /Output saved to:/);
-			assert.doesNotMatch(payload.results![0]!.output!, /Successor report/);
-		} else {
-			assert.equal(fs.existsSync(successor.output), false, "inline generated output is consumed after capture");
-			const payload = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, `${successorId}.json`), "utf8")) as AsyncResultFile;
-			assert.match(payload.results![0]!.output!, /Successor report/);
-			assert.match(payload.results![0]!.output!, /Output file consumed:/);
-		}
-		return successorId;
-	}
+  async function continueWithOwnOutput(
+    runId: string,
+    index = 0,
+    overrides: SubagentParamsLike = {},
+  ) {
+    const previous = savedLaunch(runId, index);
+    assert.ok(typeof previous.output === "string");
+    const bytes = fs.existsSync(previous.output) ? fs.readFileSync(previous.output) : undefined;
+    const receipt = contractBytes(runId, index);
+    const resultPath = ["result.json", "foreground.json"]
+      .map((name) => path.join(getRunMetadataDir(runId), name))
+      .find((file) => fs.existsSync(file));
+    assert.ok(resultPath);
+    const resultBytes = fs.readFileSync(resultPath);
+    const savedResult: AsyncResultFile | ForegroundResumeRun = JSON.parse(resultBytes.toString());
+    const artifactPath =
+      "children" in savedResult
+        ? savedResult.children.find((child) => child.index === index)?.artifactPath
+        : savedResult.results?.[index]?.artifactPaths?.outputPath;
+    if (previous.artifacts) {
+      assert.ok(artifactPath, "expected predecessor output artifact");
+    }
+    const artifactBytes = artifactPath ? fs.readFileSync(artifactPath) : undefined;
+    const discoveryCount = discoveries;
+    profile.output = "changed-current-profile.md";
+    mockPi.onCall({ output: "Successor report — new bytes" });
+    const continued = await run({
+      action: "resume",
+      id: runId,
+      index,
+      message: "Write a follow-up report",
+      ...overrides,
+    });
+    const successorId = continued.details.asyncId!;
+    const successor = savedLaunch(successorId);
+    assert.ok(typeof successor.output === "string");
+    assert.notEqual(
+      successor.output,
+      previous.output,
+      "continuation must not reuse the predecessor output path",
+    );
+    assert.ok(path.basename(successor.output).startsWith(`${successorId}_writer_0_`));
+    assert.ok(
+      successor.output.endsWith("_frozen.md"),
+      "use the frozen saved filename, not the current profile",
+    );
+    if (bytes) {
+      assert.deepEqual(
+        fs.readFileSync(previous.output),
+        bytes,
+        "predecessor bytes must stay intact",
+      );
+    } else {
+      assert.equal(
+        fs.existsSync(previous.output),
+        false,
+        "do not recreate a consumed predecessor file",
+      );
+    }
+    assert.deepEqual(
+      contractBytes(runId, index),
+      receipt,
+      "continuation must not rewrite its predecessor receipt",
+    );
+    assert.deepEqual(
+      fs.readFileSync(resultPath),
+      resultBytes,
+      "predecessor result must stay intact",
+    );
+    if (artifactPath) {
+      assert.deepEqual(
+        fs.readFileSync(artifactPath),
+        artifactBytes,
+        "predecessor artifact must stay intact",
+      );
+    }
+    assert.equal(discoveries, discoveryCount, "saved continuation must not rediscover the profile");
+    assert.equal(previous.generatedOutputFilename, "frozen.md");
+    assert.equal(successor.generatedOutputFilename, "frozen.md");
+    assert.equal(successor.agent.output, "reports/frozen.md");
+    assert.equal(successor.outputMode, overrides.outputMode ?? previous.outputMode);
+    if (successor.outputMode === "file-only") {
+      assert.equal(fs.readFileSync(successor.output, "utf8"), "Successor report — new bytes");
+      const payload = JSON.parse(
+        fs.readFileSync(path.join(RESULTS_DIR, `${successorId}.json`), "utf8"),
+      ) as AsyncResultFile;
+      assert.match(payload.results![0]!.output!, /Output saved to:/);
+      assert.doesNotMatch(payload.results![0]!.output!, /Successor report/);
+    } else {
+      assert.equal(
+        fs.existsSync(successor.output),
+        false,
+        "inline generated output is consumed after capture",
+      );
+      const payload = JSON.parse(
+        fs.readFileSync(path.join(RESULTS_DIR, `${successorId}.json`), "utf8"),
+      ) as AsyncResultFile;
+      assert.match(payload.results![0]!.output!, /Successor report/);
+      assert.match(payload.results![0]!.output!, /Output file consumed:/);
+    }
+    return successorId;
+  }
 
-	it("reuses a live continuation when resuming the original async directory again", async () => {
-		mockPi.onCall({ output: "Original report" });
-		const original = await run({ ...writer, async: true });
-		mockPi.onCall({ output: "Continued report", delay: 2_000 });
-		const continuations: SubagentExecutionResult[] = [];
-		try {
-			const first = await executor.execute("resume-dir", { action: "resume", dir: original.details.asyncDir, message: "First follow-up", async: true }, undefined, undefined, ctx);
-			assert.ok(!first.isError);
-			continuations.push(first);
-			runIds.add(first.details.asyncId!);
-			await waitFor(() => mockPi.callCount() === 2, "the continuation must start");
-			await waitFor(() => Boolean(readQuestionContract(first.details.asyncId!, 0)?.pid), "the continuation must publish its process contract");
-			const liveContract = contractBytes(first.details.asyncId!);
-			const second = await executor.execute("resume-dir-again", { action: "resume", dir: original.details.asyncDir, message: "Second follow-up", model: "mock/not-a-live-mutation:high", async: true }, undefined, undefined, ctx);
-			assert.deepEqual(contractBytes(first.details.asyncId!), liveContract, "live guidance must not mutate launch policy");
-			if (second.details.asyncId) {
-				continuations.push(second);
-				runIds.add(second.details.asyncId);
-			}
-			assert.equal(second.details.asyncId, undefined, "resume by dir must steer the same live continuation, not start another child");
-			assert.match(second.content.map((part) => part.text).join("\n"), /Nudge was not delivered/, "the fixture has no intercom endpoint");
-			assert.equal(mockPi.callCount(), 2);
-		} finally {
-			for (const continuation of continuations) {
-				await waitFor(() => fs.existsSync(path.join(RESULTS_DIR, `${continuation.details.asyncId}.json`)), "continuation cleanup");
-				await waitFor(() => !questionProcessAlive({ pid: readStatus(continuation.details.asyncDir!)?.pid }), "continuation runner must exit");
-			}
-		}
-	});
+  it("reuses a live continuation when resuming the original async directory again", async () => {
+    mockPi.onCall({ output: "Original report" });
+    const original = await run({ ...writer, async: true });
+    mockPi.onCall({ output: "Continued report", delay: 2_000 });
+    const continuations: SubagentExecutionResult[] = [];
+    try {
+      const first = await executor.execute(
+        "resume-dir",
+        {
+          action: "resume",
+          dir: original.details.asyncDir,
+          message: "First follow-up",
+          async: true,
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      assert.ok(!first.isError);
+      continuations.push(first);
+      runIds.add(first.details.asyncId!);
+      await waitFor(() => mockPi.callCount() === 2, "the continuation must start");
+      await waitFor(
+        () => Boolean(readQuestionContract(first.details.asyncId!, 0)?.pid),
+        "the continuation must publish its process contract",
+      );
+      const liveContract = contractBytes(first.details.asyncId!);
+      const second = await executor.execute(
+        "resume-dir-again",
+        {
+          action: "resume",
+          dir: original.details.asyncDir,
+          message: "Second follow-up",
+          model: "mock/not-a-live-mutation:high",
+          async: true,
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      assert.deepEqual(
+        contractBytes(first.details.asyncId!),
+        liveContract,
+        "live guidance must not mutate launch policy",
+      );
+      if (second.details.asyncId) {
+        continuations.push(second);
+        runIds.add(second.details.asyncId);
+      }
+      assert.equal(
+        second.details.asyncId,
+        undefined,
+        "resume by dir must steer the same live continuation, not start another child",
+      );
+      assert.match(
+        second.content.map((part) => part.text).join("\n"),
+        /Nudge was not delivered/,
+        "the fixture has no intercom endpoint",
+      );
+      assert.equal(mockPi.callCount(), 2);
+    } finally {
+      for (const continuation of continuations) {
+        await waitFor(
+          () => fs.existsSync(path.join(RESULTS_DIR, `${continuation.details.asyncId}.json`)),
+          "continuation cleanup",
+        );
+        await waitFor(
+          () => !questionProcessAlive({ pid: readStatus(continuation.details.asyncDir!)?.pid }),
+          "continuation runner must exit",
+        );
+      }
+    }
+  });
 
-	for (const async of [true, false]) {
-		for (const route of routes) {
-			it(`${async ? "async" : "foreground"} ${route.name} regenerates default outputs from saved launches`, async () => {
-				if (route.structured) mockPi.onCall({ output: "Inputs", structuredOutput: { items: ["a", "b"] } });
-				mockPi.onCall({ output: "Predecessor report — preserved bytes\n" });
-				const original = await run({ ...route.params, async });
-				const id = original.details.runId!;
-				for (const index of route.indices) {
-					await continueWithOwnOutput(id, index);
-				}
-			});
-		}
-	}
+  for (const async of [true, false]) {
+    for (const route of routes) {
+      it(`${async ? "async" : "foreground"} ${route.name} regenerates default outputs from saved launches`, async () => {
+        if (route.structured) {
+          mockPi.onCall({ output: "Inputs", structuredOutput: { items: ["a", "b"] } });
+        }
+        mockPi.onCall({ output: "Predecessor report — preserved bytes\n" });
+        const original = await run({ ...route.params, async });
+        const id = original.details.runId!;
+        for (const index of route.indices) {
+          await continueWithOwnOutput(id, index);
+        }
+      });
+    }
+  }
 
-	for (const async of [true, false]) {
-		for (const override of [undefined, "mock/chosen:high"]) {
-			for (const route of launchRoutes(override)) {
-				it(`${async ? "async" : "foreground"} ${route.name} preserves ${override ? "pinned" : "inherited"} model policy through revival`, async () => {
-					profile.model = undefined;
-					profile.thinking = "medium";
-					profile.fallbackModels = ["mock/backup:low"];
-					const parentModel = { provider: "mock", id: "inherited" };
-					ctx.model = parentModel;
-					if (route.structured) mockPi.onCall({ output: "Inputs", structuredOutput: { items: ["a", "b"] } });
-					mockPi.onCall({ output: "Report" });
-					const original = await run({ ...route.params, async });
-					const id = original.details.runId!;
-					const expectedModel = override ?? "mock/inherited:medium";
-					const expectedCandidates = override ? [override] : [expectedModel, "mock/backup:low"];
-					profile.model = "mock/updated";
-					profile.thinking = "low";
-					profile.fallbackModels = ["mock/updated-backup"];
-					for (const index of route.indices) {
-						const launch = savedLaunch(id, index);
-						assert.equal(launch.model, expectedModel);
-						assert.equal(launch.thinking, override ? "high" : "medium");
-						assert.deepEqual(launch.modelCandidates, expectedCandidates);
-						const continued = await run({ action: "resume", id, index, message: "Continue" });
-						const successor = savedLaunch(continued.details.asyncId!);
-						assert.equal(successor.model, expectedModel);
-						assert.equal(successor.thinking, launch.thinking);
-						assert.deepEqual(successor.modelCandidates, expectedCandidates);
-					}
-				});
-			}
-		}
-	}
+  for (const async of [true, false]) {
+    for (const override of [undefined, "mock/chosen:high"]) {
+      for (const route of launchRoutes(override)) {
+        it(`${async ? "async" : "foreground"} ${route.name} preserves ${override ? "pinned" : "inherited"} model policy through revival`, async () => {
+          profile.model = undefined;
+          profile.thinking = "medium";
+          profile.fallbackModels = ["mock/backup:low"];
+          const parentModel = { provider: "mock", id: "inherited" };
+          ctx.model = parentModel;
+          if (route.structured) {
+            mockPi.onCall({ output: "Inputs", structuredOutput: { items: ["a", "b"] } });
+          }
+          mockPi.onCall({ output: "Report" });
+          const original = await run({ ...route.params, async });
+          const id = original.details.runId!;
+          const expectedModel = override ?? "mock/inherited:medium";
+          const expectedCandidates = override ? [override] : [expectedModel, "mock/backup:low"];
+          profile.model = "mock/updated";
+          profile.thinking = "low";
+          profile.fallbackModels = ["mock/updated-backup"];
+          for (const index of route.indices) {
+            const launch = savedLaunch(id, index);
+            assert.equal(launch.model, expectedModel);
+            assert.equal(launch.thinking, override ? "high" : "medium");
+            assert.deepEqual(launch.modelCandidates, expectedCandidates);
+            const continued = await run({ action: "resume", id, index, message: "Continue" });
+            const successor = savedLaunch(continued.details.asyncId!);
+            assert.equal(successor.model, expectedModel);
+            assert.equal(successor.thinking, launch.thinking);
+            assert.deepEqual(successor.modelCandidates, expectedCandidates);
+          }
+        });
+      }
+    }
+  }
 
-	for (const route of routes.filter((entry) => ["single", "parallel", "sequential chain"].includes(entry.name))) {
-		it(`clarify-to-background ${route.name} preserves generated output origin`, async () => {
-			ctx.hasUI = true;
-			ctx.ui.custom = async () => ({
-				confirmed: true,
-				templates: route.name === "single" ? [writer.task] : ["Prepare inputs", writer.task],
-				behaviorOverrides: [],
-				runInBackground: true,
-			});
-			mockPi.onCall({ output: "Predecessor report" });
-			const original = await run({ ...route.params, async: true, clarify: true });
-			assert.ok(original.details.asyncId);
-			for (const index of route.indices) await continueWithOwnOutput(original.details.asyncId, index);
-		});
-	}
+  for (const route of routes.filter((entry) =>
+    ["single", "parallel", "sequential chain"].includes(entry.name),
+  )) {
+    it(`clarify-to-background ${route.name} preserves generated output origin`, async () => {
+      ctx.hasUI = true;
+      ctx.ui.custom = async () => ({
+        confirmed: true,
+        templates: route.name === "single" ? [writer.task] : ["Prepare inputs", writer.task],
+        behaviorOverrides: [],
+        runInBackground: true,
+      });
+      mockPi.onCall({ output: "Predecessor report" });
+      const original = await run({ ...route.params, async: true, clarify: true });
+      assert.ok(original.details.asyncId);
+      for (const index of route.indices) {
+        await continueWithOwnOutput(original.details.asyncId, index);
+      }
+    });
+  }
 
-	for (const output of [true, "true"] as const) {
-		it(`explicit output:${JSON.stringify(output)} keeps the generated default over repeated continuations`, async () => {
-			mockPi.onCall({ output: "Predecessor report" });
-			const original = await run({ ...writer, async: true, output });
-			const successorId = await continueWithOwnOutput(original.details.asyncId!);
-			await continueWithOwnOutput(successorId);
-		});
-	}
+  for (const output of [true, "true"] as const) {
+    it(`explicit output:${JSON.stringify(output)} keeps the generated default over repeated continuations`, async () => {
+      mockPi.onCall({ output: "Predecessor report" });
+      const original = await run({ ...writer, async: true, output });
+      const successorId = await continueWithOwnOutput(original.details.asyncId!);
+      await continueWithOwnOutput(successorId);
+    });
+  }
 
-	for (const reviverRoot of ["root-A", "root-B"]) {
-		it(`saved revival belongs to ${reviverRoot} after root-A's executor exits`, async () => {
-			ctx.sessionManager.getSessionId = () => "root-A";
-			mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ROOT_SESSION_ID"] });
-			const original = await run({ ...writer, async: true, output: false, outputMode: "inline" });
-			const id = original.details.asyncId!;
-			const originalPayload = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, `${id}.json`), "utf8")) as AsyncResultFile;
-			assert.equal(JSON.parse(originalPayload.results![0]!.output!).PI_SUBAGENT_ROOT_SESSION_ID, "root-A");
-			// Older persisted contracts may still carry the original root.
-			const contractPath = path.join(getRunMetadataDir(id), "contracts", "0.json");
-			const contract = JSON.parse(fs.readFileSync(contractPath, "utf8"));
-			contract.launch.rootSessionId = "root-A";
-			fs.writeFileSync(contractPath, JSON.stringify(contract));
-			const receipt = contractBytes(id);
+  for (const reviverRoot of ["root-A", "root-B"]) {
+    it(`saved revival belongs to ${reviverRoot} after root-A's executor exits`, async () => {
+      ctx.sessionManager.getSessionId = () => "root-A";
+      mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ROOT_SESSION_ID"] });
+      const original = await run({ ...writer, async: true, output: false, outputMode: "inline" });
+      const id = original.details.asyncId!;
+      const originalPayload = JSON.parse(
+        fs.readFileSync(path.join(RESULTS_DIR, `${id}.json`), "utf8"),
+      ) as AsyncResultFile;
+      assert.equal(
+        JSON.parse(originalPayload.results![0]!.output!).PI_SUBAGENT_ROOT_SESSION_ID,
+        "root-A",
+      );
+      // Older persisted contracts may still carry the original root.
+      const contractPath = path.join(getRunMetadataDir(id), "contracts", "0.json");
+      const contract = JSON.parse(fs.readFileSync(contractPath, "utf8"));
+      contract.launch.rootSessionId = "root-A";
+      fs.writeFileSync(contractPath, JSON.stringify(contract));
+      const receipt = contractBytes(id);
 
-			ctx = makeMinimalCtx(tempDir);
-			ctx.sessionManager.getSessionId = () => reviverRoot;
-			executor = createExecutor();
-			mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ROOT_SESSION_ID"] });
-			const continued = await run({ action: "resume", id, message: "Continue", output: false, outputMode: "inline" });
-			const successorId = continued.details.asyncId!;
-			const payload = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, `${successorId}.json`), "utf8")) as AsyncResultFile;
-			assert.equal(JSON.parse(payload.results![0]!.output!).PI_SUBAGENT_ROOT_SESSION_ID, reviverRoot);
-			assert.deepEqual(contractBytes(id), receipt, "revival must not rewrite the old contract");
-		});
-	}
+      ctx = makeMinimalCtx(tempDir);
+      ctx.sessionManager.getSessionId = () => reviverRoot;
+      executor = createExecutor();
+      mockPi.onCall({ echoEnv: ["PI_SUBAGENT_ROOT_SESSION_ID"] });
+      const continued = await run({
+        action: "resume",
+        id,
+        message: "Continue",
+        output: false,
+        outputMode: "inline",
+      });
+      const successorId = continued.details.asyncId!;
+      const payload = JSON.parse(
+        fs.readFileSync(path.join(RESULTS_DIR, `${successorId}.json`), "utf8"),
+      ) as AsyncResultFile;
+      assert.equal(
+        JSON.parse(payload.results![0]!.output!).PI_SUBAGENT_ROOT_SESSION_ID,
+        reviverRoot,
+      );
+      assert.deepEqual(contractBytes(id), receipt, "revival must not rewrite the old contract");
+    });
+  }
 
-	it("an inline continuation consumes only its new generated file", async () => {
-		mockPi.onCall({ output: "Predecessor report" });
-		const original = await run({ ...writer, async: true });
-		await continueWithOwnOutput(original.details.asyncId!, 0, { outputMode: "inline" });
-	});
+  it("an inline continuation consumes only its new generated file", async () => {
+    mockPi.onCall({ output: "Predecessor report" });
+    const original = await run({ ...writer, async: true });
+    await continueWithOwnOutput(original.details.asyncId!, 0, { outputMode: "inline" });
+  });
 
-	it("inline launches preserve predecessor artifacts and results while consuming both temporary files", async () => {
-		mockPi.onCall({ output: "Inline predecessor report" });
-		const original = await run({ ...writer, async: true, outputMode: "inline" });
-		const previous = savedLaunch(original.details.asyncId!);
-		assert.ok(typeof previous.output === "string");
-		assert.equal(fs.existsSync(previous.output), false);
-		await continueWithOwnOutput(original.details.asyncId!);
-	});
+  it("inline launches preserve predecessor artifacts and results while consuming both temporary files", async () => {
+    mockPi.onCall({ output: "Inline predecessor report" });
+    const original = await run({ ...writer, async: true, outputMode: "inline" });
+    const previous = savedLaunch(original.details.asyncId!);
+    assert.ok(typeof previous.output === "string");
+    assert.equal(fs.existsSync(previous.output), false);
+    await continueWithOwnOutput(original.details.asyncId!);
+  });
 
-	for (const async of [true, false]) {
-		for (const choice of ["explicit", "absolute-default", "disabled"] as const) {
-			it(`${async ? "async" : "foreground"} ${choice} output retains its fixed or disabled contract`, async () => {
-				const fixedPath = path.join(tempDir, "fixed.md");
-				if (choice === "explicit") profile.output = "fixed.md";
-				if (choice === "absolute-default") profile.output = fixedPath;
-				mockPi.onCall({ output: "First report" });
-				const original = await run({
-					...writer, async,
-					...(choice === "explicit" ? { output: "fixed.md" } : {}),
-					...(choice === "disabled" ? { output: false, outputMode: "inline" } : {}),
-				});
-				const id = original.details.runId!;
-				const previous = savedLaunch(id);
-				const receipt = contractBytes(id);
-				assert.equal(previous.generatedOutputFilename, undefined);
-				assert.equal(previous.output, choice === "disabled" ? false : fixedPath);
-				mockPi.onCall({ output: "Replacement report" });
-				const continued = await run({ action: "resume", id, message: "Replace the report" });
-				const successor = savedLaunch(continued.details.asyncId!);
-				assert.equal(successor.output, previous.output);
-				assert.equal(successor.generatedOutputFilename, undefined);
-				assert.equal(successor.outputMode, previous.outputMode);
-				assert.deepEqual(contractBytes(id), receipt);
-				if (choice !== "disabled") assert.equal(fs.readFileSync(fixedPath, "utf8"), "Replacement report");
-				else assert.equal(fs.existsSync(fixedPath), false);
-			});
-		}
-	}
+  for (const async of [true, false]) {
+    for (const choice of ["explicit", "absolute-default", "disabled"] as const) {
+      it(`${async ? "async" : "foreground"} ${choice} output retains its fixed or disabled contract`, async () => {
+        const fixedPath = path.join(tempDir, "fixed.md");
+        if (choice === "explicit") {
+          profile.output = "fixed.md";
+        }
+        if (choice === "absolute-default") {
+          profile.output = fixedPath;
+        }
+        mockPi.onCall({ output: "First report" });
+        const original = await run({
+          ...writer,
+          async,
+          ...(choice === "explicit" ? { output: "fixed.md" } : {}),
+          ...(choice === "disabled" ? { output: false, outputMode: "inline" } : {}),
+        });
+        const id = original.details.runId!;
+        const previous = savedLaunch(id);
+        const receipt = contractBytes(id);
+        assert.equal(previous.generatedOutputFilename, undefined);
+        assert.equal(previous.output, choice === "disabled" ? false : fixedPath);
+        mockPi.onCall({ output: "Replacement report" });
+        const continued = await run({ action: "resume", id, message: "Replace the report" });
+        const successor = savedLaunch(continued.details.asyncId!);
+        assert.equal(successor.output, previous.output);
+        assert.equal(successor.generatedOutputFilename, undefined);
+        assert.equal(successor.outputMode, previous.outputMode);
+        assert.deepEqual(contractBytes(id), receipt);
+        if (choice !== "disabled") {
+          assert.equal(fs.readFileSync(fixedPath, "utf8"), "Replacement report");
+        } else {
+          assert.equal(fs.existsSync(fixedPath), false);
+        }
+      });
+    }
+  }
 
-	for (const output of ["override.md", false] as const) {
-		it(`explicit continuation output:${JSON.stringify(output)} replaces only the output choice`, async () => {
-			mockPi.onCall({ output: "Predecessor report" });
-			const original = await run({ ...writer, async: true });
-			const id = original.details.asyncId!;
-			const previous = savedLaunch(id);
-			assert.ok(typeof previous.output === "string");
-			const bytes = fs.readFileSync(previous.output);
-			mockPi.onCall({ output: "Override report" });
-			const continued = await run({ action: "resume", id, message: "Use the override", output, outputMode: output === false ? "inline" : "file-only" });
-			const successor = savedLaunch(continued.details.asyncId!);
-			assert.equal(successor.generatedOutputFilename, undefined);
-			assert.equal(successor.output, output === false ? false : path.join(tempDir, output));
-			assert.deepEqual(fs.readFileSync(previous.output), bytes);
-			if (typeof successor.output === "string") assert.equal(fs.readFileSync(successor.output, "utf8"), "Override report");
-		});
-	}
+  for (const output of ["override.md", false] as const) {
+    it(`explicit continuation output:${JSON.stringify(output)} replaces only the output choice`, async () => {
+      mockPi.onCall({ output: "Predecessor report" });
+      const original = await run({ ...writer, async: true });
+      const id = original.details.asyncId!;
+      const previous = savedLaunch(id);
+      assert.ok(typeof previous.output === "string");
+      const bytes = fs.readFileSync(previous.output);
+      mockPi.onCall({ output: "Override report" });
+      const continued = await run({
+        action: "resume",
+        id,
+        message: "Use the override",
+        output,
+        outputMode: output === false ? "inline" : "file-only",
+      });
+      const successor = savedLaunch(continued.details.asyncId!);
+      assert.equal(successor.generatedOutputFilename, undefined);
+      assert.equal(successor.output, output === false ? false : path.join(tempDir, output));
+      assert.deepEqual(fs.readFileSync(previous.output), bytes);
+      if (typeof successor.output === "string") {
+        assert.equal(fs.readFileSync(successor.output, "utf8"), "Override report");
+      }
+    });
+  }
 
-	it("generated output survives continuation with debug artifacts disabled", async () => {
-		mockPi.onCall({ output: "Predecessor report" });
-		const original = await run({ ...writer, async: true, artifacts: false });
-		assert.equal(savedLaunch(original.details.asyncId!).artifacts, false);
-		await continueWithOwnOutput(original.details.asyncId!);
-	});
+  it("generated output survives continuation with debug artifacts disabled", async () => {
+    mockPi.onCall({ output: "Predecessor report" });
+    const original = await run({ ...writer, async: true, artifacts: false });
+    assert.equal(savedLaunch(original.details.asyncId!).artifacts, false);
+    await continueWithOwnOutput(original.details.asyncId!);
+  });
 
-	it("explicit continuation output:true selects the saved default instead of an earlier fixed override", async () => {
-		mockPi.onCall({ output: "Fixed predecessor" });
-		const original = await run({ ...writer, async: true, output: "fixed.md" });
-		profile.output = "changed-current-profile.md";
-		mockPi.onCall({ output: "New default report" });
-		const continued = await run({ action: "resume", id: original.details.asyncId, message: "Use the default", output: true });
-		const successor = savedLaunch(continued.details.asyncId!);
-		assert.ok(typeof successor.output === "string");
-		assert.ok(path.basename(successor.output).startsWith(`${continued.details.asyncId}_writer_0_`));
-		assert.ok(successor.output.endsWith("_frozen.md"));
-		assert.equal(successor.generatedOutputFilename, "frozen.md");
-		assert.equal(fs.readFileSync(successor.output, "utf8"), "New default report");
-		assert.equal(fs.readFileSync(path.join(tempDir, "fixed.md"), "utf8"), "Fixed predecessor");
-	});
+  it("explicit continuation output:true selects the saved default instead of an earlier fixed override", async () => {
+    mockPi.onCall({ output: "Fixed predecessor" });
+    const original = await run({ ...writer, async: true, output: "fixed.md" });
+    profile.output = "changed-current-profile.md";
+    mockPi.onCall({ output: "New default report" });
+    const continued = await run({
+      action: "resume",
+      id: original.details.asyncId,
+      message: "Use the default",
+      output: true,
+    });
+    const successor = savedLaunch(continued.details.asyncId!);
+    assert.ok(typeof successor.output === "string");
+    assert.ok(path.basename(successor.output).startsWith(`${continued.details.asyncId}_writer_0_`));
+    assert.ok(successor.output.endsWith("_frozen.md"));
+    assert.equal(successor.generatedOutputFilename, "frozen.md");
+    assert.equal(fs.readFileSync(successor.output, "utf8"), "New default report");
+    assert.equal(fs.readFileSync(path.join(tempDir, "fixed.md"), "utf8"), "Fixed predecessor");
+  });
 
-	for (const clarify of [false, true]) {
-		for (const output of [undefined, true]) it(`async absolute default remains fixed in inline mode (clarify:${clarify}, resume output:${output})`, async () => {
-			profile.output = path.join(tempDir, "absolute.md");
-			ctx.hasUI = clarify;
-			ctx.ui.custom = async () => ({ confirmed: true, templates: [writer.task], behaviorOverrides: [], runInBackground: true });
-			mockPi.onCall({ output: "Absolute predecessor" });
-			const original = await run({ ...writer, async: true, clarify, outputMode: "inline" });
-			assert.equal(savedLaunch(original.details.asyncId!).generatedOutputFilename, undefined);
-			assert.equal(fs.readFileSync(profile.output, "utf8"), "Absolute predecessor");
-			mockPi.onCall({ output: "Absolute successor" });
-			const continued = await run({ action: "resume", id: original.details.asyncId, message: "Replace fixed output", output });
-			assert.equal(savedLaunch(continued.details.asyncId!).output, profile.output);
-			assert.equal(fs.readFileSync(profile.output, "utf8"), "Absolute successor");
-		});
-	}
+  for (const clarify of [false, true]) {
+    for (const output of [undefined, true]) {
+      it(`async absolute default remains fixed in inline mode (clarify:${clarify}, resume output:${output})`, async () => {
+        profile.output = path.join(tempDir, "absolute.md");
+        ctx.hasUI = clarify;
+        ctx.ui.custom = async () => ({
+          confirmed: true,
+          templates: [writer.task],
+          behaviorOverrides: [],
+          runInBackground: true,
+        });
+        mockPi.onCall({ output: "Absolute predecessor" });
+        const original = await run({ ...writer, async: true, clarify, outputMode: "inline" });
+        assert.equal(savedLaunch(original.details.asyncId!).generatedOutputFilename, undefined);
+        assert.equal(fs.readFileSync(profile.output, "utf8"), "Absolute predecessor");
+        mockPi.onCall({ output: "Absolute successor" });
+        const continued = await run({
+          action: "resume",
+          id: original.details.asyncId,
+          message: "Replace fixed output",
+          output,
+        });
+        assert.equal(savedLaunch(continued.details.asyncId!).output, profile.output);
+        assert.equal(fs.readFileSync(profile.output, "utf8"), "Absolute successor");
+      });
+    }
+  }
 
-	it("a successor's newly written file wins over its assistant receipt without touching the predecessor", async () => {
-		mockPi.onCall({ output: "Predecessor report" });
-		const original = await run({ ...writer, async: true });
-		const previous = savedLaunch(original.details.asyncId!);
-		assert.ok(typeof previous.output === "string");
-		const bytes = fs.readFileSync(previous.output);
-		const release = path.join(tempDir, "release-successor");
-		mockPi.onCall({ output: "Short assistant receipt", waitForFile: release });
-		const pending = run({ action: "resume", id: original.details.asyncId, message: "Write the detailed successor report" });
-		let successor: ReturnType<typeof savedLaunch>;
-		try {
-			await waitFor(() => mockPi.callCount() === 2, "successor child must start before its file is written");
-			successor = savedLaunch([...runIds].at(-1)!);
-			assert.ok(typeof successor.output === "string");
-			fs.mkdirSync(path.dirname(successor.output), { recursive: true });
-			fs.writeFileSync(successor.output, "Detailed child-written report\n");
-		} finally {
-			fs.writeFileSync(release, "");
-			await pending;
-		}
-		const continued = await pending;
-		const payload = JSON.parse(fs.readFileSync(path.join(RESULTS_DIR, `${continued.details.asyncId}.json`), "utf8")) as AsyncResultFile;
-		const artifactPath = payload.results?.[0]?.artifactPaths?.outputPath;
-		assert.ok(artifactPath);
-		assert.equal(fs.readFileSync(artifactPath, "utf8"), "Detailed child-written report");
-		assert.equal(fs.readFileSync(successor.output, "utf8"), "Detailed child-written report\n");
-		assert.deepEqual(fs.readFileSync(previous.output), bytes);
-	});
+  it("a successor's newly written file wins over its assistant receipt without touching the predecessor", async () => {
+    mockPi.onCall({ output: "Predecessor report" });
+    const original = await run({ ...writer, async: true });
+    const previous = savedLaunch(original.details.asyncId!);
+    assert.ok(typeof previous.output === "string");
+    const bytes = fs.readFileSync(previous.output);
+    const release = path.join(tempDir, "release-successor");
+    mockPi.onCall({ output: "Short assistant receipt", waitForFile: release });
+    const pending = run({
+      action: "resume",
+      id: original.details.asyncId,
+      message: "Write the detailed successor report",
+    });
+    let successor: ReturnType<typeof savedLaunch>;
+    try {
+      await waitFor(
+        () => mockPi.callCount() === 2,
+        "successor child must start before its file is written",
+      );
+      successor = savedLaunch([...runIds].at(-1)!);
+      assert.ok(typeof successor.output === "string");
+      fs.mkdirSync(path.dirname(successor.output), { recursive: true });
+      fs.writeFileSync(successor.output, "Detailed child-written report\n");
+    } finally {
+      fs.writeFileSync(release, "");
+      await pending;
+    }
+    const continued = await pending;
+    const payload = JSON.parse(
+      fs.readFileSync(path.join(RESULTS_DIR, `${continued.details.asyncId}.json`), "utf8"),
+    ) as AsyncResultFile;
+    const artifactPath = payload.results?.[0]?.artifactPaths?.outputPath;
+    assert.ok(artifactPath);
+    assert.equal(fs.readFileSync(artifactPath, "utf8"), "Detailed child-written report");
+    assert.equal(fs.readFileSync(successor.output, "utf8"), "Detailed child-written report\n");
+    assert.deepEqual(fs.readFileSync(previous.output), bytes);
+  });
 
-	it("legacy snapshots without origin proof retain matching-looking generated paths", async () => {
-		mockPi.onCall({ output: "Legacy report" });
-		const original = await run({ ...writer, async: true });
-		const id = original.details.asyncId!;
-		const legacy = { ...savedLaunch(id) };
-		delete legacy.generatedOutputFilename;
-		fs.writeFileSync(path.join(getRunMetadataDir(id), "contracts", "0.json"), JSON.stringify({ ...JSON.parse(contractBytes(id).toString()), launch: legacy }));
-		const receipt = contractBytes(id);
-		assert.ok(typeof legacy.output === "string");
-		assert.ok(legacy.output.includes(id));
-		mockPi.onCall({ output: "Legacy replacement" });
-		const continued = await run({ action: "resume", id, message: "Use the saved output choice" });
-		const successor = savedLaunch(continued.details.asyncId!);
-		assert.equal(successor.output, legacy.output);
-		assert.equal(successor.generatedOutputFilename, undefined);
-		assert.equal(fs.readFileSync(legacy.output, "utf8"), "Legacy replacement");
-		assert.deepEqual(contractBytes(id), receipt, "do not migrate legacy receipts");
-	});
+  it("legacy snapshots without origin proof retain matching-looking generated paths", async () => {
+    mockPi.onCall({ output: "Legacy report" });
+    const original = await run({ ...writer, async: true });
+    const id = original.details.asyncId!;
+    const legacy = { ...savedLaunch(id) };
+    delete legacy.generatedOutputFilename;
+    fs.writeFileSync(
+      path.join(getRunMetadataDir(id), "contracts", "0.json"),
+      JSON.stringify({ ...JSON.parse(contractBytes(id).toString()), launch: legacy }),
+    );
+    const receipt = contractBytes(id);
+    assert.ok(typeof legacy.output === "string");
+    assert.ok(legacy.output.includes(id));
+    mockPi.onCall({ output: "Legacy replacement" });
+    const continued = await run({ action: "resume", id, message: "Use the saved output choice" });
+    const successor = savedLaunch(continued.details.asyncId!);
+    assert.equal(successor.output, legacy.output);
+    assert.equal(successor.generatedOutputFilename, undefined);
+    assert.equal(fs.readFileSync(legacy.output, "utf8"), "Legacy replacement");
+    assert.deepEqual(contractBytes(id), receipt, "do not migrate legacy receipts");
+  });
 
-	for (const action of ["resume", "answer"] as const) {
-		for (const outputMode of ["inline", "file-only"] as const) {
-			it(`explicit profile ${action} retains the original generated filename (${outputMode})`, async () => {
-				mockPi.onCall({ output: "Predecessor report" });
-				const original = await run({ ...writer, async: true, outputMode, model: "mock/old:medium" });
-				const id = original.details.asyncId!;
-				const previous = savedLaunch(id);
-				assert.ok(typeof previous.output === "string");
-				const receipt = contractBytes(id);
-				const bytes = fs.existsSync(previous.output) ? fs.readFileSync(previous.output) : undefined;
-				const contract = readQuestionContract(id, 0)!;
-				const question = action === "answer" ? createSupervisorQuestion({
-					runId: id, index: 0, agent: "writer", ownerTarget: "fixture-parent", childTarget: "fixture-child", childSessionId: "fixture-session",
-					sessionFile: contract.sessionFile!, cwd: tempDir, pid: contract.pid!, reason: "need_decision", message: "May I continue?",
-				}) : undefined;
-				profile.output = "changed-current-profile.md";
-				profile.model = "mock/current";
-				profile.thinking = "high";
-				profile.fallbackModels = ["mock/backup:low"];
-				profile.systemPrompt = "Use the explicitly selected current profile.";
-				mockPi.onCall({ output: "Current-profile successor report" });
-				const continued = await run({ action, id, agent: "writer", questionId: question?.questionId, message: "Continue with the current profile" });
-				const successor = savedLaunch(continued.details.asyncId!);
-				assert.ok(typeof successor.output === "string");
-				assert.notEqual(successor.output, previous.output);
-				assert.ok(path.basename(successor.output).startsWith(`${continued.details.asyncId}_writer_0_`));
-				assert.ok(successor.output.endsWith("_frozen.md"), "profile selection does not replace the saved output choice");
-				assert.equal(successor.agent.output, profile.output, "the saved profile must remain the current selected profile");
-				assert.match(successor.systemPrompt, /explicitly selected current profile/);
-				assert.equal(successor.model, "mock/current:high");
-				assert.equal(successor.thinking, "high");
-				assert.deepEqual(successor.modelCandidates, ["mock/current:high", "mock/backup:low"]);
-				assert.equal(successor.outputMode, outputMode);
-				if (bytes) assert.deepEqual(fs.readFileSync(previous.output), bytes);
-				else assert.equal(fs.existsSync(previous.output), false);
-				assert.deepEqual(contractBytes(id), receipt);
-				if (outputMode === "file-only") assert.equal(fs.readFileSync(successor.output, "utf8"), "Current-profile successor report");
-				else assert.equal(fs.existsSync(successor.output), false, "generated inline output still gets consumed");
+  for (const action of ["resume", "answer"] as const) {
+    for (const outputMode of ["inline", "file-only"] as const) {
+      it(`explicit profile ${action} retains the original generated filename (${outputMode})`, async () => {
+        mockPi.onCall({ output: "Predecessor report" });
+        const original = await run({
+          ...writer,
+          async: true,
+          outputMode,
+          model: "mock/old:medium",
+        });
+        const id = original.details.asyncId!;
+        const previous = savedLaunch(id);
+        assert.ok(typeof previous.output === "string");
+        const receipt = contractBytes(id);
+        const bytes = fs.existsSync(previous.output) ? fs.readFileSync(previous.output) : undefined;
+        const contract = readQuestionContract(id, 0)!;
+        const question =
+          action === "answer"
+            ? createSupervisorQuestion({
+                runId: id,
+                index: 0,
+                agent: "writer",
+                ownerTarget: "fixture-parent",
+                childTarget: "fixture-child",
+                childSessionId: "fixture-session",
+                sessionFile: contract.sessionFile!,
+                cwd: tempDir,
+                pid: contract.pid!,
+                reason: "need_decision",
+                message: "May I continue?",
+              })
+            : undefined;
+        profile.output = "changed-current-profile.md";
+        profile.model = "mock/current";
+        profile.thinking = "high";
+        profile.fallbackModels = ["mock/backup:low"];
+        profile.systemPrompt = "Use the explicitly selected current profile.";
+        mockPi.onCall({ output: "Current-profile successor report" });
+        const continued = await run({
+          action,
+          id,
+          agent: "writer",
+          questionId: question?.questionId,
+          message: "Continue with the current profile",
+        });
+        const successor = savedLaunch(continued.details.asyncId!);
+        assert.ok(typeof successor.output === "string");
+        assert.notEqual(successor.output, previous.output);
+        assert.ok(
+          path.basename(successor.output).startsWith(`${continued.details.asyncId}_writer_0_`),
+        );
+        assert.ok(
+          successor.output.endsWith("_frozen.md"),
+          "profile selection does not replace the saved output choice",
+        );
+        assert.equal(
+          successor.agent.output,
+          profile.output,
+          "the saved profile must remain the current selected profile",
+        );
+        assert.match(successor.systemPrompt, /explicitly selected current profile/);
+        assert.equal(successor.model, "mock/current:high");
+        assert.equal(successor.thinking, "high");
+        assert.deepEqual(successor.modelCandidates, ["mock/current:high", "mock/backup:low"]);
+        assert.equal(successor.outputMode, outputMode);
+        if (bytes) {
+          assert.deepEqual(fs.readFileSync(previous.output), bytes);
+        } else {
+          assert.equal(fs.existsSync(previous.output), false);
+        }
+        assert.deepEqual(contractBytes(id), receipt);
+        if (outputMode === "file-only") {
+          assert.equal(
+            fs.readFileSync(successor.output, "utf8"),
+            "Current-profile successor report",
+          );
+        } else {
+          assert.equal(
+            fs.existsSync(successor.output),
+            false,
+            "generated inline output still gets consumed",
+          );
+        }
 
-				mockPi.onCall({ output: "Repeated successor report" });
-				const repeated = await run({ action: "resume", id: continued.details.asyncId, message: "Continue again without selecting a profile" });
-				const latest = savedLaunch(repeated.details.asyncId!);
-				assert.ok(typeof latest.output === "string");
-				assert.notEqual(latest.output, successor.output);
-				assert.ok(latest.output.endsWith("_frozen.md"), "the preserved filename survives another saved continuation");
-				assert.equal(latest.agent.output, profile.output);
-				assert.equal(latest.model, successor.model);
-				assert.deepEqual(latest.modelCandidates, successor.modelCandidates);
-				if (outputMode === "file-only") assert.equal(fs.readFileSync(latest.output, "utf8"), "Repeated successor report");
-				else assert.equal(fs.existsSync(latest.output), false);
-			});
-		}
-	}
+        mockPi.onCall({ output: "Repeated successor report" });
+        const repeated = await run({
+          action: "resume",
+          id: continued.details.asyncId,
+          message: "Continue again without selecting a profile",
+        });
+        const latest = savedLaunch(repeated.details.asyncId!);
+        assert.ok(typeof latest.output === "string");
+        assert.notEqual(latest.output, successor.output);
+        assert.ok(
+          latest.output.endsWith("_frozen.md"),
+          "the preserved filename survives another saved continuation",
+        );
+        assert.equal(latest.agent.output, profile.output);
+        assert.equal(latest.model, successor.model);
+        assert.deepEqual(latest.modelCandidates, successor.modelCandidates);
+        if (outputMode === "file-only") {
+          assert.equal(fs.readFileSync(latest.output, "utf8"), "Repeated successor report");
+        } else {
+          assert.equal(fs.existsSync(latest.output), false);
+        }
+      });
+    }
+  }
 
-	it("saved continuation preserves its pinned launch instead of mutable native display metadata", async () => {
-		mockPi.onCall({ output: "Original" });
-		const original = await run({ ...writer, async: true, model: "mock/chosen:high" });
-		const id = original.details.asyncId!;
-		const contract = readQuestionContract(id, 0)!;
-		const timestamp = new Date().toISOString();
-		fs.writeFileSync(contract.sessionFile!, [
-			{ type: "session", version: 3, id: "native-session", cwd: tempDir, timestamp },
-			{ type: "model_change", id: "model", parentId: null, provider: "native", modelId: "later", timestamp },
-			{ type: "thinking_level_change", id: "thinking", parentId: "model", thinkingLevel: "low", timestamp },
-		].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-		assert.equal(readQuestionContract(id, 0)?.launch?.model, "mock/chosen:high", "default reads retain the captured selection");
-		const continued = await run({ action: "resume", id, message: "Continue" });
-		const successor = readQuestionContract(continued.details.asyncId!, 0, undefined, { readConfiguration: false })!.launch!;
-		assert.equal(successor.model, "mock/chosen:high");
-		assert.equal(successor.thinking, "high");
-		assert.deepEqual(successor.modelCandidates, ["mock/chosen:high"]);
-		const calls = fs.readdirSync(mockPi.dir).filter((name) => /^call-.*\.json$/.test(name)).sort();
-		const args = JSON.parse(fs.readFileSync(path.join(mockPi.dir, calls.at(-1)!), "utf8")).args as string[];
-		assert.equal(args[args.indexOf("--model") + 1], "mock/chosen:high");
-	});
+  it("saved continuation preserves its pinned launch instead of mutable native display metadata", async () => {
+    mockPi.onCall({ output: "Original" });
+    const original = await run({ ...writer, async: true, model: "mock/chosen:high" });
+    const id = original.details.asyncId!;
+    const contract = readQuestionContract(id, 0)!;
+    const timestamp = new Date().toISOString();
+    fs.writeFileSync(
+      contract.sessionFile!,
+      [
+        { type: "session", version: 3, id: "native-session", cwd: tempDir, timestamp },
+        {
+          type: "model_change",
+          id: "model",
+          parentId: null,
+          provider: "native",
+          modelId: "later",
+          timestamp,
+        },
+        {
+          type: "thinking_level_change",
+          id: "thinking",
+          parentId: "model",
+          thinkingLevel: "low",
+          timestamp,
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n") + "\n",
+    );
+    assert.equal(
+      readQuestionContract(id, 0)?.launch?.model,
+      "mock/chosen:high",
+      "default reads retain the captured selection",
+    );
+    const continued = await run({ action: "resume", id, message: "Continue" });
+    const successor = readQuestionContract(continued.details.asyncId!, 0, undefined, {
+      readConfiguration: false,
+    })!.launch!;
+    assert.equal(successor.model, "mock/chosen:high");
+    assert.equal(successor.thinking, "high");
+    assert.deepEqual(successor.modelCandidates, ["mock/chosen:high"]);
+    const calls = fs
+      .readdirSync(mockPi.dir)
+      .filter((name) => /^call-.*\.json$/.test(name))
+      .sort();
+    const args = JSON.parse(fs.readFileSync(path.join(mockPi.dir, calls.at(-1)!), "utf8"))
+      .args as string[];
+    assert.equal(args[args.indexOf("--model") + 1], "mock/chosen:high");
+  });
 
-	for (const selectProfile of [false, true]) {
-		it(`explicit continuation model wins over ${selectProfile ? "current profile" : "saved launch"} policy`, async () => {
-			profile.model = "mock/original";
-			profile.thinking = "medium";
-			profile.fallbackModels = ["mock/original-backup:low"];
-			mockPi.onCall({ output: "Original" });
-			const original = await run({ ...writer, async: true });
-			profile.model = "mock/current";
-			profile.thinking = "low";
-			profile.fallbackModels = ["mock/current-backup"];
-			const continued = await run({ action: "resume", id: original.details.asyncId, message: "Continue",
-				...(selectProfile ? { agent: "writer" } : {}), model: "mock/chosen:high" });
-			const successor = savedLaunch(continued.details.asyncId!);
-			assert.equal(successor.model, "mock/chosen:high");
-			assert.equal(successor.thinking, "high");
-			assert.deepEqual(successor.modelCandidates, ["mock/chosen:high"]);
-			const repeated = await run({ action: "resume", id: continued.details.asyncId, message: "Keep going" });
-			assert.deepEqual(savedLaunch(repeated.details.asyncId!).modelCandidates, ["mock/chosen:high"]);
-		});
-	}
+  for (const selectProfile of [false, true]) {
+    it(`explicit continuation model wins over ${selectProfile ? "current profile" : "saved launch"} policy`, async () => {
+      profile.model = "mock/original";
+      profile.thinking = "medium";
+      profile.fallbackModels = ["mock/original-backup:low"];
+      mockPi.onCall({ output: "Original" });
+      const original = await run({ ...writer, async: true });
+      profile.model = "mock/current";
+      profile.thinking = "low";
+      profile.fallbackModels = ["mock/current-backup"];
+      const continued = await run({
+        action: "resume",
+        id: original.details.asyncId,
+        message: "Continue",
+        ...(selectProfile ? { agent: "writer" } : {}),
+        model: "mock/chosen:high",
+      });
+      const successor = savedLaunch(continued.details.asyncId!);
+      assert.equal(successor.model, "mock/chosen:high");
+      assert.equal(successor.thinking, "high");
+      assert.deepEqual(successor.modelCandidates, ["mock/chosen:high"]);
+      const repeated = await run({
+        action: "resume",
+        id: continued.details.asyncId,
+        message: "Keep going",
+      });
+      assert.deepEqual(savedLaunch(repeated.details.asyncId!).modelCandidates, [
+        "mock/chosen:high",
+      ]);
+    });
+  }
 
-	for (const choice of ["explicit", "absolute-default", "disabled", "legacy", "no-launch", "new-default"] as const) {
-		it(`explicit profile selection preserves ${choice} output intent`, async () => {
-			if (choice === "absolute-default") profile.output = path.join(tempDir, "absolute.md");
-			mockPi.onCall({ output: "Predecessor report" });
-			const original = await run({ ...writer, async: true,
-				...(choice === "explicit" ? { output: "fixed.md" } : {}),
-				...(choice === "disabled" ? { output: false, outputMode: "inline" } : {}),
-			});
-			const id = original.details.asyncId!;
-			const previous = savedLaunch(id);
-			if (choice === "legacy") {
-				const legacy = { ...previous };
-				delete legacy.generatedOutputFilename;
-				Reflect.deleteProperty(legacy, "outputFromAgentDefault");
-				fs.writeFileSync(path.join(getRunMetadataDir(id), "contracts", "0.json"), JSON.stringify({ ...JSON.parse(contractBytes(id).toString()), launch: legacy }));
-			}
-			if (choice === "no-launch") fs.writeFileSync(path.join(getRunMetadataDir(id), "contracts", "0.json"), JSON.stringify({ ...JSON.parse(contractBytes(id).toString()), launch: undefined }));
-			const receipt = contractBytes(id);
-			profile.output = "changed-current-profile.md";
-			mockPi.onCall({ output: "Current-profile report" });
-			const continued = await run({ action: "resume", id, agent: "writer", message: "Use the current profile",
-				...(choice === "new-default" ? { output: true } : {}),
-			});
-			const successor = savedLaunch(continued.details.asyncId!);
-			assert.equal(successor.agent.output, profile.output);
-			assert.deepEqual(contractBytes(id), receipt);
-			if (choice === "new-default") {
-				assert.ok(typeof successor.output === "string");
-				assert.ok(successor.output.endsWith("_changed-current-profile.md"));
-				assert.notEqual(successor.output, previous.output);
-			} else {
-				assert.equal(successor.output, previous.output, "fixed, disabled and unproven choices remain unchanged");
-				assert.equal(successor.generatedOutputFilename, undefined);
-			}
-		});
-	}
+  for (const choice of [
+    "explicit",
+    "absolute-default",
+    "disabled",
+    "legacy",
+    "no-launch",
+    "new-default",
+  ] as const) {
+    it(`explicit profile selection preserves ${choice} output intent`, async () => {
+      if (choice === "absolute-default") {
+        profile.output = path.join(tempDir, "absolute.md");
+      }
+      mockPi.onCall({ output: "Predecessor report" });
+      const original = await run({
+        ...writer,
+        async: true,
+        ...(choice === "explicit" ? { output: "fixed.md" } : {}),
+        ...(choice === "disabled" ? { output: false, outputMode: "inline" } : {}),
+      });
+      const id = original.details.asyncId!;
+      const previous = savedLaunch(id);
+      if (choice === "legacy") {
+        const legacy = { ...previous };
+        delete legacy.generatedOutputFilename;
+        Reflect.deleteProperty(legacy, "outputFromAgentDefault");
+        fs.writeFileSync(
+          path.join(getRunMetadataDir(id), "contracts", "0.json"),
+          JSON.stringify({ ...JSON.parse(contractBytes(id).toString()), launch: legacy }),
+        );
+      }
+      if (choice === "no-launch") {
+        fs.writeFileSync(
+          path.join(getRunMetadataDir(id), "contracts", "0.json"),
+          JSON.stringify({ ...JSON.parse(contractBytes(id).toString()), launch: undefined }),
+        );
+      }
+      const receipt = contractBytes(id);
+      profile.output = "changed-current-profile.md";
+      mockPi.onCall({ output: "Current-profile report" });
+      const continued = await run({
+        action: "resume",
+        id,
+        agent: "writer",
+        message: "Use the current profile",
+        ...(choice === "new-default" ? { output: true } : {}),
+      });
+      const successor = savedLaunch(continued.details.asyncId!);
+      assert.equal(successor.agent.output, profile.output);
+      assert.deepEqual(contractBytes(id), receipt);
+      if (choice === "new-default") {
+        assert.ok(typeof successor.output === "string");
+        assert.ok(successor.output.endsWith("_changed-current-profile.md"));
+        assert.notEqual(successor.output, previous.output);
+      } else {
+        assert.equal(
+          successor.output,
+          previous.output,
+          "fixed, disabled and unproven choices remain unchanged",
+        );
+        assert.equal(successor.generatedOutputFilename, undefined);
+      }
+    });
+  }
 
-	for (const action of ["answer", "resume"] as const) {
-		it(`${action} revives an exited question with a successor-owned default output`, async () => {
-			mockPi.onCall({ output: "Predecessor report" });
-			const original = await run({ ...writer, async: true });
-			const id = original.details.asyncId!;
-			const contract = readQuestionContract(id, 0)!;
-			const previous = savedLaunch(id);
-			assert.ok(typeof previous.output === "string");
-			const bytes = fs.readFileSync(previous.output);
-			assert.ok(contract.pid && !questionProcessAlive({ pid: contract.pid }));
-			const question = createSupervisorQuestion({
-				runId: id, index: 0, agent: "writer", ownerTarget: "fixture-parent", childTarget: "fixture-child", childSessionId: "fixture-session",
-				sessionFile: contract.sessionFile!, cwd: tempDir, pid: contract.pid,
-				reason: "need_decision", message: "May I write the follow-up?",
-			});
-			const receipt = contractBytes(id);
-			profile.output = "changed-current-profile.md";
-			mockPi.onCall({ output: "Answered report" });
-			const continued = await run({ action, id, questionId: question.questionId, message: "Yes, write the follow-up" });
-			const successor = savedLaunch(continued.details.asyncId!);
-			assert.ok(typeof successor.output === "string");
-			assert.notEqual(successor.output, previous.output);
-			assert.ok(path.basename(successor.output).startsWith(`${continued.details.asyncId}_writer_0_`));
-			assert.ok(successor.output.endsWith("_frozen.md"));
-			assert.equal(successor.generatedOutputFilename, "frozen.md");
-			assert.equal(successor.outputMode, "file-only");
-			assert.equal(fs.readFileSync(successor.output, "utf8"), "Answered report");
-			assert.deepEqual(fs.readFileSync(previous.output), bytes);
-			assert.deepEqual(contractBytes(id), receipt);
-		});
-	}
+  for (const action of ["answer", "resume"] as const) {
+    it(`${action} revives an exited question with a successor-owned default output`, async () => {
+      mockPi.onCall({ output: "Predecessor report" });
+      const original = await run({ ...writer, async: true });
+      const id = original.details.asyncId!;
+      const contract = readQuestionContract(id, 0)!;
+      const previous = savedLaunch(id);
+      assert.ok(typeof previous.output === "string");
+      const bytes = fs.readFileSync(previous.output);
+      assert.ok(contract.pid && !questionProcessAlive({ pid: contract.pid }));
+      const question = createSupervisorQuestion({
+        runId: id,
+        index: 0,
+        agent: "writer",
+        ownerTarget: "fixture-parent",
+        childTarget: "fixture-child",
+        childSessionId: "fixture-session",
+        sessionFile: contract.sessionFile!,
+        cwd: tempDir,
+        pid: contract.pid,
+        reason: "need_decision",
+        message: "May I write the follow-up?",
+      });
+      const receipt = contractBytes(id);
+      profile.output = "changed-current-profile.md";
+      mockPi.onCall({ output: "Answered report" });
+      const continued = await run({
+        action,
+        id,
+        questionId: question.questionId,
+        message: "Yes, write the follow-up",
+      });
+      const successor = savedLaunch(continued.details.asyncId!);
+      assert.ok(typeof successor.output === "string");
+      assert.notEqual(successor.output, previous.output);
+      assert.ok(
+        path.basename(successor.output).startsWith(`${continued.details.asyncId}_writer_0_`),
+      );
+      assert.ok(successor.output.endsWith("_frozen.md"));
+      assert.equal(successor.generatedOutputFilename, "frozen.md");
+      assert.equal(successor.outputMode, "file-only");
+      assert.equal(fs.readFileSync(successor.output, "utf8"), "Answered report");
+      assert.deepEqual(fs.readFileSync(previous.output), bytes);
+      assert.deepEqual(contractBytes(id), receipt);
+    });
+  }
 
-	for (const action of ["resume", "answer"] as const) it(`${action} passes replacement cwd to the saved child and its finalization`, async () => {
-		const originalCwd = path.join(tempDir, "original");
-		const replacementCwd = path.join(tempDir, "replacement");
-		fs.mkdirSync(originalCwd);
-		fs.mkdirSync(replacementCwd);
-		const report = '```acceptance-report\n{"criteriaSatisfied":[{"id":"criterion-1","status":"satisfied","evidence":"fixture"}]}\n```';
-		mockPi.onCall({ nativeReport: { scenario: "single", initialReport: `Predecessor report\n${report}`, report: `Predecessor report\n${report}`, receiptPath: path.join(tempDir, "native-before.json") } });
-		const original = await run({ agent: "writer", task: "Prepare the result", cwd: originalCwd, output: false,
-			acceptance: { criteria: ["Deliver the result"], maxFinalizationTurns: 1 } });
-		const id = original.details.runId!;
-		const contract = readQuestionContract(id, 0)!;
-		assert.ok(contract.pid && !questionProcessAlive({ pid: contract.pid }));
-		const question = action === "answer" ? createSupervisorQuestion({
-			runId: id, index: 0, agent: "writer", ownerTarget: "fixture-parent", childTarget: "fixture-child", childSessionId: "fixture-session",
-			sessionFile: contract.sessionFile!, cwd: originalCwd, pid: contract.pid, reason: "need_decision", message: "May I continue?",
-		}) : undefined;
-		fs.rmdirSync(originalCwd);
-		const before = mockPi.callCount();
-		const nativeReceipt = path.join(tempDir, "native-after.json");
-		mockPi.onCall({ nativeReport: { scenario: "single", initialReport: `Continued report\n${report}`, report: `Continued report\n${report}`, receiptPath: nativeReceipt } });
-		const continued = await run({ action, id, questionId: question?.questionId, message: "Continue in the replacement", cwd: "replacement" });
-		assert.equal(savedLaunch(continued.details.asyncId!).cwd, replacementCwd);
-		const attempts = fs.readdirSync(mockPi.dir).filter((name) => /^call-.*\.json$/.test(name)).sort()
-			.map((name) => JSON.parse(fs.readFileSync(path.join(mockPi.dir, name), "utf8"))).slice(before);
-		assert.equal(attempts.length, 1, "initial work and review share one native process");
-		const native = JSON.parse(fs.readFileSync(nativeReceipt, "utf8"));
-		assert.equal(native.providerCalls, 2);
-		assert.deepEqual(native.providerCwds, [replacementCwd, replacementCwd].map((dir) => fs.realpathSync(dir)));
-		for (const call of attempts) {
-			assert.equal(call.cwd, fs.realpathSync(replacementCwd));
-			assert.equal(call.args[call.args.indexOf("--session") + 1], contract.sessionFile);
-			assert.equal(call.args.includes("--session-cwd"), false);
-			assert.equal(call.sessionCwd.cwd, replacementCwd);
-		}
-	});
+  for (const action of ["resume", "answer"] as const) {
+    it(`${action} passes replacement cwd to the saved child and its finalization`, async () => {
+      const originalCwd = path.join(tempDir, "original");
+      const replacementCwd = path.join(tempDir, "replacement");
+      fs.mkdirSync(originalCwd);
+      fs.mkdirSync(replacementCwd);
+      const report =
+        '```acceptance-report\n{"criteriaSatisfied":[{"id":"criterion-1","status":"satisfied","evidence":"fixture"}]}\n```';
+      mockPi.onCall({
+        nativeReport: {
+          scenario: "single",
+          initialReport: `Predecessor report\n${report}`,
+          report: `Predecessor report\n${report}`,
+          receiptPath: path.join(tempDir, "native-before.json"),
+        },
+      });
+      const original = await run({
+        agent: "writer",
+        task: "Prepare the result",
+        cwd: originalCwd,
+        output: false,
+        acceptance: { criteria: ["Deliver the result"], maxFinalizationTurns: 1 },
+      });
+      const id = original.details.runId!;
+      const contract = readQuestionContract(id, 0)!;
+      assert.ok(contract.pid && !questionProcessAlive({ pid: contract.pid }));
+      const question =
+        action === "answer"
+          ? createSupervisorQuestion({
+              runId: id,
+              index: 0,
+              agent: "writer",
+              ownerTarget: "fixture-parent",
+              childTarget: "fixture-child",
+              childSessionId: "fixture-session",
+              sessionFile: contract.sessionFile!,
+              cwd: originalCwd,
+              pid: contract.pid,
+              reason: "need_decision",
+              message: "May I continue?",
+            })
+          : undefined;
+      fs.rmdirSync(originalCwd);
+      const before = mockPi.callCount();
+      const nativeReceipt = path.join(tempDir, "native-after.json");
+      mockPi.onCall({
+        nativeReport: {
+          scenario: "single",
+          initialReport: `Continued report\n${report}`,
+          report: `Continued report\n${report}`,
+          receiptPath: nativeReceipt,
+        },
+      });
+      const continued = await run({
+        action,
+        id,
+        questionId: question?.questionId,
+        message: "Continue in the replacement",
+        cwd: "replacement",
+      });
+      assert.equal(savedLaunch(continued.details.asyncId!).cwd, replacementCwd);
+      const attempts = fs
+        .readdirSync(mockPi.dir)
+        .filter((name) => /^call-.*\.json$/.test(name))
+        .sort()
+        .map((name) => JSON.parse(fs.readFileSync(path.join(mockPi.dir, name), "utf8")))
+        .slice(before);
+      assert.equal(attempts.length, 1, "initial work and review share one native process");
+      const native = JSON.parse(fs.readFileSync(nativeReceipt, "utf8"));
+      assert.equal(native.providerCalls, 2);
+      assert.deepEqual(
+        native.providerCwds,
+        [replacementCwd, replacementCwd].map((dir) => fs.realpathSync(dir)),
+      );
+      for (const call of attempts) {
+        assert.equal(call.cwd, fs.realpathSync(replacementCwd));
+        assert.equal(call.args[call.args.indexOf("--session") + 1], contract.sessionFile);
+        assert.equal(call.args.includes("--session-cwd"), false);
+        assert.equal(call.sessionCwd.cwd, replacementCwd);
+      }
+    });
+  }
 
-	it("rejects file-only with output:false before any child starts", async () => {
-		const result = await executor.execute("disabled-file-only", { ...writer, output: false, async: true }, undefined, undefined, ctx);
-		assert.equal(result.isError, true);
-		assert.match(result.content.map((part) => part.text).join("\n"), /does not configure an output file/);
-		assert.equal(mockPi.callCount(), 0);
-	});
+  it("rejects file-only with output:false before any child starts", async () => {
+    const result = await executor.execute(
+      "disabled-file-only",
+      { ...writer, output: false, async: true },
+      undefined,
+      undefined,
+      ctx,
+    );
+    assert.equal(result.isError, true);
+    assert.match(
+      result.content.map((part) => part.text).join("\n"),
+      /does not configure an output file/,
+    );
+    assert.equal(mockPi.callCount(), 0);
+  });
 });

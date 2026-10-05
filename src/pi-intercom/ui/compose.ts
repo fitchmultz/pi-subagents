@@ -1,5 +1,13 @@
-import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
-import { Box, Container, Text, sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+  type TUI,
+  type TuiMouseEvent,
+  Box,
+  Container,
+  Text,
+  sliceByColumn,
+  truncateToWidth,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
 import { actionHints } from "../../tui/action-hints.ts";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import type { IntercomClient } from "../broker/client.ts";
@@ -56,39 +64,66 @@ export class ComposeOverlay extends Container {
 
   dispose(): void {
     this.completed = true;
-    if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
+    if (this.pasteIdleTimer) {
+      clearTimeout(this.pasteIdleTimer);
+    }
     this.pasteIdleTimer = null;
   }
 
   handleMouse(event: TuiMouseEvent) {
     const width = Math.min(event.width, 72);
-    if (this.sending || this.completed || this.pasteBuffer !== null || this.pasteStartPrefix || event.x >= width) return;
+    if (
+      this.sending ||
+      this.completed ||
+      this.pasteBuffer !== null ||
+      this.pasteStartPrefix ||
+      event.x >= width
+    ) {
+      return;
+    }
     return super.handleMouse({ ...event, width });
   }
 
   private act(action: "close" | "mode" | "send"): void {
-    if (this.sending || this.completed || this.pasteBuffer !== null || this.pasteStartPrefix) return;
-    if (action === "close") this.finish({ sent: false });
-    else if (action === "mode") { this.mode = this.mode === "send" ? "ask" : "send"; this.error = null; }
-    else if (this.inputBuffer.trim()) void this.sendMessage();
+    if (this.sending || this.completed || this.pasteBuffer !== null || this.pasteStartPrefix) {
+      return;
+    }
+    if (action === "close") {
+      this.finish({ sent: false });
+    } else if (action === "mode") {
+      this.mode = this.mode === "send" ? "ask" : "send";
+      this.error = null;
+    } else if (this.inputBuffer.trim()) {
+      void this.sendMessage();
+    }
     this.tui.requestRender();
   }
 
   private finish(result: ComposeResult): void {
-    if (this.completed) return;
+    if (this.completed) {
+      return;
+    }
     this.dispose();
     this.done(result);
   }
 
   private scheduleIncompletePasteFlush(): void {
-    if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
+    if (this.pasteIdleTimer) {
+      clearTimeout(this.pasteIdleTimer);
+    }
     this.pasteIdleTimer = setTimeout(() => {
       this.pasteIdleTimer = null;
-      if (this.pasteBuffer === null || this.completed) return;
+      if (this.pasteBuffer === null || this.completed) {
+        return;
+      }
       const data = this.pasteBuffer.replace(/\r\n?/g, "\n");
       this.pasteBuffer = null;
-      const printable = [...data].filter((character) => character >= " " || character === "\n" || character === "\t").join("");
-      if (printable) this.inputBuffer += printable;
+      const printable = [...data]
+        .filter((character) => character >= " " || character === "\n" || character === "\t")
+        .join("");
+      if (printable) {
+        this.inputBuffer += printable;
+      }
       this.error = null;
       this.tui.requestRender();
     }, INCOMPLETE_PASTE_IDLE_MS);
@@ -96,7 +131,9 @@ export class ComposeOverlay extends Container {
   }
 
   handleInput(data: string): void {
-    if (this.sending || this.completed || !data) return;
+    if (this.sending || this.completed || !data) {
+      return;
+    }
 
     let pasted = false;
     if (this.pasteBuffer !== null) {
@@ -107,17 +144,23 @@ export class ComposeOverlay extends Container {
         this.tui.requestRender();
         return;
       }
-      data = end === -1
-        ? this.pasteBuffer
-        : this.pasteBuffer.slice(0, end) + this.pasteBuffer.slice(end + BRACKETED_PASTE_END.length);
+      data =
+        end === -1
+          ? this.pasteBuffer
+          : this.pasteBuffer.slice(0, end) +
+            this.pasteBuffer.slice(end + BRACKETED_PASTE_END.length);
       this.pasteBuffer = null;
-      if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
+      if (this.pasteIdleTimer) {
+        clearTimeout(this.pasteIdleTimer);
+      }
       this.pasteIdleTimer = null;
       data = data.replace(/\r\n?/g, "\n");
       pasted = true;
     } else {
       if (this.pasteStartPrefix) {
-        if (this.pasteIdleTimer) clearTimeout(this.pasteIdleTimer);
+        if (this.pasteIdleTimer) {
+          clearTimeout(this.pasteIdleTimer);
+        }
         this.pasteIdleTimer = null;
         data = this.pasteStartPrefix + data;
         this.pasteStartPrefix = "";
@@ -128,7 +171,12 @@ export class ComposeOverlay extends Container {
           this.pasteIdleTimer = null;
           const pendingPrefix = this.pasteStartPrefix;
           this.pasteStartPrefix = "";
-          if (pendingPrefix === "\x1b" && this.keybindings.matches(pendingPrefix, "tui.select.cancel")) this.finish({ sent: false });
+          if (
+            pendingPrefix === "\x1b" &&
+            this.keybindings.matches(pendingPrefix, "tui.select.cancel")
+          ) {
+            this.finish({ sent: false });
+          }
         }, INCOMPLETE_PASTE_IDLE_MS);
         this.pasteIdleTimer.unref?.();
         return;
@@ -147,8 +195,12 @@ export class ComposeOverlay extends Container {
       data = data.replace(/\r\n?/g, "\n");
       pasted = true;
     }
-    if (!pasted && data.includes(BRACKETED_PASTE_END)) data = data.replaceAll(BRACKETED_PASTE_END, "");
-    if (!data) return;
+    if (!pasted && data.includes(BRACKETED_PASTE_END)) {
+      data = data.replaceAll(BRACKETED_PASTE_END, "");
+    }
+    if (!data) {
+      return;
+    }
 
     if (!pasted && this.keybindings.matches(data, "tui.select.cancel")) {
       this.act("close");
@@ -176,7 +228,7 @@ export class ComposeOverlay extends Container {
       return;
     }
 
-    const printable = [...data].filter(c => c >= " " || c === "\n" || c === "\t").join("");
+    const printable = [...data].filter((c) => c >= " " || c === "\n" || c === "\t").join("");
     if (printable) {
       this.inputBuffer += printable;
       this.error = null;
@@ -198,7 +250,8 @@ export class ComposeOverlay extends Container {
       });
 
       if (!result.accepted) {
-        this.error = result.reason ?? "Message not delivered. Session may not exist or has disconnected.";
+        this.error =
+          result.reason ?? "Message not delivered. Session may not exist or has disconnected.";
         this.sending = false;
         this.tui.requestRender();
         return;
@@ -217,11 +270,20 @@ export class ComposeOverlay extends Container {
     }
   }
 
-  private renderInputLines(row: (text?: string) => string, lines: string[], contentWidth: number): void {
-    const pendingPaste = this.pasteBuffer === null
-      ? ""
-      : [...this.pasteBuffer.slice(-PASTE_RENDER_TAIL_CHARS)].filter((character) => character >= " " || character === "\n" || character === "\t").join("");
-    const rawLines = `${this.inputBuffer.slice(-PASTE_RENDER_TAIL_CHARS)}${pendingPaste}`.split("\n");
+  private renderInputLines(
+    row: (text?: string) => string,
+    lines: string[],
+    contentWidth: number,
+  ): void {
+    const pendingPaste =
+      this.pasteBuffer === null
+        ? ""
+        : [...this.pasteBuffer.slice(-PASTE_RENDER_TAIL_CHARS)]
+            .filter((character) => character >= " " || character === "\n" || character === "\t")
+            .join("");
+    const rawLines = `${this.inputBuffer.slice(-PASTE_RENDER_TAIL_CHARS)}${pendingPaste}`.split(
+      "\n",
+    );
     const visibleLines = rawLines.slice(-8);
     visibleLines.forEach((line, index) => {
       const isLast = index === visibleLines.length - 1;
@@ -233,7 +295,9 @@ export class ComposeOverlay extends Container {
         let start = graphemes.length;
         while (start > 0) {
           const width = visibleWidth(graphemes[start - 1]!);
-          if (used + width > budget) break;
+          if (used + width > budget) {
+            break;
+          }
           used += width;
           start--;
         }
@@ -245,15 +309,32 @@ export class ComposeOverlay extends Container {
 
   render(width: number): string[] {
     this.clear();
-    if (width < 3) return [truncateToWidth("Intercom", width)];
+    if (width < 3) {
+      return [truncateToWidth("Intercom", width)];
+    }
     const innerWidth = Math.min(width, 72);
     const contentWidth = Math.max(1, innerWidth - 2);
-    const send = [this.keybindings.getKeys("tui.select.confirm").join("/"), this.mode === "ask" ? "Request reply" : "Send"].filter(Boolean).join(": ");
+    const send = [
+      this.keybindings.getKeys("tui.select.confirm").join("/"),
+      this.mode === "ask" ? "Request reply" : "Send",
+    ]
+      .filter(Boolean)
+      .join(": ");
     const mode = `Tab: ${this.mode === "ask" ? "Send mode" : "Request-reply mode"}`;
-    const close = [this.keybindings.getKeys("tui.select.cancel").join("/"), "Close"].filter(Boolean).join(": ");
-    const footer = this.sending ? ["Sending…"] : this.pasteBuffer !== null || this.pasteStartPrefix ? ["Pasting…"] : [
-      { text: send, run: () => this.act("send") }, " • ", { text: mode, run: () => this.act("mode") }, " • ", { text: close, run: () => this.act("close") },
-    ];
+    const close = [this.keybindings.getKeys("tui.select.cancel").join("/"), "Close"]
+      .filter(Boolean)
+      .join(": ");
+    const footer = this.sending
+      ? ["Sending…"]
+      : this.pasteBuffer !== null || this.pasteStartPrefix
+        ? ["Pasting…"]
+        : [
+            { text: send, run: () => this.act("send") },
+            " • ",
+            { text: mode, run: () => this.act("mode") },
+            " • ",
+            { text: close, run: () => this.act("close") },
+          ];
     const border = (text: string) => this.theme.fg("accent", text);
     const row = (text = "") => {
       const clipped = truncateToWidth(text, contentWidth, "…", true);
@@ -262,8 +343,16 @@ export class ComposeOverlay extends Container {
 
     const lines: string[] = [];
     lines.push(border(`╭${"─".repeat(contentWidth)}╮`));
-    lines.push(row(this.theme.bold(` ${this.mode === "ask" ? "Request reply" : "Send"} to: ${this.targetLabel}`)));
-    lines.push(row(this.theme.fg("dim", ` Native session cwd: ${this.target.cwd} • ${this.target.model}`)));
+    lines.push(
+      row(
+        this.theme.bold(
+          ` ${this.mode === "ask" ? "Request reply" : "Send"} to: ${this.targetLabel}`,
+        ),
+      ),
+    );
+    lines.push(
+      row(this.theme.fg("dim", ` Native session cwd: ${this.target.cwd} • ${this.target.model}`)),
+    );
     lines.push(border(`├${"─".repeat(contentWidth)}┤`));
     lines.push(row());
 

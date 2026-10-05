@@ -6,166 +6,190 @@ import { EXTENSION_BUILD } from "./build-info.ts";
 import { discoverAgentsAll, type AgentSource } from "../agents/agents.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
 import {
-	ASYNC_DIR,
-	CHAIN_RUNS_DIR,
-	RESULTS_DIR,
-	TEMP_ROOT_DIR,
-	type ExtensionConfig,
-	type SubagentState,
-	type SubagentIntercomConnection,
+  ASYNC_DIR,
+  CHAIN_RUNS_DIR,
+  RESULTS_DIR,
+  TEMP_ROOT_DIR,
+  type ExtensionConfig,
+  type SubagentState,
+  type SubagentIntercomConnection,
 } from "../shared/types.ts";
 
 interface DoctorReportInput {
-	cwd: string;
-	nativeSessionCwd?: string;
-	config: ExtensionConfig;
-	state: SubagentState;
-	requestedSessionDir?: string;
-	currentSessionFile?: string | null;
-	currentSessionId?: string | null;
-	orchestratorTarget?: string;
-	connection?: SubagentIntercomConnection;
-	sessionError?: string;
-	expandTilde?: (value: string) => string;
-	projectTrusted?: boolean;
+  cwd: string;
+  nativeSessionCwd?: string;
+  config: ExtensionConfig;
+  state: SubagentState;
+  requestedSessionDir?: string;
+  currentSessionFile?: string | null;
+  currentSessionId?: string | null;
+  orchestratorTarget?: string;
+  connection?: SubagentIntercomConnection;
+  sessionError?: string;
+  expandTilde?: (value: string) => string;
+  projectTrusted?: boolean;
 }
 
 const PI_PACKAGE_DIR = getPackageDir();
 const EXTENSION_MODULE = fileURLToPath(import.meta.url);
 
 function errorText(error: unknown): string {
-	return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
 function lineFromCheck(label: string, check: () => string): string {
-	try {
-		return check();
-	} catch (error) {
-		return `- ${label}: failed — ${errorText(error)}`;
-	}
+  try {
+    return check();
+  } catch (error) {
+    return `- ${label}: failed — ${errorText(error)}`;
+  }
 }
 
 function formatExistingDirectory(label: string, dirPath: string): string {
-	try {
-		if (!fs.existsSync(dirPath)) return `- ${label}: missing (${dirPath})`;
-		const stats = fs.statSync(dirPath);
-		if (!stats.isDirectory()) throw new Error(`not a directory: ${dirPath}`);
-		fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
-		return `- ${label}: ok (${dirPath})`;
-	} catch (error) {
-		return `- ${label}: failed (${dirPath}) — ${errorText(error)}`;
-	}
+  try {
+    if (!fs.existsSync(dirPath)) {
+      return `- ${label}: missing (${dirPath})`;
+    }
+    const stats = fs.statSync(dirPath);
+    if (!stats.isDirectory()) {
+      throw new Error(`not a directory: ${dirPath}`);
+    }
+    fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
+    return `- ${label}: ok (${dirPath})`;
+  } catch (error) {
+    return `- ${label}: failed (${dirPath}) — ${errorText(error)}`;
+  }
 }
 
 function formatSourceCounts(counts: Record<AgentSource, number>): string {
-	return `builtin ${counts.builtin}, package ${counts.package}, user ${counts.user}, project ${counts.project}`;
+  return `builtin ${counts.builtin}, package ${counts.package}, user ${counts.user}, project ${counts.project}`;
 }
 
 function formatSkillSourceCounts(skills: Array<{ source: SkillSource }>): string {
-	const counts = new Map<SkillSource, number>();
-	for (const skill of skills) counts.set(skill.source, (counts.get(skill.source) ?? 0) + 1);
-	const ordered: SkillSource[] = [
-		"project",
-		"project-settings",
-		"project-package",
-		"user",
-		"user-settings",
-		"user-package",
-		"extension",
-		"builtin",
-		"unknown",
-	];
-	const parts = ordered
-		.map((source) => `${source} ${counts.get(source) ?? 0}`)
-		.filter((part) => !part.endsWith(" 0"));
-	return parts.length > 0 ? parts.join(", ") : "none";
+  const counts = new Map<SkillSource, number>();
+  for (const skill of skills) {
+    counts.set(skill.source, (counts.get(skill.source) ?? 0) + 1);
+  }
+  const ordered: SkillSource[] = [
+    "project",
+    "project-settings",
+    "project-package",
+    "user",
+    "user-settings",
+    "user-package",
+    "extension",
+    "builtin",
+    "unknown",
+  ];
+  const parts = ordered
+    .map((source) => `${source} ${counts.get(source) ?? 0}`)
+    .filter((part) => !part.endsWith(" 0"));
+  return parts.length > 0 ? parts.join(", ") : "none";
 }
 
 function formatConfiguredSessionDir(input: DoctorReportInput): string {
-	if (input.requestedSessionDir) {
-		return path.resolve(input.expandTilde?.(input.requestedSessionDir) ?? input.requestedSessionDir);
-	}
-	if (input.config.defaultSessionDir) {
-		return path.resolve(input.expandTilde?.(input.config.defaultSessionDir) ?? input.config.defaultSessionDir);
-	}
-	return "not configured";
+  if (input.requestedSessionDir) {
+    return path.resolve(
+      input.expandTilde?.(input.requestedSessionDir) ?? input.requestedSessionDir,
+    );
+  }
+  if (input.config.defaultSessionDir) {
+    return path.resolve(
+      input.expandTilde?.(input.config.defaultSessionDir) ?? input.config.defaultSessionDir,
+    );
+  }
+  return "not configured";
 }
 
 function formatSessionLines(input: DoctorReportInput): string[] {
-	const sessionFile = input.currentSessionFile ?? null;
-	const lines = [
-		lineFromCheck("configured session dir", () => `- configured session dir: ${formatConfiguredSessionDir(input)}`),
-		`- current session file: ${sessionFile ?? "not available"}`,
-		`- current session dir: ${sessionFile ? path.dirname(sessionFile) : "not available"}`,
-		`- current session id: ${input.currentSessionId ?? input.state.currentSessionId ?? "not available"}`,
-	];
-	if (input.sessionError) lines.push(`- session manager: failed — ${input.sessionError}`);
-	return lines;
+  const sessionFile = input.currentSessionFile ?? null;
+  const lines = [
+    lineFromCheck(
+      "configured session dir",
+      () => `- configured session dir: ${formatConfiguredSessionDir(input)}`,
+    ),
+    `- current session file: ${sessionFile ?? "not available"}`,
+    `- current session dir: ${sessionFile ? path.dirname(sessionFile) : "not available"}`,
+    `- current session id: ${input.currentSessionId ?? input.state.currentSessionId ?? "not available"}`,
+  ];
+  if (input.sessionError) {
+    lines.push(`- session manager: failed — ${input.sessionError}`);
+  }
+  return lines;
 }
 
 function formatDiscovery(input: DoctorReportInput): string[] {
-	return [
-		lineFromCheck("agents/chains", () => {
-			const discovered = discoverAgentsAll(input.cwd, { projectTrusted: input.projectTrusted ?? true });
-			const agentCounts = {
-				builtin: discovered.builtin.length,
-				package: discovered.package.length,
-				user: discovered.user.length,
-				project: discovered.project.length,
-			};
-			const chainCounts = discovered.chains.reduce<Record<AgentSource, number>>((counts, chain) => {
-				counts[chain.source] += 1;
-				return counts;
-			}, { builtin: 0, package: 0, user: 0, project: 0 });
-			return [
-				`- agents: total ${agentCounts.builtin + agentCounts.package + agentCounts.user + agentCounts.project} (${formatSourceCounts(agentCounts)})`,
-				`- chains: total ${discovered.chains.length} (${formatSourceCounts(chainCounts)})`,
-			].join("\n");
-		}),
-		lineFromCheck("skills", () => {
-			const skills = discoverAvailableSkills(input.cwd, { projectTrusted: input.projectTrusted ?? true });
-			return `- skills: total ${skills.length} (${formatSkillSourceCounts(skills)})`;
-		}),
-	];
+  return [
+    lineFromCheck("agents/chains", () => {
+      const discovered = discoverAgentsAll(input.cwd, {
+        projectTrusted: input.projectTrusted ?? true,
+      });
+      const agentCounts = {
+        builtin: discovered.builtin.length,
+        package: discovered.package.length,
+        user: discovered.user.length,
+        project: discovered.project.length,
+      };
+      const chainCounts = discovered.chains.reduce<Record<AgentSource, number>>(
+        (counts, chain) => {
+          counts[chain.source] += 1;
+          return counts;
+        },
+        { builtin: 0, package: 0, user: 0, project: 0 },
+      );
+      return [
+        `- agents: total ${agentCounts.builtin + agentCounts.package + agentCounts.user + agentCounts.project} (${formatSourceCounts(agentCounts)})`,
+        `- chains: total ${discovered.chains.length} (${formatSourceCounts(chainCounts)})`,
+      ].join("\n");
+    }),
+    lineFromCheck("skills", () => {
+      const skills = discoverAvailableSkills(input.cwd, {
+        projectTrusted: input.projectTrusted ?? true,
+      });
+      return `- skills: total ${skills.length} (${formatSkillSourceCounts(skills)})`;
+    }),
+  ];
 }
 
 function formatIntercomSection(input: DoctorReportInput): string[] {
-	return [
-		`- bridge: ${input.connection ? "responding" : "unavailable (no live health response)"}`,
-		`- connection: ${input.connection?.status ?? "unknown"}${input.connection?.reason ? ` — ${input.connection.reason}` : ""}`,
-		`- broker session id: ${input.connection?.sessionId ?? "not available"}`,
-		`- orchestrator target: ${input.orchestratorTarget?.trim() || "not available"}`,
-	];
+  return [
+    `- bridge: ${input.connection ? "responding" : "unavailable (no live health response)"}`,
+    `- connection: ${input.connection?.status ?? "unknown"}${input.connection?.reason ? ` — ${input.connection.reason}` : ""}`,
+    `- broker session id: ${input.connection?.sessionId ?? "not available"}`,
+    `- orchestrator target: ${input.orchestratorTarget?.trim() || "not available"}`,
+  ];
 }
 
 export function buildDoctorReport(input: DoctorReportInput): string {
-	const lines = [
-		"Subagents doctor report",
-		"",
-		"Runtime",
-		`- Native session cwd: ${input.nativeSessionCwd ?? input.cwd}`,
-		...(input.nativeSessionCwd && input.nativeSessionCwd !== input.cwd ? [`- Requested cwd: ${input.cwd}`] : []),
-		`- Node: ${process.version}`,
-		`- process: ${process.pid} (${process.execPath})`,
-		`- loaded Pi version: ${PI_VERSION}`,
-		`- Pi package directory: ${PI_PACKAGE_DIR} (Pi resource path; may be overridden)`,
-		"- native queue contract: not verified (version alone does not identify fork patches)",
-		`- loaded pi-subagents build: ${EXTENSION_BUILD.version && EXTENSION_BUILD.sha256 ? `${EXTENSION_BUILD.version} (runtime SHA-256 ${EXTENSION_BUILD.sha256})` : "unknown (unbuilt source)"}`,
-		`- extension module: ${EXTENSION_MODULE}`,
-		"- async support: available (Node >=24)",
-		...formatSessionLines(input),
-		"",
-		"Filesystem",
-		formatExistingDirectory("temp root", TEMP_ROOT_DIR),
-		formatExistingDirectory("async runs", ASYNC_DIR),
-		formatExistingDirectory("results", RESULTS_DIR),
-		formatExistingDirectory("chain runs", CHAIN_RUNS_DIR),
-		"",
-		"Discovery",
-		...formatDiscovery(input),
-		"",
-		"Intercom",
-		...formatIntercomSection(input),
-	];
-	return lines.join("\n");
+  const lines = [
+    "Subagents doctor report",
+    "",
+    "Runtime",
+    `- Native session cwd: ${input.nativeSessionCwd ?? input.cwd}`,
+    ...(input.nativeSessionCwd && input.nativeSessionCwd !== input.cwd
+      ? [`- Requested cwd: ${input.cwd}`]
+      : []),
+    `- Node: ${process.version}`,
+    `- process: ${process.pid} (${process.execPath})`,
+    `- loaded Pi version: ${PI_VERSION}`,
+    `- Pi package directory: ${PI_PACKAGE_DIR} (Pi resource path; may be overridden)`,
+    "- native queue contract: not verified (version alone does not identify fork patches)",
+    `- loaded pi-subagents build: ${EXTENSION_BUILD.version && EXTENSION_BUILD.sha256 ? `${EXTENSION_BUILD.version} (runtime SHA-256 ${EXTENSION_BUILD.sha256})` : "unknown (unbuilt source)"}`,
+    `- extension module: ${EXTENSION_MODULE}`,
+    "- async support: available (Node >=24)",
+    ...formatSessionLines(input),
+    "",
+    "Filesystem",
+    formatExistingDirectory("temp root", TEMP_ROOT_DIR),
+    formatExistingDirectory("async runs", ASYNC_DIR),
+    formatExistingDirectory("results", RESULTS_DIR),
+    formatExistingDirectory("chain runs", CHAIN_RUNS_DIR),
+    "",
+    "Discovery",
+    ...formatDiscovery(input),
+    "",
+    "Intercom",
+    ...formatIntercomSection(input),
+  ];
+  return lines.join("\n");
 }

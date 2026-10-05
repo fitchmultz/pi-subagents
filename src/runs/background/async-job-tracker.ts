@@ -5,381 +5,541 @@ import { scanJournal } from "../../shared/journal-reader.ts";
 import { renderWidget, widgetRenderKey } from "../../tui/render.ts";
 import { formatControlNoticeMessage, isObsoleteIdleNotice } from "../shared/subagent-control.ts";
 import {
-	type AsyncJobState,
-	type AsyncStartedEvent,
-	type ControlEvent,
-	type SubagentState,
-	POLL_INTERVAL_MS,
-	RESULTS_DIR,
-	SUBAGENT_CONTROL_EVENT,
-	SUBAGENT_CONTROL_INTERCOM_EVENT,
+  type AsyncJobState,
+  type AsyncStartedEvent,
+  type ControlEvent,
+  type SubagentState,
+  POLL_INTERVAL_MS,
+  RESULTS_DIR,
+  SUBAGENT_CONTROL_EVENT,
+  SUBAGENT_CONTROL_INTERCOM_EVENT,
 } from "../../shared/types.ts";
 import { readStatus } from "../../shared/utils.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
-import { attachRootChildrenToSteps, findNestedRouteForRootId, hasLiveNestedDescendants } from "../shared/nested-events.ts";
+import {
+  attachRootChildrenToSteps,
+  findNestedRouteForRootId,
+  hasLiveNestedDescendants,
+} from "../shared/nested-events.ts";
 import { asyncStatusToSummary, createAsyncRunDiscovery, listAsyncRuns } from "./async-status.ts";
 import { isTuiContext } from "../../shared/ui-mode.ts";
 import { exactAsyncRunLocation, type AsyncRunRecord } from "./async-resume.ts";
 import type { OwnedRunRestoration } from "../shared/run-records.ts";
 
 interface AsyncJobTrackerOptions {
-	render?: (ctx: ExtensionContext, jobs: AsyncJobState[]) => void;
+  render?: (ctx: ExtensionContext, jobs: AsyncJobState[]) => void;
 }
 
-export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: SubagentState, asyncDirRoot: string, options: AsyncJobTrackerOptions = {}): {
-	ensurePoller: () => void;
-	handleStarted: (data: unknown) => void;
-	handleComplete: (data: unknown) => void;
-	restoreJobs: (sessionId: string, ctx: ExtensionContext, restoration?: OwnedRunRestoration) => void;
-	resetJobs: (ctx?: ExtensionContext) => void;
+export function createAsyncJobTracker(
+  pi: Pick<ExtensionAPI, "events">,
+  state: SubagentState,
+  asyncDirRoot: string,
+  options: AsyncJobTrackerOptions = {},
+): {
+  ensurePoller: () => void;
+  handleStarted: (data: unknown) => void;
+  handleComplete: (data: unknown) => void;
+  restoreJobs: (
+    sessionId: string,
+    ctx: ExtensionContext,
+    restoration?: OwnedRunRestoration,
+  ) => void;
+  resetJobs: (ctx?: ExtensionContext) => void;
 } {
-	const resultsDir = RESULTS_DIR;
-	let restoreDiscovery: (() => AsyncRunRecord[]) | undefined;
-	let restoreBoundary = 0;
-	let restoreDiscoveryDeadline = 0;
-	const rerenderWidget = (ctx: ExtensionContext, jobs = Array.from(state.asyncJobs.values())) => {
-		(options.render ?? renderWidget)(ctx, jobs);
-		const uiWithRender: ExtensionContext["ui"] & { requestRender?: () => void } = ctx.ui;
-		uiWithRender.requestRender?.();
-	};
-	const cancelCleanup = (asyncId: string) => {
-		const existingTimer = state.cleanupTimers.get(asyncId);
-		if (!existingTimer) return;
-		clearTimeout(existingTimer);
-		state.cleanupTimers.delete(asyncId);
-	};
-	const scheduleCleanup = (asyncId: string) => {
-		cancelCleanup(asyncId);
-		const timer = setTimeout(() => {
-			state.cleanupTimers.delete(asyncId);
-			state.asyncJobs.delete(asyncId);
-			if (state.lastUiContext) {
-				rerenderWidget(state.lastUiContext);
-			}
-		}, 10000);
-		state.cleanupTimers.set(asyncId, timer);
-	};
-	const emitNewControlEvents = (job: AsyncJobState) => {
-		const eventsPath = path.join(job.asyncDir, "events.jsonl");
-		try {
-			const stat = fs.statSync(eventsPath);
-			const identity = `${stat.dev}:${stat.ino}`;
-			if (job.controlEventIdentity !== identity || stat.size < (job.controlEventCursor ?? 0)) job.controlEventCursor = 0;
-			job.controlEventIdentity = identity;
-			if (stat.size === (job.controlEventCursor ?? 0)) return;
-			const cursor = scanJournal(eventsPath, (path) => !path.length || ["type", "event", "channels", "childIntercomTarget", "noticeText", "intercom"].includes(String(path[0])), ({ value, end }) => {
-				if (value?.type === "subagent.control") {
-					const record = value as { event?: ControlEvent; channels?: string[]; childIntercomTarget?: string; noticeText?: string; intercom?: { to?: string; message?: string } };
-					if (record.event?.type === "needs_attention" && Array.isArray(record.channels)
-						&& (job.controlEventSince === undefined || typeof record.event.ts === "number" && record.event.ts >= job.controlEventSince)) {
-						const payload = { event: record.event, source: "async" as const, asyncDir: job.asyncDir, childIntercomTarget: record.childIntercomTarget,
-							noticeText: record.noticeText ?? formatControlNoticeMessage(record.event, record.childIntercomTarget) };
-						if (!isObsoleteIdleNotice(payload)) {
-							if (record.channels.includes("event")) pi.events.emit(SUBAGENT_CONTROL_EVENT, payload);
-							if (record.channels.includes("intercom") && record.intercom?.to && record.intercom.message) pi.events.emit(SUBAGENT_CONTROL_INTERCOM_EVENT, { ...payload, to: record.intercom.to, message: record.intercom.message });
-						}
-					}
-				}
-				job.controlEventCursor = end;
-			}, { policy: "live", start: job.controlEventCursor ?? 0 });
-			job.controlEventCursor = cursor;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error(`Failed to read async control events for '${job.asyncDir}':`, error);
-		}
-	};
+  const resultsDir = RESULTS_DIR;
+  let restoreDiscovery: (() => AsyncRunRecord[]) | undefined;
+  let restoreBoundary = 0;
+  let restoreDiscoveryDeadline = 0;
+  const rerenderWidget = (ctx: ExtensionContext, jobs = Array.from(state.asyncJobs.values())) => {
+    (options.render ?? renderWidget)(ctx, jobs);
+    const uiWithRender: ExtensionContext["ui"] & { requestRender?: () => void } = ctx.ui;
+    uiWithRender.requestRender?.();
+  };
+  const cancelCleanup = (asyncId: string) => {
+    const existingTimer = state.cleanupTimers.get(asyncId);
+    if (!existingTimer) {
+      return;
+    }
+    clearTimeout(existingTimer);
+    state.cleanupTimers.delete(asyncId);
+  };
+  const scheduleCleanup = (asyncId: string) => {
+    cancelCleanup(asyncId);
+    const timer = setTimeout(() => {
+      state.cleanupTimers.delete(asyncId);
+      state.asyncJobs.delete(asyncId);
+      if (state.lastUiContext) {
+        rerenderWidget(state.lastUiContext);
+      }
+    }, 10000);
+    state.cleanupTimers.set(asyncId, timer);
+  };
+  const emitNewControlEvents = (job: AsyncJobState) => {
+    const eventsPath = path.join(job.asyncDir, "events.jsonl");
+    try {
+      const stat = fs.statSync(eventsPath);
+      const identity = `${stat.dev}:${stat.ino}`;
+      if (job.controlEventIdentity !== identity || stat.size < (job.controlEventCursor ?? 0)) {
+        job.controlEventCursor = 0;
+      }
+      job.controlEventIdentity = identity;
+      if (stat.size === (job.controlEventCursor ?? 0)) {
+        return;
+      }
+      const cursor = scanJournal(
+        eventsPath,
+        (path) =>
+          !path.length ||
+          ["type", "event", "channels", "childIntercomTarget", "noticeText", "intercom"].includes(
+            String(path[0]),
+          ),
+        ({ value, end }) => {
+          if (value?.type === "subagent.control") {
+            const record = value as {
+              event?: ControlEvent;
+              channels?: string[];
+              childIntercomTarget?: string;
+              noticeText?: string;
+              intercom?: { to?: string; message?: string };
+            };
+            if (
+              record.event?.type === "needs_attention" &&
+              Array.isArray(record.channels) &&
+              (job.controlEventSince === undefined ||
+                (typeof record.event.ts === "number" && record.event.ts >= job.controlEventSince))
+            ) {
+              const payload = {
+                event: record.event,
+                source: "async" as const,
+                asyncDir: job.asyncDir,
+                childIntercomTarget: record.childIntercomTarget,
+                noticeText:
+                  record.noticeText ??
+                  formatControlNoticeMessage(record.event, record.childIntercomTarget),
+              };
+              if (!isObsoleteIdleNotice(payload)) {
+                if (record.channels.includes("event")) {
+                  pi.events.emit(SUBAGENT_CONTROL_EVENT, payload);
+                }
+                if (
+                  record.channels.includes("intercom") &&
+                  record.intercom?.to &&
+                  record.intercom.message
+                ) {
+                  pi.events.emit(SUBAGENT_CONTROL_INTERCOM_EVENT, {
+                    ...payload,
+                    to: record.intercom.to,
+                    message: record.intercom.message,
+                  });
+                }
+              }
+            }
+          }
+          job.controlEventCursor = end;
+        },
+        { policy: "live", start: job.controlEventCursor ?? 0 },
+      );
+      job.controlEventCursor = cursor;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.error(`Failed to read async control events for '${job.asyncDir}':`, error);
+      }
+    }
+  };
 
-	const refreshNestedJob = (job: AsyncJobState) => {
-		if (!job.nestedRoute) return;
-		job.nestedChildren = reconcileNestedAsyncDescendants(job.nestedRoute, { resultsDir });
-		attachRootChildrenToSteps(job.asyncId, job.steps, job.nestedChildren);
-	};
+  const refreshNestedJob = (job: AsyncJobState) => {
+    if (!job.nestedRoute) {
+      return;
+    }
+    job.nestedChildren = reconcileNestedAsyncDescendants(job.nestedRoute, { resultsDir });
+    attachRootChildrenToSteps(job.asyncId, job.steps, job.nestedChildren);
+  };
 
-	const ensurePoller = () => {
-		if (state.poller) return;
-		state.poller = setInterval(() => {
-			let widgetChanged = false;
-			let restoredRecords: AsyncRunRecord[] = [];
-			if (restoreDiscovery) {
-				try {
-					restoredRecords = restoreDiscovery();
-					widgetChanged = discoverRestoredJobs(restoredRecords, true);
-				} catch (error) {
-					console.error("Failed to discover active async jobs:", error);
-				}
-				if (Date.now() >= restoreDiscoveryDeadline) {
-					restoreDiscovery = undefined;
-					restoreDiscoveryDeadline = 0;
-				}
-			}
-			if (state.asyncJobs.size === 0) {
-				if (restoreDiscovery) return;
-				if (state.lastUiContext && isTuiContext(state.lastUiContext)) rerenderWidget(state.lastUiContext, []);
-				if (state.poller) {
-					clearInterval(state.poller);
-					state.poller = null;
-				}
-				return;
-			}
-			const restoredByDir = new Map(restoredRecords.map((record) => [record.location.asyncDir, record]));
-			for (const job of state.asyncJobs.values()) {
-				const widgetStateBefore = widgetRenderKey(job);
-				let nestedRefreshFailed = false;
-				const refreshNestedProjection = () => {
-					try {
-						refreshNestedJob(job);
-					} catch (error) {
-						nestedRefreshFailed = true;
-						console.error(`Failed to refresh nested async descendants for '${job.asyncDir}':`, error);
-					}
-				};
+  const ensurePoller = () => {
+    if (state.poller) {
+      return;
+    }
+    state.poller = setInterval(() => {
+      let widgetChanged = false;
+      let restoredRecords: AsyncRunRecord[] = [];
+      if (restoreDiscovery) {
+        try {
+          restoredRecords = restoreDiscovery();
+          widgetChanged = discoverRestoredJobs(restoredRecords, true);
+        } catch (error) {
+          console.error("Failed to discover active async jobs:", error);
+        }
+        if (Date.now() >= restoreDiscoveryDeadline) {
+          restoreDiscovery = undefined;
+          restoreDiscoveryDeadline = 0;
+        }
+      }
+      if (state.asyncJobs.size === 0) {
+        if (restoreDiscovery) {
+          return;
+        }
+        if (state.lastUiContext && isTuiContext(state.lastUiContext)) {
+          rerenderWidget(state.lastUiContext, []);
+        }
+        if (state.poller) {
+          clearInterval(state.poller);
+          state.poller = null;
+        }
+        return;
+      }
+      const restoredByDir = new Map(
+        restoredRecords.map((record) => [record.location.asyncDir, record]),
+      );
+      for (const job of state.asyncJobs.values()) {
+        const widgetStateBefore = widgetRenderKey(job);
+        let nestedRefreshFailed = false;
+        const refreshNestedProjection = () => {
+          try {
+            refreshNestedJob(job);
+          } catch (error) {
+            nestedRefreshFailed = true;
+            console.error(
+              `Failed to refresh nested async descendants for '${job.asyncDir}':`,
+              error,
+            );
+          }
+        };
 
-				try {
-					emitNewControlEvents(job);
-					refreshNestedProjection();
-					const reconciliation = restoredByDir.get(job.asyncDir) ?? reconcileAsyncRun(job.asyncDir, {
-						resultsDir,
-						startedRun: {
-							runId: job.asyncId,
-							pid: job.pid,
-							sessionId: job.sessionId,
-							mode: job.mode,
-							agents: job.agents,
-							chainStepCount: job.chainStepCount,
-							parallelGroups: job.parallelGroups,
-							startedAt: job.startedAt,
-							sessionFile: job.sessionFile,
-						},
-					});
-					const status = reconciliation.status ?? readStatus(job.asyncDir);
-					if (status) {
-						const summary = asyncStatusToSummary(job.asyncDir, status, [], job.nestedRoute ? job.nestedChildren ?? [] : undefined);
-						const previousStatus = job.status;
-						job.status = summary.state;
-						if (job.status !== "complete" && job.status !== "failed" && job.status !== "blocked" && job.status !== "paused") cancelCleanup(job.asyncId);
-						job.sessionId = summary.sessionId ?? job.sessionId;
-						job.activityState = summary.activityState;
-						job.lastActivityAt = summary.lastActivityAt ?? job.lastActivityAt;
-						job.currentTool = summary.currentTool;
-						job.currentToolStartedAt = summary.currentToolStartedAt;
-						job.currentPath = summary.currentPath;
-						job.turnCount = summary.turnCount ?? job.turnCount;
-						job.toolCount = summary.toolCount ?? job.toolCount;
-						job.mode = summary.mode;
-						job.currentStep = summary.currentStep ?? job.currentStep;
-						job.chainStepCount = summary.chainStepCount ?? job.chainStepCount;
-						job.startedAt = summary.startedAt;
-						if (summary.lastUpdate !== undefined) job.updatedAt = summary.lastUpdate;
-						if (summary.steps.length) {
-							const groups = summary.parallelGroups ?? [];
-							job.parallelGroups = groups.length ? groups : job.parallelGroups;
-							const activeGroup = summary.currentStep !== undefined
-								? groups.find((group) => summary.currentStep! >= group.start && summary.currentStep! < group.start + group.count)
-								: undefined;
-							const visibleSteps = activeGroup
-								? summary.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count)
-								: summary.steps;
-							job.activeParallelGroup = Boolean(activeGroup);
-							job.agents = visibleSteps.map((step) => step.agent);
-							job.steps = visibleSteps;
-							attachRootChildrenToSteps(job.asyncId, job.steps, job.nestedChildren);
-							job.stepsTotal = visibleSteps.length;
-							job.runningSteps = visibleSteps.filter((step) => step.status === "running").length;
-							job.completedSteps = visibleSteps.filter((step) => step.status === "complete" || step.status === "completed").length;
-							if (summary.state === "complete") job.completedSteps = visibleSteps.length;
-						}
-						job.totalTokens = summary.totalTokens ?? job.totalTokens;
-						job.sessionFile = summary.sessionFile ?? job.sessionFile;
-						if ((job.status === "complete" || job.status === "failed" || job.status === "blocked" || job.status === "paused") && !nestedRefreshFailed && !hasLiveNestedDescendants(job.nestedChildren) && (previousStatus !== job.status || !state.cleanupTimers.has(job.asyncId))) {
-							scheduleCleanup(job.asyncId);
-						}
-						if (widgetRenderKey(job) !== widgetStateBefore) widgetChanged = true;
-						continue;
-					}
-					if (job.status === "queued") {
-						job.status = "running";
-						job.updatedAt = Date.now();
-					}
-				} catch (error) {
-					if (job.status !== "failed") {
-						console.error(`Failed to read async status for '${job.asyncDir}':`, error);
-						job.status = "failed";
-						job.updatedAt = Date.now();
-					}
-					if (!hasLiveNestedDescendants(job.nestedChildren) && !state.cleanupTimers.has(job.asyncId)) {
-						scheduleCleanup(job.asyncId);
-					}
-				}
-				if (widgetRenderKey(job) !== widgetStateBefore) widgetChanged = true;
-			}
+        try {
+          emitNewControlEvents(job);
+          refreshNestedProjection();
+          const reconciliation =
+            restoredByDir.get(job.asyncDir) ??
+            reconcileAsyncRun(job.asyncDir, {
+              resultsDir,
+              startedRun: {
+                runId: job.asyncId,
+                pid: job.pid,
+                sessionId: job.sessionId,
+                mode: job.mode,
+                agents: job.agents,
+                chainStepCount: job.chainStepCount,
+                parallelGroups: job.parallelGroups,
+                startedAt: job.startedAt,
+                sessionFile: job.sessionFile,
+              },
+            });
+          const status = reconciliation.status ?? readStatus(job.asyncDir);
+          if (status) {
+            const summary = asyncStatusToSummary(
+              job.asyncDir,
+              status,
+              [],
+              job.nestedRoute ? (job.nestedChildren ?? []) : undefined,
+            );
+            const previousStatus = job.status;
+            job.status = summary.state;
+            if (
+              job.status !== "complete" &&
+              job.status !== "failed" &&
+              job.status !== "blocked" &&
+              job.status !== "paused"
+            ) {
+              cancelCleanup(job.asyncId);
+            }
+            job.sessionId = summary.sessionId ?? job.sessionId;
+            job.activityState = summary.activityState;
+            job.lastActivityAt = summary.lastActivityAt ?? job.lastActivityAt;
+            job.currentTool = summary.currentTool;
+            job.currentToolStartedAt = summary.currentToolStartedAt;
+            job.currentPath = summary.currentPath;
+            job.turnCount = summary.turnCount ?? job.turnCount;
+            job.toolCount = summary.toolCount ?? job.toolCount;
+            job.mode = summary.mode;
+            job.currentStep = summary.currentStep ?? job.currentStep;
+            job.chainStepCount = summary.chainStepCount ?? job.chainStepCount;
+            job.startedAt = summary.startedAt;
+            if (summary.lastUpdate !== undefined) {
+              job.updatedAt = summary.lastUpdate;
+            }
+            if (summary.steps.length) {
+              const groups = summary.parallelGroups ?? [];
+              job.parallelGroups = groups.length ? groups : job.parallelGroups;
+              const activeGroup =
+                summary.currentStep !== undefined
+                  ? groups.find(
+                      (group) =>
+                        summary.currentStep! >= group.start &&
+                        summary.currentStep! < group.start + group.count,
+                    )
+                  : undefined;
+              const visibleSteps = activeGroup
+                ? summary.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count)
+                : summary.steps;
+              job.activeParallelGroup = Boolean(activeGroup);
+              job.agents = visibleSteps.map((step) => step.agent);
+              job.steps = visibleSteps;
+              attachRootChildrenToSteps(job.asyncId, job.steps, job.nestedChildren);
+              job.stepsTotal = visibleSteps.length;
+              job.runningSteps = visibleSteps.filter((step) => step.status === "running").length;
+              job.completedSteps = visibleSteps.filter(
+                (step) => step.status === "complete" || step.status === "completed",
+              ).length;
+              if (summary.state === "complete") {
+                job.completedSteps = visibleSteps.length;
+              }
+            }
+            job.totalTokens = summary.totalTokens ?? job.totalTokens;
+            job.sessionFile = summary.sessionFile ?? job.sessionFile;
+            if (
+              (job.status === "complete" ||
+                job.status === "failed" ||
+                job.status === "blocked" ||
+                job.status === "paused") &&
+              !nestedRefreshFailed &&
+              !hasLiveNestedDescendants(job.nestedChildren) &&
+              (previousStatus !== job.status || !state.cleanupTimers.has(job.asyncId))
+            ) {
+              scheduleCleanup(job.asyncId);
+            }
+            if (widgetRenderKey(job) !== widgetStateBefore) {
+              widgetChanged = true;
+            }
+            continue;
+          }
+          if (job.status === "queued") {
+            job.status = "running";
+            job.updatedAt = Date.now();
+          }
+        } catch (error) {
+          if (job.status !== "failed") {
+            console.error(`Failed to read async status for '${job.asyncDir}':`, error);
+            job.status = "failed";
+            job.updatedAt = Date.now();
+          }
+          if (
+            !hasLiveNestedDescendants(job.nestedChildren) &&
+            !state.cleanupTimers.has(job.asyncId)
+          ) {
+            scheduleCleanup(job.asyncId);
+          }
+        }
+        if (widgetRenderKey(job) !== widgetStateBefore) {
+          widgetChanged = true;
+        }
+      }
 
-			if (widgetChanged && state.lastUiContext && isTuiContext(state.lastUiContext)) rerenderWidget(state.lastUiContext);
-		}, POLL_INTERVAL_MS);
-		state.poller.unref?.();
-	};
+      if (widgetChanged && state.lastUiContext && isTuiContext(state.lastUiContext)) {
+        rerenderWidget(state.lastUiContext);
+      }
+    }, POLL_INTERVAL_MS);
+    state.poller.unref?.();
+  };
 
-	const handleStarted = (data: unknown) => {
-		const info = data as AsyncStartedEvent;
-		if (!info.id) return;
-		const now = Date.now();
-		const asyncDir = info.asyncDir ?? exactAsyncRunLocation(info.id, asyncDirRoot, resultsDir).asyncDir ?? path.join(asyncDirRoot, info.id);
-		const rawAgents = info.agents?.length ? info.agents : info.chain && info.chain.length > 0 ? info.chain : info.agent ? [info.agent] : undefined;
-		const validParallelGroups = normalizeParallelGroups(info.parallelGroups, Number.MAX_SAFE_INTEGER, info.chainStepCount ?? Number.MAX_SAFE_INTEGER);
-		const firstGroup = validParallelGroups.find((group) => group.start === 0);
-		const firstGroupCount = firstGroup?.count;
-		const agents = firstGroupCount && firstGroupCount > 0
-			? rawAgents?.slice(0, firstGroupCount)
-			: rawAgents;
-		state.asyncJobs.set(info.id, {
-			asyncId: info.id,
-			asyncDir,
-			status: "queued",
-			pid: typeof info.pid === "number" ? info.pid : undefined,
-			...(typeof info.sessionId === "string" ? { sessionId: info.sessionId } : {}),
-			mode: info.mode ?? (info.chain ? "chain" : "single"),
-			agents,
-			chainStepCount: info.chainStepCount,
-			parallelGroups: validParallelGroups,
-			nestedRoute: info.nestedRoute,
-			stepsTotal: firstGroupCount ?? agents?.length,
-			activeParallelGroup: Boolean(firstGroupCount && firstGroupCount > 0),
-			startedAt: now,
-			updatedAt: now,
-		});
-		ensurePoller();
-		if (state.lastUiContext && isTuiContext(state.lastUiContext)) {
-			rerenderWidget(state.lastUiContext);
-		}
-	};
+  const handleStarted = (data: unknown) => {
+    const info = data as AsyncStartedEvent;
+    if (!info.id) {
+      return;
+    }
+    const now = Date.now();
+    const asyncDir =
+      info.asyncDir ??
+      exactAsyncRunLocation(info.id, asyncDirRoot, resultsDir).asyncDir ??
+      path.join(asyncDirRoot, info.id);
+    const rawAgents = info.agents?.length
+      ? info.agents
+      : info.chain && info.chain.length > 0
+        ? info.chain
+        : info.agent
+          ? [info.agent]
+          : undefined;
+    const validParallelGroups = normalizeParallelGroups(
+      info.parallelGroups,
+      Number.MAX_SAFE_INTEGER,
+      info.chainStepCount ?? Number.MAX_SAFE_INTEGER,
+    );
+    const firstGroup = validParallelGroups.find((group) => group.start === 0);
+    const firstGroupCount = firstGroup?.count;
+    const agents =
+      firstGroupCount && firstGroupCount > 0 ? rawAgents?.slice(0, firstGroupCount) : rawAgents;
+    state.asyncJobs.set(info.id, {
+      asyncId: info.id,
+      asyncDir,
+      status: "queued",
+      pid: typeof info.pid === "number" ? info.pid : undefined,
+      ...(typeof info.sessionId === "string" ? { sessionId: info.sessionId } : {}),
+      mode: info.mode ?? (info.chain ? "chain" : "single"),
+      agents,
+      chainStepCount: info.chainStepCount,
+      parallelGroups: validParallelGroups,
+      nestedRoute: info.nestedRoute,
+      stepsTotal: firstGroupCount ?? agents?.length,
+      activeParallelGroup: Boolean(firstGroupCount && firstGroupCount > 0),
+      startedAt: now,
+      updatedAt: now,
+    });
+    ensurePoller();
+    if (state.lastUiContext && isTuiContext(state.lastUiContext)) {
+      rerenderWidget(state.lastUiContext);
+    }
+  };
 
-	const handleComplete = (data: unknown) => {
-		const result = data as { id?: string; success?: boolean; state?: string; asyncDir?: string };
-		const asyncId = result.id;
-		if (!asyncId) return;
-		const job = state.asyncJobs.get(asyncId);
-		let nestedRefreshFailed = false;
-		if (job) {
-			job.status = result.state === "blocked" ? "blocked" : result.state === "paused" ? "paused" : result.success ? "complete" : "failed";
-			job.updatedAt = Date.now();
-			if (result.asyncDir) job.asyncDir = result.asyncDir;
-			try {
-				refreshNestedJob(job);
-			} catch (error) {
-				nestedRefreshFailed = true;
-				console.error(`Failed to refresh nested async descendants for '${job.asyncDir}':`, error);
-			}
-		}
-		if (state.lastUiContext && isTuiContext(state.lastUiContext)) {
-			rerenderWidget(state.lastUiContext);
-		}
-		if (!nestedRefreshFailed && !hasLiveNestedDescendants(job?.nestedChildren)) scheduleCleanup(asyncId);
-	};
+  const handleComplete = (data: unknown) => {
+    const result = data as { id?: string; success?: boolean; state?: string; asyncDir?: string };
+    const asyncId = result.id;
+    if (!asyncId) {
+      return;
+    }
+    const job = state.asyncJobs.get(asyncId);
+    let nestedRefreshFailed = false;
+    if (job) {
+      job.status =
+        result.state === "blocked"
+          ? "blocked"
+          : result.state === "paused"
+            ? "paused"
+            : result.success
+              ? "complete"
+              : "failed";
+      job.updatedAt = Date.now();
+      if (result.asyncDir) {
+        job.asyncDir = result.asyncDir;
+      }
+      try {
+        refreshNestedJob(job);
+      } catch (error) {
+        nestedRefreshFailed = true;
+        console.error(`Failed to refresh nested async descendants for '${job.asyncDir}':`, error);
+      }
+    }
+    if (state.lastUiContext && isTuiContext(state.lastUiContext)) {
+      rerenderWidget(state.lastUiContext);
+    }
+    if (!nestedRefreshFailed && !hasLiveNestedDescendants(job?.nestedChildren)) {
+      scheduleCleanup(asyncId);
+    }
+  };
 
-	const discoverRestoredJobs = (records: AsyncRunRecord[], sinceBoundary: boolean): boolean => {
-		let changed = false;
-		for (const run of listAsyncRuns(asyncDirRoot, {
-			states: ["queued", "running"],
-			records,
-			resultsDir,
-			skipInvalid: true,
-		})) {
-			if (state.asyncJobs.has(run.id)) continue;
-			const groups = run.parallelGroups ?? [];
-			const activeGroup = run.currentStep !== undefined
-				? groups.find((group) => run.currentStep! >= group.start && run.currentStep! < group.start + group.count)
-				: undefined;
-			const steps = activeGroup
-				? run.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count)
-				: run.steps;
-			let controlEventCursor = 0;
-			let controlEventSince: number | undefined = sinceBoundary ? restoreBoundary : undefined;
-			// Shared discovery has already started. An EOF observed now could swallow
-			// attention appended during it; late publications use the same original cut.
-			if (!sinceBoundary) try {
-				controlEventCursor = fs.statSync(path.join(run.asyncDir, "events.jsonl")).size;
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-					controlEventSince = restoreBoundary;
-					console.error(`Failed to inspect async control events for '${run.asyncDir}':`, error);
-				}
-			}
-			let nestedRoute: ReturnType<typeof findNestedRouteForRootId>;
-			try {
-				nestedRoute = findNestedRouteForRootId(run.id);
-			} catch (error) {
-				console.error(`Failed to restore nested async descendants for '${run.asyncDir}':`, error);
-			}
-			state.asyncJobs.set(run.id, {
-				asyncId: run.id,
-				asyncDir: run.asyncDir,
-				status: run.state,
-				pid: run.pid,
-				sessionId: run.sessionId,
-				activityState: run.activityState,
-				lastActivityAt: run.lastActivityAt,
-				currentTool: run.currentTool,
-				currentToolStartedAt: run.currentToolStartedAt,
-				currentPath: run.currentPath,
-				turnCount: run.turnCount,
-				toolCount: run.toolCount,
-				mode: run.mode,
-				agents: steps.map((step) => step.agent),
-				currentStep: run.currentStep,
-				chainStepCount: run.chainStepCount,
-				parallelGroups: groups,
-				steps,
-				stepsTotal: steps.length,
-				runningSteps: steps.filter((step) => step.status === "running").length,
-				completedSteps: steps.filter((step) => step.status === "complete" || step.status === "completed").length,
-				activeParallelGroup: Boolean(activeGroup),
-				startedAt: run.startedAt,
-				updatedAt: run.lastUpdate ?? run.startedAt,
-				totalTokens: run.totalTokens,
-				sessionFile: run.sessionFile,
-				controlEventCursor,
-				controlEventSince,
-				nestedRoute,
-				nestedChildren: run.nestedChildren,
-			});
-			changed = true;
-		}
-		return changed;
-	};
+  const discoverRestoredJobs = (records: AsyncRunRecord[], sinceBoundary: boolean): boolean => {
+    let changed = false;
+    for (const run of listAsyncRuns(asyncDirRoot, {
+      states: ["queued", "running"],
+      records,
+      resultsDir,
+      skipInvalid: true,
+    })) {
+      if (state.asyncJobs.has(run.id)) {
+        continue;
+      }
+      const groups = run.parallelGroups ?? [];
+      const activeGroup =
+        run.currentStep !== undefined
+          ? groups.find(
+              (group) =>
+                run.currentStep! >= group.start && run.currentStep! < group.start + group.count,
+            )
+          : undefined;
+      const steps = activeGroup
+        ? run.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count)
+        : run.steps;
+      let controlEventCursor = 0;
+      let controlEventSince: number | undefined = sinceBoundary ? restoreBoundary : undefined;
+      // Shared discovery has already started. An EOF observed now could swallow
+      // attention appended during it; late publications use the same original cut.
+      if (!sinceBoundary) {
+        try {
+          controlEventCursor = fs.statSync(path.join(run.asyncDir, "events.jsonl")).size;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            controlEventSince = restoreBoundary;
+            console.error(`Failed to inspect async control events for '${run.asyncDir}':`, error);
+          }
+        }
+      }
+      let nestedRoute: ReturnType<typeof findNestedRouteForRootId>;
+      try {
+        nestedRoute = findNestedRouteForRootId(run.id);
+      } catch (error) {
+        console.error(`Failed to restore nested async descendants for '${run.asyncDir}':`, error);
+      }
+      state.asyncJobs.set(run.id, {
+        asyncId: run.id,
+        asyncDir: run.asyncDir,
+        status: run.state,
+        pid: run.pid,
+        sessionId: run.sessionId,
+        activityState: run.activityState,
+        lastActivityAt: run.lastActivityAt,
+        currentTool: run.currentTool,
+        currentToolStartedAt: run.currentToolStartedAt,
+        currentPath: run.currentPath,
+        turnCount: run.turnCount,
+        toolCount: run.toolCount,
+        mode: run.mode,
+        agents: steps.map((step) => step.agent),
+        currentStep: run.currentStep,
+        chainStepCount: run.chainStepCount,
+        parallelGroups: groups,
+        steps,
+        stepsTotal: steps.length,
+        runningSteps: steps.filter((step) => step.status === "running").length,
+        completedSteps: steps.filter(
+          (step) => step.status === "complete" || step.status === "completed",
+        ).length,
+        activeParallelGroup: Boolean(activeGroup),
+        startedAt: run.startedAt,
+        updatedAt: run.lastUpdate ?? run.startedAt,
+        totalTokens: run.totalTokens,
+        sessionFile: run.sessionFile,
+        controlEventCursor,
+        controlEventSince,
+        nestedRoute,
+        nestedChildren: run.nestedChildren,
+      });
+      changed = true;
+    }
+    return changed;
+  };
 
-	const restoreJobs = (sessionId: string, ctx: ExtensionContext, restoration?: OwnedRunRestoration) => {
-		restoreBoundary = restoration?.startedAt ?? Date.now();
-		restoreDiscovery = restoration?.discover ?? createAsyncRunDiscovery(asyncDirRoot, {
-			sessionId: ctx.sessionManager?.getSessionFile() ?? sessionId, ownerSessionId: ctx.sessionManager?.getSessionId(), resultsDir, skipInvalid: true,
-		});
-		restoreDiscoveryDeadline = restoreBoundary + 2_000;
-		try {
-			discoverRestoredJobs(restoration?.records ?? restoreDiscovery(), Boolean(restoration));
-		} catch (error) {
-			console.error("Failed to discover active async jobs:", error);
-		}
-		if (isTuiContext(ctx)) {
-			state.lastUiContext = ctx;
-			rerenderWidget(ctx);
-		}
-		ensurePoller();
-	};
+  const restoreJobs = (
+    sessionId: string,
+    ctx: ExtensionContext,
+    restoration?: OwnedRunRestoration,
+  ) => {
+    restoreBoundary = restoration?.startedAt ?? Date.now();
+    restoreDiscovery =
+      restoration?.discover ??
+      createAsyncRunDiscovery(asyncDirRoot, {
+        sessionId: ctx.sessionManager?.getSessionFile() ?? sessionId,
+        ownerSessionId: ctx.sessionManager?.getSessionId(),
+        resultsDir,
+        skipInvalid: true,
+      });
+    restoreDiscoveryDeadline = restoreBoundary + 2_000;
+    try {
+      discoverRestoredJobs(restoration?.records ?? restoreDiscovery(), Boolean(restoration));
+    } catch (error) {
+      console.error("Failed to discover active async jobs:", error);
+    }
+    if (isTuiContext(ctx)) {
+      state.lastUiContext = ctx;
+      rerenderWidget(ctx);
+    }
+    ensurePoller();
+  };
 
-	const resetJobs = (ctx?: ExtensionContext) => {
-		restoreDiscovery = undefined;
-		restoreBoundary = 0;
-		restoreDiscoveryDeadline = 0;
-		for (const timer of state.cleanupTimers.values()) {
-			clearTimeout(timer);
-		}
-		state.cleanupTimers.clear();
-		state.asyncJobs.clear();
-		state.foregroundRuns?.clear();
-		state.resultFileCoalescer.clear();
-		if (ctx && isTuiContext(ctx)) {
-			state.lastUiContext = ctx;
-			rerenderWidget(ctx, []);
-		}
-	};
+  const resetJobs = (ctx?: ExtensionContext) => {
+    restoreDiscovery = undefined;
+    restoreBoundary = 0;
+    restoreDiscoveryDeadline = 0;
+    for (const timer of state.cleanupTimers.values()) {
+      clearTimeout(timer);
+    }
+    state.cleanupTimers.clear();
+    state.asyncJobs.clear();
+    state.foregroundRuns?.clear();
+    state.resultFileCoalescer.clear();
+    if (ctx && isTuiContext(ctx)) {
+      state.lastUiContext = ctx;
+      rerenderWidget(ctx, []);
+    }
+  };
 
-	return { ensurePoller, handleStarted, handleComplete, restoreJobs, resetJobs };
+  return { ensurePoller, handleStarted, handleComplete, restoreJobs, resetJobs };
 }

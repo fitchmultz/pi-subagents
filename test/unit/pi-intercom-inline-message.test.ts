@@ -4,7 +4,15 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { createRequire } from "node:module";
 
-import { createEventBus, createExtensionRuntime, CustomEditor, CustomMessageComponent, getSelectListTheme, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import {
+  createEventBus,
+  createExtensionRuntime,
+  CustomEditor,
+  CustomMessageComponent,
+  getSelectListTheme,
+  initTheme,
+  ToolExecutionComponent,
+} from "@earendil-works/pi-coding-agent";
 import { TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { createTestTerminal } from "../support/terminal.ts";
 import registerIntercomExtension from "../../src/pi-intercom/index.ts";
@@ -34,31 +42,68 @@ const message: Message = {
 };
 
 test("registered subagent completion messages honor native collapse and expand without changing peer messages", async (t) => {
-  const { loadExtensionFromFactory } = await import(new URL("./core/extensions/loader.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+  const { loadExtensionFromFactory } = await import(
+    new URL("./core/extensions/loader.js", import.meta.resolve("@earendil-works/pi-coding-agent"))
+      .href
+  );
   const runtime = createExtensionRuntime();
-  const extension = await loadExtensionFromFactory(registerIntercomExtension, process.cwd(), createEventBus(), runtime);
+  const extension = await loadExtensionFromFactory(
+    registerIntercomExtension,
+    process.cwd(),
+    createEventBus(),
+    runtime,
+  );
   const renderer = extension.messageRenderers.get("intercom_message");
-  assert.ok(renderer, "exercise the actual registered message renderer, not just the component constructor");
+  assert.ok(
+    renderer,
+    "exercise the actual registered message renderer, not just the component constructor",
+  );
   initTheme("dark", false);
-  const { theme: nativeTheme } = await import(new URL("./modes/interactive/theme/theme.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
-  const { KeybindingsManager } = await import(new URL("./core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
-  const { setKeybindings } = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
+  const { theme: nativeTheme } = await import(
+    new URL(
+      "./modes/interactive/theme/theme.js",
+      import.meta.resolve("@earendil-works/pi-coding-agent"),
+    ).href
+  );
+  const { KeybindingsManager } = await import(
+    new URL("./core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href
+  );
+  const { setKeybindings } = await import(
+    createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve(
+      "@earendil-works/pi-tui",
+    )
+  );
   setKeybindings(new KeybindingsManager());
-  const unwrap = (lines: string[]) => lines.map(stripVTControlCharacters).map((line) => line.startsWith("│") ? line.slice(1, -1) : line).join("\n").replace(/\s/g, "");
+  const unwrap = (lines: string[]) =>
+    lines
+      .map(stripVTControlCharacters)
+      .map((line) => (line.startsWith("│") ? line.slice(1, -1) : line))
+      .join("\n")
+      .replace(/\s/g, "");
   try {
     for (const status of ["completed", "failed", "paused", "timed-out"] as const) {
       const summary = `Long result: ${"café 中文 👩🏽‍💻 detailed evidence. ".repeat(40)}\n\nLast child response detail.`;
       const payload = buildSubagentResultIntercomPayload({
-        to: "parent", runId: "f5b4b221-5c64-4bc7-9862-70a35d94dc9b", mode: "parallel", source: "async",
-        children: [{ agent: "worker", index: 0, status, summary }, { agent: "reviewer", index: 1, status: "completed", summary: "Second child response." }],
+        to: "parent",
+        runId: "f5b4b221-5c64-4bc7-9862-70a35d94dc9b",
+        mode: "parallel",
+        source: "async",
+        children: [
+          { agent: "worker", index: 0, status, summary },
+          { agent: "reviewer", index: 1, status: "completed", summary: "Second child response." },
+        ],
       });
       const bodyText = payload.message;
       const customMessage = {
-        role: "custom" as const, customType: "intercom_message", display: true, timestamp: 0,
+        role: "custom" as const,
+        customType: "intercom_message",
+        display: true,
+        timestamp: 0,
         content: `**From subagent-result:**\n\n${bodyText}`,
         details: {
           from: { ...from, id: "subagent-result", name: "subagent-result", status: "result" },
-          message: { ...message, content: { text: bodyText } }, bodyText,
+          message: { ...message, content: { text: bodyText } },
+          bodyText,
         },
       };
       const original = structuredClone(customMessage);
@@ -66,7 +111,10 @@ test("registered subagent completion messages honor native collapse and expand w
       for (const width of [120, 40, 80]) {
         const collapsed = component.render(width);
         const text = collapsed.map(stripVTControlCharacters).join("\n");
-        assert.ok(collapsed.length <= 9, "completion cards must not render the full response while collapsed");
+        assert.ok(
+          collapsed.length <= 9,
+          "completion cards must not render the full response while collapsed",
+        );
         assert.ok(collapsed.every((line) => visibleWidth(line) <= width));
         assert.match(text, /Run: f5b4b221/);
         assert.match(text, new RegExp(`Status: ${status}`));
@@ -76,48 +124,116 @@ test("registered subagent completion messages honor native collapse and expand w
         component.setExpanded(true);
         const expanded = component.render(width);
         assert.ok(expanded.every((line) => visibleWidth(line) <= width));
-        assert.ok(unwrap(expanded).includes(bodyText.replace(/\s/g, "")), "native expansion retains every child response and header");
+        assert.ok(
+          unwrap(expanded).includes(bodyText.replace(/\s/g, "")),
+          "native expansion retains every child response and header",
+        );
         component.setExpanded(false);
         assert.deepEqual(component.render(width), collapsed);
       }
-      assert.deepEqual(customMessage, original, "display choices must not alter model-visible message content or details");
+      assert.deepEqual(
+        customMessage,
+        original,
+        "display choices must not alter model-visible message content or details",
+      );
 
       for (const details of [
         { ...customMessage.details, from },
         { ...customMessage.details, from: { ...from, name: "subagent-result" } },
-        { ...customMessage.details, from: { ...from, id: "subagent-control", name: "subagent-control", status: "needs_attention" } },
-        { ...customMessage.details, from: { ...customMessage.details.from, status: "needs_attention" } },
-        { ...customMessage.details, message: { ...customMessage.details.message, expectsReply: true } },
+        {
+          ...customMessage.details,
+          from: {
+            ...from,
+            id: "subagent-control",
+            name: "subagent-control",
+            status: "needs_attention",
+          },
+        },
+        {
+          ...customMessage.details,
+          from: { ...customMessage.details.from, status: "needs_attention" },
+        },
+        {
+          ...customMessage.details,
+          message: { ...customMessage.details.message, expectsReply: true },
+        },
         { ...customMessage.details, replyCommand: 'intercom({ action: "reply", message: "..." })' },
       ]) {
         const peer = new CustomMessageComponent({ ...customMessage, details }, renderer);
         const collapsed = peer.render(40);
-        assert.ok(unwrap(collapsed).includes(bodyText.replace(/\s/g, "")), "ordinary peers, questions and control messages stay fully actionable");
+        assert.ok(
+          unwrap(collapsed).includes(bodyText.replace(/\s/g, "")),
+          "ordinary peers, questions and control messages stay fully actionable",
+        );
         peer.setExpanded(true);
         assert.deepEqual(peer.render(40), collapsed);
       }
     }
-    await t.test("native Intercom list-tool hint follows configured and unbound expansion keys", () => {
-      const keys = new KeybindingsManager({ "app.tools.expand": "alt+o" }); setKeybindings(keys);
-      const terminal = createTestTerminal(90, 40), tui = new TuiAltScreen(terminal);
-      const definition = [...extension.tools.values()].find(({ definition }) => definition.name === "intercom")?.definition;
-      assert.ok(definition);
-      const card = new ToolExecutionComponent("intercom", "list-hint", { action: "list" }, {}, definition, tui, process.cwd());
-      card.updateResult({ content: [{ type: "text", text: "Full listing\nINTERCOM-PEER-END" }], details: { sessionCount: 2 }, isError: false });
-      tui.addChild(card); tui.start(); tui.renderNow();
-      try {
-        const key = process.platform === "darwin" ? "option+o" : "alt+o";
-        const lines = card.render(90).map(stripVTControlCharacters), y = lines.findIndex((line) => line.includes(key));
-        assert.ok(y >= 0, "the registered list result shows the actual native expansion shortcut");
-        terminal.click(visibleWidth(lines[y].slice(0, lines[y].indexOf(key) + key.length)) - 1, y); tui.renderNow();
-        assert.match(card.render(90).map(stripVTControlCharacters).join("\n"), /INTERCOM-PEER-END/);
-        card.setExpanded(false); keys.setUserBindings({ "app.tools.expand": [] }); card.invalidate(); tui.renderNow();
-        assert.doesNotMatch(card.render(90).map(stripVTControlCharacters).join("\n"), /to expand|Ctrl\+O|option\+o|alt\+o/);
-      } finally { tui.stop(); setKeybindings(new KeybindingsManager()); }
-    });
+    await t.test(
+      "native Intercom list-tool hint follows configured and unbound expansion keys",
+      () => {
+        const keys = new KeybindingsManager({ "app.tools.expand": "alt+o" });
+        setKeybindings(keys);
+        const terminal = createTestTerminal(90, 40),
+          tui = new TuiAltScreen(terminal);
+        const definition = [...extension.tools.values()].find(
+          ({ definition }) => definition.name === "intercom",
+        )?.definition;
+        assert.ok(definition);
+        const card = new ToolExecutionComponent(
+          "intercom",
+          "list-hint",
+          { action: "list" },
+          {},
+          definition,
+          tui,
+          process.cwd(),
+        );
+        card.updateResult({
+          content: [{ type: "text", text: "Full listing\nINTERCOM-PEER-END" }],
+          details: { sessionCount: 2 },
+          isError: false,
+        });
+        tui.addChild(card);
+        tui.start();
+        tui.renderNow();
+        try {
+          const key = process.platform === "darwin" ? "option+o" : "alt+o";
+          const lines = card.render(90).map(stripVTControlCharacters),
+            y = lines.findIndex((line) => line.includes(key));
+          assert.ok(
+            y >= 0,
+            "the registered list result shows the actual native expansion shortcut",
+          );
+          terminal.click(
+            visibleWidth(lines[y].slice(0, lines[y].indexOf(key) + key.length)) - 1,
+            y,
+          );
+          tui.renderNow();
+          assert.match(
+            card.render(90).map(stripVTControlCharacters).join("\n"),
+            /INTERCOM-PEER-END/,
+          );
+          card.setExpanded(false);
+          keys.setUserBindings({ "app.tools.expand": [] });
+          card.invalidate();
+          tui.renderNow();
+          assert.doesNotMatch(
+            card.render(90).map(stripVTControlCharacters).join("\n"),
+            /to expand|Ctrl\+O|option\+o|alt\+o/,
+          );
+        } finally {
+          tui.stop();
+          setKeybindings(new KeybindingsManager());
+        }
+      },
+    );
     await t.test("compact previews reuse formatting until width, key hint or theme changes", () => {
       const entry = {
-        role: "custom" as const, customType: "intercom_message", display: true, timestamp: 0,
+        role: "custom" as const,
+        customType: "intercom_message",
+        display: true,
+        timestamp: 0,
         content: message.content.text,
         details: { from, message },
       };
@@ -127,7 +243,9 @@ test("registered subagent completion messages honor native collapse and expand w
       const fg = nativeTheme.fg;
       const countingTheme = new Proxy(nativeTheme, {
         get(target, property) {
-          if (property !== "fg") return Reflect.get(target, property);
+          if (property !== "fg") {
+            return Reflect.get(target, property);
+          }
           return (...args: Parameters<typeof fg>) => {
             colorCalls++;
             return color + fg.apply(nativeTheme, args);
@@ -139,7 +257,9 @@ test("registered subagent completion messages honor native collapse and expand w
       for (const width of [120, 40, 2, 1, 3, 80]) {
         const lines = component.render(width);
         const calls = colorCalls;
-        for (let frame = 0; frame < 10; frame++) assert.deepEqual(component.render(width), lines);
+        for (let frame = 0; frame < 10; frame++) {
+          assert.deepEqual(component.render(width), lines);
+        }
         assert.equal(colorCalls, calls, "unchanged frames must not repeat styling and truncation");
         assert.deepEqual(lines, renderer(entry, options, countingTheme)!.render(width));
         assert.ok(lines.every((line) => visibleWidth(line) <= width));
@@ -155,7 +275,10 @@ test("registered subagent completion messages honor native collapse and expand w
         component.invalidate();
         const recolored = component.render(120);
         assert.notDeepEqual(recolored, newHint);
-        assert.deepEqual(recolored.map(stripVTControlCharacters), newHint.map(stripVTControlCharacters));
+        assert.deepEqual(
+          recolored.map(stripVTControlCharacters),
+          newHint.map(stripVTControlCharacters),
+        );
         assert.deepEqual(recolored, renderer(entry, options, countingTheme)!.render(120));
         setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
         const noHint = component.render(120);
@@ -165,133 +288,291 @@ test("registered subagent completion messages honor native collapse and expand w
         setKeybindings(new KeybindingsManager());
       }
     });
-    await t.test("direct compact Intercom previews preserve state, attachments and attention exceptions", () => {
-      const bodyText = "Historical/deferred progress from completed child (completed); not new work.\nOriginally sent: earlier\nDelivered to Pi: later\n\nSubagent progress update.\n\n📎 notes.ts\nconst proof = 'café e\u0301 中文 👩🏽‍💻';\nLast attachment detail.";
-      const received = {
-        role: "custom" as const, customType: "intercom_message", display: true, timestamp: 0,
-        content: bodyText,
-        details: {
-          from: { ...from, name: "worker" }, bodyText,
-          message: { ...message, replyTo: "previous-message", content: { text: "Subagent progress update.", attachments: [{ type: "snippet" as const, name: "notes.ts", content: "Last attachment detail." }] } },
-        },
-      };
-      const payload = buildSubagentResultIntercomPayload({
-        to: "parent", runId: "f5b4b221-5c64-4bc7-9862-70a35d94dc9b", mode: "parallel", source: "async",
-        children: [{ agent: "worker", index: 0, status: "failed", summary: "First child response." }, { agent: "reviewer", index: 1, status: "completed", summary: "Last child response." }],
-      });
-      const grouped = {
-        ...received, content: payload.message,
-        details: {
-          from: { ...from, id: "subagent-result", name: "subagent-result", status: "result" }, bodyText: payload.message,
-          message: { ...message, content: { text: payload.message } },
-        },
-      };
-      const render = (entry: typeof received | typeof grouped, compactView?: boolean, expanded = false, outputPad = 1) => {
-        const options = { expanded, outputPad, ...(compactView === undefined ? {} : { compactView }) };
-        const component = renderer(entry, options, nativeTheme);
-        assert.ok(component);
-        return component;
-      };
-      for (const entry of [
-        received,
-        { ...received, details: { ...received.details, bodyText: "Peer update: café e\u0301 中文 👩🏽‍💻\r\n\tMore peer detail.", from: { ...from, name: "peer 中文 👩🏽‍💻" } } },
-        grouped,
-        { ...grouped, details: { ...grouped.details, subagentCompletion: { runId: payload.runId, status: payload.status, children: [{ agent: "worker", index: 0, status: "failed", intercomTarget: "worker" }], ownerSessionId: "parent" } } },
-      ]) {
-        const original = structuredClone(entry);
-        for (const outputPad of [0, 2]) {
-          const compact = render(entry, true, false, outputPad);
-          for (const width of [120, 40, 2, 1, 3, 80]) {
-            const lines = compact.render(width);
-            assert.equal(lines.length, 1, "the registered compact renderer must return one content row, without a native wrapper");
-            assert.ok(lines.every((line) => visibleWidth(line) <= width && !/[\r\n\t]/.test(line)));
-            if (width >= 40 && outputPad > 0) assert.ok(lines[0]!.startsWith(" ".repeat(outputPad)));
-            assert.deepEqual(render(entry, false, false, outputPad).render(width), render(entry, undefined, false, outputPad).render(width), "OFF and absent use the same presentation");
-            compact.invalidate();
-            assert.deepEqual(compact.render(width), lines);
-            assert.deepEqual(render(entry, true, false, outputPad).render(width), lines, "OFF/ON cycles restore the compact view");
+    await t.test(
+      "direct compact Intercom previews preserve state, attachments and attention exceptions",
+      () => {
+        const bodyText =
+          "Historical/deferred progress from completed child (completed); not new work.\nOriginally sent: earlier\nDelivered to Pi: later\n\nSubagent progress update.\n\n📎 notes.ts\nconst proof = 'café e\u0301 中文 👩🏽‍💻';\nLast attachment detail.";
+        const received = {
+          role: "custom" as const,
+          customType: "intercom_message",
+          display: true,
+          timestamp: 0,
+          content: bodyText,
+          details: {
+            from: { ...from, name: "worker" },
+            bodyText,
+            message: {
+              ...message,
+              replyTo: "previous-message",
+              content: {
+                text: "Subagent progress update.",
+                attachments: [
+                  {
+                    type: "snippet" as const,
+                    name: "notes.ts",
+                    content: "Last attachment detail.",
+                  },
+                ],
+              },
+            },
+          },
+        };
+        const payload = buildSubagentResultIntercomPayload({
+          to: "parent",
+          runId: "f5b4b221-5c64-4bc7-9862-70a35d94dc9b",
+          mode: "parallel",
+          source: "async",
+          children: [
+            { agent: "worker", index: 0, status: "failed", summary: "First child response." },
+            { agent: "reviewer", index: 1, status: "completed", summary: "Last child response." },
+          ],
+        });
+        const grouped = {
+          ...received,
+          content: payload.message,
+          details: {
+            from: { ...from, id: "subagent-result", name: "subagent-result", status: "result" },
+            bodyText: payload.message,
+            message: { ...message, content: { text: payload.message } },
+          },
+        };
+        const render = (
+          entry: typeof received | typeof grouped,
+          compactView?: boolean,
+          expanded = false,
+          outputPad = 1,
+        ) => {
+          const options = {
+            expanded,
+            outputPad,
+            ...(compactView === undefined ? {} : { compactView }),
+          };
+          const component = renderer(entry, options, nativeTheme);
+          assert.ok(component);
+          return component;
+        };
+        for (const entry of [
+          received,
+          {
+            ...received,
+            details: {
+              ...received.details,
+              bodyText: "Peer update: café e\u0301 中文 👩🏽‍💻\r\n\tMore peer detail.",
+              from: { ...from, name: "peer 中文 👩🏽‍💻" },
+            },
+          },
+          grouped,
+          {
+            ...grouped,
+            details: {
+              ...grouped.details,
+              subagentCompletion: {
+                runId: payload.runId,
+                status: payload.status,
+                children: [
+                  { agent: "worker", index: 0, status: "failed", intercomTarget: "worker" },
+                ],
+                ownerSessionId: "parent",
+              },
+            },
+          },
+        ]) {
+          const original = structuredClone(entry);
+          for (const outputPad of [0, 2]) {
+            const compact = render(entry, true, false, outputPad);
+            for (const width of [120, 40, 2, 1, 3, 80]) {
+              const lines = compact.render(width);
+              assert.equal(
+                lines.length,
+                1,
+                "the registered compact renderer must return one content row, without a native wrapper",
+              );
+              assert.ok(
+                lines.every((line) => visibleWidth(line) <= width && !/[\r\n\t]/.test(line)),
+              );
+              if (width >= 40 && outputPad > 0) {
+                assert.ok(lines[0]!.startsWith(" ".repeat(outputPad)));
+              }
+              assert.deepEqual(
+                render(entry, false, false, outputPad).render(width),
+                render(entry, undefined, false, outputPad).render(width),
+                "OFF and absent use the same presentation",
+              );
+              compact.invalidate();
+              assert.deepEqual(compact.render(width), lines);
+              assert.deepEqual(
+                render(entry, true, false, outputPad).render(width),
+                lines,
+                "OFF/ON cycles restore the compact view",
+              );
+            }
           }
+          const wide = render(entry, true).render(120).map(stripVTControlCharacters).join("\n");
+          assert.match(wide, /ctrl\+o/i);
+          assert.ok(wide.includes(entry.details.from.name!));
+          if (entry.details.from.id === "subagent-result") {
+            assert.match(wide, /failed/);
+            assert.match(wide, /f5b4b221/);
+            assert.doesNotMatch(wide, /1 child/);
+          }
+          for (const width of [40, 120]) {
+            const expanded = render(entry, true, true).render(width);
+            assert.deepEqual(
+              expanded,
+              render(entry, false, true).render(width),
+              "compact mode never changes the expanded renderer",
+            );
+            assert.ok(unwrap(expanded).includes(entry.details.bodyText.replace(/\s/g, "")));
+          }
+          assert.deepEqual(entry, original);
         }
-        const wide = render(entry, true).render(120).map(stripVTControlCharacters).join("\n");
-        assert.match(wide, /ctrl\+o/i);
-        assert.ok(wide.includes(entry.details.from.name!));
-        if (entry.details.from.id === "subagent-result") {
-          assert.match(wide, /failed/);
-          assert.match(wide, /f5b4b221/);
-          assert.doesNotMatch(wide, /1 child/);
+        assert.match(
+          render(received, true).render(120).map(stripVTControlCharacters).join("\n"),
+          /Historical\/deferred progress/,
+        );
+        for (const details of [
+          { ...received.details, from: { ...from, id: "subagent-control" } },
+          { ...received.details, from: { ...from, status: "needs_attention" } },
+          { ...received.details, message: { ...received.details.message, expectsReply: true } },
+          { ...received.details, replyCommand: 'intercom({ action: "reply", message: "..." })' },
+        ]) {
+          const entry = { ...received, details };
+          const original = structuredClone(entry);
+          const lines = render(entry, true).render(40);
+          assert.deepEqual(
+            lines,
+            render(entry, false).render(40),
+            "attention and reply guidance stay prominent",
+          );
+          assert.ok(unwrap(lines).includes(bodyText.replace(/\s/g, "")));
+          assert.deepEqual(entry, original);
         }
-        for (const width of [40, 120]) {
-          const expanded = render(entry, true, true).render(width);
-          assert.deepEqual(expanded, render(entry, false, true).render(width), "compact mode never changes the expanded renderer");
-          assert.ok(unwrap(expanded).includes(entry.details.bodyText.replace(/\s/g, "")));
+        setKeybindings(new KeybindingsManager({ "app.tools.expand": ["ctrl+e"] }));
+        try {
+          assert.match(
+            render(received, true).render(120).map(stripVTControlCharacters).join("\n"),
+            /ctrl\+e/i,
+          );
+        } finally {
+          setKeybindings(new KeybindingsManager());
         }
-        assert.deepEqual(entry, original);
-      }
-      assert.match(render(received, true).render(120).map(stripVTControlCharacters).join("\n"), /Historical\/deferred progress/);
-      for (const details of [
-        { ...received.details, from: { ...from, id: "subagent-control" } },
-        { ...received.details, from: { ...from, status: "needs_attention" } },
-        { ...received.details, message: { ...received.details.message, expectsReply: true } },
-        { ...received.details, replyCommand: 'intercom({ action: "reply", message: "..." })' },
-      ]) {
-        const entry = { ...received, details };
-        const original = structuredClone(entry);
-        const lines = render(entry, true).render(40);
-        assert.deepEqual(lines, render(entry, false).render(40), "attention and reply guidance stay prominent");
-        assert.ok(unwrap(lines).includes(bodyText.replace(/\s/g, "")));
-        assert.deepEqual(entry, original);
-      }
-      setKeybindings(new KeybindingsManager({ "app.tools.expand": ["ctrl+e"] }));
-      try {
-        assert.match(render(received, true).render(120).map(stripVTControlCharacters).join("\n"), /ctrl\+e/i);
-      } finally {
-        setKeybindings(new KeybindingsManager());
-      }
-    });
-    await t.test("native pointer input expands only the clicked Intercom row and preserves global expansion and selection", async () => {
-      const terminal = createTestTerminal(90, 70), copied: string[] = [];
-      const tui = new TuiAltScreen(terminal, false, undefined, { copySelection: async (text) => { copied.push(text); return true; } });
-      const entry = (id: string, text: string, extra = {}) => ({
-        role: "custom" as const, customType: "intercom_message", display: true, timestamp: 0, content: text,
-        details: { from, message: { ...message, id, content: { text } }, ...extra },
-      });
-      const entries = [entry("first", "FULL-REPORT-ONE\nFirst report detail.\nFIRST-END"), entry("second", "FULL-REPORT-TWO\nSecond report detail.\nSECOND-END"),
-        entry("attention", "ATTENTION-BODY\nAction remains visible.", { replyCommand: "intercom reply", from: { ...from, status: "needs_attention" } })];
-      const original = structuredClone(entries);
-      // Explicit renderer input keeps this test at the same compact-message boundary on both SDK packages.
-      const components = entries.map((entry) => new CustomMessageComponent(entry, (message, options, theme) => renderer(message, { ...options, compactView: true }, theme)));
-      for (const component of components) tui.addChild(component);
-      const editor = new CustomEditor(tui, { borderColor: (text) => text, selectList: getSelectListTheme() }, new KeybindingsManager());
-      editor.setText("Unsent parent draft");
-      let expanded = false;
-      editor.onAction("app.tools.expand", () => { expanded = !expanded; for (const component of components) component.setExpanded(expanded); tui.requestRender(); });
-      tui.addChild(editor); tui.setFocus(editor); tui.start(); tui.renderNow();
-      const text = (component) => component.render(90).map(stripVTControlCharacters).join("\n");
-      const secondBefore = text(components[1]), attentionBefore = text(components[2]);
-      try {
-        assert.doesNotMatch(text(components[0]), /FIRST-END/);
-        terminal.click(4, 1); tui.renderNow();
-        assert.match(text(components[0]), /FIRST-END/);
-        assert.equal(text(components[1]), secondBefore, "a row click is not global expansion");
-        components[0].invalidate(); tui.renderNow();
-        assert.match(text(components[0]), /FIRST-END/, "theme invalidation retains the local expansion choice");
-        terminal.input("\x1b[<0;3;3M"); terminal.input("\x1b[<32;14;3M"); terminal.input("\x1b[<0;14;3m"); tui.renderNow();
-        assert.equal(tui.hasActiveSelection(), true);
-        await tui.copyActiveSelectionToClipboard();
-        assert.ok(copied.some((text) => text.includes("REPORT")), "drag selection remains native and does not toggle the row");
-        assert.match(text(components[0]), /FIRST-END/);
-        terminal.click(4, 1); tui.renderNow();
-        assert.doesNotMatch(text(components[0]), /FIRST-END/, "a second click collapses that message");
-        terminal.input("\x0f"); tui.renderNow();
-        assert.match(text(components[0]), /FIRST-END/); assert.match(text(components[1]), /SECOND-END/);
-        terminal.click(4, 1); tui.renderNow();
-        assert.doesNotMatch(text(components[0]), /FIRST-END/); assert.match(text(components[1]), /SECOND-END/);
-        terminal.input("\x0f"); tui.renderNow();
-        assert.doesNotMatch(text(components[0]), /FIRST-END/); assert.equal(text(components[1]), secondBefore);
-        assert.equal(text(components[2]), attentionBefore, "reply and attention contents stay visible");
-        assert.equal(editor.getText(), "Unsent parent draft"); assert.deepEqual(entries, original);
-      } finally { tui.stop(); }
-    });
+      },
+    );
+    await t.test(
+      "native pointer input expands only the clicked Intercom row and preserves global expansion and selection",
+      async () => {
+        const terminal = createTestTerminal(90, 70),
+          copied: string[] = [];
+        const tui = new TuiAltScreen(terminal, false, undefined, {
+          copySelection: async (text) => {
+            copied.push(text);
+            return true;
+          },
+        });
+        const entry = (id: string, text: string, extra = {}) => ({
+          role: "custom" as const,
+          customType: "intercom_message",
+          display: true,
+          timestamp: 0,
+          content: text,
+          details: { from, message: { ...message, id, content: { text } }, ...extra },
+        });
+        const entries = [
+          entry("first", "FULL-REPORT-ONE\nFirst report detail.\nFIRST-END"),
+          entry("second", "FULL-REPORT-TWO\nSecond report detail.\nSECOND-END"),
+          entry("attention", "ATTENTION-BODY\nAction remains visible.", {
+            replyCommand: "intercom reply",
+            from: { ...from, status: "needs_attention" },
+          }),
+        ];
+        const original = structuredClone(entries);
+        // Explicit renderer input keeps this test at the same compact-message boundary on both SDK packages.
+        const components = entries.map(
+          (entry) =>
+            new CustomMessageComponent(entry, (message, options, theme) =>
+              renderer(message, { ...options, compactView: true }, theme),
+            ),
+        );
+        for (const component of components) {
+          tui.addChild(component);
+        }
+        const editor = new CustomEditor(
+          tui,
+          { borderColor: (text) => text, selectList: getSelectListTheme() },
+          new KeybindingsManager(),
+        );
+        editor.setText("Unsent parent draft");
+        let expanded = false;
+        editor.onAction("app.tools.expand", () => {
+          expanded = !expanded;
+          for (const component of components) {
+            component.setExpanded(expanded);
+          }
+          tui.requestRender();
+        });
+        tui.addChild(editor);
+        tui.setFocus(editor);
+        tui.start();
+        tui.renderNow();
+        const text = (component) => component.render(90).map(stripVTControlCharacters).join("\n");
+        const secondBefore = text(components[1]),
+          attentionBefore = text(components[2]);
+        try {
+          assert.doesNotMatch(text(components[0]), /FIRST-END/);
+          terminal.click(4, 1);
+          tui.renderNow();
+          assert.match(text(components[0]), /FIRST-END/);
+          assert.equal(text(components[1]), secondBefore, "a row click is not global expansion");
+          components[0].invalidate();
+          tui.renderNow();
+          assert.match(
+            text(components[0]),
+            /FIRST-END/,
+            "theme invalidation retains the local expansion choice",
+          );
+          terminal.input("\x1b[<0;3;3M");
+          terminal.input("\x1b[<32;14;3M");
+          terminal.input("\x1b[<0;14;3m");
+          tui.renderNow();
+          assert.equal(tui.hasActiveSelection(), true);
+          await tui.copyActiveSelectionToClipboard();
+          assert.ok(
+            copied.some((text) => text.includes("REPORT")),
+            "drag selection remains native and does not toggle the row",
+          );
+          assert.match(text(components[0]), /FIRST-END/);
+          terminal.click(4, 1);
+          tui.renderNow();
+          assert.doesNotMatch(
+            text(components[0]),
+            /FIRST-END/,
+            "a second click collapses that message",
+          );
+          terminal.input("\x0f");
+          tui.renderNow();
+          assert.match(text(components[0]), /FIRST-END/);
+          assert.match(text(components[1]), /SECOND-END/);
+          terminal.click(4, 1);
+          tui.renderNow();
+          assert.doesNotMatch(text(components[0]), /FIRST-END/);
+          assert.match(text(components[1]), /SECOND-END/);
+          terminal.input("\x0f");
+          tui.renderNow();
+          assert.doesNotMatch(text(components[0]), /FIRST-END/);
+          assert.equal(text(components[1]), secondBefore);
+          assert.equal(
+            text(components[2]),
+            attentionBefore,
+            "reply and attention contents stay visible",
+          );
+          assert.equal(editor.getText(), "Unsent parent draft");
+          assert.deepEqual(entries, original);
+        } finally {
+          tui.stop();
+        }
+      },
+    );
   } finally {
     runtime.invalidate();
   }
@@ -303,7 +584,9 @@ test("inline intercom messages render at the available terminal width", () => {
   const lines = component.render(120);
 
   assert.ok(lines.length > 0);
-  for (const line of lines) assert.equal(visibleWidth(line), 120);
+  for (const line of lines) {
+    assert.equal(visibleWidth(line), 120);
+  }
 });
 
 test("inline intercom messages do not duplicate attachment labels when body text includes attachments", () => {
@@ -311,11 +594,25 @@ test("inline intercom messages do not duplicate attachment labels when body text
     ...message,
     content: {
       text: "See attached snippet.",
-      attachments: [{ type: "snippet", name: "example.ts", content: "const ok = true;", language: "typescript" }],
+      attachments: [
+        {
+          type: "snippet",
+          name: "example.ts",
+          content: "const ok = true;",
+          language: "typescript",
+        },
+      ],
     },
   };
-  const bodyText = "See attached snippet.\n\n---\n📎 example.ts\n~~~typescript\nconst ok = true;\n~~~";
-  const component = new InlineMessageComponent(from, attachmentMessage, theme as any, undefined, bodyText);
+  const bodyText =
+    "See attached snippet.\n\n---\n📎 example.ts\n~~~typescript\nconst ok = true;\n~~~";
+  const component = new InlineMessageComponent(
+    from,
+    attachmentMessage,
+    theme as any,
+    undefined,
+    bodyText,
+  );
 
   const text = component.render(120).join("\n");
   assert.equal((text.match(/📎 example\.ts/g) ?? []).length, 1);
@@ -323,9 +620,12 @@ test("inline intercom messages do not duplicate attachment labels when body text
 });
 
 test("inline intercom messages cache the full output only at the latest width", () => {
-  const bodyText = Array.from({ length: 120 }, (_, index) =>
-    `Line ${index}: café e\u0301 中文 👩🏽‍💻 with enough text to wrap at a narrow terminal width.`,
-  ).join("\n") + "\n\n📎 example.ts\n~~~typescript\nconst ok = true;\n~~~";
+  const bodyText =
+    Array.from(
+      { length: 120 },
+      (_, index) =>
+        `Line ${index}: café e\u0301 中文 👩🏽‍💻 with enough text to wrap at a narrow terminal width.`,
+    ).join("\n") + "\n\n📎 example.ts\n~~~typescript\nconst ok = true;\n~~~";
   const attachmentMessage: Message = {
     ...message,
     replyTo: "previous-message",
@@ -342,7 +642,13 @@ test("inline intercom messages cache the full output only at the latest width", 
       return text;
     },
   };
-  const component = new InlineMessageComponent(from, attachmentMessage, countingTheme as any, replyCommand, bodyText);
+  const component = new InlineMessageComponent(
+    from,
+    attachmentMessage,
+    countingTheme as any,
+    replyCommand,
+    bodyText,
+  );
   let firstWideLines: string[] | undefined;
 
   for (const width of [120, 41, 80, 2, 1, 3, 41, 120]) {
@@ -350,19 +656,35 @@ test("inline intercom messages cache the full output only at the latest width", 
     const callsAfterRender = colorCalls;
     assert.strictEqual(component.render(width), lines, `reuse rendered lines at width ${width}`);
     assert.equal(colorCalls, callsAfterRender, "cached frames do not repeat coloring");
-    const fresh = new InlineMessageComponent(from, attachmentMessage, theme as any, replyCommand, bodyText);
+    const fresh = new InlineMessageComponent(
+      from,
+      attachmentMessage,
+      theme as any,
+      replyCommand,
+      bodyText,
+    );
     assert.deepEqual(lines, fresh.render(width), `resize matches a fresh render at width ${width}`);
-    for (const line of lines) assert.ok(visibleWidth(line) <= width);
+    for (const line of lines) {
+      assert.ok(visibleWidth(line) <= width);
+    }
 
     if (width >= 41) {
-      const text = lines.slice(1, -1).map((line) => line.slice(1, -1)).join("\n");
-      assert.ok(text.replace(/\s/g, "").includes(bodyText.replace(/\s/g, "")), "preserve the entire Unicode body and attachment");
+      const text = lines
+        .slice(1, -1)
+        .map((line) => line.slice(1, -1))
+        .join("\n");
+      assert.ok(
+        text.replace(/\s/g, "").includes(bodyText.replace(/\s/g, "")),
+        "preserve the entire Unicode body and attachment",
+      );
       assert.ok(text.replace(/\s/g, "").includes(`↩ To reply: ${replyCommand}`.replace(/\s/g, "")));
       assert.match(text, /↳ Reply to previous/);
       assert.equal((text.match(/📎 example\.ts/g) ?? []).length, 1);
     }
     if (width === 120) {
-      if (firstWideLines) assert.notStrictEqual(lines, firstWideLines, "resizing evicts the previous width");
+      if (firstWideLines) {
+        assert.notStrictEqual(lines, firstWideLines, "resizing evicts the previous width");
+      }
       firstWideLines = lines;
     }
   }
@@ -377,7 +699,10 @@ test("inline intercom invalidation refreshes cached theme colors and attachment 
   };
   const attachmentMessage: Message = {
     ...message,
-    content: { text: message.content.text, attachments: [{ type: "file", name: "notes.txt", content: "notes" }] },
+    content: {
+      text: message.content.text,
+      attachments: [{ type: "file", name: "notes.txt", content: "notes" }],
+    },
   };
   const component = new InlineMessageComponent(from, attachmentMessage, changingTheme as any);
   const before = component.render(80);
@@ -390,7 +715,10 @@ test("inline intercom invalidation refreshes cached theme colors and attachment 
   assert.notDeepEqual(after, before);
   assert.deepEqual(after.map(stripVTControlCharacters), before.map(stripVTControlCharacters));
   assert.match(after.join("\n"), /📎 notes\.txt/);
-  assert.deepEqual(after, new InlineMessageComponent(from, attachmentMessage, changingTheme as any).render(80));
+  assert.deepEqual(
+    after,
+    new InlineMessageComponent(from, attachmentMessage, changingTheme as any).render(80),
+  );
   assert.strictEqual(component.render(80), after, "reuse the refreshed frame");
 
   component.render(1);

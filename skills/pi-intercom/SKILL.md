@@ -41,13 +41,13 @@ Coordinate named Pi sessions on the same machine with the least context loss and
 3. Pick the displayed name or target ID exactly. If names collide, use the target shown by `list`. Never message the current session.
 4. Choose the lightest action:
 
-| Action | Use for | Effect |
-| --- | --- | --- |
-| `send` | Guidance, answers, corrections, blockers, context, or other non-blocking coordination | Defaults to steer: it wakes idle recipients or reaches busy recipients at the next tool boundary, then returns after broker acceptance. Use explicit queue only when delay is intentional and passive only for human-visible breadcrumbs. |
-| `ask` | A required answer when this process must remain alive waiting for it | Use `delivery:"steer"`; waits up to `askTimeoutMs` (default 2 minutes). Default asks to peers reporting `accepts_asks:false` return `delivered:true`, `replied:false`, `reason:"peer_busy"`, while explicit steer asks keep waiting; not passive. |
-| `reply` | Answering an inbound ask | Uses the active ask, or the single pending ask |
-| `pending` | Multiple or delayed inbound asks | Lists unresolved asks so you can disambiguate |
-| `status` | Troubleshooting connection state | Shows connection, active session count, and the same live recipient capability/guidance rows as `list` |
+| Action    | Use for                                                                               | Effect                                                                                                                                                                                                                                            |
+| --------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `send`    | Guidance, answers, corrections, blockers, context, or other non-blocking coordination | Defaults to steer: it wakes idle recipients or reaches busy recipients at the next tool boundary, then returns after broker acceptance. Use explicit queue only when delay is intentional and passive only for human-visible breadcrumbs.         |
+| `ask`     | A required answer when this process must remain alive waiting for it                  | Use `delivery:"steer"`; waits up to `askTimeoutMs` (default 2 minutes). Default asks to peers reporting `accepts_asks:false` return `delivered:true`, `replied:false`, `reason:"peer_busy"`, while explicit steer asks keep waiting; not passive. |
+| `reply`   | Answering an inbound ask                                                              | Uses the active ask, or the single pending ask                                                                                                                                                                                                    |
+| `pending` | Multiple or delayed inbound asks                                                      | Lists unresolved asks so you can disambiguate                                                                                                                                                                                                     |
+| `status`  | Troubleshooting connection state                                                      | Shows connection, active session count, and the same live recipient capability/guidance rows as `list`                                                                                                                                            |
 
 5. Write compact messages with objective, scope, relevant files, stop boundary, and expected reply. Attachments only when the recipient needs the extra context.
 6. For live agent-to-agent coordination, use non-blocking `send`; omitted delivery steers by default. Then end the turn or continue independent work. Use explicit queue only when delay is intentional; optional `delivery:"queue", queueMode:"replace", threadId:"<non-empty>"` keeps only the latest undelivered update for that thread.
@@ -66,11 +66,11 @@ Child-side reasons only: blocking `need_decision` or `interview_request` when th
 
 Supervisor-side: while connected, `intercom` `reply` answers formatted child escalations. After reload/reconnect, resume the same saved supervisor session, list `agent_runs({ action: "questions" })`, and use `agent_runs({ action: "answer", id, questionId, message })`. These questions do not use the ordinary ask timeout. A nudge is not an answer. Saved answers reach a live waiter or revive an exited child's saved session; a receipt does not mean the work completed. Use `agent_runs({ action: "stop", id })` to cancel a pending question and its live waiter.
 
-| Type | Meaning | Supervisor response |
-| --- | --- | --- |
-| `need_decision` | Child cannot safely continue without one decision or approval | Reply promptly with a clear decision |
+| Type                | Meaning                                                          | Supervisor response                     |
+| ------------------- | ---------------------------------------------------------------- | --------------------------------------- |
+| `need_decision`     | Child cannot safely continue without one decision or approval    | Reply promptly with a clear decision    |
 | `interview_request` | Child cannot safely continue without multiple structured answers | Reply with JSON using the requested ids |
-| `progress_update` | Child steers a material discovery needed during active work | Read it; reply only if redirecting |
+| `progress_update`   | Child steers a material discovery needed during active work      | Read it; reply only if redirecting      |
 
 Interview replies use plain JSON or a fenced JSON block. `info` questions are context only and need no response entries:
 

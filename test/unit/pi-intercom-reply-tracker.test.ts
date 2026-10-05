@@ -37,7 +37,11 @@ test("reply resolves from current triggered message context", () => {
 
 test("queueTurnContext ignores a second enqueue of the same ask", () => {
   const tracker = new ReplyTracker();
-  const context = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "Need a decision"), 1000);
+  const context = tracker.recordIncomingMessage(
+    createSession("planner-id", "planner"),
+    createMessage("ask-1", "Need a decision"),
+    1000,
+  );
   tracker.queueTurnContext(context);
   tracker.queueTurnContext(context);
   tracker.beginTurn(1001);
@@ -49,8 +53,16 @@ test("queueTurnContext ignores a second enqueue of the same ask", () => {
 
 test("non-ask trigger context does not override a pending ask reply target", () => {
   const tracker = new ReplyTracker();
-  const ask = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "Need a decision"), 1000);
-  const result = tracker.recordIncomingMessage(createSession("result-id", "subagent-result"), createMessage("result-1", "Done", false), 1001);
+  const ask = tracker.recordIncomingMessage(
+    createSession("planner-id", "planner"),
+    createMessage("ask-1", "Need a decision"),
+    1000,
+  );
+  const result = tracker.recordIncomingMessage(
+    createSession("result-id", "subagent-result"),
+    createMessage("result-1", "Done", false),
+    1001,
+  );
 
   tracker.queueTurnContext(result);
   tracker.beginTurn(1002);
@@ -62,46 +74,87 @@ test("non-ask trigger context does not override a pending ask reply target", () 
 
 test("reply resolves from single pending ask without current turn context", () => {
   const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "Need a decision"), 1000);
+  tracker.recordIncomingMessage(
+    createSession("planner-id", "planner"),
+    createMessage("ask-1", "Need a decision"),
+    1000,
+  );
 
   assert.equal(tracker.resolveReplyTarget({}, 1001).message.id, "ask-1");
 });
 
 test("reply with to resolves matching pending ask", () => {
   const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "First"), 1000);
-  tracker.recordIncomingMessage(createSession("reviewer-id", "reviewer"), createMessage("ask-2", "Second"), 1001);
+  tracker.recordIncomingMessage(
+    createSession("planner-id", "planner"),
+    createMessage("ask-1", "First"),
+    1000,
+  );
+  tracker.recordIncomingMessage(
+    createSession("reviewer-id", "reviewer"),
+    createMessage("ask-2", "Second"),
+    1001,
+  );
 
   assert.equal(tracker.resolveReplyTarget({ to: "reviewer" }, 1002).message.id, "ask-2");
   assert.equal(tracker.resolveReplyTarget({ to: "planner-id" }, 1002).message.id, "ask-1");
-  assert.throws(() => tracker.resolveReplyTarget({ to: "review" }, 1002), /too short.*reviewer: to: "reviewer-" or replyTo: "ask-2"/);
+  assert.throws(
+    () => tracker.resolveReplyTarget({ to: "review" }, 1002),
+    /too short.*reviewer: to: "reviewer-" or replyTo: "ask-2"/,
+  );
 });
 
 test("reply with explicit to must match even when only one pending ask exists", () => {
   const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "First"), 1000);
+  tracker.recordIncomingMessage(
+    createSession("planner-id", "planner"),
+    createMessage("ask-1", "First"),
+    1000,
+  );
 
-  assert.throws(() => tracker.resolveReplyTarget({ to: "reviewer" }, 1002), /No pending ask from "reviewer"/);
+  assert.throws(
+    () => tracker.resolveReplyTarget({ to: "reviewer" }, 1002),
+    /No pending ask from "reviewer"/,
+  );
 });
 
 test("reply errors when no context and no pending asks", () => {
   const tracker = new ReplyTracker();
 
-  assert.throws(() => tracker.resolveReplyTarget({}, 1000), /No active intercom context to reply to/);
+  assert.throws(
+    () => tracker.resolveReplyTarget({}, 1000),
+    /No active intercom context to reply to/,
+  );
 });
 
 test("reply errors when multiple pending asks and no to", () => {
   const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "First"), 1000);
-  tracker.recordIncomingMessage(createSession("reviewer-id", "reviewer"), createMessage("ask-2", "Second"), 1001);
+  tracker.recordIncomingMessage(
+    createSession("planner-id", "planner"),
+    createMessage("ask-1", "First"),
+    1000,
+  );
+  tracker.recordIncomingMessage(
+    createSession("reviewer-id", "reviewer"),
+    createMessage("ask-2", "Second"),
+    1001,
+  );
 
   assert.throws(() => tracker.resolveReplyTarget({}, 1002), /Multiple pending asks — specify `to`/);
 });
 
 test("reply errors for duplicate sender names include copyable targets", () => {
   const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(createSession("planner-11111111", "planner"), createMessage("ask-1", "First"), 1000);
-  tracker.recordIncomingMessage(createSession("planner-22222222", "planner"), createMessage("ask-2", "Second"), 1001);
+  tracker.recordIncomingMessage(
+    createSession("planner-11111111", "planner"),
+    createMessage("ask-1", "First"),
+    1000,
+  );
+  tracker.recordIncomingMessage(
+    createSession("planner-22222222", "planner"),
+    createMessage("ask-2", "Second"),
+    1001,
+  );
 
   assert.throws(
     () => tracker.resolveReplyTarget({ to: "planner" }, 1002),
@@ -111,17 +164,39 @@ test("reply errors for duplicate sender names include copyable targets", () => {
 
 test("reply can disambiguate multiple pending asks with replyTo", () => {
   const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "First"), 1000);
-  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-2", "Second"), 1001);
+  tracker.recordIncomingMessage(
+    createSession("planner-id", "planner"),
+    createMessage("ask-1", "First"),
+    1000,
+  );
+  tracker.recordIncomingMessage(
+    createSession("planner-id", "planner"),
+    createMessage("ask-2", "Second"),
+    1001,
+  );
 
-  assert.equal(tracker.resolveReplyTarget({ to: "planner", replyTo: "ask-2" }, 1002).message.id, "ask-2");
-  assert.throws(() => tracker.resolveReplyTarget({ to: "reviewer", replyTo: "ask-2" }, 1002), /is not from "reviewer"/);
+  assert.equal(
+    tracker.resolveReplyTarget({ to: "planner", replyTo: "ask-2" }, 1002).message.id,
+    "ask-2",
+  );
+  assert.throws(
+    () => tracker.resolveReplyTarget({ to: "reviewer", replyTo: "ask-2" }, 1002),
+    /is not from "reviewer"/,
+  );
 });
 
 test("reply exact full sender ID wins over prefix matches", () => {
   const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(createSession("abcdefgh", "first"), createMessage("ask-1", "First"), 1000);
-  tracker.recordIncomingMessage(createSession("abcdefghi", "second"), createMessage("ask-2", "Second"), 1001);
+  tracker.recordIncomingMessage(
+    createSession("abcdefgh", "first"),
+    createMessage("ask-1", "First"),
+    1000,
+  );
+  tracker.recordIncomingMessage(
+    createSession("abcdefghi", "second"),
+    createMessage("ask-2", "Second"),
+    1001,
+  );
 
   assert.equal(tracker.resolveReplyTarget({ to: "abcdefgh" }, 1002).message.id, "ask-1");
   assert.throws(
@@ -132,7 +207,11 @@ test("reply exact full sender ID wins over prefix matches", () => {
 
 test("reply rejects too-short sender ID prefixes with a helpful target hint", () => {
   const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(createSession("abcdefgh", "first"), createMessage("ask-1", "First"), 1000);
+  tracker.recordIncomingMessage(
+    createSession("abcdefgh", "first"),
+    createMessage("ask-1", "First"),
+    1000,
+  );
 
   assert.throws(
     () => tracker.resolveReplyTarget({ to: "abcdefg" }, 1002),
@@ -146,9 +225,21 @@ test("reply rejects too-short sender ID prefixes with a helpful target hint", ()
 
 test("reply duplicate sender options avoid name and prefix collisions", () => {
   const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(createSession("abcdefgh1111", "planner"), createMessage("ask-1", "First"), 1000);
-  tracker.recordIncomingMessage(createSession("abcdefgi2222", "planner"), createMessage("ask-2", "Second"), 1001);
-  tracker.recordIncomingMessage(createSession("other-id", "abcdefgh"), createMessage("ask-3", "Third"), 1002);
+  tracker.recordIncomingMessage(
+    createSession("abcdefgh1111", "planner"),
+    createMessage("ask-1", "First"),
+    1000,
+  );
+  tracker.recordIncomingMessage(
+    createSession("abcdefgi2222", "planner"),
+    createMessage("ask-2", "Second"),
+    1001,
+  );
+  tracker.recordIncomingMessage(
+    createSession("other-id", "abcdefgh"),
+    createMessage("ask-3", "Third"),
+    1002,
+  );
 
   assert.throws(
     () => tracker.resolveReplyTarget({ to: "planner" }, 1003),
@@ -158,7 +249,11 @@ test("reply duplicate sender options avoid name and prefix collisions", () => {
 
 test("reply removes pending ask after successful reply", () => {
   const tracker = new ReplyTracker();
-  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "Need a decision"), 1000);
+  tracker.recordIncomingMessage(
+    createSession("planner-id", "planner"),
+    createMessage("ask-1", "Need a decision"),
+    1000,
+  );
 
   tracker.markReplied("ask-1");
 
@@ -169,7 +264,11 @@ test("reply preserves every pending ask and queued turn context beyond 100 messa
   const tracker = new ReplyTracker();
   const sender = createSession("sender-id", "sender");
   for (let index = 1; index <= 150; index++) {
-    const context = tracker.recordIncomingMessage(sender, createMessage(`ask-${index}`, `Question ${index}`), index);
+    const context = tracker.recordIncomingMessage(
+      sender,
+      createMessage(`ask-${index}`, `Question ${index}`),
+      index,
+    );
     tracker.queueTurnContext(context);
   }
 
@@ -191,7 +290,11 @@ test("reply preserves every pending ask and queued turn context beyond 100 messa
 
 test("reply expires pending and queued contexts together", () => {
   const tracker = new ReplyTracker(10);
-  const context = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-old", "Old"), 1000);
+  const context = tracker.recordIncomingMessage(
+    createSession("planner-id", "planner"),
+    createMessage("ask-old", "Old"),
+    1000,
+  );
   tracker.queueTurnContext(context);
   tracker.beginTurn(1011);
   assert.equal(tracker.currentTurn(), null);
@@ -201,7 +304,10 @@ test("reply expires pending and queued contexts together", () => {
 test("durable supervisor asks keep pending and active reply context after sender disconnect or timeout", () => {
   const tracker = new ReplyTracker(10);
   const sender = createSession("child-id", "child");
-  const message = createMessage("durable-question", "Subagent needs a supervisor decision.\nQuestion ID: durable-question\nContinue?");
+  const message = createMessage(
+    "durable-question",
+    "Subagent needs a supervisor decision.\nQuestion ID: durable-question\nContinue?",
+  );
   tracker.queueTurnContext(tracker.recordIncomingMessage(sender, message, 1000));
   tracker.beginTurn(1001);
   tracker.expireSender(sender.id);
@@ -217,8 +323,16 @@ test("reply expires pending and active asks when sender disconnects", () => {
   const tracker = new ReplyTracker();
   const planner = createSession("planner-id", "planner");
   const reviewer = createSession("reviewer-id", "reviewer");
-  const current = tracker.recordIncomingMessage(planner, createMessage("ask-1", "Need a decision"), 1000);
-  const queued = tracker.recordIncomingMessage(planner, createMessage("ask-2", "Queued decision"), 1001);
+  const current = tracker.recordIncomingMessage(
+    planner,
+    createMessage("ask-1", "Need a decision"),
+    1000,
+  );
+  const queued = tracker.recordIncomingMessage(
+    planner,
+    createMessage("ask-2", "Queued decision"),
+    1001,
+  );
   tracker.recordIncomingMessage(reviewer, createMessage("ask-3", "Still connected"), 1002);
   tracker.queueTurnContext(current);
   tracker.queueTurnContext(queued);
@@ -226,7 +340,10 @@ test("reply expires pending and active asks when sender disconnects", () => {
 
   tracker.expireSender("planner-id");
 
-  assert.deepEqual(tracker.listPending(1004).map((context) => context.message.id), ["ask-3"]);
+  assert.deepEqual(
+    tracker.listPending(1004).map((context) => context.message.id),
+    ["ask-3"],
+  );
   assert.throws(() => tracker.resolveReplyTarget({ replyTo: "ask-1" }, 1004), /No pending ask/);
   assert.throws(() => tracker.resolveReplyTarget({ replyTo: "ask-2" }, 1004), /No pending ask/);
   assert.equal(tracker.resolveReplyTarget({}, 1004).message.id, "ask-3");

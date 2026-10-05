@@ -52,7 +52,9 @@ function isShortcut(value: string): value is KeyId {
   const prefix = value.match(/^(?:(?:ctrl|shift|alt|super)\+)+/)?.[0] ?? "";
   const modifiers = prefix.split("+").filter(Boolean);
   const key = value.slice(prefix.length);
-  return new Set(modifiers).size === modifiers.length && (namedKeys.has(key) || /^[a-z0-9]$/.test(key));
+  return (
+    new Set(modifiers).size === modifiers.length && (namedKeys.has(key) || /^[a-z0-9]$/.test(key))
+  );
 }
 
 export function loadConfig(): IntercomConfig {
@@ -72,9 +74,13 @@ export function loadConfig(): IntercomConfig {
     const config: IntercomConfig = { ...defaults };
 
     if (Object.hasOwn(parsedConfig, "shortcut")) {
-      if (typeof parsedConfig.shortcut !== "string") throw new Error('"shortcut" must be a native key identifier');
+      if (typeof parsedConfig.shortcut !== "string") {
+        throw new Error('"shortcut" must be a native key identifier');
+      }
       const shortcut = parsedConfig.shortcut.trim();
-      if (!isShortcut(shortcut)) throw new Error('"shortcut" must be a native key identifier, for example alt+shift+m');
+      if (!isShortcut(shortcut)) {
+        throw new Error('"shortcut" must be a native key identifier, for example alt+shift+m');
+      }
       config.shortcut = shortcut;
     }
 
@@ -124,7 +130,11 @@ export function loadConfig(): IntercomConfig {
       config.status = parsedConfig.status;
     }
 
-    for (const [key, min] of [["askTimeoutMs", 1000], ["sendTimeoutMs", 500], ["listTimeoutMs", 500]] as const) {
+    for (const [key, min] of [
+      ["askTimeoutMs", 1000],
+      ["sendTimeoutMs", 500],
+      ["listTimeoutMs", 500],
+    ] as const) {
       if (Object.hasOwn(parsedConfig, key)) {
         const value = parsedConfig[key];
         if (typeof value !== "number" || !Number.isFinite(value) || value < min) {
