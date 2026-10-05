@@ -139,6 +139,12 @@ This is an input-contract check, not proof of callback purity or runtime freezin
   annotation permissions. Annotated unions and intersections check each part,
   preserving mutable-attachment diagnostics even when the checker flattens an
   approved native intersection alias.
+- Structural recursion owns a path-local active-type set, including array/tuple
+  entry. Annotated composites do not write that set. This terminates back-edges
+  such as `interface Branch { readonly children?: readonly Branch[] }` without
+  confusing annotation traversal with completed structural checking. Mutable
+  fields before or after a back-edge, alternate union branches and unapproved
+  uses of the same resolved native type remain independently checked.
 
 For a fixed alias such as `SubagentExecutionResult = AgentToolResult<ReadonlyDetails>`,
 qualify its actual declaration file, not the `AgentToolResult` SDK generic. Probe

@@ -1,5 +1,5 @@
 diff --git a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
-index e3f055c..7118476 100644
+index e3f055c..27cb1dd 100644
 --- a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
 +++ b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
 @@ -301,7 +301,13 @@ func isTypeReadonlyObject(
@@ -17,9 +17,15 @@ index e3f055c..7118476 100644
  			return readonlynessMutable
  		}
  	}
-@@ -336,7 +342,19 @@ func isTypeReadonlyRecurser(
+@@ -334,9 +340,25 @@ func isTypeReadonlyRecurser(
+ 	opts readonlynessOptions,
+ 	seenTypes map[*checker.Type]struct{},
  ) readonlyness {
++	if _, active := seenTypes[t]; active {
++		return readonlynessReadonly
++	}
  	seenTypes[t] = struct{}{}
++	defer delete(seenTypes, t)
  
 -	if utils.TypeMatchesSomeSpecifier(t, opts.allow, program) {
 +	if utils.TypeMatchesSomeSpecifierExactly(t, opts.allow, program) {
@@ -38,7 +44,7 @@ index e3f055c..7118476 100644
  		return readonlynessReadonly
  	}
  
-@@ -352,33 +370,6 @@ func isTypeReadonlyRecurser(
+@@ -352,33 +374,6 @@ func isTypeReadonlyRecurser(
  		return readonlynessReadonly
  	}
  
@@ -72,7 +78,7 @@ index e3f055c..7118476 100644
  	if !utils.IsObjectType(t) {
  		return readonlynessReadonly
  	}
-@@ -400,13 +391,89 @@ func isTypeReadonlyRecurser(
+@@ -400,13 +395,84 @@ func isTypeReadonlyRecurser(
  	return readonlynessReadonly
  }
  
@@ -135,11 +141,6 @@ index e3f055c..7118476 100644
 +		if parts == nil {
 +			break
 +		}
-+		_, alreadySeen := seenTypes[t]
-+		seenTypes[t] = struct{}{}
-+		if !alreadySeen {
-+			defer delete(seenTypes, t)
-+		}
 +		for _, part := range parts {
 +			partType := checker.Checker_getTypeFromTypeNode(typeChecker, part)
 +			if isTypeReadonlyAnnotated(program, typeChecker, partType, part, opts, seenTypes) != readonlynessReadonly {
@@ -163,7 +164,7 @@ index e3f055c..7118476 100644
  }
  
  func isLiteralOrTaggablePrimitiveLike(t *checker.Type) bool {
-@@ -504,7 +571,7 @@ var PreferReadonlyParameterTypesRule = rule.Rule{
+@@ -504,7 +570,7 @@ var PreferReadonlyParameterTypesRule = rule.Rule{
  					continue
  				}
  
