@@ -31,7 +31,7 @@ export class ClarifyView {
   }
   private row(content: string): string {
     const inner = this.width - 2;
-    const clipped = truncateToWidth(content, inner, "", true);
+    const clipped = truncateToWidth(content, inner, "…", true);
     return (
       this.theme.fg("border", "│") +
       clipped +
@@ -133,12 +133,7 @@ export class ClarifyView {
     return lines;
   }
   overview(input: Preview): string[] {
-    const lines = [
-      this.border(
-        `${input.mode === "chain" ? "Chain" : "Agents"}: ${input.steps.map((step) => step.name).join(" → ")}`,
-      ),
-      this.row(""),
-    ];
+    const lines = [this.border(this.title(input)), this.row("")];
     if (input.mode === "chain") {
       lines.push(
         this.row(` Original Task: ${input.originalTask}`),
@@ -151,17 +146,30 @@ export class ClarifyView {
       lines.push(...this.step(step, index, input));
     });
     if (input.notice !== undefined) {
-      lines.push(this.row(` ${this.theme.fg("error", input.notice)}`));
+      lines.push(this.row(` ${this.theme.fg("success", input.notice)}`));
     }
-    const fields = input.mode === "single" ? "e m t w s" : "e m t s";
-    const extra = input.mode === "chain" ? " w r p" : "";
+    const fields = this.shortcuts(input.mode);
+    const navigation = input.mode === "single" ? "" : " • ↑↓ Nav";
     lines.push(
       this.border(
-        `[Enter] Run • [Esc] Cancel • ${fields}${extra} [b]g${input.background ? ":ON" : ""} • ↑↓ Nav`,
+        `[Enter] Run • [Esc] Cancel • ${fields} [b]g${input.background ? ":ON" : ""}${navigation}`,
         true,
       ),
     );
     return lines;
+  }
+  private title(input: Preview): string {
+    if (input.mode === "parallel") {
+      return `Parallel Tasks (${input.steps.length})`;
+    }
+    const label = input.mode === "single" ? "Agent" : "Chain";
+    return `${label}: ${input.steps.map((step) => step.name).join(" → ")}`;
+  }
+  private shortcuts(mode: Preview["mode"]): string {
+    if (mode === "chain") {
+      return "e m t w r p s";
+    }
+    return mode === "single" ? "e m t w s" : "e m t s";
   }
   private stepHeading(label: string, active: boolean): string {
     return this.theme.fg(active ? "accent" : "dim", `${active ? "▶ " : "  "}${label}`);
@@ -175,11 +183,13 @@ export class ClarifyView {
             .replace(/\{previous\}/g, this.theme.fg("warning", "{previous}"))
             .replace(/\{chain_dir\}/g, this.theme.fg("accent", "{chain_dir}"))
         : step.template;
-    const marker = step.modelOverridden ? this.theme.fg("dim", " ✎") : "";
+    const model = step.modelOverridden
+      ? this.theme.fg("warning", step.model) + this.theme.fg("dim", " ✎")
+      : step.model;
     const lines = [
       this.row(` ${heading}`),
       this.row(`     task: ${task}`),
-      this.row(`     model: ${step.model}${marker}`),
+      this.row(`     model: ${model}`),
     ];
     if (input.mode !== "parallel") {
       lines.push(this.row(`     writes: ${displayOutput(step.behavior.output)}`));

@@ -113,7 +113,11 @@ function canPromptForChainTask(
   hasChain: boolean,
 ): boolean {
   return (
-    hasChain && params.clarify === true && ctx.hasUI && params.chain?.some(isParallelStep) !== true
+    hasChain &&
+    params.clarify === true &&
+    ctx.hasUI &&
+    ctx.mode === "tui" &&
+    params.chain?.some(isParallelStep) !== true
   );
 }
 /** Owns launch planning and its durable registration, not management or existing-run waits. */

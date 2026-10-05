@@ -7,7 +7,7 @@ import { questionProcessAlive, readRunJson } from "../shared/supervisor-question
 import { readStatus } from "../../shared/utils.ts";
 import { resolveOwnedRun } from "../shared/run-records.ts";
 import { buildManagementControl } from "../../shared/status-format.ts";
-import { errorMessage } from "../../shared/unknown.ts";
+import { errorMessage, isRecord } from "../../shared/unknown.ts";
 import type {
   ReadonlySubagentState,
   SubagentState,
@@ -95,10 +95,14 @@ function extendable(target: InterruptTarget): boolean {
       (status.timeoutAt ?? 0) !== 0
     );
   }
-  const launch = readRunJson<{ readonly runtimeVersion?: number; readonly timeoutMs?: number }>(
-    path.join(target.asyncDir, "launch.json"),
+  const launch = readRunJson(path.join(target.asyncDir, "launch.json"));
+  return (
+    isRecord(launch) &&
+    launch.runtimeVersion === 2 &&
+    typeof launch.timeoutMs === "number" &&
+    Number.isFinite(launch.timeoutMs) &&
+    launch.timeoutMs > 0
   );
-  return launch?.runtimeVersion === 2 && (launch.timeoutMs ?? 0) !== 0;
 }
 export function extendAsyncTimeoutResult(
   state: ReadonlySubagentState,
