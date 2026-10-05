@@ -22,7 +22,11 @@ export function openHistoryDatabase(file: string, readOnly = false): DatabaseSyn
 			if (version !== "3.53.4") throw new HistoryIndexError("UNSUPPORTED_SQLITE", `History requires qualified SQLite 3.53.4; found ${version}.`);
 			db.exec("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF");
 			if (!readOnly) {
-				if (db.prepare("PRAGMA journal_mode").get()?.journal_mode !== "wal") db.exec("PRAGMA journal_mode=WAL");
+				if (db.prepare("PRAGMA journal_mode").get()?.journal_mode !== "wal") {
+					// WAL conversion upgrades a read lock without waiting for an existing writer.
+					// Wait for that writer through native transaction admission before converting.
+					db.exec("BEGIN IMMEDIATE; COMMIT; PRAGMA journal_mode=WAL");
+				}
 				db.exec("PRAGMA synchronous=FULL");
 				for (const suffix of ["", "-wal", "-shm"]) {
 					try { fs.chmodSync(file + suffix, 0o600); }

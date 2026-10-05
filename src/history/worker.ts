@@ -8,7 +8,7 @@ import type { ForegroundResumeRun, HistoryOwner, HistoryRunRow, OwnedRun, Reques
 import type { SubagentState } from "../shared/types.ts";
 import { exactTextDigest, HistoryStore, safeText } from "./store.ts";
 import { readCanonicalOutput, readSavedOutput } from "./canonical-result.ts";
-import { SourceIngest } from "./ingest.ts";
+import { SourceIngest, identity, stamp } from "./ingest.ts";
 import { HistoryQueries } from "./queries.ts";
 
 const agentDir = process.argv[2];
@@ -18,6 +18,7 @@ const runs = new Map<string, OwnedRun>(), foreground = new Map<string, Foregroun
 const dirtyRuns = new Set<string>(), dirtySources = new Map<string, boolean>();
 const watchers = new Map<string, fs.FSWatcher>();
 const sourceWatchers = new Map<string, fs.FSWatcher>();
+const watchIdentities = new WeakMap<fs.FSWatcher, string>();
 const watchedSources = new Map<string, Map<string, string>>();
 let job: SourceIngest | undefined, scheduled = false, closed = false;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -72,24 +73,50 @@ function projection(run: OwnedRun): HistoryRunRow {
 	return { ...ownedRunView(run, state, options), questions };
 }
 function watch(directory: string, recursive: boolean, listener: (name: string | null) => void, handles = watchers): void {
-	if (handles.has(directory)) return;
+	const existing = handles.get(directory);
 	try {
-		if (recursive && !fs.existsSync(directory)) return;
-		const watcher = fs.watch(directory, { recursive }, (_event, name) => { listener(name?.toString() ?? null); schedule(); });
+		const physical = identity(fs.statSync(directory, { bigint: true }));
+		if (existing && watchIdentities.get(existing) === physical) return;
+		const watcher = fs.watch(directory, { recursive }, (event, name) => {
+			const filename = name?.toString() ?? null;
+			if (event === "rename" && filename === path.basename(directory) && handles.get(directory) === watcher) {
+				watchIdentities.delete(watcher);
+				watch(directory, recursive, listener, handles);
+				listener(null);
+			} else listener(filename);
+			schedule();
+		});
+		watchIdentities.set(watcher, physical);
 		watcher.on("error", () => { watcher.close(); if (handles.get(directory) === watcher) handles.delete(directory); });
 		watcher.on("close", () => { if (handles.get(directory) === watcher) handles.delete(directory); });
 		handles.set(directory, watcher);
-	} catch { /* Known-handle background census recovers absent directories and dropped watches. */ }
+		// Native close fences macOS stream re-registration; admit the replacement first.
+		existing?.close();
+	} catch {
+		if (existing && handles.get(directory) === existing) watchIdentities.delete(existing);
+		/* Known-handle background census recovers absent directories and dropped watches. */
+	}
 }
 function resetDirectoryWatch(directory: string): void {
-	watchers.get(directory)?.close(); watchers.delete(directory);
-	sourceWatchers.get(directory)?.close(); sourceWatchers.delete(directory);
-	for (const id of watchedSources.get(directory)?.keys() ?? []) dirtySources.set(id, false);
+	for (const handles of [watchers, sourceWatchers]) {
+		const watcher = handles.get(directory);
+		if (watcher) watchIdentities.delete(watcher);
+	}
+	for (const id of watchedSources.get(directory)?.keys() ?? []) dirtySources.set(id, dirtySources.get(id) ?? false);
 }
 function watchSources(directory: string): void {
 	if (!watchedSources.has(directory)) return;
 	watch(directory, false, (name) => {
-		for (const [id, filename] of watchedSources.get(directory) ?? []) if (!name || filename === name) dirtySources.set(id, false);
+		for (const [id, filename] of watchedSources.get(directory) ?? []) if (!name || filename === name) {
+			if (!dirtySources.has(id) && job?.id !== id) {
+				try {
+					const source = store?.source(id);
+					if (source?.stamp && ["current", "partial", "degraded"].includes(source.state)
+						&& source.stamp === stamp(fs.statSync(source.path, { bigint: true }))) continue;
+				} catch { /* Missing or unreadable sources still need reconciliation. */ }
+			}
+			dirtySources.set(id, dirtySources.get(id) ?? false);
+		}
 	}, sourceWatchers);
 }
 function installWatches(runId?: string): void {
@@ -179,7 +206,11 @@ function pump(): void {
 			for (const child of store.all("SELECT source_id FROM children WHERE run_id=? AND source_id IS NOT NULL", id)) if (child.source_id !== job?.id) dirtySources.set(child.source_id, dirtySources.get(child.source_id) ?? false);
 			installWatches(id); changed();
 		} else if (job) {
-			if (job.step()) { job = undefined; changed(); }
+			if (job.step()) {
+				const source = store.source(job.id);
+				if (source) watchSources(path.dirname(source.path));
+				job = undefined; changed();
+			}
 		} else if (dirtySources.size) {
 			const [id, force] = dirtySources.entries().next().value!; dirtySources.delete(id);
 			const source = store.source(id);

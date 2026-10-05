@@ -11,6 +11,46 @@ import { test } from "node:test";
 const { recordRun, loadRunsForAgent } = await import("../../src/runs/shared/run-history.ts");
 const writerModule = new URL("../../src/runs/shared/run-history.ts", import.meta.url).href;
 
+test("cold timing conversion retains a sample while an attached rollback-journal writer finishes", async (t) => {
+	const f = fixture(t), ready = path.join(f.root, "ready"), write = path.join(f.root, "write"), closed = path.join(f.root, "closed");
+	fs.mkdirSync(path.dirname(f.database), { mode: 0o700 });
+	const db = new DatabaseSync(f.database);
+	db.exec("CREATE TABLE native_writer(value); INSERT INTO native_writer VALUES (1)");
+	db.close();
+	const writer = spawn(process.execPath, ["--input-type=module", "-e", `
+		import fs from "node:fs"; import { DatabaseSync } from "node:sqlite";
+		const db = new DatabaseSync(${JSON.stringify(f.database)});
+		db.exec("BEGIN IMMEDIATE"); db.exec("INSERT INTO native_writer VALUES (2)");
+		fs.writeFileSync(${JSON.stringify(ready)}, "write transaction held");
+		setTimeout(() => { db.close(); process.exit(1); }, 5000).unref();
+		const timer = setInterval(() => {
+			if (!fs.existsSync(${JSON.stringify(write)})) return;
+			clearInterval(timer);
+			setTimeout(() => { db.exec("COMMIT"); db.close(); fs.writeFileSync(${JSON.stringify(closed)}, "writer closed"); }, 50);
+		}, 1);
+	`], { env: process.env, stdio: ["ignore", "ignore", "pipe"] });
+	let error = ""; writer.stderr.setEncoding("utf8"); writer.stderr.on("data", (chunk) => { error += chunk; });
+	const exited = new Promise<void>((resolve, reject) => {
+		writer.once("error", reject); writer.once("exit", (status) => status === 0 ? resolve() : reject(new Error(error || `Writer exited ${status}`)));
+	});
+	try {
+		const deadline = Date.now() + 5000;
+		while (!fs.existsSync(ready)) { assert.ok(Date.now() < deadline, "native writer acquires its write transaction"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1); }
+		const contender = new DatabaseSync(f.database);
+		try { assert.throws(() => contender.exec("BEGIN IMMEDIATE"), { errcode: 5 }, "the other process holds SQLite's writer lock"); }
+		finally { contender.close(); }
+		fs.writeFileSync(write, "record now");
+		recordRun("cold", "Sample during conversion", 0, 7);
+		await exited;
+		assert.equal(fs.existsSync(closed), true);
+		recordRun("cold", "Sample after conversion", 0, 8);
+		assert.deepEqual(loadRunsForAgent("cold").map((row) => row.task), ["Sample after conversion", "Sample during conversion"]);
+	} finally {
+		fs.writeFileSync(write, "release");
+		await exited;
+	}
+});
+
 test("cold timing writers retain their sample when SQLite removes another connection's sidecars", async (t) => {
 	const f = fixture(t), database = path.join(fs.realpathSync(f.root), "history-index", "run-timing.sqlite"), exists = fs.existsSync, chmod = fs.chmodSync;
 	const ready = path.join(f.root, "ready"), release = path.join(f.root, "release"), closed = path.join(f.root, "closed");

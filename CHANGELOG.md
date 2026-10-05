@@ -10,6 +10,8 @@
 - Resolve latest stable official Pi and maintained fork main once per qualification run, retaining native, Git production-build, packed-install and full CI contracts without below-floor skip routes.
 
 ### Fixed
+- Admit cold WAL conversion through SQLite's native writer lock so a briefly overlapping writer no longer causes a lost timing sample; preserve the existing bounded timeout, private storage and per-agent retention bounds.
+- Ignore delayed native filesystem hints for an already indexed physical source and replace stale directory watches before publishing catch-up readiness, preserving real pending work, forced refreshes and changed/deleted source recovery.
 - Preserve timing samples and history writes when SQLite removes another connection's WAL sidecars during a cold open, without relaxing file permissions or storage-error handling.
 - Keep the selected Agents report visible when a background metadata refresh completes while its saved history is loading, preserving full reports, reading positions and stale-request guards.
 - Join in-flight Intercom startup and reconnect attempts before session shutdown completes, without stopping a broker shared by other sessions.
