@@ -30,69 +30,92 @@ interface RequestCallbacks {
   readonly failed: (error: Readonly<Error>) => void;
 }
 
+function disposeSubscriptions(subscriptions: readonly (() => void)[]): void {
+  for (const unsubscribe of subscriptions) {
+    try {
+      unsubscribe();
+    } catch (error) {
+      console.error("Could not unsubscribe slash subagent request:", error);
+    }
+  }
+}
+
 function subscribeRequest(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   requestId: string,
   callbacks: RequestCallbacks,
 ): () => void {
-  const started = pi.events.on(SLASH_SUBAGENT_STARTED_EVENT, (data) => {
-    if (callbacks.active() && isRecord(data) && data.requestId === requestId) {
-      callbacks.started();
-      if (ctx.hasUI) {
-        ctx.ui.setStatus("subagent-slash", "running...");
-      }
-    }
-  });
-  const response = pi.events.on(SLASH_SUBAGENT_RESPONSE_EVENT, (data) => {
-    if (!callbacks.active()) {
-      return;
-    }
-    try {
-      const parsed = slashResponse(data, requestId);
-      if (parsed) {
-        callbacks.response(parsed);
-      }
-    } catch (error) {
-      if (!(error instanceof Error)) {
-        throw error;
-      }
-      callbacks.failed(error);
-    }
-  });
-  const update = pi.events.on(SLASH_SUBAGENT_UPDATE_EVENT, (data) => {
-    if (!callbacks.active()) {
-      return;
-    }
-    const parsed = slashUpdate(data, requestId);
-    if (!parsed) {
-      return;
-    }
-    applySlashUpdate(requestId, parsed);
-    if (ctx.hasUI) {
-      const tool = parsed.currentTool ?? "";
-      ctx.ui.setStatus(
-        "subagent-slash",
-        `${parsed.toolCount ?? 0} tools${tool.length > 0 ? ` ${tool}` : ""}`,
-      );
-    }
-  });
-  const terminal = isTuiContext(ctx)
-    ? ctx.ui.onTerminalInput((input) => {
-        if (!callbacks.active() || !matchesKey(input, Key.escape)) {
+  const subscriptions: Array<() => void> = [];
+  const dispose = (): void => {
+    disposeSubscriptions(subscriptions);
+  };
+  try {
+    subscriptions.push(
+      pi.events.on(SLASH_SUBAGENT_STARTED_EVENT, (data) => {
+        if (callbacks.active() && isRecord(data) && data.requestId === requestId) {
+          callbacks.started();
+          if (ctx.hasUI) {
+            ctx.ui.setStatus("subagent-slash", "running...");
+          }
+        }
+      }),
+    );
+    subscriptions.push(
+      pi.events.on(SLASH_SUBAGENT_RESPONSE_EVENT, (data) => {
+        if (!callbacks.active()) {
           return;
         }
-        pi.events.emit(SLASH_SUBAGENT_CANCEL_EVENT, { requestId });
-        callbacks.failed(new Error("Cancelled"));
-        return { consume: true };
-      })
-    : undefined;
-  return () => {
-    started();
-    response();
-    update();
-    terminal?.();
-  };
+        try {
+          const parsed = slashResponse(data, requestId);
+          if (parsed) {
+            callbacks.response(parsed);
+          }
+        } catch (error) {
+          if (!(error instanceof Error)) {
+            throw error;
+          }
+          callbacks.failed(error);
+        }
+      }),
+    );
+    subscriptions.push(
+      pi.events.on(SLASH_SUBAGENT_UPDATE_EVENT, (data) => {
+        if (!callbacks.active()) {
+          return;
+        }
+        const parsed = slashUpdate(data, requestId);
+        if (!parsed) {
+          return;
+        }
+        applySlashUpdate(requestId, parsed);
+        if (ctx.hasUI) {
+          const tool = parsed.currentTool ?? "";
+          ctx.ui.setStatus(
+            "subagent-slash",
+            `${parsed.toolCount ?? 0} tools${tool.length > 0 ? ` ${tool}` : ""}`,
+          );
+        }
+      }),
+    );
+    const terminal = isTuiContext(ctx)
+      ? ctx.ui.onTerminalInput((input) => {
+          if (!callbacks.active() || !matchesKey(input, Key.escape)) {
+            return;
+          }
+          pi.events.emit(SLASH_SUBAGENT_CANCEL_EVENT, { requestId });
+          callbacks.failed(new Error("Cancelled"));
+          return { consume: true };
+        })
+      : undefined;
+    if (terminal) {
+      subscriptions.push(terminal);
+    }
+    return dispose;
+  } catch (error) {
+    dispose();
+    throw error;
+  }
 }
 
 class PendingSlashRequest {
@@ -139,6 +162,7 @@ class PendingSlashRequest {
       return;
     }
     this.settled = true;
+    clearTimeout(this.timer);
     this.pending.reject(error);
   }
   dispose(): void {
@@ -170,15 +194,7 @@ async function requestSlashRun(
         pending.fail(error);
       },
     });
-    try {
-      pi.events.emit(SLASH_SUBAGENT_REQUEST_EVENT, request);
-    } catch (error) {
-      // A synchronous response may have already settled before a later bus listener fails.
-      if (!pending.active()) {
-        return await pending.result();
-      }
-      throw error;
-    }
+    pi.events.emit(SLASH_SUBAGENT_REQUEST_EVENT, request);
     // STARTED is synchronous: its absence means no bridge admitted this request.
     if (!pending.admitted() && pending.active()) {
       pending.fail(
@@ -188,6 +204,12 @@ async function requestSlashRun(
       );
     }
     return await pending.result();
+  } catch (error) {
+    // A synchronous response may settle before a later subscription or bus listener fails.
+    if (!pending.active()) {
+      return await pending.result();
+    }
+    throw error;
   } finally {
     pending.dispose();
     dispose?.();
