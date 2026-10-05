@@ -6,7 +6,7 @@ import {
   type StringChunk,
   type KeyLimit,
 } from "./json-projection.ts";
-import { errorMessage, isRecord, type UnknownRecord } from "./unknown.ts";
+import { errorDescription, isRecord, type UnknownRecord } from "./unknown.ts";
 
 export interface JournalRecord {
   readonly value: UnknownRecord;
@@ -97,7 +97,7 @@ export class JournalFrames {
     const failed = this.failed;
     const error = this.error;
     if (failed && this.policy !== "inspect") {
-      throw new SyntaxError(`Invalid JSONL record at byte ${start}: ${errorMessage(error)}`, {
+      throw new SyntaxError(`Invalid JSONL record at byte ${start}: ${errorDescription(error)}`, {
         cause: error,
       });
     }
@@ -188,10 +188,9 @@ export function readJsonProjection(file: string, select: Projection): UnknownRec
     }
     return value;
   } catch (error) {
-    throw new SyntaxError(
-      `Invalid JSON file ${file}: ${error instanceof Error ? error.toString() : errorMessage(error)}`,
-      { cause: error },
-    );
+    throw new SyntaxError(`Invalid JSON file ${file}: ${errorDescription(error)}`, {
+      cause: error,
+    });
   } finally {
     fs.closeSync(fd);
   }

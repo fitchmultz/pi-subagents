@@ -48,3 +48,12 @@ export function errorMessage(error: unknown): string {
 export function hasErrorCode(error: unknown, code: string): boolean {
   return isRecord(error) && error.code === code;
 }
+
+/** Retain native error names without letting a broken stringifier replace the caught failure. */
+export function errorDescription(error: unknown): string {
+  try {
+    return error instanceof Error ? error.toString() : errorMessage(error);
+  } catch {
+    return errorMessage(error);
+  }
+}
