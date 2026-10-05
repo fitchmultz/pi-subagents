@@ -103,6 +103,7 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
           "BeforeAgentStartEvent",
           "AgentBeforeSettleEvent",
           "SessionMessageEntry",
+          "EventBus",
           "EventBusController",
           "DefaultPackageManager",
           "SettingsManager",
@@ -179,6 +180,7 @@ await test("readonly SDK/native allowances isolate real declarations from mutabl
       "SessionMessageEntry",
       "UsageEntry",
       "AgentMessage",
+      "EventBus",
     ];
     const foreignDeclarations = isolatedNames
       .map((name) => `export interface ${name} { values: string[]; }`)
