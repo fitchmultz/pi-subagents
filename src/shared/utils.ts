@@ -4,7 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { errorMessage, hasErrorCode } from "./unknown.ts";
+import { errorMessage, hasErrorCode, isRecord } from "./unknown.ts";
 import type { ReadonlyAsyncStatus } from "./types.ts";
 import { parseAsyncStatus } from "../runs/background/run-schemas.ts";
 
@@ -35,6 +35,26 @@ export function resolveChildCwd(baseCwd: string, childCwd: string | undefined): 
 
 function isNotFoundError(error: unknown): boolean {
   return hasErrorCode(error, "ENOENT");
+}
+
+function parseStatusForDisplay(value: unknown): ReadonlyAsyncStatus {
+  try {
+    return parseAsyncStatus(value);
+  } catch (error) {
+    if (!isRecord(value)) {
+      throw error;
+    }
+    // Legacy display metadata may be corrupt; every other persisted field must validate.
+    const { parallelGroups, ...remaining } = value;
+    if (parallelGroups === undefined) {
+      throw error;
+    }
+    try {
+      return parseAsyncStatus(remaining);
+    } catch {
+      throw error;
+    }
+  }
 }
 
 /**
@@ -77,7 +97,7 @@ export function readStatus(asyncDir: string): ReadonlyAsyncStatus | null {
   let status: ReadonlyAsyncStatus;
   try {
     const parsed: unknown = JSON.parse(content);
-    status = parseAsyncStatus(parsed);
+    status = parseStatusForDisplay(parsed);
   } catch (error) {
     throw new Error(`Failed to parse async status file '${statusPath}': ${errorMessage(error)}`, {
       cause: error,
