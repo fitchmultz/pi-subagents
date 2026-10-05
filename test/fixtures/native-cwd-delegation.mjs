@@ -162,13 +162,12 @@ async function run(params, script, expected) {
   const output = path.join(root, `child-${++index}.json`);
   process.env.PI_CWD_FIXTURE_SCRIPT = JSON.stringify(script);
   process.env.PI_CWD_FIXTURE_OUTPUT = output;
-  const result = await executor.execute(
-    randomUUID(),
-    { async: params.action === "resume", artifacts: false, output: false, ...params },
-    AbortSignal.timeout(30_000),
-    undefined,
+  const result = await executor.execute({
+    toolCallId: randomUUID(),
+    params: { async: params.action === "resume", artifacts: false, output: false, ...params },
+    signal: AbortSignal.timeout(30_000),
     ctx,
-  );
+  });
   assert.ok(!result.isError, JSON.stringify(result));
   if (result.details.asyncId) {
     const resultPath = path.join(getRunMetadataDir(result.details.asyncId), "result.json");
@@ -232,18 +231,16 @@ try {
     beforeResume,
     "ordinary resume keeps the saved launch instead of rediscovering at parent B",
   );
-  const failedOverride = await executor.execute(
-    "bad-cwd",
-    {
+  const failedOverride = await executor.execute({
+    toolCallId: "bad-cwd",
+    params: {
       action: "resume",
       id: originalId,
       message: "rejected override",
       cwd: path.join(root, "missing"),
     },
-    undefined,
-    undefined,
     ctx,
-  );
+  });
   assert.equal(failedOverride.isError, true);
   assert.match(JSON.stringify(failedOverride.content), /cwd does not exist/);
   assert.equal(
@@ -277,13 +274,11 @@ try {
   });
   const beforeFailure = fs.readdirSync(root).filter((name) => name.startsWith("child-")).length;
   await assert.rejects(
-    executor.execute(
-      "fail",
-      { agent: "cwd-probe", task: "must not launch" },
-      undefined,
-      undefined,
+    executor.execute({
+      toolCallId: "fail",
+      params: { agent: "cwd-probe", task: "must not launch" },
       ctx,
-    ),
+    }),
     /Directory fixture unavailable/,
   );
   assert.equal(
@@ -291,21 +286,21 @@ try {
     beforeFailure,
   );
   assert.equal(errorQueries, 1);
-  await executor.execute("status", { action: "status", id: originalId }, undefined, undefined, ctx);
-  await executor.execute(
-    "review",
-    { action: "review", id: originalId, decision: "accepted" },
-    undefined,
-    undefined,
+  await executor.execute({
+    toolCallId: "status",
+    params: { action: "status", id: originalId },
     ctx,
-  );
-  await executor.execute(
-    "questions",
-    { action: "questions", id: originalId },
-    undefined,
-    undefined,
+  });
+  await executor.execute({
+    toolCallId: "review",
+    params: { action: "review", id: originalId, decision: "accepted" },
     ctx,
-  );
+  });
+  await executor.execute({
+    toolCallId: "questions",
+    params: { action: "questions", id: originalId },
+    ctx,
+  });
   await run(
     {
       action: "resume",
