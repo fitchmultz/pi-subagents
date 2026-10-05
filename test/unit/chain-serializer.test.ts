@@ -1,6 +1,8 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { objectAt } from "./config-workflow-fixtures.ts";
+import { json as parseJsonObject } from "../support/assertions.ts";
 import {
   parseChain,
   parseJsonChain,
@@ -223,14 +225,10 @@ Continue here
 
     const serialized = serializeJsonChain(parsed);
     assert.doesNotMatch(serialized, /^---/);
-    const reparsed = JSON.parse(serialized) as {
-      name?: string;
-      package?: string;
-      chain?: Array<{ collect?: { as?: string } }>;
-    };
+    const reparsed = parseJsonObject(serialized);
     assert.equal(reparsed.name, "dynamic-review");
     assert.equal(reparsed.package, "code-analysis");
-    assert.equal(reparsed.chain?.[1]?.collect?.as, "reviews");
+    assert.equal(objectAt(reparsed, "chain", 1, "collect").as, "reviews");
   });
 
   it("parses declarative JSON chains with dynamic fanout", () => {
@@ -267,7 +265,8 @@ Continue here
 
     assert.equal(parsed.name, "dynamic-review");
     assert.equal(parsed.steps.length, 2);
-    assert.deepEqual((parsed.steps[1] as { collect?: { as?: string } }).collect, { as: "reviews" });
+    assert.ok("collect" in parsed.steps[1]);
+    assert.deepEqual(parsed.steps[1].collect, { as: "reviews" });
     assert.deepEqual((parsed.steps[0] as { outputSchema?: unknown }).outputSchema, {
       type: "object",
     });
@@ -303,10 +302,9 @@ Continue here
       criteria: ["Patch bug"],
       evidence: ["changed-files", "commands-run"],
     });
-    assert.deepEqual(
-      (parsed.steps[1] as { parallel?: Array<{ acceptance?: unknown }> }).parallel?.[0]?.acceptance,
-      { criteria: ["Return concrete findings"] },
-    );
+    assert.deepEqual(objectAt(parsed.steps[1], "parallel", 0).acceptance, {
+      criteria: ["Return concrete findings"],
+    });
     assert.throws(
       () =>
         parseJsonChain(

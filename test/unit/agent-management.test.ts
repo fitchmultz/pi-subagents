@@ -4,21 +4,20 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { makeExtensionContext } from "../support/sdk-context.ts";
 import {
   handleCreate,
   handleManagementAction,
   handleUpdate,
 } from "../../src/agents/agent-management.ts";
+import { objectAt } from "./config-workflow-fixtures.ts";
+import { json as parseJsonObject, textAt } from "../support/assertions.ts";
 import { discoverAgentsAll } from "../../src/agents/agents.ts";
 
 let tempDir = "";
 
-function readText(result: { content: Array<{ type: string; text?: string }> }): string {
-  const first = result.content[0];
-  assert.ok(first);
-  assert.equal(first.type, "text");
-  assert.equal(typeof first.text, "string");
-  return first.text;
+function readText(result: { readonly content: unknown }): string {
+  return textAt(result.content);
 }
 
 describe("agent management config parsing", () => {
@@ -33,7 +32,7 @@ describe("agent management config parsing", () => {
   it("lists effective model, effort and ordered fallbacks without inventing unset defaults", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     for (const config of [
@@ -75,7 +74,7 @@ describe("agent management config parsing", () => {
     const text = readText(listed);
     const profile = (name: string) => {
       const entry = text.split("\n- ").find((line) => line.startsWith(`${name} (`));
-      assert.ok(entry, `Missing profile ${name}`);
+      assert.ok(entry !== undefined, `Missing profile ${name}`);
       assert.match(entry, /\(project, context: fresh\): Discovery fixture/);
       return entry;
     };
@@ -101,7 +100,7 @@ describe("agent management config parsing", () => {
   it("rejects unknown config keys instead of silently ignoring typos", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     const result = handleManagementAction(
@@ -116,7 +115,11 @@ describe("agent management config parsing", () => {
   it("surfaces JSON parse errors for create config strings", () => {
     const result = handleCreate(
       { config: '{"name":' },
-      { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
+      {
+        cwd: tempDir,
+        modelRegistry: makeExtensionContext(tempDir).modelRegistry,
+        isProjectTrusted: () => true,
+      },
     );
 
     assert.equal(result.isError, true);
@@ -126,7 +129,11 @@ describe("agent management config parsing", () => {
   it("surfaces JSON parse errors for update config strings", () => {
     const result = handleUpdate(
       { agent: "reviewer", config: '{"description":' },
-      { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
+      {
+        cwd: tempDir,
+        modelRegistry: makeExtensionContext(tempDir).modelRegistry,
+        isProjectTrusted: () => true,
+      },
     );
 
     assert.equal(result.isError, true);
@@ -154,7 +161,7 @@ describe("agent management config parsing", () => {
         { agent: "duplicate", agentScope: "user" },
         {
           cwd: tempDir,
-          modelRegistry: { getAvailable: () => [] },
+          modelRegistry: makeExtensionContext(tempDir).modelRegistry,
           isProjectTrusted: () => true,
         },
       );
@@ -207,7 +214,7 @@ describe("agent management config parsing", () => {
     );
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
 
@@ -233,7 +240,7 @@ describe("agent management config parsing", () => {
   it("creates, gets, updates, and deletes a packaged agent by runtime name", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     const created = handleCreate(
@@ -283,7 +290,7 @@ describe("agent management config parsing", () => {
   it("rejects package values that cannot be normalized", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     const created = handleCreate(
@@ -298,7 +305,7 @@ describe("agent management config parsing", () => {
   it("creates and updates packaged chains while preserving packaged step names", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     fs.mkdirSync(path.join(tempDir, ".pi", "agents"), { recursive: true });
@@ -350,7 +357,7 @@ Inspect
   it("creates saved chains with plural step skills", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     const result = handleCreate(
@@ -379,7 +386,7 @@ Inspect
   it("preserves task headings through managed chain creation and updates", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     const task = "Review this change.\n\n## Requirements\nDo not modify any files.";
@@ -402,7 +409,7 @@ Inspect
       );
     assert.deepEqual(load()?.steps, steps);
 
-    const updatedSteps = [{ ...steps[0]!, task: `${task}\n\n## Report\nReturn findings.` }];
+    const updatedSteps = [{ ...steps[0], task: `${task}\n\n## Report\nReturn findings.` }];
     const updated = handleUpdate(
       { chainName: "heading-repro", config: { steps: updatedSteps } },
       ctx,
@@ -421,7 +428,11 @@ Inspect
           steps: [{ agent: "reviewer", task: "Review", skill: "code-review" }],
         },
       },
-      { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
+      {
+        cwd: tempDir,
+        modelRegistry: makeExtensionContext(tempDir).modelRegistry,
+        isProjectTrusted: () => true,
+      },
     );
 
     assert.equal(result.isError, true);
@@ -432,7 +443,7 @@ Inspect
   it("creates agents with completion guard disabled", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     const result = handleCreate(
@@ -461,7 +472,7 @@ Inspect
   it("creates agents with resource limits", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     const result = handleCreate(
@@ -499,7 +510,11 @@ Inspect
           maxTokens: 0,
         },
       },
-      { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
+      {
+        cwd: tempDir,
+        modelRegistry: makeExtensionContext(tempDir).modelRegistry,
+        isProjectTrusted: () => true,
+      },
     );
 
     assert.equal(result.isError, true);
@@ -516,7 +531,11 @@ Inspect
           completionGuard: "false",
         },
       },
-      { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
+      {
+        cwd: tempDir,
+        modelRegistry: makeExtensionContext(tempDir).modelRegistry,
+        isProjectTrusted: () => true,
+      },
     );
 
     assert.equal(result.isError, true);
@@ -526,7 +545,7 @@ Inspect
   it("updates JSON chain descriptions without rewriting them as markdown", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     const chainPath = path.join(tempDir, ".pi", "chains", "dynamic-review.chain.json");
@@ -570,18 +589,15 @@ Inspect
     assert.equal(updated.isError, false);
     const content = fs.readFileSync(chainPath, "utf-8");
     assert.doesNotMatch(content, /^---/);
-    const parsed = JSON.parse(content) as {
-      description?: string;
-      chain?: Array<{ collect?: { as?: string } }>;
-    };
+    const parsed = parseJsonObject(content);
     assert.equal(parsed.description, "Updated dynamic review");
-    assert.equal(parsed.chain?.[1]?.collect?.as, "reviews");
+    assert.equal(objectAt(parsed, "chain", 1, "collect").as, "reviews");
   });
 
   it("serializes managed JSON chain skills in the runtime format", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     const chainPath = path.join(tempDir, ".pi", "chains", "review-flow.chain.json");
@@ -607,11 +623,9 @@ Inspect
     );
 
     assert.equal(updated.isError, false, readText(updated));
-    const parsed = JSON.parse(fs.readFileSync(chainPath, "utf-8")) as {
-      chain?: Array<{ skill?: string[]; skills?: unknown }>;
-    };
-    assert.deepEqual(parsed.chain?.[0]?.skill, ["review", "verification"]);
-    assert.equal(parsed.chain?.[0]?.skills, undefined);
+    const parsed = parseJsonObject(fs.readFileSync(chainPath, "utf-8"));
+    assert.deepEqual(objectAt(parsed, "chain", 0).skill, ["review", "verification"]);
+    assert.equal(objectAt(parsed, "chain", 0).skills, undefined);
     const got = handleManagementAction("get", { chainName: "review-flow" }, ctx);
     assert.equal(got.isError, false, readText(got));
     assert.match(readText(got), /Skills: review, verification/);
@@ -620,7 +634,7 @@ Inspect
   it("renames and repackages JSON chains while preserving JSON format and extension", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     const chainPath = path.join(tempDir, ".pi", "chains", "dynamic-review.chain.json");
@@ -645,20 +659,16 @@ Inspect
     assert.equal(fs.existsSync(chainPath), false);
     const content = fs.readFileSync(updatedPath, "utf-8");
     assert.doesNotMatch(content, /^---/);
-    const parsed = JSON.parse(content) as {
-      name?: string;
-      package?: string;
-      chain?: Array<{ agent?: string }>;
-    };
+    const parsed = parseJsonObject(content);
     assert.equal(parsed.name, "review-flow");
     assert.equal(parsed.package, "code-analysis");
-    assert.equal(parsed.chain?.[0]?.agent, "scout");
+    assert.equal(objectAt(parsed, "chain", 0).agent, "scout");
   });
 
   it("gets dynamic JSON chain details and lists invalid chain diagnostics", () => {
     const ctx = {
       cwd: tempDir,
-      modelRegistry: { getAvailable: () => [] },
+      modelRegistry: makeExtensionContext(tempDir).modelRegistry,
       isProjectTrusted: () => true,
     };
     fs.mkdirSync(path.join(tempDir, ".pi", "chains"), { recursive: true });
@@ -710,7 +720,11 @@ Inspect
   it("creates delegate with its builtin prompt defaults", () => {
     const result = handleCreate(
       { config: { name: "delegate", description: "Delegate helper", scope: "project" } },
-      { cwd: tempDir, modelRegistry: { getAvailable: () => [] }, isProjectTrusted: () => true },
+      {
+        cwd: tempDir,
+        modelRegistry: makeExtensionContext(tempDir).modelRegistry,
+        isProjectTrusted: () => true,
+      },
     );
 
     assert.equal(result.isError, false);

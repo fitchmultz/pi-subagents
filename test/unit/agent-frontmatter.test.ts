@@ -5,8 +5,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { serializeAgent } from "../../src/agents/agent-serializer.ts";
-import { parseChain, serializeChain } from "../../src/agents/chain-serializer.ts";
-import { discoverAgents, discoverAgentsAll, type AgentConfig } from "../../src/agents/agents.ts";
+import { serializeChain } from "../../src/agents/chain-serializer.ts";
+import { discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
+import type { AgentConfig } from "../../src/shared/types/config.ts";
 import { parseFrontmatter } from "../../src/agents/frontmatter.ts";
 
 const tempDirs: string[] = [];
@@ -14,7 +15,7 @@ const tempDirs: string[] = [];
 afterEach(() => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
-    if (!dir) {
+    if (dir === undefined) {
       continue;
     }
     fs.rmSync(dir, { recursive: true, force: true });
@@ -138,7 +139,7 @@ Validate changes
     const result = discoverAgents(dir, "project");
     const runner = result.agents.find((agent) => agent.name === "test-runner");
     assert.equal(runner?.completionGuard, false);
-    assert.equal(runner?.extraFields?.completionGuard, undefined);
+    assert.equal(runner.extraFields?.completionGuard, undefined);
   });
 });
 
@@ -181,7 +182,7 @@ Do work
     const result = discoverAgents(dir, "project");
     const worker = result.agents.find((agent) => agent.name === "worker");
     assert.equal(worker?.allowSubagents, true);
-    assert.equal(worker?.extraFields?.allowSubagents, undefined);
+    assert.equal(worker.extraFields?.allowSubagents, undefined);
   });
 });
 
@@ -269,9 +270,9 @@ Do work
     const result = discoverAgents(dir, "project");
     const worker = result.agents.find((agent) => agent.name === "worker");
     assert.equal(worker?.maxExecutionTimeMs, 600000);
-    assert.equal(worker?.maxTokens, 50000);
-    assert.equal(worker?.extraFields?.maxExecutionTimeMs, undefined);
-    assert.equal(worker?.extraFields?.maxTokens, undefined);
+    assert.equal(worker.maxTokens, 50000);
+    assert.equal(worker.extraFields?.maxExecutionTimeMs, undefined);
+    assert.equal(worker.extraFields?.maxTokens, undefined);
   });
 });
 
@@ -402,7 +403,7 @@ Do work
     const result = discoverAgents(dir, "project");
     const worker = result.agents.find((agent) => agent.name === "worker");
     assert.equal(worker?.inheritProjectContext, true);
-    assert.equal(worker?.inheritSkills, true);
+    assert.equal(worker.inheritSkills, true);
   });
 });
 
@@ -429,9 +430,9 @@ Do work
     const result = discoverAgents(dir, "project");
     const worker = result.agents.find((agent) => agent.name === "worker");
     assert.equal(worker?.systemPromptMode, "append");
-    assert.equal(worker?.inheritProjectContext, true);
-    assert.equal(worker?.inheritSkills, true);
-    assert.equal(worker?.maxSubagentDepth, 0);
+    assert.equal(worker.inheritProjectContext, true);
+    assert.equal(worker.inheritSkills, true);
+    assert.equal(worker.maxSubagentDepth, 0);
   });
 
   it("all bundled agents use the normal configured tool surface", () => {
@@ -492,9 +493,9 @@ Do work
     const result = discoverAgents(dir, "project");
     const delegate = result.agents.find((agent) => agent.name === "delegate");
     assert.equal(delegate?.systemPromptMode, "append");
-    assert.equal(delegate?.inheritProjectContext, true);
-    assert.equal(delegate?.inheritSkills, true);
-    assert.equal(delegate?.maxSubagentDepth, 0);
+    assert.equal(delegate.inheritProjectContext, true);
+    assert.equal(delegate.inheritSkills, true);
+    assert.equal(delegate.maxSubagentDepth, 0);
   });
 });
 
@@ -720,7 +721,7 @@ Packaged
     const unqualified = agents.find((agent) => agent.name === "scout");
     const packaged = agents.find((agent) => agent.name === "code-analysis.scout");
     assert.equal(unqualified?.description, "Project scout");
-    assert.equal(unqualified?.filePath, path.join(dir, ".pi", "agents", "scout.md"));
+    assert.equal(unqualified.filePath, path.join(dir, ".pi", "agents", "scout.md"));
     assert.equal(packaged?.description, "Packaged scout");
   });
 
@@ -1047,9 +1048,9 @@ Inspect project
       );
       const user = sharedChains.find((chain) => chain.source === "user");
       assert.equal(user?.filePath, path.join(userChainsDir, "shared.chain.md"));
-      assert.equal(user?.description, "User chain");
-      assert.equal(user?.steps[0]?.agent, "scout");
-      assert.equal(user?.steps[0]?.task, "Inspect user");
+      assert.equal(user.description, "User chain");
+      assert.equal(user.steps[0]?.agent, "scout");
+      assert.equal(user.steps[0]?.task, "Inspect user");
       const shared = sharedChains.find((chain) => chain.source === "project");
       assert.ok(shared);
       assert.equal(shared.filePath, path.join(dir, ".pi", "chains", "shared.chain.md"));

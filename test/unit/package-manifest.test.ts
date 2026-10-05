@@ -4,6 +4,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { objectAt } from "./config-workflow-fixtures.ts";
+import {
+  array as arrayValue,
+  record as objectValue,
+  json as parseJsonObject,
+} from "../support/assertions.ts";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -18,7 +24,7 @@ function collectTsFiles(dir: string): string[] {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const entryPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      collectTsFiles(entryPath).forEach((file) => files.push(file));
+      files.push(...collectTsFiles(entryPath));
     } else if (entry.name.endsWith(".ts")) {
       files.push(entryPath);
     }
@@ -26,11 +32,8 @@ function collectTsFiles(dir: string): string[] {
   return files;
 }
 
-function readPackageJson(): Record<string, unknown> {
-  return JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf-8")) as Record<
-    string,
-    unknown
-  >;
+function readPackageJson(): Readonly<Record<string, unknown>> {
+  return parseJsonObject(fs.readFileSync(path.join(projectRoot, "package.json"), "utf-8"));
 }
 
 function rootPackageName(specifier: string): string {
@@ -39,14 +42,8 @@ function rootPackageName(specifier: string): string {
 
 test("direct @earendil-works runtime imports are declared for local installs", () => {
   const packageJson = readPackageJson();
-  const dependencies =
-    packageJson.dependencies && typeof packageJson.dependencies === "object"
-      ? packageJson.dependencies
-      : {};
-  const devDependencies =
-    packageJson.devDependencies && typeof packageJson.devDependencies === "object"
-      ? packageJson.devDependencies
-      : {};
+  const dependencies = objectValue(packageJson.dependencies ?? {});
+  const devDependencies = objectValue(packageJson.devDependencies ?? {});
   const declared = new Set([...Object.keys(dependencies), ...Object.keys(devDependencies)]);
   const imported = new Set<string>();
 
@@ -56,7 +53,10 @@ test("direct @earendil-works runtime imports are declared for local installs", (
   ]) {
     const source = fs.readFileSync(file, "utf-8");
     for (const match of source.matchAll(sourceImportPattern)) {
-      imported.add(rootPackageName(match[1] ?? match[2]!));
+      const captures: readonly (string | undefined)[] = match;
+      const specifier = captures[1] ?? captures[2];
+      assert.ok(specifier !== undefined, `Missing import specifier in ${file}`);
+      imported.add(rootPackageName(specifier));
     }
   }
 
@@ -66,43 +66,41 @@ test("direct @earendil-works runtime imports are declared for local installs", (
 
 test("Pi development dependencies use one exact baseline with optional wildcard peers", () => {
   const packageJson = readPackageJson();
-  const devDependencies = packageJson.devDependencies as Record<string, unknown>;
-  const peerDependencies = packageJson.peerDependencies as Record<string, unknown>;
-  const peerDependenciesMeta = packageJson.peerDependenciesMeta as Record<
-    string,
-    { optional?: boolean }
-  >;
+  const devDependencies = objectValue(packageJson.devDependencies);
+  const peerDependencies = objectValue(packageJson.peerDependencies);
+  const peerDependenciesMeta = objectValue(packageJson.peerDependenciesMeta);
   for (const name of [
     "@earendil-works/pi-agent-core",
     "@earendil-works/pi-ai",
     "@earendil-works/pi-coding-agent",
     "@earendil-works/pi-tui",
   ]) {
-    assert.match(String(devDependencies[name]), /^\d+\.\d+\.\d+$/, name);
+    const version = devDependencies[name];
+    assert.ok(typeof version === "string", name);
+    assert.match(version, /^\d+\.\d+\.\d+$/, name);
     assert.equal(devDependencies[name], devDependencies["@earendil-works/pi-coding-agent"], name);
     assert.equal(peerDependencies[name], "*", name);
-    assert.equal(peerDependenciesMeta[name]?.optional, true, name);
+    assert.equal(objectAt(peerDependenciesMeta, name).optional, true, name);
   }
 });
 
 test("package lock uses the public npm registry", () => {
-  const lockfile = JSON.parse(
+  const lockfile = parseJsonObject(
     fs.readFileSync(path.join(projectRoot, "package-lock.json"), "utf-8"),
-  ) as {
-    packages?: Record<string, { resolved?: unknown }>;
-  };
-  for (const [name, entry] of Object.entries(lockfile.packages ?? {})) {
-    if (typeof entry.resolved !== "string") {
+  );
+  for (const [name, entry] of Object.entries(objectValue(lockfile.packages ?? {}))) {
+    const resolvedUrl = objectValue(entry).resolved;
+    if (typeof resolvedUrl !== "string") {
       continue;
     }
-    const resolved = new URL(entry.resolved);
+    const resolved = new URL(resolvedUrl);
     assert.equal(resolved.protocol, "https:", name);
     assert.equal(resolved.hostname, "registry.npmjs.org", name);
   }
 });
 
 test("one manifest bundles subagents and intercom", () => {
-  const pi = readPackageJson().pi as { extensions?: unknown; skills?: unknown };
+  const pi = objectValue(readPackageJson().pi);
   assert.deepEqual(pi.extensions, ["./dist/extension/index.js", "./dist/pi-intercom/index.js"]);
   assert.deepEqual(pi.skills, ["./skills"]);
   assert.equal(
@@ -117,7 +115,7 @@ test("package has the owned public scoped identity and exposes no legacy npx ins
   assert.notEqual(packageJson.private, true);
   assert.deepEqual(packageJson.publishConfig, { access: "public" });
   assert.equal("bin" in packageJson, false);
-  const files = Array.isArray(packageJson.files) ? packageJson.files : [];
+  const files = packageJson.files === undefined ? [] : arrayValue(packageJson.files);
   assert.equal(files.includes("*.mjs"), false);
   assert.equal(fs.existsSync(path.join(projectRoot, "install.mjs")), false);
 });

@@ -60,14 +60,14 @@ describe("Path resolution for .agents and ~/.agents", () => {
     const skillsDir = path.join(cwdDir, ".agents", "skills");
     const resolved = resolveSkillPath("test-skill-1", cwdDir);
     assert.ok(resolved);
-    assert.strictEqual(resolved?.path, path.join(skillsDir, "test-skill-1.md"));
+    assert.strictEqual(resolved.path, path.join(skillsDir, "test-skill-1.md"));
   });
 
   test("should resolve skills in ~/.agents/skills", () => {
     const userSkillsDir = path.join(fakeHomeDir, ".agents", "skills");
     const resolved = resolveSkillPath("test-skill-2", cwdDir);
     assert.ok(resolved);
-    assert.strictEqual(resolved?.path, path.join(userSkillsDir, "test-skill-2.md"));
+    assert.strictEqual(resolved.path, path.join(userSkillsDir, "test-skill-2.md"));
   });
 
   test("should resolve project agents from both .agents and .pi/agents", () => {
@@ -89,9 +89,9 @@ describe("Path resolution for .agents and ~/.agents", () => {
     const legacyAgent = result.agents.find((a) => a.name === "test-agent-legacy");
     const agent = result.agents.find((a) => a.name === "test-agent-1");
     assert.ok(legacyAgent);
-    assert.strictEqual(legacyAgent?.filePath, path.join(legacyDir, "test-agent-legacy.md"));
+    assert.strictEqual(legacyAgent.filePath, path.join(legacyDir, "test-agent-legacy.md"));
     assert.ok(agent);
-    assert.strictEqual(agent?.filePath, path.join(agentsDir, "test-agent-1.md"));
+    assert.strictEqual(agent.filePath, path.join(agentsDir, "test-agent-1.md"));
   });
 
   test("should resolve agents in ~/.agents", () => {
@@ -105,7 +105,7 @@ describe("Path resolution for .agents and ~/.agents", () => {
     const result = discoverAgents(cwdDir, "user");
     const agent = result.agents.find((a) => a.name === "test-agent-2");
     assert.ok(agent);
-    assert.strictEqual(agent?.filePath, path.join(userAgentsDir, "test-agent-2.md"));
+    assert.strictEqual(agent.filePath, path.join(userAgentsDir, "test-agent-2.md"));
   });
 
   test("should ignore AGENTS.md in ~/.agents", () => {

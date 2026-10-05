@@ -12,8 +12,9 @@ import {
   resolveJsonPointer,
   validateDynamicCollection,
 } from "../../src/runs/shared/dynamic-fanout.ts";
-import type { ChainStep } from "../../src/shared/settings.ts";
-import type { ChainOutputMap, SingleResult } from "../../src/shared/types.ts";
+import { parseJsonChain } from "../../src/agents/chain-serializer.ts";
+import type { ChainStep, ChainOutputMap } from "../../src/shared/types/workflow.ts";
+import type { SingleResult } from "../../src/shared/types.ts";
 
 const outputs: ChainOutputMap = {
   targets: {
@@ -177,48 +178,67 @@ describe("dynamic fanout helpers", () => {
   });
 
   it("rejects malformed dynamic-like shapes before they can run as static parallel", () => {
-    const malformed = [
+    const malformed: readonly { readonly step: unknown; readonly expectedError: RegExp }[] = [
       {
-        expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
-        parallel: [{ agent: "reviewer", task: "Review" }],
-        collect: { as: "reviews" },
+        step: {
+          expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
+          parallel: [{ agent: "reviewer", task: "Review" }],
+          collect: { as: "reviews" },
+        },
+        expectedError: /expand\/collect cannot be mixed with static parallel arrays/,
       },
       {
-        expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
-        parallel: { agent: "reviewer", task: "Review {item.path}" },
+        step: {
+          expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
+          parallel: { agent: "reviewer", task: "Review {item.path}" },
+        },
+        expectedError: /dynamic fanout requires expand and collect objects/,
       },
       {
-        expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
-        parallel: { agent: "reviewer", task: "Review {item.path}" },
-        collect: { as: "reviews" },
-        when: "later",
+        step: {
+          expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
+          parallel: { agent: "reviewer", task: "Review {item.path}" },
+          collect: { as: "reviews" },
+          when: "later",
+        },
+        expectedError: /unknown field: when/,
       },
       {
-        expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
-        parallel: { agent: "reviewer", task: "Review {item.path}", as: "child" },
-        collect: { as: "reviews" },
+        step: {
+          expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
+          parallel: { agent: "reviewer", task: "Review {item.path}", as: "child" },
+          collect: { as: "reviews" },
+        },
+        expectedError: /parallel does not support field 'as'/,
       },
-    ] as ChainStep[];
-
-    for (const step of malformed) {
+    ];
+    for (const { step, expectedError } of malformed) {
       assert.throws(
         () =>
-          validateChainOutputBindings([
-            {
-              agent: "scout",
-              task: "Return targets",
-              as: "targets",
-              outputSchema: { type: "object" },
-            },
-            step,
-          ]),
-        ChainOutputValidationError,
+          parseJsonChain(
+            JSON.stringify({
+              name: "malformed-dynamic",
+              description: "Malformed dynamic-like shape must not execute as static parallel",
+              chain: [
+                {
+                  agent: "scout",
+                  task: "Return targets",
+                  as: "targets",
+                  outputSchema: { type: "object" },
+                },
+                step,
+              ],
+            }),
+            "project",
+            "/tmp/malformed-dynamic.chain.json",
+          ),
+        expectedError,
       );
     }
   });
 
   it("validates source ordering and collect name collisions", () => {
-    const chain: ChainStep[] = [
+    const chain: readonly ChainStep[] = [
       { agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
       {
         expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
@@ -227,7 +247,7 @@ describe("dynamic fanout helpers", () => {
       },
     ];
     assert.throws(() => validateChainOutputBindings(chain), ChainOutputValidationError);
-    assert.throws(() => validateChainOutputBindings([chain[1]!]), /unknown output 'targets'/);
+    assert.throws(() => validateChainOutputBindings([chain[1]]), /unknown output 'targets'/);
   });
 
   it("collects ordered child result records and validates aggregate schema", () => {

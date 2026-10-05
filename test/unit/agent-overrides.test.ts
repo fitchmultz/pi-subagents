@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { makeExtensionContext } from "../support/sdk-context.ts";
 import { discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
 import { handleManagementAction } from "../../src/agents/agent-management.ts";
 import {
@@ -97,11 +98,11 @@ describe("builtin agent overrides", () => {
     );
     const watcher = builtins.find((agent) => agent.name === "watcher");
     assert.equal(watcher?.maxSubagentDepth, 0);
-    assert.equal(watcher?.completionGuard, false);
-    assert.match(watcher?.systemPrompt ?? "", /Do not modify the watched target/);
-    assert.match(watcher?.systemPrompt ?? "", /never use a tight loop/);
-    assert.match(watcher?.systemPrompt ?? "", /suppress unchanged heartbeats/);
-    const effectiveWatcher = applyIntercomBridgeToAgent(watcher!, resolveIntercomBridge("main"));
+    assert.equal(watcher.completionGuard, false);
+    assert.match(watcher.systemPrompt, /Do not modify the watched target/);
+    assert.match(watcher.systemPrompt, /never use a tight loop/);
+    assert.match(watcher.systemPrompt, /suppress unchanged heartbeats/);
+    const effectiveWatcher = applyIntercomBridgeToAgent(watcher, resolveIntercomBridge("main"));
     assert.match(
       effectiveWatcher.systemPrompt,
       /steers at the next tool boundary without waiting for a reply/,
@@ -129,7 +130,7 @@ describe("builtin agent overrides", () => {
       );
       assert.equal(agent.maxSubagentDepth, 0, `${agent.name} must block child delegation`);
       assert.ok(
-        !agent.tools?.includes("subagent"),
+        agent.tools?.includes("subagent") !== true,
         `${agent.name} must not expose nested delegation`,
       );
       const effectivePrompt = applyIntercomBridgeToAgent(
@@ -144,7 +145,7 @@ describe("builtin agent overrides", () => {
     }
     const delegate = builtins.find((agent) => agent.name === "delegate");
     assert.equal(delegate?.model, "openai-codex/gpt-6.1-sol");
-    assert.equal(delegate?.fallbackModels, undefined);
+    assert.equal(delegate.fallbackModels, undefined);
   });
 
   it("applies user settings overrides to builtin agents", () => {
@@ -238,7 +239,7 @@ describe("builtin agent overrides", () => {
       { agentScope: "user" },
       {
         cwd: tempProject,
-        modelRegistry: { getAvailable: () => [] },
+        modelRegistry: makeExtensionContext(tempProject).modelRegistry,
         isProjectTrusted: () => true,
       },
     );
@@ -258,7 +259,7 @@ describe("builtin agent overrides", () => {
       { agentScope: "user" },
       {
         cwd: tempProject,
-        modelRegistry: { getAvailable: () => [] },
+        modelRegistry: makeExtensionContext(tempProject).modelRegistry,
         isProjectTrusted: () => true,
       },
     );
@@ -279,14 +280,18 @@ describe("builtin agent overrides", () => {
     );
     const originalError = console.error;
     const loggedErrors: string[] = [];
-    console.error = (...args: unknown[]) => loggedErrors.push(args.map(String).join(" "));
+    console.error = (...args: readonly unknown[]) => {
+      loggedErrors.push(
+        args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "),
+      );
+    };
     try {
       const invalid = handleManagementAction(
         "list",
         { agentScope: "user" },
         {
           cwd: tempProject,
-          modelRegistry: { getAvailable: () => [] },
+          modelRegistry: makeExtensionContext(tempProject).modelRegistry,
           isProjectTrusted: () => true,
         },
       );
@@ -298,7 +303,7 @@ describe("builtin agent overrides", () => {
         { agentScope: "user" },
         {
           cwd: tempProject,
-          modelRegistry: { getAvailable: () => [] },
+          modelRegistry: makeExtensionContext(tempProject).modelRegistry,
           isProjectTrusted: () => true,
         },
       );
@@ -310,7 +315,7 @@ describe("builtin agent overrides", () => {
         { agentScope: "user" },
         {
           cwd: tempProject,
-          modelRegistry: { getAvailable: () => [] },
+          modelRegistry: makeExtensionContext(tempProject).modelRegistry,
           isProjectTrusted: () => true,
         },
       );

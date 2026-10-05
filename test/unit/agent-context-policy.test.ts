@@ -5,8 +5,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig } from "../../src/agents/agents.ts";
-import { collectInvocationAgentNames } from "../../src/shared/settings.ts";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import type { AgentConfig } from "../../src/shared/types/config.ts";
+import { collectInvocationAgentNames, isDynamicParallelStep } from "../../src/shared/settings.ts";
 import {
   buildFlatAgentNameResolver,
   createPerAgentForkContextResolver,
@@ -17,7 +18,7 @@ import {
   wrapTaskForAgentContext,
 } from "../../src/shared/agent-context-policy.ts";
 
-const agents: AgentConfig[] = [
+const agents: readonly AgentConfig[] = [
   makeAgent("scout", "fresh"),
   makeAgent("worker", "fork"),
   makeAgent("oracle", "fork"),
@@ -27,7 +28,7 @@ function makeAgent(
   name: string,
   defaultContext: "fresh" | "fork",
   model = "openai/test-model",
-  fallbackModels?: string[],
+  fallbackModels?: readonly string[],
 ): AgentConfig {
   return {
     name,
@@ -184,8 +185,10 @@ describe("wrapChainTasksForAgentContext", () => {
       undefined,
       agents,
     );
-    assert.equal((wrapped[0] as { task?: string }).task, "scout task");
-    assert.match((wrapped[1] as { task?: string }).task ?? "", /delegated subagent/i);
+    assert.ok("agent" in wrapped[0]);
+    assert.ok("agent" in wrapped[1]);
+    assert.equal(wrapped[0].task, "scout task");
+    assert.match(wrapped[1].task ?? "", /delegated subagent/i);
   });
 
   it("applies fork wrapping to dynamic parallel templates", () => {
@@ -200,7 +203,8 @@ describe("wrapChainTasksForAgentContext", () => {
       undefined,
       agents,
     );
-    const step = wrapped[0] as { parallel: { task?: string } };
+    const step = wrapped[0];
+    assert.ok(isDynamicParallelStep(step));
     assert.match(step.parallel.task ?? "", /delegated subagent/i);
   });
 });
@@ -211,13 +215,13 @@ describe("createPerAgentForkContextResolver", () => {
     try {
       const parent = SessionManager.create(tempDir, tempDir);
       parent.appendMessage({ role: "user", content: "parent context", timestamp: 1 });
-      parent.appendMessage({ role: "assistant", content: "persist parent" });
+      parent.appendMessage(fauxAssistantMessage("persist parent"));
       const resolver = createPerAgentForkContextResolver(parent, (index = 0) =>
         index === 1 ? "fork" : "fresh",
       );
       assert.equal(resolver.sessionFileForIndex(0), undefined);
       const fork = resolver.sessionFileForIndex(1);
-      assert.ok(fork);
+      assert.ok(fork !== undefined);
       assert.notEqual(fork, parent.getSessionFile());
       assert.deepEqual(SessionManager.open(fork).getBranch(), parent.getBranch());
       assert.equal(resolver.sessionFileForIndex(1), fork);

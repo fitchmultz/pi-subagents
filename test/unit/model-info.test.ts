@@ -7,8 +7,10 @@ import {
   type ModelInfo,
 } from "../../src/shared/model-info.ts";
 
+import type { ReadonlyInput } from "../../src/shared/types/inputs.ts";
+
 describe("model info helpers", () => {
-  const ambiguousModels: ModelInfo[] = [
+  const ambiguousModels: readonly ReadonlyInput<ModelInfo>[] = [
     {
       provider: "openai",
       id: "gpt-5-mini",

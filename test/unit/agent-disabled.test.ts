@@ -4,6 +4,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { makeExtensionContext } from "../support/sdk-context.ts";
+import { textAt } from "../support/assertions.ts";
 import { discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
 import { handleList, handleManagementAction } from "../../src/agents/agent-management.ts";
 
@@ -17,12 +19,8 @@ function writeJson(filePath: string, value: unknown): void {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf-8");
 }
 
-function readText(result: { content: Array<{ type: string; text?: string }> }): string {
-  const first = result.content[0];
-  assert.ok(first);
-  assert.equal(first.type, "text");
-  assert.equal(typeof first.text, "string");
-  return first.text;
+function readText(result: { readonly content: unknown }): string {
+  return textAt(result.content);
 }
 
 function writeAgent(filePath: string, name: string, description: string, model: string): void {
@@ -205,7 +203,7 @@ describe("builtin agent disabling", () => {
         {},
         {
           cwd: tempProject,
-          modelRegistry: { getAvailable: () => [] },
+          modelRegistry: makeExtensionContext(tempProject).modelRegistry,
           isProjectTrusted: () => true,
         },
       ),
@@ -232,7 +230,7 @@ describe("builtin agent disabling", () => {
         {},
         {
           cwd: tempProject,
-          modelRegistry: { getAvailable: () => [] },
+          modelRegistry: makeExtensionContext(tempProject).modelRegistry,
           isProjectTrusted: () => true,
         },
       ),
@@ -263,7 +261,7 @@ describe("builtin agent disabling", () => {
         { action: "get", agent: "reviewer" },
         {
           cwd: tempProject,
-          modelRegistry: { getAvailable: () => [] },
+          modelRegistry: makeExtensionContext(tempProject).modelRegistry,
           isProjectTrusted: () => true,
         },
       ),
@@ -295,7 +293,7 @@ describe("builtin agent disabling", () => {
         { action: "get", agent: "reviewer", agentScope: "user" },
         {
           cwd: tempProject,
-          modelRegistry: { getAvailable: () => [] },
+          modelRegistry: makeExtensionContext(tempProject).modelRegistry,
           isProjectTrusted: () => true,
         },
       ),

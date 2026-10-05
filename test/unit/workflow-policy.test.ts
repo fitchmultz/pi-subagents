@@ -6,19 +6,21 @@ import {
   evaluateAcceptance,
   resolveEffectiveAcceptance,
 } from "../../src/runs/shared/acceptance.ts";
-import { renderChainTask } from "../../src/runs/shared/chain-outputs.ts";
+import { renderChainTask, resolveOutputReferences } from "../../src/runs/shared/chain-outputs.ts";
 import { materializeDynamicParallelStep } from "../../src/runs/shared/dynamic-fanout.ts";
 import { isFailFastAbort } from "../../src/runs/shared/parallel-utils.ts";
 import { completeWorkflowStep, runParallelTasks } from "../../src/runs/shared/workflow-policy.ts";
+
+import type { ReadonlyInput } from "../../src/shared/types/inputs.ts";
 
 const success = { agent: "worker", output: "Evidence", exitCode: 0 };
 
 describe("workflow policy", () => {
   it("bounds parallel work and returns input order, not completion order", async () => {
-    const gates = [
-      Promise.withResolvers<void>(),
-      Promise.withResolvers<void>(),
-      Promise.withResolvers<void>(),
+    const gates: readonly { readonly promise: Promise<void>; readonly resolve: () => void }[] = [
+      Promise.withResolvers(),
+      Promise.withResolvers(),
+      Promise.withResolvers(),
     ];
     const started: number[] = [];
     const pending = runParallelTasks({
@@ -29,13 +31,15 @@ describe("workflow policy", () => {
         await gate.promise;
         return { ...success, output: String(index) };
       },
-      stoppedTask: () => {
+      stoppedTask: (): ReadonlyInput<typeof success> => {
         throw new Error("No task should stop");
       },
     });
     assert.deepEqual(started, [0, 1]);
     gates[1].resolve();
-    await new Promise(setImmediate);
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
     assert.deepEqual(started, [0, 1, 2]);
     gates[2].resolve();
     gates[0].resolve();
@@ -79,36 +83,38 @@ describe("workflow policy", () => {
   });
 
   it("pause, detach and cancellation stop queued work without becoming fail-fast", async () => {
-    for (const reason of ["interrupted", "detached", "cancelled"] as const) {
-      const cancellation = new AbortController();
-      const interruption = new AbortController();
-      const started: number[] = [];
-      const results = await runParallelTasks({
-        tasks: [0, 1],
-        concurrency: 1,
-        failFast: true,
-        signal: cancellation.signal,
-        interruptSignal: interruption.signal,
-        runTask: async (_, index, failFastSignal) => {
-          started.push(index);
-          assert.equal(failFastSignal.aborted, false);
-          if (reason === "cancelled") {
-            cancellation.abort();
-          }
-          if (reason === "interrupted") {
-            interruption.abort();
-          }
-          return { ...success, ...(reason === "cancelled" ? {} : { [reason]: true }) };
-        },
-        stoppedTask: (_, index, stopped) => {
-          assert.equal(index, 1);
-          assert.equal(stopped, reason);
-          return { ...success, exitCode: -1 };
-        },
-      });
-      assert.deepEqual(started, [0]);
-      assert.equal(results[1].exitCode, -1);
-    }
+    await Promise.all(
+      ["interrupted", "detached", "cancelled"].map(async (reason) => {
+        const cancellation = new AbortController();
+        const interruption = new AbortController();
+        const started: number[] = [];
+        const results = await runParallelTasks({
+          tasks: [0, 1],
+          concurrency: 1,
+          failFast: true,
+          signal: cancellation.signal,
+          interruptSignal: interruption.signal,
+          runTask: async (_, index, failFastSignal) => {
+            started.push(index);
+            assert.equal(failFastSignal.aborted, false);
+            if (reason === "cancelled") {
+              cancellation.abort();
+            }
+            if (reason === "interrupted") {
+              interruption.abort();
+            }
+            return { ...success, ...(reason === "cancelled" ? {} : { [reason]: true }) };
+          },
+          stoppedTask: (_, index, stopped) => {
+            assert.equal(index, 1);
+            assert.equal(stopped, reason);
+            return { ...success, exitCode: -1 };
+          },
+        });
+        assert.deepEqual(started, [0]);
+        assert.equal(results[1].exitCode, -1);
+      }),
+    );
   });
 
   it("a selected-child stop leaves queued and running independent siblings alone, even with fail-fast", async () => {
@@ -227,6 +233,70 @@ describe("workflow policy", () => {
     assert.equal(last.complete, true);
   });
 
+  for (const mode of ["sequential", "dynamic"]) {
+    it(`publishes ${mode} __proto__ as an own output without changing the map prototype`, () => {
+      const step = {
+        expand: { from: { output: "items", path: "/items" }, maxItems: 1 },
+        parallel: { agent: "worker", task: "{item}" },
+        collect: { as: "__proto__" },
+      };
+      const completion =
+        mode === "sequential"
+          ? completeWorkflowStep({
+              stepIndex: 0,
+              stepCount: 1,
+              results: [success],
+              previousOutput: "",
+              outputNames: ["__proto__"],
+            })
+          : completeWorkflowStep({
+              stepIndex: 1,
+              stepCount: 2,
+              results: [success],
+              previousOutput: "",
+              dynamic: {
+                step,
+                items: materializeDynamicParallelStep(
+                  step,
+                  {
+                    items: {
+                      agent: "producer",
+                      stepIndex: 0,
+                      text: "",
+                      structured: { items: ["a"] },
+                    },
+                  },
+                  1,
+                ).items,
+              },
+            });
+      const expectedText =
+        mode === "sequential"
+          ? "Evidence"
+          : '[{"key":"0","index":0,"item":"a","agent":"worker","exitCode":0,"text":"Evidence"}]';
+      assert.equal(completion.complete, true);
+      assert.equal(Object.hasOwn(completion.outputs, "__proto__"), true);
+      assert.equal(Object.getPrototypeOf(completion.outputs), Object.prototype);
+      assert.equal(completion.outputs["__proto__"].text, expectedText);
+      assert.equal(
+        resolveOutputReferences("{outputs.__proto__}", completion.outputs),
+        expectedText,
+      );
+    });
+  }
+
+  it("rejects inherited output names that no workflow step published", () => {
+    const outputs = {};
+    const prototype = { inherited: { text: "Not produced", agent: "parent", stepIndex: 0 } };
+    Object.setPrototypeOf(outputs, prototype);
+    assert.equal(Object.hasOwn(outputs, "inherited"), false);
+    assert.equal(Object.getPrototypeOf(outputs), prototype);
+    assert.throws(
+      () => resolveOutputReferences("{outputs.inherited}", outputs),
+      /Unknown chain output reference/,
+    );
+  });
+
   it("publishes dynamic collections only after every child and the aggregate schema succeed", () => {
     const step = {
       expand: { from: { output: "items", path: "/items" }, maxItems: 2 },
@@ -238,7 +308,7 @@ describe("workflow policy", () => {
       { items: { agent: "producer", stepIndex: 0, text: "", structured: { items: ["a", "b"] } } },
       1,
     ).items;
-    const complete = (results: Array<typeof success>, collect = step.collect) =>
+    const complete = (results: readonly ReadonlyInput<typeof success>[], collect = step.collect) =>
       completeWorkflowStep({
         stepIndex: 1,
         stepCount: 2,
@@ -246,10 +316,13 @@ describe("workflow policy", () => {
         previousOutput: "Before",
         dynamic: { step: { ...step, collect }, items },
       });
+    const structured: unknown = complete([success, success]).outputs.answers.structured;
+    assert.ok(Array.isArray(structured));
     assert.deepEqual(
-      (complete([success, success]).outputs.answers.structured as Array<{ key: string }>).map(
-        (item) => item.key,
-      ),
+      structured.map((item: unknown) => {
+        assert.ok(item !== null && typeof item === "object" && "key" in item);
+        return item.key;
+      }),
       ["0", "1"],
     );
     for (const completion of [

@@ -47,11 +47,12 @@ describe("workflow graph snapshots", () => {
     });
 
     const group = graph.nodes[1];
-    assert.equal(group?.kind, "parallel-group");
-    assert.equal(group?.children?.[0]?.id, "step-1-agent-0");
-    assert.equal(group?.children?.[0]?.flatIndex, 1);
-    assert.equal(group?.children?.[1]?.flatIndex, 2);
-    assert.equal(group?.children?.[1]?.status, "running");
+    assert.equal(group.kind, "parallel-group");
+    assert.ok(group.children);
+    assert.equal(group.children[0]?.id, "step-1-agent-0");
+    assert.equal(group.children[0].flatIndex, 1);
+    assert.equal(group.children[1].flatIndex, 2);
+    assert.equal(group.children[1].status, "running");
     assert.equal(graph.currentNodeId, "step-1-agent-1");
     assert.deepEqual(graph.phases, [
       { title: "Review", nodeIds: ["step-1-agent-0", "step-1-agent-1"] },

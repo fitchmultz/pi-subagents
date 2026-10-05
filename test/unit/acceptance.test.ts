@@ -21,7 +21,9 @@ import {
   validateAcceptanceInput,
 } from "../../src/runs/shared/acceptance.ts";
 
-function report(overrides: Record<string, unknown> = {}): string {
+import type { AcceptanceInput } from "../../src/shared/types/acceptance.ts";
+
+function report(overrides: Readonly<Record<string, unknown>> = {}): string {
   return [
     "done",
     "```acceptance-report",
@@ -203,7 +205,7 @@ describe("acceptance gates", () => {
 
     const genericJson = parseAcceptanceReport(`done\n\
 \
-\`\`\`json\n{\"notes\":\"not an acceptance report\"}\n\`\`\``);
+\`\`\`json\n{"notes":"not an acceptance report"}\n\`\`\``);
     assert.equal(genericJson.report, undefined);
     assert.match(genericJson.error ?? "", /Structured acceptance report not found/);
 
@@ -380,7 +382,7 @@ describe("acceptance gates", () => {
           humanAction: "Complete Touch ID",
         },
       ];
-      const config = {
+      const config: AcceptanceInput = {
         criteria: [
           { id: "done", must: "Retain work", evidence: ["changed-files"] },
           { id: "auth", must: "Validate sign-in" },
@@ -578,12 +580,12 @@ describe("acceptance gates", () => {
 
       assert.equal(ledger.status, "rejected");
       assert.equal(ledger.finalization?.status, "failed");
-      assert.equal(ledger.effectiveAcceptance?.level, "verified");
+      assert.equal(ledger.effectiveAcceptance.level, "verified");
       assert.deepEqual(
-        ledger.effectiveAcceptance?.verify.map((command) => command.id),
+        ledger.effectiveAcceptance.verify.map((command) => command.id),
         ["unit-verify"],
       );
-      assert.equal(ledger.effectiveAcceptance?.finalization.maxTurns, 1);
+      assert.equal(ledger.effectiveAcceptance.finalization.maxTurns, 1);
     }));
 
   it("validates removed level API, empty contracts, verify shapes, and loop bounds", () => {

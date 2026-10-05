@@ -2,7 +2,7 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { mergeAgentsForScope } from "../../src/agents/agent-selection.ts";
-import type { AgentConfig } from "../../src/agents/agents.ts";
+import type { AgentConfig } from "../../src/shared/types/config.ts";
 
 function makeAgent(
   name: string,

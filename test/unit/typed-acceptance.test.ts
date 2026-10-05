@@ -1,9 +1,20 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { it } from "node:test";
-import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-works/pi-ai";
+import {
+  fauxAssistantMessage,
+  fauxToolCall,
+  type Message,
+  type ToolResultMessage,
+  type JsonValue,
+  type JsonObject,
+} from "@earendil-works/pi-ai";
+import type { ReadonlyInput } from "../../src/shared/types/inputs.ts";
+import { isRecord, isUnknownArray } from "../../src/shared/unknown.ts";
 import {
   evaluateAcceptance,
   evaluateAcceptanceReport,
@@ -29,16 +40,16 @@ import { resolveJsonSchemaStrictSampling } from "@earendil-works/pi-ai/api/const
 
 const answer =
   "Result: /fixture/report.md\nIdentifier: task-42\nFindings and verification are complete.";
-const report: AcceptanceReport = {
+const report = {
   criteriaSatisfied: [
     { id: "criterion-1", status: "satisfied", evidence: "Fixture output and commands verified" },
   ],
   diffSummary: "Verified fixture",
   reviewFindings: [{ summary: "Finding retained", custom: { lines: [1, 2] } }],
-};
+} satisfies AcceptanceReport;
 const value = { answer, report };
 const acceptance = resolveEffectiveAcceptance({ explicit: { criteria: ["Deliver fixture"] } });
-const resultMessage = (id = "current"): Message => ({
+const resultMessage = (id = "current"): ToolResultMessage => ({
   role: "toolResult",
   toolCallId: id,
   toolName: "structured_output",
@@ -46,10 +57,31 @@ const resultMessage = (id = "current"): Message => ({
   content: [{ type: "text", text: "Captured" }],
   timestamp: Date.now(),
 });
-const submit = (payload: unknown = value, id = "current"): Message =>
-  fauxAssistantMessage(fauxToolCall("structured_output", { value: payload }, { id }), {
+function isJsonValue(input: unknown): input is JsonValue {
+  if (input === null || typeof input === "string" || typeof input === "boolean") {
+    return true;
+  }
+  if (typeof input === "number") {
+    return Number.isFinite(input);
+  }
+  if (isUnknownArray(input)) {
+    return input.every(isJsonValue);
+  }
+  return isRecord(input) && Object.values(input).every(isJsonValue);
+}
+
+function isJsonObject(input: unknown): input is JsonObject {
+  return isRecord(input) && isJsonValue(input);
+}
+
+const submit = (payload: unknown = value, id = "current"): Message => {
+  // Native tool arguments are JSON data; undefined object fields are omitted by the transport.
+  const encoded: unknown = JSON.parse(JSON.stringify({ value: payload }));
+  assert.ok(isJsonObject(encoded));
+  return fauxAssistantMessage(fauxToolCall("structured_output", encoded, { id }), {
     stopReason: "toolUse",
   });
+};
 
 it("keeps timeout aborts distinct from cancellation", () => {
   const timeout = new Error("Configured child deadline elapsed");
@@ -68,26 +100,32 @@ it("keeps timeout aborts distinct from cancellation", () => {
 });
 
 it("shape-validates a typed blocker before evaluating it", async () => {
-  const acceptance = resolveEffectiveAcceptance({ explicit: { criteria: ["Deliver fixture"] } });
-  for (const humanAction of [undefined, null, "", " ", 42]) {
-    const report = {
-      criteriaSatisfied: [
-        {
-          id: "criterion-1",
-          status: "blocked",
-          evidence: "Touch ID dialog is visible",
-          humanAction,
-        },
-      ],
-    };
-    const ledger = await evaluateAcceptance({ acceptance, output: "", report, cwd: process.cwd() });
-    assert.equal(
-      ledger.status,
-      "rejected",
-      `humanAction ${JSON.stringify(humanAction)} must not be accepted`,
-    );
-    assert.equal(ledger.childReport, undefined);
-  }
+  await Promise.all(
+    [undefined, null, "", " ", 42].map(async (humanAction) => {
+      const invalidReport = {
+        criteriaSatisfied: [
+          {
+            id: "criterion-1",
+            status: "blocked",
+            evidence: "Touch ID dialog is visible",
+            humanAction,
+          },
+        ],
+      };
+      const ledger = await evaluateAcceptance({
+        acceptance,
+        output: "",
+        report: invalidReport,
+        cwd: process.cwd(),
+      });
+      assert.equal(
+        ledger.status,
+        "rejected",
+        `humanAction ${JSON.stringify(humanAction)} must not be accepted`,
+      );
+      assert.equal(ledger.childReport, undefined);
+    }),
+  );
 });
 
 it("rejects malformed typed evidence even when valid legacy prose is also present", () => {
@@ -181,12 +219,13 @@ it("validates the current public answer with its original recursive schema scope
       const bad = { answer: invalid, report };
       fs.writeFileSync(runtime.outputPath, JSON.stringify(bad));
       assert.ok(
-        readFinalizationReport([submit(bad), resultMessage()], runtime).reportSubmissionError,
+        (readFinalizationReport([submit(bad), resultMessage()], runtime).reportSubmissionError
+          ?.length ?? 0) > 0,
       );
       assert.ok(
-        readFinalizationReport([fauxAssistantMessage("Result")], runtime, {
+        (readFinalizationReport([fauxAssistantMessage("Result")], runtime, {
           structuredResult: true,
-        }).reportSubmissionError,
+        }).reportSubmissionError?.length ?? 0) > 0,
       );
     }
   } finally {
@@ -211,9 +250,11 @@ it("invalidates old reports on later assistant activity but accepts passive cont
     );
     assert.equal(stale.report, undefined);
     assert.equal(stale.output, "");
-    assert.match(stale.reportSubmissionError!, /only tool call/);
-    assert.match(stale.unconfirmedOutput!, /Identifier: task-42/);
-    assert.deepEqual(parseAcceptanceReport(stale.unconfirmedOutput!).report, report);
+    assert.ok(stale.reportSubmissionError !== undefined);
+    assert.match(stale.reportSubmissionError, /only tool call/);
+    assert.ok(stale.unconfirmedOutput !== undefined);
+    assert.match(stale.unconfirmedOutput, /Identifier: task-42/);
+    assert.deepEqual(parseAcceptanceReport(stale.unconfirmedOutput).report, report);
     assert.equal(
       readFinalizationReport(messages, runtime, { messageOffset: messages.length }).report,
       undefined,
@@ -240,8 +281,8 @@ it("requires a sole successful report call, a later matching result, and the exa
       [submit()],
       [resultMessage(), submit()],
       [submit(), resultMessage("other")],
-      [submit(), { ...resultMessage(), toolName: "other" } as Message],
-      [submit(), { ...resultMessage(), isError: true } as Message],
+      [submit(), { ...resultMessage(), toolName: "other" } satisfies Message],
+      [submit(), { ...resultMessage(), isError: true } satisfies Message],
       [
         fauxAssistantMessage([call, fauxToolCall("read", {})], { stopReason: "toolUse" }),
         resultMessage(),
@@ -258,7 +299,7 @@ it("requires a sole successful report call, a later matching result, and the exa
       [fauxAssistantMessage(call, { stopReason: "length" }), resultMessage()],
     ];
     for (const messages of invalid) {
-      assert.ok(readFinalizationReport(messages, runtime).reportSubmissionError);
+      assert.ok((readFinalizationReport(messages, runtime).reportSubmissionError?.length ?? 0) > 0);
     }
     const withText = fauxAssistantMessage(
       [
@@ -271,16 +312,22 @@ it("requires a sole successful report call, a later matching result, and the exa
     assert.equal(readFinalizationReport([withText, resultMessage()], runtime).output, answer);
     fs.writeFileSync(runtime.outputPath, JSON.stringify({ ...value, answer: "Different capture" }));
     assert.match(
-      readFinalizationReport([submit(), resultMessage()], runtime).reportSubmissionError!,
+      readFinalizationReport([submit(), resultMessage()], runtime).reportSubmissionError ?? "",
       /does not match/,
     );
     fs.rmSync(runtime.outputPath);
     const missing = readFinalizationReport([submit(), resultMessage()], runtime);
-    assert.match(missing.reportSubmissionError!, /Missing structured_output/);
-    assert.match(missing.unconfirmedOutput!, /Identifier: task-42/);
+    assert.match(missing.reportSubmissionError ?? "", /Missing structured_output/);
+    assert.match(missing.unconfirmedOutput ?? "", /Identifier: task-42/);
   } finally {
     fs.rmSync(path.dirname(runtime.schemaPath), { recursive: true, force: true });
   }
+});
+
+it("requires explicit successful flags on malformed external receipts and audit evidence", () => {
+  const fixture = new URL("../fixtures/malformed-finalization-receipts.mjs", import.meta.url);
+  const result = spawnSync(process.execPath, [fileURLToPath(fixture)], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
 });
 
 it("postvalidates blocked reports, whitespace answers and arbitrary finding objects", () => {
@@ -301,7 +348,8 @@ it("postvalidates blocked reports, whitespace answers and arbitrary finding obje
     ]) {
       fs.writeFileSync(runtime.outputPath, JSON.stringify(invalid));
       assert.ok(
-        readFinalizationReport([submit(invalid), resultMessage()], runtime).reportSubmissionError,
+        (readFinalizationReport([submit(invalid), resultMessage()], runtime).reportSubmissionError
+          ?.length ?? 0) > 0,
       );
     }
     const blocked = {
@@ -386,7 +434,7 @@ it("keeps mandatory self-review defaults, cumulative typed evidence and verifica
 
 it("uses remaining review budget for missing submissions, and stops immediately for human blockers", async () => {
   let calls = 0;
-  const run = (initialReport: AcceptanceReport) =>
+  const run = (initialReport: ReadonlyInput<AcceptanceReport>) =>
     evaluateRunAcceptance({
       acceptance,
       initial: { exitCode: 0 },
@@ -409,7 +457,7 @@ it("uses remaining review budget for missing submissions, and stops immediately 
     repaired.finalization?.turns.map((turn) => turn.status),
     ["rejected", "checked"],
   );
-  assert.match(repaired.finalization?.turns[0]?.unconfirmedOutput ?? "", /Identifier: task-42/);
+  assert.match(repaired.finalization.turns[0]?.unconfirmedOutput ?? "", /Identifier: task-42/);
   calls = 0;
   const blocked = await run({
     ...report,
@@ -463,11 +511,14 @@ it("native strict preference preserves arbitrary findings and output schemas by 
     } as const;
     assert.equal(resolveJsonSchemaStrictSampling(tool, true), undefined);
     assert.equal(validateStructuredOutputValue(runtime.schema, value).status, "valid");
+    // JSON Schema's "then" keyword is a schema object, not a Promise callback.
+    const conditionalRequirements: unknown = JSON.parse('{"then":{"required":["extra"]}}');
+    assert.ok(conditionalRequirements !== null && typeof conditionalRequirements === "object");
     const custom = {
       type: "object",
       properties: { env: { type: "object", additionalProperties: { type: "string" } } },
       required: ["env"],
-      allOf: [{ if: { required: ["mode"] }, then: { required: ["extra"] } }],
+      allOf: [{ if: { required: ["mode"] }, ...conditionalRequirements }],
     };
     assert.equal(resolveJsonSchemaStrictSampling({ ...tool, parameters: custom }, true), undefined);
     assert.equal(

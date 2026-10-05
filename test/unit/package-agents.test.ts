@@ -1,6 +1,14 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -291,6 +299,65 @@ test("configured package profiles are read-only fallbacks, trust gated and redis
           );
         }
         writeFileSync(join(project, ".pi", "settings.json"), "{}");
+      },
+    );
+    await t.test(
+      "package profile directories stay inside their real package root",
+      async (cases) => {
+        await Promise.all(
+          [
+            {
+              name: "immediate parent",
+              packageDir: join(root, "confinement-parent"),
+              target: root,
+            },
+            {
+              name: "sibling with the same path prefix",
+              packageDir: join(root, "confinement"),
+              target: join(root, "confinement-outside"),
+            },
+            {
+              name: "package root itself",
+              packageDir: join(root, "confinement-self"),
+              target: join(root, "confinement-self"),
+            },
+          ].map(({ name, packageDir, target }) =>
+            cases.test(name, () => {
+              const directory = join(packageDir, "profiles");
+              mkdirSync(directory, { recursive: true });
+              mkdirSync(target, { recursive: true });
+              writeFileSync(
+                join(packageDir, "package.json"),
+                JSON.stringify({
+                  name: "@example/confinement",
+                  subagents: { agents: ["profiles"] },
+                }),
+              );
+              writeFileSync(
+                join(directory, "inside.md"),
+                profile("inside").replace("name: scoped-specialist", "name: confined-specialist"),
+              );
+              writeFileSync(
+                join(agentDir, "settings.json"),
+                JSON.stringify({ packages: [packageDir] }),
+              );
+              const admitted = discoverAgents(nested, "user").agents.find(
+                (agent) => agent.name === "confined-specialist",
+              );
+              assert.equal(admitted?.source, "package");
+              assert.equal(admitted.filePath, join(directory, "inside.md"));
+
+              rmSync(directory, { recursive: true });
+              symlinkSync(target, directory, "dir");
+              assert.equal(statSync(directory).isDirectory(), true);
+              assert.equal(realpathSync(directory), realpathSync(target));
+              assert.throws(
+                () => discoverAgents(nested, "user"),
+                /directory is missing or outside the package/,
+              );
+            }),
+          ),
+        );
       },
     );
     writeFileSync(
