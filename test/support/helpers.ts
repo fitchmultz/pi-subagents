@@ -1,8 +1,18 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+  createEventBus as createNativeEventBus,
+  type EventBus,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { ReadonlyDeep } from "type-fest";
 import { createMockPi as _createMockPi, type MockPi } from "./mock-pi.ts";
+import { makeExtensionContext } from "./sdk-context.ts";
 
+export { makeExtensionContext } from "./sdk-context.ts";
+export { createNativeSessionFixture } from "./native-session.ts";
 export type { MockPi };
 
 export function createMockPi(): MockPi {
@@ -16,29 +26,13 @@ export function createTempDir(prefix = "pi-subagent-test-"): string {
 export function removeTempDir(dir: string): void {
   try {
     fs.rmSync(dir, { recursive: true, force: true });
-  } catch {}
+  } catch {
+    // Best-effort teardown must not replace the test's original failure.
+  }
 }
 
-export function createEventBus() {
-  const listeners = new Map<string, Set<(payload: unknown) => void>>();
-  return {
-    on(channel: string, handler: (payload: unknown) => void) {
-      const channelListeners = listeners.get(channel) ?? new Set();
-      channelListeners.add(handler);
-      listeners.set(channel, channelListeners);
-      return () => {
-        channelListeners.delete(handler);
-        if (channelListeners.size === 0) {
-          listeners.delete(channel);
-        }
-      };
-    },
-    emit(channel: string, payload: unknown) {
-      for (const handler of listeners.get(channel) ?? []) {
-        handler(payload);
-      }
-    },
-  };
+export function createEventBus(): EventBus {
+  return createNativeEventBus();
 }
 
 interface AgentConfig {
@@ -65,18 +59,14 @@ interface AgentConfig {
   completionGuard?: boolean;
 }
 
-export function makeAgentConfigs(names: string[]): AgentConfig[] {
-  return names.map((name) => ({
-    name,
-    description: `Test agent: ${name}`,
-    systemPrompt: "",
-    systemPromptMode: "replace",
-    inheritProjectContext: false,
-    inheritSkills: false,
-  }));
+export function makeAgentConfigs(names: readonly string[]): AgentConfig[] {
+  return names.map((name) => makeAgent(name));
 }
 
-export function makeAgent(name: string, overrides: Partial<AgentConfig> = {}): AgentConfig {
+export function makeAgent(
+  name: string,
+  overrides: ReadonlyDeep<Partial<AgentConfig>> = {},
+): AgentConfig {
   return {
     name,
     description: `Test agent: ${name}`,
@@ -85,51 +75,34 @@ export function makeAgent(name: string, overrides: Partial<AgentConfig> = {}): A
     inheritProjectContext: false,
     inheritSkills: false,
     ...overrides,
+    fallbackModels: overrides.fallbackModels?.slice(),
+    tools: overrides.tools?.slice(),
+    extensions: overrides.extensions?.slice(),
+    skills: overrides.skills?.slice(),
+    reads: overrides.reads === false ? false : overrides.reads?.slice(),
+    mcpDirectTools: overrides.mcpDirectTools?.slice(),
   };
 }
 
-interface MinimalCtx {
-  cwd: string;
-  mode: "json";
-  hasUI: boolean;
-  isProjectTrusted: () => boolean;
-  ui: Record<string, never>;
-  sessionManager: {
-    getSessionId: () => string;
-    getSessionFile: () => string | null;
-    getSessionDir: () => string;
-  };
-  modelRegistry: {
-    getAvailable: () => Array<{ provider: string; id: string }>;
-  };
-  model?: { provider: string };
-}
-
-export function makeMinimalCtx(cwd: string): MinimalCtx {
-  return {
-    cwd,
-    mode: "json",
-    hasUI: false,
-    isProjectTrusted: () => true,
-    ui: {},
-    sessionManager: {
-      getSessionId: () => "session-123",
-      getSessionFile: () => null,
-      getSessionDir: () => cwd,
-    },
-    modelRegistry: {
-      getAvailable: () => [],
-    },
-  };
+export function makeMinimalCtx(
+  cwd: string,
+  overrides: Readonly<Partial<ExtensionContext>> = {},
+): ExtensionContext {
+  return makeExtensionContext(cwd, overrides);
 }
 
 export const events = {
-  assistantMessage(text: string, model = "mock/test-model"): object {
+  assistantMessage(
+    text: string,
+    model = "mock/test-model",
+  ): { readonly type: "message_end"; readonly message: AssistantMessage } {
     const separator = model.indexOf("/");
     return {
       type: "message_end",
       message: {
         role: "assistant",
+        api: "mock",
+        timestamp: 0,
         content: [{ type: "text", text }],
         provider: separator >= 0 ? model.slice(0, separator) : "mock",
         model: separator >= 0 ? model.slice(separator + 1) : model,
@@ -146,7 +119,7 @@ export const events = {
     };
   },
 
-  toolStart(toolName: string, args: Record<string, unknown> = {}): object {
+  toolStart(toolName: string, args: ReadonlyDeep<Record<string, unknown>> = {}): object {
     return { type: "tool_execution_start", toolName, args };
   },
 

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ReadonlyDeep } from "type-fest";
 
 interface MockPiResponse {
   matchArgsIncludes?: string | string[];
@@ -40,11 +41,11 @@ interface MockPiResponse {
 
 export interface MockPi {
   readonly dir: string;
-  install(): void;
-  uninstall(): void;
-  onCall(response: MockPiResponse): void;
-  reset(): void;
-  callCount(): number;
+  readonly install: () => void;
+  readonly uninstall: () => void;
+  readonly onCall: (response: ReadonlyDeep<MockPiResponse>) => void;
+  readonly reset: () => void;
+  readonly callCount: () => number;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -123,7 +124,9 @@ export function createMockPi(): MockPi {
       }
       try {
         fs.rmSync(rootDir, { recursive: true, force: true });
-      } catch {}
+      } catch {
+        // Cleanup is best effort; preserve the original assertion failure.
+      }
     },
     onCall(response) {
       ensureDir(queueDir);
@@ -145,7 +148,9 @@ export function createMockPi(): MockPi {
       for (const entry of fs.readdirSync(queueDir)) {
         try {
           fs.rmSync(path.join(queueDir, entry), { recursive: true, force: true });
-        } catch {}
+        } catch {
+          // Cleanup is best effort; preserve the original assertion failure.
+        }
       }
     },
     callCount() {
