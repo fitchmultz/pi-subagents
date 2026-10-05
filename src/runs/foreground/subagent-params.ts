@@ -1,4 +1,3 @@
-import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentDiscoveryOptions } from "../../agents/agents.ts";
 import type { AgentConfig, AgentScope } from "../../shared/types/config.ts";
@@ -23,7 +22,7 @@ import type {
   NestedRouteInfo,
   ResolvedControlConfig,
   ReadonlySingleResult,
-  Details,
+  SubagentExecutionUpdateCallback,
   SubagentRunMode,
   SubagentState,
   ReadonlyInput,
@@ -366,7 +365,7 @@ export interface ExecutionContextData {
   readonly effectiveCwd: string;
   readonly ctx: ExtensionContext;
   readonly signal: AbortSignal | undefined;
-  readonly onUpdate?: AgentToolUpdateCallback<Details>;
+  readonly onUpdate?: SubagentExecutionUpdateCallback;
   readonly agents: readonly AgentConfig[];
   readonly runId: string;
   readonly shareEnabled: boolean;
