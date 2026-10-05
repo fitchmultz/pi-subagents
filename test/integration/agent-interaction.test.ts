@@ -864,10 +864,8 @@ test("selected native records retain max thinking, diagnostic, deferred and nest
   transient.appendMessage(transientMessage);
   const transientEntry = transient.getEntries().find((entry) => entry.type === "message");
   const observed = displayEntry(transientEntry, "full");
-  assert.equal(observed?.type, "message");
-  if (observed?.type !== "message") {
-    throw new Error("Expected a complete transient native message");
-  }
+  assertDefined(observed);
+  assert.equal(observed.type, "message");
   assert.deepEqual(
     observed.native,
     transientMessage,
