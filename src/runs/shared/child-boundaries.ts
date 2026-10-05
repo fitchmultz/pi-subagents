@@ -12,7 +12,7 @@ import {
   type NativeFinalizationConfig,
   type NativeFinalizationEvent,
 } from "./native-finalization-types.ts";
-import { parseNativeFinalizationEvent } from "./native-finalization-schema.ts";
+import { parseNativeFinalizationEvent } from "../background/run-schemas.ts";
 import { readFinalizationReport } from "./acceptance.ts";
 import { addUsage } from "./native-usage.ts";
 import { hasErrorCode } from "../../shared/unknown.ts";

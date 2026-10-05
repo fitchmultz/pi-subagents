@@ -30,7 +30,7 @@ import { captureSingleOutputSnapshot, resolveSingleOutput } from "./single-outpu
 import { readStructuredOutput, type StructuredOutputRuntime } from "./structured-output.ts";
 import { compactObservedMessage } from "./child-observations.ts";
 import { registerChildStructuredTool } from "./child-structured-tool.ts";
-import { parseNativeFinalizationConfig } from "./native-finalization-schema.ts";
+import { parseNativeFinalizationConfig } from "../background/run-schemas.ts";
 import {
   FINALIZATION_EVENT,
   type NativeFinalizationConfig,
