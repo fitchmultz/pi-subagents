@@ -3,11 +3,10 @@ import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { KeybindingsManager } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { createPlainTheme, setKeybindings } from "../support/ui.ts";
 import { renderSubagentResult } from "../../src/tui/render.ts";
 setKeybindings(new KeybindingsManager());
 
-import { createPlainTheme } from "../support/ui.ts";
 import { resolveEffectiveAcceptance } from "../../src/runs/shared/acceptance.ts";
 const theme = createPlainTheme();
 
