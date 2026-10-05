@@ -1,37 +1,45 @@
-import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { ReadonlyInput } from "../../shared/types.ts";
 
 type TextEvent = {
-  type?: string;
-  message?: { role: string };
-  assistantMessageEvent?: Extract<
-    JsonAgentSessionEvent,
-    { type: "message_update" }
-  >["assistantMessageEvent"];
+  readonly type?: string;
+  readonly message?: { readonly role: string };
+  readonly assistantMessageEvent?: {
+    readonly type: string;
+    readonly delta?: string;
+    readonly contentIndex?: number;
+  };
 };
+
+function applyTextDelta(
+  current: string | undefined,
+  update: ReadonlyInput<TextEvent["assistantMessageEvent"]>,
+): string | undefined {
+  if (update?.type === "text_start") {
+    return current !== undefined && current.length > 0 ? `${current}\n\n` : "";
+  }
+  if (update?.type === "text_delta" && update.delta !== undefined) {
+    return ((current ?? "") + update.delta).slice(-8192);
+  }
+  return current;
+}
 
 /** Native JSON stdout sends text deltas, not cumulative message/partial snapshots. */
 export function updateStreamingText(
   current: string | undefined,
-  event: TextEvent,
+  event: ReadonlyInput<TextEvent>,
 ): string | undefined {
-  if (
-    event.type === "agent_start" ||
-    (event.type === "message_end" && event.message?.role === "assistant")
-  ) {
-    return undefined;
+  if (event.type === "agent_start") {
+    return;
   }
-  if (event.type === "message_start" && event.message?.role === "assistant") {
-    return "";
+  if (event.message?.role === "assistant") {
+    if (event.type === "message_end") {
+      return;
+    }
+    if (event.type === "message_start") {
+      return "";
+    }
   }
-  if (event.type !== "message_update") {
-    return current;
-  }
-  const update = event.assistantMessageEvent;
-  if (update?.type === "text_start") {
-    return current ? `${current}\n\n` : "";
-  }
-  if (update?.type === "text_delta") {
-    return ((current ?? "") + update.delta).slice(-8192);
-  }
-  return current;
+  return event.type === "message_update"
+    ? applyTextDelta(current, event.assistantMessageEvent)
+    : current;
 }

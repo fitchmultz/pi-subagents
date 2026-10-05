@@ -3,26 +3,29 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Compile } from "../../shared/native-typebox.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
+import { errorText } from "./child-json.ts";
 
 export const STRUCTURED_OUTPUT_SCHEMA_ENV = "PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA";
 export const STRUCTURED_OUTPUT_CAPTURE_ENV = "PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE";
 
 export interface StructuredOutputRuntime {
-  schema: JsonSchemaObject;
-  schemaPath: string;
-  outputPath: string;
+  readonly schema: JsonSchemaObject;
+  readonly schemaPath: string;
+  readonly outputPath: string;
 }
 
 interface CompiledJsonSchema {
-  Check(value: unknown): boolean;
-  Errors(value: unknown): Iterable<{ instancePath?: string; message?: string }>;
+  readonly Check: (value: unknown) => boolean;
+  readonly Errors: (
+    value: unknown,
+  ) => Iterable<{ readonly instancePath?: string; readonly message?: string }>;
 }
 
 export function assertJsonSchemaObject(
   schema: unknown,
   label = "outputSchema",
 ): asserts schema is JsonSchemaObject {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+  if (schema === null || typeof schema !== "object" || Array.isArray(schema)) {
     throw new Error(`${label} must be a JSON Schema object.`);
   }
 }
@@ -31,7 +34,6 @@ export function createStructuredOutputRuntime(
   schema: JsonSchemaObject,
   baseDir?: string,
 ): StructuredOutputRuntime {
-  assertJsonSchemaObject(schema);
   const rootDir = baseDir ?? os.tmpdir();
   fs.mkdirSync(rootDir, { recursive: true });
   const dir = fs.mkdtempSync(path.join(rootDir, "pi-subagent-structured-"));
@@ -47,23 +49,27 @@ export function validateStructuredOutputValue(
 ): { status: "valid" } | { status: "invalid"; message: string } {
   let validator: CompiledJsonSchema;
   try {
-    validator = (Compile as (schema: unknown) => CompiledJsonSchema)(schema);
+    validator = Compile(schema);
   } catch (error) {
     return {
       status: "invalid",
-      message: `invalid outputSchema: ${error instanceof Error ? error.message : String(error)}`,
+      message: `invalid outputSchema: ${errorText(error)}`,
     };
   }
   if (validator.Check(value)) {
     return { status: "valid" };
   }
   const errors = [...validator.Errors(value)].slice(0, 8).map((error) => {
-    const pathText = error.instancePath
-      ? error.instancePath.replace(/^\//, "").replace(/\//g, ".")
-      : "root";
-    return `${pathText}: ${error.message}`;
+    const pathText =
+      error.instancePath !== undefined && error.instancePath.length > 0
+        ? error.instancePath.replace(/^\//, "").replace(/\//g, ".")
+        : "root";
+    return `${pathText}: ${error.message ?? "schema validation failed"}`;
   });
-  return { status: "invalid", message: errors.join("; ") || "schema validation failed" };
+  return {
+    status: "invalid",
+    message: errors.length > 0 ? errors.join("; ") : "schema validation failed",
+  };
 }
 
 export function readStructuredOutput(runtime: StructuredOutputRuntime): {
@@ -81,7 +87,7 @@ export function readStructuredOutput(runtime: StructuredOutputRuntime): {
     value = JSON.parse(fs.readFileSync(runtime.outputPath, "utf-8"));
   } catch (error) {
     return {
-      error: `Failed to read structured output: ${error instanceof Error ? error.message : String(error)}`,
+      error: `Failed to read structured output: ${errorText(error)}`,
     };
   }
   const validation = validateStructuredOutputValue(runtime.schema, value);

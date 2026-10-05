@@ -1,100 +1,172 @@
 import { createHash, type Hash } from "node:crypto";
 import * as fs from "node:fs";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
   journalStamp,
   scanJournal,
   type JournalPolicy,
   type Projection,
 } from "../../shared/journal-reader.ts";
+import type { ObservedUsage } from "../../shared/types.ts";
+import { isObject, nonempty } from "./child-json.ts";
+import { observedUsage, optionalString, requiredString } from "./child-message-validation.ts";
+
+export type ParentReceipt =
+  | {
+      readonly type: "custom_message";
+      readonly id: string;
+      readonly timestamp?: string;
+      readonly customType?: string;
+      readonly details?: unknown;
+    }
+  | {
+      readonly type: "message";
+      readonly id: string;
+      readonly timestamp?: string;
+      readonly message: {
+        readonly role: "toolResult";
+        readonly toolName: string;
+        readonly usage?: ObservedUsage;
+        readonly details?: unknown;
+      };
+    };
+export interface ParentReceiptReader {
+  readonly clear: () => void;
+  readonly read: (file: string | undefined) => ReadonlyMap<string, ParentReceipt>;
+}
+interface ReceiptCache {
+  readonly file: string;
+  readonly identity: string;
+  readonly end: number;
+  readonly digest: string;
+  readonly records: Readonly<ReadonlyMap<string, ParentReceipt>>;
+}
 
 function hashRange(fd: number, start: number, end: number, hash: Hash): void {
   const bytes = Buffer.allocUnsafe(64 * 1024);
-  while (start < end) {
-    const count = fs.readSync(fd, bytes, 0, Math.min(bytes.length, end - start), start);
-    if (!count) {
+  let position = start;
+  while (position < end) {
+    const count = fs.readSync(fd, bytes, 0, Math.min(bytes.length, end - position), position);
+    if (count === 0) {
       throw new Error("Parent journal truncated during inspection");
     }
     hash.update(bytes.subarray(0, count));
-    start += count;
+    position += count;
   }
 }
-
-const receiptProjection: Projection = (path) => {
-  if (!path.length || ["type", "id", "timestamp", "customType"].includes(String(path[0]))) {
+const receiptProjection: Projection = (keys) => {
+  if (keys.length === 0 || ["type", "id", "timestamp", "customType"].includes(String(keys[0]))) {
     return true;
   }
-  if (path[0] === "details") {
-    return (
-      path.length === 1 ||
-      (["completion", "subagentCompletion", "result"].includes(String(path[1])) &&
-        (path[1] !== "result" || path.length <= 3 || path[3] === "wait"))
-    );
+  if (keys[0] === "details") {
+    return projectedReceiptDetails(keys);
   }
-  if (path[0] === "message") {
-    return (
-      path.length === 1 ||
-      ["role", "toolName", "usage"].includes(String(path[1])) ||
-      (path[1] === "details" &&
-        (path.length === 2 || ["wait", "parentUsage"].includes(String(path[2]))))
-    );
+  if (keys[0] === "message") {
+    return projectedReceiptMessage(keys);
   }
   return false;
 };
 
+function projectedReceiptDetails(keys: readonly (string | number)[]): boolean {
+  return (
+    keys.length === 1 ||
+    (["completion", "subagentCompletion", "result"].includes(String(keys[1])) &&
+      (keys[1] !== "result" || keys.length <= 3 || keys[3] === "wait"))
+  );
+}
+function projectedReceiptMessage(keys: readonly (string | number)[]): boolean {
+  return (
+    keys.length === 1 ||
+    ["role", "toolName", "usage"].includes(String(keys[1])) ||
+    (keys[1] === "details" &&
+      (keys.length === 2 || ["wait", "parentUsage"].includes(String(keys[2]))))
+  );
+}
+
+function parseReceipt(value: Readonly<Record<string, unknown>>): ParentReceipt | undefined {
+  if (value.type === "custom_message") {
+    return {
+      ...value,
+      type: "custom_message",
+      id: requiredString(value.id, "receipt ID"),
+      timestamp: optionalString(value.timestamp, "timestamp"),
+      customType: optionalString(value.customType, "customType"),
+    };
+  }
+  if (value.type !== "message" || !isObject(value.message) || value.message.role !== "toolResult") {
+    return;
+  }
+  return {
+    ...value,
+    type: "message",
+    id: requiredString(value.id, "receipt ID"),
+    timestamp: optionalString(value.timestamp, "timestamp"),
+    message: {
+      ...value.message,
+      role: "toolResult",
+      toolName: requiredString(value.message.toolName, "toolName"),
+      usage: observedUsage(value.message.usage),
+    },
+  };
+}
+
+function verifiedPrefix(
+  fd: number,
+  location: { readonly file: string; readonly identity: string; readonly size: number },
+  cache: ReceiptCache | undefined,
+): { hash: Hash; previous?: ReceiptCache } {
+  const hash = createHash("sha256");
+  if (
+    !cache ||
+    cache.file !== location.file ||
+    cache.identity !== location.identity ||
+    location.size < cache.end
+  ) {
+    return { hash };
+  }
+  // Coarse timestamps can hide same-size edits; stat hits still require verified bytes.
+  hashRange(fd, 0, cache.end, hash);
+  return hash.copy().digest("hex") === cache.digest
+    ? { hash, previous: cache }
+    : { hash: createHash("sha256") };
+}
+
 /** Cache only LF-published receipt fields, never transcripts or accepted-but-unsaved messages. */
-export function createParentReceiptReader(policy: JournalPolicy) {
-  let cache:
-    | {
-        file: string;
-        identity: string;
-        end: number;
-        digest: string;
-        records: Map<string, SessionEntry>;
-      }
-    | undefined;
+export function createParentReceiptReader(policy: JournalPolicy): ParentReceiptReader {
+  let cache: ReceiptCache | undefined;
   return {
     clear() {
       cache = undefined;
     },
-    read(file: string | undefined): ReadonlyMap<string, SessionEntry> {
-      if (!file || !fs.existsSync(file)) {
+    read(file) {
+      if (!nonempty(file) || !fs.existsSync(file)) {
         cache = undefined;
         return new Map();
       }
       const fd = fs.openSync(file, "r");
       try {
-        const stat = fs.fstatSync(fd, { bigint: true }),
-          stamp = journalStamp(stat),
-          identity = `${stat.dev}:${stat.ino}`;
-        let hash = createHash("sha256");
-        let append =
-          cache?.file === file && cache.identity === identity && Number(stat.size) >= cache.end;
-        if (append) {
-          // Coarse timestamps can hide same-size edits; even a stat hit needs verified bytes.
-          hashRange(fd, 0, cache!.end, hash);
-          append = hash.copy().digest("hex") === cache!.digest;
-        }
-        if (append && Number(stat.size) === cache!.end) {
+        const stat = fs.fstatSync(fd, { bigint: true });
+        const stamp = journalStamp(stat);
+        const identity = `${stat.dev}:${stat.ino}`;
+        const { hash, previous } = verifiedPrefix(
+          fd,
+          { file, identity, size: Number(stat.size) },
+          cache,
+        );
+        if (previous && Number(stat.size) === previous.end) {
           if (journalStamp(fs.fstatSync(fd, { bigint: true })) !== stamp) {
             throw new Error("Parent journal changed during inspection");
           }
-          return cache!.records;
+          return previous.records;
         }
-        if (!append) {
-          hash = createHash("sha256");
-        }
-        const start = append ? cache!.end : 0,
-          records = append ? new Map(cache!.records) : new Map<string, SessionEntry>();
+        const start = previous?.end ?? 0;
+        const records = new Map(previous?.records);
         const end = scanJournal(
           fd,
           receiptProjection,
           ({ value }) => {
-            if (
-              value.type === "custom_message" ||
-              (value.type === "message" && value.message?.role === "toolResult")
-            ) {
-              records.set(value.id, value as SessionEntry);
+            const receipt = parseReceipt(value);
+            if (receipt) {
+              records.set(receipt.id, receipt);
             }
           },
           { policy, requireNewline: true, start, end: Number(stat.size) },

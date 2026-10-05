@@ -1,44 +1,68 @@
 import type { Usage as NativeUsage } from "@earendil-works/pi-ai";
 import { isDeepStrictEqual } from "node:util";
-import type { Usage, UsageContribution } from "../../shared/types.ts";
+import type {
+  ObservedUsage,
+  ReadonlyInput,
+  Usage,
+  UsageAccumulator,
+  UsageContribution,
+} from "../../shared/types.ts";
 import { scanJournal, nativeProjection } from "../../shared/journal-reader.ts";
+import { errorCode, isObject, nonempty } from "./child-json.ts";
+import {
+  observedUsage,
+  optionalNumber,
+  optionalString,
+  requiredString,
+} from "./child-message-validation.ts";
 
-export function snapshotNativeBaseline(file: string | undefined): {
-  ids: Set<string>;
-  entryCount: number;
-  legacy: boolean;
-  sessionId?: string;
-} {
+export interface NativeBaseline {
+  readonly ids: Readonly<ReadonlySet<string>>;
+  readonly entryCount: number;
+  readonly legacy: boolean;
+  readonly sessionId?: string;
+}
+
+export function snapshotNativeBaseline(
+  file: string | undefined,
+): NativeBaseline & { readonly ids: Set<string> } {
   const ids = new Set<string>();
-  let first = true,
-    native = false,
-    entryCount = 0,
-    legacy = false,
-    sessionId: string | undefined;
-  if (file) {
+  let first = true;
+  let native = false;
+  let entryCount = 0;
+  let legacy = false;
+  let sessionId: string | undefined;
+  if (nonempty(file)) {
     try {
       scanJournal(
         file,
         (path) =>
-          !path.length ||
+          path.length === 0 ||
           (path.length === 1 && ["id", "type", "version"].includes(String(path[0]))),
         ({ value }) => {
           if (first) {
             first = false;
-            native = value?.type === "session";
+            native = value.type === "session";
             if (native) {
-              if (typeof value.id !== "string" || !value.id)
+              sessionId = requiredString(value.id, "native session identity");
+              if (sessionId.length === 0) {
                 throw new SyntaxError("Invalid native session identity");
-              sessionId = value.id;
+              }
               legacy = value.version === 1;
             }
-          } else if (native) entryCount++;
-          if (native && typeof value?.id === "string") ids.add(value.id);
+          } else if (native) {
+            entryCount++;
+          }
+          if (native && typeof value.id === "string") {
+            ids.add(value.id);
+          }
         },
         { requireNewline: true },
       );
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (errorCode(error) !== "ENOENT") {
+        throw error;
+      }
     }
   }
   return { ids, entryCount, legacy, sessionId };
@@ -48,33 +72,28 @@ export function snapshotNativeUsage(file: string | undefined): Set<string> {
   return snapshotNativeBaseline(file).ids;
 }
 
-export function addUsage(
-  usage: Usage,
-  value: NativeUsage,
-  attribution?: Omit<UsageContribution, "usage">,
-): void {
-  for (const key of [
-    "input",
-    "output",
-    "cacheRead",
-    "cacheWrite",
-    "totalTokens",
-    "reasoning",
-    "cacheWrite1h",
-  ] as const) {
-    if (value[key] !== undefined && typeof value[key] !== "number") {
-      throw new Error(`Invalid native usage counter: ${key}`);
-    }
-  }
+function validateObservedCounters(value: ObservedUsage): void {
   for (const [key, counter] of Object.entries(value)) {
     if (typeof counter === "number" && (!Number.isFinite(counter) || counter < 0)) {
       throw new Error(`Invalid native usage counter: ${key}`);
     }
   }
   if (value.cost) {
-    for (const counter of Object.values(value.cost))
-      if (!Number.isFinite(counter) || counter < 0) throw new Error("Invalid native usage cost");
+    for (const counter of Object.values(value.cost)) {
+      if (!Number.isFinite(counter) || counter < 0) {
+        throw new Error("Invalid native usage cost");
+      }
+    }
   }
+}
+
+/** Mutating accounting boundary: the caller owns this accumulator, observations stay readonly. */
+export function addUsage(
+  usage: UsageAccumulator,
+  value: ObservedUsage,
+  attribution?: Omit<UsageContribution, "usage">,
+): void {
+  validateObservedCounters(value);
   usage.input += value.input ?? 0;
   usage.output += value.output ?? 0;
   usage.cacheRead += value.cacheRead ?? 0;
@@ -85,181 +104,290 @@ export function addUsage(
   }
 }
 
-export function validateNativeUsage(value: NativeUsage): void {
+/** Complete native receipts are required for billing; partial observations remain audit-only. */
+export function validateNativeUsage(
+  value: ObservedUsage,
+): asserts value is ReadonlyInput<NativeUsage> {
   for (const key of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) {
-    if (typeof value[key] !== "number" || !Number.isFinite(value[key]) || value[key] < 0) {
+    const counter = value[key];
+    if (counter === undefined || !Number.isFinite(counter) || counter < 0) {
       throw new Error(`Native usage ${key} is unavailable or invalid`);
     }
   }
   for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) {
-    if (
-      !value.cost ||
-      typeof value.cost[key] !== "number" ||
-      !Number.isFinite(value.cost[key]) ||
-      value.cost[key] < 0
-    ) {
+    const counter = value.cost?.[key];
+    if (counter === undefined || !Number.isFinite(counter) || counter < 0) {
       throw new Error(`Native usage cost.${key} is unavailable or invalid`);
     }
   }
 }
 
 export interface NativeUsageMetadata {
-  type: string;
-  id: string;
-  checkpoint?: boolean;
-  provider?: string;
-  model?: string;
-  usage?: NativeUsage;
-  message?: {
-    role: string;
-    timestamp?: number;
-    toolCallId?: string;
-    provider?: string;
-    model?: string;
-    responseModel?: string;
-    usage?: NativeUsage;
+  readonly type: string;
+  readonly id: string;
+  readonly checkpoint?: boolean;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly usage?: ObservedUsage;
+  readonly message?: {
+    readonly role: string;
+    readonly timestamp?: number;
+    readonly toolCallId?: string;
+    readonly provider?: string;
+    readonly model?: string;
+    readonly responseModel?: string;
+    readonly usage?: ObservedUsage;
   };
 }
 
-/** One billing reducer for published journals and settled, once-audited in-memory sessions. */
+export function nativeUsageMetadata(value: unknown): NativeUsageMetadata {
+  if (!isObject(value)) {
+    throw new SyntaxError("Invalid native entry");
+  }
+  const message = isObject(value.message) ? value.message : undefined;
+  if (value.type === "message" && !message) {
+    throw new SyntaxError("Invalid native message");
+  }
+  if (value.checkpoint !== undefined && typeof value.checkpoint !== "boolean") {
+    throw new SyntaxError("Invalid native checkpoint");
+  }
+  return {
+    ...value,
+    type: requiredString(value.type, "native entry type"),
+    id: requiredString(value.id, "native entry identity"),
+    checkpoint: value.checkpoint,
+    provider: optionalString(value.provider, "provider"),
+    model: optionalString(value.model, "model"),
+    usage: observedUsage(value.usage),
+    message: message
+      ? {
+          role: requiredString(message.role, "native message role"),
+          timestamp: optionalNumber(message.timestamp, "timestamp"),
+          toolCallId: optionalString(message.toolCallId, "toolCallId"),
+          provider: optionalString(message.provider, "provider"),
+          model: optionalString(message.model, "model"),
+          responseModel: optionalString(message.responseModel, "responseModel"),
+          usage: observedUsage(message.usage),
+        }
+      : undefined,
+  };
+}
+
+interface EntryUsage {
+  readonly value?: ObservedUsage;
+  readonly provider?: string;
+  readonly model?: string;
+}
+function messageUsage(message: NativeUsageMetadata["message"]): EntryUsage {
+  if (message?.role === "assistant") {
+    return {
+      value: message.usage,
+      provider: message.provider,
+      model: message.responseModel ?? message.model,
+    };
+  }
+  return { value: message?.role === "toolResult" ? message.usage : undefined };
+}
+function entryUsage(entry: NativeUsageMetadata): EntryUsage {
+  if (entry.type === "usage") {
+    return { value: entry.usage, provider: entry.provider, model: entry.model };
+  }
+  if (entry.type === "compaction" || entry.type === "branch_summary") {
+    return { value: entry.usage };
+  }
+  return entry.type === "message" ? messageUsage(entry.message) : {};
+}
+function requiredReceipt(entry: NativeUsageMetadata): EntryUsage {
+  const receipt = entryUsage(entry);
+  const required =
+    entry.type === "usage" || (entry.type === "message" && entry.message?.role === "assistant");
+  if (!receipt.value && required) {
+    throw new Error(`Required native usage is unavailable: ${entry.id}`);
+  }
+  return receipt;
+}
+export interface NativeUsageCollector {
+  readonly totals: readonly Usage[];
+  readonly append: (entry: NativeUsageMetadata) => void;
+}
+
+class UsageCollector implements NativeUsageCollector {
+  private readonly sessionId: string;
+  private readonly baseline: Readonly<ReadonlySet<string>>;
+  private readonly boundaries: readonly (string | undefined)[];
+  private readonly segments: UsageAccumulator[];
+  private readonly contributions = new Map<string, UsageContribution>();
+  private readonly turns = new Set<string>();
+  private segment = 0;
+  constructor(
+    sessionId: string,
+    baseline: Readonly<ReadonlySet<string>>,
+    boundaries: readonly (string | undefined)[],
+  ) {
+    this.sessionId = sessionId;
+    this.baseline = baseline;
+    this.boundaries = boundaries;
+    this.segments = Array.from({ length: Math.max(1, boundaries.length) }, () => ({
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      turns: 0,
+      contributions: [],
+    }));
+  }
+  get totals(): readonly Usage[] {
+    return this.segments;
+  }
+  private total(): UsageAccumulator {
+    const total = this.segments.at(this.segment);
+    if (!total) {
+      throw new Error("Missing native usage segment");
+    }
+    return total;
+  }
+  private countTurn(entry: NativeUsageMetadata): void {
+    if (
+      entry.type === "message" &&
+      entry.message?.role === "assistant" &&
+      !this.turns.has(entry.id)
+    ) {
+      this.total().turns++;
+      this.turns.add(entry.id);
+    }
+  }
+  private account(entry: NativeUsageMetadata): void {
+    const { value, provider, model } = requiredReceipt(entry);
+    this.countTurn(entry);
+    if (!value) {
+      return;
+    }
+    validateNativeUsage(value);
+    if (entry.id.length === 0) {
+      throw new Error("Native usage entry identity is unavailable");
+    }
+    const next = { id: `${this.sessionId}:${entry.id}`, provider, model, usage: value };
+    const previous = this.contributions.get(next.id);
+    if (previous && !isDeepStrictEqual(previous, next)) {
+      throw new Error(`Conflicting native usage contribution: ${next.id}`);
+    }
+    if (!previous) {
+      this.contributions.set(next.id, next);
+      addUsage(this.total(), value, { id: next.id, provider, model });
+    }
+  }
+  append(entry: NativeUsageMetadata): void {
+    if (!this.baseline.has(entry.id) && entry.checkpoint !== true) {
+      this.account(entry);
+    }
+    if (entry.id === this.boundaries.at(this.segment) && this.segment < this.segments.length - 1) {
+      this.segment++;
+    }
+  }
+}
+
+/** One reducer for published journals and settled, once-audited in-memory sessions. */
 export function nativeUsageCollector(
   sessionId: string,
-  baseline: ReadonlySet<string>,
-  boundaries: Array<string | undefined> = [],
-) {
-  const totals: Usage[] = Array.from({ length: Math.max(1, boundaries.length) }, () => ({
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    cost: 0,
-    turns: 0,
-    contributions: [],
-  }));
-  let segment = 0;
-  const contributions = new Map<string, UsageContribution>(),
-    turns = new Set<string>();
-  return {
-    totals,
-    append(entry: NativeUsageMetadata) {
-      if (!entry || typeof entry !== "object") {
-        throw new SyntaxError("Invalid native entry");
-      }
-      if (entry.type === "message" && (!entry.message || typeof entry.message.role !== "string")) {
-        throw new SyntaxError("Invalid native message");
-      }
-      if (!baseline.has(entry.id) && entry.checkpoint !== true) {
-        let value: NativeUsage | undefined, provider: string | undefined, model: string | undefined;
-        if (entry.type === "usage") {
-          value = entry.usage;
-          provider = entry.provider;
-          model = entry.model;
-        } else if (entry.type === "compaction" || entry.type === "branch_summary") {
-          value = entry.usage;
-        } else if (entry.type === "message") {
-          if (entry.message?.role === "assistant") {
-            value = entry.message.usage;
-            provider = entry.message.provider;
-            model = entry.message.responseModel ?? entry.message.model;
-            if (!turns.has(entry.id)) {
-              totals[segment]!.turns++;
-              turns.add(entry.id);
-            }
-          } else if (entry.message?.role === "toolResult") {
-            value = entry.message.usage;
-          }
-        }
-        if (
-          !value &&
-          (entry.type === "usage" ||
-            (entry.type === "message" && entry.message?.role === "assistant"))
-        ) {
-          throw new Error(`Required native usage is unavailable: ${entry.id}`);
-        }
-        if (value) {
-          validateNativeUsage(value);
-          if (typeof entry.id !== "string" || !entry.id) {
-            throw new Error("Native usage entry identity is unavailable");
-          }
-          const next = { id: `${sessionId}:${entry.id}`, provider, model, usage: value };
-          const previous = contributions.get(next.id);
-          if (previous && !isDeepStrictEqual(previous, next)) {
-            throw new Error(`Conflicting native usage contribution: ${next.id}`);
-          }
-          if (!previous) {
-            contributions.set(next.id, next);
-            addUsage(totals[segment]!, value, { id: next.id, provider, model });
-          }
-        }
-      }
-      if (entry.id === boundaries[segment] && segment < totals.length - 1) {
-        segment++;
-      }
-    },
-  };
+  baseline: Readonly<ReadonlySet<string>>,
+  boundaries: readonly (string | undefined)[] = [],
+): NativeUsageCollector {
+  return new UsageCollector(sessionId, baseline, boundaries);
 }
 
-/** Read native journals without opening a second writer or copying their transcripts. */
+interface NativeUsageReadOptions {
+  readonly terminalEntryId?: string;
+  readonly onEntry?: (entry: NativeUsageMetadata) => void;
+  readonly onBoundary?: (boundary: {
+    readonly sessionId: string;
+    readonly lastEntryId?: string;
+  }) => void;
+}
+class UsageReader {
+  private readonly baseline: Readonly<ReadonlySet<string>>;
+  private readonly boundaries: readonly (string | undefined)[];
+  private readonly options: NativeUsageReadOptions;
+  private first = true;
+  private sessionId?: string;
+  private lastEntryId?: string;
+  private reached = false;
+  private collector?: NativeUsageCollector;
+  constructor(
+    baseline: Readonly<ReadonlySet<string>>,
+    boundaries: readonly (string | undefined)[],
+    options: NativeUsageReadOptions,
+  ) {
+    this.baseline = baseline;
+    this.boundaries = boundaries;
+    this.options = options;
+  }
+  observe(value: Readonly<Record<string, unknown>>): boolean {
+    if (this.first) {
+      this.first = false;
+      this.sessionId =
+        value.type === "session" ? requiredString(value.id, "native session identity") : undefined;
+      if (nonempty(this.sessionId)) {
+        this.collector = nativeUsageCollector(this.sessionId, this.baseline, this.boundaries);
+      }
+    }
+    if (!this.collector) {
+      return false;
+    }
+    const entry = nativeUsageMetadata(value);
+    this.options.onEntry?.(entry);
+    this.collector.append(entry);
+    if (entry.type !== "session") {
+      this.lastEntryId = entry.id;
+    }
+    if (entry.id === this.options.terminalEntryId) {
+      this.reached = true;
+      return true;
+    }
+    return false;
+  }
+  finish(): Usage[] | undefined {
+    if (nonempty(this.options.terminalEntryId) && !this.reached) {
+      throw new Error("Native accounting terminal entry is missing");
+    }
+    if (nonempty(this.sessionId)) {
+      this.options.onBoundary?.({ sessionId: this.sessionId, lastEntryId: this.lastEntryId });
+    }
+    return this.collector?.totals.slice();
+  }
+}
+
+/** Read journals without opening a second writer or copying their transcripts. */
 export function readNativeUsage(
   file: string | undefined,
-  baseline: ReadonlySet<string>,
-  boundaries: Array<string | undefined> = [],
-  options: {
-    terminalEntryId?: string;
-    onEntry?: (entry: NativeUsageMetadata) => void;
-    onBoundary?: (boundary: { sessionId: string; lastEntryId?: string }) => void;
-  } = {},
+  baseline: Readonly<ReadonlySet<string>>,
+  boundaries: readonly (string | undefined)[] = [],
+  options: NativeUsageReadOptions = {},
 ): Usage[] | undefined {
-  if (!file) {
+  if (!nonempty(file)) {
     return;
   }
-  let sessionId: string | undefined,
-    first = true,
-    lastEntryId: string | undefined,
-    reached = false;
-  let collector: ReturnType<typeof nativeUsageCollector> | undefined;
-  const boundaryReached = Symbol("terminal entry");
+  const reader = new UsageReader(baseline, boundaries, options);
+  const boundaryReached = new Error("terminal entry reached");
   try {
     scanJournal(
       file,
-      (path, root) =>
-        path[0] === "message" && path[1] === "content" ? false : nativeProjection(path, root),
-      ({ value: entry }) => {
-        if (first) {
-          first = false;
-          sessionId = entry?.type === "session" ? entry.id : undefined;
-          if (sessionId) {
-            collector = nativeUsageCollector(sessionId, baseline, boundaries);
-          }
-        }
-        if (!collector) {
-          return;
-        }
-        options.onEntry?.(entry as NativeUsageMetadata);
-        collector.append(entry as NativeUsageMetadata);
-        if (entry.type !== "session") {
-          lastEntryId = entry.id;
-        }
-        if (entry.id === options.terminalEntryId) {
-          reached = true;
+      (keys, root) =>
+        keys[0] === "message" && keys[1] === "content" ? false : nativeProjection(keys, root),
+      ({ value }) => {
+        if (reader.observe(value)) {
           throw boundaryReached;
         }
       },
       { requireNewline: true },
     );
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    if (errorCode(error) === "ENOENT") {
       return;
     }
     if (error !== boundaryReached) {
       throw error;
     }
   }
-  if (options.terminalEntryId && !reached) {
-    throw new Error("Native accounting terminal entry is missing");
-  }
-  if (sessionId) {
-    options.onBoundary?.({ sessionId, lastEntryId });
-  }
-  return collector?.totals;
+  return reader.finish();
 }

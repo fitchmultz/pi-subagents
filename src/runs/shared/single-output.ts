@@ -1,20 +1,21 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { OutputMode, SavedOutputReference } from "../../shared/types.ts";
+import { errorCode, errorText, nonempty } from "./child-json.ts";
 
 export interface SingleOutputSnapshot {
-  exists: boolean;
-  mtimeMs?: number;
-  ctimeMs?: number;
-  size?: number;
-  ino?: number;
+  readonly exists: boolean;
+  readonly mtimeMs?: number;
+  readonly ctimeMs?: number;
+  readonly size?: number;
+  readonly ino?: number;
 }
 
 export interface SingleOutputCleanupResult {
-  path: string;
-  action: "deleted" | "already-missing" | "skipped";
-  reason?: string;
-  error?: string;
+  readonly path: string;
+  readonly action: "deleted" | "already-missing" | "skipped";
+  readonly reason?: string;
+  readonly error?: string;
 }
 
 export function normalizeSingleOutputOverride(
@@ -38,35 +39,39 @@ export function resolveSingleOutputPath(
   runtimeCwd: string,
   requestedCwd?: string,
 ): string | undefined {
-  if (typeof output !== "string" || !output || output === "false" || output === "true") {
+  if (
+    typeof output !== "string" ||
+    output.length === 0 ||
+    output === "false" ||
+    output === "true"
+  ) {
     return undefined;
   }
   if (path.isAbsolute(output)) {
     return output;
   }
-  const baseCwd = requestedCwd
-    ? path.isAbsolute(requestedCwd)
-      ? requestedCwd
-      : path.resolve(runtimeCwd, requestedCwd)
-    : runtimeCwd;
+  let baseCwd = runtimeCwd;
+  if (nonempty(requestedCwd)) {
+    baseCwd = path.isAbsolute(requestedCwd) ? requestedCwd : path.resolve(runtimeCwd, requestedCwd);
+  }
   return path.resolve(baseCwd, output);
 }
 
 function safeOutputSegment(value: string, fallback: string): string {
   const sanitized = value.replace(/[^\w.-]/g, "_").replace(/^\.+$/, "");
-  return sanitized || fallback;
+  return sanitized.length > 0 ? sanitized : fallback;
 }
 
 export function materializeAgentDefaultOutputPath(params: {
-  output: string | false | undefined;
-  artifactsDir: string;
-  runId: string;
-  agent: string;
-  index?: number | string;
+  readonly output: string | false | undefined;
+  readonly artifactsDir: string;
+  readonly runId: string;
+  readonly agent: string;
+  readonly index?: number | string;
 }): string | false | undefined {
   if (
     typeof params.output !== "string" ||
-    !params.output ||
+    params.output.length === 0 ||
     params.output === "false" ||
     params.output === "true"
   ) {
@@ -90,14 +95,14 @@ export function injectSingleOutputInstruction(
   task: string,
   outputPath: string | undefined,
 ): string {
-  if (!outputPath) {
+  if (!nonempty(outputPath)) {
     return task;
   }
   return `${task}\n\n---\n**Output:** Write your findings to: ${outputPath}`;
 }
 
 function countLines(text: string): number {
-  if (!text) {
+  if (text.length === 0) {
     return 0;
   }
   const newlineMatches = text.match(/\r\n|\r|\n/g);
@@ -133,6 +138,16 @@ export function formatSavedOutputReference(
   };
 }
 
+function consumedOutputStatus(cleanup: SingleOutputCleanupResult): string {
+  if (cleanup.action === "deleted") {
+    return "removed after capture";
+  }
+  if (cleanup.action === "already-missing") {
+    return "already absent after capture";
+  }
+  return `not removed${nonempty(cleanup.reason) ? `: ${cleanup.reason}` : ""}`;
+}
+
 export function formatConsumedOutputReference(
   outputPath: string,
   fullOutput: string,
@@ -141,12 +156,7 @@ export function formatConsumedOutputReference(
   const absolutePath = path.resolve(outputPath);
   const bytes = Buffer.byteLength(fullOutput, "utf-8");
   const lines = countLines(fullOutput);
-  const status =
-    cleanup.action === "deleted"
-      ? "removed after capture"
-      : cleanup.action === "already-missing"
-        ? "already absent after capture"
-        : `not removed${cleanup.reason ? `: ${cleanup.reason}` : ""}`;
+  const status = consumedOutputStatus(cleanup);
   return {
     path: absolutePath,
     bytes,
@@ -156,19 +166,19 @@ export function formatConsumedOutputReference(
 }
 
 export function findDuplicateOutputPath(
-  items: ReadonlyArray<{ agent: string; outputPath?: string }>,
+  items: readonly { readonly agent: string; readonly outputPath?: string }[],
 ): string | undefined {
   const seen = new Map<string, { index: number; agent: string }>();
-  for (let index = 0; index < items.length; index++) {
-    const outputPath = items[index]?.outputPath;
-    if (!outputPath) {
+  for (const [index, item] of items.entries()) {
+    const outputPath = item.outputPath;
+    if (!nonempty(outputPath)) {
       continue;
     }
     const previous = seen.get(outputPath);
     if (previous) {
-      return `Parallel tasks ${previous.index + 1} (${previous.agent}) and ${index + 1} (${items[index]!.agent}) resolve output to the same path: ${outputPath}. Use distinct output paths.`;
+      return `Parallel tasks ${previous.index + 1} (${previous.agent}) and ${index + 1} (${item.agent}) resolve output to the same path: ${outputPath}. Use distinct output paths.`;
     }
-    seen.set(outputPath, { index, agent: items[index]!.agent });
+    seen.set(outputPath, { index, agent: item.agent });
   }
   return undefined;
 }
@@ -178,7 +188,7 @@ export function validateFileOnlyOutputMode(
   outputPath: string | undefined,
   context: string,
 ): string | undefined {
-  if (outputMode === "file-only" && !outputPath) {
+  if (outputMode === "file-only" && !nonempty(outputPath)) {
     return `${context} sets outputMode: "file-only" but does not configure an output file. Set output to a path or use outputMode: "inline".`;
   }
   return undefined;
@@ -187,7 +197,7 @@ export function validateFileOnlyOutputMode(
 export function captureSingleOutputSnapshot(
   outputPath: string | undefined,
 ): SingleOutputSnapshot | undefined {
-  if (!outputPath) {
+  if (!nonempty(outputPath)) {
     return undefined;
   }
   try {
@@ -219,7 +229,7 @@ function persistSingleOutput(
   outputPath: string | undefined,
   fullOutput: string,
 ): { savedPath?: string; error?: string } {
-  if (!outputPath) {
+  if (!nonempty(outputPath)) {
     return {};
   }
   try {
@@ -227,7 +237,7 @@ function persistSingleOutput(
     fs.writeFileSync(outputPath, fullOutput, "utf-8");
     return { savedPath: outputPath };
   } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) };
+    return { error: errorText(err) };
   }
 }
 
@@ -241,7 +251,7 @@ export function resolveSingleOutput(
   saveError?: string;
   writtenSnapshot?: SingleOutputSnapshot;
 } {
-  if (!outputPath) {
+  if (!nonempty(outputPath)) {
     return { fullOutput: fallbackOutput };
   }
 
@@ -253,20 +263,17 @@ export function resolveSingleOutput(
       return { fullOutput: fs.readFileSync(outputPath, "utf-8"), savedPath: outputPath };
     }
   } catch (error) {
-    const code =
-      error && typeof error === "object" && "code" in error
-        ? (error as { code?: unknown }).code
-        : undefined;
+    const code = errorCode(error);
     if (code !== "ENOENT" && code !== "ENOTDIR") {
       return {
         fullOutput: fallbackOutput,
-        saveError: `Failed to read changed output file: ${error instanceof Error ? error.message : String(error)}`,
+        saveError: `Failed to read changed output file: ${errorText(error)}`,
       };
     }
   }
 
   const save = persistSingleOutput(outputPath, fallbackOutput);
-  if (save.savedPath) {
+  if (nonempty(save.savedPath)) {
     return {
       fullOutput: fallbackOutput,
       savedPath: save.savedPath,
@@ -276,43 +283,60 @@ export function resolveSingleOutput(
   return { fullOutput: fallbackOutput, saveError: save.error };
 }
 
+function equalOutputBytes(fd: number, fullOutput: string, size: number): boolean {
+  if (size !== Buffer.byteLength(fullOutput)) {
+    return false;
+  }
+  let position = 0;
+  for (let start = 0; start < fullOutput.length;) {
+    let end = Math.min(start + 16384, fullOutput.length);
+    if (end < fullOutput.length && /[\uD800-\uDBFF]/.test(fullOutput.charAt(end - 1))) {
+      end--;
+    }
+    const expected = Buffer.from(fullOutput.slice(start, end));
+    const actual = Buffer.allocUnsafe(expected.length);
+    if (
+      fs.readSync(fd, actual, 0, actual.length, position) !== actual.length ||
+      !actual.equals(expected)
+    ) {
+      return false;
+    }
+    position += expected.length;
+    start = end;
+  }
+  return true;
+}
+
+function unchangedOutputIdentity(fd: number, outputPath: string, stat: fs.Stats): boolean {
+  const current = fs.fstatSync(fd);
+  const located = fs.statSync(outputPath);
+  return (
+    current.ino === stat.ino &&
+    current.size === stat.size &&
+    current.ctimeMs === stat.ctimeMs &&
+    located.ino === current.ino &&
+    located.dev === current.dev &&
+    located.ctimeMs === current.ctimeMs
+  );
+}
+
 export function cleanupSingleOutputFile(
   outputPath: string | undefined,
   fullOutput: string,
   beforeRun: SingleOutputSnapshot | undefined,
 ): SingleOutputCleanupResult | undefined {
-  if (!outputPath) {
+  if (!nonempty(outputPath)) {
     return undefined;
   }
   const absolutePath = path.resolve(outputPath);
   try {
     const stat = fs.statSync(outputPath);
     const fd = fs.openSync(outputPath, "r");
-    let equal = stat.size === Buffer.byteLength(fullOutput);
+    let equal: boolean;
     try {
-      let position = 0;
-      for (let start = 0; equal && start < fullOutput.length;) {
-        let end = Math.min(start + 16384, fullOutput.length);
-        if (end < fullOutput.length && /[\uD800-\uDBFF]/.test(fullOutput[end - 1]!)) {
-          end--;
-        }
-        const expected = Buffer.from(fullOutput.slice(start, end));
-        const actual = Buffer.allocUnsafe(expected.length);
-        equal =
-          fs.readSync(fd, actual, 0, actual.length, position) === actual.length &&
-          actual.equals(expected);
-        position += expected.length;
-        start = end;
-      }
-      const current = fs.fstatSync(fd),
-        located = fs.statSync(outputPath);
-      equal &&=
-        current.ino === stat.ino &&
-        current.size === stat.size &&
-        current.ctimeMs === stat.ctimeMs &&
-        located.ino === current.ino &&
-        located.dev === current.dev &&
-        located.ctimeMs === current.ctimeMs;
+      equal =
+        equalOutputBytes(fd, fullOutput, stat.size) &&
+        unchangedOutputIdentity(fd, outputPath, stat);
     } finally {
       fs.closeSync(fd);
     }
@@ -325,59 +349,69 @@ export function cleanupSingleOutputFile(
     fs.unlinkSync(outputPath);
     return { path: absolutePath, action: "deleted" };
   } catch (error) {
-    const code =
-      error && typeof error === "object" && "code" in error
-        ? (error as { code?: unknown }).code
-        : undefined;
+    const code = errorCode(error);
     if (code === "ENOENT" || code === "ENOTDIR") {
       return { path: absolutePath, action: "already-missing" };
     }
     return {
       path: absolutePath,
       action: "skipped",
-      error: error instanceof Error ? error.message : String(error),
+      error: errorText(error),
     };
   }
 }
 
-export function finalizeSingleOutput(params: {
-  fullOutput: string;
-  truncatedOutput?: string;
-  outputPath?: string;
-  outputMode?: OutputMode;
-  exitCode: number;
-  savedPath?: string;
-  outputReference?: SavedOutputReference;
-  saveError?: string;
-  cleanup?: SingleOutputCleanupResult;
-}): {
+interface FinalizeOutputInput {
+  readonly fullOutput: string;
+  readonly truncatedOutput?: string;
+  readonly outputPath?: string;
+  readonly outputMode?: OutputMode;
+  readonly exitCode: number;
+  readonly savedPath?: string;
+  readonly outputReference?: SavedOutputReference;
+  readonly saveError?: string;
+  readonly cleanup?: SingleOutputCleanupResult;
+}
+interface FinalizedOutput {
   displayOutput: string;
   savedPath?: string;
   outputReference?: SavedOutputReference;
   saveError?: string;
-} {
-  let displayOutput = params.truncatedOutput || params.fullOutput;
-  if (params.exitCode === 0 && params.savedPath) {
-    const outputReference =
-      params.outputReference ??
-      (params.cleanup && params.outputMode !== "file-only"
-        ? formatConsumedOutputReference(params.savedPath, params.fullOutput, params.cleanup)
-        : formatSavedOutputReference(params.savedPath, params.fullOutput));
-    if (params.outputMode === "file-only") {
-      return {
-        displayOutput: outputReference.message,
-        savedPath: params.savedPath,
-        outputReference,
-      };
-    }
-    displayOutput += `\n\n${outputReference.message}`;
+}
+function successfulOutput(
+  params: FinalizeOutputInput,
+  displayOutput: string,
+  savedPath: string,
+): FinalizedOutput {
+  const outputReference =
+    params.outputReference ??
+    (params.cleanup && params.outputMode !== "file-only"
+      ? formatConsumedOutputReference(savedPath, params.fullOutput, params.cleanup)
+      : formatSavedOutputReference(savedPath, params.fullOutput));
+  if (params.outputMode === "file-only") {
     return {
-      displayOutput,
-      savedPath: params.cleanup ? undefined : params.savedPath,
+      displayOutput: outputReference.message,
+      savedPath,
       outputReference,
     };
   }
-  if (params.exitCode === 0 && params.saveError && params.outputPath) {
+  const withReference = `${displayOutput}\n\n${outputReference.message}`;
+  return {
+    displayOutput: withReference,
+    savedPath: params.cleanup ? undefined : savedPath,
+    outputReference,
+  };
+}
+
+export function finalizeSingleOutput(params: FinalizeOutputInput): FinalizedOutput {
+  let displayOutput = nonempty(params.truncatedOutput) ? params.truncatedOutput : params.fullOutput;
+  if (params.exitCode !== 0) {
+    return { displayOutput };
+  }
+  if (nonempty(params.savedPath)) {
+    return successfulOutput(params, displayOutput, params.savedPath);
+  }
+  if (nonempty(params.saveError) && nonempty(params.outputPath)) {
     displayOutput += `\n\nOutput file error: ${params.outputPath}\n${params.saveError}`;
     return { displayOutput, saveError: params.saveError };
   }

@@ -1,11 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { errorCode, errorText, isObject, nonempty } from "./child-json.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const RESOLVE_CWD = "pi-change-working-dir:resolve-execution-cwd";
 const SET_CWD = "pi-change-working-dir:set-execution-cwd";
 const intentPath = (sessionFile: string): string => `${sessionFile}.subagent-cwd-init`;
-type CwdIntent = { cwd?: string };
+type CwdIntent = { readonly cwd?: string };
 type CwdRequest = {
   sessionManager: ExtensionContext["sessionManager"];
   path?: string;
@@ -33,28 +34,26 @@ function readIntent(sessionFile: string): CwdIntent | undefined {
   try {
     raw = fs.readFileSync(intentPath(sessionFile), "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    if (errorCode(error) === "ENOENT") {
       return undefined;
     }
     throw error;
   }
   const value: unknown = JSON.parse(raw);
   if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
+    !isObject(value) ||
     ("cwd" in value && (typeof value.cwd !== "string" || !path.isAbsolute(value.cwd)))
   ) {
     throw new Error("Invalid child execution cwd initialization request.");
   }
-  return value as CwdIntent;
+  return { cwd: "cwd" in value && typeof value.cwd === "string" ? value.cwd : undefined };
 }
 
 /** Freeze the new fork's requested directory once the actual launch cwd is known. */
 export function prepareChildExecutionCwd(sessionFile: string, cwd?: string): void {
   const intent = readIntent(sessionFile);
   if (intent && intent.cwd === undefined) {
-    if (!cwd) {
+    if (!nonempty(cwd)) {
       throw new Error("New fork execution cwd was not supplied.");
     }
     requestChildExecutionCwd(sessionFile, cwd);
@@ -65,7 +64,11 @@ export function hasExecutionCwdOwner(
   pi: Pick<ExtensionAPI, "getAllTools" | "getCommands">,
 ): boolean {
   // excludeTools can hide change_dir while the owner's /cwd command remains loaded.
-  const fromOwner = ({ sourceInfo }: { sourceInfo: { source: string; path: string } }) =>
+  const fromOwner = ({
+    sourceInfo,
+  }: {
+    readonly sourceInfo: { readonly source: string; readonly path: string };
+  }) =>
     /(?:^|[/\\:@])(?:pi-)?change-working-dir(?:[/\\@:.>]|$)/.test(
       `${sourceInfo.source}/${sourceInfo.path}`,
     );
@@ -81,6 +84,59 @@ export function hasExecutionCwdOwner(
   );
 }
 
+function initializeCwd(pi: ExtensionAPI, ctx: ExtensionContext, cwd: string, owned: boolean): void {
+  if (!owned) {
+    if (fs.realpathSync(ctx.cwd) !== fs.realpathSync(cwd)) {
+      throw new Error("Native child directory does not match the requested execution cwd.");
+    }
+    return;
+  }
+  const selection: CwdRequest = { sessionManager: ctx.sessionManager, path: cwd };
+  pi.events.emit(SET_CWD, selection);
+  if (!selection.result) {
+    throw new Error(
+      "The loaded directory extension did not initialize the child directory. Update pi-change-working-dir and ensure session startup has completed.",
+    );
+  }
+  if (nonempty(selection.result.error)) {
+    throw new Error(selection.result.error);
+  }
+  if (fs.realpathSync(selection.result.cwd) !== fs.realpathSync(cwd)) {
+    throw new Error("The directory extension selected a different child directory.");
+  }
+}
+
+function resolveCwdOwnership(pi: ExtensionAPI, ctx: ExtensionContext): boolean {
+  const request: CwdRequest = { sessionManager: ctx.sessionManager };
+  pi.events.emit(RESOLVE_CWD, request);
+  if (nonempty(request.result?.error)) {
+    throw new Error(request.result.error);
+  }
+  const owned = request.result !== undefined || hasExecutionCwdOwner(pi);
+  if (owned && !nonempty(request.result?.cwd)) {
+    throw new Error(
+      "The loaded directory extension did not resolve the child directory. Update pi-change-working-dir and ensure session startup has completed.",
+    );
+  }
+  return owned;
+}
+function initializeOnInput(pi: ExtensionAPI, ctx: ExtensionContext): void {
+  const sessionFile = ctx.sessionManager.getSessionFile();
+  const intent = nonempty(sessionFile) ? readIntent(sessionFile) : undefined;
+  const owned = resolveCwdOwnership(pi, ctx);
+  if (!intent) {
+    return;
+  }
+  if (!nonempty(intent.cwd)) {
+    throw new Error("New fork execution cwd was not prepared before startup.");
+  }
+  initializeCwd(pi, ctx, intent.cwd, owned);
+  // This is a launch intent, not another directory store. Only the owner persists selection.
+  if (sessionFile !== undefined) {
+    fs.unlinkSync(intentPath(sessionFile));
+  }
+}
+
 export function registerChildExecutionCwd(pi: ExtensionAPI): void {
   let initialized = false;
   pi.on("input", (_event, ctx) => {
@@ -88,50 +144,11 @@ export function registerChildExecutionCwd(pi: ExtensionAPI): void {
       return;
     }
     try {
-      const sessionFile = ctx.sessionManager.getSessionFile();
-      const intent = sessionFile ? readIntent(sessionFile) : undefined;
-      const request: CwdRequest = { sessionManager: ctx.sessionManager };
-      pi.events.emit(RESOLVE_CWD, request);
-      if (request.result?.error) {
-        throw new Error(request.result.error);
-      }
-      const owned = Boolean(request.result) || hasExecutionCwdOwner(pi);
-      if (owned && !request.result?.cwd) {
-        throw new Error(
-          "The loaded directory extension did not resolve the child directory. Update pi-change-working-dir and ensure session startup has completed.",
-        );
-      }
-      if (!intent) {
-        initialized = true;
-        return;
-      }
-      if (!intent.cwd) {
-        throw new Error("New fork execution cwd was not prepared before startup.");
-      }
-      if (owned) {
-        const selection: CwdRequest = { sessionManager: ctx.sessionManager, path: intent.cwd };
-        pi.events.emit(SET_CWD, selection);
-        if (!selection.result) {
-          throw new Error(
-            "The loaded directory extension did not initialize the child directory. Update pi-change-working-dir and ensure session startup has completed.",
-          );
-        }
-        if (selection.result.error) {
-          throw new Error(selection.result.error);
-        }
-        if (fs.realpathSync(selection.result.cwd) !== fs.realpathSync(intent.cwd)) {
-          throw new Error("The directory extension selected a different child directory.");
-        }
-      } else if (fs.realpathSync(ctx.cwd) !== fs.realpathSync(intent.cwd)) {
-        throw new Error("Native child directory does not match the requested execution cwd.");
-      }
-      // This is a launch intent, not another directory store. Only the owner persists selection.
-      fs.unlinkSync(intentPath(sessionFile!));
+      initializeOnInput(pi, ctx);
       initialized = true;
+      return;
     } catch (error) {
-      console.error(
-        `Subagent directory initialization failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      console.error(`Subagent directory initialization failed: ${errorText(error)}`);
       process.exitCode = 1;
       // Native hook exceptions are swallowed. Handled input stops before provider/tool dispatch.
       return { action: "handled" };
