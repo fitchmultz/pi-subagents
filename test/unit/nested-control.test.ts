@@ -472,7 +472,13 @@ describe("nested control routing", () => {
       fs.mkdirSync(asyncDir, { recursive: true });
       fs.writeFileSync(
         path.join(asyncDir, "status.json"),
-        JSON.stringify({ runId: "nested-direct", state: "running", pid: 12345 }),
+        JSON.stringify({
+          runId: "nested-direct",
+          mode: "single",
+          state: "running",
+          startedAt: Date.now(),
+          pid: 12345,
+        }),
         "utf-8",
       );
       const route = createNestedRun("nested-direct", "running", {
@@ -518,7 +524,13 @@ describe("nested control routing", () => {
     try {
       fs.writeFileSync(
         path.join(asyncDir, "status.json"),
-        JSON.stringify({ runId: "async-live", state: "running", pid: 12345 }),
+        JSON.stringify({
+          runId: "async-live",
+          mode: "single",
+          state: "running",
+          startedAt: Date.now(),
+          pid: 12345,
+        }),
         "utf-8",
       );
       const state = createState();
@@ -552,7 +564,13 @@ describe("nested control routing", () => {
     try {
       fs.writeFileSync(
         path.join(asyncDir, "status.json"),
-        JSON.stringify({ runId: "another-run", state: "running", pid: -1 }),
+        JSON.stringify({
+          runId: "another-run",
+          mode: "single",
+          state: "running",
+          startedAt: Date.now(),
+          pid: -1,
+        }),
         "utf-8",
       );
       const state = createState();
@@ -1133,6 +1151,7 @@ describe("nested control routing", () => {
       const fixture = await restoring;
       fanoutHosts.push(fixture);
       poll();
+      await waitFor(() => readNestedControlResults(route).length > 0);
       const results = readNestedControlResults(route);
       assert.equal(results.length, 1);
       assert.equal(results[0].ok, true, results[0].message);

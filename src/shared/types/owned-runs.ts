@@ -3,7 +3,7 @@ import type { ResolvedAcceptanceConfig } from "./acceptance.ts";
 import type { ReadonlyInput } from "./inputs.ts";
 import type { SavedLaunchConfig } from "./launch.ts";
 import type { ReadonlyAgentProgress, SubagentResultStatus, SubagentRunMode } from "./progress.ts";
-import type { ArtifactPaths, ReadonlySingleResult, SingleResult } from "./results.ts";
+import type { ArtifactPaths, ReadonlySingleResult } from "./results.ts";
 
 export type ManagementRunState = "live" | "completed" | "paused" | "blocked" | "failed" | "unknown";
 export type ManagementAction = "status" | "nudge" | "resume" | "interrupt" | "extend" | "review";
@@ -123,7 +123,7 @@ export interface ForegroundResumeChild {
   summary?: string;
   artifactPath?: string;
   effectiveAcceptance?: ResolvedAcceptanceConfig;
-  result?: SingleResult;
+  result?: ReadonlySingleResult;
 }
 
 export interface ForegroundResumeRun {

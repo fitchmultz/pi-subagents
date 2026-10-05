@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 const queueDir = process.env.MOCK_PI_QUEUE_DIR;
 
@@ -284,7 +285,7 @@ async function writeFinalizationEntry(entry, enabled) {
   return true;
 }
 
-async function maybeWriteStructuredOutput(response, jsonMode, toolCallId) {
+async function maybeWriteStructuredOutput(response, jsonMode, toolCallId = randomUUID()) {
   if (!Object.prototype.hasOwnProperty.call(response, "structuredOutput")) {
     return;
   }

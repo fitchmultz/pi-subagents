@@ -4,6 +4,7 @@ import type {
   AsyncResultTerminalState,
 } from "../../shared/types.ts";
 import { ownerProjection, readJsonProjection } from "../../shared/journal-reader.ts";
+import { isUnknownArray } from "../../shared/unknown.ts";
 import { errorCode, errorMessage } from "./async-value.ts";
 import { parseAsyncResult } from "./run-schemas.ts";
 
@@ -54,13 +55,20 @@ export function deriveAsyncResultTerminalState(
   return "failed";
 }
 
-function normalizeResultChild(value: unknown, index: number, resultPath: string): AsyncResultChild {
-  if (!isRecord(value)) {
-    throw new Error(
-      `Invalid async result file '${resultPath}': results[${index}] must be an object.`,
-    );
+function validateResultsContainer(value: unknown, resultPath: string): void {
+  if (value === undefined) {
+    return;
   }
-  return value;
+  if (!isUnknownArray(value)) {
+    throw new Error(`Invalid async result file '${resultPath}': results must be an array.`);
+  }
+  for (const [index, child] of value.entries()) {
+    if (!isRecord(child)) {
+      throw new Error(
+        `Invalid async result file '${resultPath}': results[${index}] must be an object.`,
+      );
+    }
+  }
 }
 
 export function readAsyncResultFile(resultPath: string): ParsedAsyncResultFile {
@@ -75,13 +83,11 @@ export function readAsyncResultFile(resultPath: string): ParsedAsyncResultFile {
   if (!isRecord(value)) {
     throw new Error(`Failed to parse async result file '${resultPath}': expected a JSON object.`);
   }
+  validateResultsContainer(value.results, resultPath);
   const data = parseAsyncResult(value);
-  if (value.results !== undefined && !Array.isArray(value.results)) {
-    throw new Error(`Invalid async result file '${resultPath}': results must be an array.`);
-  }
   return {
     ...data,
-    results: data.results?.map((child, index) => normalizeResultChild(child, index, resultPath)),
+    results: data.results?.slice(),
     terminalState: deriveAsyncResultTerminalState(data),
   };
 }

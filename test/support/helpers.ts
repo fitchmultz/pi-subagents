@@ -99,20 +99,31 @@ export const events = {
     };
   },
 
-  toolStart(toolName: string, args: ReadonlyDeep<Record<string, unknown>> = {}): object {
-    return { type: "tool_execution_start", toolName, args };
+  toolStart(
+    toolName: string,
+    args: ReadonlyDeep<Record<string, unknown>> = {},
+    toolCallId = `mock-${toolName}`,
+  ): object {
+    return { type: "tool_execution_start", toolName, toolCallId, args };
   },
 
-  toolEnd(toolName: string): object {
-    return { type: "tool_execution_end", toolName };
+  toolEnd(toolName: string, toolCallId = `mock-${toolName}`): object {
+    return { type: "tool_execution_end", toolName, toolCallId };
   },
 
-  toolResult(toolName: string, text: string, isError = false): object {
+  toolResult(
+    toolName: string,
+    text: string,
+    isError = false,
+    toolCallId = `mock-${toolName}`,
+  ): object {
     return {
       type: "message_end",
       message: {
         role: "toolResult",
         toolName,
+        toolCallId,
+        timestamp: 0,
         isError,
         content: [{ type: "text", text }],
       },
