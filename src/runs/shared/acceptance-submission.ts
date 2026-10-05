@@ -1,17 +1,25 @@
 import { isDeepStrictEqual } from "node:util";
-import type { AssistantMessage, Message, ToolCall } from "@earendil-works/pi-ai";
 import {
   createStructuredOutputRuntime,
   readStructuredOutput,
   validateStructuredOutputValue,
   type StructuredOutputRuntime,
 } from "./structured-output.ts";
-import type { AcceptanceReport, JsonSchemaObject, ReadonlyInput } from "../../shared/types.ts";
+import type {
+  AcceptanceReport,
+  JsonSchemaObject,
+  ReadonlyInput,
+  ObservedMessage,
+  ObservedContent,
+} from "../../shared/types.ts";
 import {
   ACCEPTANCE_REPORT_SCHEMA,
   isAcceptanceReport,
   parseAcceptanceReport,
 } from "./acceptance-reports.ts";
+
+type ObservedAssistant = Extract<ObservedMessage, { readonly role: "assistant" }>;
+type ObservedToolCall = Extract<ObservedContent, { readonly type: "toolCall" }>;
 
 export type FinalizationReportRuntime = ReadonlyInput<StructuredOutputRuntime> & {
   readonly publicOutputSchema?: JsonSchemaObject;
@@ -93,11 +101,11 @@ export function reportAuditOutput(submission: {
     : submission.output;
 }
 
-function toolResultSucceeded(result: { readonly isError: unknown }): boolean {
+function toolResultSucceeded(result: { readonly isError?: unknown }): boolean {
   return result.isError === false;
 }
 
-function successfulStructuredIds(messages: readonly Message[]): Set<string> {
+function successfulStructuredIds(messages: readonly ObservedMessage[]): Set<string> {
   return new Set(
     messages.flatMap((message) =>
       message.role === "toolResult" &&
@@ -117,17 +125,21 @@ function auditSubmission(value: unknown, runtime: FinalizationReportRuntime): st
 }
 
 function previousAuditOutput(
-  messages: readonly Message[],
+  messages: readonly ObservedMessage[],
   runtime: FinalizationReportRuntime,
   submitted: FinalizationReportSubmission | undefined,
 ): string | undefined {
   const successfulIds = successfulStructuredIds(messages);
   let retained = submitted ? reportAuditOutput(submitted) : undefined;
   for (const message of messages) {
-    if (message.role !== "assistant" || !Array.isArray(message.content)) {
+    if (message.role !== "assistant") {
       continue;
     }
-    for (const call of message.content) {
+    const content: readonly ObservedContent[] = message.content;
+    if (!Array.isArray(message.content)) {
+      continue;
+    }
+    for (const call of content) {
       if (
         call.type !== "toolCall" ||
         call.name !== "structured_output" ||
@@ -143,8 +155,8 @@ function previousAuditOutput(
 }
 
 function latestSubmissionError(
-  messages: readonly Message[],
-  call: ToolCall,
+  messages: readonly ObservedMessage[],
+  call: ObservedToolCall,
   index: number,
 ): string | undefined {
   const result = messages
@@ -161,14 +173,14 @@ function latestSubmissionError(
 }
 
 function latestAssistant(
-  messages: readonly Message[],
-): { message: AssistantMessage; index: number } | undefined {
+  messages: readonly ObservedMessage[],
+): { message: ObservedAssistant; index: number } | undefined {
   const index = messages.findLastIndex((message) => message.role === "assistant");
   const last = Object.hasOwn(messages, index) ? messages[index] : undefined;
   if (
     last?.role !== "assistant" ||
     (last.errorMessage ?? "").length > 0 ||
-    !["stop", "toolUse"].includes(last.stopReason) ||
+    (last.stopReason !== "stop" && last.stopReason !== "toolUse") ||
     !Array.isArray(last.content)
   ) {
     return undefined;
@@ -177,8 +189,8 @@ function latestAssistant(
 }
 
 function currentToolSubmissionError(
-  last: AssistantMessage,
-  messages: readonly Message[],
+  last: ObservedAssistant,
+  messages: readonly ObservedMessage[],
   index: number,
   captured: { readonly value?: unknown; readonly error?: string },
 ): string | undefined {
@@ -202,7 +214,7 @@ function currentToolSubmissionError(
 
 /** The current attempt's terminal assistant and its actual successful tool result authorize publication. */
 export function readFinalizationReport(
-  messages: readonly Message[],
+  messages: readonly ObservedMessage[],
   runtime: FinalizationReportRuntime,
   options: { readonly messageOffset?: number; readonly structuredResult?: boolean } = {},
 ): FinalizationReportSubmission {
