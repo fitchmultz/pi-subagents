@@ -1,5 +1,5 @@
 diff --git a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
-index e3f055c..27cb1dd 100644
+index e3f055c..fa2bc62 100644
 --- a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
 +++ b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
 @@ -301,7 +301,13 @@ func isTypeReadonlyObject(
@@ -78,7 +78,7 @@ index e3f055c..27cb1dd 100644
  	if !utils.IsObjectType(t) {
  		return readonlynessReadonly
  	}
-@@ -400,13 +395,84 @@ func isTypeReadonlyRecurser(
+@@ -400,13 +395,87 @@ func isTypeReadonlyRecurser(
  	return readonlynessReadonly
  }
  
@@ -92,10 +92,13 @@ index e3f055c..27cb1dd 100644
 +) readonlyness {
 +	if annotation != nil && utils.IsUnionType(t) {
 +		annotatedType := checker.Checker_getTypeFromTypeNode(typeChecker, annotation)
-+		if utils.Some(t.Types(), func(part *checker.Type) bool { return part == annotatedType }) &&
-+			utils.Every(t.Types(), func(part *checker.Type) bool {
-+				return part == annotatedType || utils.IsTypeUndefinedType(part)
-+			}) {
++		annotatedParts := utils.UnionTypeParts(annotatedType)
++		if annotatedType != t && utils.Every(annotatedParts, func(part *checker.Type) bool {
++			return utils.Some(t.Types(), func(actual *checker.Type) bool { return actual == part })
++		}) && utils.Every(t.Types(), func(part *checker.Type) bool {
++			return utils.IsTypeUndefinedType(part) ||
++				utils.Some(annotatedParts, func(annotated *checker.Type) bool { return annotated == part })
++		}) {
 +			return isTypeReadonlyAnnotated(program, typeChecker, annotatedType, annotation, opts, seenTypes)
 +		}
 +	}
@@ -164,7 +167,7 @@ index e3f055c..27cb1dd 100644
  }
  
  func isLiteralOrTaggablePrimitiveLike(t *checker.Type) bool {
-@@ -504,7 +570,7 @@ var PreferReadonlyParameterTypesRule = rule.Rule{
+@@ -504,7 +573,7 @@ var PreferReadonlyParameterTypesRule = rule.Rule{
  					continue
  				}
  

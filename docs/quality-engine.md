@@ -133,7 +133,9 @@ This is an input-contract check, not proof of callback purity or runtime freezin
 - Conditional SDK types can erase an owned alias from the resolved type. The
   readonly rule recovers a nongeneric alias from the actual parameter or property
   annotation only when that annotation resolves to the analyzed type (or that
-  exact type plus implicit `undefined` for an optional property). It follows
+  exact type plus implicit `undefined` for an optional property). For a flattened
+  union alias, both sets of resolved constituent identities must match, apart
+  from that `undefined`; an unchanged type is not recursively unwrapped. It follows
   import/re-export and alias chains, checking each declaration's real name and
   origin with the qualified matcher. It does not grant name-only or generic
   annotation permissions. Annotated unions and intersections check each part,
