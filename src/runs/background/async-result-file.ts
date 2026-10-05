@@ -4,9 +4,11 @@ import type {
   AsyncResultTerminalState,
 } from "../../shared/types.ts";
 import { ownerProjection, readJsonProjection } from "../../shared/journal-reader.ts";
+import { errorCode, errorMessage } from "./async-value.ts";
+import { parseAsyncResult } from "./run-schemas.ts";
 
-export function isDurableRun(value: object | null | undefined): boolean {
-  return Boolean(value && "runtimeVersion" in value && value.runtimeVersion === 2);
+export function isDurableRun(value: unknown): boolean {
+  return isRecord(value) && value.runtimeVersion === 2;
 }
 
 export type ParsedAsyncResultFile = Omit<AsyncResultFile, "results"> & {
@@ -15,7 +17,7 @@ export type ParsedAsyncResultFile = Omit<AsyncResultFile, "results"> & {
 };
 
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return errorMessage(error);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -23,22 +25,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isNotFoundError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === "ENOENT"
-  );
+  return errorCode(error) === "ENOENT";
 }
 
 export function deriveAsyncResultTerminalState(
-  input: Pick<AsyncResultFile, "success" | "state" | "exitCode">,
+  input: Readonly<Pick<AsyncResultFile, "success" | "state" | "exitCode">>,
 ): AsyncResultTerminalState {
   if (input.success === true) {
     return "complete";
   }
   if (input.success === false) {
-    return input.state === "blocked" ? "blocked" : input.state === "paused" ? "paused" : "failed";
+    if (input.state === "blocked" || input.state === "paused") {
+      return input.state;
+    }
+    return "failed";
   }
   if (
     input.state === "complete" ||
@@ -60,22 +60,23 @@ function normalizeResultChild(value: unknown, index: number, resultPath: string)
       `Invalid async result file '${resultPath}': results[${index}] must be an object.`,
     );
   }
-  return value as AsyncResultChild;
+  return value;
 }
 
 export function readAsyncResultFile(resultPath: string): ParsedAsyncResultFile {
-  let data: AsyncResultFile;
+  let value: unknown;
   try {
-    data = readJsonProjection(resultPath, ownerProjection);
+    value = readJsonProjection(resultPath, ownerProjection);
   } catch (error) {
     throw new Error(`Failed to read async result file '${resultPath}': ${getErrorMessage(error)}`, {
-      cause: error instanceof Error ? error : undefined,
+      cause: error,
     });
   }
-  if (!isRecord(data)) {
+  if (!isRecord(value)) {
     throw new Error(`Failed to parse async result file '${resultPath}': expected a JSON object.`);
   }
-  if (data.results !== undefined && !Array.isArray(data.results)) {
+  const data = parseAsyncResult(value);
+  if (value.results !== undefined && !Array.isArray(value.results)) {
     throw new Error(`Invalid async result file '${resultPath}': results must be an array.`);
   }
   return {

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isRecord, hasText } from "./async-value.ts";
 
 interface CompletionDataLike {
   completionId?: unknown;
@@ -33,7 +34,10 @@ function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(stableStringify).join(",")}]`;
   }
-  const record = value as Record<string, unknown>;
+  if (!isRecord(value)) {
+    throw new Error("Completion identity must contain JSON-compatible values.");
+  }
+  const record = value;
   return `{${Object.keys(record)
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
@@ -44,13 +48,13 @@ function payloadDigest(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex").slice(0, 16);
 }
 
-export function buildCompletionKey(data: CompletionDataLike, fallback: string): string {
+export function buildCompletionKey(data: Readonly<CompletionDataLike>, fallback: string): string {
   const completionId = asNonEmptyString(data.completionId);
-  if (completionId) {
+  if (hasText(completionId)) {
     return `completion:${completionId}`;
   }
   const id = asNonEmptyString(data.id);
-  if (id) {
+  if (hasText(id)) {
     return `id:${id}:${payloadDigest(data)}`;
   }
   const sessionId = asNonEmptyString(data.sessionId) ?? "no-session";
@@ -58,7 +62,8 @@ export function buildCompletionKey(data: CompletionDataLike, fallback: string): 
   const timestamp = asFiniteNumber(data.timestamp);
   const taskIndex = asFiniteNumber(data.taskIndex);
   const totalTasks = asFiniteNumber(data.totalTasks);
-  const success = typeof data.success === "boolean" ? (data.success ? "1" : "0") : "?";
+  const success = data.success === true ? "1" : "?";
+  const successIdentity = data.success === false ? "0" : success;
   return [
     "meta",
     sessionId,
@@ -66,12 +71,20 @@ export function buildCompletionKey(data: CompletionDataLike, fallback: string): 
     timestamp !== undefined ? String(timestamp) : "no-ts",
     taskIndex !== undefined ? String(taskIndex) : "-",
     totalTasks !== undefined ? String(totalTasks) : "-",
-    success,
+    successIdentity,
     fallback,
   ].join(":");
 }
 
-function pruneSeenMap(seen: Map<string, number>, now: number, ttlMs: number): void {
+/** Mutable identity store owned by the completion-admission lifecycle. */
+export interface CompletionSeenStore {
+  readonly entries: () => IterableIterator<[string, number]>;
+  readonly has: (key: string) => boolean;
+  readonly set: (key: string, value: number) => unknown;
+  readonly delete: (key: string) => boolean;
+}
+
+function pruneSeenMap(seen: CompletionSeenStore, now: number, ttlMs: number): void {
   for (const [key, ts] of seen.entries()) {
     if (now - ts > ttlMs) {
       seen.delete(key);
@@ -80,7 +93,7 @@ function pruneSeenMap(seen: Map<string, number>, now: number, ttlMs: number): vo
 }
 
 export function markSeenWithTtl(
-  seen: Map<string, number>,
+  seen: CompletionSeenStore,
   key: string,
   now: number,
   ttlMs: number,
@@ -93,11 +106,21 @@ export function markSeenWithTtl(
   return false;
 }
 
+function isSeenMap(value: unknown): value is Map<string, number> {
+  if (!(value instanceof Map)) {
+    return false;
+  }
+  const entries: Map<unknown, unknown> = value;
+  return [...entries].every(
+    ([key, timestamp]) => typeof key === "string" && typeof timestamp === "number",
+  );
+}
+
 export function getGlobalSeenMap(storeKey: string): Map<string, number> {
   const globalStore = globalThis as Record<string, unknown>;
   const existing = globalStore[storeKey];
-  if (existing instanceof Map) {
-    return existing as Map<string, number>;
+  if (isSeenMap(existing)) {
+    return existing;
   }
   const map = new Map<string, number>();
   globalStore[storeKey] = map;

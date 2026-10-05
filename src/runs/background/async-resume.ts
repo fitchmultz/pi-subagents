@@ -1,347 +1,262 @@
 import * as fs from "node:fs";
-import { formatRunIdAmbiguity } from "../shared/run-id-ambiguity.ts";
 import * as path from "node:path";
 import {
   ASYNC_DIR,
   RESULTS_DIR,
   type AsyncStatus,
   type ResolvedAcceptanceConfig,
+  type SupervisorRunContract,
 } from "../../shared/types.ts";
+import type { ReadonlyInput } from "../../shared/types/inputs.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { checkPidLiveness, reconcileAsyncRun } from "./stale-run-reconciler.ts";
-import {
-  isDurableRun,
-  readAsyncResultFile,
-  type ParsedAsyncResultFile,
-} from "./async-result-file.ts";
-import {
-  QUESTIONS_DIR,
-  readQuestionContract,
-  readRunJson,
-} from "../shared/supervisor-questions.ts";
-import { readStatus } from "../../shared/utils.ts";
+import { readAsyncResultFile, type ParsedAsyncResultFile } from "./async-result-file.ts";
+import { readQuestionContract } from "../shared/supervisor-questions.ts";
+import { resolveAsyncRunLocation, type AsyncResumeParams } from "./async-run-location.ts";
+import type { AsyncRunLocation } from "./async-run-record.ts";
+import { hasText, isRecord } from "./async-value.ts";
 
-export interface AsyncResumeParams {
-  id?: string;
-  runId?: string;
-  dir?: string;
-  index?: number;
-}
+export type { AsyncResumeParams } from "./async-run-location.ts";
+export type { AsyncRunLocation, AsyncRunRecord } from "./async-run-record.ts";
+export {
+  asyncRunRoots,
+  exactAsyncRunLocation,
+  readAsyncRunRecord,
+  findAsyncRunPrefixMatches,
+  resolveAsyncRunLocation,
+} from "./async-run-location.ts";
 
 export interface AsyncResumeDeps {
-  asyncDirRoot?: string;
-  resultsDir?: string;
-  kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
-  now?: () => number;
+  readonly asyncDirRoot?: string;
+  readonly resultsDir?: string;
+  readonly kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
+  readonly now?: () => number;
+}
+export interface AsyncResumeTarget {
+  readonly kind: "live" | "revive";
+  readonly runId: string;
+  readonly asyncDir?: string;
+  readonly state: AsyncStatus["state"];
+  readonly agent: string;
+  readonly index: number;
+  readonly intercomTarget: string;
+  readonly cwd?: string;
+  readonly sessionFile?: string;
+  readonly effectiveAcceptance?: ResolvedAcceptanceConfig;
 }
 
-export type AsyncResumeTarget = {
-  kind: "live" | "revive";
-  runId: string;
-  asyncDir?: string;
-  state: AsyncStatus["state"];
-  agent: string;
-  index: number;
-  intercomTarget: string;
-  cwd?: string;
-  sessionFile?: string;
-  effectiveAcceptance?: ResolvedAcceptanceConfig;
-};
-
-export interface AsyncRunLocation {
-  asyncDir: string | null;
-  resultPath: string | null;
-  resolvedId?: string;
-}
-
-export interface AsyncRunRecord {
-  location: AsyncRunLocation;
-  status: AsyncStatus | null;
-  durable: boolean;
-}
-
-function validateOptionalString(
-  value: Record<string, unknown>,
-  field: string,
-  source: string,
-  displayField = field,
-): string | undefined {
-  const fieldValue = value[field];
-  if (fieldValue === undefined) {
-    return undefined;
+function optionalStrings(value: unknown, fields: readonly string[], source: string): void {
+  if (!isRecord(value)) {
+    throw new Error(`Invalid async status '${source}': expected an object.`);
   }
-  if (typeof fieldValue !== "string") {
-    throw new Error(`Invalid async result file '${source}': ${displayField} must be a string.`);
-  }
-  return fieldValue;
-}
-
-function validateResultFile(
-  data: ParsedAsyncResultFile,
-  resultPath: string,
-): ParsedAsyncResultFile {
-  if (data.results !== undefined) {
-    if (!Array.isArray(data.results)) {
-      throw new Error(`Invalid async result file '${resultPath}': results must be an array.`);
+  for (const field of fields) {
+    if (value[field] !== undefined && typeof value[field] !== "string") {
+      throw new Error(`Invalid async status '${source}': ${field} must be a string.`);
     }
-    data.results.forEach((child, index) => {
-      const record = child as Record<string, unknown>;
-      validateOptionalString(record, "agent", resultPath, `results[${index}].agent`);
-      validateOptionalString(record, "sessionFile", resultPath, `results[${index}].sessionFile`);
-      validateOptionalString(
-        record,
-        "intercomTarget",
-        resultPath,
-        `results[${index}].intercomTarget`,
+  }
+}
+
+function validateStatusForResume(value: unknown, source: string): void {
+  if (value === null) {
+    return;
+  }
+  if (!isRecord(value) || typeof value.runId !== "string") {
+    throw new Error(`Invalid async status '${source}': runId must be a string.`);
+  }
+  optionalStrings(value, ["sessionId", "cwd", "sessionFile"], source);
+  if (value.steps === undefined) {
+    return;
+  }
+  if (!Array.isArray(value.steps)) {
+    throw new Error(`Invalid async status '${source}': steps must be an array.`);
+  }
+  const steps: readonly unknown[] = value.steps;
+  steps.forEach((step, index) => {
+    if (!isRecord(step)) {
+      throw new Error(`Invalid async status '${source}': steps[${index}] must be an object.`);
+    }
+    if (typeof step.agent !== "string") {
+      throw new Error(`Invalid async status '${source}': steps[${index}].agent must be a string.`);
+    }
+    if (step.sessionFile !== undefined && typeof step.sessionFile !== "string") {
+      throw new Error(
+        `Invalid async status '${source}': steps[${index}].sessionFile must be a string.`,
       );
-      const success = child.success;
-      if (success !== undefined && typeof success !== "boolean") {
-        throw new Error(
-          `Invalid async result file '${resultPath}': results[${index}].success must be a boolean.`,
-        );
-      }
-    });
+    }
+  });
+}
+
+function validateResultRecord(value: unknown, resultPath: string, prefix = ""): void {
+  if (!isRecord(value)) {
+    throw new Error(`Invalid async result file '${resultPath}': expected an object.`);
   }
-  const record = data as Record<string, unknown>;
-  const success = data.success;
-  if (success !== undefined && typeof success !== "boolean") {
-    throw new Error(`Invalid async result file '${resultPath}': success must be a boolean.`);
+  const fields =
+    prefix.length > 0
+      ? ["agent", "sessionFile", "intercomTarget"]
+      : ["id", "runId", "agent", "mode", "state", "cwd", "sessionFile"];
+  for (const field of fields) {
+    if (value[field] !== undefined && typeof value[field] !== "string") {
+      throw new Error(
+        `Invalid async result file '${resultPath}': ${prefix}${field} must be a string.`,
+      );
+    }
   }
-  validateOptionalString(record, "id", resultPath);
-  validateOptionalString(record, "runId", resultPath);
-  validateOptionalString(record, "agent", resultPath);
-  validateOptionalString(record, "mode", resultPath);
-  validateOptionalString(record, "state", resultPath);
-  validateOptionalString(record, "cwd", resultPath);
-  validateOptionalString(record, "sessionFile", resultPath);
+  if (value.success !== undefined && typeof value.success !== "boolean") {
+    throw new Error(
+      `Invalid async result file '${resultPath}': ${prefix}success must be a boolean.`,
+    );
+  }
+}
+
+function readResultFile(file: string): ParsedAsyncResultFile {
+  const data = readAsyncResultFile(file);
+  data.results?.forEach((child, index) => validateResultRecord(child, file, `results[${index}].`));
+  validateResultRecord(data, file);
   return data;
 }
 
-function readResultFile(resultPath: string): ParsedAsyncResultFile {
-  return validateResultFile(readAsyncResultFile(resultPath), resultPath);
+interface ResumeEvidence {
+  readonly location: AsyncRunLocation;
+  readonly status: ReadonlyInput<AsyncStatus> | null;
+  readonly result?: ReadonlyInput<ParsedAsyncResultFile>;
+  readonly runId: string;
+  readonly state: AsyncStatus["state"];
+  readonly stepCount: number;
+  readonly steps: ReadonlyInput<NonNullable<AsyncStatus["steps"]>>;
+  readonly resultSteps: ReadonlyInput<NonNullable<ParsedAsyncResultFile["results"]>>;
 }
 
-function assertRunId(value: string | undefined, field: "id" | "runId"): string | undefined {
-  if (value === undefined) {
-    return undefined;
+function childEvidence(
+  status: ReadonlyInput<AsyncStatus> | null,
+  result: ReadonlyInput<ParsedAsyncResultFile> | undefined,
+): Pick<ResumeEvidence, "steps" | "resultSteps" | "stepCount"> {
+  const steps = status?.steps ?? [];
+  const resultSteps = result?.results ?? [];
+  const count = steps.length > 0 ? steps.length : resultSteps.length;
+  return { steps, resultSteps, stepCount: count > 0 ? count : Number(hasText(result?.agent)) };
+}
+
+function persistedRunId(
+  location: AsyncRunLocation,
+  status: ReadonlyInput<AsyncStatus> | null,
+  result: ReadonlyInput<ParsedAsyncResultFile> | undefined,
+): string {
+  const fallback = location.asyncDir === null ? "unknown" : path.basename(location.asyncDir);
+  return status?.runId ?? result?.runId ?? result?.id ?? location.resolvedId ?? fallback;
+}
+
+function resumeIdentity(
+  location: AsyncRunLocation,
+  status: ReadonlyInput<AsyncStatus> | null,
+  result: ReadonlyInput<ParsedAsyncResultFile> | undefined,
+): Pick<ResumeEvidence, "runId" | "state"> {
+  const runId = persistedRunId(location, status, result);
+  const state = status?.state ?? result?.terminalState;
+  if (state === undefined) {
+    throw new Error(`Status file not found for async run '${runId}'.`);
   }
-  if (value.trim() === "") {
-    throw new Error(`${field} must not be empty.`);
+  return { runId, state };
+}
+
+function readEvidence(
+  params: ReadonlyInput<AsyncResumeParams>,
+  deps: AsyncResumeDeps,
+): ResumeEvidence {
+  const resultsDir = deps.resultsDir ?? RESULTS_DIR;
+  const location = resolveAsyncRunLocation(params, deps.asyncDirRoot ?? ASYNC_DIR, resultsDir);
+  if (location.asyncDir === null && location.resultPath === null) {
+    throw new Error("Async run not found. Provide id or dir.");
   }
-  if (path.isAbsolute(value) || /[\\/]/.test(value) || value.includes("..")) {
-    throw new Error(`${field} must be an async run id or prefix, not a path.`);
-  }
-  return value;
-}
-
-function assertInsideRoot(root: string, target: string, label: string): void {
-  const rootPath = path.resolve(root);
-  const targetPath = path.resolve(target);
-  const relative = path.relative(rootPath, targetPath);
-  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
-    return;
-  }
-  throw new Error(`${label} must be inside ${rootPath}.`);
-}
-
-function prefixedRunIds(dir: string, prefix: string, suffix = ""): string[] {
-  if (!fs.existsSync(dir)) {
-    return [];
-  }
-  return fs
-    .readdirSync(dir)
-    .filter((entry) => entry.startsWith(prefix) && (!suffix || entry.endsWith(suffix)))
-    .map((entry) => (suffix ? entry.slice(0, -suffix.length) : entry))
-    .sort();
-}
-
-export function asyncRunRoots(asyncDirRoot: string): string[] {
-  return [...new Set([path.resolve(asyncDirRoot), path.resolve(QUESTIONS_DIR)])];
-}
-
-export function exactAsyncRunLocation(
-  runId: string,
-  asyncDirRoot: string,
-  resultsDir: string,
-): AsyncRunLocation {
-  return resolveAsyncRunRecord(runId, asyncDirRoot, resultsDir, false).location;
-}
-
-/** Resolve canonical precedence and decode each candidate status once for this pass. */
-export function readAsyncRunRecord(
-  runId: string,
-  asyncDirRoot: string,
-  resultsDir: string,
-): AsyncRunRecord {
-  return resolveAsyncRunRecord(runId, asyncDirRoot, resultsDir, true);
-}
-
-function resolveAsyncRunRecord(
-  runId: string,
-  asyncDirRoot: string,
-  resultsDir: string,
-  readLegacyStatus: boolean,
-): AsyncRunRecord {
-  assertRunId(runId, "id");
-  const durableDir = path.join(QUESTIONS_DIR, runId);
-  const legacyDir = path.join(asyncDirRoot, runId);
-  const durableStatus = readStatus(durableDir);
-  const durableResult = path.join(durableDir, "result.json");
-  const durable =
-    isDurableRun(durableStatus) ||
-    isDurableRun(readRunJson<object>(path.join(durableDir, "launch.json")));
-  const asyncDir = durable
-    ? durableDir
-    : fs.existsSync(legacyDir)
-      ? legacyDir
-      : durableStatus
-        ? durableDir
-        : null;
   const status =
-    asyncDir === durableDir
-      ? durableStatus
-      : asyncDir && readLegacyStatus
-        ? readStatus(asyncDir)
-        : null;
-  return {
-    location: {
-      asyncDir,
-      resultPath: fs.existsSync(durableResult) ? durableResult : exactResultPath(resultsDir, runId),
-      resolvedId: runId,
-    },
+    location.asyncDir === null
+      ? null
+      : reconcileAsyncRun(location.asyncDir, { resultsDir, kill: deps.kill, now: deps.now }).status;
+  validateStatusForResume(
     status,
-    durable: durable || isDurableRun(status),
+    location.asyncDir === null ? "status.json" : path.join(location.asyncDir, "status.json"),
+  );
+  const result = location.resultPath === null ? undefined : readResultFile(location.resultPath);
+  return {
+    location,
+    status,
+    result,
+    ...resumeIdentity(location, status, result),
+    ...childEvidence(status, result),
   };
 }
 
-function exactResultPath(resultsDir: string, runId: string): string | null {
-  const resultPath = path.join(resultsDir, `${runId}.json`);
-  assertInsideRoot(resultsDir, resultPath, "Async result file");
-  return fs.existsSync(resultPath) ? resultPath : null;
-}
-
-export function findAsyncRunPrefixMatches(
-  prefix: string,
-  asyncDirRoot: string,
-  resultsDir: string,
-): Array<{ id: string; location: AsyncRunLocation }> {
-  const requestedId = assertRunId(prefix, "id");
-  if (!requestedId) {
-    return [];
+function assertIndex(evidence: ReadonlyInput<ResumeEvidence>, index: number): void {
+  if (!Number.isInteger(index)) {
+    throw new Error(`Async run '${evidence.runId}' index must be an integer.`);
   }
-  const asyncRoot = path.resolve(asyncDirRoot);
-  const resultRoot = path.resolve(resultsDir);
-  const matchingIds = [
-    ...new Set([
-      ...prefixedRunIds(asyncRoot, requestedId),
-      ...prefixedRunIds(QUESTIONS_DIR, requestedId).filter(
-        (id) =>
-          fs.existsSync(path.join(QUESTIONS_DIR, id, "status.json")) ||
-          fs.existsSync(path.join(QUESTIONS_DIR, id, "result.json")) ||
-          fs.existsSync(path.join(QUESTIONS_DIR, id, "launch.json")),
-      ),
-      ...prefixedRunIds(resultRoot, requestedId, ".json"),
-    ]),
-  ].sort();
-  return matchingIds.map((id) => ({
-    id,
-    location: exactAsyncRunLocation(id, asyncRoot, resultRoot),
-  }));
-}
-
-export function resolveAsyncRunLocation(
-  params: AsyncResumeParams,
-  asyncDirRoot: string,
-  resultsDir: string,
-): AsyncRunLocation {
-  const asyncRoot = path.resolve(asyncDirRoot);
-  const resultRoot = path.resolve(resultsDir);
-  const requestedId = assertRunId(params.id, "id") ?? assertRunId(params.runId, "runId");
-  if (params.dir) {
-    const asyncDir = path.resolve(params.dir);
-    if (
-      !asyncRunRoots(asyncRoot).some((root) => {
-        const relative = path.relative(root, asyncDir);
-        return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-      })
-    ) {
-      throw new Error(
-        `Async run directory must be inside ${asyncRunRoots(asyncRoot).join(" or ")}.`,
-      );
-    }
-    const resolvedId = requestedId ?? path.basename(asyncDir);
-    if (requestedId && requestedId !== path.basename(asyncDir)) {
-      throw new Error(
-        `Async run id '${requestedId}' does not match directory '${path.basename(asyncDir)}'.`,
-      );
-    }
-    const location = exactAsyncRunLocation(resolvedId, asyncRoot, resultRoot);
-    const canonical =
-      location.asyncDir &&
-      isDurableRun(readRunJson<object>(path.join(location.asyncDir, "launch.json")));
-    return { ...location, asyncDir: canonical ? location.asyncDir : asyncDir };
-  }
-  if (!requestedId) {
-    return { asyncDir: null, resultPath: null };
-  }
-
-  const direct = exactAsyncRunLocation(requestedId, asyncRoot, resultRoot);
-  if (direct.asyncDir || direct.resultPath) {
-    return direct;
-  }
-
-  const matching = findAsyncRunPrefixMatches(requestedId, asyncRoot, resultRoot);
-  if (matching.length === 0) {
-    return { asyncDir: null, resultPath: null, resolvedId: requestedId };
-  }
-  if (matching.length > 1) {
+  if (index < 0 || index >= evidence.stepCount) {
     throw new Error(
-      formatRunIdAmbiguity(
-        "async",
-        requestedId,
-        matching.map((match) => match.id),
-      ),
+      `Async run '${evidence.runId}' has ${evidence.stepCount} children. Index ${index} is out of range.`,
     );
   }
-  return matching[0]!.location;
 }
 
-function validateStatusForResume(status: AsyncStatus | null, source: string): void {
-  if (!status) {
-    return;
+function baseTarget(
+  evidence: ReadonlyInput<ResumeEvidence>,
+  agent: string,
+  index: number,
+): Omit<AsyncResumeTarget, "kind"> {
+  return {
+    runId: evidence.runId,
+    asyncDir: evidence.location.asyncDir ?? undefined,
+    state: evidence.state,
+    agent,
+    index,
+    intercomTarget: resolveSubagentIntercomTarget(evidence.runId, agent, index),
+    cwd: evidence.status?.cwd ?? evidence.result?.cwd,
+  };
+}
+
+function liveIndex(evidence: ReadonlyInput<ResumeEvidence>, requested: number | undefined): number {
+  if (requested !== undefined) {
+    return requested;
   }
-  if (typeof status.runId !== "string") {
-    throw new Error(`Invalid async status '${source}': runId must be a string.`);
+  const running = evidence.steps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step.status === "running");
+  const selected = running.at(0);
+  if (running.length !== 1 || selected === undefined) {
+    throw new Error(
+      `Async run '${evidence.runId}' has ${running.length} running children. Provide index to choose one.`,
+    );
   }
-  if (status.sessionId !== undefined && typeof status.sessionId !== "string") {
-    throw new Error(`Invalid async status '${source}': sessionId must be a string.`);
+  return selected.index;
+}
+
+function liveTarget(
+  evidence: ReadonlyInput<ResumeEvidence>,
+  requestedIndex: number | undefined,
+): AsyncResumeTarget | undefined {
+  if (evidence.state !== "running") {
+    return undefined;
   }
-  if (status.cwd !== undefined && typeof status.cwd !== "string") {
-    throw new Error(`Invalid async status '${source}': cwd must be a string.`);
+  const steps = evidence.steps;
+  const index = liveIndex(evidence, requestedIndex);
+  assertIndex(evidence, index);
+  const step = steps.at(index);
+  if (step?.status === "running") {
+    return {
+      ...baseTarget(evidence, step.agent, index),
+      kind: "live",
+      sessionFile: childSession(evidence, index),
+    };
   }
-  if (status.sessionFile !== undefined && typeof status.sessionFile !== "string") {
-    throw new Error(`Invalid async status '${source}': sessionFile must be a string.`);
+  if (step?.status === "pending") {
+    throw new Error(
+      `Async run '${evidence.runId}' child ${index} is pending and has not started yet. Wait for it to run or complete before resuming.`,
+    );
   }
-  if (status.steps !== undefined) {
-    if (!Array.isArray(status.steps)) {
-      throw new Error(`Invalid async status '${source}': steps must be an array.`);
-    }
-    status.steps.forEach((step, index) => {
-      if (!step || typeof step !== "object" || Array.isArray(step)) {
-        throw new Error(`Invalid async status '${source}': steps[${index}] must be an object.`);
-      }
-      if (typeof step.agent !== "string") {
-        throw new Error(
-          `Invalid async status '${source}': steps[${index}].agent must be a string.`,
-        );
-      }
-      if (step.sessionFile !== undefined && typeof step.sessionFile !== "string") {
-        throw new Error(
-          `Invalid async status '${source}': steps[${index}].sessionFile must be a string.`,
-        );
-      }
-    });
+  if (step && !["complete", "completed", "failed", "blocked", "paused"].includes(step.status)) {
+    throw new Error(
+      `Async run '${evidence.runId}' child ${index} is ${step.status} and cannot be revived yet.`,
+    );
   }
+  return undefined;
 }
 
 function validateResumeSessionFile(runId: string, sessionFile: string): string {
@@ -355,169 +270,100 @@ function validateResumeSessionFile(runId: string, sessionFile: string): string {
   return resolved;
 }
 
-export function resolveAsyncResumeTarget(
-  params: AsyncResumeParams,
-  deps: AsyncResumeDeps = {},
-): AsyncResumeTarget {
-  const asyncDirRoot = deps.asyncDirRoot ?? ASYNC_DIR;
-  const resultsDir = deps.resultsDir ?? RESULTS_DIR;
-  const location = resolveAsyncRunLocation(params, asyncDirRoot, resultsDir);
-  if (!location.asyncDir && !location.resultPath) {
-    throw new Error("Async run not found. Provide id or dir.");
-  }
-
-  const reconciliation = location.asyncDir
-    ? reconcileAsyncRun(location.asyncDir, { resultsDir, kill: deps.kill, now: deps.now })
-    : undefined;
-  const status = reconciliation?.status ?? null;
-  validateStatusForResume(
-    status,
-    location.asyncDir ? path.join(location.asyncDir, "status.json") : "status.json",
+function childAgent(
+  evidence: ReadonlyInput<ResumeEvidence>,
+  index: number,
+  fallback?: string,
+): string | undefined {
+  return (
+    evidence.steps.at(index)?.agent ??
+    evidence.resultSteps.at(index)?.agent ??
+    evidence.result?.agent ??
+    fallback
   );
-  const result = location.resultPath ? readResultFile(location.resultPath) : undefined;
-  const runId =
-    status?.runId ??
-    result?.runId ??
-    result?.id ??
-    location.resolvedId ??
-    (location.asyncDir ? path.basename(location.asyncDir) : "unknown");
-  const state = status?.state ?? result?.terminalState;
-  if (!state) {
-    throw new Error(`Status file not found for async run '${runId}'.`);
-  }
+}
 
-  const statusSteps = status?.steps ?? [];
-  const resultSteps = result?.results ?? [];
-  const stepCount = statusSteps.length || resultSteps.length || (result?.agent ? 1 : 0);
-  const requestedIndex = params.index;
-  if (requestedIndex !== undefined && !Number.isInteger(requestedIndex)) {
-    throw new Error(`Async run '${runId}' index must be an integer.`);
-  }
-  const terminalStepStatuses = new Set(["complete", "completed", "failed", "blocked", "paused"]);
+function childSession(evidence: ReadonlyInput<ResumeEvidence>, index: number): string | undefined {
+  const fallback =
+    evidence.stepCount === 1
+      ? (evidence.status?.sessionFile ?? evidence.result?.sessionFile)
+      : undefined;
+  return (
+    evidence.steps.at(index)?.sessionFile ?? evidence.resultSteps.at(index)?.sessionFile ?? fallback
+  );
+}
 
-  if (state === "running") {
-    if (requestedIndex !== undefined) {
-      if (requestedIndex < 0 || requestedIndex >= stepCount) {
-        throw new Error(
-          `Async run '${runId}' has ${stepCount} children. Index ${requestedIndex} is out of range.`,
-        );
-      }
-      const selectedStep = statusSteps[requestedIndex];
-      if (selectedStep?.status === "running") {
-        return {
-          kind: "live",
-          runId,
-          asyncDir: location.asyncDir ?? undefined,
-          state,
-          agent: selectedStep.agent,
-          index: requestedIndex,
-          intercomTarget: resolveSubagentIntercomTarget(runId, selectedStep.agent, requestedIndex),
-          cwd: status?.cwd ?? result?.cwd,
-          sessionFile: selectedStep.sessionFile ?? status?.sessionFile ?? result?.sessionFile,
-        };
-      }
-      if (selectedStep?.status === "pending") {
-        throw new Error(
-          `Async run '${runId}' child ${requestedIndex} is pending and has not started yet. Wait for it to run or complete before resuming.`,
-        );
-      }
-      if (selectedStep && !terminalStepStatuses.has(selectedStep.status)) {
-        throw new Error(
-          `Async run '${runId}' child ${requestedIndex} is ${selectedStep.status} and cannot be revived yet.`,
-        );
-      }
-    } else {
-      const running = statusSteps
-        .map((step, index) => ({ step, index }))
-        .filter(({ step }) => step.status === "running");
-      const selected = running.length === 1 ? running[0] : undefined;
-      if (!selected) {
-        throw new Error(
-          `Async run '${runId}' has ${running.length} running children. Provide index to choose one.`,
-        );
-      }
-      return {
-        kind: "live",
-        runId,
-        asyncDir: location.asyncDir ?? undefined,
-        state,
-        agent: selected.step.agent,
-        index: selected.index,
-        intercomTarget: resolveSubagentIntercomTarget(runId, selected.step.agent, selected.index),
-        cwd: status?.cwd ?? result?.cwd,
-        sessionFile: selected.step.sessionFile ?? status?.sessionFile ?? result?.sessionFile,
-      };
-    }
-  }
+function childAcceptance(
+  evidence: ReadonlyInput<ResumeEvidence>,
+  index: number,
+): ResolvedAcceptanceConfig | undefined {
+  return (
+    evidence.steps.at(index)?.acceptance?.effectiveAcceptance ??
+    evidence.resultSteps.at(index)?.acceptance?.effectiveAcceptance
+  );
+}
 
-  if (stepCount > 1 && requestedIndex === undefined) {
-    throw new Error(`Async run '${runId}' has ${stepCount} children. Provide index to choose one.`);
+function contractIsLive(
+  contract: ReadonlyInput<SupervisorRunContract> | undefined,
+  kill: AsyncResumeDeps["kill"],
+): boolean {
+  const pid = contract?.pid;
+  return pid !== undefined && pid !== 0 && checkPidLiveness(pid, kill) !== "dead";
+}
+
+function revivalTarget(
+  evidence: ReadonlyInput<ResumeEvidence>,
+  index: number,
+  deps: AsyncResumeDeps,
+): AsyncResumeTarget {
+  const contract = readQuestionContract(evidence.runId, index);
+  const live = contractIsLive(contract, deps.kill);
+  const agent = childAgent(evidence, index, live ? contract?.launch?.agent.name : undefined);
+  if (!hasText(agent)) {
+    throw new Error(`Could not determine child agent for async run '${evidence.runId}'.`);
   }
-  const index = requestedIndex ?? 0;
-  if (!Number.isInteger(index)) {
-    throw new Error(`Async run '${runId}' index must be an integer.`);
+  const base = baseTarget(evidence, agent, index);
+  if (live) {
+    return { ...base, kind: "live", sessionFile: contract?.sessionFile };
   }
-  if (index < 0 || index >= stepCount) {
+  const sessionFile = childSession(evidence, index);
+  if (!hasText(sessionFile)) {
     throw new Error(
-      `Async run '${runId}' has ${stepCount} children. Index ${index} is out of range.`,
+      `Async run '${evidence.runId}' child ${index} does not have a persisted session file to resume from.`,
     );
   }
-  const contract = readQuestionContract(runId, index);
-  if (contract?.pid && checkPidLiveness(contract.pid, deps.kill) !== "dead") {
-    const agent =
-      statusSteps[index]?.agent ??
-      resultSteps[index]?.agent ??
-      result?.agent ??
-      contract.launch?.agent.name;
-    if (!agent) {
-      throw new Error(`Could not determine child agent for async run '${runId}'.`);
-    }
-    return {
-      kind: "live",
-      runId,
-      asyncDir: location.asyncDir ?? undefined,
-      state,
-      agent,
-      index,
-      intercomTarget: resolveSubagentIntercomTarget(runId, agent, index),
-      cwd: status?.cwd ?? result?.cwd,
-      sessionFile: contract.sessionFile,
-    };
-  }
-  const agent = statusSteps[index]?.agent ?? resultSteps[index]?.agent ?? result?.agent;
-  if (!agent) {
-    throw new Error(`Could not determine child agent for async run '${runId}'.`);
-  }
-  const sessionFile =
-    statusSteps[index]?.sessionFile ??
-    resultSteps[index]?.sessionFile ??
-    (stepCount === 1 ? (status?.sessionFile ?? result?.sessionFile) : undefined);
-  if (!sessionFile) {
-    throw new Error(
-      `Async run '${runId}' child ${index} does not have a persisted session file to resume from.`,
-    );
-  }
-  const resolvedSessionFile = validateResumeSessionFile(runId, sessionFile);
-  const effectiveAcceptance =
-    statusSteps[index]?.acceptance?.effectiveAcceptance ??
-    resultSteps[index]?.acceptance?.effectiveAcceptance;
-
   return {
+    ...base,
     kind: "revive",
-    runId,
-    asyncDir: location.asyncDir ?? undefined,
-    state,
-    agent,
-    index,
-    intercomTarget: resolveSubagentIntercomTarget(runId, agent, index),
-    cwd: status?.cwd ?? result?.cwd,
-    sessionFile: resolvedSessionFile,
-    effectiveAcceptance,
+    sessionFile: validateResumeSessionFile(evidence.runId, sessionFile),
+    effectiveAcceptance: childAcceptance(evidence, index),
   };
 }
 
+export function resolveAsyncResumeTarget(
+  params: ReadonlyInput<AsyncResumeParams>,
+  deps: AsyncResumeDeps = {},
+): AsyncResumeTarget {
+  const evidence = readEvidence(params, deps);
+  if (params.index !== undefined && !Number.isInteger(params.index)) {
+    throw new Error(`Async run '${evidence.runId}' index must be an integer.`);
+  }
+  const live = liveTarget(evidence, params.index);
+  if (live) {
+    return live;
+  }
+  if (evidence.stepCount > 1 && params.index === undefined) {
+    throw new Error(
+      `Async run '${evidence.runId}' has ${evidence.stepCount} children. Provide index to choose one.`,
+    );
+  }
+  const index = params.index ?? 0;
+  assertIndex(evidence, index);
+  return revivalTarget(evidence, index, deps);
+}
+
 export function buildRevivedAsyncTask(
-  target: Pick<AsyncResumeTarget, "runId" | "agent" | "sessionFile">,
+  target: Readonly<Pick<AsyncResumeTarget, "runId" | "agent" | "sessionFile">>,
   message: string,
   origin?: "human",
 ): string {
@@ -526,7 +372,7 @@ export function buildRevivedAsyncTask(
     "",
     `Original run: ${target.runId}`,
     `Original agent: ${target.agent}`,
-    target.sessionFile ? `Original session file: ${target.sessionFile}` : undefined,
+    hasText(target.sessionFile) ? `Original session file: ${target.sessionFile}` : undefined,
     "",
     origin === "human"
       ? "Use the stored session context as background. This is a direct user follow-up (human origin); respond in this conversation where the user can see it. Do not relay it to the parent."
@@ -535,6 +381,6 @@ export function buildRevivedAsyncTask(
     "Follow-up:",
     message,
   ]
-    .filter((line): line is string => line !== undefined)
+    .filter((line) => line !== undefined)
     .join("\n");
 }

@@ -1,21 +1,31 @@
 import type { AsyncParallelGroupStatus } from "../../shared/types.ts";
 
+function numericParallelGroup(group: unknown): group is AsyncParallelGroupStatus {
+  if (
+    typeof group !== "object" ||
+    group === null ||
+    !("start" in group && "count" in group && "stepIndex" in group)
+  ) {
+    return false;
+  }
+  return (
+    typeof group.start === "number" &&
+    typeof group.count === "number" &&
+    typeof group.stepIndex === "number" &&
+    [group.start, group.count, group.stepIndex].every(Number.isInteger)
+  );
+}
+
 function isValidParallelGroup(
   group: unknown,
   stepCount: number,
   chainStepCount: number,
 ): group is AsyncParallelGroupStatus {
-  if (typeof group !== "object" || group === null) {
+  if (!numericParallelGroup(group)) {
     return false;
   }
-  const { start, count, stepIndex } = group as Partial<AsyncParallelGroupStatus>;
+  const { start, count, stepIndex } = group;
   return (
-    typeof start === "number" &&
-    typeof count === "number" &&
-    typeof stepIndex === "number" &&
-    Number.isInteger(start) &&
-    Number.isInteger(count) &&
-    Number.isInteger(stepIndex) &&
     start >= 0 &&
     count >= 0 &&
     stepIndex >= 0 &&
@@ -32,11 +42,15 @@ export function normalizeParallelGroups(
   if (!Array.isArray(groups)) {
     return [];
   }
-  const sorted = groups
+  const candidates: readonly unknown[] = groups;
+  const sorted = candidates
     .filter((group): group is AsyncParallelGroupStatus =>
       isValidParallelGroup(group, stepCount, chainStepCount),
     )
-    .sort((left, right) => left.stepIndex - right.stepIndex || left.start - right.start);
+    .sort((left, right) => {
+      const logical = left.stepIndex - right.stepIndex;
+      return logical === 0 ? left.start - right.start : logical;
+    });
   const normalized: AsyncParallelGroupStatus[] = [];
   const logicalSteps = new Set<number>();
   for (const group of sorted) {
@@ -59,7 +73,7 @@ export function normalizeParallelGroups(
 export function flatToLogicalStepIndex(
   flatIndex: number,
   chainStepCount: number,
-  groups: AsyncParallelGroupStatus[],
+  groups: readonly Readonly<AsyncParallelGroupStatus>[],
 ): number {
   let logicalIndex = 0;
   let cursor = 0;
