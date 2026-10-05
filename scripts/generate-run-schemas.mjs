@@ -19,18 +19,16 @@ if (mode === "--help" || mode === "-h") {
     throw new Error("Canonical run types could not be compiled for schema generation.");
   }
   const names = ["AsyncStatus", "AsyncResultFile", "ForegroundResumeRun", "OwnedRun", "AsyncStartedEvent", "ControlEvent", "SupervisorRunContract", "SupervisorQuestion", "QuestionAnswer", "QuestionDelivery", "SupervisorQuestionView"];
-  for (const name of names) {
-    const schema = generator.getSchemaForSymbol(name);
-    const target = path.join(root, "src/runs/background/schemas", `${name}.json`);
-    if (mode === "--check") {
-      const actual = JSON.parse(fs.readFileSync(target, "utf8"));
-      if (JSON.stringify(actual) !== JSON.stringify(schema)) {
-        throw new Error(`Stale run schema: ${path.relative(root, target)}. Run node scripts/generate-run-schemas.mjs.`);
-      }
-    } else {
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, `${JSON.stringify(schema, null, 2)}\n`);
+  const schema = generator.getSchemaForSymbols(names);
+  const target = path.join(root, "src/runs/background/schemas/RunContracts.json");
+  if (mode === "--check") {
+    const actual = JSON.parse(fs.readFileSync(target, "utf8"));
+    if (JSON.stringify(actual) !== JSON.stringify(schema)) {
+      throw new Error("Stale run schema. Run node scripts/generate-run-schemas.mjs.");
     }
+  } else {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, `${JSON.stringify(schema, null, 2)}\n`);
   }
   console.log(`${mode === "--check" ? "Verified" : "Generated"} ${names.length} canonical run schemas.`);
 }

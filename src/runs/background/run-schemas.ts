@@ -1,31 +1,22 @@
 import { Ajv } from "ajv";
-import statusSchema from "./schemas/AsyncStatus.json" with { type: "json" };
-import resultSchema from "./schemas/AsyncResultFile.json" with { type: "json" };
-import foregroundSchema from "./schemas/ForegroundResumeRun.json" with { type: "json" };
-import ownedSchema from "./schemas/OwnedRun.json" with { type: "json" };
-import startedSchema from "./schemas/AsyncStartedEvent.json" with { type: "json" };
-import controlSchema from "./schemas/ControlEvent.json" with { type: "json" };
-import contractSchema from "./schemas/SupervisorRunContract.json" with { type: "json" };
-import questionSchema from "./schemas/SupervisorQuestion.json" with { type: "json" };
-import answerSchema from "./schemas/QuestionAnswer.json" with { type: "json" };
-import deliverySchema from "./schemas/QuestionDelivery.json" with { type: "json" };
-import questionViewSchema from "./schemas/SupervisorQuestionView.json" with { type: "json" };
+import runSchema from "./schemas/RunContracts.json" with { type: "json" };
 import type { AsyncStatus, AsyncResultFile, ForegroundResumeRun, OwnedRun, AsyncStartedEvent, ControlEvent, SupervisorRunContract, SupervisorQuestion, QuestionAnswer, QuestionDelivery, SupervisorQuestionView } from "../../shared/types.ts";
 
 // Typed guards are compiled from generated canonical declarations, not assertion casts.
 // Unknown forward-compatible properties remain permitted; declared nested fields are checked.
 const validator = new Ajv({ strict: false, allErrors: true, strictNumbers: true });
-const status = validator.compile<AsyncStatus>(statusSchema);
-const result = validator.compile<AsyncResultFile>(resultSchema);
-const foreground = validator.compile<ForegroundResumeRun>(foregroundSchema);
-const owned = validator.compile<OwnedRun>(ownedSchema);
-const started = validator.compile<AsyncStartedEvent>(startedSchema);
-const control = validator.compile<ControlEvent>(controlSchema);
-const contract = validator.compile<SupervisorRunContract>(contractSchema);
-const question = validator.compile<SupervisorQuestion>(questionSchema);
-const answer = validator.compile<QuestionAnswer>(answerSchema);
-const delivery = validator.compile<QuestionDelivery>(deliverySchema);
-const revival = validator.compile<NonNullable<SupervisorQuestionView["revival"]>>(questionViewSchema.properties.revival);
+validator.addSchema(runSchema, "run");
+const status = validator.compile<AsyncStatus>({ $ref: "run#/definitions/AsyncStatus" });
+const result = validator.compile<AsyncResultFile>({ $ref: "run#/definitions/AsyncResultFile" });
+const foreground = validator.compile<ForegroundResumeRun>({ $ref: "run#/definitions/ForegroundResumeRun" });
+const owned = validator.compile<OwnedRun>({ $ref: "run#/definitions/OwnedRun" });
+const started = validator.compile<AsyncStartedEvent>({ $ref: "run#/definitions/AsyncStartedEvent" });
+const control = validator.compile<ControlEvent>({ $ref: "run#/definitions/ControlEvent" });
+const contract = validator.compile<SupervisorRunContract>({ $ref: "run#/definitions/SupervisorRunContract" });
+const question = validator.compile<SupervisorQuestion>({ $ref: "run#/definitions/SupervisorQuestion" });
+const answer = validator.compile<QuestionAnswer>({ $ref: "run#/definitions/QuestionAnswer" });
+const delivery = validator.compile<QuestionDelivery>({ $ref: "run#/definitions/QuestionDelivery" });
+const revival = validator.compile<NonNullable<SupervisorQuestionView["revival"]>>({ $ref: "run#/definitions/SupervisorQuestionView/properties/revival" });
 
 export function parseAsyncStatus(value: unknown): AsyncStatus {
   if (!status(value)) {
