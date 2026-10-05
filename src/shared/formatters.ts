@@ -34,27 +34,31 @@ export function formatModelThinking(model?: string, thinking?: string): string {
     .join(" · ");
 }
 
+function hasUsageValue(value: number): boolean {
+  return value !== 0 && !Number.isNaN(value);
+}
+
 /**
  * Format usage statistics into a compact string
  */
 export function formatUsage(u: ReadonlyDeep<Usage>, model?: string): string {
   const parts: string[] = [];
-  if (u.turns !== 0) {
+  if (hasUsageValue(u.turns)) {
     parts.push(`${u.turns} turn${u.turns > 1 ? "s" : ""}`);
   }
-  if (u.input !== 0) {
+  if (hasUsageValue(u.input)) {
     parts.push(`in:${formatTokens(u.input)}`);
   }
-  if (u.output !== 0) {
+  if (hasUsageValue(u.output)) {
     parts.push(`out:${formatTokens(u.output)}`);
   }
-  if (u.cacheRead !== 0) {
+  if (hasUsageValue(u.cacheRead)) {
     parts.push(`R${formatTokens(u.cacheRead)}`);
   }
-  if (u.cacheWrite !== 0) {
+  if (hasUsageValue(u.cacheWrite)) {
     parts.push(`W${formatTokens(u.cacheWrite)}`);
   }
-  if (u.cost !== 0) {
+  if (hasUsageValue(u.cost)) {
     parts.push(`$${u.cost.toFixed(4)}`);
   }
   if (model !== undefined && model !== "") {
