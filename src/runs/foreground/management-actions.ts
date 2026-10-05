@@ -67,7 +67,6 @@ export class ManagementActions {
   private readonly deps: ExecutorDeps;
   constructor(
     // Reviews and stop requests update this session's actual tracked state and persistence owner.
-    // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
     deps: ExecutorDeps,
   ) {
     this.deps = deps;

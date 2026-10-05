@@ -126,7 +126,6 @@ function nudgeContinuation(
 }
 async function resumeOwned(
   // Owned continuation may persist a new run; deps retains the actual session mutation owner.
-  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
   input: RevivalInput,
   owned: OwnedRun,
 ): Promise<SubagentExecutionResult> {
@@ -207,7 +206,6 @@ function resolveRequestedRun(
 }
 async function resolveContinuation(
   // Resolution includes question/owned revival, whose durable updates belong to this session owner.
-  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
   input: RevivalInput,
   parentSessionFile: string | null,
 ): Promise<Resolution> {
@@ -249,7 +247,6 @@ async function resolveContinuation(
 }
 function lookupFailure(
   // Recovery may revive a saved question; the real dependency state remains owned, not frozen.
-  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
   input: RevivalInput,
   error: unknown,
 ): SubagentExecutionResult {
@@ -320,7 +317,6 @@ async function deliverLiveContinuation(
 /** Pending question, owned/live continuation, then saved session revival—in that order. */
 export async function resumeAsyncRun(
   // Resume owns durable question delivery and newly launched continuation state through its helpers.
-  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
   input: RevivalInput,
 ): Promise<SubagentExecutionResult> {
   if (normalizedFollowUp(input.params).length === 0) {

@@ -86,7 +86,6 @@ function recordSuccessfulDelivery(question: SavedQuestion, result: SubagentExecu
 /** Recover a dead question waiter without relaunching a live child or a previously claimed continuation. */
 export function continueQuestionSession(
   // The question's session owner launches its continuation and records the resulting durable delivery.
-  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
   input: RevivalInput,
   questions: readonly SavedQuestion[],
 ): SubagentExecutionResult {

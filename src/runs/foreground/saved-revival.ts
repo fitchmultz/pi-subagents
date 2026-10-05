@@ -291,7 +291,6 @@ function initialRevivalRecord(
 }
 function rememberRevivalReceipt(
   // This persistence boundary updates the actual session-owned run record after launch settles.
-  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
   state: SubagentState,
   runId: string,
   result: SubagentExecutionResult,
@@ -320,7 +319,6 @@ function configurationLabel(
 /** Validate the saved session, persist ownership, launch once, and roll back only the cwd request on failure. */
 export function reviveSavedSubagent(
   // Revival owns session identity and durable launch/receipt updates in this dependency boundary.
-  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
   input: RevivalInput,
   target: RevivalTarget,
   runId: string = randomUUID(),

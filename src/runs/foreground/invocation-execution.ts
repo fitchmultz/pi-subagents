@@ -112,7 +112,6 @@ export class InvocationExecution {
   private readonly deps: ExecutorDeps;
   constructor(
     // Launch owns the current session identity and tracked/durable run records through these dependencies.
-    // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
     deps: ExecutorDeps,
   ) {
     this.deps = deps;

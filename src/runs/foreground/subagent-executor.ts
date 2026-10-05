@@ -80,7 +80,6 @@ class ForegroundExecutor {
   private readonly launch: InvocationExecution;
   constructor(
     // Native tool invocation owns session state preparation and run/wait lifecycle through these dependencies.
-    // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
     deps: ExecutorDeps,
   ) {
     this.deps = deps;
@@ -195,7 +194,6 @@ class ForegroundExecutor {
 }
 export function createSubagentExecutor(
   // This factory transfers the actual session mutation owner to the native executor and its domain owners.
-  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
   deps: ExecutorDeps,
 ): { execute: (request: SubagentExecutionRequest) => Promise<SubagentExecutionResult> } {
   const owner = new ForegroundExecutor(deps);

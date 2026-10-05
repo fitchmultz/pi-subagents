@@ -158,7 +158,6 @@ function selectedChildError(
 }
 export function interruptAsyncRun(
   // This control boundary owns the tracked job activity reset after publishing a stop request.
-  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
   state: SubagentState,
   runId: string | undefined,
   index?: number,
