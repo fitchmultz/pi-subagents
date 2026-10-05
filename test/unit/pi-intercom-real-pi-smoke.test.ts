@@ -6,7 +6,7 @@ import test from "node:test";
 
 const script = fileURLToPath(new URL("../../scripts/real-pi-smoke.mjs", import.meta.url));
 
-function run(...args: string[]) {
+function run(...args: readonly string[]) {
   return spawnSync(process.execPath, [script, ...args], { encoding: "utf-8" });
 }
 

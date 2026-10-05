@@ -1,6 +1,7 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { assertArray, assertDefined, assertRecord } from "../support/assertions.ts";
 
 import {
   PROMPT_TEMPLATE_SUBAGENT_CANCEL_EVENT,
@@ -13,7 +14,7 @@ import {
 } from "../../src/slash/prompt-template-bridge.ts";
 
 class FakeEvents implements PromptTemplateBridgeEvents {
-  private handlers = new Map<string, Array<(data: unknown) => void>>();
+  private readonly handlers = new Map<string, Array<(data: unknown) => void>>();
 
   on(event: string, handler: (data: unknown) => void): () => void {
     const list = this.handlers.get(event) ?? [];
@@ -30,18 +31,31 @@ class FakeEvents implements PromptTemplateBridgeEvents {
 
   emit(event: string, data: unknown): void {
     const list = this.handlers.get(event) ?? [];
-    for (const handler of [...list]) {
+    for (const handler of list) {
       handler(data);
     }
   }
 }
 
-function once(events: FakeEvents, event: string): Promise<unknown> {
+function once(
+  events: { readonly on: (event: string, handler: (data: unknown) => void) => () => void },
+  event: string,
+): Promise<Readonly<Record<string, unknown>>> {
   return new Promise((resolve) => {
     const unsubscribe = events.on(event, (payload) => {
       unsubscribe();
+      assertRecord(payload);
       resolve(payload);
     });
+  });
+}
+
+function records(value: unknown): ReadonlyArray<Readonly<Record<string, unknown>>> {
+  assertArray(value);
+  const values: readonly unknown[] = value;
+  return values.map((item) => {
+    assertRecord(item);
+    return item;
   });
 }
 
@@ -52,7 +66,8 @@ describe("prompt-template delegation bridge", () => {
     const bridge = registerPromptTemplateDelegationBridge({
       events,
       getContext: () => ({ cwd: "/repo" }),
-      execute: async (_requestId, _request, _signal, _ctx, onUpdate) => {
+      execute: async ({ onUpdate }) => {
+        assertDefined(onUpdate);
         executeCalls++;
         onUpdate({
           details: {
@@ -95,18 +110,10 @@ describe("prompt-template delegation bridge", () => {
       cwd: "/repo",
     });
 
-    const started = (await startedPromise) as { requestId: string };
+    const started = await startedPromise;
     assert.equal(started.requestId, "r1");
 
-    const update = (await updatePromise) as {
-      requestId: string;
-      currentTool?: string;
-      toolCount?: number;
-      recentOutputLines?: string[];
-      recentTools?: Array<{ tool: string; args: string }>;
-      model?: string;
-      taskProgress?: Array<{ model?: string }>;
-    };
+    const update = await updatePromise;
     assert.equal(update.requestId, "r1");
     assert.equal(update.currentTool, "read");
     assert.equal(update.toolCount, 1);
@@ -115,13 +122,9 @@ describe("prompt-template delegation bridge", () => {
       { tool: "read", args: '{"path":"src/extension/index.ts"}' },
     ]);
     assert.equal(update.model, "openai/gpt-5-mini");
-    assert.equal(update.taskProgress?.[0]?.model, "openai/gpt-5-mini");
+    assert.equal(records(update.taskProgress)[0].model, "openai/gpt-5-mini");
 
-    const response = (await responsePromise) as {
-      requestId: string;
-      isError: boolean;
-      messages: unknown[];
-    };
+    const response = await responsePromise;
     assert.equal(response.requestId, "r1");
     assert.equal(response.isError, false);
     assert.equal(Array.isArray(response.messages), true);
@@ -135,7 +138,8 @@ describe("prompt-template delegation bridge", () => {
     const bridge = registerPromptTemplateDelegationBridge({
       events,
       getContext: () => ({ cwd: "/repo" }),
-      execute: async (_requestId, _request, _signal, _ctx, onUpdate) => {
+      execute: async ({ onUpdate }) => {
+        assertDefined(onUpdate);
         onUpdate({
           details: {
             results: [{ agent: "worker", model: "openai/gpt-5-mini" }],
@@ -143,7 +147,7 @@ describe("prompt-template delegation bridge", () => {
               {
                 index: 0,
                 agent: "worker",
-                recentOutput: ["line 1", 123 as unknown as string],
+                recentOutput: ["line 1", 123],
               },
             ],
           },
@@ -163,15 +167,12 @@ describe("prompt-template delegation bridge", () => {
       cwd: "/repo",
     });
 
-    const update = (await updatePromise) as {
-      recentOutput?: string;
-      recentOutputLines?: string[];
-      taskProgress?: Array<{ recentOutput?: string; recentOutputLines?: string[] }>;
-    };
+    const update = await updatePromise;
+    const progress = records(update.taskProgress)[0];
     assert.equal(update.recentOutput, undefined);
     assert.deepEqual(update.recentOutputLines, ["line 1"]);
-    assert.equal(update.taskProgress?.[0]?.recentOutput, undefined);
-    assert.deepEqual(update.taskProgress?.[0]?.recentOutputLines, ["line 1"]);
+    assert.equal(progress.recentOutput, undefined);
+    assert.deepEqual(progress.recentOutputLines, ["line 1"]);
 
     await responsePromise;
     bridge.dispose();
@@ -195,9 +196,10 @@ describe("prompt-template delegation bridge", () => {
       cwd: "/repo",
     });
 
-    const response = (await responsePromise) as { isError: boolean; errorText?: string };
+    const response = await responsePromise;
     assert.equal(response.isError, true);
-    assert.match(response.errorText ?? "", /No active extension context/);
+    assert.ok(typeof response.errorText === "string");
+    assert.match(response.errorText, /No active extension context/);
 
     bridge.dispose();
   });
@@ -208,7 +210,7 @@ describe("prompt-template delegation bridge", () => {
     const bridge = registerPromptTemplateDelegationBridge({
       events,
       getContext: () => ({ cwd: "/actual" }),
-      execute: async (_requestId, request) => {
+      execute: async ({ request }) => {
         executeCwd = request.cwd;
         return { details: { results: [{ messages: [] }] } };
       },
@@ -224,7 +226,7 @@ describe("prompt-template delegation bridge", () => {
       cwd: "/repo",
     });
 
-    const response = (await responsePromise) as { isError: boolean; errorText?: string };
+    const response = await responsePromise;
     assert.equal(response.isError, false);
     assert.equal(executeCwd, "/repo");
 
@@ -255,7 +257,7 @@ describe("prompt-template delegation bridge", () => {
       cwd: "/repo",
     });
 
-    const response = (await responsePromise) as { isError: boolean; errorText?: string };
+    const response = await responsePromise;
     assert.equal(response.isError, true);
     assert.equal(response.errorText, "Delegated prompt cancelled.");
     assert.equal(executeCalls, 0);
@@ -268,10 +270,12 @@ describe("prompt-template delegation bridge", () => {
     const bridge = registerPromptTemplateDelegationBridge({
       events,
       getContext: () => ({ cwd: "/repo" }),
-      execute: async (_requestId, _request, signal) =>
-        await new Promise((_resolve, reject) => {
+      execute: async ({ signal }) => {
+        assertDefined(signal);
+        return await new Promise((_resolve, reject) => {
           signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-        }),
+        });
+      },
     });
 
     const startedPromise = once(events, PROMPT_TEMPLATE_SUBAGENT_STARTED_EVENT);
@@ -289,9 +293,10 @@ describe("prompt-template delegation bridge", () => {
     await startedPromise;
     events.emit(PROMPT_TEMPLATE_SUBAGENT_CANCEL_EVENT, { requestId: "r5" });
 
-    const response = (await responsePromise) as { isError: boolean; errorText?: string };
+    const response = await responsePromise;
     assert.equal(response.isError, true);
-    assert.match(response.errorText ?? "", /aborted/i);
+    assert.ok(typeof response.errorText === "string");
+    assert.match(response.errorText, /aborted/i);
 
     bridge.dispose();
   });
@@ -299,12 +304,17 @@ describe("prompt-template delegation bridge", () => {
   it("accepts tasks payloads and emits parallelResults", async () => {
     const events = new FakeEvents();
     let executeTasks:
-      | Array<{ agent: string; task: string; model?: string; cwd?: string }>
+      | ReadonlyArray<{
+          readonly agent: string;
+          readonly task: string;
+          readonly model?: string;
+          readonly cwd?: string;
+        }>
       | undefined;
     const bridge = registerPromptTemplateDelegationBridge({
       events,
       getContext: () => ({ cwd: "/repo" }),
-      execute: async (_requestId, request) => {
+      execute: async ({ request }) => {
         executeTasks = request.tasks;
         return {
           details: {
@@ -338,22 +348,21 @@ describe("prompt-template delegation bridge", () => {
       cwd: "/repo",
     });
 
-    const response = (await responsePromise) as {
-      isError: boolean;
-      parallelResults?: Array<{ agent: string; isError: boolean; errorText?: string }>;
-    };
+    const response = await responsePromise;
+    const parallelResults = records(response.parallelResults);
+    assertDefined(executeTasks);
     assert.equal(Array.isArray(executeTasks), true);
-    assert.equal(executeTasks?.length, 2);
-    assert.equal(executeTasks?.[0]?.model, "openai/gpt-5");
-    assert.equal(executeTasks?.[1]?.model, "anthropic/claude-sonnet-4-20250514");
-    assert.equal(executeTasks?.[0]?.cwd, "/repo/a");
-    assert.equal(executeTasks?.[1]?.cwd, "/repo/b");
+    assert.equal(executeTasks.length, 2);
+    assert.equal(executeTasks[0].model, "openai/gpt-5");
+    assert.equal(executeTasks[1].model, "anthropic/claude-sonnet-4-20250514");
+    assert.equal(executeTasks[0].cwd, "/repo/a");
+    assert.equal(executeTasks[1].cwd, "/repo/b");
     assert.equal(response.isError, false);
-    assert.equal(response.parallelResults?.[0]?.agent, "worker-a");
-    assert.equal(response.parallelResults?.[0]?.isError, false);
-    assert.equal(response.parallelResults?.[1]?.agent, "worker-b");
-    assert.equal(response.parallelResults?.[1]?.isError, true);
-    assert.equal(response.parallelResults?.[1]?.errorText, "failed");
+    assert.equal(parallelResults[0].agent, "worker-a");
+    assert.equal(parallelResults[0].isError, false);
+    assert.equal(parallelResults[1].agent, "worker-b");
+    assert.equal(parallelResults[1].isError, true);
+    assert.equal(parallelResults[1].errorText, "failed");
 
     bridge.dispose();
   });
@@ -388,15 +397,14 @@ describe("prompt-template delegation bridge", () => {
       cwd: "/repo",
     });
 
-    const response = (await responsePromise) as {
-      isError: boolean;
-      parallelResults?: Array<{ agent: string; isError: boolean; errorText?: string }>;
-    };
+    const response = await responsePromise;
+    const parallelResults = records(response.parallelResults);
     assert.equal(response.isError, false);
-    assert.equal(response.parallelResults?.[0]?.isError, false);
-    assert.equal(response.parallelResults?.[1]?.agent, "worker-b");
-    assert.equal(response.parallelResults?.[1]?.isError, true);
-    assert.match(response.parallelResults?.[1]?.errorText ?? "", /missing result/i);
+    assert.equal(parallelResults[0].isError, false);
+    assert.equal(parallelResults[1].agent, "worker-b");
+    assert.equal(parallelResults[1].isError, true);
+    assert.ok(typeof parallelResults[1].errorText === "string");
+    assert.match(parallelResults[1].errorText, /missing result/i);
 
     bridge.dispose();
   });

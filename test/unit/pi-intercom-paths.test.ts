@@ -75,16 +75,22 @@ test("client falls back to an owned live legacy socket without mutating it", asy
   const server = net.createServer((socket) => {
     socket.on(
       "data",
-      createMessageReader((message) => {
-        if (
-          message &&
-          typeof message === "object" &&
-          "type" in message &&
-          message.type === "register"
-        ) {
-          writeMessage(socket, { type: "registered", sessionId: "legacy-session" });
-        }
-      }),
+      createMessageReader(
+        (message) => {
+          if (
+            message !== null &&
+            typeof message === "object" &&
+            "type" in message &&
+            message.type === "register"
+          ) {
+            writeMessage(socket, { type: "registered", sessionId: "legacy-session" });
+          }
+        },
+        (error) => {
+          assert.ok(error instanceof Error);
+          throw error;
+        },
+      ),
     );
   });
   server.listen(legacyPath);
@@ -101,7 +107,7 @@ test("client falls back to an owned live legacy socket without mutating it", asy
     );
     assert.equal(fs.statSync(legacyPath).mode & 0o777, modeBefore);
   } finally {
-    await client.disconnect().catch(() => undefined);
+    await client.disconnect();
     server.close();
     await once(server, "close");
     if (previousAgentDir === undefined) {

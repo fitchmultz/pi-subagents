@@ -1,8 +1,13 @@
 import "../support/isolated-home.ts";
-import test, { after } from "node:test";
+import { createPlainTheme, setKeybindings, type NativeCustomMessage } from "../support/ui.ts";
+import { assertDefined } from "../support/assertions.ts";
+import test, { after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { createRequire } from "node:module";
+import type { ReadonlyDeep } from "type-fest";
+import { loadExtensionFromFactory } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
+import { theme as nativeTheme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import { KeybindingsManager } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
 import {
   createEventBus,
   createExtensionRuntime,
@@ -11,7 +16,6 @@ import {
   getSelectListTheme,
   initTheme,
   ToolExecutionComponent,
-  type MessageRenderer,
 } from "@earendil-works/pi-coding-agent";
 import { TuiAltScreen, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { createTestTerminal } from "../support/terminal.ts";
@@ -36,10 +40,6 @@ import {
   restoreSlashFinalSnapshots,
 } from "../../src/slash/slash-live-state.ts";
 
-const { loadExtensionFromFactory } = await import(
-  new URL("./core/extensions/loader.js", import.meta.resolve("@earendil-works/pi-coding-agent"))
-    .href
-);
 const runtime = createExtensionRuntime();
 const extension = await loadExtensionFromFactory(
   registerSubagentExtension,
@@ -49,26 +49,14 @@ const extension = await loadExtensionFromFactory(
 );
 after(() => runtime.invalidate());
 initTheme("dark", false);
-const { theme: nativeTheme } = await import(
-  new URL(
-    "./modes/interactive/theme/theme.js",
-    import.meta.resolve("@earendil-works/pi-coding-agent"),
-  ).href
-);
-const { KeybindingsManager } = await import(
-  new URL("./core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href
-);
-const { setKeybindings } = await import(
-  createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve(
-    "@earendil-works/pi-tui",
-  )
-);
 setKeybindings(new KeybindingsManager());
 
 function nativeTool(
   name: string,
-  result: SubagentExecutionResult,
-  args: Record<string, unknown> = { agent: "worker" },
+  receipt: Pick<ReadonlyDeep<SubagentExecutionResult>, "content" | "isError"> & {
+    readonly details: unknown;
+  },
+  args: Readonly<Record<string, unknown>> = { agent: "worker" },
   tui?: TUI,
 ): ToolExecutionComponent {
   const tool = [...extension.tools.values()].find(
@@ -81,15 +69,19 @@ function nativeTool(
     args,
     {},
     tool,
-    tui ?? ({ requestRender() {} } as never),
+    tui ?? new TuiAltScreen(createTestTerminal(120, 100)),
     process.cwd(),
   );
-  component.updateResult({ ...result, isError: result.isError ?? false });
+  component.updateResult({
+    ...receipt,
+    content: [...receipt.content],
+    isError: receipt.isError ?? false,
+  });
   return component;
 }
 
 function directCustomMessage(
-  message: Parameters<MessageRenderer>[0],
+  message: NativeCustomMessage,
   compactView?: boolean,
   expanded = false,
   outputPad = 1,
@@ -102,7 +94,10 @@ function directCustomMessage(
   return component;
 }
 
-function renderedText(component: { render(width: number): string[] }, width: number): string {
+function renderedText(
+  component: { readonly render: (width: number) => string[] },
+  width: number,
+): string {
   const lines = component.render(width);
   assert.ok(
     lines.every((line) => visibleWidth(line) <= width),
@@ -116,14 +111,14 @@ function renderedText(component: { render(width: number): string[] }, width: num
 
 const unwrap = (text: string) => text.replace(/\s/g, "");
 
-const theme = {
-  fg(_name: string, text: string): string {
-    return text;
-  },
-  bold(text: string): string {
-    return text;
-  },
-};
+const plainTheme = createPlainTheme();
+
+function receiptText(receipt: Pick<ReadonlyDeep<SubagentExecutionResult>, "content">): string {
+  const part = receipt.content.at(0);
+  assertDefined(part);
+  assert.ok(part.type === "text");
+  return part.text;
+}
 
 function result(agent: string, output: string) {
   return {
@@ -136,7 +131,10 @@ function result(agent: string, output: string) {
   };
 }
 
-function interactiveCard(t, create: (tui: TUI) => ToolExecutionComponent | CustomMessageComponent) {
+function interactiveCard(
+  t: TestContext,
+  create: (tui: TUI) => ToolExecutionComponent | CustomMessageComponent,
+) {
   const keys = new KeybindingsManager({ "app.tools.expand": "alt+o" });
   setKeybindings(keys);
   const terminal = createTestTerminal(120, 100),
@@ -235,8 +233,10 @@ test("native result expansion hints use configured keys, native clicks and no un
     ],
   ];
   for (const [name, receipt, tail] of cases) {
-    await t.test(name, (t) => {
-      const f = interactiveCard(t, (tui) => nativeTool("subagent", receipt, undefined, tui));
+    // Native cards share keybindings and TUI focus; finish one case before the next.
+    // oxlint-disable-next-line no-await-in-loop
+    await t.test(name, (subtest) => {
+      const f = interactiveCard(subtest, (tui) => nativeTool("subagent", receipt, undefined, tui));
       const key = process.platform === "darwin" ? "option+o" : "alt+o";
       assert.ok(f.text().includes(key));
       assert.doesNotMatch(f.text(), /Ctrl\+O/);
@@ -252,8 +252,9 @@ test("native result expansion hints use configured keys, native clicks and no un
         f.text().includes(tail),
         "the visible key hint is handled by native ToolExecutionComponent",
       );
-      if (name.startsWith("live")) f.click(key);
-      else {
+      if (name.startsWith("live")) {
+        f.click(key);
+      } else {
         f.card.setExpanded(false);
         f.tui.renderNow();
       }
@@ -273,8 +274,10 @@ test("native result expansion hints use configured keys, native clicks and no un
 
 test("owned slash and notification hints expand through the native custom-message mouse route", async (t) => {
   for (const kind of ["subagent-slash-result", "subagent-notify"]) {
-    for (const compactView of [false, true])
-      await t.test(`${kind} compact=${compactView}`, (t) => {
+    for (const compactView of [false, true]) {
+      // These native cards share the SDK keybindings and TUI focus.
+      // oxlint-disable-next-line no-await-in-loop
+      await t.test(`${kind} compact=${compactView}`, (subtest) => {
         const receipt = {
           content: [{ type: "text" as const, text: "FIRST-LINE\nCUSTOM-CARD-END" }],
           details: {
@@ -297,13 +300,15 @@ test("owned slash and notification hints expand through the native custom-messag
               : undefined,
         };
         const original = structuredClone(message),
-          renderer = extension.messageRenderers.get(kind)!;
+          renderer = extension.messageRenderers.get(kind);
+        assertDefined(renderer);
         const f = interactiveCard(
-          t,
+          subtest,
           () =>
-            new CustomMessageComponent(message, (entry, options, theme) =>
-              renderer(entry, { ...options, compactView }, theme),
-            ),
+            new CustomMessageComponent(message, (entry, options, theme) => {
+              const renderOptions = { ...options, compactView };
+              return renderer(entry, renderOptions, theme);
+            }),
         );
         assert.doesNotMatch(f.text(), /CUSTOM-CARD-END/);
         f.click(process.platform === "darwin" ? "option+o" : "alt+o");
@@ -322,6 +327,7 @@ test("owned slash and notification hints expand through the native custom-messag
         assert.equal(f.editor.getText(), "Unsent parent draft");
         assert.deepEqual(message, original);
       });
+    }
   }
 });
 
@@ -329,13 +335,15 @@ test("native async launch and revival cards collapse without changing their rece
   const id = "f5b4b221-5c64-4bc7-9862-70a35d94dc9b";
   const previousId = "622f1dc5-d645-4125-a903-c60e3a568208";
   for (const mode of ["single", "parallel", "chain", "revival"] as const) {
+    // Native renderer cases share the SDK keybinding singleton.
+    // oxlint-disable-next-line no-await-in-loop
     await t.test(mode, () => {
-      const headline =
-        mode === "revival"
-          ? `Revived async subagent from ${previousId}.\nRun mapping: ${previousId} -> ${id}\nRevived run: ${id}\nAgent: worker\nSession: /tmp/saved-child.jsonl`
-          : mode === "single"
-            ? `Async: worker [${id}]`
-            : `Async ${mode}: worker -> reviewer [${id}]`;
+      let headline = `Async ${mode}: worker -> reviewer [${id}]`;
+      if (mode === "revival") {
+        headline = `Revived async subagent from ${previousId}.\nRun mapping: ${previousId} -> ${id}\nRevived run: ${id}\nAgent: worker\nSession: /tmp/saved-child.jsonl`;
+      } else if (mode === "single") {
+        headline = `Async: worker [${id}]`;
+      }
       const receipt: SubagentExecutionResult = {
         content: [{ type: "text", text: formatAsyncStartedMessage(headline) }],
         details: {
@@ -376,7 +384,7 @@ test("native async launch and revival cards collapse without changing their rece
           assert.match(collapsed, /ctrl\+o/i);
           component.setExpanded(true);
           assert.ok(
-            unwrap(renderedText(component, width)).includes(unwrap(receipt.content[0]!.text)),
+            unwrap(renderedText(component, width)).includes(unwrap(receiptText(receipt))),
             "native expansion retains the entire receipt",
           );
           component.setExpanded(false);
@@ -441,12 +449,12 @@ test("async start rendering does not hide errors or management reports", () => {
     { mode: "single", results: [] },
     { mode: "management", results: [], asyncId: "existing-run" },
   ] as const) {
-    const receipt = {
+    const receipt: SubagentExecutionResult = {
       content: [{ type: "text", text: output }],
-      details,
-    } as SubagentExecutionResult;
+      details: { ...details, results: [] },
+    };
     assert.equal(
-      renderedText(renderSubagentResult(receipt, { expanded: false }, theme as any), 1000),
+      renderedText(renderSubagentResult(receipt, { expanded: false }, plainTheme), 1000),
       output,
     );
     assert.ok(unwrap(renderedText(nativeTool("agent_runs", receipt), 40)).includes(unwrap(output)));
@@ -457,10 +465,10 @@ test("async start rendering does not hide errors or management reports", () => {
     details: { mode: "single", results: [], asyncId: "existing-run" },
   };
   assert.equal(
-    renderedText(renderSubagentResult(error, { expanded: false }, theme as any), 1000),
+    renderedText(renderSubagentResult(error, { expanded: false }, plainTheme), 1000),
     output,
   );
-  const nativeError = nativeTool("delegate", { ...error, details: undefined as never });
+  const nativeError = nativeTool("delegate", { ...error, details: undefined });
   assert.ok(
     unwrap(renderedText(nativeError, 40)).includes(unwrap(output)),
     "thrown tool errors have no launch details",
@@ -469,6 +477,8 @@ test("async start rendering does not hide errors or management reports", () => {
 
 test("native foreground and slash responses stay compact and expand every child response", async (t) => {
   for (const mode of ["single", "parallel", "chain"] as const) {
+    // Native renderer cases share the SDK keybinding singleton.
+    // oxlint-disable-next-line no-await-in-loop
     await t.test(mode, () => {
       const results = (mode === "single" ? ["worker"] : ["worker", "reviewer"]).map((agent) =>
         result(
@@ -543,30 +553,34 @@ test("native stopped chain expansion includes the prefix before the retained par
           : { parallel: [{ agent: "reviewer" }, { agent: "reviewer" }] },
         { agent: "writer", task: "Write after the reviews" },
       ];
-      const results: SingleResult[] = ["scout", "reviewer", "reviewer"].map((agent, index) => ({
-        ...result(
-          agent,
-          `Response ${index}: ${"café 中文 👩🏽‍💻 detailed findings. ".repeat(12)}\n\nEnd of response ${index}.`,
+      const results: SingleResult[] = ["scout", "reviewer", "reviewer"].map((agent, index) =>
+        Object.assign<SingleResult, Partial<SingleResult>>(
+          result(
+            agent,
+            `Response ${index}: ${"café 中文 👩🏽‍💻 detailed findings. ".repeat(12)}\n\nEnd of response ${index}.`,
+          ),
+          {
+            exitCode: index === 2 && status === "failed" ? 1 : 0,
+            interrupted: index === 2 && status === "paused",
+            detached: index === 2 && status === "detached",
+            error:
+              index === 2 && status !== "running"
+                ? `Stop detail: ${"retained error context. ".repeat(12)}\nLast error detail.`
+                : undefined,
+            progress: {
+              index,
+              agent,
+              task: `${agent} task`,
+              status: index === 2 ? status : "completed",
+              toolCount: 1,
+              tokens: 10,
+              durationMs: 1000,
+              recentTools: [],
+              recentOutput: [],
+            },
+          },
         ),
-        exitCode: index === 2 && status === "failed" ? 1 : 0,
-        interrupted: index === 2 && status === "paused",
-        detached: index === 2 && status === "detached",
-        error:
-          index === 2 && status !== "running"
-            ? `Stop detail: ${"retained error context. ".repeat(12)}\nLast error detail.`
-            : undefined,
-        progress: {
-          index,
-          agent,
-          task: `${agent} task`,
-          status: index === 2 ? status : "completed",
-          toolCount: 1,
-          tokens: 10,
-          durationMs: 1000,
-          recentTools: [],
-          recentOutput: [],
-        },
-      }));
+      );
       const receipt: SubagentExecutionResult = {
         content: [{ type: "text", text: `Chain ${status} at step 2 (reviewer).` }],
         isError: status === "failed",
@@ -581,7 +595,10 @@ test("native stopped chain expansion includes the prefix before the retained par
           ],
           totalSteps: 3,
           currentStepIndex: 1,
-          progress: results.map((entry) => entry.progress!),
+          progress: results.map((entry) => {
+            assertDefined(entry.progress);
+            return entry.progress;
+          }),
           workflowGraph:
             metadata === "labels"
               ? undefined
@@ -592,7 +609,10 @@ test("native stopped chain expansion includes the prefix before the retained par
                   results,
                   currentStepIndex: 1,
                   currentFlatIndex: 2,
-                  stepStatuses: results.map((entry) => entry.progress!),
+                  stepStatuses: results.map((entry) => {
+                    assertDefined(entry.progress);
+                    return entry.progress;
+                  }),
                   dynamicChildren: {
                     1: [
                       { agent: "reviewer", flatIndex: 1, itemKey: "a" },
@@ -603,6 +623,8 @@ test("native stopped chain expansion includes the prefix before the retained par
         },
       };
       for (const surface of ["tool", "slash"] as const) {
+        // Each native tool/slash card must settle before the shared renderer is reused.
+        // oxlint-disable-next-line no-await-in-loop
         await t.test(`${metadata} ${status} ${surface}`, () => {
           const original = structuredClone(receipt);
           const component =
@@ -637,8 +659,9 @@ test("native stopped chain expansion includes the prefix before the retained par
                 !expanded.includes("Step1:scout"),
                 "live expansion still focuses the active group",
               );
+              assertDefined(results[1].finalOutput);
               assert.ok(
-                expanded.includes(unwrap(results[1]!.finalOutput!)),
+                expanded.includes(unwrap(results[1].finalOutput)),
                 "the completed group sibling remains visible",
               );
             } else {
@@ -649,11 +672,12 @@ test("native stopped chain expansion includes the prefix before the retained par
                 );
               }
               for (const entry of results) {
+                assertDefined(entry.finalOutput);
                 assert.ok(
-                  expanded.includes(unwrap(entry.finalOutput!)),
+                  expanded.includes(unwrap(entry.finalOutput)),
                   `${surface} ${metadata} ${status}: expanded chain must include every response, including the completed prefix`,
                 );
-                if (entry.error) {
+                if (entry.error !== undefined && entry.error.length > 0) {
                   assert.ok(
                     expanded.includes(unwrap(entry.error)),
                     "full child errors remain available",
@@ -710,7 +734,7 @@ test("foreground intercom receipts retain full metadata without claiming separat
           mode,
           runId: "receipt-run",
           chainAgents: mode === "chain" ? ["worker"] : undefined,
-          results: [result("worker", payload.children[0]!.summary)],
+          results: [result("worker", payload.children[0].summary)],
         },
         {
           delivered: true,
@@ -726,7 +750,7 @@ test("foreground intercom receipts retain full metadata without claiming separat
     assert.match(renderedText(component, 40), /receipt details/);
     component.setExpanded(true);
     const expanded = renderedText(component, 40);
-    assert.ok(unwrap(expanded).includes(unwrap(receipt.content[0]!.text)));
+    assert.ok(unwrap(expanded).includes(unwrap(receiptText(receipt))));
     assert.match(expanded, /worker task/, "expanding a receipt must retain the child metadata too");
     assert.doesNotMatch(expanded, /warning|no text output/);
     assert.deepEqual(receipt, original);
@@ -794,10 +818,11 @@ test("direct compact notifications retain status and expand parsed and raw messa
     timestamp: 0,
   };
   for (const message of [
-    ...(["completed", "failed", "paused"] as const).map((status) => ({
-      ...base,
-      content: `Background task ${status}: **worker**\n\n${preview}\n\nSession file: /tmp/saved-child.jsonl`,
-    })),
+    ...(["completed", "failed", "paused"] as const).map((status) =>
+      Object.assign({}, base, {
+        content: `Background task ${status}: **worker**\n\n${preview}\n\nSession file: /tmp/saved-child.jsonl`,
+      }),
+    ),
     {
       ...base,
       content: "Fallback text",
@@ -821,7 +846,7 @@ test("direct compact notifications retain status and expand parsed and raw messa
         assert.equal(lines.length, 1, "notification consumer must emit one content row");
         assert.ok(lines.every((line) => visibleWidth(line) <= width && !/[\r\n\t]/.test(line)));
         if (width >= 40 && outputPad > 0) {
-          assert.ok(lines[0]!.startsWith(" ".repeat(outputPad)));
+          assert.ok(lines[0].startsWith(" ".repeat(outputPad)));
         }
         assert.deepEqual(
           directCustomMessage(message, false, false, outputPad).render(width),
@@ -836,7 +861,7 @@ test("direct compact notifications retain status and expand parsed and raw messa
     assert.match(wide, /ctrl\+o/i);
     assert.match(wide, /Needs attention/);
     if (message.content.startsWith("Background task")) {
-      assert.match(wide, new RegExp(`worker.*${message.content.split(" ")[2]!.replace(":", "")}`));
+      assert.match(wide, new RegExp(`worker.*${message.content.split(" ")[2].replace(":", "")}`));
     }
     assert.doesNotMatch(wide, /Last notification detail/);
     for (const width of [40, 120]) {
@@ -887,7 +912,7 @@ test("direct compact slash cards track live and restored results without collaps
         );
         assert.ok(lines.every((line) => visibleWidth(line) <= width && !/[\r\n\t]/.test(line)));
         if (width >= 40) {
-          assert.ok(lines[0]!.startsWith("  "));
+          assert.ok(lines[0].startsWith("  "));
         }
         compact.invalidate();
         assert.deepEqual(compact.render(width), lines);
@@ -1017,7 +1042,7 @@ test("empty-result management output preserves every line", () => {
       details: { mode: "single", results: [] },
     },
     { expanded: false },
-    theme as any,
+    plainTheme,
   );
 
   assert.equal(renderedText(component, 1000), output);
@@ -1025,19 +1050,16 @@ test("empty-result management output preserves every line", () => {
 
 test("empty-result management output collapses long reports", () => {
   const output = Array.from({ length: 14 }, (_, index) => `line ${index + 1}`).join("\n");
-  const result = {
+  const report: SubagentExecutionResult = {
     content: [{ type: "text", text: output }],
     details: { mode: "single", results: [] },
   };
 
-  const compact = renderedText(
-    renderSubagentResult(result, { expanded: false }, theme as any),
-    1000,
-  );
+  const compact = renderedText(renderSubagentResult(report, { expanded: false }, plainTheme), 1000);
   assert.match(compact, /line 12\n\+2 more · ctrl\+o expands$/);
   assert.doesNotMatch(compact, /line 13/);
   assert.equal(
-    renderedText(renderSubagentResult(result, { expanded: true }, theme as any), 1000),
+    renderedText(renderSubagentResult(report, { expanded: true }, plainTheme), 1000),
     output,
   );
 });
@@ -1050,7 +1072,7 @@ test("single-line management output with a trailing newline stays compact", () =
       details: { mode: "single", results: [] },
     },
     { expanded: false },
-    theme as any,
+    plainTheme,
   );
 
   assert.ok(
@@ -1081,7 +1103,7 @@ test("compact parallel rendering shows each child model", () => {
       },
     },
     { expanded: false },
-    theme as any,
+    plainTheme,
   );
 
   const text = renderedText(component, 1000);
@@ -1216,7 +1238,7 @@ test("compact chain rendering uses workflow graph spans for dynamic fanout resul
       },
     },
     { expanded: false },
-    theme as any,
+    plainTheme,
   );
 
   const text = renderedText(component, 1000);
@@ -1277,7 +1299,7 @@ test("compact chain rendering shows failed zero-child dynamic fanout groups", ()
       },
     },
     { expanded: false },
-    theme as any,
+    plainTheme,
   );
 
   const text = renderedText(component, 1000);
@@ -1364,7 +1386,7 @@ test("expanded chain rendering uses workflow graph spans for dynamic fanout resu
       },
     },
     { expanded: true },
-    theme as any,
+    plainTheme,
   );
 
   const text = renderedText(component, 1000);
@@ -1387,7 +1409,7 @@ test("static sequential and static parallel chain rendering keep existing labels
         },
       },
       { expanded: false },
-      theme as any,
+      plainTheme,
     ),
     1000,
   );
@@ -1411,7 +1433,7 @@ test("static sequential and static parallel chain rendering keep existing labels
         },
       },
       { expanded: false },
-      theme as any,
+      plainTheme,
     ),
     1000,
   );

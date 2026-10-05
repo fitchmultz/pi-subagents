@@ -1,7 +1,7 @@
 import "../support/isolated-home.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfig } from "../../src/pi-intercom/config.ts";
@@ -28,7 +28,9 @@ test("Agents shortcut defaults to Option/Alt+Shift+M and accepts native key iden
       writeFileSync(file, JSON.stringify({ shortcut }));
       assert.equal(loadConfig().shortcut, shortcut);
     }
-    t.mock.method(console, "error", () => {});
+    t.mock.method(console, "error", () => {
+      /* Invalid shortcut cases intentionally log their fallback. */
+    });
     for (const shortcut of [false, 7, "", "hyper+m", "ctrl+ctrl+m", "alt+"]) {
       writeFileSync(file, JSON.stringify({ shortcut }));
       assert.equal(
@@ -38,6 +40,7 @@ test("Agents shortcut defaults to Option/Alt+Shift+M and accepts native key iden
       );
     }
   } finally {
+    rmSync(agentDir, { recursive: true, force: true });
     if (previous === undefined) {
       delete process.env.PI_CODING_AGENT_DIR;
     } else {
@@ -62,6 +65,7 @@ test("legacy enabled config is ignored in favor of pi config", () => {
     assert.equal(config.confirmSend, true);
     assert.equal("enabled" in config, false);
   } finally {
+    rmSync(agentDir, { recursive: true, force: true });
     if (previous === undefined) {
       delete process.env.PI_CODING_AGENT_DIR;
     } else {

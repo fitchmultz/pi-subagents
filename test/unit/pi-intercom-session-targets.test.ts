@@ -22,12 +22,12 @@ const sessions = [
 ];
 
 test("formatSessionTarget returns the shortest safe prefix across ids and names", () => {
-  assert.equal(formatSessionTarget(sessions[0]!, sessions), "abcdefgh-");
-  assert.equal(formatSessionTarget(sessions[1]!, sessions), "abcdefgi");
+  assert.equal(formatSessionTarget(sessions[0], sessions), "abcdefgh-");
+  assert.equal(formatSessionTarget(sessions[1], sessions), "abcdefgi");
 });
 
 test("targetDisplayName adds a safe target when a name collides with another id prefix", () => {
-  assert.equal(targetDisplayName(sessions[2]!, sessions), "abcdefgh (xyz00000)");
+  assert.equal(targetDisplayName(sessions[2], sessions), "abcdefgh (xyz00000)");
 });
 
 test("resolveSessionTarget rejects too-short id prefixes with a specific status", () => {
@@ -36,7 +36,7 @@ test("resolveSessionTarget rejects too-short id prefixes with a specific status"
   assert.equal(resolution.minLength, 8);
   assert.deepEqual(
     resolution.matches.map((session) => session.id).sort(),
-    [sessions[0]!.id, sessions[1]!.id].sort(),
+    [sessions[0].id, sessions[1].id].sort(),
   );
 });
 
@@ -46,7 +46,7 @@ test("resolveSessionTarget resolves safe prefixes and reports name-prefix ambigu
   assert.equal(ambiguous.status, "ambiguous");
   assert.deepEqual(
     ambiguous.matches.map((session) => session.id).sort(),
-    [sessions[0]!.id, sessions[2]!.id].sort(),
+    [sessions[0].id, sessions[2].id].sort(),
   );
 });
 
@@ -189,11 +189,11 @@ test("formatPeerAwarenessHint detects only same-project sessions without exposin
   );
 
   assert.equal(hint, PEER_AWARENESS_HINT);
-  assert.match(hint ?? "", /intercom\(\{ action: "list" \}\)/);
-  assert.match(hint ?? "", /before changing shared state or coordinating known overlapping work/);
-  assert.match(hint ?? "", /Routine standalone read-only tasks do not need a peer check/);
+  assert.match(hint, /intercom\(\{ action: "list" \}\)/);
+  assert.match(hint, /before changing shared state or coordinating known overlapping work/);
+  assert.match(hint, /Routine standalone read-only tasks do not need a peer check/);
   assert.doesNotMatch(
-    hint ?? "",
+    hint,
     /ignore previous instructions|secret-project-name|unrelated-session-name/,
   );
   assert.equal(
@@ -249,6 +249,6 @@ test("resolveSessionTarget rejects exact names that are unsafe too-short id pref
   assert.equal(ambiguous.status, "ambiguous");
   assert.deepEqual(
     ambiguous.matches.map((session) => session.id).sort(),
-    [unsafe[0]!.id, unsafe[1]!.id].sort(),
+    [unsafe[0].id, unsafe[1].id].sort(),
   );
 });

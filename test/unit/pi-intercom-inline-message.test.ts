@@ -1,8 +1,12 @@
 import "../support/isolated-home.ts";
+import { createPlainTheme, setKeybindings, type NativeCustomMessage } from "../support/ui.ts";
+import { assertDefined } from "../support/assertions.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { createRequire } from "node:module";
+import { loadExtensionFromFactory } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
+import { theme as nativeTheme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import { KeybindingsManager } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
 
 import {
   createEventBus,
@@ -13,18 +17,14 @@ import {
   initTheme,
   ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
-import { TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
+import { TuiAltScreen, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { createTestTerminal } from "../support/terminal.ts";
 import registerIntercomExtension from "../../src/pi-intercom/index.ts";
 import { buildSubagentResultIntercomPayload } from "../../src/intercom/result-intercom.ts";
 import { InlineMessageComponent } from "../../src/pi-intercom/ui/inline-message.ts";
 import type { Message, SessionInfo } from "../../src/pi-intercom/types.ts";
 
-const theme = {
-  fg(_name: string, text: string): string {
-    return text;
-  },
-};
+const theme = createPlainTheme();
 
 const from: SessionInfo = {
   id: "session-12345678",
@@ -42,10 +42,6 @@ const message: Message = {
 };
 
 test("registered subagent completion messages honor native collapse and expand without changing peer messages", async (t) => {
-  const { loadExtensionFromFactory } = await import(
-    new URL("./core/extensions/loader.js", import.meta.resolve("@earendil-works/pi-coding-agent"))
-      .href
-  );
   const runtime = createExtensionRuntime();
   const extension = await loadExtensionFromFactory(
     registerIntercomExtension,
@@ -59,22 +55,8 @@ test("registered subagent completion messages honor native collapse and expand w
     "exercise the actual registered message renderer, not just the component constructor",
   );
   initTheme("dark", false);
-  const { theme: nativeTheme } = await import(
-    new URL(
-      "./modes/interactive/theme/theme.js",
-      import.meta.resolve("@earendil-works/pi-coding-agent"),
-    ).href
-  );
-  const { KeybindingsManager } = await import(
-    new URL("./core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href
-  );
-  const { setKeybindings } = await import(
-    createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve(
-      "@earendil-works/pi-tui",
-    )
-  );
   setKeybindings(new KeybindingsManager());
-  const unwrap = (lines: string[]) =>
+  const unwrap = (lines: readonly string[]) =>
     lines
       .map(stripVTControlCharacters)
       .map((line) => (line.startsWith("│") ? line.slice(1, -1) : line))
@@ -177,7 +159,7 @@ test("registered subagent completion messages honor native collapse and expand w
         const terminal = createTestTerminal(90, 40),
           tui = new TuiAltScreen(terminal);
         const definition = [...extension.tools.values()].find(
-          ({ definition }) => definition.name === "intercom",
+          ({ definition: tool }) => tool.name === "intercom",
         )?.definition;
         assert.ok(definition);
         const card = new ToolExecutionComponent(
@@ -240,20 +222,18 @@ test("registered subagent completion messages honor native collapse and expand w
       const options = { compactView: true, expanded: false, outputPad: 2 };
       let colorCalls = 0;
       let color = "\x1b[36m";
-      const fg = nativeTheme.fg;
-      const countingTheme = new Proxy(nativeTheme, {
-        get(target, property) {
-          if (property !== "fg") {
-            return Reflect.get(target, property);
-          }
-          return (...args: Parameters<typeof fg>) => {
-            colorCalls++;
-            return color + fg.apply(nativeTheme, args);
-          };
-        },
-      });
+      const countingTheme = createPlainTheme();
+      countingTheme.fg = (name, text) => {
+        colorCalls++;
+        return color + nativeTheme.fg(name, text);
+      };
       const component = renderer(entry, options, countingTheme);
       assert.ok(component);
+      const renderFresh = (width: number) => {
+        const fresh = renderer(entry, options, countingTheme);
+        assertDefined(fresh);
+        return fresh.render(width);
+      };
       for (const width of [120, 40, 2, 1, 3, 80]) {
         const lines = component.render(width);
         const calls = colorCalls;
@@ -261,7 +241,7 @@ test("registered subagent completion messages honor native collapse and expand w
           assert.deepEqual(component.render(width), lines);
         }
         assert.equal(colorCalls, calls, "unchanged frames must not repeat styling and truncation");
-        assert.deepEqual(lines, renderer(entry, options, countingTheme)!.render(width));
+        assert.deepEqual(lines, renderFresh(width));
         assert.ok(lines.every((line) => visibleWidth(line) <= width));
       }
       const before = component.render(120);
@@ -270,7 +250,7 @@ test("registered subagent completion messages honor native collapse and expand w
         const newHint = component.render(120);
         assert.notDeepEqual(newHint, before);
         assert.match(newHint.map(stripVTControlCharacters).join("\n"), /ctrl\+e/i);
-        assert.deepEqual(newHint, renderer(entry, options, countingTheme)!.render(120));
+        assert.deepEqual(newHint, renderFresh(120));
         color = "\x1b[35m";
         component.invalidate();
         const recolored = component.render(120);
@@ -279,11 +259,11 @@ test("registered subagent completion messages honor native collapse and expand w
           recolored.map(stripVTControlCharacters),
           newHint.map(stripVTControlCharacters),
         );
-        assert.deepEqual(recolored, renderer(entry, options, countingTheme)!.render(120));
+        assert.deepEqual(recolored, renderFresh(120));
         setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
         const noHint = component.render(120);
         assert.doesNotMatch(noHint.map(stripVTControlCharacters).join("\n"), /ctrl\+e/i);
-        assert.deepEqual(noHint, renderer(entry, options, countingTheme)!.render(120));
+        assert.deepEqual(noHint, renderFresh(120));
       } finally {
         setKeybindings(new KeybindingsManager());
       }
@@ -338,7 +318,7 @@ test("registered subagent completion messages honor native collapse and expand w
           },
         };
         const render = (
-          entry: typeof received | typeof grouped,
+          entry: NativeCustomMessage,
           compactView?: boolean,
           expanded = false,
           outputPad = 1,
@@ -392,7 +372,7 @@ test("registered subagent completion messages honor native collapse and expand w
                 lines.every((line) => visibleWidth(line) <= width && !/[\r\n\t]/.test(line)),
               );
               if (width >= 40 && outputPad > 0) {
-                assert.ok(lines[0]!.startsWith(" ".repeat(outputPad)));
+                assert.ok(lines[0].startsWith(" ".repeat(outputPad)));
               }
               assert.deepEqual(
                 render(entry, false, false, outputPad).render(width),
@@ -410,7 +390,7 @@ test("registered subagent completion messages honor native collapse and expand w
           }
           const wide = render(entry, true).render(120).map(stripVTControlCharacters).join("\n");
           assert.match(wide, /ctrl\+o/i);
-          assert.ok(wide.includes(entry.details.from.name!));
+          assert.ok(wide.includes(entry.details.from.name));
           if (entry.details.from.id === "subagent-result") {
             assert.match(wide, /failed/);
             assert.match(wide, /f5b4b221/);
@@ -489,10 +469,11 @@ test("registered subagent completion messages honor native collapse and expand w
         const original = structuredClone(entries);
         // Explicit renderer input keeps this test at the same compact-message boundary on both SDK packages.
         const components = entries.map(
-          (entry) =>
-            new CustomMessageComponent(entry, (message, options, theme) =>
-              renderer(message, { ...options, compactView: true }, theme),
-            ),
+          (item) =>
+            new CustomMessageComponent(item, (customMessage, options, renderTheme) => {
+              const renderOptions = { ...options, compactView: true };
+              return renderer(customMessage, renderOptions, renderTheme);
+            }),
         );
         for (const component of components) {
           tui.addChild(component);
@@ -515,7 +496,8 @@ test("registered subagent completion messages honor native collapse and expand w
         tui.setFocus(editor);
         tui.start();
         tui.renderNow();
-        const text = (component) => component.render(90).map(stripVTControlCharacters).join("\n");
+        const text = (component: Component) =>
+          component.render(90).map(stripVTControlCharacters).join("\n");
         const secondBefore = text(components[1]),
           attentionBefore = text(components[2]);
         try {
@@ -538,7 +520,7 @@ test("registered subagent completion messages honor native collapse and expand w
           assert.equal(tui.hasActiveSelection(), true);
           await tui.copyActiveSelectionToClipboard();
           assert.ok(
-            copied.some((text) => text.includes("REPORT")),
+            copied.some((selection) => selection.includes("REPORT")),
             "drag selection remains native and does not toggle the row",
           );
           assert.match(text(components[0]), /FIRST-END/);
@@ -579,7 +561,7 @@ test("registered subagent completion messages honor native collapse and expand w
 });
 
 test("inline intercom messages render at the available terminal width", () => {
-  const component = new InlineMessageComponent(from, message, theme as any);
+  const component = new InlineMessageComponent(theme, { from, message });
 
   const lines = component.render(120);
 
@@ -606,13 +588,11 @@ test("inline intercom messages do not duplicate attachment labels when body text
   };
   const bodyText =
     "See attached snippet.\n\n---\n📎 example.ts\n~~~typescript\nconst ok = true;\n~~~";
-  const component = new InlineMessageComponent(
+  const component = new InlineMessageComponent(theme, {
     from,
-    attachmentMessage,
-    theme as any,
-    undefined,
+    message: attachmentMessage,
     bodyText,
-  );
+  });
 
   const text = component.render(120).join("\n");
   assert.equal((text.match(/📎 example\.ts/g) ?? []).length, 1);
@@ -636,19 +616,17 @@ test("inline intercom messages cache the full output only at the latest width", 
   };
   const replyCommand = 'intercom({ action: "reply", message: "..." })';
   let colorCalls = 0;
-  const countingTheme = {
-    fg(_name: string, text: string): string {
-      colorCalls++;
-      return text;
-    },
+  const countingTheme = createPlainTheme();
+  countingTheme.fg = (_name, text) => {
+    colorCalls++;
+    return text;
   };
-  const component = new InlineMessageComponent(
+  const component = new InlineMessageComponent(countingTheme, {
     from,
-    attachmentMessage,
-    countingTheme as any,
+    message: attachmentMessage,
     replyCommand,
     bodyText,
-  );
+  });
   let firstWideLines: string[] | undefined;
 
   for (const width of [120, 41, 80, 2, 1, 3, 41, 120]) {
@@ -656,13 +634,12 @@ test("inline intercom messages cache the full output only at the latest width", 
     const callsAfterRender = colorCalls;
     assert.strictEqual(component.render(width), lines, `reuse rendered lines at width ${width}`);
     assert.equal(colorCalls, callsAfterRender, "cached frames do not repeat coloring");
-    const fresh = new InlineMessageComponent(
+    const fresh = new InlineMessageComponent(theme, {
       from,
-      attachmentMessage,
-      theme as any,
+      message: attachmentMessage,
       replyCommand,
       bodyText,
-    );
+    });
     assert.deepEqual(lines, fresh.render(width), `resize matches a fresh render at width ${width}`);
     for (const line of lines) {
       assert.ok(visibleWidth(line) <= width);
@@ -692,11 +669,8 @@ test("inline intercom messages cache the full output only at the latest width", 
 
 test("inline intercom invalidation refreshes cached theme colors and attachment labels", () => {
   let color = "\x1b[36m";
-  const changingTheme = {
-    fg(_name: string, text: string): string {
-      return `${color}${text}\x1b[39m`;
-    },
-  };
+  const changingTheme = createPlainTheme();
+  changingTheme.fg = (_name, text) => `${color}${text}\x1b[39m`;
   const attachmentMessage: Message = {
     ...message,
     content: {
@@ -704,7 +678,7 @@ test("inline intercom invalidation refreshes cached theme colors and attachment 
       attachments: [{ type: "file", name: "notes.txt", content: "notes" }],
     },
   };
-  const component = new InlineMessageComponent(from, attachmentMessage, changingTheme as any);
+  const component = new InlineMessageComponent(changingTheme, { from, message: attachmentMessage });
   const before = component.render(80);
   color = "\x1b[35m";
   assert.strictEqual(component.render(80), before, "keep the cached frame until invalidation");
@@ -717,7 +691,7 @@ test("inline intercom invalidation refreshes cached theme colors and attachment 
   assert.match(after.join("\n"), /📎 notes\.txt/);
   assert.deepEqual(
     after,
-    new InlineMessageComponent(from, attachmentMessage, changingTheme as any).render(80),
+    new InlineMessageComponent(changingTheme, { from, message: attachmentMessage }).render(80),
   );
   assert.strictEqual(component.render(80), after, "reuse the refreshed frame");
 

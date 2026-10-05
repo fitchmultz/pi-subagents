@@ -1,4 +1,6 @@
 import "../support/isolated-home.ts";
+import { assertDefined } from "../support/assertions.ts";
+import { events } from "../support/helpers.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -85,7 +87,7 @@ describe("result intercom formatter", () => {
       );
       assert.equal(payload.summary, "2 completed");
       assert.match(payload.message, new RegExp(`Status: ${status}`));
-      if (error) {
+      if (error !== undefined) {
         assert.ok(payload.message.includes(error));
         assert.ok(
           formatSubagentResultReceipt({ mode: "chain", runId: "workflow", payload }).includes(
@@ -228,11 +230,13 @@ describe("result intercom formatter", () => {
     const grandchild = nested?.children?.[0];
     assert.equal(payload.children[0]?.children, undefined);
     assert.equal(nested?.id, "nested-a");
-    assert.equal(Object.hasOwn(nested ?? {}, "controlInbox"), false);
-    assert.equal(Object.hasOwn(nested ?? {}, "capabilityToken"), false);
+    assertDefined(nested);
+    assert.equal(Object.hasOwn(nested, "controlInbox"), false);
+    assert.equal(Object.hasOwn(nested, "capabilityToken"), false);
     assert.equal(grandchild?.id, "nested-grandchild");
-    assert.equal(Object.hasOwn(grandchild ?? {}, "controlInbox"), false);
-    assert.equal(Object.hasOwn(grandchild ?? {}, "capabilityToken"), false);
+    assertDefined(grandchild);
+    assert.equal(Object.hasOwn(grandchild, "controlInbox"), false);
+    assert.equal(Object.hasOwn(grandchild, "capabilityToken"), false);
     assert.match(payload.message, /Nested subagents:/);
     assert.match(payload.message, /↳ reviewer — complete \[nested-a\]/);
   });
@@ -246,7 +250,7 @@ describe("result intercom formatter", () => {
       source: "foreground",
       children: [{ agent: "worker", status: "completed", summary: longSummary }],
     });
-    assert.equal(payload.children[0]!.summary, longSummary);
+    assert.equal(payload.children[0].summary, longSummary);
     assert.match(payload.message, new RegExp(`${"x".repeat(2000)}\\n${"y".repeat(2000)}`));
   });
 
@@ -295,7 +299,7 @@ describe("result intercom formatter", () => {
           agent: "worker",
           task: "Task",
           exitCode: 0,
-          messages: [{ role: "assistant", content: [{ type: "text", text: "full" }] } as never],
+          messages: [events.assistantMessage("full").message],
           usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
           finalOutput: "full output",
           truncation: { text: "truncated", truncated: true },

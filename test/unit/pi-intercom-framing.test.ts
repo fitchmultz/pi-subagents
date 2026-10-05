@@ -1,7 +1,7 @@
 import "../support/isolated-home.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
+import { Socket } from "node:net";
 import {
   createMessageReader,
   MAX_FRAME_SIZE_BYTES,
@@ -12,8 +12,12 @@ test("framing rejects oversized incoming frames before buffering payload", () =>
   const errors: Error[] = [];
   const messages: unknown[] = [];
   const reader = createMessageReader(
-    (message) => messages.push(message),
-    (error) => errors.push(error),
+    (message) => {
+      messages.push(message);
+    },
+    (error) => {
+      errors.push(error);
+    },
   );
   const header = Buffer.alloc(4);
   header.writeUInt32BE(MAX_FRAME_SIZE_BYTES + 1, 0);
@@ -22,15 +26,14 @@ test("framing rejects oversized incoming frames before buffering payload", () =>
 
   assert.equal(messages.length, 0);
   assert.equal(errors.length, 1);
-  assert.match(errors[0]!.message, /frame too large/);
+  assert.match(errors[0].message, /frame too large/);
 });
 
 test("framing refuses to write oversized messages", () => {
-  const socket = new EventEmitter() as EventEmitter & { write(chunk: Buffer): boolean };
-  socket.write = () => true;
+  const socket = new Socket();
 
   assert.throws(
-    () => writeMessage(socket as never, { text: "x".repeat(MAX_FRAME_SIZE_BYTES + 1) }),
+    () => writeMessage(socket, { text: "x".repeat(MAX_FRAME_SIZE_BYTES + 1) }),
     /message too large/,
   );
 });

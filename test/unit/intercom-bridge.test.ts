@@ -1,7 +1,10 @@
 import "../support/isolated-home.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { ReadonlyDeep } from "type-fest";
 import type { AgentConfig } from "../../src/agents/agents.ts";
+import { makeAgent as makeAgentConfig } from "../support/helpers.ts";
+import { assertDefined } from "../support/assertions.ts";
 import {
   applyIntercomBridgeToAgent,
   INTERCOM_BRIDGE_MARKER,
@@ -12,18 +15,12 @@ import {
   type IntercomBridgeState,
 } from "../../src/intercom/intercom-bridge.ts";
 
-function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
-  return {
-    name: "worker",
+function makeAgent(overrides: ReadonlyDeep<Partial<AgentConfig>> = {}): AgentConfig {
+  return makeAgentConfig("worker", {
     description: "Test worker",
     systemPrompt: "Base prompt",
-    systemPromptMode: "replace",
-    inheritProjectContext: false,
-    inheritSkills: false,
-    source: "user",
-    filePath: "/tmp/worker.md",
     ...overrides,
-  };
+  });
 }
 
 const bridge: IntercomBridgeState = {
@@ -54,7 +51,8 @@ describe("resolveOrchestratorIntercomTarget", () => {
       },
       emit(channel: string, payload: unknown) {
         if (channel === "subagent:intercom-identity-request") {
-          const requestId = (payload as { requestId: string }).requestId;
+          assert.ok(payload !== null && typeof payload === "object" && "requestId" in payload);
+          const requestId = payload.requestId;
           listeners.get("subagent:intercom-identity-response")?.({
             requestId,
             sessionId: "exact-broker-session",
@@ -66,7 +64,9 @@ describe("resolveOrchestratorIntercomTarget", () => {
       resolveOrchestratorIntercomTarget(events, "duplicate-name"),
       "exact-broker-session",
     );
-    events.emit = () => {};
+    events.emit = () => {
+      /* Simulate a disconnected identity provider. */
+    };
     assert.equal(resolveOrchestratorIntercomTarget(events, "duplicate-name"), "duplicate-name");
     assert.equal(listeners.size, 0);
   });
@@ -114,10 +114,10 @@ describe("resolveSubagentIntercomTarget", () => {
 
 describe("resolveIntercomBridge", () => {
   it("preserves the exact default paired-path instructions", () => {
-    const bridge = resolveIntercomBridge("main");
-    assert.equal(bridge.orchestratorTarget, "main");
+    const defaultBridge = resolveIntercomBridge("main");
+    assert.equal(defaultBridge.orchestratorTarget, "main");
     assert.equal(
-      bridge.instruction,
+      defaultBridge.instruction,
       `Intercom orchestration channel:
 The inherited thread is reference-only. Do not continue that conversation or send questions, status updates, or completion handoffs to the supervisor in normal assistant text.
 
@@ -148,8 +148,9 @@ describe("applyIntercomBridgeToAgent", () => {
   it("is idempotent", () => {
     const first = applyIntercomBridgeToAgent(makeAgent({ tools: ["read"] }), bridge);
     const second = applyIntercomBridgeToAgent(first, bridge);
-    assert.equal(second.tools?.filter((tool) => tool === "intercom").length, 1);
-    assert.equal(second.tools?.filter((tool) => tool === "contact_supervisor").length, 1);
+    assertDefined(second.tools);
+    assert.equal(second.tools.filter((tool) => tool === "intercom").length, 1);
+    assert.equal(second.tools.filter((tool) => tool === "contact_supervisor").length, 1);
     assert.equal(second.systemPrompt, first.systemPrompt);
   });
 
@@ -175,12 +176,10 @@ describe("applyIntercomBridgeToAgent", () => {
         ["read", "intercom", "contact_supervisor"],
         extensions.join(","),
       );
-      assert.equal(updated.extensions?.length, 1);
-      assert.match(
-        updated.extensions?.[0]?.replaceAll("\\\\", "/") ?? "",
-        /\/src\/pi-intercom\/index\.ts$/,
-      );
-      assert.notEqual(updated.extensions?.[0], extensions[0]);
+      assertDefined(updated.extensions);
+      assert.equal(updated.extensions.length, 1);
+      assert.match(updated.extensions[0].replaceAll("\\\\", "/"), /\/src\/pi-intercom\/index\.ts$/);
+      assert.notEqual(updated.extensions[0], extensions[0]);
     }
   });
 
@@ -201,12 +200,10 @@ describe("applyIntercomBridgeToAgent", () => {
       bridge,
     );
 
-    assert.equal(updated.extensions?.length, 2);
-    assert.equal(updated.extensions?.[0], "/tmp/other-extension/index.ts");
-    assert.match(
-      updated.extensions?.[1]?.replaceAll("\\\\", "/") ?? "",
-      /\/src\/pi-intercom\/index\.ts$/,
-    );
+    assertDefined(updated.extensions);
+    assert.equal(updated.extensions.length, 2);
+    assert.equal(updated.extensions[0], "/tmp/other-extension/index.ts");
+    assert.match(updated.extensions[1].replaceAll("\\\\", "/"), /\/src\/pi-intercom\/index\.ts$/);
   });
 
   it("does not inject when extension sandbox excludes intercom", () => {

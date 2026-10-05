@@ -2,12 +2,19 @@ import "../support/isolated-home.ts";
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import fs, { readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs, {
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  type PathOrFileDescriptor,
+  type ReadFileSyncOptions,
+} from "node:fs";
 import { once } from "node:events";
 import { Worker } from "node:worker_threads";
 import { syncBuiltinESMExports } from "node:module";
 import { brokerPidRecord, isBrokerPidReused } from "../../src/pi-intercom/broker/pid.ts";
 import { fileURLToPath } from "node:url";
+import { assertRecord } from "../support/assertions.ts";
 import {
   getBrokerLaunchSpec,
   getBrokerSpawnOptions,
@@ -38,7 +45,10 @@ test(
       { eval: true },
     );
     try {
-      const [identity] = await once(worker, "message");
+      const payload: readonly unknown[] = await once(worker, "message");
+      const identity = payload[0];
+      assertRecord(identity);
+      assert.ok(typeof identity.tgid === "number" && typeof identity.tid === "number");
       assert.equal(identity.tgid, process.pid);
       assert.notEqual(identity.tid, process.pid);
       process.kill(identity.tid, 0); // Native signal-0 succeeds for this non-process TID.
@@ -48,7 +58,7 @@ test(
       process.kill(identity.tid, 0); // Guard neither signals nor removes the alias.
     } finally {
       const exited = once(worker, "exit");
-      worker.postMessage("normal exit");
+      worker.postMessage("normal exit", []);
       assert.deepEqual(await exited, [0]);
       rmSync(dir, { recursive: true, force: true });
     }
@@ -148,25 +158,38 @@ test(
     // A stale-looking record still cannot override an unreadable native identity.
     const record = brokerPidRecord().replace(
       /(\d+)\n$/,
-      (_match, ticks) => `${BigInt(ticks) + 1n}\n`,
+      (_match: string, ticks: string) => `${BigInt(ticks) + 1n}\n`,
     );
     const read = fs.readFileSync;
     try {
       for (const view of ["denied", "ancestor", "missing-stat"] as const) {
-        const mocked = mock.method(fs, "readFileSync", (...args: Parameters<typeof read>) => {
-          if (String(args[0]) === "/proc/self/status") {
-            if (view === "denied") {
-              throw Object.assign(new Error("not permitted"), { code: "EACCES" });
+        const mocked = mock.method(
+          fs,
+          "readFileSync",
+          (
+            file: PathOrFileDescriptor,
+            options?: Readonly<ReadFileSyncOptions> | BufferEncoding | null,
+          ) => {
+            if (String(file) === "/proc/self/status") {
+              if (view === "denied") {
+                throw Object.assign(new Error("not permitted"), { code: "EACCES" });
+              }
+              if (view === "ancestor") {
+                return `NStgid:\t99999\t${process.pid}\n`;
+              }
             }
-            if (view === "ancestor") {
-              return `NStgid:\t99999\t${process.pid}\n`;
+            if (view === "missing-stat" && String(file).endsWith("/stat")) {
+              throw Object.assign(new Error("gone"), { code: "ENOENT" });
             }
-          }
-          if (view === "missing-stat" && String(args[0]).endsWith("/stat")) {
-            throw Object.assign(new Error("gone"), { code: "ENOENT" });
-          }
-          return read(...args);
-        });
+            if (typeof options === "string") {
+              return read(file, options);
+            }
+            if (options === undefined || options === null) {
+              return read(file);
+            }
+            return read(file, options);
+          },
+        );
         syncBuiltinESMExports();
         assert.equal(isBrokerPidReused(process.pid, record), false);
         assert.equal(brokerPidRecord(), `${process.pid}\n`);
@@ -222,7 +245,7 @@ test("spawn guard fails loud instead of killing a live unhealthy broker PID", as
   });
 
   try {
-    await import("node:fs").then(({ writeFileSync }) => writeFileSync(pidPath, "12345"));
+    writeFileSync(pidPath, "12345");
     await assert.rejects(
       () => stopUnhealthyBrokerBeforeSpawn(),
       /refusing to spawn a second broker/,
@@ -237,14 +260,12 @@ test("spawn guard treats EPERM as a live unhealthy broker PID and fails loud", a
   const intercomDir = pidDir;
   fs.mkdirSync(intercomDir, { recursive: true });
   const pidPath = path.join(intercomDir, "broker.pid");
-  t.mock.method(process, "kill", (_: number) => {
-    const error = new Error("alive but not owned") as NodeJS.ErrnoException;
-    error.code = "EPERM";
-    throw error;
+  t.mock.method(process, "kill", () => {
+    throw Object.assign(new Error("alive but not owned"), { code: "EPERM" });
   });
 
   try {
-    await import("node:fs").then(({ writeFileSync }) => writeFileSync(pidPath, "12345"));
+    writeFileSync(pidPath, "12345");
     await assert.rejects(
       () => stopUnhealthyBrokerBeforeSpawn(),
       /refusing to spawn a second broker/,
