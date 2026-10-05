@@ -377,6 +377,9 @@ test("an ambiguous native owner acknowledgement keeps the revival claim after re
       const resultPath = path.join(getRunMetadataDir(handedOffId), "result.json");
       await until(() => fs.existsSync(resultPath), "the real claimed successor must finish");
       assert.equal(readResult(resultPath).results[0]?.output, "Actual claimed successor finished");
+      const pid = f.state.ownedRuns.get(handedOffId)?.pid;
+      assertDefined(pid);
+      await until(() => !questionProcessAlive({ pid }), "the claimed successor launcher must exit");
     }
   }
 });
