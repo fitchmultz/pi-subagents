@@ -243,40 +243,61 @@ test("wait registration failure releases ownership and returns the native listen
   assert.equal(f.mock.callCount(), 0);
 });
 
-test(
-  "native wait listener teardown failure settles instead of stranding completion",
-  { timeout: 2_000 },
-  async (t) => {
-    const f = await setup(t);
-    saveAsyncRunResult(f.runId, {
-      runId: f.runId,
-      state: "complete",
-      success: true,
-      results: [{ agent: "worker", exitCode: 0, output: "Previous result" }],
-    });
-    const on = f.events.on.bind(f.events);
-    let released = false;
-    t.mock.method(f.events, "on", (name: string, listener: (data: unknown) => void) => {
-      const unsubscribe = on(name, listener);
-      return () => {
-        unsubscribe();
-        released = true;
-        throw new Error("native listener teardown failed");
+for (const fault of ["listener", "abort"] as const) {
+  test(
+    `native wait ${fault} teardown failure settles instead of stranding completion`,
+    { timeout: 2_000 },
+    async (t) => {
+      const f = await setup(t);
+      saveAsyncRunResult(f.runId, {
+        runId: f.runId,
+        state: "complete",
+        success: true,
+        results: [{ agent: "worker", exitCode: 0, output: "Previous result" }],
+      });
+      const on = f.events.on.bind(f.events);
+      let released = false;
+      let abortDetached = false;
+      const controller = new AbortController();
+      const nativeRemove = controller.signal.removeEventListener.bind(controller.signal);
+      const remove: typeof controller.signal.removeEventListener = (...args) => {
+        nativeRemove(...args);
+        abortDetached = true;
+        if (fault === "abort") {
+          throw new Error("native abort teardown failed");
+        }
       };
-    });
-    const result = await waitForOwnedRun({
-      id: f.runId,
-      deps: f.deps,
-      ctx: makeMinimalCtx(f.cwd),
-      executionResult: true,
-    });
-    assert.equal(released, true);
-    assert.equal(result.isError, true);
-    assert.equal(result.details.wait?.status, "unavailable");
-    assert.match(textAt(result.content), /native listener teardown failed/);
-    assert.equal(f.state.waitingRuns?.has(f.runId), false);
-  },
-);
+      t.mock.method(controller.signal, "removeEventListener", remove);
+      t.mock.method(f.events, "on", (name: string, listener: (data: unknown) => void) => {
+        const unsubscribe = on(name, listener);
+        return () => {
+          unsubscribe();
+          released = true;
+          if (fault === "listener") {
+            throw new Error("native listener teardown failed");
+          }
+        };
+      });
+      const result = await waitForOwnedRun({
+        id: f.runId,
+        deps: f.deps,
+        ctx: makeMinimalCtx(f.cwd),
+        executionResult: true,
+        signal: controller.signal,
+      });
+      assert.equal(released, true);
+      assert.equal(
+        abortDetached,
+        true,
+        "one cleanup failure must not prevent releasing other native registrations",
+      );
+      assert.equal(result.isError, true);
+      assert.equal(result.details.wait?.status, "unavailable");
+      assert.match(textAt(result.content), new RegExp(`native ${fault} teardown failed`));
+      assert.equal(f.state.waitingRuns?.has(f.runId), false);
+    },
+  );
+}
 
 test("an ambiguous native owner acknowledgement keeps the revival claim after real process handoff", async (t) => {
   const f = await setup(t);

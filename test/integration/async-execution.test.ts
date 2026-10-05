@@ -8,7 +8,7 @@ import "../support/isolated-home.ts";
 
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import childProcess, { ChildProcess, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -3166,6 +3166,7 @@ describe("async execution utilities", () => {
       let faultObserved = false;
       const warnings: unknown[][] = [];
       mockPi.onCall({ output: "Real detached child finished", waitForFile: release });
+      const spawning = t.mock.method(childProcess, "spawn");
       if (fault === "descriptor") {
         const open = fs.openSync;
         const close = fs.closeSync;
@@ -3193,6 +3194,7 @@ describe("async execution utilities", () => {
           throw failure;
         });
       }
+      syncBuiltinESMExports();
       let launcherPid: number | undefined;
       try {
         const result = executeAsyncSingle(id, {
@@ -3203,10 +3205,13 @@ describe("async execution utilities", () => {
           shareEnabled: false,
           maxSubagentDepth: 2,
         });
+        const spawned: unknown = spawning.mock.calls[0]?.result;
+        assert.ok(spawned instanceof ChildProcess, "the native spawn returned its actual handle");
+        launcherPid = numberValue(spawned.pid);
         assert.equal(faultObserved, true);
         assert.notEqual(result.isError, true, textAt(result.content));
         assert.equal(result.details.asyncId, id);
-        launcherPid = numberValue(result.details.asyncPid);
+        assert.equal(result.details.asyncPid, launcherPid);
         assert.equal(questionProcessAlive({ pid: launcherPid }), true);
         await waitForMockPiCalls(mockPi, 1);
         assert.equal(mockPi.callCount(), 1, "the launch is real and does not duplicate work");
