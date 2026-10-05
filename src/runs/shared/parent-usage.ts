@@ -191,7 +191,7 @@ class ReceiptIndexOwner {
   ): PublishedReceipt {
     return (
       saved.get(metadata.id) ??
-      (metadata.message.details !== undefined
+      ("details" in metadata.message && metadata.message.details !== undefined
         ? metadata
         : (manager.getEntry(metadata.id) ?? metadata))
     );
