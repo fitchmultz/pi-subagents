@@ -1,6 +1,10 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { MessageRenderer, Theme } from "@earendil-works/pi-coding-agent";
 import { getThemeByName } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { assertDefined } from "./assertions.ts";
+
+// Fixed native renderer input, including its opaque payload; not an immutable
+// application-owned message or an allowance for arbitrary CustomMessage<T>.
+export type NativeCustomMessage = Parameters<MessageRenderer>[0];
 
 /** A fresh native theme; direct rendering assertions omit terminal color escapes. */
 export function createPlainTheme(): Theme {
