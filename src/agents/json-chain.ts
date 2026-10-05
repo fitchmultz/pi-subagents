@@ -9,6 +9,11 @@ import {
 import { validateAcceptanceInput } from "../runs/shared/acceptance.ts";
 import { Check, Errors } from "../shared/native-typebox.ts";
 import { ChainItemSchema } from "../extension/schemas.ts";
+import {
+  DynamicFanoutError,
+  hasDynamicFanoutFields,
+  validateDynamicStepShape,
+} from "../runs/shared/dynamic-fanout.ts";
 
 const STEP_KEYS = new Set([
   "agent",
@@ -188,6 +193,21 @@ function isRuntimeStep(value: unknown): value is ChainStep {
   // The native schema owns complete runtime field validation, including its structural union.
   return Check(ChainItemSchema, value);
 }
+
+function validateDynamicRecord(value: ConfigObject, index: number, filePath: string): void {
+  if (!hasDynamicFanoutFields(value)) {
+    return;
+  }
+  try {
+    validateDynamicStepShape(value, index, { maxItems: Number.MAX_SAFE_INTEGER });
+  } catch (error) {
+    if (error instanceof DynamicFanoutError) {
+      throw new Error(`Invalid JSON chain '${filePath}': ${error.message}`, { cause: error });
+    }
+    throw error;
+  }
+}
+
 function checkedStep(value: ConfigObject, index: number, filePath: string): ChainStep {
   if (
     (value.expand !== undefined || value.collect !== undefined) &&
@@ -197,10 +217,11 @@ function checkedStep(value: ConfigObject, index: number, filePath: string): Chai
       `Invalid JSON chain '${filePath}': Dynamic chain step ${index + 1} requires expand, a single parallel template object, and collect; dynamic expand/collect cannot be mixed with static parallel arrays.`,
     );
   }
+  validateDynamicRecord(value, index, filePath);
   if (!isRuntimeStep(value)) {
-    const issue = [...Errors(ChainItemSchema, value)].at(0);
+    const diagnostic = [...Errors(ChainItemSchema, value)].at(0)?.message;
     throw new Error(
-      `JSON chain '${filePath}' step ${index + 1} is invalid${issue === undefined ? "" : `: ${issue.message}`}.`,
+      `JSON chain '${filePath}' step ${index + 1} is invalid${diagnostic === undefined ? "" : `: ${diagnostic}`}.`,
     );
   }
   return value;

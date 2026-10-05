@@ -1,37 +1,8 @@
 import * as fs from "node:fs";
 
-export type ConfigObject = Readonly<Record<string, unknown>>;
-
-export function isConfigObject(value: unknown): value is ConfigObject {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-export function errorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (error === null) {
-    return "null";
-  }
-  if (error === undefined) {
-    return "undefined";
-  }
-  if (typeof error === "object") {
-    return Object.prototype.toString.call(error);
-  }
-  if (typeof error === "string") {
-    return error;
-  }
-  if (
-    typeof error === "number" ||
-    typeof error === "bigint" ||
-    typeof error === "boolean" ||
-    typeof error === "symbol"
-  ) {
-    return String(error);
-  }
-  return Object.prototype.toString.call(error);
-}
+import { errorMessage, isRecord as isConfigObject, type UnknownRecord } from "../shared/unknown.ts";
+export { errorMessage, isRecord as isConfigObject } from "../shared/unknown.ts";
+export type ConfigObject = UnknownRecord;
 
 export function readSettingsFileStrict(filePath: string): ConfigObject {
   if (!fs.existsSync(filePath)) {

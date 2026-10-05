@@ -126,6 +126,18 @@ function markdownSteps(body: string): ChainStepConfig[] {
     );
   });
 }
+function chainExtraFields(
+  frontmatter: Readonly<Partial<Record<string, string>>>,
+): Record<string, string> | undefined {
+  const extraFields: Record<string, string> = {};
+  for (const [key, value] of Object.entries(frontmatter)) {
+    if (key !== "name" && key !== "package" && key !== "description" && value !== undefined) {
+      extraFields[key] = value;
+    }
+  }
+  return Object.keys(extraFields).length > 0 ? extraFields : undefined;
+}
+
 export function parseChain(
   content: string,
   source: "user" | "project",
@@ -150,12 +162,6 @@ export function parseChain(
   if (parsedPackage.error !== undefined) {
     throw new Error(parsedPackage.error);
   }
-  const extraFields: Record<string, string> = {};
-  for (const [key, value] of Object.entries(frontmatter)) {
-    if (key !== "name" && key !== "package" && key !== "description" && value !== undefined) {
-      extraFields[key] = value;
-    }
-  }
   return {
     name: buildRuntimeName(name, parsedPackage.packageName),
     localName: name,
@@ -164,7 +170,7 @@ export function parseChain(
     source,
     filePath,
     steps,
-    extraFields: Object.keys(extraFields).length > 0 ? extraFields : undefined,
+    extraFields: chainExtraFields(frontmatter),
   };
 }
 function stringLine(field: string, value: string | undefined): string[] {

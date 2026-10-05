@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir } from "../shared/utils.ts";
+import { getAgentDir } from "../shared/agent-dir.ts";
 
 export interface ChainDiscoveryDiagnostic {
   readonly source: "user" | "project";
@@ -104,7 +104,12 @@ export function resolveNearestProjectChainDirs(
 
 export function pathIsInside(dir: string, filePath: string): boolean {
   const relative = path.relative(dir, filePath);
-  return relative !== "" && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  return (
+    relative !== "" &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
 }
 
 export function listFilesRecursive(

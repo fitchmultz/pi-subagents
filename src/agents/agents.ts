@@ -17,7 +17,7 @@ export type {
   ChainConfig,
   ChainStepConfig,
 } from "../shared/types/config.ts";
-import { getAgentDir } from "../shared/utils.ts";
+import { getAgentDir } from "../shared/agent-dir.ts";
 import {
   getUserAgentSettingsPath,
   getProjectAgentSettingsPath,

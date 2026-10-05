@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, AgentScope } from "../shared/types/config.ts";
-import { getAgentDir } from "../shared/utils.ts";
+import { getAgentDir } from "../shared/agent-dir.ts";
 import { readSettingsFileStrict, isConfigObject } from "./config-values.ts";
 import {
   findNearestProjectRoot,

@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { getAgentDir } from "../shared/utils.ts";
+import { getAgentDir } from "../shared/agent-dir.ts";
 import { buildSkillPaths } from "./skill-search-paths.ts";
 import { collectFilesystemSkills, readSkill } from "./skill-files.ts";
 import type {

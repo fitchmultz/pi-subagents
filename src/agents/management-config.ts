@@ -127,84 +127,7 @@ function defaultContext(value: unknown): "fresh" | "fork" | undefined {
     : invalid("defaultContext", "'fresh', 'fork', or false");
 }
 
-function promptPatch(cfg: ConfigObject): AgentPatch {
-  const patch: AgentPatch = {};
-  if (hasKey(cfg, "systemPrompt")) {
-    patch.systemPrompt = stringField(cfg.systemPrompt, "systemPrompt") ?? "";
-  }
-  if (hasKey(cfg, "systemPromptMode")) {
-    patch.systemPromptMode = promptMode(cfg.systemPromptMode);
-  }
-  if (hasKey(cfg, "inheritProjectContext")) {
-    patch.inheritProjectContext = booleanField(cfg.inheritProjectContext, "inheritProjectContext");
-  }
-  if (hasKey(cfg, "inheritSkills")) {
-    patch.inheritSkills = booleanField(cfg.inheritSkills, "inheritSkills");
-  }
-  if (hasKey(cfg, "defaultContext")) {
-    patch.defaultContext = defaultContext(cfg.defaultContext);
-  }
-  return patch;
-}
-function modelPatch(cfg: ConfigObject): AgentPatch {
-  const patch: AgentPatch = {};
-  if (hasKey(cfg, "model")) {
-    patch.model = stringField(cfg.model, "model", true);
-  }
-  if (hasKey(cfg, "fallbackModels")) {
-    patch.fallbackModels = fallbackModels(cfg.fallbackModels);
-  }
-  if (hasKey(cfg, "thinking")) {
-    patch.thinking = stringField(cfg.thinking, "thinking", true);
-  }
-  return patch;
-}
-function resourcePatch(cfg: ConfigObject): AgentPatch {
-  const patch: AgentPatch = {};
-  if (hasKey(cfg, "tools")) {
-    Object.assign(patch, tools(cfg.tools));
-  }
-  if (hasKey(cfg, "skills")) {
-    patch.skills = csvField(cfg.skills, "skills");
-  }
-  if (hasKey(cfg, "extensions")) {
-    patch.extensions = extensions(cfg.extensions);
-  }
-  if (hasKey(cfg, "output")) {
-    patch.output = stringField(cfg.output, "output");
-  }
-  if (hasKey(cfg, "reads")) {
-    patch.defaultReads = csvField(cfg.reads, "reads");
-  }
-  if (hasKey(cfg, "progress")) {
-    patch.defaultProgress = booleanField(cfg.progress, "progress");
-  }
-  return patch;
-}
-function executionPatch(cfg: ConfigObject): AgentPatch {
-  const patch: AgentPatch = {};
-  if (hasKey(cfg, "allowSubagents")) {
-    patch.allowSubagents = booleanField(cfg.allowSubagents, "allowSubagents");
-  }
-  if (hasKey(cfg, "maxSubagentDepth")) {
-    patch.maxSubagentDepth = limitField(cfg.maxSubagentDepth, "maxSubagentDepth", 0);
-  }
-  if (hasKey(cfg, "maxExecutionTimeMs")) {
-    patch.maxExecutionTimeMs = limitField(cfg.maxExecutionTimeMs, "maxExecutionTimeMs", 1);
-  }
-  if (hasKey(cfg, "maxTokens")) {
-    patch.maxTokens = limitField(cfg.maxTokens, "maxTokens", 1);
-  }
-  if (hasKey(cfg, "completionGuard")) {
-    patch.completionGuard = booleanField(cfg.completionGuard, "completionGuard");
-  }
-  return patch;
-}
-const AGENT_KEYS = new Set([
-  "name",
-  "package",
-  "description",
-  "scope",
+const AGENT_FIELD_ORDER = [
   "systemPrompt",
   "model",
   "fallbackModels",
@@ -224,7 +147,50 @@ const AGENT_KEYS = new Set([
   "maxExecutionTimeMs",
   "maxTokens",
   "completionGuard",
-]);
+] as const;
+function agentFieldPatch(field: (typeof AGENT_FIELD_ORDER)[number], value: unknown): AgentPatch {
+  switch (field) {
+    case "systemPrompt":
+      return { systemPrompt: stringField(value, field) ?? "" };
+    case "model":
+      return { model: stringField(value, field, true) };
+    case "fallbackModels":
+      return { fallbackModels: fallbackModels(value) };
+    case "tools":
+      return tools(value);
+    case "skills":
+      return { skills: csvField(value, field) };
+    case "extensions":
+      return { extensions: extensions(value) };
+    case "thinking":
+      return { thinking: stringField(value, field, true) };
+    case "systemPromptMode":
+      return { systemPromptMode: promptMode(value) };
+    case "inheritProjectContext":
+      return { inheritProjectContext: booleanField(value, field) };
+    case "inheritSkills":
+      return { inheritSkills: booleanField(value, field) };
+    case "defaultContext":
+      return { defaultContext: defaultContext(value) };
+    case "output":
+      return { output: stringField(value, field) };
+    case "reads":
+      return { defaultReads: csvField(value, field) };
+    case "progress":
+      return { defaultProgress: booleanField(value, field) };
+    case "allowSubagents":
+      return { allowSubagents: booleanField(value, field) };
+    case "maxSubagentDepth":
+      return { maxSubagentDepth: limitField(value, field, 0) };
+    case "maxExecutionTimeMs":
+      return { maxExecutionTimeMs: limitField(value, field, 1) };
+    case "maxTokens":
+      return { maxTokens: limitField(value, field, 1) };
+    case "completionGuard":
+      return { completionGuard: booleanField(value, field) };
+  }
+}
+const AGENT_KEYS = new Set(["name", "package", "description", "scope", ...AGENT_FIELD_ORDER]);
 const CHAIN_KEYS = new Set(["name", "package", "description", "scope", "steps"]);
 function unknownKeys(cfg: ConfigObject, keys: readonly string[]): string | undefined {
   const unknown = Object.keys(cfg).filter((key) => !keys.includes(key));
@@ -241,14 +207,13 @@ export function parseAgentPatch(cfg: ConfigObject): ConfigParse<AgentPatch> {
     return { error };
   }
   try {
-    return {
-      value: {
-        ...promptPatch(cfg),
-        ...modelPatch(cfg),
-        ...resourcePatch(cfg),
-        ...executionPatch(cfg),
-      },
-    };
+    const patch: AgentPatch = {};
+    for (const field of AGENT_FIELD_ORDER) {
+      if (hasKey(cfg, field)) {
+        Object.assign(patch, agentFieldPatch(field, cfg[field]));
+      }
+    }
+    return { value: patch };
   } catch (caught) {
     if (caught instanceof ConfigValidationError) {
       return { error: caught.message };
