@@ -1,6 +1,6 @@
 import type { Message } from "@earendil-works/pi-ai";
 import { createMutationCompletionTracker } from "./mutating-tool-guard.ts";
-import { isRecord } from "./record-value.ts";
+import { isRecord } from "../../shared/unknown.ts";
 
 export type CompletionPolicy = "none" | "mutation-guard" | "acceptance-contract";
 

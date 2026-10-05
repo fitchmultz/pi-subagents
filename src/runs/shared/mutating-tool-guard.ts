@@ -1,4 +1,4 @@
-import { isRecord } from "./record-value.ts";
+import { isRecord } from "../../shared/unknown.ts";
 
 interface FailedMutatingAttempt {
   readonly tool: string;

@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SubagentHistoryIndex } from "../../history/index.ts";
 import type { OwnedRun, SubagentState } from "../../shared/types.ts";
-import { getAgentDir } from "../../shared/utils.ts";
+import { getAgentDir } from "../../shared/agent-dir.ts";
 
 export function closeRunHistory(state: SubagentState): Promise<void> {
   const index = state.historyIndex;

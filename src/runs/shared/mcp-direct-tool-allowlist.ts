@@ -2,13 +2,13 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir } from "../../shared/utils.ts";
+import { getAgentDir } from "../../shared/agent-dir.ts";
 
 import type { Static } from "typebox";
 import type { ReadonlyInput } from "../../shared/types.ts";
 import { Check, ServersSchema, type ServerSchema, CacheSchema } from "./mcp-config-schema.ts";
 import { stableStringify } from "./stable-value.ts";
-import { isRecord } from "./record-value.ts";
+import { isRecord } from "../../shared/unknown.ts";
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const BUILTIN_TOOL_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "mcp"]);
 const GENERIC_GLOBAL_CONFIG_PATH = path.join(os.homedir(), ".config", "mcp", "mcp.json");

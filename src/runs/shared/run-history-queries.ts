@@ -11,8 +11,9 @@ export async function ownedHistoryQuery(
   signal?: AbortSignal,
 ): Promise<SubagentExecutionResult> {
   const requested = params.id ?? params.runId;
-  const run = requested ? resolveOwnedRun(state, requested) : undefined;
-  if (requested && !run) {
+  const run =
+    requested !== undefined && requested !== "" ? resolveOwnedRun(state, requested) : undefined;
+  if (requested !== undefined && requested !== "" && !run) {
     throw new Error("Run not found in this owning session.");
   }
   const index = await runHistoryIndex(state, true);
@@ -42,20 +43,21 @@ export async function ownedHistoryQuery(
       ...(child.state !== "live"
         ? {
             terminalEntryId: child.result?.terminalEntryId,
-            endedAt: child.result?.terminalEntryId ? undefined : view.updatedAt,
+            endedAt: (child.result?.terminalEntryId ?? "") !== "" ? undefined : view.updatedAt,
           }
         : {}),
     };
     const page = await index.historyPage(input);
-    const earlier = page.previousCursor
-      ? {
-          action: "history",
-          id: run.runId,
-          index: child.index,
-          limit: params.limit ?? 100,
-          cursor: page.previousCursor,
-        }
-      : undefined;
+    const earlier =
+      (page.previousCursor ?? "") !== ""
+        ? {
+            action: "history",
+            id: run.runId,
+            index: child.index,
+            limit: params.limit ?? 100,
+            cursor: page.previousCursor,
+          }
+        : undefined;
     return {
       content: [
         {
@@ -63,13 +65,13 @@ export async function ownedHistoryQuery(
           text: [
             `History: ${run.runId}, child ${child.index} (${child.agent}); ${page.entries.length} of ${page.count} indexed native entries.`,
             `Browse index: ${page.freshness.state}. These are bounded previews, not completion or delivery receipts.`,
-            ...(page.unavailable ? [page.unavailable] : []),
+            ...((page.unavailable ?? "") !== "" ? [page.unavailable] : []),
             ...page.entries.map(
               (entry) =>
                 `- ${entry.id} · position ${entry.sequence}\n${JSON.stringify(entry.entry)}`,
             ),
             ...(earlier ? [`Earlier: agent_runs(${JSON.stringify(earlier)})`] : []),
-            ...(child.sessionFile
+            ...((child.sessionFile ?? "") !== ""
               ? [
                   `Native source: ${child.sessionFile}. Open a selected record in Agents for validated full details.`,
                 ]
@@ -80,10 +82,10 @@ export async function ownedHistoryQuery(
       details: { mode: "management", results: [], runId: run.runId, history: page },
     };
   }
-  if (params.action !== "search" || !params.query) {
+  if (params.action !== "search" || params.query === undefined || params.query === "") {
     throw new Error("Search requires query.");
   }
-  if (params.sort && !["relevance", "newest"].includes(params.sort)) {
+  if (params.sort !== undefined && !["relevance", "newest"].includes(params.sort)) {
     throw new Error("Search sort must be relevance or newest.");
   }
   const input: HistorySearchInput = {
@@ -92,23 +94,24 @@ export async function ownedHistoryQuery(
     index: params.index,
     limit: params.limit,
     cursor: params.cursor,
-    sort: params.sort as HistorySearchInput["sort"],
+    sort: params.sort === "relevance" || params.sort === "newest" ? params.sort : undefined,
     agent: params.agent,
     signal,
   };
   const page = await index.search(input);
-  const next = page.nextCursor
-    ? {
-        action: "search",
-        query: params.query,
-        ...(run ? { id: run.runId } : {}),
-        ...(params.index !== undefined ? { index: params.index } : {}),
-        ...(params.agent ? { agent: params.agent } : {}),
-        ...(params.sort ? { sort: params.sort } : {}),
-        limit: params.limit ?? 20,
-        cursor: page.nextCursor,
-      }
-    : undefined;
+  const next =
+    (page.nextCursor ?? "") !== ""
+      ? {
+          action: "search",
+          query: params.query,
+          ...(run ? { id: run.runId } : {}),
+          ...(params.index !== undefined ? { index: params.index } : {}),
+          ...((params.agent ?? "") !== "" ? { agent: params.agent } : {}),
+          ...((params.sort ?? "") !== "" ? { sort: params.sort } : {}),
+          limit: params.limit ?? 20,
+          cursor: page.nextCursor,
+        }
+      : undefined;
   return {
     content: [
       {

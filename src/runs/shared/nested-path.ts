@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { isRecord } from "./record-value.ts";
+import { isRecord } from "../../shared/unknown.ts";
 
 const MAX_NESTED_ID_LENGTH = 128;
 export const MAX_NESTED_PATH_ENTRIES = 4;

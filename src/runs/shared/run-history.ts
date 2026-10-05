@@ -5,37 +5,52 @@ import {
   historyTransaction,
   openHistoryDatabase,
 } from "../../history/database.ts";
-import { getAgentDir } from "../../shared/utils.ts";
+import { isRecord } from "../../shared/unknown.ts";
+import { getAgentDir } from "../../shared/agent-dir.ts";
 
 export interface RunEntry {
-  agent: string;
-  task: string;
-  ts: number;
-  status: "ok" | "error";
-  duration: number;
-  exit?: number;
+  readonly agent: string;
+  readonly task: string;
+  readonly ts: number;
+  readonly status: "ok" | "error";
+  readonly duration: number;
+  readonly exit?: number;
 }
 
 const MAX_AGENT_SAMPLES = 1000;
 const MAX_LEGACY_BYTES = 1024 * 1024;
 const TIMING_DATABASE = "run-timing.sqlite";
 
-function validEntry(value: unknown): value is RunEntry {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const entry = value as RunEntry;
+function validIdentity(entry: Readonly<Record<string, unknown>>): boolean {
   return (
     typeof entry.agent === "string" &&
     entry.agent.length > 0 &&
     entry.agent.length <= 256 &&
-    typeof entry.task === "string" &&
+    typeof entry.task === "string"
+  );
+}
+
+function validTiming(entry: Readonly<Record<string, unknown>>): boolean {
+  return (
+    typeof entry.ts === "number" &&
     Number.isSafeInteger(entry.ts) &&
     entry.ts >= 0 &&
-    (entry.status === "ok" || entry.status === "error") &&
+    typeof entry.duration === "number" &&
     Number.isFinite(entry.duration) &&
-    entry.duration >= 0 &&
-    (entry.exit === undefined || Number.isSafeInteger(entry.exit))
+    entry.duration >= 0
+  );
+}
+
+function validEntry(value: unknown): value is RunEntry {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    validIdentity(value) &&
+    validTiming(value) &&
+    (value.status === "ok" || value.status === "error") &&
+    (value.exit === undefined ||
+      (typeof value.exit === "number" && Number.isSafeInteger(value.exit)))
   );
 }
 
@@ -50,39 +65,21 @@ function legacySamples(agentDir: string, agent?: string): RunEntry[] {
     let count = 0;
     while (count < bytes.length) {
       const read = fs.readSync(fd, bytes, count, bytes.length - count, start + count);
-      if (!read) {
+      if (read === 0) {
         break;
       }
       count += read;
     }
     const complete = bytes.subarray(0, count),
-      first = start ? complete.indexOf(10) + 1 : 0,
+      first = start > 0 ? complete.indexOf(10) + 1 : 0,
       last = complete.lastIndexOf(10);
-    if (last < first || (start && !first)) {
+    if (last < first || (start > 0 && first === 0)) {
       return [];
     }
-    const samples: RunEntry[] = [],
-      retained = new Map<string, number>();
-    for (const line of complete.subarray(first, last).toString("utf8").split("\n").reverse()) {
-      try {
-        const entry: unknown = JSON.parse(line);
-        if (
-          !validEntry(entry) ||
-          (agent !== undefined && entry.agent !== agent) ||
-          (retained.get(entry.agent) ?? 0) >= MAX_AGENT_SAMPLES
-        ) {
-          continue;
-        }
-        samples.push({ ...entry, task: entry.task.slice(0, 200) });
-        retained.set(entry.agent, (retained.get(entry.agent) ?? 0) + 1);
-        if (agent !== undefined && samples.length === MAX_AGENT_SAMPLES) {
-          break;
-        }
-      } catch {
-        /* Incomplete or invalid timing samples are not evidence. */
-      }
-    }
-    return samples;
+    return parseLegacyLines(
+      complete.subarray(first, last).toString("utf8").split("\n").reverse(),
+      agent,
+    );
   } catch {
     return [];
   } finally {
@@ -90,6 +87,36 @@ function legacySamples(agentDir: string, agent?: string): RunEntry[] {
       fs.closeSync(fd);
     }
   }
+}
+
+function parseLegacySample(line: string, agent: string | undefined): RunEntry | undefined {
+  try {
+    const entry: unknown = JSON.parse(line);
+    if (!validEntry(entry) || (agent !== undefined && entry.agent !== agent)) {
+      return;
+    }
+    return entry;
+  } catch {
+    // Invalid timing samples are not evidence; valid neighboring LF records survive.
+    return;
+  }
+}
+
+function parseLegacyLines(lines: readonly string[], agent: string | undefined): RunEntry[] {
+  const samples: RunEntry[] = [];
+  const retained = new Map<string, number>();
+  for (const line of lines) {
+    const entry = parseLegacySample(line, agent);
+    if (!entry || (retained.get(entry.agent) ?? 0) >= MAX_AGENT_SAMPLES) {
+      continue;
+    }
+    samples.push({ ...entry, task: entry.task.slice(0, 200) });
+    retained.set(entry.agent, (retained.get(entry.agent) ?? 0) + 1);
+    if (agent !== undefined && samples.length === MAX_AGENT_SAMPLES) {
+      break;
+    }
+  }
+  return samples;
 }
 
 export function recordRun(agent: string, task: string, exitCode: number, durationMs: number): void {
@@ -101,7 +128,11 @@ export function recordRun(agent: string, task: string, exitCode: number, duratio
     duration: durationMs,
     ...(exitCode !== 0 ? { exit: exitCode } : {}),
   };
-  if (!validEntry(entry)) {
+  if (
+    !validIdentity({ ...entry }) ||
+    !validTiming({ ...entry }) ||
+    !Number.isSafeInteger(exitCode)
+  ) {
     return;
   }
   let db: ReturnType<typeof openHistoryDatabase> | undefined;
@@ -160,14 +191,17 @@ export function loadRunsForAgent(agent: string): RunEntry[] {
         "SELECT agent,task,ts,status,duration,exit FROM samples WHERE agent=? ORDER BY sequence DESC LIMIT ?",
       )
       .all(agent, MAX_AGENT_SAMPLES)
-      .map((row) => ({
-        agent: String(row.agent),
-        task: String(row.task),
-        ts: Number(row.ts),
-        status: row.status as RunEntry["status"],
-        duration: Number(row.duration),
-        ...(row.exit === null ? {} : { exit: Number(row.exit) }),
-      }));
+      .flatMap((row) => {
+        const entry = {
+          agent: row.agent,
+          task: row.task,
+          ts: row.ts,
+          status: row.status,
+          duration: row.duration,
+          ...(row.exit === null ? {} : { exit: row.exit }),
+        };
+        return validEntry(entry) ? [entry] : [];
+      });
   } catch {
     return [];
   } finally {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { stableStringify } from "./stable-value.ts";
-import { isRecord } from "./record-value.ts";
+import { isRecord } from "../../shared/unknown.ts";
 
 const REPEATED_SUBAGENT_CALL_LIMIT = 5;
 const SUBAGENT_CALL_WINDOW_SIZE = REPEATED_SUBAGENT_CALL_LIMIT * 2 - 1;
