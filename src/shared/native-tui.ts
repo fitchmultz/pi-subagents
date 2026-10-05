@@ -1,8 +1,8 @@
 import { findPackageJSON } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
+import type * as NativeTui from "@earendil-works/pi-tui";
 import { requirePiPackageRoot } from "../runs/shared/pi-spawn.ts";
-import { importSelectedNative } from "./native-import.ts";
 
 // Detached Node workers use the selected host's TUI, without extension-loader aliases.
 const manifest = findPackageJSON(
@@ -12,10 +12,9 @@ const manifest = findPackageJSON(
 if (manifest === undefined || manifest === "") {
   throw new Error("Could not locate the selected Pi TUI package.");
 }
-const tui = await importSelectedNative(
-  import.meta.url,
-  "@earendil-works/pi-tui",
-  new URL("./dist/utils.js", pathToFileURL(manifest)).href,
-  () => import("@earendil-works/pi-tui"),
-);
+const selectedTuiURL = new URL("./dist/utils.js", pathToFileURL(manifest)).href;
+// The trusted selected TUI export implements this exact native string-transform contract.
+// Jiti aliases literal TUI imports to its host, so this selected dependency URL is required.
+// oxlint-disable-next-line typescript/no-unsafe-assignment
+const tui: Pick<typeof NativeTui, "stripTerminalSequences"> = await import(selectedTuiURL);
 export const { stripTerminalSequences } = tui;

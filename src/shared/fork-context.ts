@@ -15,7 +15,7 @@ interface ForkContextResolver {
   readonly sessionFileForIndex: (index?: number) => string | undefined;
 }
 
-export function resolveSubagentContext(value: unknown): SubagentExecutionContext {
+export function resolveSubagentContext(value?: unknown): SubagentExecutionContext {
   return value === "fork" ? "fork" : "fresh";
 }
 
