@@ -63,14 +63,18 @@ function applyInvocationPreview(
   result: ChainClarifyResult,
 ): SubagentParamsLike {
   const updated = previewSteps(params).map((step, index) => applyPreview(step, result, index));
-  const common = { ...params, clarify: false, async: result.runInBackground === true };
+  const confirmed = { clarify: false, async: result.runInBackground === true };
   if (params.chain) {
-    return { ...common, chain: updated.map(toSequentialStep) };
+    return { ...params, chain: updated.map(toSequentialStep), ...confirmed };
   }
   if (params.tasks) {
-    return { ...common, tasks: updated.map((step) => ({ ...step, task: step.task ?? "" })) };
+    return {
+      ...params,
+      tasks: updated.map((step) => ({ ...step, task: step.task ?? "" })),
+      ...confirmed,
+    };
   }
-  return { ...common, ...updated[0] };
+  return { ...params, ...updated[0], ...confirmed };
 }
 
 /** Preview changes launch input only; waiting and background runs share the same owner. */

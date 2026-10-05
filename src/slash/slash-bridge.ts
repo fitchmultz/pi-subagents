@@ -135,11 +135,17 @@ class SlashBridge {
       this.respond(failedResponse(requestId, "Slash subagent parameters must be an object."));
       return;
     }
-    const request: SlashSubagentRequest = {
-      requestId,
-      params: normalizeSubagentParamsLike(data.params),
-      ...(typeof data.executionCwd === "string" ? { executionCwd: data.executionCwd } : {}),
-    };
+    let request: SlashSubagentRequest;
+    try {
+      request = {
+        requestId,
+        params: normalizeSubagentParamsLike(data.params),
+        ...(typeof data.executionCwd === "string" ? { executionCwd: data.executionCwd } : {}),
+      };
+    } catch (error) {
+      this.respond(failedResponse(requestId, errorMessage(error)));
+      return;
+    }
     const controller = new AbortController();
     this.controllers.set(requestId, controller);
     if (this.pendingCancels.delete(requestId)) {
