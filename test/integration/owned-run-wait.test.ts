@@ -225,6 +225,53 @@ test("removed wait action is rejected without starting or attaching to work", as
   assert.equal(f.mock.callCount(), 0);
 });
 
+test("native session disposal settles an already registered wait without stopping its producer", async (t) => {
+  const f = await setup(t);
+  const original = f.state.ownedRuns.get(f.runId);
+  assertDefined(original);
+  const asyncDir = getRunMetadataDir(f.runId);
+  fs.rmSync(path.join(asyncDir, "foreground.json"), { force: true });
+  f.state.ownedRuns.set(f.runId, { ...original, source: "async", asyncDir, pid: process.pid });
+  saveRunStatus(f.runId, {
+    runtimeVersion: 2,
+    runId: f.runId,
+    mode: "single",
+    state: "running",
+    pid: process.pid,
+    startedAt: 1,
+    steps: [{ agent: "worker", status: "running" }],
+  });
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const polling = t.mock.method(globalThis, "setInterval");
+  const controller = new AbortController();
+  const pending = waitForOwnedRun({
+    id: f.runId,
+    deps: f.deps,
+    ctx: f.native.context,
+    signal: controller.signal,
+  });
+  assert.equal(polling.mock.callCount(), 1, "the actual wait owner registered its native timer");
+  assert.equal(polling.mock.calls[0].arguments[1], POLL_INTERVAL_MS);
+  assert.equal(f.state.waitingRuns?.has(f.runId), true);
+  f.native.session.dispose();
+  try {
+    assert.throws(() => f.native.context.sessionManager.getSessionId(), /stale|disposed/i);
+    assert.doesNotThrow(() => t.mock.timers.tick(POLL_INTERVAL_MS));
+    const result = await pending;
+    assert.equal(result.isError, true);
+    assert.equal(result.details.wait?.status, "unavailable");
+    assert.match(textAt(result.content), /stale|disposed/i);
+    assert.equal(f.state.waitingRuns.has(f.runId), false);
+    assert.equal(questionProcessAlive({ pid: process.pid }), true);
+    assert.equal(fs.existsSync(path.join(asyncDir, "control-request.json")), false);
+    assert.equal(f.mock.callCount(), 0, "losing the session cannot start a child");
+  } finally {
+    controller.abort();
+    await pending;
+    t.mock.timers.reset();
+  }
+});
+
 test("wait registration failure releases ownership and returns the native listener error", async (t) => {
   const f = await setup(t);
   const failure = new Error("native listener registration failed");
