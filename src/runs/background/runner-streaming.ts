@@ -172,6 +172,7 @@ export async function runPiStreaming(
 ): Promise<ChildAttemptResult> {
   const outputFd = fs.openSync(outputFile, "w", 0o600);
   const audit = new ChildAudit(context, outputFile);
+  let outputWritten = false;
   try {
     const result = await runChildAttempt({
       ...options,
@@ -190,6 +191,7 @@ export async function runPiStreaming(
       },
       onOutput: (text) => {
         fs.writeFileSync(outputFd, text);
+        outputWritten ||= text.length > 0;
       },
       onStderr: (text) => {
         audit.append({
@@ -204,6 +206,10 @@ export async function runPiStreaming(
         audit.record(event, observed);
       },
     });
+    // Native recovery and non-streaming providers can finalize text without publishing deltas.
+    if (!outputWritten && result.finalOutput.length > 0) {
+      fs.writeFileSync(outputFd, `${result.finalOutput}\n`);
+    }
     audit.finalized(result);
     return result;
   } finally {
