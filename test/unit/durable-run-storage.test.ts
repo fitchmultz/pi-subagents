@@ -166,7 +166,9 @@ it("v2 final results survive temporary cleanup and supply full execution results
     state: "complete",
     timestamp: 300,
     summary: "Worktree changes retained",
-    outputs: { report: { path: "report.md" } },
+    outputs: {
+      report: { agent: "worker", stepIndex: 0, text: "Full child report", path: "report.md" },
+    },
     results: [
       {
         agent: "worker",
@@ -215,7 +217,9 @@ it("v2 final results survive temporary cleanup and supply full execution results
     "direct native usage takes precedence over legacy attempt aggregation",
   );
   assert.equal(execution.details.results[0]?.artifactPaths?.metadataPath, "metadata");
-  assert.deepEqual(execution.details.outputs, { report: { path: "report.md" } });
+  assert.deepEqual(execution.details.outputs, {
+    report: { agent: "worker", stepIndex: 0, text: "Full child report", path: "report.md" },
+  });
   assert.match(firstText(execution.content), /Worktree changes retained/);
   assert.deepEqual(snapshot(dir), before);
 });
