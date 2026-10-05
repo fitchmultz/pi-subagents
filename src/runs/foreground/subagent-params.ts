@@ -1,40 +1,41 @@
+import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-  type AgentConfig,
-  type AgentDiscoveryOptions,
-  type AgentScope,
-} from "../../agents/agents.ts";
+import type { AgentDiscoveryOptions } from "../../agents/agents.ts";
+import type { AgentConfig, AgentScope } from "../../shared/types/config.ts";
 import {
   materializeAgentDefaultOutputPath,
   normalizeSingleOutputOverride,
 } from "../shared/single-output.ts";
 import type { IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
-import {
-  type ChainStep,
-  type DynamicParallelStep,
-  type ParallelStep,
-  type SequentialStep,
-} from "../../shared/settings.ts";
-import {
-  type AcceptanceInput,
-  type ControlConfig,
-  type ExtensionConfig,
-  type JsonSchemaObject,
-  type MaxOutputConfig,
-  type ManagementRunState,
-  type NestedRouteInfo,
-  type ResolvedControlConfig,
-  type SingleResult,
-  type SubagentExecutionResult,
-  type SubagentRunMode,
-  type SubagentState,
+import type {
+  ChainStep,
+  DynamicParallelStep,
+  ParallelStep,
+  SequentialStep,
+} from "../../shared/types/workflow.ts";
+import type {
+  AcceptanceInput,
+  ControlConfig,
+  ExtensionConfig,
+  JsonSchemaObject,
+  MaxOutputConfig,
+  ManagementRunState,
+  NestedRouteInfo,
+  ResolvedControlConfig,
+  ReadonlySingleResult,
+  Details,
+  SubagentRunMode,
+  SubagentState,
+  ReadonlyInput,
+  ReadonlySubagentState,
 } from "../../shared/types.ts";
 
 export function maxParallelTasksMessage(maxParallelTasks: number): string {
   return `Max ${maxParallelTasks} tasks. Split the batch into smaller parallel calls or raise parallel.maxTasks in ~/.pi/agent/extensions/subagent/config.json.`;
 }
 
-export interface TaskParam {
+export type TaskParam = ReadonlyInput<TaskParamData>;
+interface TaskParamData {
   agent: string;
   task: string;
   label?: string;
@@ -86,7 +87,8 @@ function isChainStepLike(value: unknown): value is ChainStep {
   );
 }
 
-export interface SubagentParamsLike {
+export type SubagentParamsLike = ReadonlyInput<SubagentParamsData>;
+interface SubagentParamsData {
   action?: string;
   id?: string;
   runId?: string;
@@ -151,7 +153,9 @@ export function resolveAsyncExecutionMode(
   };
 }
 
-type RawSubagentParamsLike = Record<string, unknown>;
+interface RawSubagentParamsLike {
+  readonly [key: string]: unknown;
+}
 
 function stringValue(params: RawSubagentParamsLike, key: string): string | undefined {
   const value = params[key];
@@ -188,12 +192,12 @@ export function usesAgentDefaultOutput(output: string | boolean | undefined): bo
 }
 
 export function resolveTopLevelOutputOverride(params: {
-  requestedOutput: string | boolean | undefined;
-  agentDefaultOutput: string | false | undefined;
-  artifactsDir: string;
-  runId: string;
-  agent: string;
-  index?: number;
+  readonly requestedOutput: string | boolean | undefined;
+  readonly agentDefaultOutput: string | false | undefined;
+  readonly artifactsDir: string;
+  readonly runId: string;
+  readonly agent: string;
+  readonly index?: number;
 }): string | false | undefined {
   const effectiveOutput = usesAgentDefaultOutput(params.requestedOutput)
     ? normalizeSingleOutputOverride(true, params.agentDefaultOutput)
@@ -215,11 +219,12 @@ function skillValue(params: RawSubagentParamsLike): SubagentParamsLike["skill"] 
   if (typeof value === "string" || typeof value === "boolean") {
     return value;
   }
-  return Array.isArray(value) && value.every((item) => typeof item === "string")
-    ? value
-    : undefined;
+  if (!Array.isArray(value)) {
+    return;
+  }
+  const items: unknown[] = value;
+  return items.every((item): item is string => typeof item === "string") ? items : undefined;
 }
-
 function maxOutputValue(params: RawSubagentParamsLike): MaxOutputConfig | undefined {
   const value = params.maxOutput;
   if (!isRecord(value)) {
@@ -239,6 +244,30 @@ function isAcceptanceInput(value: unknown): value is AcceptanceInput {
   return isRecord(value);
 }
 
+function sortValue(value: unknown): SubagentParamsLike["sort"] {
+  switch (value) {
+    case "attention":
+    case "newest":
+    case "oldest":
+    case "relevance":
+      return value;
+    default:
+      return;
+  }
+}
+function stateValue(value: unknown): ManagementRunState | undefined {
+  switch (value) {
+    case "live":
+    case "completed":
+    case "failed":
+    case "blocked":
+    case "paused":
+    case "unknown":
+      return value;
+    default:
+      return;
+  }
+}
 export function normalizeSubagentParamsLike(params: RawSubagentParamsLike): SubagentParamsLike {
   const normalized: SubagentParamsLike = {
     action: stringValue(params, "action"),
@@ -252,14 +281,8 @@ export function normalizeSubagentParamsLike(params: RawSubagentParamsLike): Suba
     offset: numberValue(params, "offset"),
     limit: numberValue(params, "limit"),
     cursor: stringValue(params, "cursor"),
-    sort: ["attention", "newest", "oldest", "relevance"].includes(String(params.sort))
-      ? (params.sort as SubagentParamsLike["sort"])
-      : undefined,
-    state: ["live", "completed", "failed", "blocked", "paused", "unknown"].includes(
-      String(params.state),
-    )
-      ? (params.state as ManagementRunState)
-      : undefined,
+    sort: sortValue(params.sort),
+    state: stateValue(params.state),
     text: stringValue(params, "text"),
     query: stringValue(params, "query"),
     before: numberValue(params, "before"),
@@ -297,62 +320,74 @@ export function normalizeSubagentParamsLike(params: RawSubagentParamsLike): Suba
     chainDir: stringValue(params, "chainDir"),
     acceptance: isAcceptanceInput(params.acceptance) ? params.acceptance : undefined,
   };
-  if (params.tasks !== undefined) {
-    if (!Array.isArray(params.tasks) || !params.tasks.every(isTaskParamLike)) {
-      throw new Error("tasks must be an array of task objects with an agent.");
-    }
-    normalized.tasks = params.tasks;
+  return { ...normalized, tasks: taskArray(params.tasks), chain: chainArray(params.chain) };
+}
+function taskArray(value: unknown): TaskParam[] | undefined {
+  if (value === undefined) {
+    return;
   }
-  if (params.chain !== undefined) {
-    if (!Array.isArray(params.chain) || !params.chain.every(isChainStepLike)) {
-      throw new Error("chain must contain valid sequential, parallel, or dynamic fanout steps.");
-    }
-    normalized.chain = params.chain;
+  if (!Array.isArray(value) || !value.every(isTaskParamLike)) {
+    throw new Error("tasks must be an array of task objects with an agent.");
   }
-  return normalized;
+  return value;
+}
+function chainArray(value: unknown): ChainStep[] | undefined {
+  if (value === undefined) {
+    return;
+  }
+  if (!Array.isArray(value) || !value.every(isChainStepLike)) {
+    throw new Error("chain must contain valid sequential, parallel, or dynamic fanout steps.");
+  }
+  return value;
 }
 
+export type ExecutorReadDeps = Readonly<Omit<ExecutorDeps, "state">> & {
+  readonly state: ReadonlySubagentState;
+};
 export interface ExecutorDeps {
-  pi: ExtensionAPI;
-  state: SubagentState;
-  config: ExtensionConfig;
-  asyncByDefault: boolean;
-  tempArtifactsDir: string;
-  getSubagentSessionRoot: (parentSessionFile: string | null) => string;
-  expandTilde: (p: string) => string;
-  discoverAgents: (
+  readonly pi: ExtensionAPI;
+  readonly state: SubagentState;
+  readonly config: ExtensionConfig;
+  readonly asyncByDefault: boolean;
+  readonly tempArtifactsDir: string;
+  readonly getSubagentSessionRoot: (parentSessionFile: string | null) => string;
+  readonly expandTilde: (p: string) => string;
+  readonly discoverAgents: (
     cwd: string,
     scope: AgentScope,
-    options?: AgentDiscoveryOptions,
-  ) => { agents: AgentConfig[] };
-  allowMutatingManagementActions?: boolean;
-  ensureSessionState?: (ctx: ExtensionContext) => void | Promise<void>;
+    options?: ReadonlyInput<AgentDiscoveryOptions>,
+  ) => { readonly agents: readonly AgentConfig[] };
+  readonly allowMutatingManagementActions?: boolean;
+  readonly ensureSessionState?: (ctx: ExtensionContext) => void | Promise<void>;
 }
 
 export interface ExecutionContextData {
-  params: SubagentParamsLike;
-  effectiveCwd: string;
-  ctx: ExtensionContext;
-  signal: AbortSignal | undefined;
-  onUpdate?: (r: SubagentExecutionResult) => void;
-  agents: AgentConfig[];
-  runId: string;
-  shareEnabled: boolean;
-  sessionRoot: string;
-  sessionDirForIndex: (idx?: number) => string;
-  sessionFileForIndex: (idx?: number) => string | undefined;
-  sessionFileForAgentIndex: (agentName: string | undefined, idx?: number) => string | undefined;
-  artifactsEnabled: boolean;
-  artifactsDir: string;
-  backgroundRequestedWhileClarifying: boolean;
-  effectiveAsync: boolean;
-  foregroundTimeoutMs?: number;
-  controlConfig: ResolvedControlConfig;
-  intercomBridge: IntercomBridgeState;
-  nestedRoute?: NestedRouteInfo;
-  onDetachedResultsSettled?: (
+  readonly params: SubagentParamsLike;
+  readonly effectiveCwd: string;
+  readonly ctx: ExtensionContext;
+  readonly signal: AbortSignal | undefined;
+  readonly onUpdate?: AgentToolUpdateCallback<Details>;
+  readonly agents: readonly AgentConfig[];
+  readonly runId: string;
+  readonly shareEnabled: boolean;
+  readonly sessionRoot: string;
+  readonly sessionDirForIndex: (idx?: number) => string;
+  readonly sessionFileForIndex: (idx?: number) => string | undefined;
+  readonly sessionFileForAgentIndex: (
+    agentName: string | undefined,
+    idx?: number,
+  ) => string | undefined;
+  readonly artifactsEnabled: boolean;
+  readonly artifactsDir: string;
+  readonly backgroundRequestedWhileClarifying: boolean;
+  readonly effectiveAsync: boolean;
+  readonly foregroundTimeoutMs?: number;
+  readonly controlConfig: ResolvedControlConfig;
+  readonly intercomBridge: Readonly<IntercomBridgeState>;
+  readonly nestedRoute?: NestedRouteInfo;
+  readonly onDetachedResultsSettled?: (
     mode: SubagentRunMode,
-    results: SingleResult[],
+    results: readonly ReadonlySingleResult[],
     totalSteps?: number,
   ) => void;
 }
