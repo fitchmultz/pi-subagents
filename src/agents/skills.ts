@@ -133,9 +133,9 @@ function getGlobalNpmRoot(): string | null {
 	}
 }
 
-function collectInstalledPackageSkillPaths(cwd: string, agentDir: string): SkillSearchPath[] {
+function collectInstalledPackageSkillPaths(cwd: string, agentDir: string, projectTrusted: boolean): SkillSearchPath[] {
 	const dirs: SkillSearchPath[] = [
-		{ path: path.join(cwd, CONFIG_DIR, "npm", "node_modules"), source: "project-package" },
+		...(projectTrusted ? [{ path: path.join(cwd, CONFIG_DIR, "npm", "node_modules"), source: "project-package" as const }] : []),
 		{ path: path.join(agentDir, "npm", "node_modules"), source: "user-package" },
 	];
 
@@ -184,7 +184,7 @@ function collectInstalledPackageSkillPaths(cwd: string, agentDir: string): Skill
 	return results;
 }
 
-function collectSettingsSkillPaths(cwd: string, agentDir: string): SkillSearchPath[] {
+function collectSettingsSkillPaths(cwd: string, agentDir: string, projectTrusted: boolean): SkillSearchPath[] {
 	const results: SkillSearchPath[] = [];
 	const settingsFiles = [
 		{ file: path.join(cwd, CONFIG_DIR, "settings.json"), base: path.join(cwd, CONFIG_DIR), source: "project-settings" as const },
@@ -192,6 +192,7 @@ function collectSettingsSkillPaths(cwd: string, agentDir: string): SkillSearchPa
 	];
 
 	for (const { file, base, source } of settingsFiles) {
+		if (!projectTrusted && source.startsWith("project-")) continue;
 		const settings = readOptionalJsonFile(file, "skills settings file");
 		if (!settings || typeof settings !== "object" || Array.isArray(settings)) continue;
 		const skills = (settings as { skills?: unknown }).skills;
@@ -285,7 +286,7 @@ function resolveSettingsPackageRoot(source: string, baseDir: string): string | u
 	return undefined;
 }
 
-function collectSettingsPackageSkillPaths(cwd: string, agentDir: string): SkillSearchPath[] {
+function collectSettingsPackageSkillPaths(cwd: string, agentDir: string, projectTrusted: boolean): SkillSearchPath[] {
 	const settingsFiles = [
 		{ file: path.join(cwd, CONFIG_DIR, "settings.json"), base: path.join(cwd, CONFIG_DIR), source: "project-package" as const },
 		{ file: path.join(agentDir, "settings.json"), base: agentDir, source: "user-package" as const },
@@ -293,6 +294,7 @@ function collectSettingsPackageSkillPaths(cwd: string, agentDir: string): SkillS
 	const results: SkillSearchPath[] = [];
 
 	for (const { file, base, source } of settingsFiles) {
+		if (!projectTrusted && source.startsWith("project-")) continue;
 		const settings = readOptionalJsonFile(file, "skills settings file");
 		if (!settings || typeof settings !== "object" || Array.isArray(settings)) continue;
 		const packages = (settings as { packages?: unknown }).packages;
@@ -320,14 +322,14 @@ function buildSkillPaths(cwd: string, agentDir: string, projectTrusted = true): 
 		? [
 			{ path: path.join(cwd, CONFIG_DIR, "skills"), source: "project" },
 			{ path: path.join(cwd, ".agents", "skills"), source: "project" },
-			...collectInstalledPackageSkillPaths(cwd, agentDir),
-			...collectSettingsPackageSkillPaths(cwd, agentDir),
-			...extractSkillPathsFromPackageRoot(cwd, "project-package"),
-			...collectSettingsSkillPaths(cwd, agentDir),
 		]
 		: [];
 	const skillPaths: SkillSearchPath[] = [
 		...projectSkillPaths,
+		...collectInstalledPackageSkillPaths(cwd, agentDir, projectTrusted),
+		...collectSettingsPackageSkillPaths(cwd, agentDir, projectTrusted),
+		...(projectTrusted ? extractSkillPathsFromPackageRoot(cwd, "project-package") : []),
+		...collectSettingsSkillPaths(cwd, agentDir, projectTrusted),
 		{ path: path.join(agentDir, "skills"), source: "user" },
 		{ path: path.join(os.homedir(), ".agents", "skills"), source: "user" },
 	];

@@ -173,13 +173,18 @@ describe("skills filesystem fallback", () => {
 		assert.equal(resolved[0]?.source, "project-package");
 	});
 
-	it("discovers skills from the current cwd package", () => {
+	it("discovers skills from the current cwd package", async () => {
 		makePackageSkill(tempDir, "cwd-package-skill", "Cwd package skill.");
 
 		const { resolved, missing } = resolveSkills(["cwd-package-skill"], tempDir);
 		assert.deepEqual(missing, []);
 		assert.equal(resolved.length, 1);
 		assert.equal(resolved[0]?.source, "project-package");
+		makeProjectPackageSkill(tempDir, "installed-skill-package", "cwd-package-skill", "Installed package wins equal-priority ties.");
+		const fresh = await importSkillsFresh();
+		const collision = fresh.resolveSkills(["cwd-package-skill"], tempDir);
+		assert.deepEqual(collision.missing, []);
+		assert.match(collision.resolved[0]?.content ?? "", /Installed package wins equal-priority ties/);
 	});
 
 	it("falls back to the runtime cwd when the execution cwd lacks the skill", () => {
@@ -283,6 +288,11 @@ describe("skills filesystem fallback", () => {
 			const skill = discovered.find((entry) => entry.name === "user-settings-scoped-npm-package-skill");
 			assert.ok(skill);
 			assert.equal(skill?.source, "user-package");
+			fs.mkdirSync(path.join(tempDir, ".pi"), { recursive: true });
+			fs.writeFileSync(path.join(tempDir, ".pi", "settings.json"), "{untrusted-project", "utf-8");
+			const untrusted = fresh.resolveSkills(["user-settings-scoped-npm-package-skill"], tempDir, { projectTrusted: false });
+			assert.deepEqual(untrusted.missing, []);
+			assert.equal(untrusted.resolved[0]?.source, "user-package");
 		} finally {
 			if (previousHome === undefined) delete process.env.HOME;
 			else process.env.HOME = previousHome;

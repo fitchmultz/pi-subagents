@@ -82,7 +82,8 @@ describe("doctor action executor routing", () => {
 		write(path.join(tempDir, ".pi", "chains", "project-flow.chain.md"), "---\nname: project-flow\ndescription: Project chain\n---\n\n## worker\n\nProject work");
 		write(path.join(tempDir, ".pi", "skills", "project-skill", "SKILL.md"), "---\nname: project-skill\ndescription: Project skill\n---\nFixture skill");
 		const packageDir = path.join(agentDir, "package");
-		write(path.join(packageDir, "package.json"), JSON.stringify({ name: "fixture-skills", pi: { skills: ["./skills"] } }));
+		write(path.join(packageDir, "package.json"), JSON.stringify({ name: "fixture-skills", pi: { skills: ["./skills"] }, subagents: { agents: ["profiles"] } }));
+		write(path.join(packageDir, "profiles", "package-agent.md"), "---\nname: package-agent\ndescription: Package agent\n---\nPackage instructions");
 		write(path.join(packageDir, "skills", "package-skill", "SKILL.md"), "---\nname: package-skill\ndescription: Package skill\n---\nFixture skill");
 		write(path.join(agentDir, "settings.json"), JSON.stringify({ packages: ["./package"] }));
 		const executor = createSubagentExecutor({
@@ -118,8 +119,8 @@ describe("doctor action executor routing", () => {
 		assert.ok(text.includes(`- async runs: ok (${ASYNC_DIR})`));
 		assert.ok(text.includes(`- results: ok (${RESULTS_DIR})`));
 		assert.ok(text.includes(`- chain runs: ok (${CHAIN_RUNS_DIR})`));
-		assert.match(text, /- agents: total 20 \(builtin 17, user 1, project 2\)/);
-		assert.match(text, /- chains: total 2 \(builtin 0, user 1, project 1\)/);
+		assert.match(text, /- agents: total 21 \(builtin 17, package 1, user 1, project 2\)/);
+		assert.match(text, /- chains: total 2 \(builtin 0, package 0, user 1, project 1\)/);
 		assert.match(text, /- skills: total 2 \(project 1, user-package 1\)/);
 		assert.match(text, /- configured session dir: .*configured-sessions/);
 		assert.match(text, /- connection: unknown/);

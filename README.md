@@ -4,6 +4,12 @@
 
 ## Installation
 
+```bash
+pi install npm:@fitchmultz/pi-subagents
+```
+
+**The unscoped npm package `pi-subagents` is not this project.** Use the owned `@fitchmultz/pi-subagents` package; no `npx` installer is provided.
+
 `pi-subagents` requires Pi **1.0.0** and Node **24.21.0** or later, including saved-child continuation in a different directory. No Pi fork is required. Indexed history requires the qualified built-in SQLite **3.53.4** binding; other bindings report history as unavailable rather than silently scanning journals on the interactive thread. Usage is attributed through finalized native tool results; see [usage accounting](#usage-accounting). Known Intercom host limitations are listed in the [Intercom guide](docs/intercom.md#limitations).
 
 New sessions inherit the child process's working directory. Saved sessions retain their file, identity, header, and history; a requested directory change uses Pi's native SDK cwd override before startup. Same-directory resumes, including symlink and trailing-slash spellings, need no override. Structured-output startup preserves active tools and enables its capture tool. Use an explicit tool policy for restricted child runs; Pi can restore default built-ins when resuming without one.
@@ -12,13 +18,13 @@ With [pi-change-working-dir](https://github.com/fitchmultz/pi-change-working-dir
 
 Without a directory extension, native Pi cwd behavior is unchanged. An installed older or failing directory extension produces a clear error before work starts; update it rather than silently launching in another directory. Every child validates its loaded directory owner before its first prompt, including fresh runs. Inspection, review, questions, stop, and ordinary saved-child continuation remain available even when the parent's selected directory is unavailable. Native session identity, project context, and browser-group identity keep their existing ownership.
 
-Install from GitHub:
+Git fallback (existing tags and branches remain installable):
 
 ```bash
 pi install git:github.com/fitchmultz/pi-subagents
 ```
 
-This package is not published to npm and does not provide an `npx` installer. Use `pi update --extension git:github.com/fitchmultz/pi-subagents` to refresh only this package. Before updating an in-use Pi checkout or extension, checkpoint work and **fully quit every Pi session using that installation**. Run rebuilds and updates from a separate terminal, then start fresh Pi processes. `/reload` can refresh supported settings, skills, and prompts, but cannot reliably activate changed JavaScript. Resume the **same saved parent session**, for example with `pi --session /path/to/parent.jsonl`, to retain run ownership, questions, and pending intercom delivery. A new or forked parent does not adopt them.
+Use `pi update --extension npm:@fitchmultz/pi-subagents` for an npm install, or `pi update --extension git:github.com/fitchmultz/pi-subagents` for an existing Git install. To switch sources, remove only the old package declaration with `pi remove git:github.com/fitchmultz/pi-subagents`, then install the scoped package; keep your user profiles and settings. Before updating an in-use Pi checkout or extension, checkpoint work and **fully quit every Pi session using that installation**. Run rebuilds and updates from a separate terminal, then start fresh Pi processes. `/reload` can refresh supported settings, skills, and prompts, but cannot reliably activate changed JavaScript. Resume the **same saved parent session**, for example with `pi --session /path/to/parent.jsonl`, to retain run ownership, questions, and pending intercom delivery. A new or forked parent does not adopt them.
 
 To restart the bundled broker too, close every Pi session using the same agent directory and wait at least five seconds before reopening Pi.
 
@@ -53,11 +59,11 @@ Pi 1.0 still eagerly loads native journals during its own startup; extension ins
 
 ## Local validation
 
-`npm run check:compat` uses the selected host installed in this checkout, never a hidden Pi from PATH. It checks host SDK/manifest-bin identity, typechecks, builds, and qualifies both compiled entries with a private Intercom broker through the native SDK and bundled RPC CLI. Official hosts exercise same/different-cwd resume, acceptance, structured output, native result routing/ownership and tool activation. No provider credentials or inference services are used.
+`npm run check:compat` uses the selected host installed in this checkout, never a hidden Pi from PATH. It runs full CI with actual native editor receipts: a supplied clean `PI_EDITOR_RECEIPT_TEST_ROOT` stays read-only, otherwise the owning runner snapshots public `pi-apply-edits` main once in a temporary checkout, records its exact Git SHA, installs only its third-party runtime dependencies, and cleans its owned copy. Repository CI resolves that editor SHA once for all host/platform lanes. It checks host SDK/manifest-bin identity, typechecks, builds, and qualifies both compiled entries with a private Intercom broker through the native SDK and bundled RPC CLI. Official hosts exercise same/different-cwd resume, acceptance, structured output, native result routing/ownership and tool activation. No provider credentials or inference services are used.
 
-Repository CI qualifies the locked official Pi graph and the maintained fork through the existing Linux/macOS lanes. One resolver selects the fork commit for every platform lane, so a run never mixes moving `main` revisions. Focused delegation, Intercom, native usage and process checks run alongside package/install smokes; the complete integration suite remains available locally through `npm run ci`.
+Repository CI resolves latest stable official Pi and maintained fork main once, then freezes that version/SHA across the Linux/macOS lanes and release qualification. Full `npm run ci`, selected-host native contracts, Git production builds and packed-install smokes remain required.
 
-Fork jobs supply `PI_COMPAT_HOST=fork`, `PI_COMPAT_EXPECTED_VERSION`, `PI_COMPAT_EXPECTED_PACKAGE_DIR`, `PI_HOST_INDEX`, and `PI_HOST_CLI` to verify the selected SDK and CLI. The official job uses the locked Pi cohort with `PI_COMPAT_HOST=official`. Both targets use ordinary 1.0 lifecycle and finalized tool-result accounting, without checkpoint, immediate-usage or pending-call APIs. A resolved fork below 1.0 reports qualification as `UNATTEMPTED` rather than run unsupported-host tests or certify that host; the official lane and supported-fork checks remain unchanged. See [host capabilities](#host-capabilities-and-result-delivery) and [limitations](docs/intercom.md#limitations).
+Fork jobs supply `PI_COMPAT_HOST=fork`, `PI_COMPAT_EXPECTED_VERSION`, `PI_COMPAT_EXPECTED_PACKAGE_DIR`, `PI_HOST_INDEX`, and `PI_HOST_CLI` to verify the selected SDK and CLI. The official job uses the resolved latest stable cohort with `PI_COMPAT_HOST=official`. Both targets use ordinary 1.0 lifecycle and finalized tool-result accounting, without checkpoint, immediate-usage or pending-call APIs. Unsupported hosts fail qualification rather than skip native checks. See [host capabilities](#host-capabilities-and-result-delivery) and [limitations](docs/intercom.md#limitations).
 
 For a fresh development worktree, run `npm ci` before launching Pi there: project-local `.pi/extensions` can autoload before dependencies exist. Alternatively launch from a neutral directory and use `change_dir` to enter the owned worktree after startup. Do not disable all extensions or remove project extensions to hide missing dependencies.
 
@@ -450,7 +456,7 @@ If you previously installed the standalone package, remove that old settings ent
 
 ```bash
 pi remove git:github.com/fitchmultz/pi-intercom
-pi install git:github.com/fitchmultz/pi-subagents
+pi install npm:@fitchmultz/pi-subagents
 ```
 
 Most users do not call `intercom` directly. `pi-subagents` injects fixed default bridge instructions and auto-adds `intercom`, `contact_supervisor`, and any required `structured_output` tool when a child has an explicit tool list. If an agent sets an explicit `extensions` allowlist, include `pi-intercom` there or those child tools stay sandboxed out. The bridge resolves that entry, including old standalone paths, to the bundled extension.
@@ -621,9 +627,14 @@ Agent locations, lowest to highest priority:
 
 | Scope | Path |
 |-------|------|
-| Builtin | Installed package's `agents/` directory |
+| Builtin | Subagents' own `agents/` directory |
+| Package | Configured Pi packages declaring `subagents.agents` directories |
 | User | `~/.pi/agent/agents/**/*.md` |
 | Project | `.pi/agents/**/*.md` |
+
+Package profiles use Pi's public package manager to resolve installed npm, Git and local package declarations, without installing missing packages or scanning undeclared dependencies. Declare exact package-relative directories in `package.json`, for example `"subagents": { "agents": ["resources/agents"] }`; absolute, escaping and missing directories are rejected. Profiles are read-only: create a same-named user or trusted-project profile to override one. Precedence is builtin < package < user < trusted project. Package declarations follow `agentScope`; untrusted project declarations are not read. In both scopes, a project declaration shadows the same npm name, Git repository or local package identity; a project `autoload:false` resource delta retains the global package's profiles. Discovery reads current settings on every request, so source removal/reload cannot retain stale profiles. Pi's native resource filters still control extensions/skills/prompts; they do not filter this separate profile manifest.
+
+Install `npm:@fitchmultz/pi-workflows` alongside Subagents 0.44.4 or later for its recipe specialists. No profile copying into user or project directories is needed.
 
 Project discovery also reads legacy `.agents/**/*.md` files. Nested subdirectories are discovered recursively. `.chain.md` files do not define agents. If both `.agents/` and `.pi/agents/` define the same parsed runtime agent name, `.pi/agents/` wins. Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions.
 
@@ -1025,7 +1036,7 @@ delegate({
 
 ### Management actions
 
-Agent definitions are not loaded into context by default. Management actions let the LLM discover, inspect, create, update, and delete agents and chains at runtime. `list` and `get` show the effective runtime agent by default, so user/project agents that shadow a builtin appear once with the same precedence used for execution (`project` > `user` > `builtin`). Pass `agentScope: "user"` or `agentScope: "project"` to inspect a specific shadowing scope.
+Agent definitions are not loaded into context by default. Management actions let the LLM discover, inspect, create, update, and delete agents and chains at runtime. `list` and `get` show the effective runtime agent by default, so user/project agents that shadow a builtin appear once with the same precedence used for execution (`project` > `user` > `package` > `builtin`). Pass `agentScope: "user"` or `agentScope: "project"` to inspect a specific shadowing scope.
 
 ```ts
 { action: "list" }

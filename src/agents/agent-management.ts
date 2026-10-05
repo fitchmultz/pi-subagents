@@ -80,8 +80,8 @@ function parsePackageConfig(value: unknown): { packageName?: string; error?: str
 	return parsePackageName(value, "config.package");
 }
 
-function allAgents(d: { builtin: AgentConfig[]; user: AgentConfig[]; project: AgentConfig[] }): AgentConfig[] {
-	return [...d.builtin, ...d.user, ...d.project];
+function allAgents(d: { builtin: AgentConfig[]; package: AgentConfig[]; user: AgentConfig[]; project: AgentConfig[] }): AgentConfig[] {
+	return [...d.builtin, ...d.package, ...d.user, ...d.project];
 }
 
 function discoveryOptions(ctx: ManagementContext): { projectTrusted: boolean } {
@@ -388,7 +388,7 @@ function resolveTarget<T extends { source: AgentSource; filePath: string }>(
 	const mutable = matches.filter(isMutableTarget);
 	if (mutable.length === 0) {
 		if (matches.length > 0) {
-			return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' is builtin and cannot be modified. Create a same-named ${kind} in user or project scope to override it.`, true);
+			return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' is ${matches[0]!.source} and cannot be modified. Create a same-named ${kind} in user or project scope to override it.`, true);
 		}
 		const available = availableNames(ctx, kind);
 		return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' not found. Available: ${available.join(", ") || "none"}.`, true);

@@ -2684,10 +2684,16 @@ for (const hasUI of [true, false]) test(`steered supervisor decisions and interv
   }
 });
 
-test("deferred startup connect is cancelled on shutdown", { concurrency: false }, async () => {
+test("shutdown cancels deferred startup and joins an already in-flight connection", { concurrency: false, timeout: 20_000 }, async (t) => {
   const { default: piIntercomExtension } = await import("../../src/pi-intercom/index.ts");
   const { planner, cleanup } = await setupClients();
   const harness = createExtensionHarness("shutdown-before-start", { hasUI: true });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const originalConnect = IntercomClient.prototype.connect;
+  let connectSettled = false;
+  let settledAtShutdown: boolean | undefined;
+  let shutdown: Promise<unknown> | undefined;
 
   try {
     piIntercomExtension(harness.pi as never);
@@ -2697,7 +2703,27 @@ test("deferred startup connect is cancelled on shutdown", { concurrency: false }
 
     const sessions = await planner.listSessions();
     assert.equal(sessions.some((session) => session.name === "shutdown-before-start"), false);
+
+    t.mock.method(IntercomClient.prototype, "connect", async function (this: InstanceType<typeof IntercomClient>, ...args: Parameters<typeof originalConnect>) {
+      if (args[0].name === "shutdown-before-start") {
+        entered.resolve();
+        await release.promise;
+      }
+      await originalConnect.apply(this, args);
+      if (args[0].name === "shutdown-before-start") connectSettled = true;
+    });
+    await harness.emitLifecycle("session_start");
+    await entered.promise;
+    shutdown = harness.emitLifecycle("session_shutdown").then(() => { settledAtShutdown = connectSettled; });
+    release.resolve();
+    await shutdown;
+    assert.equal(settledAtShutdown, true, "The real connection must settle before the shutdown hook returns");
+    assert.equal(planner.isConnected(), true, "Shutdown must not stop a broker used by another client");
+    assert.equal((await planner.listSessions()).some((session) => session.name === "shutdown-before-start"), false);
   } finally {
+    release.resolve();
+    await shutdown;
+    await harness.emitLifecycle("session_shutdown");
     await cleanup();
   }
 });

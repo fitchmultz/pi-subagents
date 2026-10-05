@@ -91,9 +91,11 @@ test("one manifest bundles subagents and intercom", () => {
 	assert.equal(fs.existsSync(path.join(projectRoot, "scripts", "intercom-smoke-package.mjs")), false);
 });
 
-test("package is private and exposes no legacy npx installer", () => {
+test("package has the owned public scoped identity and exposes no legacy npx installer", () => {
 	const packageJson = readPackageJson();
-	assert.equal(packageJson.private, true);
+	assert.equal(packageJson.name, "@fitchmultz/pi-subagents");
+	assert.notEqual(packageJson.private, true);
+	assert.deepEqual(packageJson.publishConfig, { access: "public" });
 	assert.equal("bin" in packageJson, false);
 	const files = Array.isArray(packageJson.files) ? packageJson.files : [];
 	assert.equal(files.includes("*.mjs"), false);
