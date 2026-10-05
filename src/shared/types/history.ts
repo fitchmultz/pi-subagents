@@ -196,7 +196,8 @@ export interface HistoryIndexStatus extends HistoryVersion {
 
 /** Public process-owner capability contract; the type model never imports the index implementation. */
 export interface HistoryIndexHandle {
-  readonly failure: Error | undefined;
+  /** Diagnostic view of the original failure; reading the capability must not permit error mutation. */
+  readonly failure: Readonly<Error> | undefined;
   readonly setOwner: (input: HistoryOwner) => Promise<void>;
   readonly updateRun: (run: OwnedRun, foreground?: ReadonlyForegroundResumeRun) => Promise<void>;
   readonly needsControls: () => Promise<boolean>;
