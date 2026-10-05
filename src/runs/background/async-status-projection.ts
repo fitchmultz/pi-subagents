@@ -111,7 +111,7 @@ function summaryChildren(
   runId: string,
   projected: ReadonlyInput<NestedRunSummary[]> | undefined,
   warnings: readonly string[],
-): { readonly children: NestedRunSummary[]; readonly warnings: readonly string[] } {
+): { readonly children: readonly NestedRunSummary[]; readonly warnings: readonly string[] } {
   if (projected !== undefined) {
     return {
       children: projected

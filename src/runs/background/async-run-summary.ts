@@ -37,7 +37,7 @@ export interface AsyncRunStepSummary {
   readonly thinking?: string;
   readonly attemptedModels?: readonly string[];
   readonly error?: string;
-  children?: NestedRunSummary[];
+  children?: readonly NestedRunSummary[];
 }
 
 export interface AsyncRunSummary {
@@ -66,6 +66,6 @@ export interface AsyncRunSummary {
   readonly outputFile?: string;
   readonly totalTokens?: TokenUsage;
   readonly sessionFile?: string;
-  readonly nestedChildren?: NestedRunSummary[];
+  readonly nestedChildren?: readonly NestedRunSummary[];
   readonly nestedWarnings?: readonly string[];
 }
