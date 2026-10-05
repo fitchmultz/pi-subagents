@@ -1,11 +1,16 @@
 diff --git a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
-index 1590568..79e7cde 100644
+index 1590568..1ad667d 100644
 --- a/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
 +++ b/internal/rules/prefer_readonly_parameter_types/prefer_readonly_parameter_types.go
-@@ -293,6 +293,18 @@ func isTypeReadonlyRecurser(
+@@ -293,7 +293,19 @@ func isTypeReadonlyRecurser(
  ) readonlyness {
  	seenTypes[t] = struct{}{}
  
+-	if utils.TypeMatchesSomeSpecifier(t, opts.allow, program) {
++	if utils.TypeMatchesSomeSpecifierExactly(t, opts.allow, program) {
++		return readonlynessReadonly
++	}
++
 +	if utils.IsIntersectionType(t) {
 +		for _, subType := range t.Types() {
 +			if _, ok := seenTypes[subType]; ok {
@@ -15,12 +20,9 @@ index 1590568..79e7cde 100644
 +				return readonlynessMutable
 +			}
 +		}
-+		return readonlynessReadonly
-+	}
-+
- 	if utils.TypeMatchesSomeSpecifier(t, opts.allow, program) {
  		return readonlynessReadonly
  	}
+ 
 @@ -309,33 +321,6 @@ func isTypeReadonlyRecurser(
  		return readonlynessReadonly
  	}
@@ -56,7 +58,7 @@ index 1590568..79e7cde 100644
  		return readonlynessReadonly
  	}
 diff --git a/internal/utils/type_matches_specifier.go b/internal/utils/type_matches_specifier.go
-index cfcaaab..96609ce 100644
+index cfcaaab..99edac7 100644
 --- a/internal/utils/type_matches_specifier.go
 +++ b/internal/utils/type_matches_specifier.go
 @@ -385,11 +385,8 @@ func typeMatchesSpecifier(
@@ -73,3 +75,48 @@ index cfcaaab..96609ce 100644
  	}
  	var declarations []*ast.Node
  	if symbol != nil {
+@@ -519,21 +516,25 @@ func ConvertTypeOrValueSpecifier(spec any) (TypeOrValueSpecifier, bool) {
+ 	return result, true
+ }
+ 
++func TypeMatchesSomeSpecifierExactly(
++	t *checker.Type,
++	specifiers []TypeOrValueSpecifier,
++	program *compiler.Program,
++) bool {
++	if IsIntrinsicErrorType(t) {
++		return false
++	}
++	return Some(specifiers, func(s TypeOrValueSpecifier) bool {
++		return typeMatchesSpecifier(t, s, program)
++	})
++}
++
+ func TypeMatchesSomeSpecifier(
+ 	t *checker.Type,
+ 	specifiers []TypeOrValueSpecifier,
+ 	program *compiler.Program,
+ ) bool {
+-	matches := func(t *checker.Type) bool {
+-		if IsIntrinsicErrorType(t) {
+-			return false
+-		}
+-		return Some(specifiers, func(s TypeOrValueSpecifier) bool {
+-			return typeMatchesSpecifier(t, s, program)
+-		})
+-	}
+-
+-	if matches(t) {
++	if TypeMatchesSomeSpecifierExactly(t, specifiers, program) {
+ 		return true
+ 	}
+ 
+@@ -541,7 +542,7 @@ func TypeMatchesSomeSpecifier(
+ 		if typePart == t {
+ 			continue
+ 		}
+-		if matches(typePart) {
++		if TypeMatchesSomeSpecifierExactly(typePart, specifiers, program) {
+ 			return true
+ 		}
+ 	}

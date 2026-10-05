@@ -118,9 +118,11 @@ This is an input-contract check, not proof of callback purity or runtime freezin
   the matched name, so an exact file-qualified, non-generic native wrapper can
   pass without granting permission to every instantiation of the SDK generic.
 - Native approval previously short-circuited an entire intersection when any part
-  was approved. The readonly rule now checks every intersection constituent before
-  the approval shortcut. `Theme & { state: string[] }` therefore reports while
-  `Theme & { readonly labels: readonly string[] }` retains native permission.
+  was approved. The readonly rule now accepts an exact whole-type declaration
+  match, including approved SDK intersection aliases, but otherwise checks every
+  intersection constituent independently. `Theme & { state: string[] }` therefore
+  reports while `Theme & { readonly labels: readonly string[] }` retains native
+  permission. The existing any-member matcher remains unchanged for other rules.
 
 For a fixed alias such as `SubagentExecutionResult = AgentToolResult<ReadonlyDetails>`,
 qualify its actual declaration file, not the `AgentToolResult` SDK generic. Probe
