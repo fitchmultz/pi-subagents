@@ -1,4 +1,8 @@
-import type { AcceptanceInput, AcceptanceLedgerStatus, ResolvedAcceptanceConfig } from "./acceptance.ts";
+import type {
+  AcceptanceInput,
+  AcceptanceLedgerStatus,
+  ResolvedAcceptanceConfig,
+} from "./acceptance.ts";
 import type { JsonSchemaObject, OutputMode } from "./config.ts";
 import type { SavedLaunchConfig } from "./launch.ts";
 
