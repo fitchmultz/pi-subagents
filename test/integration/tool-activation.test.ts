@@ -24,10 +24,12 @@ import {
 import { OWNED_RUN_ENTRY, saveForegroundRun } from "../../src/runs/shared/run-records.ts";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
+import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
   createEventBus,
   DefaultResourceLoader,
+  ModelRuntime,
   SettingsManager,
   SessionManager,
   type AgentSession,
@@ -57,10 +59,19 @@ async function withSdkSession(
     additionalExtensionPaths: [extensionPath],
   });
   await resourceLoader.reload();
+  const faux = fauxProvider();
+  const modelRuntime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+    refreshOnCreate: false,
+  });
+  modelRuntime.registerNativeProvider(faux.provider);
   const { session } = await createAgentSession({
     cwd: projectRoot,
     agentDir,
     resourceLoader,
+    modelRuntime,
+    model: faux.getModel(),
     sessionManager: SessionManager.inMemory(projectRoot),
     ...options,
     tools: options.tools?.slice(),
