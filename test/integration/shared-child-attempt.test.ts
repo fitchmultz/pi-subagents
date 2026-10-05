@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { findPackageJSON } from "node:module";
 import { test } from "node:test";
+import sinon from "sinon";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolveEffectiveAcceptance } from "../../src/runs/shared/acceptance.ts";
 import { getRunMetadataDir } from "../../src/runs/shared/supervisor-questions.ts";
@@ -526,7 +527,6 @@ test("native post-submission provider failure remains authoritative", async () =
   assertDefined(result.results[0].error);
   assert.match(result.results[0].error, /Fixture final provider failure/);
   assertDefined(result.results[0].acceptance);
-  assertDefined(result.results[0].acceptance.childReport);
   assert.equal(result.results[0].acceptance.childReport, undefined);
   assertDefined(result.results[0].acceptance);
   assertDefined(result.results[0].acceptance.unconfirmedOutput);
@@ -672,51 +672,43 @@ test("native message references and finalization scans scale with new messages r
       filtered = 0;
     const prototype: Pick<unknown[], "find" | "filter"> = Array.prototype;
     const find = prototype.find;
-    const findMock = t.mock.method(
-      prototype,
-      "find",
-      function (
-        this: readonly unknown[],
-        predicate: (value: unknown, index: number, array: readonly unknown[]) => unknown,
-        thisArg?: unknown,
-      ) {
-        const observation = this[0];
-        const matching =
-          isRecord(observation) &&
-          typeof observation.start === "number" &&
-          observation.kind === "message_end";
-        const result: unknown = Reflect.apply(find, this, [
-          (item: unknown, index: number, array: readonly unknown[]) => {
-            if (matching) {
-              comparisons++;
-            }
-            return predicate.call(thisArg, item, index, array);
-          },
-        ]);
-        return result;
-      },
-    );
+    const findMock = sinon.stub(prototype, "find").callsFake(function (
+      this: readonly unknown[],
+      predicate: (value: unknown, index: number, elements: readonly unknown[]) => unknown,
+      thisArg?: unknown,
+    ) {
+      const observation = this[0];
+      const matching =
+        isRecord(observation) &&
+        typeof observation.start === "number" &&
+        observation.kind === "message_end";
+      const result: unknown = Reflect.apply(find, this, [
+        (item: unknown, index: number, elements: readonly unknown[]) => {
+          if (matching) {
+            comparisons++;
+          }
+          return predicate.call(thisArg, item, index, elements);
+        },
+      ]);
+      return result;
+    });
     const filter = prototype.filter;
-    const filterMock = t.mock.method(
-      prototype,
-      "filter",
-      function (
-        this: readonly unknown[],
-        predicate: (value: unknown, index: number, array: readonly unknown[]) => unknown,
-        thisArg?: unknown,
-      ) {
-        const messages = this[0];
-        const result: unknown = Reflect.apply(filter, this, [
-          (item: unknown, index: number, array: readonly unknown[]) => {
-            if (isRecord(messages) && typeof messages.role === "string") {
-              filtered++;
-            }
-            return predicate.call(thisArg, item, index, array);
-          },
-        ]);
-        return result;
-      },
-    );
+    const filterMock = sinon.stub(prototype, "filter").callsFake(function (
+      this: readonly unknown[],
+      predicate: (value: unknown, index: number, elements: readonly unknown[]) => unknown,
+      thisArg?: unknown,
+    ) {
+      const messages = this[0];
+      const result: unknown = Reflect.apply(filter, this, [
+        (item: unknown, index: number, elements: readonly unknown[]) => {
+          if (isRecord(messages) && typeof messages.role === "string") {
+            filtered++;
+          }
+          return predicate.call(thisArg, item, index, elements);
+        },
+      ]);
+      return result;
+    });
     let result: Awaited<ReturnType<typeof runChildAttempt>>;
     try {
       // Each scenario owns shared fixture state; complete it before starting the next one.
@@ -725,7 +717,7 @@ test("native message references and finalization scans scale with new messages r
         args: [],
         cwd: root,
         env: {
-          PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+          PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
           JOURNAL: file,
           BOUNDARIES: boundaries,
         },
@@ -735,8 +727,8 @@ test("native message references and finalization scans scale with new messages r
         auditPath: path.join(root, "audit"),
       });
     } finally {
-      findMock.mock.restore();
-      filterMock.mock.restore();
+      findMock.restore();
+      filterMock.restore();
     }
     assert.equal(result.exitCode, 0, result.error);
     assert.equal(result.accounting?.state, "complete", result.accounting?.error);
@@ -806,7 +798,7 @@ test("native fallback never assigns baseline IDs to new messages with identical 
   const result = await runChildAttempt({
     args: [],
     cwd: root,
-    env: { PATH: `${bin}${path.delimiter}${process.env.PATH}`, JOURNAL: file },
+    env: { PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`, JOURNAL: file },
     agent: "fixture",
     sessionFile: file,
     auditPath: path.join(root, "audit"),
@@ -865,7 +857,6 @@ test("native review rejects an older valid report after later assistant activity
   assertDefined(result.results[0].acceptance.finalization);
   assert.equal(result.results[0].acceptance.finalization.turns.length, 1);
   assertDefined(result.results[0].acceptance);
-  assertDefined(result.results[0].acceptance.childReport);
   assert.equal(result.results[0].acceptance.childReport, undefined);
   assertDefined(result.results[0].acceptance);
   assertDefined(result.results[0].acceptance.unconfirmedOutput);

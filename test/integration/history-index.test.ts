@@ -99,7 +99,7 @@ function seed(
   fs.mkdirSync(root, { recursive: true });
   const ownedRun = {
     ...run(id, undefined, agent),
-    ...(attention.length || state === "live"
+    ...(attention.length > 0 || state === "live"
       ? {}
       : { review: { decision: "accepted" as const, reviewedAt: updatedAt } }),
   };
@@ -205,13 +205,13 @@ test(
     let sequence = 0;
     const requests = new Map<
       number,
-      Readonly<{ resolve: (value: unknown) => void; reject: (error: Error) => void }>
+      Readonly<{ resolve: (value: unknown) => void; reject: (error: Readonly<Error>) => void }>
     >();
     const observed = new Set<string>(),
       waiting = new Map<string, () => void>();
     const directories: string[] = [];
-    worker.on("message", (message: unknown) => {
-      const response = objectRecord(message);
+    worker.on("message", (received: unknown) => {
+      const response = objectRecord(received);
       if (typeof response.watchDirectory === "string") {
         directories.push(response.watchDirectory);
         return;
@@ -222,13 +222,16 @@ test(
         waiting.delete(response.watchHint);
         return;
       }
+      if (response.changed === true) {
+        return;
+      }
       const id = numberValue(response.id);
       const request = requests.get(id);
       if (!request) {
         return;
       }
       requests.delete(id);
-      if (response.error) {
+      if (response.error !== undefined) {
         const failure = objectRecord(response.error);
         request.reject(
           Object.assign(new Error(stringValue(failure.message)), {
@@ -1009,7 +1012,14 @@ test("selected canonical result details select sparse child indices, retain full
           agent: "other",
           index: 4,
           status: "completed",
-          result: { finalOutput: "unrelated", messages: [{ secret: "private payload" }] },
+          result: {
+            agent: "other",
+            task: "independent saved task",
+            exitCode: 0,
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+            finalOutput: "unrelated",
+            messages: [{ secret: "private payload" }],
+          },
         },
         {
           agent: "worker",
@@ -1061,7 +1071,13 @@ test("selected canonical result details select sparse child indices, retain full
           agent: "worker",
           index: 9,
           status: "completed",
-          result: { agent: "worker", task: "task", finalOutput: "x".repeat(16 * 1024 * 1024 + 1) },
+          result: {
+            agent: "worker",
+            task: "task",
+            exitCode: 0,
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+            finalOutput: "x".repeat(16 * 1024 * 1024 + 1),
+          },
         },
       ],
     }),

@@ -6,7 +6,10 @@ import {
   ChainClarifyComponent,
   type ChainClarifyOptions,
 } from "../../src/runs/foreground/chain-clarify.ts";
-import { makeAgent } from "../support/helpers.ts";
+import { clarifyInvocation } from "../../src/runs/foreground/clarify-invocation.ts";
+import { assertDefined } from "../support/assertions.ts";
+import { customInteraction } from "../support/custom-interaction.ts";
+import { makeAgent, makeMinimalCtx, createTempDir, removeTempDir } from "../support/helpers.ts";
 import { createPlainTheme } from "../support/ui.ts";
 import { createTestTerminal } from "../support/terminal.ts";
 
@@ -52,6 +55,33 @@ function overview(component: Readonly<ChainClarifyComponent>): string {
 }
 
 describe("chain clarify model display", () => {
+  for (const scenario of [
+    { initialAsync: false, keys: ["b", "\r"], expectedAsync: true },
+    { initialAsync: true, keys: ["\r"], expectedAsync: false },
+  ] as const) {
+    it(`confirmed single preview switches async ${scenario.initialAsync} to ${scenario.expectedAsync} and closes clarification`, async (t) => {
+      const cwd = createTempDir("single-preview-");
+      t.after(() => removeTempDir(cwd));
+      const base = makeMinimalCtx(cwd);
+      const ctx = makeMinimalCtx(cwd, {
+        mode: "tui",
+        hasUI: true,
+        ui: { ...base.ui, custom: customInteraction(scenario.keys) },
+      });
+      const confirmed = await clarifyInvocation({
+        params: { agent: "worker", task: "Task", async: scenario.initialAsync, clarify: true },
+        agents: [makeAgent("worker")],
+        ctx,
+        cwd,
+        runId: "preview",
+      });
+      assertDefined(confirmed);
+      assert.equal(confirmed.async, scenario.expectedAsync);
+      assert.equal(confirmed.clarify, false);
+      assert.equal(confirmed.task, "Task");
+    });
+  }
+
   it("keeps the preferred provider visible after applying thinking to a bare model", () => {
     const component = preview("gpt-5-mini", {
       availableModels: [
