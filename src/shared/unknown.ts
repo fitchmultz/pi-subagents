@@ -20,16 +20,24 @@ export function recordAt(value: unknown, key: string | number): UnknownRecord | 
 }
 
 export function errorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === "string") {
-    return error;
-  }
-  if (error === undefined) {
-    return "undefined";
-  }
   try {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    if (typeof error === "string") {
+      return error;
+    }
+    if (error === undefined) {
+      return "undefined";
+    }
+    if (
+      typeof error === "number" ||
+      typeof error === "boolean" ||
+      typeof error === "bigint" ||
+      typeof error === "symbol"
+    ) {
+      return String(error);
+    }
     const serialized: string | undefined = JSON.stringify(error);
     return typeof serialized === "string" ? serialized : "Unserializable failure";
   } catch {
