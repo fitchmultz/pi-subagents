@@ -132,6 +132,22 @@ make metrics pass. Review fixes, formatting idempotence and lint/format converge
 
 ## Verification and reporting
 
+### Responsibility boundaries
+
+The strict cleanup separates responsibilities, not just file lengths:
+
+| Before                                                                                          | Current owner boundary                                                                                                                                                  | Preserved contract                                                                                                         |
+| ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| The detached runner mixed process controls, step execution, status, acceptance and publication. | `RunnerLifecycle` owns cancellation and cleanup; `RunnerMonitor` owns status; `RunnerWorkflow` executes the plan; `completeRunner` publishes finalized evidence.        | Ordered steps, bounded concurrency, sibling evidence, durable completion and process-tree cleanup.                         |
+| Foreground execution mixed management commands, preparation, launch and waiting.                | `ForegroundExecutor` prepares one request and selects `ManagementActions` or `InvocationExecution`; the wait owner separately registers, observes and settles receipts. | An accepted launch is not undone by a wait failure; cancellation and supervisor handoff remain distinct.                   |
+| History ingestion, querying, watching and IPC shared large implementations.                     | The worker owns admission and background work; source ingestion owns its descriptor/transaction; query modules own paging and selection; IPC validates both directions. | Native journal publication, owner isolation, bounded selected records, cursor freshness and read-only authoritative files. |
+| Agents UI forwarded operations through the controller and shared writable task objects.         | The task store owns cache updates; browser and controls expose focused bound ports; conversation components receive readonly observations.                              | Drafts, unread state, paging, native clicks, full metadata and session-generation guards.                                  |
+| Parent and child runtimes duplicated final-result adaptation and reload cleanup.                | Shared adapters perform the native result copy once; each runtime owns its reset, subscriptions and shutdown.                                                           | Native usage accounting, persisted notices, reload recovery and joining parent reset before disposal.                      |
+
+The application executor now accepts one named request object, with its callers migrated together.
+Native Pi callbacks retain their required SDK signatures. Existing public compatibility exports remain;
+new private helpers are not exported merely to move lines or enable tests.
+
 `test/quality/*.test.mjs` invokes the installed native CLI against disposable projects. Expected rule IDs,
 locations, positive boundaries and failure statuses are independent of the checker. Fixtures are strings
 materialized outside normal compilation. Tests cover language opt-in, inherited projects, compiler-only
