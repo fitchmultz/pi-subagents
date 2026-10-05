@@ -8,8 +8,47 @@ import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-const { loadRunsForAgent } = await import("../../src/runs/shared/run-history.ts");
+const { recordRun, loadRunsForAgent } = await import("../../src/runs/shared/run-history.ts");
 const writerModule = new URL("../../src/runs/shared/run-history.ts", import.meta.url).href;
+
+test("cold timing writers retain their sample when SQLite removes another connection's sidecars", async (t) => {
+	const f = fixture(t), database = path.join(fs.realpathSync(f.root), "history-index", "run-timing.sqlite"), exists = fs.existsSync, chmod = fs.chmodSync;
+	const ready = path.join(f.root, "ready"), release = path.join(f.root, "release"), closed = path.join(f.root, "closed");
+	let writer: ReturnType<typeof spawn> | undefined, exited: Promise<void> | undefined, vanished = false;
+	const wait = (file: string) => {
+		const deadline = Date.now() + 5000;
+		while (!exists(file)) { assert.ok(Date.now() < deadline, `native writer publishes ${file}`); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1); }
+	};
+	const closeWriter = () => {
+		if (vanished) return;
+		assert.equal(exists(database + "-wal"), true);
+		assert.equal(exists(database + "-shm"), true);
+		fs.writeFileSync(release, "close"); wait(closed);
+		assert.equal(exists(database + "-wal"), false, "SQLite itself removed the WAL while the cold converter remained open");
+		assert.equal(exists(database + "-shm"), false);
+		vanished = true;
+	};
+	t.mock.method(fs, "chmodSync", function(file, mode) {
+		if (file === database && !writer) {
+			const child = spawn(process.execPath, ["--input-type=module", "-e", `import fs from "node:fs"; import { DatabaseSync } from "node:sqlite"; const db = new DatabaseSync(${JSON.stringify(database)}); db.exec("CREATE TABLE native_sidecar_probe(value)"); fs.writeFileSync(${JSON.stringify(ready)}, "ready"); setTimeout(() => { db.close(); process.exit(1); }, 10_000).unref(); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(timer); db.close(); fs.writeFileSync(${JSON.stringify(closed)}, "closed"); } }, 1);`], { env: process.env, stdio: "ignore" });
+			writer = child;
+			exited = new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("exit", (status) => status === 0 ? resolve() : reject(new Error(`Native writer exited ${status}`))); });
+			wait(ready);
+		}
+		if (file === database + "-wal") closeWriter();
+		return chmod.call(this, file, mode);
+	});
+	syncBuiltinESMExports();
+	try {
+		recordRun("cold", "Retained cold sample", 0, 7);
+		assert.equal(vanished, true, "the native sidecar interleaving was reached");
+		assert.equal(loadRunsForAgent("cold")[0]?.task, "Retained cold sample");
+	} finally {
+		t.mock.restoreAll(); syncBuiltinESMExports();
+		if (writer && !exists(closed)) fs.writeFileSync(release, "close");
+		await exited;
+	}
+});
 
 function fixture(t: { after: (fn: () => void) => void }) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-history-")), previous = process.env.PI_CODING_AGENT_DIR;

@@ -24,7 +24,13 @@ export function openHistoryDatabase(file: string, readOnly = false): DatabaseSyn
 			if (!readOnly) {
 				if (db.prepare("PRAGMA journal_mode").get()?.journal_mode !== "wal") db.exec("PRAGMA journal_mode=WAL");
 				db.exec("PRAGMA synchronous=FULL");
-				for (const suffix of ["", "-wal", "-shm"]) if (fs.existsSync(file + suffix)) fs.chmodSync(file + suffix, 0o600);
+				for (const suffix of ["", "-wal", "-shm"]) {
+					try { fs.chmodSync(file + suffix, 0o600); }
+					catch (error) {
+						// SQLite can remove its sidecars when the last attached connection closes.
+						if (!suffix || !(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+					}
+				}
 			}
 			return db;
 		} catch (error) {
